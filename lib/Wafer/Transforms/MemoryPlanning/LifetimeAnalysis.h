@@ -283,22 +283,27 @@ private:
     bool hasWrite = false;
   };
 
-  AccessCollection collectAccesses(mlir::Operation *op,
-                                   ProgramPoint point, uint32_t workerMask,
+  AccessCollection collectAccesses(mlir::Operation *op, ProgramPoint point,
+                                   uint32_t workerMask,
                                    LifetimeDataflow &dataflow) const;
   mlir::LogicalResult
   verifyPendingObservers(mlir::Operation *op, ProgramPoint point,
                          const NCCCompletionContract &contract,
                          const AccessCollection &current,
                          LifetimeFailure *failure) const;
-  bool provesLoopBackedgeOrder(const PendingIssue &issue,
-                               mlir::Operation *loop,
+  bool provesLoopBackedgeOrder(const PendingIssue &issue, mlir::Operation *loop,
                                LifetimeDataflow &dataflow) const;
+  void appendPendingAccess(PendingAccess access);
+  void refreshPendingAccessSummary();
   void processFence(ProgramPoint fencePoint, uint32_t participantMask,
                     LifetimeDataflow &dataflow);
 
   llvm::SmallVector<PendingIssue, 8> pendingIssues;
   llvm::SmallVector<PendingAccess, 8> pendingAccesses;
+  uint32_t commonPendingWorkerMask = 0;
+  bool pendingWorkerMasksAgree = true;
+  bool pendingAllHaveResolvedRoots = true;
+  bool pendingAllHaveLogicalRoots = true;
 };
 
 /// Combines two independent byte-alignment divisibility requirements.

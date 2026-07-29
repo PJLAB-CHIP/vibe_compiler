@@ -650,21 +650,20 @@ static void appendWorkerPlacementNeighbor(
   std::string failureReason;
   mlir::FailureOr<NCCWorkerPlacementCandidate> candidate =
       deriveDisjointNCCWorkerPlacementCandidate(source, &failureReason);
-  if (mlir::failed(candidate) ||
-      llvm::popcount(candidate->participantMask) < 2)
+  if (mlir::failed(candidate) || llvm::popcount(candidate->participantMask) < 2)
     return;
 
   bool hasDirectDTE = false;
   candidate->module->walk([&](mlir::Operation *operation) {
     auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(operation);
-    hasDirectDTE |= instruction &&
-                    instruction.getInstructionFamily() == InstrFamily::DTE;
+    hasDirectDTE |=
+        instruction && instruction.getInstructionFamily() == InstrFamily::DTE;
   });
   TargetSchedulingMechanism mechanism =
       bufferingKind == RankBufferingKind::StaticFixedSlot
           ? TargetSchedulingMechanism::StaticFixedSlot
-          : hasDirectDTE ? TargetSchedulingMechanism::DirectDTEOverlap
-                         : TargetSchedulingMechanism::WorkerPlacement;
+      : hasDirectDTE ? TargetSchedulingMechanism::DirectDTEOverlap
+                     : TargetSchedulingMechanism::WorkerPlacement;
   llvm::Expected<TargetSchedulingWindowQuery> query =
       analyzeTargetSchedulingWindow(*candidate->module, targetProfile,
                                     mechanism);
@@ -681,11 +680,10 @@ static void appendWorkerPlacementNeighbor(
   if (decision->legality != TargetSchedulingCapabilityState::Supported)
     return;
 
-  alternatives.push_back(
-      {std::move(candidate->module), promotedHandoffs, readyReordered,
-       bufferingKind, bufferingPlanOrdinal,
-       RankWorkerPlacementKind::DisjointComponents,
-       /*workerPlacementPlanOrdinal=*/1});
+  alternatives.push_back({std::move(candidate->module), promotedHandoffs,
+                          readyReordered, bufferingKind, bufferingPlanOrdinal,
+                          RankWorkerPlacementKind::DisjointComponents,
+                          /*workerPlacementPlanOrdinal=*/1});
 }
 
 static mlir::FailureOr<std::string> getPartitionSignature(
@@ -1123,9 +1121,8 @@ static void buildBoundedSourceVariants(
   // bounded interaction sample without permutation duplicates.
   for (unsigned index = 0; index < std::size(producers); ++index)
     tryAdd({index}, /*minimumAppliedProducers=*/1);
-  for (unsigned lhs = 0;
-       lhs < std::size(producers) &&
-       variants.size() + 1 < boundedSourceVariantLimit;
+  for (unsigned lhs = 0; lhs < std::size(producers) &&
+                         variants.size() + 1 < boundedSourceVariantLimit;
        ++lhs)
     for (unsigned rhs = lhs + 1;
          rhs < std::size(producers) &&
@@ -1149,8 +1146,8 @@ struct RankSearchRecipes {
   llvm::SmallVector<SelectionConfig, 4> interfaceDriven;
 };
 
-static RankSearchRecipes
-buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
+static RankSearchRecipes buildRankSearchRecipes(mlir::ModuleOp source,
+                                                const SelectionConfig &base) {
   bool hasAllGather = false;
   bool hasReduceScatter = false;
   bool hasAllReduce = false;
@@ -1175,8 +1172,7 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
     }
   });
 
-  llvm::SmallVector<SelectionConfig, kRankSemanticRecipeLimit>
-      semanticRecipes;
+  llvm::SmallVector<SelectionConfig, kRankSemanticRecipeLimit> semanticRecipes;
   RankSearchRecipes recipes;
   auto addRecipe = [&](CommunicationAlternative communication,
                        std::optional<TargetImplementationKind> implementation,
@@ -1251,8 +1247,8 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
   // the authority on actual slot lifetimes and placement.
   for (const SelectionConfig &recipe : semanticRecipes)
     recipes.resultDriven.push_back(recipe);
-  for (unsigned multiplicity = 2;
-       multiplicity <= kRankSPMMultiplicityLimit; ++multiplicity) {
+  for (unsigned multiplicity = 2; multiplicity <= kRankSPMMultiplicityLimit;
+       ++multiplicity) {
     for (const SelectionConfig &semantic : semanticRecipes) {
       SelectionConfig recipe = semantic;
       recipe.spmWorkingSetMultiplicity = multiplicity;
@@ -1302,6 +1298,22 @@ struct RankEvaluationRequest {
 
 } // namespace
 
+bool isTensorProgramSchedulingRankInvariant(mlir::ModuleOp sourceModule) {
+  if (!sourceModule)
+    return false;
+  bool rankDependent = false;
+  sourceModule.walk([&](mlir::Operation *operation) {
+    rankDependent |=
+        mlir::isa<LinalgExtCollectiveAllGatherOp,
+                  LinalgExtCollectiveReduceScatterOp,
+                  LinalgExtCollectiveAllReduceOp, LinalgExtCollectiveAllToAllOp,
+                  LinalgExtCollectiveCollectivePermuteOp>(operation);
+    return rankDependent ? mlir::WalkResult::interrupt()
+                         : mlir::WalkResult::advance();
+  });
+  return !rankDependent;
+}
+
 mlir::FailureOr<std::vector<ScheduledRankCandidate>>
 buildScheduledRankCandidateFrontier(
     mlir::ModuleOp sourceModule,
@@ -1318,6 +1330,13 @@ buildScheduledRankCandidateFrontier(
   if (frontierConfig.candidateParallelism <= 0) {
     sourceModule.emitError() << "invalid_tensor_program_scheduling_config: "
                                 "candidate-parallelism must be positive";
+    return mlir::failure();
+  }
+  if (frontierConfig.requestShardCount == 0 ||
+      frontierConfig.requestShardIndex >= frontierConfig.requestShardCount) {
+    sourceModule.emitError()
+        << "invalid_tensor_program_scheduling_config: request shard "
+           "index/count must name a non-empty in-range shard";
     return mlir::failure();
   }
   if (!frontierConfig.targetProfile) {
@@ -1375,9 +1394,10 @@ buildScheduledRankCandidateFrontier(
   frontier.reserve(kMaximumScheduledRankFrontierSize);
   unsigned reservedBaselineCount = 0;
   RankFrontierAdmissionState admission;
-  auto appendAccepted = [&](RankVariantEvaluation &evaluation,
-                            int64_t stableOrdinal,
-                            bool reservedPolicy) -> mlir::LogicalResult {
+  auto appendAccepted =
+      [&](RankVariantEvaluation &evaluation, int64_t stableOrdinal,
+          bool reservedPolicy,
+          uint32_t frontierOrderOrdinal) -> mlir::LogicalResult {
     bool hasBaselineSpill = false;
     for (RankArtifactAlternative &alternative : evaluation.alternatives) {
       bool isBaselineSpill =
@@ -1390,16 +1410,14 @@ buildScheduledRankCandidateFrontier(
       bool reserved = reservedPolicy && isBaselineSpill;
       hasBaselineSpill |= isBaselineSpill;
       reservedBaselineCount += reserved;
-      if (!reserved &&
-          !admission.tryAdmit(alternative.bufferingKind,
-                              alternative.workerPlacementKind))
+      if (!reserved && !admission.tryAdmit(alternative.bufferingKind,
+                                           alternative.workerPlacementKind))
         continue;
-      frontier.emplace_back(std::move(alternative.module), stableOrdinal,
-                            getRankArtifactKind(alternative), reserved,
-                            alternative.bufferingKind,
-                            alternative.bufferingPlanOrdinal,
-                            alternative.workerPlacementKind,
-                            alternative.workerPlacementPlanOrdinal);
+      frontier.emplace_back(
+          std::move(alternative.module), stableOrdinal,
+          getRankArtifactKind(alternative), reserved, alternative.bufferingKind,
+          alternative.bufferingPlanOrdinal, alternative.workerPlacementKind,
+          alternative.workerPlacementPlanOrdinal, frontierOrderOrdinal);
     }
     return !reservedPolicy || hasBaselineSpill ? mlir::success()
                                                : mlir::failure();
@@ -1407,29 +1425,45 @@ buildScheduledRankCandidateFrontier(
 
   // The conservative spill tuple has an allowance outside every optimization
   // cap. It must exist before producer/recipe work can add frontier members.
-  llvm::StringSet<> reservedSeenPartitions;
-  RankVariantEvaluation reserved = evaluateRankVariant(
-      generationSources.front(), recipes.front(),
-      policies[conservativePolicyIndex], reservedSeenPartitions,
-      /*enableTransferElision=*/false);
-  if (reserved.noScopes) {
-    clearRankCandidatePhysicalFacts(*reserved.module);
-    frontier.emplace_back(std::move(reserved.module),
-                          /*stableOrdinal=*/conservativePolicyIndex,
-                          RankArtifactKind::Spill,
-                          /*reservedBaseline=*/true);
-    return frontier;
-  }
-  if (!reserved.accepted ||
-      mlir::failed(appendAccepted(reserved,
-                                  /*stableOrdinal=*/conservativePolicyIndex,
-                                  /*reservedPolicy=*/true))) {
-    sourceModule.emitError()
-        << "reserved_baseline_unavailable: conservative spill artifact did "
-           "not pass rank-local exact gates"
-        << (reserved.failureReason.empty() ? "" : ": ")
-        << reserved.failureReason;
-    return mlir::failure();
+  if (frontierConfig.requestShardIndex == 0) {
+    llvm::StringSet<> reservedSeenPartitions;
+    RankVariantEvaluation reserved = evaluateRankVariant(
+        generationSources.front(), recipes.front(),
+        policies[conservativePolicyIndex], reservedSeenPartitions,
+        /*enableTransferElision=*/false);
+    if (reserved.noScopes) {
+      clearRankCandidatePhysicalFacts(*reserved.module);
+      frontier.emplace_back(std::move(reserved.module),
+                            /*stableOrdinal=*/conservativePolicyIndex,
+                            RankArtifactKind::Spill,
+                            /*reservedBaseline=*/true);
+      return frontier;
+    }
+    if (!reserved.accepted ||
+        mlir::failed(appendAccepted(reserved,
+                                    /*stableOrdinal=*/conservativePolicyIndex,
+                                    /*reservedPolicy=*/true,
+                                    /*frontierOrderOrdinal=*/0))) {
+      sourceModule.emitError()
+          << "reserved_baseline_unavailable: conservative spill artifact did "
+             "not pass rank-local exact gates"
+          << (reserved.failureReason.empty() ? "" : ": ")
+          << reserved.failureReason;
+      return mlir::failure();
+    }
+  } else {
+    // Preserve the original terminal no-scope behavior without repeating the
+    // expensive reserved artifact construction in every search shard.
+    mlir::OwningOpRef<mlir::ModuleOp> scopeProbe =
+        mlir::cast<mlir::ModuleOp>(sourceModule->clone());
+    outlineRankDenseTensorConstants(*scopeProbe);
+    llvm::SmallVector<structured_scheduler::StructuredSchedulingScope, 8>
+        scopes;
+    if (mlir::failed(structured_scheduler::discoverStructuredSchedulingScopes(
+            *scopeProbe, scopes, policies[conservativePolicyIndex])))
+      return mlir::failure();
+    if (scopes.empty())
+      return frontier;
   }
 
   llvm::SmallVector<RankEvaluationRequest, 32> requests;
@@ -1497,7 +1531,13 @@ buildScheduledRankCandidateFrontier(
 
   std::vector<llvm::StringSet<>> seenPartitions(generationSources.size() *
                                                 recipes.size());
-  for (const RankEvaluationRequest &request : requests) {
+  for (auto [requestOrder, request] : llvm::enumerate(requests)) {
+    const uint64_t requestGroup =
+        static_cast<uint64_t>(request.sourceIndex) * recipes.size() +
+        request.recipeIndex;
+    if (requestGroup % frontierConfig.requestShardCount !=
+        frontierConfig.requestShardIndex)
+      continue;
     if (admission.allBandsFull())
       break;
     llvm::StringSet<> &seen =
@@ -1509,13 +1549,14 @@ buildScheduledRankCandidateFrontier(
     if (evaluation.noScopes || evaluation.duplicate)
       continue;
     int64_t stableOrdinal = static_cast<int64_t>(
-        (request.sourceIndex * kRankSearchRecipeStride +
-         request.recipeIndex) *
+        (request.sourceIndex * kRankSearchRecipeStride + request.recipeIndex) *
             std::size(policies) +
         request.policyIndex);
     if (evaluation.accepted) {
       (void)appendAccepted(evaluation, stableOrdinal,
-                           /*reservedPolicy=*/false);
+                           /*reservedPolicy=*/false,
+                           /*frontierOrderOrdinal=*/
+                           static_cast<uint32_t>(requestOrder + 1));
       continue;
     }
     if (failures.size() < 16) {
@@ -1548,27 +1589,36 @@ buildScheduledRankCandidateFrontier(
 
   std::vector<llvm::StringSet<>> interfaceSeenPartitions(
       generationSources.size() * interfaceRecipes.size());
-  for (const RankEvaluationRequest &request : interfaceRequests) {
+  for (auto [requestOrder, request] : llvm::enumerate(interfaceRequests)) {
+    const uint64_t requestGroup =
+        static_cast<uint64_t>(generationSources.size()) * recipes.size() +
+        static_cast<uint64_t>(request.sourceIndex) * interfaceRecipes.size() +
+        request.recipeIndex;
+    if (requestGroup % frontierConfig.requestShardCount !=
+        frontierConfig.requestShardIndex)
+      continue;
     if (admission.allBandsFull())
       break;
     llvm::StringSet<> &seen =
         interfaceSeenPartitions[request.sourceIndex * interfaceRecipes.size() +
                                 request.recipeIndex];
-    RankVariantEvaluation evaluation = evaluateRankVariant(
-        generationSources[request.sourceIndex],
-        interfaceRecipes[request.recipeIndex], policies[request.policyIndex],
-        seen);
+    RankVariantEvaluation evaluation =
+        evaluateRankVariant(generationSources[request.sourceIndex],
+                            interfaceRecipes[request.recipeIndex],
+                            policies[request.policyIndex], seen);
     if (evaluation.noScopes || evaluation.duplicate)
       continue;
     int64_t stableOrdinal = static_cast<int64_t>(
         (stableInterfaceRecipeBase +
-         request.sourceIndex * interfaceRecipes.size() +
-         request.recipeIndex) *
+         request.sourceIndex * interfaceRecipes.size() + request.recipeIndex) *
             std::size(policies) +
         request.policyIndex);
     if (evaluation.accepted) {
-      (void)appendAccepted(evaluation, stableOrdinal,
-                           /*reservedPolicy=*/false);
+      (void)appendAccepted(
+          evaluation, stableOrdinal,
+          /*reservedPolicy=*/false,
+          /*frontierOrderOrdinal=*/
+          static_cast<uint32_t>(requests.size() + requestOrder + 1));
       continue;
     }
     if (failures.size() < 16) {
@@ -1581,7 +1631,7 @@ buildScheduledRankCandidateFrontier(
     }
   }
 
-  if (reservedBaselineCount == 1)
+  if (frontierConfig.requestShardIndex != 0 || reservedBaselineCount == 1)
     return frontier;
 
   auto diagnostic = sourceModule.emitError()

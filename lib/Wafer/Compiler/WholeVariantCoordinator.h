@@ -76,11 +76,18 @@ struct AcceptedProductionAndBaseline {
   bool productionIsReservedBaseline = false;
 };
 
-/// Invocation-local test instrumentation for the expensive target gate. It is
-/// never stored in selected IR, an executable bundle, or a package artifact.
+/// Invocation-local search instrumentation. It is never stored in selected IR,
+/// an executable bundle, or a package artifact.
 struct WholeVariantSelectionStatistics {
+  uint64_t frontierCandidateCount = 0;
+  uint64_t plannedAttemptCount = 0;
+  uint64_t plannedAttemptLimit = 0;
+  uint64_t preTargetAttempts = 0;
+  uint64_t preTargetAccepted = 0;
   uint64_t targetGateInvocations = 0;
   uint64_t targetRankGateInvocations = 0;
+  uint64_t fullyAcceptedVariants = 0;
+  uint64_t paretoRetainedVariants = 0;
   uint64_t noCProfitabilityEvaluations = 0;
   uint64_t noCProfitabilityRejected = 0;
   uint64_t noCProfitabilityIndeterminate = 0;

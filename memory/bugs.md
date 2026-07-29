@@ -2174,23 +2174,36 @@
   schedule、Unknown work fail-closed及非NoC优化不受新门禁影响。`α=10 us`不是板端测量，后续matched board
   calibration可替换prior；论文绝对参数、静态公式或单engine counter均不能代签Q39 promotion和fresh correctness。
 
-## 2026-07-29 简单replicated-operand GEMM的profile编译时间已阻断model-scale
+## 2026-07-29 编译搜索的重复语义工作会放大成非线性资源消耗
 
-- 现象：16-rank FP16 GEMM使用global `A[4096,1024] × B[1024,4096] -> C[4096,4096]`，A/C沿M分片、
-  K不分片且B replicated。production winner `--profile`编译运行16分12秒仍未发布package，期间约28个逻辑
-  CPU持续工作、RSS约18 GiB，最终按用户要求停止且未上板。作为对照，更大算术量的K-sharded global
-  `4096³` GEMM winner profile约8分钟出包。编译时间因此不能用GEMM FLOPs或shape大小解释。
-- 当前边界：只确认耗时发生在production profile编译事务内；当前driver没有阶段计时、candidate数量、
-  accepted/rejected attempt数量或profile capture展开计数，不能判断主因是NoC owner/fan-out candidate搜索、
-  late-gate重复工作、profile site/capture展开还是其它阶段。CPU活跃只能证明进程未阻塞，不能证明语义进度。
-- 处置要求：该问题由独立Q41 `compiler-search-scalability`拥有，不再堆入Q39/Q40，也不是可接受的
-  qualification开销。在继续扩大workload前，
-  compiler必须输出稳定的per-stage wall time、peak memory、candidate/attempt/capture计数，并为bounded search
-  和profile companion生成建立可测试的编译成本上界；定位后删除重复工作或收紧有语义依据的预算，不能靠缩小
-  测试shape、关闭profile或无限延长timeout掩盖。
-- 防复发：固定K-sharded large contraction与M-sharded replicated-operand两个同源benchmark，分别运行ordinary
-  和profile编译；CI/qualification检查package发布、阶段计数、候选上界、wall time与peak RSS。任何“进入真实
-  模型后再看”的方案都不成立；简单GEMM未满足有界编译成本前，不得声称NoC-resident pipeline具备model-scale。
+- 现象：无collective的16-rank FP16 M-sharded GEMM每个rank生成完全相同frontier，并为全部candidate做文本
+  跨context传输；large layout movement按logical element分段，ordered reduction按每个slice再次枚举result，
+  same-worker pending lifetime按全部历史pair及每个loop issue反复扫描。CPU持续活跃但十余分钟不出包、RSS达到
+  十余GiB，不能用workload FLOPs解释。
+- 根因：rank-invariant artifact被误当成16个generation class，whole-variant有界attempt之前仍materialize和
+  import完整candidate domain；可解析的规则layout和homogeneous ordered stream又退化成element/pair枚举。
+  缺少阶段wall/RSS及candidate/attempt/lowering/capture计数，使“进程活跃”被误当成有效搜索进度。
+- 修复模式：只根据typed rank-dependent op判定generation class；request shard保持semantic recipe group完整，
+  canonical归并后重放原admission，并与未分片frontier逐module比较。whole-variant先从metadata建立固定attempt
+  plan，只bytecode传输required module；regular movement直接构造exact descriptor/block run，stable-root
+  same-worker stream用busytable合同摘要证明，mixed/unknown路径保留原fail-closed扫描。必然超过现有terminal/SPM
+  exact gate的partial reduction可用sound lower bound提前拒绝。
+- 防复发：真实model-scale owner case必须同时检查完整package/no-card、可引用的frontier/attempt上界、阶段wall、
+  peak RSS和profile capture展开计数；小型unit固定分片/未分片frontier完全等价及fallback negative。不得通过缩小
+  shape、关闭profile、按名字跳过候选或延长timeout满足门禁；统计也不得进入IR、selection或持久artifact。
+
+## 2026-07-29 多rank domain不能代替runtime launch form
+
+- 现象：16-rank M-sharded replicated-operand GEMM的production manifest正确发布`grid/main`，通用paired runner却按
+  `rank_count > 1`期待`cluster/prepare+main`并自动追加Direct-DTE no-card参数，在任何structure或numeric oracle前
+  错误拒绝package。
+- 根因：runner从rank数量恢复了未被该字段表达的transport语义；grid和cluster都可覆盖16个logical rank，launch
+  form只能来自accepted artifact的完整runtime contract。
+- 修复模式：case显式携带expected launch contract。compiler-search owner case独立验证grid manifest、
+  ordinary/profile production package递归bytes一致、完整profile companion及NE activity；旧NoC/Direct-DTE
+  structure oracle不放宽，也不复用来代签无transport workload。
+- 防复发：runner测试必须同时有16-rank grid与cluster正例，按case合同检查form/phases/entry ABI；Direct-DTE
+  status/watchdog参数只加到manifest transport需要的case，不能按rank count添加。
 
 ## 2026-07-29 Direct-DTE occurrence不能绑定无关静态位置
 

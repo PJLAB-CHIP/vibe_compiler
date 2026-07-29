@@ -792,6 +792,87 @@ getStaticLogicalMovementSegments(mlir::PatternRewriter &rewriter,
   int64_t elementBytes = sourceInfo.elementBytes;
   int64_t elementCount = sourceInfo.compactBytes / elementBytes;
 
+  // An identity transfer between a standard Tensor/NTensor layout and a
+  // channel-blocked Cx/NCx layout is piecewise contiguous by construction:
+  // for each logical outer coordinate, every channel block is one maximal
+  // run in both buffers. Build those exact runs directly instead of visiting
+  // every logical element. Large replicated GEMM operands otherwise spend
+  // minutes rediscovering tens of thousands of channel-block segments from
+  // millions of individual offsets before the fixed command-budget gate can
+  // reject or pack them.
+  const bool sourceBlocked =
+      sourceInfo.layout == MemLayout::Cx || sourceInfo.layout == MemLayout::NCx;
+  const bool destBlocked =
+      destInfo.layout == MemLayout::Cx || destInfo.layout == MemLayout::NCx;
+  if (sourceType.getShape() == destType.getShape() &&
+      sourceType.getElementType() == destType.getElementType() &&
+      sourceBlocked != destBlocked && sourceType.getRank() > 0) {
+    const WaferPhysicalTensorInfo &blockedInfo =
+        sourceBlocked ? sourceInfo : destInfo;
+    llvm::ArrayRef<int64_t> shape = sourceType.getShape();
+    const int64_t channels = shape.back();
+    if (blockedInfo.cBlock > 0 && channels > 0 &&
+        elementCount % channels == 0) {
+      llvm::SmallVector<int64_t, 4> indices(shape.size(), 0);
+      llvm::SmallVector<LogicalMovementSegment> blockedSegments;
+      const int64_t outerCount = elementCount / channels;
+      bool exactPiecewiseRuns = true;
+      for (int64_t outer = 0; outer < outerCount && exactPiecewiseRuns;
+           ++outer) {
+        for (int64_t channel = 0; channel < channels;
+             channel += blockedInfo.cBlock) {
+          const int64_t runElements =
+              std::min(blockedInfo.cBlock, channels - channel);
+          indices.back() = channel;
+          const int64_t sourceOffset =
+              sourceOffsets->getByteOffsetForValidIndices(indices);
+          const int64_t destOffset =
+              destOffsets->getByteOffsetForValidIndices(indices);
+          const int64_t runBytes = runElements * elementBytes;
+          if (sourceOffset < 0 || destOffset < 0 ||
+              sourceOffset > sourceInfo.physicalBytes - runBytes ||
+              destOffset > destInfo.physicalBytes - runBytes) {
+            exactPiecewiseRuns = false;
+            break;
+          }
+          if (runElements > 1) {
+            indices.back() = channel + runElements - 1;
+            exactPiecewiseRuns &=
+                sourceOffsets->getByteOffsetForValidIndices(indices) ==
+                    sourceOffset + runBytes - elementBytes &&
+                destOffsets->getByteOffsetForValidIndices(indices) ==
+                    destOffset + runBytes - elementBytes;
+            indices.back() = channel;
+            if (!exactPiecewiseRuns)
+              break;
+          }
+
+          if (!blockedSegments.empty()) {
+            LogicalMovementSegment &last = blockedSegments.back();
+            if (last.sourceOffset + last.bytes == sourceOffset &&
+                last.destOffset + last.bytes == destOffset) {
+              last.bytes += runBytes;
+              continue;
+            }
+          }
+          blockedSegments.push_back({sourceOffset, destOffset, runBytes});
+        }
+
+        if (outer + 1 != outerCount) {
+          for (int64_t dim = static_cast<int64_t>(shape.size()) - 2; dim >= 0;
+               --dim) {
+            if (++indices[dim] < shape[dim])
+              break;
+            indices[dim] = 0;
+          }
+          indices.back() = 0;
+        }
+      }
+      if (exactPiecewiseRuns)
+        return blockedSegments;
+    }
+  }
+
   // Reshape preserves canonical logical linear order, not per-dimension index
   // equality.  Traverse the source and destination canonical shapes with two
   // incremental odometers, then ask the physical layout helper where the same

@@ -39,6 +39,17 @@ enum class WholeVariantAttemptPlanFailure : uint8_t {
 /// rank-frontier metadata. Candidate indices always refer to the original
 /// frontier slots; no frontier is compacted or reordered.
 struct WholeVariantAttemptPlan {
+  static constexpr size_t kCartesianVisitLimit = 64;
+  static constexpr size_t kCoordinatedVisitLimit = 64;
+  static constexpr size_t kGenericCorrespondenceVisitLimit = 8;
+  static constexpr size_t kMaximumOptimizedAttemptCount =
+      kCartesianVisitLimit + kCoordinatedVisitLimit +
+      wafer::kWorkerPlacementRankFrontierAdmissionLimit +
+      wafer::kFixedSlotRankFrontierAdmissionLimit +
+      kGenericCorrespondenceVisitLimit;
+  static constexpr size_t kMaximumAttemptCount =
+      1 + kMaximumOptimizedAttemptCount;
+
   WholeVariantAttemptPlanFailure failure = WholeVariantAttemptPlanFailure::None;
   std::vector<size_t> reservedBaselineIndices;
   std::vector<std::vector<size_t>> optimizedCandidateIndices;

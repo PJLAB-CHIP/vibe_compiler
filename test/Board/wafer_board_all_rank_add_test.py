@@ -657,7 +657,7 @@ def verify_no_card_evidence(stdout: str) -> None:
 
 
 def verify_profile_report(
-    package: pathlib.Path, stdout: str
+    package: pathlib.Path, stdout: str, expected_active_engine: str = "CT"
 ) -> tuple[int, pathlib.Path]:
     companion = pathlib.Path(f"{package}.profile")
     require_profile_companion_permissions(package)
@@ -797,19 +797,20 @@ def verify_profile_report(
                     raise RuntimeError(
                         f"profile analysis contains a negative {key}"
                     )
-        ct = next(
+        active_engine = next(
             engine
             for engine in tile["engines"]
-            if engine["engine"] == "CT"
+            if engine["engine"] == expected_active_engine
         )
         if (
-            not ct.get("engine_execution_time_valid")
-            or ct.get("engine_execution_time_ns") is None
-            or ct["engine_execution_time_ns"] <= 0
-            or ct.get("activity_window_count", 0) <= 0
+            not active_engine.get("engine_execution_time_valid")
+            or active_engine.get("engine_execution_time_ns") is None
+            or active_engine["engine_execution_time_ns"] <= 0
+            or active_engine.get("activity_window_count", 0) <= 0
         ):
             raise RuntimeError(
-                "profile analysis did not capture real CT activity on every tile"
+                "profile analysis did not capture real "
+                f"{expected_active_engine} activity on every tile"
             )
     for event in final.get("timeline_events", []):
         if not isinstance(event, dict):

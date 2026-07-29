@@ -5,6 +5,7 @@
 #include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
 #include "../../lib/Wafer/Compiler/NoCResidentDataflow.h"
 #include "../../lib/Wafer/Compiler/ScheduledRankFinalization.h"
+#include "../../lib/Wafer/Compiler/WholeVariantAttemptPlan.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/IR/WaferInterfaces.h"
@@ -864,8 +865,16 @@ TEST_F(WholeVariantCoordinatorTest,
             std::vector<int64_t>({5}));
   EXPECT_FALSE(selected->production.selectedReservedBaselines.front());
   EXPECT_TRUE(selected->reservedBaseline->selectedReservedBaselines.front());
+  EXPECT_LE(statistics.plannedAttemptCount, statistics.plannedAttemptLimit);
+  EXPECT_EQ(
+      statistics.plannedAttemptLimit,
+      wafer::compiler::detail::WholeVariantAttemptPlan::kMaximumAttemptCount);
+  EXPECT_EQ(statistics.preTargetAttempts, 3u);
+  EXPECT_EQ(statistics.preTargetAccepted, 3u);
   EXPECT_EQ(statistics.targetGateInvocations, 2u);
   EXPECT_EQ(statistics.targetRankGateInvocations, 2u);
+  EXPECT_EQ(statistics.fullyAcceptedVariants, 2u);
+  EXPECT_EQ(statistics.paretoRetainedVariants, 1u);
 }
 
 TEST_F(WholeVariantCoordinatorTest,

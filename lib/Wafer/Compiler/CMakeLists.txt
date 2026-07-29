@@ -68,6 +68,7 @@ add_mlir_library(WaferCompiler
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
   MLIRBuiltinToLLVMIRTranslation
+  MLIRBytecodeWriter
   MLIRControlFlowDialect
   MLIRFuncDialect
   MLIRFuncInlinerExtension

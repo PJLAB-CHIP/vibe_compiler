@@ -1,6 +1,7 @@
 //===- CompilationOrchestration.cpp - Compiler transaction orchestration ===//
 
 #include "CompilationInternal.h"
+#include "CompilationStatistics.h"
 
 #include "Wafer/Pipelines/Pipelines.h"
 
@@ -75,6 +76,7 @@ mlir::LogicalResult runCompilationTransaction(
          "StableHLO and SPMD partitioner dependencies are required");
   return mlir::failure();
 #else
+  const CompileClock::time_point transactionStart = CompileClock::now();
   if (outputProgramDirectory.empty()) {
     reject(diagnostics, "output program directory must not be empty");
     return mlir::failure();
@@ -340,6 +342,11 @@ mlir::LogicalResult runCompilationTransaction(
                                                   tensorProgram, diagnostics)))
     return mlir::failure();
 
+  diagnostics << "wafer-compile: compile-stats stage=source-to-tensor-program"
+              << " wall_ms=" << elapsedCompileMilliseconds(transactionStart)
+              << " peak_rss_kib=" << getCompilePeakRSSKiB() << "\n";
+
+  const CompileClock::time_point targetProductStart = CompileClock::now();
   std::optional<ExecutableBundle> executableBundle;
   std::optional<TargetLLVMModuleBundle> targetLLVMModules;
   if (options.shouldProduceProfileCompanion()) {
@@ -357,7 +364,13 @@ mlir::LogicalResult runCompilationTransaction(
                  targetLLVMModules))) {
     return mlir::failure();
   }
+  diagnostics << "wafer-compile: compile-stats stage=target-product"
+              << " wall_ms=" << elapsedCompileMilliseconds(targetProductStart)
+              << " peak_rss_kib=" << getCompilePeakRSSKiB() << " profile="
+              << (options.shouldProduceProfileCompanion() ? "true" : "false")
+              << "\n";
 
+  const CompileClock::time_point publicationStart = CompileClock::now();
   llvm::SmallString<256> stagedPackage(transactionRoot);
   llvm::sys::path::append(stagedPackage, "package");
   if (producesStaticFixedSlotQualificationCompanion(selectionMode)) {
@@ -382,6 +395,12 @@ mlir::LogicalResult runCompilationTransaction(
     retainedExecutableBundle->emplace(std::move(*executableBundle));
   if (retainedTargetLLVMModuleBundle)
     retainedTargetLLVMModuleBundle->emplace(std::move(*targetLLVMModules));
+  diagnostics << "wafer-compile: compile-stats stage=publication"
+              << " wall_ms=" << elapsedCompileMilliseconds(publicationStart)
+              << " peak_rss_kib=" << getCompilePeakRSSKiB() << "\n";
+  diagnostics << "wafer-compile: compile-stats stage=compile-transaction"
+              << " wall_ms=" << elapsedCompileMilliseconds(transactionStart)
+              << " peak_rss_kib=" << getCompilePeakRSSKiB() << "\n";
   return mlir::success();
 #endif
 }

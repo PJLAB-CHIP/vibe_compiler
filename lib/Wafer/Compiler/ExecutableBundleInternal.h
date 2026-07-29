@@ -12,6 +12,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -44,10 +45,12 @@ struct ExecutableBundleBuilder {
 namespace detail {
 
 /// Invocation-local cross-context transport for one finalized rank candidate.
-/// The module text is parsed only when the fixed whole-variant attempt plan can
+/// The module data is parsed only when the fixed whole-variant attempt plan can
 /// reach this original frontier slot through its correspondence precheck.
+/// Production writes MLIR bytecode; tests may also use textual MLIR because the
+/// canonical MLIR parser accepts both representations.
 struct SerializedRankVariantCandidate {
-  std::string moduleText;
+  std::shared_ptr<const std::string> moduleData;
   int64_t stableOrdinal = 0;
   wafer::RankArtifactKind artifactKind = wafer::RankArtifactKind::Spill;
   bool reservedBaseline = false;

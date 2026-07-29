@@ -1383,8 +1383,7 @@ void LifetimeDataflow::completeAsyncTasks(mlir::Operation *op) {
   }
 
   for (mlir::Value handle : handles) {
-    for (AsyncTaskRef completed :
-         asyncTasksAt(handle, completionPoint.path)) {
+    for (AsyncTaskRef completed : asyncTasksAt(handle, completionPoint.path)) {
       if (completed.taskIndex >= asyncTasks.size())
         continue;
       AsyncTaskState &task = asyncTasks[completed.taskIndex];
@@ -1603,26 +1602,23 @@ LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
                    isNestedIn(asyncTasks[ref.taskIndex].origin, op);
           });
       if (carriesLoopLocalTask && !isStaticallyNonEmpty(forOp)) {
-        setLifetimeFailure(failure,
-                           LifetimeFailureKind::UnsupportedAsyncCompletionFlow,
-                           op);
+        setLifetimeFailure(
+            failure, LifetimeFailureKind::UnsupportedAsyncCompletionFlow, op);
         return mlir::failure();
       }
       if (!isStaticallyNonEmpty(forOp)) {
-        auto hasSameTaskIdentities =
-            [](llvm::ArrayRef<AsyncTaskRef> lhs,
-               llvm::ArrayRef<AsyncTaskRef> rhs) {
-              return llvm::all_of(lhs, [&](AsyncTaskRef ref) {
-                return llvm::any_of(rhs, [&](AsyncTaskRef other) {
-                  return ref.taskIndex == other.taskIndex;
-                });
-              });
-            };
+        auto hasSameTaskIdentities = [](llvm::ArrayRef<AsyncTaskRef> lhs,
+                                        llvm::ArrayRef<AsyncTaskRef> rhs) {
+          return llvm::all_of(lhs, [&](AsyncTaskRef ref) {
+            return llvm::any_of(rhs, [&](AsyncTaskRef other) {
+              return ref.taskIndex == other.taskIndex;
+            });
+          });
+        };
         if (!hasSameTaskIdentities(initialTasks, backedgeTasks) ||
             !hasSameTaskIdentities(backedgeTasks, initialTasks)) {
           setLifetimeFailure(
-              failure, LifetimeFailureKind::UnsupportedAsyncCompletionFlow,
-              op);
+              failure, LifetimeFailureKind::UnsupportedAsyncCompletionFlow, op);
           return mlir::failure();
         }
       }
@@ -1654,15 +1650,14 @@ LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
             llvm::SmallVector<AsyncTaskRef, 4> relaxed;
             for (AsyncTaskRef task : tasks) {
               task.path = loopPoint->path;
-              appendUniqueAsyncTaskRefs(
-                  relaxed, llvm::ArrayRef<AsyncTaskRef>{task});
+              appendUniqueAsyncTaskRefs(relaxed,
+                                        llvm::ArrayRef<AsyncTaskRef>{task});
             }
             tasks.assign(relaxed.begin(), relaxed.end());
           };
       forgetTaskRepeatableDecisions(recurrenceTasks);
       forgetTaskRepeatableDecisions(resultTasks);
-      if (!recurrenceTasks.empty() &&
-          index < forOp.getRegionIterArgs().size())
+      if (!recurrenceTasks.empty() && index < forOp.getRegionIterArgs().size())
         asyncTaskRefs[forOp.getRegionIterArgs()[index]] = recurrenceTasks;
       if (!resultTasks.empty())
         asyncTaskRefs[result] = std::move(resultTasks);
@@ -2104,8 +2099,8 @@ mlir::LogicalResult LocalCompletionTracker::verifyPendingObservers(
     mlir::Operation *op, ProgramPoint point,
     const NCCCompletionContract &contract, const AccessCollection &current,
     LifetimeFailure *failure) const {
-  auto reachablePending = llvm::find_if(
-      pendingAccesses, [&](const PendingAccess &pending) {
+  auto reachablePending =
+      llvm::find_if(pendingAccesses, [&](const PendingAccess &pending) {
         return pending.root.path.intersect(point.path).has_value();
       });
   if (reachablePending != pendingAccesses.end() &&
@@ -2116,6 +2111,27 @@ mlir::LogicalResult LocalCompletionTracker::verifyPendingObservers(
     return mlir::failure();
   }
   if (!current.hasTrackedEffect)
+    return mlir::success();
+
+  bool currentAllHaveResolvedRoots =
+      llvm::all_of(current.accesses, [](const PendingAccess &access) {
+        return access.root.demandIndex != kUnresolvedRootIndex;
+      });
+  bool currentAllHaveLogicalRoots =
+      llvm::all_of(current.accesses, [](const PendingAccess &access) {
+        return static_cast<bool>(access.logicalRoot);
+      });
+  // A same-worker ordered issue with a stable address domain is safe for every
+  // reachable pending/current pair: the hardware busytable orders an actual
+  // overlap, while disjoint runtime ranges need no edge. Preserve the exact
+  // pairwise path below for mixed workers or unresolved address domains, but
+  // avoid rescanning a long linear instruction chain when all pairs satisfy
+  // the same proof.
+  if (contract.behavior == LocalInstructionCompletion::OrderedPending &&
+      commonPendingWorkerMask != 0 && pendingWorkerMasksAgree &&
+      commonPendingWorkerMask == getNCCIssueWorkerMask(contract) &&
+      ((pendingAllHaveResolvedRoots && currentAllHaveResolvedRoots) ||
+       (pendingAllHaveLogicalRoots && currentAllHaveLogicalRoots)))
     return mlir::success();
 
   for (const PendingAccess &pending : pendingAccesses) {
@@ -2165,6 +2181,31 @@ mlir::LogicalResult LocalCompletionTracker::verifyPendingObservers(
   return mlir::success();
 }
 
+void LocalCompletionTracker::appendPendingAccess(PendingAccess access) {
+  if (pendingAccesses.empty())
+    commonPendingWorkerMask = access.workerMask;
+  else
+    pendingWorkerMasksAgree &= commonPendingWorkerMask == access.workerMask;
+  pendingAllHaveResolvedRoots &=
+      access.root.demandIndex != kUnresolvedRootIndex;
+  pendingAllHaveLogicalRoots &= static_cast<bool>(access.logicalRoot);
+  pendingAccesses.push_back(std::move(access));
+}
+
+void LocalCompletionTracker::refreshPendingAccessSummary() {
+  commonPendingWorkerMask =
+      pendingAccesses.empty() ? 0 : pendingAccesses.front().workerMask;
+  pendingWorkerMasksAgree = true;
+  pendingAllHaveResolvedRoots = true;
+  pendingAllHaveLogicalRoots = true;
+  for (const PendingAccess &access : pendingAccesses) {
+    pendingWorkerMasksAgree &= commonPendingWorkerMask == access.workerMask;
+    pendingAllHaveResolvedRoots &=
+        access.root.demandIndex != kUnresolvedRootIndex;
+    pendingAllHaveLogicalRoots &= static_cast<bool>(access.logicalRoot);
+  }
+}
+
 void LocalCompletionTracker::processFence(ProgramPoint fencePoint,
                                           uint32_t participantMask,
                                           LifetimeDataflow &dataflow) {
@@ -2209,6 +2250,7 @@ void LocalCompletionTracker::processFence(ProgramPoint fencePoint,
                         access.accessIdentity, access.write});
   }
   pendingAccesses = std::move(remainingAccesses);
+  refreshPendingAccessSummary();
 }
 
 mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
@@ -2247,7 +2289,8 @@ mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
   pendingIssues.push_back(PendingIssue{
       op, point->path, workerMask,
       current.allResolved && !current.accesses.empty(), current.hasWrite});
-  pendingAccesses.append(current.accesses.begin(), current.accesses.end());
+  for (PendingAccess access : current.accesses)
+    appendPendingAccess(std::move(access));
   return mlir::success();
 }
 
@@ -2274,21 +2317,18 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
     return false;
 
   auto accessesMayConflict = [](const PendingAccess &pending,
-                               const PendingAccess &access) {
+                                const PendingAccess &access) {
     if (!pending.root.path.intersect(access.root.path) ||
         (!pending.write && !access.write))
       return false;
 
-    bool pendingRootResolved =
-        pending.root.demandIndex != kUnresolvedRootIndex;
-    bool currentRootResolved =
-        access.root.demandIndex != kUnresolvedRootIndex;
+    bool pendingRootResolved = pending.root.demandIndex != kUnresolvedRootIndex;
+    bool currentRootResolved = access.root.demandIndex != kUnresolvedRootIndex;
     if (pendingRootResolved && currentRootResolved &&
         pending.root.demandIndex != access.root.demandIndex)
       return false;
-    if ((!pendingRootResolved || !currentRootResolved) &&
-        pending.logicalRoot && access.logicalRoot &&
-        pending.logicalRoot != access.logicalRoot &&
+    if ((!pendingRootResolved || !currentRootResolved) && pending.logicalRoot &&
+        access.logicalRoot && pending.logicalRoot != access.logicalRoot &&
         mlir::isa_and_nonnull<mlir::memref::AllocOp>(
             pending.logicalRoot.getDefiningOp()) &&
         mlir::isa_and_nonnull<mlir::memref::AllocOp>(
@@ -2346,8 +2386,8 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
       NCCCompletionContract candidateContract =
           getNCCCompletionContract(&candidate);
       uint32_t candidateWorkerMask = getNCCIssueWorkerMask(candidateContract);
-      AccessCollection current = collectAccesses(
-          &candidate, *candidatePoint, candidateWorkerMask, dataflow);
+      AccessCollection current = collectAccesses(&candidate, *candidatePoint,
+                                                 candidateWorkerMask, dataflow);
       if (!candidatePoint->path.implies(bodyPoint->path) ||
           !mlir::isa<WaferNCCIssueOpInterface>(&candidate) ||
           candidateContract.behavior !=
@@ -2361,20 +2401,19 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
       }
       if (!current.allResolved || current.accesses.empty())
         return false;
-      bool conflictsWithIssue = llvm::any_of(
-          issueAccesses, [&](const PendingAccess *pending) {
-            return llvm::any_of(
-                current.accesses, [&](const PendingAccess &access) {
-                  return accessesMayConflict(*pending, access);
-                });
+      bool conflictsWithIssue =
+          llvm::any_of(issueAccesses, [&](const PendingAccess *pending) {
+            return llvm::any_of(current.accesses,
+                                [&](const PendingAccess &access) {
+                                  return accessesMayConflict(*pending, access);
+                                });
           });
       if (conflictsWithIssue && candidateWorkerMask != issue.workerMask)
         return false;
     }
     return true;
   };
-  bool resolvedOrderedStream =
-      provesStructuredOrderedStream(*forOp.getBody());
+  bool resolvedOrderedStream = provesStructuredOrderedStream(*forOp.getBody());
   if (resolvedOrderedStream)
     return true;
 
@@ -2472,6 +2511,88 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
   auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(loop);
   if (forOp && !hasPossibleBackedge(forOp))
     return mlir::success();
+  if (forOp) {
+    std::optional<ProgramPoint> bodyPoint =
+        dataflow.timeline.lookup(forOp.getBody()->getTerminator());
+    uint32_t uniformWorkerMask = 0;
+    bool hasNestedIssue = false;
+    bool uniformIssues = static_cast<bool>(bodyPoint);
+    for (const PendingIssue &issue : pendingIssues) {
+      if (!isNestedIn(issue.origin, loop) || issue.origin == loop)
+        continue;
+      hasNestedIssue = true;
+      if (!bodyPoint || issue.workerMask == 0 || !issue.accessOrderResolved ||
+          !issue.path.implies(bodyPoint->path)) {
+        uniformIssues = false;
+        break;
+      }
+      if (uniformWorkerMask == 0)
+        uniformWorkerMask = issue.workerMask;
+      else if (uniformWorkerMask != issue.workerMask) {
+        uniformIssues = false;
+        break;
+      }
+    }
+
+    // Prove a homogeneous ordered loop stream once for all of its pending
+    // issues. The per-issue proof below remains necessary for mixed workers or
+    // partially resolved streams, but rescanning the complete loop for every
+    // operation is redundant when every tracked issue has the same stable
+    // address domain and worker.
+    std::function<bool(mlir::Block &)> provesUniformOrderedStream;
+    provesUniformOrderedStream = [&](mlir::Block &block) {
+      for (mlir::Operation &candidate : block.without_terminator()) {
+        if (auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(candidate)) {
+          if (!isStaticallyNonEmpty(nestedFor) ||
+              !provesUniformOrderedStream(*nestedFor.getBody()))
+            return false;
+          continue;
+        }
+        if (candidate.getNumRegions() != 0)
+          return false;
+
+        std::optional<ProgramPoint> candidatePoint =
+            dataflow.timeline.lookup(&candidate);
+        if (!candidatePoint)
+          return mlir::isMemoryEffectFree(&candidate);
+        if (mlir::isMemoryEffectFree(&candidate))
+          continue;
+        if (auto allocation =
+                mlir::dyn_cast<mlir::memref::AllocOp>(candidate)) {
+          bool tracked =
+              dataflow.isTrackedType &&
+              dataflow.isTrackedType(allocation.getResult().getType());
+          if (tracked && !dataflow.demands.empty() &&
+              llvm::none_of(dataflow.demands, [&](LifetimeDemand demand) {
+                return demand.allocation == allocation;
+              }))
+            return false;
+          continue;
+        }
+        if (!hasOnlyWitnessedRootlessStorageEffects(&candidate))
+          return false;
+
+        NCCCompletionContract contract = getNCCCompletionContract(&candidate);
+        uint32_t candidateWorkerMask = getNCCIssueWorkerMask(contract);
+        AccessCollection current = collectAccesses(
+            &candidate, *candidatePoint, candidateWorkerMask, dataflow);
+        if (!candidatePoint->path.implies(bodyPoint->path) ||
+            !mlir::isa<WaferNCCIssueOpInterface>(&candidate) ||
+            contract.behavior != LocalInstructionCompletion::OrderedPending ||
+            candidateWorkerMask == 0)
+          return false;
+        if (!current.hasTrackedEffect)
+          continue;
+        if (!current.allResolved || current.accesses.empty() ||
+            candidateWorkerMask != uniformWorkerMask)
+          return false;
+      }
+      return true;
+    };
+    if (hasNestedIssue && uniformIssues &&
+        provesUniformOrderedStream(*forOp.getBody()))
+      return mlir::success();
+  }
   for (const PendingIssue &issue : pendingIssues) {
     if (!isNestedIn(issue.origin, loop) || issue.origin == loop)
       continue;

@@ -2044,6 +2044,30 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       SKIP_RETURN_CODE 77
       TIMEOUT 1800
     )
+    add_test(NAME wafer-board-m-sharded-replicated-gemm-profile
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_m_sharded_gemm_profile_test.py
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --tx8-objdump ${_wafer_tx81_objdump}
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-m-sharded-replicated-gemm-profile
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 60000
+    )
+    set_tests_properties(
+      wafer-board-m-sharded-replicated-gemm-profile PROPERTIES
+      LABELS "board;hardware;kernel-grid;all-rank;gemm;compiler-search;profiler"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 1800
+    )
     add_test(NAME wafer-board-cluster-direct-dte
       COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_direct_dte_collective_test.py

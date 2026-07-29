@@ -72,12 +72,12 @@ static int64_t getOptionalBatchCount(InstrGemmOp op) {
   return 1;
 }
 
-CandidateStats estimateStats(
-    mlir::ModuleOp module,
-    const analysis::TargetScheduleCostPolicy &scheduleCostPolicy) {
+CandidateStats
+estimateStats(mlir::ModuleOp module,
+              const analysis::TargetScheduleCostPolicy &scheduleCostPolicy) {
   CandidateStats stats;
-  stats.program = analysis::analyzeInstructionProgramCost(
-      module.getOperation(), scheduleCostPolicy);
+  stats.program = analysis::analyzeInstructionProgramCost(module.getOperation(),
+                                                          scheduleCostPolicy);
   return stats;
 }
 
@@ -372,6 +372,21 @@ estimateRootMinimumSPMBytes(mlir::linalg::LinalgOp root,
       k = candidate.reductionSplitSizes.front();
     int64_t elements = saturatingAdd(saturatingMul(m, k), saturatingMul(k, n));
     elements = saturatingAdd(elements, saturatingMul(m, n));
+    if (candidate.traversalKind ==
+            CandidateTileTraversalKind::PartialReduction &&
+        !candidate.reductionSplitSizes.empty()) {
+      // PartialReductionOpInterface materializes actual [M, N, K-split]
+      // tensors before its merge reduction. The matmul expansion has four
+      // simultaneously live tensors at its multiply point: the initialized
+      // accumulator, both broadcast operands, and the multiplication result.
+      // None can alias another there under the value/effect contract, so this
+      // is a sound rejection lower bound. Applying it before materialization
+      // prevents an impossible partial from spending minutes in layout
+      // movement lowering only to fail the unchanged exact SPM planner later.
+      const int64_t partialElements =
+          saturatingMul(saturatingMul(saturatingMul(m, n), k), 4);
+      elements = std::max(elements, partialElements);
+    }
     return saturatingMul(elements, *elementBytes);
   }
 
@@ -442,9 +457,10 @@ static bool isDirectTaskArgument(mlir::func::FuncOp task, mlir::Value value) {
 /// tile.  Candidate legality must nevertheless use the worst collective role:
 /// otherwise peers select different traversal steps and no longer execute the
 /// same DTE message instances.
-static std::optional<int64_t> estimateDirectAllReduceRequiredLiveBytes(
-    mlir::func::FuncOp task, const CandidateSpec &candidate,
-    int64_t spmAlignment) {
+static std::optional<int64_t>
+estimateDirectAllReduceRequiredLiveBytes(mlir::func::FuncOp task,
+                                         const CandidateSpec &candidate,
+                                         int64_t spmAlignment) {
   if (!task || !task.getBody().hasOneBlock() ||
       !candidate.reductionSplitSizes.empty() || candidate.tileSizes.empty())
     return std::nullopt;
@@ -455,8 +471,7 @@ static std::optional<int64_t> estimateDirectAllReduceRequiredLiveBytes(
 
   int64_t largestTileBytes = 0;
   for (mlir::Value returned : returnOp.getOperands()) {
-    auto allReduce =
-        returned.getDefiningOp<LinalgExtCollectiveAllReduceOp>();
+    auto allReduce = returned.getDefiningOp<LinalgExtCollectiveAllReduceOp>();
     if (!allReduce || allReduce.getInputs().size() != 1 ||
         allReduce.getOuts().size() != 1 || allReduce->getNumResults() != 1 ||
         allReduce.getResult(0) != returned ||
@@ -482,9 +497,8 @@ static std::optional<int64_t> estimateDirectAllReduceRequiredLiveBytes(
         allReduce.getOuts().front().getType());
     auto resultType =
         mlir::dyn_cast<mlir::RankedTensorType>(returned.getType());
-    if (!inputType || !outputType || !resultType ||
-        inputType != outputType || inputType != resultType ||
-        !resultType.hasStaticShape() ||
+    if (!inputType || !outputType || !resultType || inputType != outputType ||
+        inputType != resultType || !resultType.hasStaticShape() ||
         static_cast<int64_t>(candidate.tileSizes.size()) !=
             resultType.getRank())
       return std::nullopt;
@@ -730,6 +744,28 @@ static std::optional<std::string> getCheapTargetGeometryFailureImpl(
         candidate.reductionSplitSizes.empty()
             ? reductionRanges
             : llvm::ArrayRef<int64_t>(candidate.reductionSplitSizes);
+    if (candidate.traversalKind ==
+            CandidateTileTraversalKind::PartialReduction &&
+        isGemm && !reductionSizes.empty()) {
+      int64_t reductionTupleCount = 1;
+      for (int64_t size : reductionSizes)
+        reductionTupleCount = saturatingMul(reductionTupleCount, size);
+      constexpr uint64_t budget = wafer::detail::kStaticTerminalOperationBudget;
+      constexpr uint64_t maximumOrderedReductionTuples = (budget - 4) / 4;
+      auto resultType =
+          mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
+      // The current large terminal reduction is an F32-only target
+      // instruction. Other element types with a larger tuple domain are
+      // rejected by the exact instr-lowering gate after materialization.
+      // Mirror that gate here so refinement reaches a representable split
+      // without first expanding a guaranteed-illegal partial tensor.
+      if (resultType &&
+          !mlir::isa<mlir::Float32Type>(resultType.getElementType()) &&
+          static_cast<uint64_t>(reductionTupleCount) >
+              maximumOrderedReductionTuples)
+        return "static_terminal_budget_exceeded: partial-reduction merge "
+               "minimum terminal operation count exceeds 4096";
+    }
     // GEMM dimensions and a genuine local reduction are encoded through
     // target uint16_t shape fields. A sharded high-level reduction can,
     // however, leave a rank-local unit reduction whose physical program is
@@ -741,9 +777,9 @@ static std::optional<std::string> getCheapTargetGeometryFailureImpl(
     // materializes and passes the exact instruction/ABI preflight, including
     // the uint32_t element-count check for elementwise compute.
     const bool hasNonUnitLocalReduction =
-        isReduction &&
-        llvm::any_of(reductionSizes,
-                     [](int64_t dimension) { return dimension > 1; });
+        isReduction && llvm::any_of(reductionSizes, [](int64_t dimension) {
+          return dimension > 1;
+        });
     if (!isGemm && !hasNonUnitLocalReduction)
       continue;
 

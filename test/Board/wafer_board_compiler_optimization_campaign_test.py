@@ -110,6 +110,17 @@ class CampaignCase:
         ["TargetStructure", "TargetStructure"], None
     ]
     output_comparison: PairedOutputComparisonPolicy = RAW_EXACT_OUTPUT
+    expected_launch: dict[str, object] | None = None
+
+    @property
+    def launch_contract(self) -> dict[str, object]:
+        if self.expected_launch is not None:
+            return self.expected_launch
+        return (
+            runtime_launch.RANK_ONE_KERNEL_LAUNCH
+            if self.rank_count == 1
+            else runtime_launch.CLUSTER_KERNEL_LAUNCH
+        )
 
 
 F16_16384 = TensorSpec((16384,), "f16", "float16")
@@ -1244,6 +1255,7 @@ def compile_package(
     case: CampaignCase,
     *,
     reserved_baseline: bool,
+    profile: bool = False,
 ) -> None:
     environment = os.environ.copy()
     for failure_injection in (
@@ -1256,25 +1268,35 @@ def compile_package(
         environment[BASELINE_ENVIRONMENT_VARIABLE] = "1"
     else:
         environment.pop(BASELINE_ENVIRONMENT_VARIABLE, None)
-    result = run(
-        [
-            str(compiler),
-            "--input-program-dir",
-            str(source),
-            "--output-program-dir",
-            str(output),
-            f"--execution-ranks={case.rank_count}",
-            f"--target-profile={TARGET_PROFILE}",
-            f"--launch-kind={case.launch_kind}",
-        ],
-        environment=environment,
-    )
+    command = [
+        str(compiler),
+        "--input-program-dir",
+        str(source),
+        "--output-program-dir",
+        str(output),
+        f"--execution-ranks={case.rank_count}",
+        f"--target-profile={TARGET_PROFILE}",
+        f"--launch-kind={case.launch_kind}",
+    ]
+    if profile:
+        command.append("--profile")
+    result = run(command, environment=environment)
     expected = (
         "wafer-compile: published verified package with "
         f"execution-ranks={case.rank_count}"
     )
     if expected not in result.stdout:
         raise RuntimeError(f"compiler did not publish the {case.key} package")
+    published_companion = "wafer-compile: published profile companion:"
+    if profile and published_companion not in result.stdout:
+        raise RuntimeError(
+            f"compiler did not publish the {case.key} profile companion"
+        )
+    if not profile and published_companion in result.stdout:
+        raise RuntimeError(
+            f"ordinary {case.key} compilation unexpectedly published a "
+            "profile companion"
+        )
 
 
 def normalized_manifest(manifest: dict[str, object]) -> dict[str, object]:
@@ -1357,14 +1379,9 @@ def validate_paired_packages(
     output_ids_by_variant: dict[str, set[int]] = {}
     completion_evidence_by_variant: dict[str, set[tuple[int, int]]] = {}
     for variant, manifest in manifests.items():
-        expected_launch = (
-            runtime_launch.RANK_ONE_KERNEL_LAUNCH
-            if case.rank_count == 1
-            else runtime_launch.CLUSTER_KERNEL_LAUNCH
-        )
         runtime_launch.require_manifest_launch(
             manifest,
-            expected_launch,
+            case.launch_contract,
             context=f"paired {variant}",
         )
         if (
@@ -2041,7 +2058,8 @@ def verify_board_output(
             for completion, rank in terminal_matches
         }
         if (
-            f"launch_pattern: cluster-x{case.rank_count}" not in stdout
+            f"launch_pattern: {case.launch_contract['form']}-x"
+            f"{case.rank_count}" not in stdout
             or f"logical_tile_domain: 0..{case.rank_count - 1}" not in stdout
             or len(terminal_matches) != case.rank_count
             or len(actual_completions) != case.rank_count
@@ -2133,11 +2151,7 @@ def main() -> int:
             for relative in SOURCE_SNAPSHOT_PATHS
         },
         "target_profile": TARGET_PROFILE,
-        "launch": (
-            runtime_launch.RANK_ONE_KERNEL_LAUNCH
-            if case.rank_count == 1
-            else runtime_launch.CLUSTER_KERNEL_LAUNCH
-        ),
+        "launch": case.launch_contract,
         "rank_count": case.rank_count,
         "module_digests": {
             name: list(module_digests(package))

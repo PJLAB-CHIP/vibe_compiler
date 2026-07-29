@@ -51,11 +51,11 @@ protected:
     std::optional<SelectedCandidate> selected;
   };
 
-  SelectionRun
-  select(unsigned taskAlternativeOrdinal, int64_t candidateParallelism,
-         CandidateEvaluationExecutor *evaluationExecutor = nullptr,
-         unsigned spmWorkingSetMultiplicity = 1,
-         int64_t spmCapacityBytes = 2048) {
+  SelectionRun select(unsigned taskAlternativeOrdinal,
+                      int64_t candidateParallelism,
+                      CandidateEvaluationExecutor *evaluationExecutor = nullptr,
+                      unsigned spmWorkingSetMultiplicity = 1,
+                      int64_t spmCapacityBytes = 2048) {
     SelectionRun run;
     run.source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
@@ -184,10 +184,9 @@ protected:
     run.taskModule =
         wafer::structured_scheduler::cloneScopeToStandaloneModule(scopes[0]);
     mlir::func::FuncOp task =
-        run.taskModule
-            ? wafer::structured_scheduler::findSingleTaskFunction(
-                  *run.taskModule)
-            : mlir::func::FuncOp{};
+        run.taskModule ? wafer::structured_scheduler::findSingleTaskFunction(
+                             *run.taskModule)
+                       : mlir::func::FuncOp{};
     if (!task) {
       ADD_FAILURE() << "failed to clone interface traversal task";
       return run;
@@ -297,8 +296,8 @@ module {
 )mlir";
 
   wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  SelectionConfig config(
-      policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  SelectionConfig config(policy,
+                         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   config.logicalRank = 0;
   CandidateSpec candidate{/*tileSizes=*/{8, 4},
                           /*reductionSplitSizes=*/{}};
@@ -332,8 +331,8 @@ module {
 )mlir";
 
   wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  SelectionConfig config(
-      policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  SelectionConfig config(policy,
+                         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   config.logicalRank = 0;
 
   CandidateSpec baseline{/*tileSizes=*/{2},
@@ -534,8 +533,7 @@ module {
   auto partialReductionRanges = getStaticRootReductionRanges(
       wrapped, wafer::CandidateTileTraversalKind::PartialReduction);
   ASSERT_TRUE(mlir::succeeded(partialReductionRanges));
-  EXPECT_EQ(*partialReductionRanges,
-            (llvm::SmallVector<int64_t, 2>{256}));
+  EXPECT_EQ(*partialReductionRanges, (llvm::SmallVector<int64_t, 2>{256}));
 
   CandidateSpec tile{/*tileSizes=*/{256, 256},
                      /*reductionSplitSizes=*/{}};
@@ -564,6 +562,20 @@ module {
                                  CandidateSpec{/*tileSizes=*/{4096, 4096},
                                                /*reductionSplitSizes=*/{}},
                                  /*spmBase=*/65536, /*spmLimit=*/3080192));
+  CandidateSpec oversizedPartial{/*tileSizes=*/{256, 256},
+                                 /*reductionSplitSizes=*/{256}};
+  oversizedPartial.traversalKind =
+      wafer::CandidateTileTraversalKind::PartialReduction;
+  EXPECT_TRUE(failsCheapSPMBound(wrapped, oversizedPartial,
+                                 /*spmBase=*/65536,
+                                 /*spmLimit=*/3080192));
+  CandidateSpec fittingPartial{/*tileSizes=*/{16, 16},
+                               /*reductionSplitSizes=*/{64}};
+  fittingPartial.traversalKind =
+      wafer::CandidateTileTraversalKind::PartialReduction;
+  EXPECT_FALSE(failsCheapSPMBound(wrapped, fittingPartial,
+                                  /*spmBase=*/65536,
+                                  /*spmLimit=*/3080192));
   EXPECT_TRUE(
       getCheapTargetGeometryFailure(wrapped,
                                     CandidateSpec{/*tileSizes=*/{65536, 1},
@@ -666,16 +678,15 @@ module {
 
   CandidateSpec fullTraversal{/*tileSizes=*/{458752},
                               /*reductionSplitSizes=*/{}};
-  EXPECT_FALSE(getCheapTargetGeometryFailure(
-      task, fullTraversal, /*reductionRanges=*/{1}));
-  EXPECT_TRUE(getCheapTargetGeometryFailure(
-      task, fullTraversal, /*reductionRanges=*/{2}));
+  EXPECT_FALSE(getCheapTargetGeometryFailure(task, fullTraversal,
+                                             /*reductionRanges=*/{1}));
+  EXPECT_TRUE(getCheapTargetGeometryFailure(task, fullTraversal,
+                                            /*reductionRanges=*/{2}));
 
-  CandidateSpec narrowTraversalWideReduction{
-      /*tileSizes=*/{57344},
-      /*reductionSplitSizes=*/{65536}};
-  EXPECT_TRUE(getCheapTargetGeometryFailure(
-      task, narrowTraversalWideReduction, /*reductionRanges=*/{65536}));
+  CandidateSpec narrowTraversalWideReduction{/*tileSizes=*/{57344},
+                                             /*reductionSplitSizes=*/{65536}};
+  EXPECT_TRUE(getCheapTargetGeometryFailure(task, narrowTraversalWideReduction,
+                                            /*reductionRanges=*/{65536}));
 }
 
 TEST_F(InterfaceTraversalCandidateSelectionTest,
@@ -842,8 +853,8 @@ module {
   unsigned dteIssues = 0;
   unsigned localReductions = 0;
   run.selected->module->walk([&](mlir::Operation *operation) {
-    dteIssues += mlir::isa<wafer::InstrDTESendOp,
-                           wafer::InstrDTERecvOp>(operation);
+    dteIssues +=
+        mlir::isa<wafer::InstrDTESendOp, wafer::InstrDTERecvOp>(operation);
     localReductions += mlir::isa<wafer::InstrElementwiseOp>(operation);
   });
   EXPECT_GT(dteIssues, 0u);
@@ -872,13 +883,12 @@ module {
 }
 )mlir";
   wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  SelectionConfig config(
-      policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  SelectionConfig config(policy,
+                         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   config.logicalRank = 0;
   CandidateSpec candidate{/*tileSizes=*/{2, 3},
                           /*reductionSplitSizes=*/{}};
-  candidate.traversalKind =
-      wafer::CandidateTileTraversalKind::OperandDriven;
+  candidate.traversalKind = wafer::CandidateTileTraversalKind::OperandDriven;
   CandidateCheckResult result = evaluateCandidateOnStandaloneTaskText(
       task, /*traversalShape=*/{4, 6}, candidate, config);
   EXPECT_NE(result.failureReason.find(
@@ -915,13 +925,12 @@ module {
 }
 )mlir";
   wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  SelectionConfig config(
-      policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  SelectionConfig config(policy,
+                         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   config.logicalRank = 0;
   CandidateSpec candidate{/*tileSizes=*/{2},
                           /*reductionSplitSizes=*/{4}};
-  candidate.traversalKind =
-      wafer::CandidateTileTraversalKind::PartialReduction;
+  candidate.traversalKind = wafer::CandidateTileTraversalKind::PartialReduction;
   CandidateCheckResult result = evaluateCandidateOnStandaloneTaskText(
       task, /*traversalShape=*/{4}, candidate, config);
   EXPECT_NE(result.failureReason.find(
@@ -930,6 +939,48 @@ module {
             std::string::npos)
       << result.failureReason;
   EXPECT_TRUE(result.acceptedModuleText.empty());
+}
+
+TEST(CandidateSelectionTest,
+     RejectsOversizedF16PartialReductionBeforeTargetMaterialization) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::tensor::TensorDialect,
+                  wafer::WaferDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @matmul(%lhs: tensor<2x1024xf16>,
+                    %rhs: tensor<1024x2xf16>,
+                    %out: tensor<2x2xf16>) -> tensor<2x2xf16> {
+    %result = linalg.matmul
+        ins(%lhs, %rhs : tensor<2x1024xf16>, tensor<1024x2xf16>)
+        outs(%out : tensor<2x2xf16>) -> tensor<2x2xf16>
+    return %result : tensor<2x2xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function =
+      source->lookupSymbol<mlir::func::FuncOp>("matmul");
+  ASSERT_TRUE(function);
+
+  CandidateSpec candidate{/*tileSizes=*/{2, 2},
+                          /*reductionSplitSizes=*/{1024}};
+  candidate.traversalKind = wafer::CandidateTileTraversalKind::PartialReduction;
+  std::optional<std::string> oversized =
+      getCheapTargetGeometryFailure(function, candidate, {1024});
+  ASSERT_TRUE(oversized);
+  EXPECT_NE(oversized->find("static_terminal_budget_exceeded"),
+            std::string::npos)
+      << *oversized;
+
+  candidate.reductionSplitSizes = {512};
+  EXPECT_FALSE(getCheapTargetGeometryFailure(function, candidate, {1024}));
 }
 
 TEST(CandidateSelectionTest,
@@ -968,13 +1019,12 @@ module {
 }
 )mlir";
   wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  SelectionConfig config(
-      policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  SelectionConfig config(policy,
+                         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   config.logicalRank = 0;
   CandidateSpec candidate{/*tileSizes=*/{2},
                           /*reductionSplitSizes=*/{4}};
-  candidate.traversalKind =
-      wafer::CandidateTileTraversalKind::PartialReduction;
+  candidate.traversalKind = wafer::CandidateTileTraversalKind::PartialReduction;
   CandidateCheckResult result = evaluateCandidateOnStandaloneTaskText(
       task, /*traversalShape=*/{4}, candidate, config);
   EXPECT_NE(result.failureReason.find(

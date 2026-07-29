@@ -1523,6 +1523,15 @@ selectAcceptedWholeVariants(
   }
   WholeVariantAttemptPlan attemptPlan = buildWholeVariantAttemptPlan(
       frontierMetadata, executionConfig.getRankCount());
+  if (statistics) {
+    statistics->frontierCandidateCount = 0;
+    for (const RankVariantFrontier &frontier : frontiers)
+      statistics->frontierCandidateCount += frontier.size();
+    statistics->plannedAttemptCount =
+        1 + attemptPlan.optimizedCandidateIndices.size();
+    statistics->plannedAttemptLimit =
+        WholeVariantAttemptPlan::kMaximumAttemptCount;
+  }
   if (attemptPlan.failure == WholeVariantAttemptPlanFailure::CandidateDomain) {
     diagnostics << "wafer-compile: rank scheduling frontiers do not form the "
                    "complete canonical rank domain\n";
@@ -1579,6 +1588,8 @@ selectAcceptedWholeVariants(
       -> mlir::FailureOr<PreTargetWholeVariant> {
     if (!attemptedCandidateIndices.insert(candidateIndices).second)
       return mlir::failure();
+    if (statistics)
+      ++statistics->preTargetAttempts;
     std::string capturedDiagnostics;
     std::string failureGate = "unknown";
     mlir::FailureOr<PreTargetWholeVariant> result = mlir::failure();
@@ -1593,8 +1604,11 @@ selectAcceptedWholeVariants(
       result = tryPreTargetCombination(candidateIndices, frontiers, program,
                                        executionConfig, failureGate);
     }
-    if (mlir::succeeded(result))
+    if (mlir::succeeded(result)) {
+      if (statistics)
+        ++statistics->preTargetAccepted;
       return result;
+    }
     recordFailure(candidateIndices, failureGate, capturedDiagnostics);
     return mlir::failure();
   };
@@ -1615,8 +1629,11 @@ selectAcceptedWholeVariants(
       result = runTargetGate(std::move(candidate), executionConfig, statistics,
                              failureGate);
     }
-    if (mlir::succeeded(result))
+    if (mlir::succeeded(result)) {
+      if (statistics)
+        ++statistics->fullyAcceptedVariants;
       return result;
+    }
     recordFailure(candidateIndices, failureGate, capturedDiagnostics);
     return mlir::failure();
   };
@@ -1771,6 +1788,8 @@ selectAcceptedWholeVariants(
         std::move(*accepted), paretoFrontier, selectionPolicy);
     assert(retained &&
            "target gate cannot change Pareto facts or frontier membership");
+    if (statistics)
+      ++statistics->paretoRetainedVariants;
   };
 
   // Replay the exact original bounded Cartesian/coordinated sequence over the
@@ -1820,7 +1839,7 @@ selectAcceptedWholeVariants(
     }
     return AcceptedProductionAndBaseline{
         std::move(*selected), std::nullopt,
-         /*productionIsReservedBaseline=*/false};
+        /*productionIsReservedBaseline=*/false};
   }
   AcceptedWholeVariant *selected = &baselineAccepted;
   for (AcceptedWholeVariant &candidate : paretoFrontier)

@@ -286,17 +286,10 @@ public:
       return failPattern(rewriter, op, failureReason,
                          "tile.insert_slice lowering requires memref types");
 
-    auto identityIndexFn = [](llvm::ArrayRef<int64_t> indices,
-                              llvm::SmallVectorImpl<int64_t> &result) {
-      result.assign(indices.begin(), indices.end());
-      return mlir::success();
-    };
-
     mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> copySegments =
-        getStaticMappedMovementSegments(rewriter, op, destType, resultType,
-                                        resultType.getShape(), identityIndexFn,
-                                        identityIndexFn, failureReason,
-                                        "tile.insert_slice dest copy lowering");
+        getStaticLogicalMovementSegments(
+            rewriter, op, destType, resultType, failureReason,
+            "tile.insert_slice dest copy lowering");
     if (mlir::failed(copySegments))
       return mlir::failure();
 

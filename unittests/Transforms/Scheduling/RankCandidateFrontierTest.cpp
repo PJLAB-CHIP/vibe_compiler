@@ -28,8 +28,11 @@
 
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <optional>
 #include <set>
+#include <tuple>
+#include <vector>
 
 namespace {
 
@@ -52,6 +55,153 @@ static bool hasGemmInsideDirectDTEWindow(mlir::ModuleOp module) {
       found |= mlir::isa<wafer::InstrGemmOp>(operation);
   });
   return found;
+}
+
+using RankCandidateSignature =
+    std::tuple<int64_t, wafer::RankArtifactKind, bool,
+               wafer::RankBufferingKind, uint32_t,
+               wafer::RankWorkerPlacementKind, uint32_t, std::string>;
+
+static RankCandidateSignature
+getRankCandidateSignature(wafer::ScheduledRankCandidate &candidate) {
+  std::string moduleText;
+  llvm::raw_string_ostream os(moduleText);
+  candidate.module->print(os);
+  os.flush();
+  return {candidate.stableOrdinal,
+          candidate.artifactKind,
+          candidate.reservedBaseline,
+          candidate.bufferingKind,
+          candidate.bufferingPlanOrdinal,
+          candidate.workerPlacementKind,
+          candidate.workerPlacementPlanOrdinal,
+          std::move(moduleText)};
+}
+
+static std::vector<RankCandidateSignature>
+getRankCandidateSignatures(
+    std::vector<wafer::ScheduledRankCandidate> &frontier) {
+  std::vector<RankCandidateSignature> signatures;
+  signatures.reserve(frontier.size());
+  for (wafer::ScheduledRankCandidate &candidate : frontier)
+    signatures.push_back(getRankCandidateSignature(candidate));
+  return signatures;
+}
+
+TEST(RankCandidateFrontierTest,
+     DetectsExactlyTheTypedCollectiveRankDependency) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::tensor::TensorDialect, wafer::WaferDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  mlir::OwningOpRef<mlir::ModuleOp> rankInvariant =
+      mlir::parseSourceString<mlir::ModuleOp>("module {}", &context);
+  ASSERT_TRUE(rankInvariant);
+  EXPECT_TRUE(wafer::isTensorProgramSchedulingRankInvariant(*rankInvariant));
+
+  mlir::OwningOpRef<mlir::ModuleOp> rankDependent =
+      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(%input: tensor<1xf16>) -> tensor<1xf16> {
+    %out = tensor.empty() : tensor<1xf16>
+    %result = wafer.linalg_ext.collective.all_reduce
+        ins(%input : tensor<1xf16>)
+        outs(%out : tensor<1xf16>) {
+    ^bb0(%lhs: f16, %rhs: f16):
+      %sum = arith.addf %lhs, %rhs : f16
+      wafer.linalg_ext.collective.yield %sum : f16
+    } {channel_id = 1 : i64, rank_group = array<i64: 0, 1>}
+        -> tensor<1xf16>
+    return %result : tensor<1xf16>
+  }
+}
+)mlir",
+                                              &context);
+  ASSERT_TRUE(rankDependent);
+  EXPECT_FALSE(wafer::isTensorProgramSchedulingRankInvariant(*rankDependent));
+}
+
+TEST(RankCandidateFrontierTest,
+     CanonicalRequestShardMergeMatchesUnshardedFrontier) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                  wafer::WaferDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  wafer::registerTargetImplementationExternalModels(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(%lhs: tensor<4x6xf16>, %rhs: tensor<4x6xf16>,
+                  %out: tensor<4x6xf16>) -> tensor<4x6xf16> {
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>
+        ],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%lhs, %rhs : tensor<4x6xf16>, tensor<4x6xf16>)
+        outs(%out : tensor<4x6xf16>) {
+    ^bb0(%left: f16, %right: f16, %old: f16):
+      %sum = arith.addf %left, %right : f16
+      linalg.yield %sum : f16
+    } -> tensor<4x6xf16>
+    return %result : tensor<4x6xf16>
+  }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(source);
+
+  wafer::TensorProgramSchedulingConfig unshardedConfig;
+  unshardedConfig.logicalRank = 0;
+  unshardedConfig.candidateParallelism = 1;
+  unshardedConfig.targetProfile = kTargetProfile;
+  auto unsharded =
+      wafer::buildScheduledRankCandidateFrontier(*source, unshardedConfig);
+  ASSERT_TRUE(mlir::succeeded(unsharded));
+  std::vector<RankCandidateSignature> expected =
+      getRankCandidateSignatures(*unsharded);
+
+  constexpr uint32_t requestShardCount = 16;
+  std::vector<wafer::ScheduledRankCandidate> shardCandidates;
+  for (uint32_t shardIndex = 0; shardIndex < requestShardCount; ++shardIndex) {
+    wafer::TensorProgramSchedulingConfig shardConfig = unshardedConfig;
+    shardConfig.requestShardIndex = shardIndex;
+    shardConfig.requestShardCount = requestShardCount;
+    auto shard =
+        wafer::buildScheduledRankCandidateFrontier(*source, shardConfig);
+    ASSERT_TRUE(mlir::succeeded(shard));
+    for (wafer::ScheduledRankCandidate &candidate : *shard)
+      shardCandidates.push_back(std::move(candidate));
+  }
+  std::stable_sort(
+      shardCandidates.begin(), shardCandidates.end(),
+      [](const wafer::ScheduledRankCandidate &lhs,
+         const wafer::ScheduledRankCandidate &rhs) {
+        return lhs.frontierOrderOrdinal < rhs.frontierOrderOrdinal;
+      });
+
+  wafer::RankFrontierAdmissionState admission;
+  std::vector<wafer::ScheduledRankCandidate> merged;
+  for (wafer::ScheduledRankCandidate &candidate : shardCandidates) {
+    if (!candidate.reservedBaseline &&
+        !admission.tryAdmit(candidate.bufferingKind,
+                            candidate.workerPlacementKind))
+      continue;
+    merged.push_back(std::move(candidate));
+  }
+
+  EXPECT_EQ(getRankCandidateSignatures(merged), expected);
 }
 
 TEST(RankCandidateFrontierTest,
@@ -500,8 +650,8 @@ module {
     if (mlir::succeeded(transport)) {
       acceptedDTEWindow =
           *transport == wafer::compiler::TransportContract::DirectDTE;
-      const auto policy = wafer::analysis::getTargetScheduleCostPolicy(
-          kTargetProfile);
+      const auto policy =
+          wafer::analysis::getTargetScheduleCostPolicy(kTargetProfile);
       for (mlir::ModuleOp rank : ranks) {
         rank.walk([&](wafer::InstrDTESendOp send) {
           if (!send.getBinding() ||
@@ -509,8 +659,8 @@ module {
                   wafer::DTERemoteAddressMode::SelectorTable)
             return;
           sawSelectorTableBinding = true;
-          sawRouteSelectorOperand |= static_cast<bool>(
-              send.getBindingSelector());
+          sawRouteSelectorOperand |=
+              static_cast<bool>(send.getBindingSelector());
         });
         const auto cost =
             wafer::analysis::analyzeInstructionProgramCost(rank, policy);
@@ -528,9 +678,8 @@ module {
 
   bool retiled = false;
   bool allSPMAllocationsPlaced = true;
-  pipelined->module->walk([&](wafer::InstrGemmOp gemm) {
-    retiled |= gemm.getN() < 262144;
-  });
+  pipelined->module->walk(
+      [&](wafer::InstrGemmOp gemm) { retiled |= gemm.getN() < 262144; });
   pipelined->module->walk([&](mlir::memref::AllocOp allocation) {
     if (wafer::isWaferSPMMemRefType(allocation.getType()))
       allSPMAllocationsPlaced &=

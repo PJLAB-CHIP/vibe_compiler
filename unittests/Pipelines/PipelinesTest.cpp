@@ -142,6 +142,13 @@ module {
   ASSERT_TRUE(static_cast<bool>(executable))
       << diagnosticsText
       << (executable ? "" : llvm::toString(executable.takeError()));
+  EXPECT_NE(
+      diagnosticsText.find("compile-stats stage=rank-candidate-generation"),
+      std::string::npos);
+  EXPECT_NE(diagnosticsText.find("compile-stats stage=whole-variant-selection"),
+            std::string::npos);
+  EXPECT_NE(diagnosticsText.find("planned_attempt_limit=153"),
+            std::string::npos);
   // The executable bundle becomes the MLIRContext owner on success. Destroy
   // the source module before that owner so its uniqued state stays live.
   module = nullptr;

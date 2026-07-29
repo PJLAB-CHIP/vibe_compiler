@@ -15,13 +15,16 @@
 namespace wafer::compiler::detail {
 namespace {
 
-constexpr size_t kWholeVariantVisitLimit = 64;
-constexpr size_t kCoordinatedPolicyVisitLimit = 64;
+constexpr size_t kWholeVariantVisitLimit =
+    WholeVariantAttemptPlan::kCartesianVisitLimit;
+constexpr size_t kCoordinatedPolicyVisitLimit =
+    WholeVariantAttemptPlan::kCoordinatedVisitLimit;
 constexpr size_t kWorkerPlacedVisitLimit =
     wafer::kWorkerPlacementRankFrontierAdmissionLimit;
 constexpr size_t kFixedSlotVisitLimit =
     wafer::kFixedSlotRankFrontierAdmissionLimit;
-constexpr size_t kGenericCorrespondenceVisitLimit = 8;
+constexpr size_t kGenericCorrespondenceVisitLimit =
+    WholeVariantAttemptPlan::kGenericCorrespondenceVisitLimit;
 
 using CandidateOrder = std::vector<std::vector<size_t>>;
 using CorrespondenceKey =

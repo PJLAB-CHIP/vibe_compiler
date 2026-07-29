@@ -80,8 +80,7 @@ public:
   bool allBandsFull() const {
     return generalCount >= kGeneralRankFrontierAdmissionLimit &&
            fixedSlotCount >= kFixedSlotRankFrontierAdmissionLimit &&
-           workerPlacementCount >=
-               kWorkerPlacementRankFrontierAdmissionLimit;
+           workerPlacementCount >= kWorkerPlacementRankFrontierAdmissionLimit;
   }
 
   unsigned getGeneralCount() const { return generalCount; }
@@ -107,13 +106,15 @@ struct ScheduledRankCandidate {
       uint32_t bufferingPlanOrdinal = 0,
       RankWorkerPlacementKind workerPlacementKind =
           RankWorkerPlacementKind::Unplaced,
-      uint32_t workerPlacementPlanOrdinal = 0)
+      uint32_t workerPlacementPlanOrdinal = 0,
+      uint32_t frontierOrderOrdinal = 0)
       : module(std::move(module)), stableOrdinal(stableOrdinal),
         artifactKind(artifactKind), reservedBaseline(reservedBaseline),
         bufferingKind(bufferingKind),
         bufferingPlanOrdinal(bufferingPlanOrdinal),
         workerPlacementKind(workerPlacementKind),
-        workerPlacementPlanOrdinal(workerPlacementPlanOrdinal) {}
+        workerPlacementPlanOrdinal(workerPlacementPlanOrdinal),
+        frontierOrderOrdinal(frontierOrderOrdinal) {}
 
   ScheduledRankCandidate(ScheduledRankCandidate &&) = default;
   ScheduledRankCandidate &operator=(ScheduledRankCandidate &&) = default;
@@ -132,17 +133,34 @@ struct ScheduledRankCandidate {
   RankWorkerPlacementKind workerPlacementKind;
   /// Deterministic dependency-component assignment identity.
   uint32_t workerPlacementPlanOrdinal;
+  /// Invocation-local canonical request order. This is used only to merge
+  /// independently evaluated search shards before final rank admission; it is
+  /// never persisted or used as semantic correspondence identity.
+  uint32_t frontierOrderOrdinal;
 };
 
 struct TensorProgramSchedulingConfig {
   int64_t logicalRank = -1;
   int64_t candidateParallelism = 1;
+  /// Optional bounded partition of the deterministic rank request sequence.
+  /// All requests with the same source/recipe identity remain in one shard so
+  /// partition-signature suppression is unchanged. Shards must be merged by
+  /// `frontierOrderOrdinal` and readmitted before they form a rank frontier.
+  uint32_t requestShardIndex = 0;
+  uint32_t requestShardCount = 1;
   /// Exact versioned target/ABI contract selected by the production
   /// ExecutionConfig. This is static compile input, never a live-card or
   /// profiler result. There is deliberately no scheduler-local default: an
   /// omitted contract rejects the frontier before any candidate analysis.
   std::optional<TargetProfileId> targetProfile;
 };
+
+/// Returns true exactly when rank-local scheduling cannot observe
+/// `logicalRank` from the current typed tensor program. The only
+/// rank-dependent lowering operations are the typed collective family; all
+/// other scheduling inputs are common to every rank in the same verified
+/// tensor-program artifact.
+bool isTensorProgramSchedulingRankInvariant(mlir::ModuleOp sourceModule);
 
 /// Builds a bounded frontier of complete rank alternatives in independent
 /// clones. Every returned module has passed task commit, whole-rank SPM

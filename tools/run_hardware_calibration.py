@@ -397,6 +397,15 @@ ARGMIN_PENDING_DOMAIN_CASE_NAMES = (
 
 EXPLICIT_ONLY_STEPS = (
     CalibrationStep(
+        "m-sharded-replicated-gemm-profile",
+        "full-card-compiler-search",
+        "wafer-board-m-sharded-replicated-gemm-profile",
+        (
+            "16-rank FP16 M-sharded replicated-operand GEMM exact "
+            "correctness and final-artifact profiler campaign"
+        ),
+    ),
+    CalibrationStep(
         "runtime-kernel-grid",
         "full-card-runtime-smoke",
         "wafer-board-kernel-grid-add",
@@ -698,6 +707,9 @@ ALL_CALIBRATION_STEPS = (
 )
 
 SELECTABLE_BATCHES = {
+    "compiler-search-scalability": (
+        "m-sharded-replicated-gemm-profile",
+    ),
     "compiler-optimization-paired": tuple(
         step.key
         for step in EXPLICIT_ONLY_STEPS

@@ -2,6 +2,7 @@
 
 #include "AcceptedCallClosure.h"
 #include "CompilationInternal.h"
+#include "CompilationStatistics.h"
 #include "ExecutableBundleInternal.h"
 #include "PackageInternal.h"
 #include "StaticFixedSlotQualification.h"
@@ -102,6 +103,8 @@ static mlir::LogicalResult stageExecutablePackage(
     std::optional<int64_t> failAfterPackageLogicalRank,
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle,
     ProfileCaptureKind profileCapture = ProfileCaptureKind::None) {
+  const CompileClock::time_point totalStart = CompileClock::now();
+  const CompileClock::time_point targetIRStart = CompileClock::now();
   llvm::Expected<TargetLLVMModuleBundle> targetLLVMModules =
       compileExecutableBundleToTargetLLVMModulesImpl(
           executableBundle, diagnostics, failAfterTargetLogicalRank,
@@ -110,6 +113,8 @@ static mlir::LogicalResult stageExecutablePackage(
     llvm::consumeError(targetLLVMModules.takeError());
     return mlir::failure();
   }
+  const int64_t targetIRWallMs = elapsedCompileMilliseconds(targetIRStart);
+  const CompileClock::time_point targetArtifactStart = CompileClock::now();
   llvm::Expected<TargetArtifactBundle> targetArtifacts =
       compileTargetLLVMModuleBundleToTargetArtifactsImpl(
           *targetLLVMModules, stagedTargetArtifacts, targetToolchain,
@@ -118,6 +123,9 @@ static mlir::LogicalResult stageExecutablePackage(
     llvm::consumeError(targetArtifacts.takeError());
     return mlir::failure();
   }
+  const int64_t targetArtifactWallMs =
+      elapsedCompileMilliseconds(targetArtifactStart);
+  const CompileClock::time_point packageStart = CompileClock::now();
   llvm::Expected<PackageBundle> package = assemblePackageBundleImpl(
       tensorProgramDirectory, executableBundle, *targetArtifacts, stagedPackage,
       diagnostics, failAfterPackageLogicalRank);
@@ -125,6 +133,30 @@ static mlir::LogicalResult stageExecutablePackage(
     llvm::consumeError(package.takeError());
     return mlir::failure();
   }
+  const int64_t packageWallMs = elapsedCompileMilliseconds(packageStart);
+  diagnostics << "wafer-compile: compile-stats stage=target-ir-lowering"
+              << " wall_ms=" << targetIRWallMs
+              << " peak_rss_kib=" << getCompilePeakRSSKiB()
+              << " capture=" << stringifyProfileCaptureKind(profileCapture)
+              << " rank_lowerings=" << targetLLVMModules->getModules().size()
+              << "\n";
+  diagnostics << "wafer-compile: compile-stats stage=target-artifact"
+              << " wall_ms=" << targetArtifactWallMs
+              << " peak_rss_kib=" << getCompilePeakRSSKiB()
+              << " capture=" << stringifyProfileCaptureKind(profileCapture)
+              << " module_count=" << targetArtifacts->getModules().size()
+              << "\n";
+  diagnostics << "wafer-compile: compile-stats stage=package-assembly"
+              << " wall_ms=" << packageWallMs
+              << " peak_rss_kib=" << getCompilePeakRSSKiB()
+              << " capture=" << stringifyProfileCaptureKind(profileCapture)
+              << " rank_count="
+              << executableBundle.getExecutionConfig().getRankCount() << "\n";
+  diagnostics << "wafer-compile: compile-stats stage=target-package"
+              << " wall_ms=" << elapsedCompileMilliseconds(totalStart)
+              << " peak_rss_kib=" << getCompilePeakRSSKiB()
+              << " capture=" << stringifyProfileCaptureKind(profileCapture)
+              << "\n";
   targetLLVMModuleBundle.emplace(std::move(*targetLLVMModules));
   return mlir::success();
 }
@@ -607,6 +639,7 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<int64_t> failAfterPackageLogicalRank,
     std::optional<ExecutableBundle> &executableBundle,
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle) {
+  const CompileClock::time_point totalStart = CompileClock::now();
   llvm::Expected<ExecutableBundle> compiledExecutableBundle =
       compileTensorProgramToExecutableBundleImpl(
           tensorProgramDirectory, executionConfig, diagnostics,
@@ -637,6 +670,10 @@ mlir::LogicalResult stageTargetPackage(
   }
 
   executableBundle.emplace(std::move(*compiledExecutableBundle));
+  diagnostics << "wafer-compile: compile-stats stage=ordinary-product"
+              << " wall_ms=" << elapsedCompileMilliseconds(totalStart)
+              << " peak_rss_kib=" << getCompilePeakRSSKiB()
+              << " capture_packages=0 target_bundle_count=1\n";
   return mlir::success();
 }
 
@@ -650,6 +687,7 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<int64_t> failAfterPackageLogicalRank,
     std::optional<ExecutableBundle> &executableBundle,
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle) {
+  const CompileClock::time_point totalStart = CompileClock::now();
   llvm::Expected<ExecutableBundle> compiled =
       compileTensorProgramToExecutableBundleImpl(
           tensorProgramDirectory, executionConfig, diagnostics,
@@ -694,6 +732,15 @@ mlir::LogicalResult stageProfileTargetPackages(
 
   executableBundle.emplace(std::move(*compiled));
   targetLLVMModuleBundle.emplace(std::move(*productionTargetLLVM));
+  diagnostics << "wafer-compile: compile-stats stage=profile-product"
+              << " wall_ms=" << elapsedCompileMilliseconds(totalStart)
+              << " peak_rss_kib=" << getCompilePeakRSSKiB()
+              << " capture_packages=" << kProfileCaptures.size()
+              << " target_bundle_count=" << 1 + kProfileCaptures.size()
+              << " target_rank_lowerings="
+              << executionConfig.getRankCount() *
+                     static_cast<int64_t>(1 + kProfileCaptures.size())
+              << "\n";
   return mlir::success();
 }
 

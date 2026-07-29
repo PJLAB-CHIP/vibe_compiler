@@ -308,6 +308,13 @@
 - model-scale frontier/search workload不进入聚合integration target；局部profitability、numeric和bounded-plan
   合同由小型analysis/planner unit覆盖，真实大输入的编译时间、winner、package和no-card必须由拥有该边界的任务
   直接case证明。不要让一个数分钟的旧gtest同时代签策略正确性、规模上界和source-to-package资格。
+- rank-local scheduling若只从typed collective读取`logicalRank`，无collective的verified tensor program可把
+  rank frontier视为一个generation class，但不能直接复制某个已截断的分片结果。应按稳定的
+  `(source, recipe)`请求组分片，保持partition suppression作用域，按原request ordinal归并并重放全局admission；
+  回归逐项比较分片与未分片frontier的metadata及完整module。跨context先用metadata计算bounded whole-variant
+  attempt plan，只用MLIR bytecode传输会被消费的module；同一个rank-invariant encoded module可用只读共享存储
+  映射到所有rank slot。编译统计至少覆盖generation class/shard/worker、frontier/attempt/late gate/clone/
+  lowering/capture计数、各阶段wall和process peak RSS，且只能作invocation-local观测，不能进入selection或artifact。
 - optional dependency收口必须保留两个独立build：full-feature配置显式启用StableHLO/Shardy、source-built
   PyTorch/XLA、pinned-XLA helper、numeric、oneDNN和SystemC，要求对应required tests不再因dependency
   unavailable而unsupported；feature-off配置显式关闭这些feature并验证预期unsupported清单及core binary link closure。
@@ -322,6 +329,11 @@
   binding/module/launch/completion plan；board feature开启后`--board`按`ResourceId`接收all-and-only raw buffers并调用同一
   preflight后的provider lifecycle。两种模式都验证ABI slot与resource一一对应，并在任何allocation/load side effect前拒绝
   unsupported completion/runtime mode；不能从自由字符串、resource name、文件名或instruction文本恢复语义。
+- 16-rank只说明logical rank domain，不等于cluster launch。无跨rank transport的M-sharded replicated-operand
+  program仍使用grid/main合同；只有accepted artifact需要cluster prepare/transport时才发布cluster form。board
+  case必须显式声明并核对expected launch contract，不能用`rank_count > 1`恢复form或自动追加Direct-DTE
+  no-card参数。profile资格应另外证明ordinary/profile production package递归bytes一致，并让同一个profile package
+  完整通过Primary→Count→Trace。
 - Shardy 不用 standalone Bazel workspace 作为 Wafer dependency 编译验证；`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
   会通过 `cmake/third_party/WaferShardyCMake.cmake` 编译 `wafer-shardy-cmake-gate` / `shardy-sdy-opt`，
   复用同一套固定版本 LLVM/MLIR 和 embedded StableHLO。

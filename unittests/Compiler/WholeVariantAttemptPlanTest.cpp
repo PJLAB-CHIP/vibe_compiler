@@ -3,6 +3,7 @@
 #include "../../lib/Wafer/Compiler/WholeVariantAttemptPlan.h"
 #include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
 
+#include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <queue>
 #include <set>
@@ -514,6 +516,8 @@ TEST(WholeVariantAttemptPlanTest,
       wafer::compiler::detail::buildWholeVariantAttemptPlan(metadata,
                                                             rankCount);
   ASSERT_TRUE(plan.isValid());
+  EXPECT_LE(1 + plan.optimizedCandidateIndices.size(),
+            WholeVariantAttemptPlan::kMaximumAttemptCount);
   ASSERT_EQ(plan.workerPlacedCandidateIndices.size(),
             wafer::kWorkerPlacementRankFrontierAdmissionLimit);
   for (size_t worker = 0;
@@ -555,8 +559,8 @@ TEST(WholeVariantAttemptPlanTest,
                               plan.requiredModuleIndices[rank].end());
     for (auto [index, candidate] : llvm::enumerate(metadata[rank])) {
       SerializedRankVariantCandidate slot;
-      slot.moduleText =
-          required.count(index) ? "module {}" : "unrequired invalid MLIR";
+      slot.moduleData = std::make_shared<const std::string>(
+          required.count(index) ? "module {}" : "unrequired invalid MLIR");
       slot.stableOrdinal = candidate.stableOrdinal;
       slot.artifactKind = candidate.artifactKind;
       slot.reservedBaseline = candidate.reservedBaseline;
@@ -633,9 +637,10 @@ TEST(WholeVariantAttemptPlanTest,
   using wafer::compiler::detail::SerializedRankVariantFrontier;
 
   auto makeSerialized = [](int64_t ordinal, bool baseline, uint32_t workerPlan,
-                           llvm::StringRef moduleText) {
+                           llvm::StringRef moduleData) {
     SerializedRankVariantCandidate candidate;
-    candidate.moduleText = moduleText.str();
+    candidate.moduleData =
+        std::make_shared<const std::string>(moduleData.str());
     candidate.stableOrdinal = ordinal;
     candidate.artifactKind = RankArtifactKind::Spill;
     candidate.reservedBaseline = baseline;
@@ -674,7 +679,7 @@ TEST(WholeVariantAttemptPlanTest,
   using wafer::compiler::detail::SerializedRankVariantCandidate;
   using wafer::compiler::detail::SerializedRankVariantFrontier;
 
-  auto serialized = [](llvm::StringRef moduleText, int64_t stableOrdinal,
+  auto serialized = [](llvm::StringRef moduleData, int64_t stableOrdinal,
                        RankArtifactKind artifactKind, bool reservedBaseline,
                        RankBufferingKind bufferingKind =
                            RankBufferingKind::Single,
@@ -683,7 +688,8 @@ TEST(WholeVariantAttemptPlanTest,
                            RankWorkerPlacementKind::Unplaced,
                        uint32_t workerPlacementPlanOrdinal = 0) {
     SerializedRankVariantCandidate candidate;
-    candidate.moduleText = moduleText.str();
+    candidate.moduleData =
+        std::make_shared<const std::string>(moduleData.str());
     candidate.stableOrdinal = stableOrdinal;
     candidate.artifactKind = artifactKind;
     candidate.reservedBaseline = reservedBaseline;
@@ -760,7 +766,7 @@ TEST(WholeVariantAttemptPlanTest, RequiredInvalidOwnerImportModuleStillFails) {
   using wafer::compiler::detail::SerializedRankVariantFrontier;
 
   SerializedRankVariantCandidate required;
-  required.moduleText = "not valid MLIR";
+  required.moduleData = std::make_shared<const std::string>("not valid MLIR");
   required.stableOrdinal = 0;
   required.reservedBaseline = true;
   std::vector<SerializedRankVariantFrontier> frontiers(1);
@@ -774,6 +780,42 @@ TEST(WholeVariantAttemptPlanTest, RequiredInvalidOwnerImportModuleStillFails) {
   EXPECT_NE(llvm::toString(imported.takeError())
                 .find("failed to import a lowered scheduling candidate"),
             std::string::npos);
+}
+
+TEST(WholeVariantAttemptPlanTest,
+     RequiredOwnerImportAcceptsInvocationLocalMLIRBytecode) {
+  using wafer::compiler::detail::SerializedRankVariantCandidate;
+  using wafer::compiler::detail::SerializedRankVariantFrontier;
+
+  mlir::MLIRContext workerContext;
+  mlir::OwningOpRef<mlir::ModuleOp> workerModule =
+      mlir::parseSourceString<mlir::ModuleOp>("module {}", &workerContext);
+  ASSERT_TRUE(workerModule);
+
+  SerializedRankVariantCandidate required;
+  required.stableOrdinal = 0;
+  required.reservedBaseline = true;
+  std::string moduleData;
+  llvm::raw_string_ostream bytecode(moduleData);
+  ASSERT_TRUE(mlir::succeeded(
+      mlir::writeBytecodeToFile(workerModule.get().getOperation(), bytecode)));
+  bytecode.flush();
+  required.moduleData =
+      std::make_shared<const std::string>(std::move(moduleData));
+
+  std::vector<SerializedRankVariantFrontier> frontiers(1);
+  frontiers.front().push_back(std::move(required));
+  mlir::MLIRContext ownerContext;
+  auto imported =
+      wafer::compiler::detail::importRankVariantFrontiersIntoOwnerContext(
+          ownerContext, frontiers, /*expectedRankCount=*/1);
+  if (!imported) {
+    ADD_FAILURE() << llvm::toString(imported.takeError());
+    return;
+  }
+  ASSERT_EQ(imported->size(), 1u);
+  ASSERT_EQ(imported->front().size(), 1u);
+  EXPECT_TRUE(imported->front().front().module);
 }
 
 TEST(WholeVariantAttemptPlanTest,
@@ -800,8 +842,8 @@ TEST(WholeVariantAttemptPlanTest,
   std::vector<SerializedRankVariantFrontier> serialized(1);
   for (size_t index = 0; index < originalCandidateCount; ++index) {
     SerializedRankVariantCandidate candidate;
-    candidate.moduleText =
-        required[index] ? "module {}" : "deliberately invalid unrequired MLIR";
+    candidate.moduleData = std::make_shared<const std::string>(
+        required[index] ? "module {}" : "deliberately invalid unrequired MLIR");
     candidate.stableOrdinal = static_cast<int64_t>(index);
     candidate.artifactKind =
         index == 0 ? RankArtifactKind::Spill : RankArtifactKind::Resident;
