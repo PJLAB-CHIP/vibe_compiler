@@ -45,6 +45,7 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
 
 ### 板端测试
 
+- 上板前只定向验证当前case、package和no-card；共享资格仅在相关变化或失败时检查，禁止每case重复或全量审计。
 - 同一重启会话且软硬件身份未变化时，环境资格只确认一次；不为每个 case 重复版本、反汇编、状态、
   heartbeat 或其它无关 gate。
 - 编译器/runtime功能纵向和qualification板测的默认数据类型使用FP16或BF16；只有测试目标本身是
