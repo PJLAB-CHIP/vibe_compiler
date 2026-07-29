@@ -537,24 +537,40 @@ static ParetoOrder
 compareNCCDrainCost(const analysis::WholeCardInstructionProgramCost &left,
                     const analysis::WholeCardInstructionProgramCost &right) {
   // A narrower participant set is a correctness scope, not a cheap wait.
-  // Count every by-worker call on the highest-priority axes: one steady join
-  // covering three workers is more expensive than two steady joins covering
-  // one worker each. Join-operation counts remain diagnostics/tie-breakers and
-  // cannot hide a wider participant mask.
+  // Count every by-worker call before join-operation count: one join covering
+  // three workers is more expensive than two joins covering one worker each.
+  // Loop placement is deliberately excluded here because structured and
+  // unrolled forms with the same dynamic waits consume the same hardware work.
+  const MetricPair priority[] = {
+      {&left.aggregateNCCParticipantWaitCount,
+       &right.aggregateNCCParticipantWaitCount},
+      {&left.aggregateIntrinsicNCCDrainCount,
+       &right.aggregateIntrinsicNCCDrainCount},
+      {&left.aggregateNCCJoinCount, &right.aggregateNCCJoinCount},
+  };
+  for (const MetricPair &dimension : priority) {
+    if (!dimension.left->isKnown() || !dimension.right->isKnown())
+      return ParetoOrder::Unknown;
+    if (dimension.left->value < dimension.right->value)
+      return ParetoOrder::LeftDominates;
+    if (dimension.left->value > dimension.right->value)
+      return ParetoOrder::RightDominates;
+  }
+  return ParetoOrder::Equivalent;
+}
+
+static ParetoOrder compareNCCDrainPlacement(
+    const analysis::WholeCardInstructionProgramCost &left,
+    const analysis::WholeCardInstructionProgramCost &right) {
   const MetricPair priority[] = {
       {&left.aggregateSteadyStateNCCParticipantWaitCount,
        &right.aggregateSteadyStateNCCParticipantWaitCount},
       {&left.aggregateNonTerminalNCCParticipantWaitCount,
        &right.aggregateNonTerminalNCCParticipantWaitCount},
-      {&left.aggregateNCCParticipantWaitCount,
-       &right.aggregateNCCParticipantWaitCount},
-      {&left.aggregateIntrinsicNCCDrainCount,
-       &right.aggregateIntrinsicNCCDrainCount},
       {&left.aggregateSteadyStateNCCJoinCount,
        &right.aggregateSteadyStateNCCJoinCount},
       {&left.aggregateNonTerminalNCCJoinCount,
        &right.aggregateNonTerminalNCCJoinCount},
-      {&left.aggregateNCCJoinCount, &right.aggregateNCCJoinCount},
   };
   for (const MetricPair &dimension : priority) {
     if (!dimension.left->isKnown() || !dimension.right->isKnown())
@@ -592,6 +608,9 @@ static ParetoOrder compareExactWholeVariantCost(
   ParetoOrder overlapOrder = compareQualifiedOverlapWindows(left, right);
   if (overlapOrder != ParetoOrder::Equivalent)
     return overlapOrder;
+  ParetoOrder drainPlacementOrder = compareNCCDrainPlacement(left, right);
+  if (drainPlacementOrder != ParetoOrder::Equivalent)
+    return drainPlacementOrder;
 
   const MetricPair dimensions[] = {
       {&left.aggregateCompute.npuF16Bf16LogicalOps,

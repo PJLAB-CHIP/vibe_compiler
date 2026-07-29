@@ -1,6 +1,8 @@
 //===- RankCandidateFrontierTest.cpp - Actual-clone frontier tests ------===//
 
 #include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
+#include "Wafer/Analysis/ScheduleCostAnalysis.h"
+#include "Wafer/Compiler/Testing.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
@@ -32,6 +34,24 @@ namespace {
 
 constexpr wafer::TargetProfileId kTargetProfile =
     wafer::TargetProfileId::waferTx81SingleCardKernelV1();
+
+static bool hasGemmInsideDirectDTEWindow(mlir::ModuleOp module) {
+  bool found = false;
+  module.walk([&](wafer::InstrDTESendOp send) {
+    if (found || !send.getToken().hasOneUse())
+      return;
+    auto wait = mlir::dyn_cast<wafer::InstrDTEWaitOp>(
+        *send.getToken().getUsers().begin());
+    if (!wait || wait->getBlock() != send->getBlock() ||
+        !send->isBeforeInBlock(wait))
+      return;
+    for (mlir::Operation *operation = send->getNextNode();
+         operation && operation != wait.getOperation();
+         operation = operation->getNextNode())
+      found |= mlir::isa<wafer::InstrGemmOp>(operation);
+  });
+  return found;
+}
 
 TEST(RankCandidateFrontierTest,
      RejectsMissingTargetProfileBeforeCandidateAnalysis) {
@@ -205,6 +225,143 @@ module {
   bool sourceContainsTileRegion = false;
   source->walk([&](wafer::TileRegionOp) { sourceContainsTileRegion = true; });
   EXPECT_FALSE(sourceContainsTileRegion);
+}
+
+TEST(RankCandidateFrontierTest,
+     BuildsGenericFixedSlotDirectDTEWindowForSingleAxisTiledGemm) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                  wafer::WaferDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  wafer::registerTargetImplementationExternalModels(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"],
+    endpoints = array<i64: 0, 0, 0, 0, 0, 0, 0, 1>,
+    policy = "explicit", shape = array<i64: 2>, topology = @default
+  }
+  func.func @main(%lhs: tensor<16x64xf16>,
+                  %rhs: tensor<64x262144xf16>) -> tensor<16x262144xf16> {
+    %zero = arith.constant 0.0 : f16
+    %matmul_empty = tensor.empty() : tensor<16x262144xf16>
+    %matmul_init = linalg.fill ins(%zero : f16)
+        outs(%matmul_empty : tensor<16x262144xf16>)
+        -> tensor<16x262144xf16>
+    %matmul = linalg.matmul
+        ins(%lhs, %rhs : tensor<16x64xf16>, tensor<64x262144xf16>)
+        outs(%matmul_init : tensor<16x262144xf16>)
+        -> tensor<16x262144xf16>
+    %collective_out = tensor.empty() : tensor<16x262144xf16>
+    %collective = wafer.linalg_ext.collective.all_reduce
+        ins(%matmul : tensor<16x262144xf16>)
+        outs(%collective_out : tensor<16x262144xf16>) {
+    ^bb0(%lhs_value: f16, %rhs_value: f16):
+      %sum = arith.addf %lhs_value, %rhs_value : f16
+      wafer.linalg_ext.collective.yield %sum : f16
+    } {channel_id = 44 : i64, rank_group = array<i64: 0, 1>}
+        -> tensor<16x262144xf16>
+    return %collective : tensor<16x262144xf16>
+  }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(source);
+
+  wafer::TensorProgramSchedulingConfig config;
+  config.logicalRank = 0;
+  config.candidateParallelism = 1;
+  config.targetProfile = kTargetProfile;
+  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  ASSERT_TRUE(mlir::succeeded(frontier));
+
+  auto pipelined = llvm::find_if(*frontier, [](const auto &candidate) {
+    return !candidate.reservedBaseline &&
+           candidate.bufferingKind ==
+               wafer::RankBufferingKind::StaticFixedSlot &&
+           hasGemmInsideDirectDTEWindow(*candidate.module);
+  });
+  ASSERT_NE(pipelined, frontier->end());
+
+  config.logicalRank = 1;
+  auto peerFrontier =
+      wafer::buildScheduledRankCandidateFrontier(*source, config);
+  ASSERT_TRUE(mlir::succeeded(peerFrontier));
+  bool acceptedDTEWindow = false;
+  bool sawSelectorTableBinding = false;
+  bool sawRouteSelectorOperand = false;
+  bool sawQualifiedOverlapWindow = false;
+  for (auto &candidate : *frontier) {
+    if (candidate.reservedBaseline ||
+        !hasGemmInsideDirectDTEWindow(*candidate.module))
+      continue;
+    auto peer = llvm::find_if(*peerFrontier, [&](const auto &peerCandidate) {
+      return peerCandidate.stableOrdinal == candidate.stableOrdinal &&
+             peerCandidate.artifactKind == candidate.artifactKind &&
+             peerCandidate.bufferingKind == candidate.bufferingKind &&
+             peerCandidate.bufferingPlanOrdinal ==
+                 candidate.bufferingPlanOrdinal;
+    });
+    if (peer == peerFrontier->end())
+      continue;
+    llvm::SmallVector<mlir::ModuleOp, 2> ranks{*candidate.module,
+                                               *peer->module};
+    mlir::ScopedDiagnosticHandler suppress(
+        &context, [](mlir::Diagnostic &) { return mlir::success(); });
+    auto transport = wafer::compiler::testing::acceptDirectDTETransport(ranks);
+    if (mlir::succeeded(transport)) {
+      acceptedDTEWindow =
+          *transport == wafer::compiler::TransportContract::DirectDTE;
+      const auto policy = wafer::analysis::getTargetScheduleCostPolicy(
+          kTargetProfile);
+      for (mlir::ModuleOp rank : ranks) {
+        rank.walk([&](wafer::InstrDTESendOp send) {
+          if (!send.getBinding() ||
+              send.getBinding()->getRemoteAddressMode() !=
+                  wafer::DTERemoteAddressMode::SelectorTable)
+            return;
+          sawSelectorTableBinding = true;
+          sawRouteSelectorOperand |= static_cast<bool>(
+              send.getBindingSelector());
+        });
+        const auto cost =
+            wafer::analysis::analyzeInstructionProgramCost(rank, policy);
+        sawQualifiedOverlapWindow |=
+            cost.qualifiedOverlapWindowCount.isKnown() &&
+            cost.qualifiedOverlapWindowCount.value > 0;
+      }
+      break;
+    }
+  }
+  EXPECT_TRUE(acceptedDTEWindow);
+  EXPECT_TRUE(sawSelectorTableBinding);
+  EXPECT_TRUE(sawRouteSelectorOperand);
+  EXPECT_TRUE(sawQualifiedOverlapWindow);
+
+  bool retiled = false;
+  bool allSPMAllocationsPlaced = true;
+  pipelined->module->walk([&](wafer::InstrGemmOp gemm) {
+    retiled |= gemm.getN() < 262144;
+  });
+  pipelined->module->walk([&](mlir::memref::AllocOp allocation) {
+    if (wafer::isWaferSPMMemRefType(allocation.getType()))
+      allSPMAllocationsPlaced &=
+          allocation->hasAttr(wafer::kWaferSPMOffsetAttrName);
+  });
+  EXPECT_TRUE(retiled);
+  EXPECT_TRUE(allSPMAllocationsPlaced);
 }
 
 TEST(RankCandidateFrontierTest,
@@ -587,9 +744,9 @@ module {
     // non-baseline bands proves reassociation, tree balancing, distribution,
     // and factorization clones survived the complete rank gates; the winner
     // never reads these ordinals as mechanism facts.
-    sourceBands.insert(candidate.stableOrdinal / 48);
-    int64_t sourceIndex = candidate.stableOrdinal / 48;
-    int64_t recipeIndex = (candidate.stableOrdinal / 4) % 12;
+    sourceBands.insert(candidate.stableOrdinal / 144);
+    int64_t sourceIndex = candidate.stableOrdinal / 144;
+    int64_t recipeIndex = (candidate.stableOrdinal / 4) % 36;
     int64_t policyIndex = candidate.stableOrdinal % 4;
     sawSourceRecipeJointState |= sourceIndex > 0 && recipeIndex > 0;
     sawSourcePolicyJointState |= sourceIndex > 0 && policyIndex > 0;

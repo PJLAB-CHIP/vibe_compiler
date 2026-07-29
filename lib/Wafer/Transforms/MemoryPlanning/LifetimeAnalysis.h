@@ -226,9 +226,6 @@ private:
                             llvm::ArrayRef<AsyncTaskRef> source);
   static bool sameAsyncTaskRefs(llvm::ArrayRef<AsyncTaskRef> lhs,
                                 llvm::ArrayRef<AsyncTaskRef> rhs);
-  static bool asyncTaskPathsCover(llvm::ArrayRef<AsyncTaskRef> refs,
-                                  unsigned taskIndex,
-                                  PathCondition requiredPath);
   void completeAsyncTasks(mlir::Operation *op);
   mlir::LogicalResult finishAsyncTasks(LifetimeFailure *failure) const;
 

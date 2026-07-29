@@ -100,15 +100,6 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
     return op.emitError()
            << "target_abi_narrowing: Direct DTE byte count must fit a "
               "positive int32_t packet size";
-  int64_t remoteEnd = 0;
-  WaferTargetPolicy targetPolicy = getDefaultWaferTargetPolicy();
-  if (!checkedAdd(binding.getRemoteReceiverOffset(), op.getBytesAttr().getInt(),
-                  remoteEnd) ||
-      binding.getRemoteReceiverOffset() < targetPolicy.memory.spmBase ||
-      remoteEnd > targetPolicy.memory.spmLimit)
-    return op.emitError()
-           << "unsupported_target_transport: Direct DTE remote receiver "
-              "range is outside target SPM";
   int64_t peer = op.getPeerAttr().getInt();
   if (peer < 0 || peer >= static_cast<int64_t>(domain.rankToTile.size()))
     return op.emitError()
@@ -119,18 +110,105 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
   if (mlir::failed(source))
     return mlir::failure();
 
+  mlir::Value remoteDestination;
+  mlir::Value remoteReceiverFsm =
+      constantI32(op.getLoc(), binding.getReceiverFsmId());
+  switch (binding.getRemoteAddressMode()) {
+  case DTERemoteAddressMode::Absolute: {
+    int64_t remoteEnd = 0;
+    WaferTargetPolicy targetPolicy = getDefaultWaferTargetPolicy();
+    if (!checkedAdd(binding.getRemoteReceiverAddress(),
+                    op.getBytesAttr().getInt(), remoteEnd) ||
+        binding.getRemoteReceiverAddress() < targetPolicy.memory.spmBase ||
+        remoteEnd > targetPolicy.memory.spmLimit)
+      return op.emitError()
+             << "unsupported_target_transport: Direct DTE absolute remote "
+                "receiver range is outside target SPM";
+    remoteDestination =
+        constantI64(op.getLoc(), binding.getRemoteReceiverAddress());
+    break;
+  }
+  case DTERemoteAddressMode::SourceRelative:
+    remoteDestination = builder.create<mlir::LLVM::AddOp>(
+        op.getLoc(), *source,
+        constantI64(op.getLoc(), binding.getRemoteReceiverAddress()));
+    break;
+  case DTERemoteAddressMode::SelectorTable: {
+    mlir::Value selector = op.getBindingSelector();
+    if (!selector)
+      return op.emitError(
+          "unsupported_target_transport: Direct DTE selector-table binding "
+          "requires one converted i64 selector");
+    auto convertedSelector = convertedValues.find(selector);
+    if (convertedSelector == convertedValues.end())
+      return op.emitError(
+          "unsupported_target_transport: Direct DTE selector-table binding "
+          "requires one converted i64 selector");
+    llvm::ArrayRef<int64_t> table =
+        binding.getRouteBindings().asArrayRef();
+    if (table.empty() || table.size() % 3 != 0)
+      return op.emitError(
+          "unsupported_target_transport: Direct DTE route binding "
+          "table is malformed");
+    WaferTargetPolicy targetPolicy = getDefaultWaferTargetPolicy();
+    auto setFallback = [&](size_t index) -> mlir::LogicalResult {
+      int64_t remoteEnd = 0;
+      if (!checkedAdd(table[index + 1], op.getBytesAttr().getInt(),
+                      remoteEnd) ||
+          table[index + 1] < targetPolicy.memory.spmBase ||
+          remoteEnd > targetPolicy.memory.spmLimit ||
+          table[index + 2] < 0 || table[index + 2] > 3)
+        return op.emitError(
+            "unsupported_target_transport: Direct DTE route binding "
+            "entry is outside the target SPM/FSM domain");
+      remoteDestination = constantI64(op.getLoc(), table[index + 1]);
+      remoteReceiverFsm = constantI32(op.getLoc(), table[index + 2]);
+      return mlir::success();
+    };
+    size_t fallback = table.size() - 3;
+    if (mlir::failed(setFallback(fallback)))
+      return mlir::failure();
+    mlir::Value routeSelector = builder.create<mlir::LLVM::URemOp>(
+        op.getLoc(), convertedSelector->second,
+        constantI64(op.getLoc(), table.size() / 3));
+    for (size_t index = fallback; index != 0;) {
+      index -= 3;
+      int64_t remoteEnd = 0;
+      if (!checkedAdd(table[index + 1], op.getBytesAttr().getInt(),
+                      remoteEnd) ||
+          table[index + 1] < targetPolicy.memory.spmBase ||
+          remoteEnd > targetPolicy.memory.spmLimit ||
+          table[index + 2] < 0 || table[index + 2] > 3)
+        return op.emitError(
+            "unsupported_target_transport: Direct DTE route binding "
+            "entry is outside the target SPM/FSM domain");
+      mlir::Value selected = builder.create<mlir::LLVM::ICmpOp>(
+          op.getLoc(), mlir::LLVM::ICmpPredicate::eq,
+          routeSelector,
+          constantI64(op.getLoc(), table[index]));
+      remoteDestination = builder.create<mlir::LLVM::SelectOp>(
+          op.getLoc(), selected,
+          constantI64(op.getLoc(), table[index + 1]), remoteDestination);
+      remoteReceiverFsm = builder.create<mlir::LLVM::SelectOp>(
+          op.getLoc(), selected,
+          constantI32(op.getLoc(), table[index + 2]), remoteReceiverFsm);
+    }
+    break;
+  }
+  }
+
   llvm::SmallVector<mlir::Value, 8> args;
   args.push_back(*source);
-  args.push_back(constantI64(op.getLoc(), binding.getRemoteReceiverOffset()));
+  args.push_back(remoteDestination);
   appendI32(op.getLoc(), args, op.getBytesAttr().getInt());
   appendI32(op.getLoc(), args,
             domain.rankToTile[static_cast<size_t>(domain.logicalRank)]);
   appendI32(op.getLoc(), args, domain.rankToTile[static_cast<size_t>(peer)]);
-  appendI32(op.getLoc(), args, binding.getReceiverFsmId());
+  args.push_back(remoteReceiverFsm);
   appendI32(op.getLoc(), args, /*isHighPerformance=*/0);
   return emitI64Call(
       op.getLoc(),
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare), args);
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue), args);
 }
 
 mlir::FailureOr<mlir::Value>
@@ -158,16 +236,10 @@ FunctionLowering::lowerDTERecv(InstrDTERecvOp op,
     return op.emitError()
            << "unsupported_target_transport: Direct DTE peer is outside "
               "the accepted endpoint domain";
-  mlir::FailureOr<int64_t> acceptedDestination =
-      getStaticSPMAddress(op, op.getBuffer(), "direct DTE receive destination");
   mlir::FailureOr<mlir::Value> destination =
       materializeAddress(op, op.getBuffer(), "direct DTE receive destination");
-  if (mlir::failed(acceptedDestination) || mlir::failed(destination))
+  if (mlir::failed(destination))
     return mlir::failure();
-  if (binding.getRemoteReceiverOffset() != *acceptedDestination)
-    return op.emitError()
-           << "unsupported_target_transport: receive binding offset does "
-              "not match the accepted local SPM address";
 
   llvm::SmallVector<mlir::Value, 8> args;
   args.push_back(*destination);

@@ -166,7 +166,7 @@ func.func @loop_body_same_worker_stream_reaches_outer_completion(
 
 // -----
 
-func.func @loop_carried_dte_token_is_fail_closed(
+func.func @identity_loop_carried_dte_token_is_proven(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>,
     %lb: index, %ub: index, %step: index) {
   %region = wafer.tile.region(%boundary, %lb, %ub, %step
@@ -180,10 +180,40 @@ func.func @loop_carried_dte_token_is_fail_closed(
         {peer = 1 : i64, bytes = 256 : i64,
          message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
-    // expected-error @below {{unsupported_completion_control_flow: SPM memory planning cannot prove loop-carried DTE token completion}}
     %looped = scf.for %i = %l to %u step %s
         iter_args(%iter = %token) -> (!async.token) {
       scf.yield %iter : !async.token
+    }
+    wafer.instr.dte_wait %looped : !async.token
+    wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// -----
+
+func.func @dynamic_loop_local_dte_token_is_fail_closed(
+    %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>,
+    %lb: index, %ub: index, %step: index) {
+  %region = wafer.tile.region(%boundary, %lb, %ub, %step
+      : memref<128xf16, #wafer.memory<ddr, tensor>>, index, index, index)
+      -> (memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<128xf16, #wafer.memory<ddr, tensor>>,
+       %l: index, %u: index, %s: index):
+    %source = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %initial = wafer.instr.dte_send %source
+        {peer = 1 : i64, bytes = 256 : i64,
+         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+        : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
+    // expected-error @below {{unsupported_async_completion_flow: dynamically optional loop-carried DTE issue has no exact completion instance proof}}
+    %looped = scf.for %i = %l to %u step %s
+        iter_args(%iter = %initial) -> (!async.token) {
+      %next = wafer.instr.dte_send %source
+          {peer = 1 : i64, bytes = 256 : i64,
+           message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 1, slice = 0>}
+          : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
+      scf.yield %next : !async.token
     }
     wafer.instr.dte_wait %looped : !async.token
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>

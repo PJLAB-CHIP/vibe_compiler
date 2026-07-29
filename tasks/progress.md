@@ -19,13 +19,15 @@ pipeline contract、实验结论、测试数字、失败修复过程和历史复
 
 ```text
 Q32 + Q6.B -> Q9 profiler foundation                         [done]
-Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [doing]
+Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [done]
+Q32 + Q6.B + Q37 -> Q39 composed search and DTE overlap     [next]
 ```
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q9 | `production-artifact-profiler` | `done` | Q32、Q6.B、configured board | 未插桩Primary TX stream launch-to-completion设备包络、分离的host diagnostics、Trace来源的五类NCC per-tile engine active ns/work-volume摘要、独立Direct-DTE cycles/raw activity、Count/Trace、逐次保留真实动态调用与rdcycle的16-tile timeline、exclusive语义成本与非加和Trace-only成本、final Instr静态work与硬件峰值下界对照、exact output、三文件专业UI和profile全树`0777`均闭合；不构造card-wide纯engine elapsed，静态cost不回灌ranking。Ranking feedback保留为后续独立门禁。 | 06、14-16；`tasks/archive/board-profiler.md` |
-| Q38 | `multi-engine-software-pipelining` | `doing` | Q32、Q6.B、Q37 | 从complete-rank unplaced actual clone生成legality-safe issue window、真实fixed-slot multi-buffer、prologue/steady/epilogue及zero-avoidable/zero-steady-state waitfinish normal form；same-worker跨迭代RAW/WAR/WAW只保留issue edge，minimum-strength join仅用于真实domain exit。typed worker0 issue/participant join、whole-rank completion/lifetime、participant-aware ready-order/handoff/model、drain-aware selection、通用relation-backed redundant-transfer normalization、generic fixed-slot rank/whole host late gates、FP16 rotating RDMA+CT+WDMA target capability、普通production winner、package/no-card及fresh板端正确性/profile已闭合；production与baseline最终ELF不同，16 MiB输出exact，本轮单次TX stream-event为1.654 ms对1.756 ms。当前继续闭合真实Direct-DTE issue。scheduler只消费IR和compiler-shipped静态target合同，不读取实卡/Q9/runtime profile；不保留fixed-slot专用forced-winner模式。Q9只观测最终产物，不是IR实现前置。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
+| Q38 | `multi-engine-software-pipelining` | `done` | Q32、Q6.B、Q37 | complete-rank actual clone到legality-safe issue window、fixed-slot multi-buffer、prologue/steady/epilogue、waitfinish normal form及RDMA+CT+WDMA普通production纵向闭合；same-worker跨迭代依赖和真实domain exit join已闭合。全局candidate search整改及Direct-DTE与compute并行不属于Q38，统一由Q39承担。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
+| Q39 | `composed-choice-search-and-dte-overlap` | `next` | Q32、Q6.B、Q37 | 重构whole-variant bounded search：tile、storage、buffer、order、communication和issue/wait均作为独立choice逐步组合，实际fixed-slot realization与exact SPM resource gate进入搜索；单个choice或精确tuple失败只剪该点并保留其它优化sibling，全部优化组合均失败时才回到reserved baseline。在该通用搜索上完成Direct-DTE issue与独立compute重叠及matching wait，不绑定GEMM、shape或case。完成门禁包括局部失败隔离与work-preservation回归、FP16/BF16差异化no-card，以及普通production生成结构不同的scheduler后再做板端exact-output和matched A/B；不增加forced-winner模式，不读取实卡/Q9/runtime profile参与编译选择。 | 06、08-13、16 |
 
 ## Later / External Gates
 

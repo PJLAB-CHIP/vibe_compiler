@@ -39,8 +39,25 @@ static bool isFailClosedCompletionBoundary(mlir::Operation *operation) {
          LocalInstructionCompletion::SynchronousWriteback;
 }
 
+static bool waitMayReleaseDTESender(mlir::Operation *operation) {
+  auto wait = mlir::dyn_cast<InstrDTEWaitOp>(operation);
+  if (!wait)
+    return false;
+  return llvm::any_of(wait.getTokens(), [](mlir::Value token) {
+    return token.getDefiningOp<InstrDTESendOp>() ||
+           mlir::isa<mlir::BlockArgument>(token);
+  });
+}
+
 static bool canReorderCompletionDomains(mlir::Operation *lhs,
                                         mlir::Operation *rhs) {
+  // The normal Direct-DTE target profile owns one sender slot. A send's exact
+  // wait is therefore also a typed resource release: another send may not
+  // move above it even when the two payload buffers are disjoint.
+  if ((waitMayReleaseDTESender(lhs) && mlir::isa<InstrDTESendOp>(rhs)) ||
+      (mlir::isa<InstrDTESendOp>(lhs) && waitMayReleaseDTESender(rhs)))
+    return false;
+
   NCCCompletionContract lhsContract = getNCCCompletionContract(lhs);
   NCCCompletionContract rhsContract = getNCCCompletionContract(rhs);
   if (lhsContract.behavior ==
@@ -113,6 +130,13 @@ static void collectBufferAccesses(
 }
 
 static unsigned getReadyPriority(mlir::Operation *operation) {
+  // Start Direct DTE as soon as its source/destination is ready, but defer its
+  // exact completion wait behind independent NCC work. Buffer hazards and the
+  // token edge still prevent consumers or reuse from crossing the wait.
+  if (mlir::isa<InstrDTEWaitOp>(operation))
+    return 3;
+  if (mlir::isa<SyncLocalFenceOp, SyncNCCJoinOp>(operation))
+    return 4;
   auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(operation);
   if (!instruction)
     return 3;
@@ -148,6 +172,32 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
     ++indegrees[to];
   };
 
+  // A normal-profile rank block has four receiver FSMs. Preserve the source
+  // receiver order, but make the fifth and every later receive wait for the
+  // completion that frees the oldest slot. This is a scheduling resource
+  // edge, independent of buffer aliasing and message shape.
+  struct DTEReceiverLifetime {
+    unsigned issue = 0;
+    unsigned completion = 0;
+  };
+  llvm::SmallVector<DTEReceiverLifetime, 8> receiverLifetimes;
+  for (auto [index, operation] : llvm::enumerate(operations)) {
+    auto recv = mlir::dyn_cast<InstrDTERecvOp>(operation);
+    if (!recv || !recv.getToken().hasOneUse())
+      continue;
+    auto wait =
+        mlir::dyn_cast<InstrDTEWaitOp>(*recv.getToken().getUsers().begin());
+    auto waitIndex = wait ? indices.find(wait.getOperation()) : indices.end();
+    if (!wait || waitIndex == indices.end() ||
+        static_cast<unsigned>(index) >= waitIndex->second)
+      return 0;
+    receiverLifetimes.push_back(
+        {static_cast<unsigned>(index), waitIndex->second});
+  }
+  for (unsigned index = 4; index < receiverLifetimes.size(); ++index)
+    addEdge(receiverLifetimes[index - 4].completion,
+            receiverLifetimes[index].issue);
+
   llvm::DenseMap<mlir::Value, unsigned> lastWriters;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<unsigned, 4>> readers;
   std::array<llvm::SmallVector<unsigned, 4>, kNCCWorkerCount>
@@ -155,6 +205,8 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
   std::array<std::optional<unsigned>, kNCCWorkerCount>
       lastWorkerCompletions;
   std::optional<unsigned> lastFailClosedCompletion;
+  std::optional<unsigned> pendingDTESenderIssue;
+  std::optional<unsigned> lastDTESenderCompletion;
   for (unsigned index = 0; index < count; ++index) {
     mlir::Operation *operation = operations[index];
     for (mlir::Value operand : operation->getOperands()) {
@@ -165,6 +217,30 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
     }
     if (lastFailClosedCompletion)
       addEdge(*lastFailClosedCompletion, index);
+
+    if (mlir::isa<InstrDTESendOp>(operation)) {
+      if (pendingDTESenderIssue)
+        return 0;
+      if (lastDTESenderCompletion)
+        addEdge(*lastDTESenderCompletion, index);
+      pendingDTESenderIssue = index;
+    }
+    if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(operation)) {
+      bool completesPendingSender =
+          pendingDTESenderIssue &&
+          llvm::any_of(wait.getTokens(), [&](mlir::Value token) {
+            return token.getDefiningOp() ==
+                   operations[*pendingDTESenderIssue];
+          });
+      if (completesPendingSender) {
+        addEdge(*pendingDTESenderIssue, index);
+        pendingDTESenderIssue.reset();
+        lastDTESenderCompletion = index;
+      } else if (!pendingDTESenderIssue &&
+                 waitMayReleaseDTESender(operation)) {
+        lastDTESenderCompletion = index;
+      }
+    }
 
     NCCCompletionContract contract = getNCCCompletionContract(operation);
     std::optional<unsigned> issueWorker;

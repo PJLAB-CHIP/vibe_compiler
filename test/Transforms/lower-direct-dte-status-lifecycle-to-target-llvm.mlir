@@ -23,6 +23,7 @@ module {
 // CLUSTER-NEXT: llvm.return
 // CLUSTER-NOT: llvm.call @wafer_tx81_direct_dte_begin(
 // CLUSTER-NOT: wafer_tx81_direct_dte_send_prepare
+// CLUSTER-NOT: wafer_tx81_direct_dte_send_issue
 // CLUSTER-NOT: wafer_tx81_direct_dte_recv_prepare
 
 // STANDALONE-LABEL: llvm.func @main

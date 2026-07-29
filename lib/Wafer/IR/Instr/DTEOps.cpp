@@ -26,6 +26,9 @@ mlir::LogicalResult InstrDTERecvOp::verify() {
   if (mlir::failed(verifyDTEP2P(getOperation(), getBuffer(), getPeerAttr(),
                                 getBytesAttr(), getToken().getType())))
     return mlir::failure();
+  if (getBindingSelector())
+    return emitOpError(
+        "Direct DTE receive cannot carry a sender route selector");
   return verifyDTEPeer(getOperation(), getPeerAttr());
 }
 
@@ -35,6 +38,18 @@ mlir::LogicalResult InstrDTESendOp::verify() {
   if (mlir::failed(verifyDTEP2P(getOperation(), getBuffer(), getPeerAttr(),
                                 getBytesAttr(), getToken().getType())))
     return mlir::failure();
+  if (getBindingSelector()) {
+    if (!getBinding() ||
+        getBinding()->getRemoteAddressMode() !=
+            DTERemoteAddressMode::SelectorTable)
+      return emitOpError(
+          "Direct DTE send route selector requires selector-table binding");
+  } else if (getBinding() &&
+             getBinding()->getRemoteAddressMode() ==
+                 DTERemoteAddressMode::SelectorTable) {
+    return emitOpError(
+        "Direct DTE selector-table binding requires route selector operand");
+  }
   return verifyDTEPeer(getOperation(), getPeerAttr());
 }
 

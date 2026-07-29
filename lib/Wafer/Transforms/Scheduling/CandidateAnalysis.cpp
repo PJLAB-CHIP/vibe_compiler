@@ -666,6 +666,17 @@ estimateTargetSPMWorkingSetBytes(mlir::func::FuncOp task,
 }
 
 std::optional<int64_t>
+estimateSearchSPMWorkingSetBytes(mlir::func::FuncOp task,
+                                 const CandidateSpec &candidate,
+                                 int64_t spmAlignment) {
+  if (std::optional<int64_t> targetWorkingSet =
+          estimateTargetSPMWorkingSetBytes(task, candidate, spmAlignment))
+    return targetWorkingSet;
+  return estimateRequiredSPMLowerBoundBytes(
+      getTraversalComputeRootLinalgOps(task), candidate);
+}
+
+std::optional<int64_t>
 estimateTargetSPMRequiredLiveBytes(mlir::func::FuncOp task,
                                    const CandidateSpec &candidate,
                                    int64_t spmAlignment) {

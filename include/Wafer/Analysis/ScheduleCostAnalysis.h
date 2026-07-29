@@ -79,6 +79,9 @@ struct TargetScheduleCostPolicy {
   /// profitability fact, not a latency estimate.
   uint32_t qualifiedOverlapFamilyMask = 0;
   uint32_t qualifiedOverlapWorker = 0;
+  /// Direct-DTE plus compute families known to use independent target
+  /// resources when typed issue and wait delimit an overlap window.
+  uint32_t qualifiedDirectDTEOverlapFamilyMask = 0;
   uint64_t cardDDRBytesPerSecond = 200'000'000'000ULL;
   uint64_t directionalNoCBytesPerSecond = 128'000'000'000ULL;
   uint64_t f16Bf16NPULogicalOpsPerSecondPerTile = 8'000'000'000'000ULL;

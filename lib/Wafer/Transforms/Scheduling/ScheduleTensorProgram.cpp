@@ -1029,9 +1029,13 @@ static void buildBoundedSourceVariants(
   tryAdd(allProducerIndices, /*minimumAppliedProducers=*/2);
 }
 
-static llvm::SmallVector<SelectionConfig, 12>
+static constexpr unsigned kRankSemanticRecipeLimit = 12;
+static constexpr unsigned kRankSPMMultiplicityLimit = 3;
+static constexpr unsigned kRankSearchRecipeStride =
+    kRankSemanticRecipeLimit * kRankSPMMultiplicityLimit;
+
+static llvm::SmallVector<SelectionConfig, kRankSearchRecipeStride>
 buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
-  constexpr unsigned recipeLimit = 12;
   bool hasAllGather = false;
   bool hasReduceScatter = false;
   bool hasAllReduce = false;
@@ -1056,12 +1060,13 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
     }
   });
 
-  llvm::SmallVector<SelectionConfig, 12> recipes;
+  llvm::SmallVector<SelectionConfig, kRankSemanticRecipeLimit>
+      semanticRecipes;
   auto addRecipe = [&](CommunicationAlternative communication,
                        std::optional<TargetImplementationKind> implementation,
                        unsigned taskOrdinal,
                        bool useDirectMappedBoundaryTransfer = false) {
-    if (recipes.size() >= recipeLimit)
+    if (semanticRecipes.size() >= kRankSemanticRecipeLimit)
       return;
     SelectionConfig recipe = base;
     recipe.communicationAlternative = communication;
@@ -1069,7 +1074,7 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
     recipe.forcedImplementationAlternative = implementation;
     recipe.taskAlternativeOrdinal = taskOrdinal;
     recipe.useDirectMappedBoundaryTransfer = useDirectMappedBoundaryTransfer;
-    recipes.push_back(std::move(recipe));
+    semanticRecipes.push_back(std::move(recipe));
   };
 
   addRecipe(CommunicationAlternative::Ring, std::nullopt, 0);
@@ -1121,6 +1126,23 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
               /*useDirectMappedBoundaryTransfer=*/true);
   for (TargetImplementationKind implementation : implementations)
     addRecipe(CommunicationAlternative::Ring, implementation, 1);
+
+  // Resource-changing optimizations are search dimensions, not late-gate
+  // accidents. Preserve the existing semantic-recipe order first, then cross
+  // every point with bounded concurrent-residency profiles. A profile only
+  // directs tile selection; transformed IR plus the exact SPM planner remain
+  // the authority on actual slot lifetimes and placement.
+  llvm::SmallVector<SelectionConfig, kRankSearchRecipeStride> recipes;
+  for (const SelectionConfig &recipe : semanticRecipes)
+    recipes.push_back(recipe);
+  for (unsigned multiplicity = 2;
+       multiplicity <= kRankSPMMultiplicityLimit; ++multiplicity) {
+    for (const SelectionConfig &semantic : semanticRecipes) {
+      SelectionConfig recipe = semantic;
+      recipe.spmWorkingSetMultiplicity = multiplicity;
+      recipes.push_back(std::move(recipe));
+    }
+  }
   return recipes;
 }
 
@@ -1192,14 +1214,13 @@ buildScheduledRankCandidateFrontier(
   };
 
   constexpr unsigned conservativePolicyIndex = 3;
-  constexpr unsigned optimizedRankEvaluationLimit = 64;
+  constexpr unsigned optimizedRankEvaluationLimit = 96;
   constexpr unsigned optimizedRankFrontierLimit = 256;
-  constexpr unsigned stableRecipeStride = 12;
 
   llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> sourceOwners;
   llvm::SmallVector<mlir::ModuleOp, 16> generationSources;
   buildBoundedSourceVariants(sourceModule, sourceOwners, generationSources);
-  llvm::SmallVector<SelectionConfig, 12> recipes =
+  llvm::SmallVector<SelectionConfig, kRankSearchRecipeStride> recipes =
       buildRankSearchRecipes(sourceModule, config);
 
   llvm::SmallVector<std::string, 16> failures;
@@ -1290,6 +1311,18 @@ buildScheduledRankCandidateFrontier(
       std::size(policies) > 1)
     addRequest(generationSources.size() - 1, recipes.size() - 1,
                std::size(policies) - 1);
+  std::optional<unsigned> firstConcurrentResidencyRecipe;
+  for (auto [recipeIndex, recipe] : llvm::enumerate(recipes)) {
+    if (recipe.spmWorkingSetMultiplicity > 1) {
+      firstConcurrentResidencyRecipe = static_cast<unsigned>(recipeIndex);
+      break;
+    }
+  }
+  if (firstConcurrentResidencyRecipe)
+    for (unsigned sourceIndex = 1; sourceIndex < generationSources.size();
+         ++sourceIndex)
+      addRequest(sourceIndex, *firstConcurrentResidencyRecipe,
+                 /*policyIndex=*/0);
   if (recipes.size() > 1)
     for (unsigned sourceIndex = 1; sourceIndex < generationSources.size();
          ++sourceIndex)
@@ -1323,7 +1356,8 @@ buildScheduledRankCandidateFrontier(
     if (evaluation.noScopes || evaluation.duplicate)
       continue;
     int64_t stableOrdinal = static_cast<int64_t>(
-        (request.sourceIndex * stableRecipeStride + request.recipeIndex) *
+        (request.sourceIndex * kRankSearchRecipeStride +
+         request.recipeIndex) *
             std::size(policies) +
         request.policyIndex);
     if (evaluation.accepted) {

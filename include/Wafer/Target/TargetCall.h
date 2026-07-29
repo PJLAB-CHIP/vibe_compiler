@@ -263,6 +263,7 @@ enum class TargetCallBuiltin : uint8_t {
   DirectDTEBegin,
   DirectDTEBeginAfterPrepare,
   DirectDTESendPrepare,
+  DirectDTESendIssue,
   DirectDTERecvPrepare,
   DirectDTEWait,
   DirectDTEFinish,

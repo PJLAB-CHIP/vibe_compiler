@@ -90,7 +90,7 @@ getTargetCallCompletionBehavior(const TargetCallSemantic &semantic,
 
 static std::vector<TargetCallDescriptor> buildDescriptors() {
   std::vector<TargetCallDescriptor> result;
-  result.reserve(112);
+  result.reserve(113);
 
   auto add = [&](llvm::StringRef stem, Result callResult,
                  std::vector<Scalar> arguments, TargetCallSemantic semantic) {
@@ -133,6 +133,8 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
           TargetCallBuiltin::DirectDTEBeginAfterPrepare);
   add("direct_dte_send_prepare", Result::I64, signature(2, 5),
       TargetCallBuiltin::DirectDTESendPrepare);
+  add("direct_dte_send_issue", Result::I64, signature(2, 5),
+      TargetCallBuiltin::DirectDTESendIssue);
   add("direct_dte_recv_prepare", Result::I64, signature(1, 4),
       TargetCallBuiltin::DirectDTERecvPrepare);
   addVoid("direct_dte_wait", {Scalar::I64}, TargetCallBuiltin::DirectDTEWait);
@@ -200,7 +202,7 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
   addPeripheral(InstrPeripheralKind::RandGen, 5, 7);
   addPeripheral(InstrPeripheralKind::ElemMask, 2, 7);
 
-  assert(result.size() == 112 && "target-call registry must stay closed");
+  assert(result.size() == 113 && "target-call registry must stay closed");
   assert(llvm::all_of(
              result,
              [&](const TargetCallDescriptor &descriptor) {
@@ -291,6 +293,7 @@ getTargetCallTSMEngine(const TargetCallSemantic &semantic) {
     case TargetCallBuiltin::DirectDTEBegin:
     case TargetCallBuiltin::DirectDTEBeginAfterPrepare:
     case TargetCallBuiltin::DirectDTESendPrepare:
+    case TargetCallBuiltin::DirectDTESendIssue:
     case TargetCallBuiltin::DirectDTERecvPrepare:
     case TargetCallBuiltin::DirectDTEFinish:
       return std::nullopt;

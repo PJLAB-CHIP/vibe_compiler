@@ -217,6 +217,60 @@ TEST_F(FixedSlotPipelineTest, TwoIterationTwoStagePipelineMaterializesSlots) {
 }
 
 TEST_F(FixedSlotPipelineTest,
+       DirectDTEWindowPipelinesIndependentNextTileCompute) {
+  auto source = parse(R"mlir(
+module {
+  func.func @direct_dte_pipeline() {
+    %input = memref.alloc()
+        : memref<8xf16, #wafer.memory<spm, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %iv = %c0 to %c3 step %c1 {
+      %slot = memref.alloc()
+          : memref<8xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.elementwise <add> %input, %input into %slot
+          : memref<8xf16, #wafer.memory<spm, tensor>>,
+            memref<8xf16, #wafer.memory<spm, tensor>>
+        into memref<8xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.ncc_join [0]
+      %token = wafer.instr.dte_send %slot
+          {peer = 0 : i64, bytes = 16 : i64,
+           message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+          : memref<8xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %token : !async.token
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(candidate)) << failureReason;
+  EXPECT_EQ(candidate->stageCount, 2u);
+  EXPECT_EQ(candidate->slotAllocationCount, 2u);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*candidate->module)));
+
+  auto loops = collectLoops(*candidate->module);
+  ASSERT_EQ(loops.size(), 1u);
+  llvm::SmallVector<mlir::Operation *, 4> steady;
+  for (mlir::Operation &operation : loops.front().getBody()->without_terminator())
+    if (mlir::isa<wafer::WaferInstructionOpInterface,
+                  wafer::SyncNCCJoinOp>(&operation))
+      steady.push_back(&operation);
+  ASSERT_EQ(steady.size(), 4u);
+  EXPECT_TRUE(mlir::isa<wafer::InstrDTESendOp>(steady[0]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrElementwiseOp>(steady[1]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrDTEWaitOp>(steady[2]));
+  EXPECT_TRUE(mlir::isa<wafer::SyncNCCJoinOp>(steady[3]));
+}
+
+TEST_F(FixedSlotPipelineTest,
        BlockArgumentDDRAndLoopLocalSPMAreProvenDistinct) {
   auto source = parse(R"mlir(
 module {
@@ -710,7 +764,7 @@ module {
   EXPECT_EQ(print(source->getOperation()), before);
 }
 
-TEST_F(FixedSlotPipelineTest, RejectsUnknownAliasAndCompletionIsland) {
+TEST_F(FixedSlotPipelineTest, RejectsUnknownAliasAndAcceptsTypedCompletion) {
   auto unknownAlias = parse(R"mlir(
 module {
   func.func @unknown_alias(
@@ -764,7 +818,8 @@ module {
   failureReason.clear();
   auto completionCandidate = wafer::deriveStaticFixedSlotPipelineCandidate(
       *completion, collectLoops(*completion).front(), &failureReason);
-  EXPECT_TRUE(mlir::failed(completionCandidate));
+  ASSERT_TRUE(mlir::succeeded(completionCandidate)) << failureReason;
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*completionCandidate->module)));
   EXPECT_EQ(print(completion->getOperation()), before);
 }
 

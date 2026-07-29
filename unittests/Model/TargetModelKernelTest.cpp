@@ -221,6 +221,7 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
       arguments[1] = 16;
       break;
     case TargetCallBuiltin::DirectDTESendPrepare:
+    case TargetCallBuiltin::DirectDTESendIssue:
       arguments[6] = 1;
       break;
     case TargetCallBuiltin::LocalFence:

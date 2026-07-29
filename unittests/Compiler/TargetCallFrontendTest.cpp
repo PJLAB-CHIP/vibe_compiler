@@ -329,6 +329,7 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
       arguments[1] = 16;
       break;
     case wafer::TargetCallBuiltin::DirectDTESendPrepare:
+    case wafer::TargetCallBuiltin::DirectDTESendIssue:
       arguments[6] = 1;
       break;
     case wafer::TargetCallBuiltin::GatherScatter:
@@ -567,7 +568,8 @@ void expectPayloadFields(
       EXPECT_EQ(value.rankCount, u32(1));
       return;
     }
-    case wafer::TargetCallBuiltin::DirectDTESendPrepare: {
+    case wafer::TargetCallBuiltin::DirectDTESendPrepare:
+    case wafer::TargetCallBuiltin::DirectDTESendIssue: {
       ASSERT_TRUE(std::holds_alternative<
                   wafer::compiler::TargetDirectDTESendTransaction>(payload));
       const auto &value =
@@ -882,7 +884,7 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   EXPECT_EQ(join.arguments.front(), wafer::TargetCallScalarType::I32);
   EXPECT_FALSE(join.issueDomain);
   const auto &send = wafer::getTargetCallDescriptor(
-      wafer::TargetCallBuiltin::DirectDTESendPrepare);
+      wafer::TargetCallBuiltin::DirectDTESendIssue);
   EXPECT_EQ(send.result, wafer::TargetCallResultType::I64);
   EXPECT_EQ(send.arguments.size(), 7u);
   EXPECT_EQ(send.arguments[0], wafer::TargetCallScalarType::I64);

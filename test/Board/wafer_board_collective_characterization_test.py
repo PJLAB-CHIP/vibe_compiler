@@ -1043,7 +1043,7 @@ def validate_target_pair(
     kind: CollectiveKind,
 ) -> None:
     for structure in (left, right):
-        for fragment in ("direct_dte_send_prepare", "direct_dte_recv_prepare"):
+        for fragment in ("direct_dte_send_issue", "direct_dte_recv_prepare"):
             paired_support.require_call(structure.counts, fragment, present=True)
         if kind in (CollectiveKind.REDUCE_SCATTER, CollectiveKind.ALL_REDUCE):
             paired_support.require_call(

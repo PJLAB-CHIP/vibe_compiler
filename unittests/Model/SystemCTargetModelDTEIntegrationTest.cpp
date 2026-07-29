@@ -27,7 +27,7 @@ TEST(SystemCTargetModelDTEIntegrationTest,
       << diagnostics << llvm::toString(bundle.takeError());
   llvm::Expected<test::NCCJoinRewriteResult> rewrite =
       test::rewriteNCCJoinsAfter(*bundle,
-                                 TargetCallBuiltin::DirectDTESendPrepare);
+                                 TargetCallBuiltin::DirectDTESendIssue);
   ASSERT_TRUE(static_cast<bool>(rewrite))
       << llvm::toString(rewrite.takeError());
   EXPECT_GT(rewrite->erasedJoinCount, 0u);

@@ -168,6 +168,7 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
     return TargetTransactionPayload{TargetDirectDTEBeginTransaction{
         arguments[0], argument32(arguments, 1)}};
   case TargetCallBuiltin::DirectDTESendPrepare:
+  case TargetCallBuiltin::DirectDTESendIssue:
     if (argument32(arguments, 6) > 1)
       return llvm::createStringError(
           "Direct-DTE high-performance flag is not boolean");

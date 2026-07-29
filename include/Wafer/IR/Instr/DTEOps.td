@@ -18,6 +18,7 @@ class Wafer_InstrDTEP2POp<string mnemonic, list<Trait> resourceEffects,
   }];
   let arguments = (ins
     Arg<Wafer_AnySPMMemRef, "", bufferEffects>:$buffer,
+    Optional<I64>:$binding_selector,
     I64Attr:$peer,
     I64Attr:$bytes,
     Wafer_DTEMessageAttr:$message,
@@ -26,7 +27,7 @@ class Wafer_InstrDTEP2POp<string mnemonic, list<Trait> resourceEffects,
   let results = (outs Async_TokenType:$token);
   let hasVerifier = 1;
   let assemblyFormat =
-      "$buffer attr-dict `:` type($buffer) `->` type($token)";
+      "$buffer (`,` $binding_selector^)? attr-dict `:` type($buffer) `->` type($token)";
 }
 
 def Wafer_InstrDTESendOp

@@ -71,6 +71,27 @@ static bool isStaticallyNonEmpty(mlir::scf::ForOp loop) {
   return lower && upper && step && *step > 0 && *lower < *upper;
 }
 
+static ProgramPoint
+getGuaranteedCompletionPoint(mlir::Operation *op,
+                             const StructuredTimeline &timeline,
+                             ProgramPoint point) {
+  for (mlir::Operation *parent = op ? op->getParentOp() : nullptr; parent;
+       parent = parent->getParentOp()) {
+    if (mlir::isa<mlir::scf::IfOp>(parent))
+      break;
+    if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
+      if (isStaticallyNonEmpty(loop))
+        if (std::optional<ProgramPoint> loopPoint = timeline.lookup(loop))
+          point.path = loopPoint->path;
+      break;
+    }
+    if (mlir::isa<TileRegionOp, mlir::func::FuncOp, mlir::async::FuncOp>(
+            parent))
+      break;
+  }
+  return point;
+}
+
 static bool hasPossibleBackedge(mlir::scf::ForOp loop) {
   std::optional<int64_t> lower =
       mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getLowerBound()));
@@ -135,7 +156,8 @@ static bool hasOnlyWitnessedRootlessStorageEffects(mlir::Operation *op) {
 
     mlir::SideEffects::Resource *resource = effect.getResource();
     if (resource == WaferComputeResource::get() ||
-        resource == WaferMovementResource::get())
+        resource == WaferMovementResource::get() ||
+        resource == WaferCommunicationResource::get())
       continue;
 
     std::optional<MemorySpace> memorySpace;
@@ -1034,21 +1056,6 @@ bool LifetimeDataflow::sameAsyncTaskRefs(llvm::ArrayRef<AsyncTaskRef> lhs,
   });
 }
 
-bool LifetimeDataflow::asyncTaskPathsCover(llvm::ArrayRef<AsyncTaskRef> refs,
-                                           unsigned taskIndex,
-                                           PathCondition requiredPath) {
-  llvm::SmallVector<PathCondition, 2> remaining{requiredPath};
-  for (AsyncTaskRef ref : refs) {
-    if (ref.taskIndex != taskIndex)
-      continue;
-    llvm::SmallVector<PathCondition, 2> next;
-    for (PathCondition path : remaining)
-      path.subtract(ref.path, next);
-    remaining = std::move(next);
-  }
-  return remaining.empty();
-}
-
 void LifetimeDataflow::recordUse(RootRef ref, int64_t event) {
   if (ref.demandIndex >= demands.size())
     return;
@@ -1353,6 +1360,8 @@ void LifetimeDataflow::completeAsyncTasks(mlir::Operation *op) {
   std::optional<ProgramPoint> point = timeline.lookup(op);
   if (!point)
     return;
+  ProgramPoint completionPoint =
+      getGuaranteedCompletionPoint(op, timeline, *point);
 
   llvm::SmallVector<mlir::Value, 2> handles;
   if (auto await = mlir::dyn_cast<mlir::async::AwaitOp>(op)) {
@@ -1366,7 +1375,8 @@ void LifetimeDataflow::completeAsyncTasks(mlir::Operation *op) {
   }
 
   for (mlir::Value handle : handles) {
-    for (AsyncTaskRef completed : asyncTasksAt(handle, point->path)) {
+    for (AsyncTaskRef completed :
+         asyncTasksAt(handle, completionPoint.path)) {
       if (completed.taskIndex >= asyncTasks.size())
         continue;
       AsyncTaskState &task = asyncTasks[completed.taskIndex];
@@ -1579,44 +1589,45 @@ LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
             asyncTasksAt(yield.getResults()[index], yieldPoint->path);
       }
 
-      // A loop result selects the init handle on the zero-trip path and the
-      // yielded handle otherwise. A union of different completion identities
-      // would let one await incorrectly discharge a task that was not selected.
-      // Accept only an identity-preserving recurrence whose backedge covers
-      // every path through the loop body.
-      for (AsyncTaskRef ref : backedgeTasks) {
-        if (ref.taskIndex < asyncTasks.size() &&
-            isNestedIn(asyncTasks[ref.taskIndex].origin, op)) {
+      bool carriesLoopLocalTask =
+          llvm::any_of(backedgeTasks, [&](AsyncTaskRef ref) {
+            return ref.taskIndex < asyncTasks.size() &&
+                   isNestedIn(asyncTasks[ref.taskIndex].origin, op);
+          });
+      if (carriesLoopLocalTask && !isStaticallyNonEmpty(forOp)) {
+        setLifetimeFailure(failure,
+                           LifetimeFailureKind::UnsupportedAsyncCompletionFlow,
+                           op);
+        return mlir::failure();
+      }
+      if (!isStaticallyNonEmpty(forOp)) {
+        auto hasSameTaskIdentities =
+            [](llvm::ArrayRef<AsyncTaskRef> lhs,
+               llvm::ArrayRef<AsyncTaskRef> rhs) {
+              return llvm::all_of(lhs, [&](AsyncTaskRef ref) {
+                return llvm::any_of(rhs, [&](AsyncTaskRef other) {
+                  return ref.taskIndex == other.taskIndex;
+                });
+              });
+            };
+        if (!hasSameTaskIdentities(initialTasks, backedgeTasks) ||
+            !hasSameTaskIdentities(backedgeTasks, initialTasks)) {
           setLifetimeFailure(
               failure, LifetimeFailureKind::UnsupportedAsyncCompletionFlow,
-              asyncTasks[ref.taskIndex].origin);
-          return mlir::failure();
-        }
-        if (!llvm::any_of(initialTasks, [&](AsyncTaskRef initial) {
-              return initial.taskIndex == ref.taskIndex;
-            })) {
-          setLifetimeFailure(
-              failure, LifetimeFailureKind::UnsupportedAsyncCompletionFlow, op);
+              op);
           return mlir::failure();
         }
       }
-      if (yieldPoint) {
-        for (AsyncTaskRef initial : initialTasks) {
-          std::optional<PathCondition> required =
-              initial.path.intersect(yieldPoint->path);
-          if (required && !asyncTaskPathsCover(backedgeTasks, initial.taskIndex,
-                                               *required)) {
-            setLifetimeFailure(
-                failure, LifetimeFailureKind::UnsupportedAsyncCompletionFlow,
-                op);
-            return mlir::failure();
-          }
-        }
-      }
+
       // A loop-local branch can select differently on the next dynamic
       // iteration. Once a completion handle crosses the backedge, those
       // repeatable decisions no longer constrain which root it may refer to.
-      forgetRepeatableDecisions(refs);
+      llvm::SmallVector<RootRef, 4> relaxedRefs;
+      for (RootRef ref : refs) {
+        ref.path = loopPoint->path;
+        appendUniqueRootRefs(relaxedRefs, llvm::ArrayRef<RootRef>{ref});
+      }
+      refs.assign(relaxedRefs.begin(), relaxedRefs.end());
       for (RootRef ref : refs)
         if (ref.demandIndex < demands.size())
           demands[ref.demandIndex].segments.push_back(
@@ -1626,12 +1637,27 @@ LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
         if (index < forOp.getRegionIterArgs().size())
           asyncRefs[forOp.getRegionIterArgs()[index]] = std::move(refs);
       }
-      if (!initialTasks.empty()) {
-        asyncTaskRefs[result] = initialTasks;
-        if (index < forOp.getRegionIterArgs().size())
-          asyncTaskRefs[forOp.getRegionIterArgs()[index]] =
-              std::move(initialTasks);
-      }
+      llvm::SmallVector<AsyncTaskRef, 2> recurrenceTasks = initialTasks;
+      appendUniqueAsyncTaskRefs(recurrenceTasks, backedgeTasks);
+      llvm::SmallVector<AsyncTaskRef, 2> resultTasks =
+          isStaticallyNonEmpty(forOp) ? backedgeTasks : recurrenceTasks;
+      auto forgetTaskRepeatableDecisions =
+          [&](llvm::SmallVectorImpl<AsyncTaskRef> &tasks) {
+            llvm::SmallVector<AsyncTaskRef, 4> relaxed;
+            for (AsyncTaskRef task : tasks) {
+              task.path = loopPoint->path;
+              appendUniqueAsyncTaskRefs(
+                  relaxed, llvm::ArrayRef<AsyncTaskRef>{task});
+            }
+            tasks.assign(relaxed.begin(), relaxed.end());
+          };
+      forgetTaskRepeatableDecisions(recurrenceTasks);
+      forgetTaskRepeatableDecisions(resultTasks);
+      if (!recurrenceTasks.empty() &&
+          index < forOp.getRegionIterArgs().size())
+        asyncTaskRefs[forOp.getRegionIterArgs()[index]] = recurrenceTasks;
+      if (!resultTasks.empty())
+        asyncTaskRefs[result] = std::move(resultTasks);
       continue;
     }
     llvm::SmallVector<RootRef, 2> initialRefs;
@@ -2186,8 +2212,11 @@ mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
 
   NCCCompletionContract contract = getNCCCompletionContract(op);
   if (contract.behavior == LocalInstructionCompletion::ParticipantJoin ||
-      contract.behavior == LocalInstructionCompletion::SynchronousWriteback)
-    processFence(*point, contract.participantMask, dataflow);
+      contract.behavior == LocalInstructionCompletion::SynchronousWriteback) {
+    ProgramPoint completionPoint =
+        getGuaranteedCompletionPoint(op, dataflow.timeline, *point);
+    processFence(completionPoint, contract.participantMask, dataflow);
+  }
 
   uint32_t workerMask = getNCCIssueWorkerMask(contract);
   AccessCollection current = collectAccesses(op, *point, workerMask, dataflow);

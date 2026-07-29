@@ -64,6 +64,7 @@ typedef struct {
   WaferDirectDTESendInfo info;
   uint32_t is_high_performance;
   bool active;
+  bool issued;
 } WaferDirectDTESenderState;
 
 typedef struct {
@@ -131,6 +132,7 @@ static void wafer_direct_dte_set_error(void) {
 static void wafer_direct_dte_reset_state(uint64_t status_addr) {
   wafer_direct_dte_status = (volatile uint32_t *)(uintptr_t)status_addr;
   wafer_direct_dte_sender.active = false;
+  wafer_direct_dte_sender.issued = false;
   for (uint32_t index = 0; index < WAFER_DIRECT_DTE_MAX_RECEIVERS; ++index)
     wafer_direct_dte_receivers[index].active = false;
   wafer_direct_dte_publish_status(WAFER_TX81_DIRECT_DTE_STATUS_PENDING);
@@ -175,7 +177,65 @@ uint64_t wafer_tx81_direct_dte_send_prepare(uint64_t src, uint64_t remote_dst,
   wafer_direct_dte_sender.info = info;
   wafer_direct_dte_sender.is_high_performance = is_high_performance;
   wafer_direct_dte_sender.active = true;
+  wafer_direct_dte_sender.issued = false;
   return WAFER_DIRECT_DTE_SEND_EVENT;
+}
+
+static int wafer_direct_dte_issue_sender(bool profile_phases) {
+  if (!wafer_direct_dte_sender.active || wafer_direct_dte_sender.issued) {
+    wafer_direct_dte_set_error();
+    return -1;
+  }
+
+  WaferDirectDTESendInfo *info = &wafer_direct_dte_sender.info;
+#ifdef WAFER_TX81_PROFILE_CRT
+  uint32_t peer_ready_phase = UINT32_MAX;
+  if (profile_phases)
+    peer_ready_phase = wafer_profile_direct_dte_phase_begin(
+        WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT);
+#else
+  (void)profile_phases;
+#endif
+  direct_sync_wait(info->tile_this, info->dst_tile);
+#ifdef WAFER_TX81_PROFILE_CRT
+  if (profile_phases)
+    wafer_profile_direct_dte_phase_end(peer_ready_phase);
+  uint32_t setup_phase = UINT32_MAX;
+  if (profile_phases)
+    setup_phase = wafer_profile_direct_dte_phase_begin(
+        WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE);
+#endif
+  info->dte_node =
+      direct_dte_attach(wafer_direct_dte_sender.is_high_performance);
+  int setup_result =
+      info->dte_node ? direct_dte_send_async(info) : -1;
+#ifdef WAFER_TX81_PROFILE_CRT
+  if (profile_phases)
+    wafer_profile_direct_dte_phase_end(setup_phase);
+#endif
+  if (setup_result != 0) {
+    if (info->dte_node)
+      (void)direct_dte_release(info->dte_node);
+    info->dte_node = NULL;
+    wafer_direct_dte_sender.active = false;
+    wafer_direct_dte_sender.issued = false;
+    wafer_direct_dte_set_error();
+    return -1;
+  }
+  wafer_direct_dte_sender.issued = true;
+  return 0;
+}
+
+uint64_t wafer_tx81_direct_dte_send_issue(
+    uint64_t src, uint64_t remote_dst, uint32_t byte_count,
+    uint32_t local_tile, uint32_t remote_tile, uint32_t remote_fsm_id,
+    uint32_t is_high_performance) {
+  uint64_t event = wafer_tx81_direct_dte_send_prepare(
+      src, remote_dst, byte_count, local_tile, remote_tile, remote_fsm_id,
+      is_high_performance);
+  if (event == 0 || wafer_direct_dte_issue_sender(false) != 0)
+    return 0;
+  return event;
 }
 
 uint64_t wafer_tx81_direct_dte_recv_prepare(uint64_t dst, uint32_t byte_count,
@@ -217,32 +277,14 @@ void wafer_tx81_direct_dte_wait(uint64_t event) {
       goto done;
     }
     WaferDirectDTESendInfo *info = &wafer_direct_dte_sender.info;
-    {
-#ifdef WAFER_TX81_PROFILE_CRT
-      uint32_t phase_event = wafer_profile_direct_dte_phase_begin(
-          WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT);
-#endif
-      direct_sync_wait(info->tile_this, info->dst_tile);
-#ifdef WAFER_TX81_PROFILE_CRT
-      wafer_profile_direct_dte_phase_end(phase_event);
-#endif
-    }
-    int setup_result = -1;
-    {
-#ifdef WAFER_TX81_PROFILE_CRT
-      uint32_t phase_event = wafer_profile_direct_dte_phase_begin(
-          WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE);
-#endif
-      info->dte_node =
-          direct_dte_attach(wafer_direct_dte_sender.is_high_performance);
-      if (info->dte_node)
-        setup_result = direct_dte_send_async(info);
-#ifdef WAFER_TX81_PROFILE_CRT
-      wafer_profile_direct_dte_phase_end(phase_event);
-#endif
-    }
+    // Legacy raw callers may still prepare and then wait directly. Production
+    // instruction lowering calls wafer_tx81_direct_dte_send_issue, so its
+    // transport is already active before this completion point.
+    if (!wafer_direct_dte_sender.issued &&
+        wafer_direct_dte_issue_sender(true) != 0)
+      goto done;
     int completion_result = -1;
-    if (setup_result == 0) {
+    if (wafer_direct_dte_sender.issued) {
 #ifdef WAFER_TX81_PROFILE_CRT
       uint32_t phase_event = wafer_profile_direct_dte_phase_begin(
           WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_COMPLETION_WAIT);
@@ -252,7 +294,7 @@ void wafer_tx81_direct_dte_wait(uint64_t event) {
       wafer_profile_direct_dte_phase_end(phase_event);
 #endif
     }
-    if (setup_result != 0 || completion_result != 0)
+    if (completion_result != 0)
       wafer_direct_dte_set_error();
     if (info->dte_node) {
 #ifdef WAFER_TX81_PROFILE_CRT
@@ -267,6 +309,7 @@ void wafer_tx81_direct_dte_wait(uint64_t event) {
         wafer_direct_dte_set_error();
     }
     wafer_direct_dte_sender.active = false;
+    wafer_direct_dte_sender.issued = false;
     goto done;
   }
 

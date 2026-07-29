@@ -37,7 +37,7 @@ def read_text(path: pathlib.Path) -> str:
 
 def function_body(text: str, name: str) -> str:
     match = re.search(
-        r"\b(?:static\s+)?(?:void|bool|uint32_t|uint64_t)\s+"
+        r"\b(?:static\s+)?(?:void|bool|int|uint32_t|uint64_t)\s+"
         + re.escape(name)
         + r"\s*\([^;{}]*\)\s*\{",
         text,
@@ -512,6 +512,43 @@ def check_direct_dte_lifecycle(source_text: str) -> None:
             "info.dst_addr = (uintptr_t)(remote_spm_base + remote_dst);",
         ],
         "Direct DTE sender local/remote SPM address materialization",
+    )
+
+    send_issue_helper = function_body(
+        source_text, "wafer_direct_dte_issue_sender"
+    )
+    require_in_order(
+        send_issue_helper,
+        [
+            "direct_sync_wait(info->tile_this, info->dst_tile);",
+            "direct_dte_attach(wafer_direct_dte_sender.is_high_performance)",
+            "direct_dte_send_async(info)",
+            "wafer_direct_dte_sender.issued = true;",
+        ],
+        "Direct DTE asynchronous transport issue",
+    )
+
+    send_issue = function_body(source_text, "wafer_tx81_direct_dte_send_issue")
+    require_in_order(
+        send_issue,
+        [
+            "wafer_tx81_direct_dte_send_prepare(",
+            "wafer_direct_dte_issue_sender(false)",
+            "return event;",
+        ],
+        "Direct DTE production prepare/issue boundary",
+    )
+
+    send_wait = function_body(source_text, "wafer_tx81_direct_dte_wait")
+    require_in_order(
+        send_wait,
+        [
+            "!wafer_direct_dte_sender.issued",
+            "wafer_direct_dte_issue_sender(true)",
+            "direct_dte_wait_done(info)",
+            "direct_dte_release(info->dte_node)",
+        ],
+        "Direct DTE legacy fallback and completion boundary",
     )
 
     recv_prepare = function_body(

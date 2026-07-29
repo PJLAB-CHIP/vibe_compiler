@@ -228,6 +228,23 @@ def Wafer_DTECompletionProfile
   let genSpecializedAttr = 0;
 }
 
+def Wafer_DTERemoteAddressModeAbsolute
+    : I32EnumAttrCase<"Absolute", 0, "absolute">;
+def Wafer_DTERemoteAddressModeSourceRelative
+    : I32EnumAttrCase<"SourceRelative", 1, "source_relative">;
+def Wafer_DTERemoteAddressModeSelectorTable
+    : I32EnumAttrCase<"SelectorTable", 2, "selector_table">;
+def Wafer_DTERemoteAddressMode
+    : I32EnumAttr<"DTERemoteAddressMode",
+                  "Wafer Direct DTE remote address mode", [
+  Wafer_DTERemoteAddressModeAbsolute,
+  Wafer_DTERemoteAddressModeSourceRelative,
+  Wafer_DTERemoteAddressModeSelectorTable
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
 def Wafer_DirectDTEBindingAttr
     : AttrDef<Wafer_Dialect, "DirectDTEBinding"> {
   let mnemonic = "direct_dte_binding";
@@ -238,20 +255,30 @@ def Wafer_DirectDTEBindingAttr
     Direct DTE ABI selects an allocation profile rather than an exact DTE id,
     so this attribute does not invent a channel id. The remote receiver offset
     is the cross-rank accepted memory fact that a rank-local sender cannot
-    recompute after executable modules are separated. Local address, endpoint,
-    byte range, and message identity remain represented by the operation,
-    topology, and planned buffer.
+    recompute after executable modules are separated. It is either one
+    absolute remote SPM offset, a source-relative displacement proven across
+    corresponding rotating slot families, or a compact periodic table indexed
+    by the sender's dynamic issue ordinal modulo the table size. The table
+    contains contiguous `(selector, remote address, receiver FSM)` triples.
+    Receiver operations use their buffer SSA value as the actual local
+    destination; sender-only route fields are not a second local-address fact.
+    Endpoint, byte range, and message identity remain represented by the
+    operation, topology, and planned buffer.
   }];
   let parameters = (ins
     "wafer::DTEAllocationProfile":$allocationProfile,
     "int64_t":$receiverFsmId,
-    "int64_t":$remoteReceiverOffset,
+    "wafer::DTERemoteAddressMode":$remoteAddressMode,
+    "int64_t":$remoteReceiverAddress,
+    "mlir::DenseI64ArrayAttr":$routeBindings,
     "wafer::DTECompletionProfile":$completionProfile
   );
   let assemblyFormat = [{
     `<` `allocation` `=` $allocationProfile `,`
         `receiver_fsm` `=` $receiverFsmId `,`
-        `remote_receiver_offset` `=` $remoteReceiverOffset `,`
+        `remote_address_mode` `=` $remoteAddressMode `,`
+        `remote_receiver_address` `=` $remoteReceiverAddress `,`
+        `route_bindings` `=` $routeBindings `,`
         `completion` `=` $completionProfile `>`
   }];
   let genVerifyDecl = 1;

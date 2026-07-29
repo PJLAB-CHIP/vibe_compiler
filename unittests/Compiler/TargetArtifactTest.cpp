@@ -445,7 +445,7 @@ TEST(TargetArtifactTest, ClosedProfileEngineRegistryIncludesDirectDTEWait) {
             2);
   EXPECT_EQ(
       siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEControl),
-      5);
+      6);
   EXPECT_EQ(siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEWait),
             1);
   EXPECT_EQ(wafer::getTargetCallTSMEngine(
@@ -520,7 +520,7 @@ TEST(TargetArtifactTest,
   emitTargetCall(wafer::getTargetCallDescriptor(
       wafer::TargetCallBuiltin::DirectDTEBeginAfterPrepare));
   emitTargetCall(wafer::getTargetCallDescriptor(
-      wafer::TargetCallBuiltin::DirectDTESendPrepare));
+      wafer::TargetCallBuiltin::DirectDTESendIssue));
   emitTargetCall(wafer::getTargetCallDescriptor(
       wafer::TargetCallBuiltin::DirectDTERecvPrepare));
   emitTargetCall(

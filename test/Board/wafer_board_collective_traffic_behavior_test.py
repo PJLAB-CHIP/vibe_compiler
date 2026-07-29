@@ -523,7 +523,7 @@ def validate_package(
 def validate_target_structure(
     structure: paired_support.TargetStructure,
 ) -> None:
-    for fragment in ("direct_dte_send_prepare", "direct_dte_recv_prepare"):
+    for fragment in ("direct_dte_send_issue", "direct_dte_recv_prepare"):
         paired_support.require_call(structure.counts, fragment, present=True)
 
 

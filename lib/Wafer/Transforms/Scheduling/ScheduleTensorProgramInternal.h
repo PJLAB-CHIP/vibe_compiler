@@ -174,6 +174,11 @@ struct SelectionConfig {
   int64_t ddrLargestContiguousBytes = 0;
   int64_t ddrBandwidthLimitBytes = 0;
   int64_t ddrAlignmentBytes = 0;
+  /// Search dimension for optimizations that overlap multiple live working
+  /// sets. A value greater than one constrains tile selection to leave that
+  /// multiplicative SPM headroom. Actual transformed lifetimes and capacity
+  /// remain owned by the derived IR and the normal SPM planner.
+  unsigned spmWorkingSetMultiplicity = 1;
 };
 
 struct CandidateCheckResult {
@@ -277,6 +282,15 @@ bool failsCheapSPMBound(mlir::func::FuncOp task, const CandidateSpec &candidate,
 /// candidates still pass the complete instruction and SPM-planning gates.
 std::optional<int64_t>
 estimateTargetSPMWorkingSetBytes(mlir::func::FuncOp task,
+                                 const CandidateSpec &candidate,
+                                 int64_t spmAlignment);
+
+/// Returns the best available tile-dependent SPM estimate for directing an
+/// optimization search. Target-closed working-set models take precedence;
+/// otherwise a generic structured-root lower bound keeps the resource
+/// dimension active without claiming exact placement legality.
+std::optional<int64_t>
+estimateSearchSPMWorkingSetBytes(mlir::func::FuncOp task,
                                  const CandidateSpec &candidate,
                                  int64_t spmAlignment);
 

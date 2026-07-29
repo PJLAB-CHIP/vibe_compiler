@@ -208,7 +208,9 @@ TEST_F(DirectDTETransportTest, MatchesCompleteDomainAndAttachesTypedBinding) {
   EXPECT_EQ(send.getBinding()->getAllocationProfile(),
             wafer::DTEAllocationProfile::Normal);
   EXPECT_EQ(send.getBinding()->getReceiverFsmId(), 0);
-  EXPECT_EQ(send.getBinding()->getRemoteReceiverOffset(), 65792);
+  EXPECT_EQ(send.getBinding()->getRemoteAddressMode(),
+            wafer::DTERemoteAddressMode::Absolute);
+  EXPECT_EQ(send.getBinding()->getRemoteReceiverAddress(), 65792);
   EXPECT_EQ(send.getBinding()->getCompletionProfile(),
             wafer::DTECompletionProfile::SenderWaitReceiverFSM);
 }
@@ -253,7 +255,8 @@ TEST_F(DirectDTETransportTest,
   EXPECT_EQ(recvCount, 2u);
 }
 
-TEST_F(DirectDTETransportTest, ReorderedLoopAndStaticTailFailClosed) {
+TEST_F(DirectDTETransportTest,
+       MatchesEquivalentDynamicStreamAcrossDifferentStaticPlacement) {
   constexpr llvm::StringLiteral kNestedPrefix = R"mlir(
     scf.for %outer = %c0 to %c8 step %c2 {
       scf.for %inner = %c0 to %c4 step %c2 {
@@ -290,15 +293,14 @@ TEST_F(DirectDTETransportTest, ReorderedLoopAndStaticTailFailClosed) {
   tailWait->moveBefore(outerLoop);
 
   llvm::SmallVector<mlir::ModuleOp, 2> modules{*sendModule, *recvModule};
-  mlir::ScopedDiagnosticHandler suppress(
-      context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
   auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
-  EXPECT_TRUE(mlir::failed(contract));
+  ASSERT_TRUE(mlir::succeeded(contract));
+  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
   sendModule->walk([](wafer::InstrDTESendOp operation) {
-    EXPECT_FALSE(operation.getBinding());
+    EXPECT_TRUE(operation.getBinding());
   });
   recvModule->walk([](wafer::InstrDTERecvOp operation) {
-    EXPECT_FALSE(operation.getBinding());
+    EXPECT_TRUE(operation.getBinding());
   });
 }
 
@@ -389,7 +391,8 @@ TEST_F(DirectDTETransportTest, ConditionalControlInstanceFailsClosed) {
   EXPECT_TRUE(mlir::failed(contract));
 }
 
-TEST_F(DirectDTETransportTest, MismatchedStructuredLoopFamilyFailsClosed) {
+TEST_F(DirectDTETransportTest,
+       IgnoresUnrelatedStaticControlWhenDynamicMessageStreamMatches) {
   constexpr llvm::StringLiteral kSendPrefix = R"mlir(
     scf.for %tile = %c0 to %c8 step %c2 {
 )mlir";
@@ -412,11 +415,9 @@ TEST_F(DirectDTETransportTest, MismatchedStructuredLoopFamilyFailsClosed) {
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
   llvm::SmallVector<mlir::ModuleOp, 2> modules{*sendModule, *recvModule};
-  mlir::ScopedDiagnosticHandler suppress(
-      context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
-
   auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
-  EXPECT_TRUE(mlir::failed(contract));
+  ASSERT_TRUE(mlir::succeeded(contract));
+  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest, LoopEscapingIssueTokenFailsClosed) {

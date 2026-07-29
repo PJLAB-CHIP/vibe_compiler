@@ -53,7 +53,9 @@ protected:
 
   SelectionRun
   select(unsigned taskAlternativeOrdinal, int64_t candidateParallelism,
-         CandidateEvaluationExecutor *evaluationExecutor = nullptr) {
+         CandidateEvaluationExecutor *evaluationExecutor = nullptr,
+         unsigned spmWorkingSetMultiplicity = 1,
+         int64_t spmCapacityBytes = 2048) {
     SelectionRun run;
     run.source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
@@ -109,11 +111,12 @@ module {
     config.candidateParallelism = candidateParallelism;
     config.evaluationExecutor = evaluationExecutor;
     config.taskAlternativeOrdinal = taskAlternativeOrdinal;
+    config.spmWorkingSetMultiplicity = spmWorkingSetMultiplicity;
     // The capacity-directed 8x16 seed passes. The queued full tile and the
     // first deterministic refinement then fail exact placement before the
     // next refinement passes. This fixes both passing ordinals and the
     // preceding-failure path without changing queue order.
-    config.spmLimit = config.spmBase + 2048;
+    config.spmLimit = config.spmBase + spmCapacityBytes;
 
     mlir::FailureOr<SelectedCandidate> selected =
         wafer::tensor_program_scheduling::selectCandidateForScope(
@@ -561,6 +564,32 @@ TEST_F(CandidateSearchExecutionTest,
   EXPECT_EQ(parallel.selected->rejectedCount, 0);
   EXPECT_EQ(printModule(*parallel.selected->module),
             printModule(*serial.selected->module));
+}
+
+TEST_F(CandidateSearchExecutionTest,
+       ConcurrentWorkingSetRequirementDirectsTileSearch) {
+  SelectionRun baseline =
+      select(/*taskAlternativeOrdinal=*/0, /*candidateParallelism=*/1,
+             /*evaluationExecutor=*/nullptr,
+             /*spmWorkingSetMultiplicity=*/1,
+             /*spmCapacityBytes=*/4096);
+  SelectionRun concurrent =
+      select(/*taskAlternativeOrdinal=*/0, /*candidateParallelism=*/1,
+             /*evaluationExecutor=*/nullptr,
+             /*spmWorkingSetMultiplicity=*/2,
+             /*spmCapacityBytes=*/4096);
+  ASSERT_TRUE(baseline.selected);
+  ASSERT_TRUE(concurrent.selected);
+
+  int64_t baselineTileElements = 1;
+  for (int64_t size : baseline.selected->spec.tileSizes)
+    baselineTileElements *= size;
+  int64_t concurrentTileElements = 1;
+  for (int64_t size : concurrent.selected->spec.tileSizes)
+    concurrentTileElements *= size;
+  EXPECT_LT(concurrentTileElements, baselineTileElements);
+  EXPECT_NE(concurrent.selected->spec.tileSizes,
+            baseline.selected->spec.tileSizes);
 }
 
 TEST_F(CandidateSearchExecutionTest,

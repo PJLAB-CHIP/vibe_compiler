@@ -745,15 +745,44 @@ DTEMessageAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 mlir::LogicalResult DirectDTEBindingAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     DTEAllocationProfile allocationProfile, int64_t receiverFsmId,
-    int64_t remoteReceiverOffset, DTECompletionProfile completionProfile) {
+    DTERemoteAddressMode remoteAddressMode, int64_t remoteReceiverAddress,
+    mlir::DenseI64ArrayAttr routeBindings,
+    DTECompletionProfile completionProfile) {
   (void)allocationProfile;
   (void)completionProfile;
   if (receiverFsmId < 0 || receiverFsmId > 3)
     return emitError()
            << "direct_dte_binding receiver FSM id must be within [0, 3]";
-  if (remoteReceiverOffset < 0)
+  if (remoteAddressMode == DTERemoteAddressMode::Absolute &&
+      remoteReceiverAddress < 0)
     return emitError()
-           << "direct_dte_binding remote receiver offset must be non-negative";
+           << "direct_dte_binding absolute remote receiver address must be "
+              "non-negative";
+  llvm::ArrayRef<int64_t> table = routeBindings.asArrayRef();
+  if (remoteAddressMode != DTERemoteAddressMode::SelectorTable) {
+    if (!table.empty())
+      return emitError()
+             << "direct_dte_binding route table requires selector_table mode";
+    return mlir::success();
+  }
+  if (table.empty() || table.size() % 3 != 0)
+    return emitError()
+           << "direct_dte_binding route table must contain non-empty "
+              "(selector, remote, receiver_fsm) triples";
+  for (size_t index = 0; index < table.size(); index += 3) {
+    if (table[index] < 0 || table[index + 1] < 0)
+      return emitError()
+             << "direct_dte_binding selector and remote address must be "
+                "non-negative";
+    if (table[index + 2] < 0 || table[index + 2] > 3)
+      return emitError()
+             << "direct_dte_binding route receiver FSM id must be "
+                "within [0, 3]";
+    if (table[index] != static_cast<int64_t>(index / 3))
+      return emitError()
+             << "direct_dte_binding route selectors must be contiguous "
+                "from zero";
+  }
   return mlir::success();
 }
 

@@ -298,8 +298,14 @@ findCapacityDirectedSeed(mlir::func::FuncOp task, const CandidateSpec &initial,
   if (config.spmLimit <= config.spmBase)
     return std::nullopt;
   int64_t capacityBytes = config.spmLimit - config.spmBase;
+  if (config.spmWorkingSetMultiplicity == 0)
+    return std::nullopt;
+  capacityBytes /=
+      static_cast<int64_t>(config.spmWorkingSetMultiplicity);
+  if (capacityBytes <= 0)
+    return std::nullopt;
   std::optional<int64_t> initialBytes =
-      estimateTargetSPMWorkingSetBytes(task, initial, config.spmAlignment);
+      estimateSearchSPMWorkingSetBytes(task, initial, config.spmAlignment);
   if (!initialBytes || *initialBytes <= capacityBytes)
     return std::nullopt;
 
@@ -323,13 +329,31 @@ findCapacityDirectedSeed(mlir::func::FuncOp task, const CandidateSpec &initial,
       return std::nullopt;
 
     std::optional<int64_t> refinedBytes =
-        estimateTargetSPMWorkingSetBytes(task, *refined, config.spmAlignment);
+        estimateSearchSPMWorkingSetBytes(task, *refined, config.spmAlignment);
     if (!refinedBytes)
       return std::nullopt;
     if (*refinedBytes <= capacityBytes)
       return refined;
     current = std::move(*refined);
   }
+}
+
+static std::optional<std::string>
+getSearchSPMHeadroomFailure(mlir::func::FuncOp task,
+                            const CandidateSpec &candidate,
+                            const SelectionConfig &config) {
+  if (config.spmWorkingSetMultiplicity <= 1 ||
+      config.spmLimit <= config.spmBase)
+    return std::nullopt;
+  int64_t capacityBytes = config.spmLimit - config.spmBase;
+  capacityBytes /=
+      static_cast<int64_t>(config.spmWorkingSetMultiplicity);
+  std::optional<int64_t> workingSet = estimateSearchSPMWorkingSetBytes(
+      task, candidate, config.spmAlignment);
+  if (!workingSet || *workingSet <= capacityBytes)
+    return std::nullopt;
+  return "search_spm_headroom: modeled working set exceeds the selected "
+         "concurrent-residency budget";
 }
 
 static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
@@ -445,6 +469,7 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
   };
   auto isRetryableFailure = [](llvm::StringRef failure) {
     return failure.starts_with("cheap_bound:") ||
+           failure.starts_with("search_spm_headroom:") ||
            failure.starts_with("target_spm_bound:") ||
            failure.contains("capacity_overflow") ||
            failure.contains("static_terminal_budget_exceeded:") ||
@@ -548,6 +573,12 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
           results[batchOffset].failureReason = std::move(*failure);
           continue;
         }
+        if (std::optional<std::string> failure =
+                getSearchSPMHeadroomFailure(task, candidate, config)) {
+          results[batchOffset].spec = candidate;
+          results[batchOffset].failureReason = std::move(*failure);
+          continue;
+        }
         if (std::optional<int64_t> required =
                 estimateTargetSPMRequiredLiveBytes(task, candidate,
                                                    config.spmAlignment);
@@ -586,6 +617,11 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
     ++visitedCount;
     if (std::optional<std::string> failure =
             getCheapTargetGeometryFailure(task, candidate, *reductionRanges)) {
+      rejectCandidate(candidate, *failure);
+      continue;
+    }
+    if (std::optional<std::string> failure =
+            getSearchSPMHeadroomFailure(task, candidate, config)) {
       rejectCandidate(candidate, *failure);
       continue;
     }

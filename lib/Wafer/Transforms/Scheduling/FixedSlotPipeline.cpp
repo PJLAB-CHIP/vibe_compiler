@@ -4,6 +4,7 @@
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -21,6 +22,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -275,6 +277,9 @@ static mlir::LogicalResult collectInstructionAccesses(
     if (resource == WaferComputeResource::get() ||
         resource == WaferMovementResource::get())
       continue;
+    if (resource == WaferCommunicationResource::get() &&
+        mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(operation))
+      continue;
 
     std::optional<MemorySpace> memorySpace;
     if (resource == WaferSPMResource::get())
@@ -394,15 +399,23 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
 
     auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(&operation);
     if (!instruction) {
+      if (mlir::isa<SyncLocalFenceOp, SyncNCCJoinOp>(operation))
+        continue;
       if (!isSupportedPureBodyOperation(&operation))
         return failPlan(
             failureReason,
             "fixed-slot candidate encountered an unknown effectful operation");
       continue;
     }
-    if (instruction.getInstructionFamily() == InstrFamily::DTE)
-      return failPlan(failureReason,
-                      "fixed-slot candidate does not yet support Direct DTE");
+    if (instruction.getInstructionFamily() == InstrFamily::DTE) {
+      if (!mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(
+              operation))
+        return failPlan(
+            failureReason,
+            "fixed-slot candidate encountered an unknown Direct DTE operation");
+      plan.instructionFamilies.try_emplace(&operation, InstrFamily::DTE);
+      continue;
+    }
     NCCCompletionContract contract = getNCCCompletionContract(&operation);
     if (contract.behavior != LocalInstructionCompletion::OrderedPending ||
         !contract.issueWorker)
@@ -434,6 +447,126 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
     }
   }
 
+  // Preserve typed NCC issue/completion order explicitly. A participant join
+  // stays in the producer stage; a later cross-family DTE buffer dependency
+  // advances the transport to the next stage. This lets the steady kernel
+  // issue the prior tile's DTE, launch independent work for the next tile,
+  // then wait the exact DTE event without carrying an event across iterations.
+  std::array<llvm::SmallVector<unsigned, 4>, kNCCWorkerCount>
+      pendingWorkerIssues;
+  for (auto [index, operation] : llvm::enumerate(plan.operations)) {
+    NCCCompletionContract contract = getNCCCompletionContract(operation);
+    if (contract.behavior == LocalInstructionCompletion::OrderedPending) {
+      if (!contract.issueWorker)
+        return failPlan(
+            failureReason,
+            "fixed-slot NCC issue has no typed worker");
+      unsigned worker = static_cast<unsigned>(*contract.issueWorker);
+      if (worker >= kNCCWorkerCount)
+        return failPlan(
+            failureReason,
+            "fixed-slot NCC issue worker is outside the typed domain");
+      pendingWorkerIssues[worker].push_back(static_cast<unsigned>(index));
+      continue;
+    }
+    if (contract.behavior != LocalInstructionCompletion::ParticipantJoin)
+      continue;
+    if (contract.participantMask == 0 ||
+        (contract.participantMask & ~kAllNCCWorkersMask) != 0)
+      return failPlan(
+          failureReason,
+          "fixed-slot participant join has an invalid worker mask");
+    for (unsigned worker = 0; worker < kNCCWorkerCount; ++worker) {
+      if ((contract.participantMask & (uint32_t{1} << worker)) == 0)
+        continue;
+      for (unsigned predecessor : pendingWorkerIssues[worker])
+        addDependency(plan, predecessor, static_cast<unsigned>(index),
+                      /*advancesStage=*/false);
+      pendingWorkerIssues[worker].clear();
+    }
+  }
+
+  // The current target contract exposes one Direct-DTE sender slot. Preserve
+  // its typed issue/release chain independently of buffer aliasing so
+  // pipelining may overlap one send with NCC work but never overlaps two
+  // sender events that the ABI cannot represent.
+  std::optional<unsigned> pendingSenderIssue;
+  std::optional<unsigned> lastSenderCompletion;
+  for (auto [index, operation] : llvm::enumerate(plan.operations)) {
+    if (mlir::isa<InstrDTESendOp>(operation)) {
+      if (pendingSenderIssue)
+        return failPlan(
+            failureReason,
+            "fixed-slot candidate has overlapping Direct DTE senders");
+      if (lastSenderCompletion)
+        addDependency(plan, *lastSenderCompletion,
+                      static_cast<unsigned>(index),
+                      /*advancesStage=*/false);
+      pendingSenderIssue = static_cast<unsigned>(index);
+      continue;
+    }
+    auto wait = mlir::dyn_cast<InstrDTEWaitOp>(operation);
+    if (!wait || !pendingSenderIssue)
+      continue;
+    bool completesSender =
+        llvm::any_of(wait.getTokens(), [&](mlir::Value token) {
+          return token.getDefiningOp() ==
+                 plan.operations[*pendingSenderIssue];
+        });
+    if (!completesSender)
+      continue;
+    addDependency(plan, *pendingSenderIssue, static_cast<unsigned>(index),
+                  /*advancesStage=*/false);
+    pendingSenderIssue.reset();
+    lastSenderCompletion = static_cast<unsigned>(index);
+  }
+  if (pendingSenderIssue)
+    return failPlan(
+        failureReason,
+        "fixed-slot Direct DTE sender has no matching completion");
+
+  // Receiver FSM ids are also finite target resources. Keep each source
+  // batch intact and require its exact wait before the next batch can enter
+  // the software pipeline; a batch larger than the four-FSM normal profile is
+  // not a legal candidate.
+  llvm::SmallVector<unsigned, 4> pendingReceiverIssues;
+  std::optional<unsigned> lastReceiverCompletion;
+  for (auto [index, operation] : llvm::enumerate(plan.operations)) {
+    if (mlir::isa<InstrDTERecvOp>(operation)) {
+      if (pendingReceiverIssues.empty() && lastReceiverCompletion)
+        addDependency(plan, *lastReceiverCompletion,
+                      static_cast<unsigned>(index),
+                      /*advancesStage=*/false);
+      pendingReceiverIssues.push_back(static_cast<unsigned>(index));
+      if (pendingReceiverIssues.size() > 4)
+        return failPlan(
+            failureReason,
+            "fixed-slot candidate exceeds the Direct DTE receiver FSM "
+            "profile");
+      continue;
+    }
+    auto wait = mlir::dyn_cast<InstrDTEWaitOp>(operation);
+    if (!wait || pendingReceiverIssues.empty())
+      continue;
+    for (mlir::Value token : wait.getTokens()) {
+      mlir::Operation *definition = token.getDefiningOp();
+      auto found = llvm::find_if(pendingReceiverIssues, [&](unsigned issue) {
+        return plan.operations[issue] == definition;
+      });
+      if (found == pendingReceiverIssues.end())
+        continue;
+      addDependency(plan, *found, static_cast<unsigned>(index),
+                    /*advancesStage=*/false);
+      pendingReceiverIssues.erase(found);
+    }
+    if (pendingReceiverIssues.empty())
+      lastReceiverCompletion = static_cast<unsigned>(index);
+  }
+  if (!pendingReceiverIssues.empty())
+    return failPlan(
+        failureReason,
+        "fixed-slot Direct DTE receiver has no matching completion");
+
   llvm::SmallVector<BufferAccess, 16> accesses;
   for (auto [index, operation] : llvm::enumerate(plan.operations)) {
     if (!plan.instructionFamilies.contains(operation))
@@ -458,8 +591,8 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
         mlir::Operation *priorOperation = plan.operations[prior.operation];
         auto priorWorker = plan.instructionWorkers.find(priorOperation);
         auto currentWorker = plan.instructionWorkers.find(operation);
-        if (priorWorker == plan.instructionWorkers.end() ||
-            currentWorker == plan.instructionWorkers.end() ||
+        if (priorWorker != plan.instructionWorkers.end() &&
+            currentWorker != plan.instructionWorkers.end() &&
             priorWorker->second != currentWorker->second)
           return failPlan(
               failureReason,
@@ -752,6 +885,21 @@ static void eraseSynthesizedPointerPermutations(mlir::ModuleOp module) {
   }
 }
 
+static void splitDirectDTECompletionGroups(mlir::scf::ForOp loop) {
+  llvm::SmallVector<InstrDTEWaitOp, 4> groupedWaits;
+  for (mlir::Operation &operation : loop.getBody()->without_terminator())
+    if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(&operation);
+        wait && wait.getTokens().size() > 1)
+      groupedWaits.push_back(wait);
+
+  for (InstrDTEWaitOp wait : groupedWaits) {
+    mlir::OpBuilder builder(wait);
+    for (mlir::Value token : wait.getTokens())
+      builder.create<InstrDTEWaitOp>(wait.getLoc(), mlir::ValueRange{token});
+    wait.erase();
+  }
+}
+
 /// The pinned SCF utility rebuilds a static kernel upper bound as
 /// `upper - maxStage * step`. Canonicalize exactly that mechanical expression;
 /// a whole-module canonicalizer here would be too broad because this transform
@@ -837,6 +985,11 @@ deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
         failureReason,
         "fixed-slot candidate clone did not preserve the selected loop");
 
+  // A grouped wait couples tokens whose producers may belong to different
+  // pipeline stages. Split it inside the private candidate so each exact
+  // event stays with its own issue stage; this preserves the normal
+  // single-sender ABI and keeps transport acceptance on direct SSA edges.
+  splitDirectDTECompletionGroups(clonedLoop);
   mlir::FailureOr<FixedSlotPipelinePlan> clonedPlan =
       buildFixedSlotPipelinePlan(clonedLoop, failureReason);
   if (mlir::failed(clonedPlan))
@@ -859,6 +1012,13 @@ deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
         failureReason,
         "fixed-slot candidate failed kernel-bound canonicalization");
   eraseSynthesizedPointerPermutations(*candidate);
+  bool containsDirectDTE = false;
+  candidate->walk([&](mlir::Operation *operation) {
+    containsDirectDTE |= mlir::isa<InstrDTESendOp, InstrDTERecvOp,
+                                   InstrDTEWaitOp>(operation);
+  });
+  if (containsDirectDTE)
+    scheduleIndependentInstructionsByReadyOrder(candidate->getOperation());
   if (mlir::failed(normalizeMinimumNCCJoins(*candidate)))
     return failCandidate(
         failureReason,

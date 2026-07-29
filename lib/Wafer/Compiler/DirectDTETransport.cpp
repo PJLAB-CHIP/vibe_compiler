@@ -5,6 +5,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -14,6 +15,7 @@
 #include "mlir/Interfaces/ViewLikeInterface.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -42,45 +44,22 @@ struct StructuredLoopSite {
 using MessageBaseKey =
     std::tuple<int64_t, int64_t, int64_t, DTEProtocolPhase, int64_t, int64_t>;
 
-struct MessageKey {
-  int64_t sourceRank = -1;
-  int64_t destinationRank = -1;
-  int64_t communicationId = -1;
-  DTEProtocolPhase phase = DTEProtocolPhase::CollectivePermute;
-  int64_t round = -1;
-  int64_t payloadSlice = -1;
-  // This is the structured execution order of static sites that sequentially
-  // reuse one typed message identity.  It is acceptance-only proof state, not
-  // a synthesized DTE message field or physical binding.
-  int64_t sequentialReuseIndex = -1;
-  llvm::SmallVector<StructuredLoopSite, 4> structuredLoopSite;
-
-  auto baseTuple() const {
-    return std::tie(sourceRank, destinationRank, communicationId, phase, round,
-                    payloadSlice);
-  }
-  bool operator<(const MessageKey &other) const {
-    if (baseTuple() != other.baseTuple())
-      return baseTuple() < other.baseTuple();
-    if (sequentialReuseIndex != other.sequentialReuseIndex)
-      return sequentialReuseIndex < other.sequentialReuseIndex;
-    return std::lexicographical_compare(
-        structuredLoopSite.begin(), structuredLoopSite.end(),
-        other.structuredLoopSite.begin(), other.structuredLoopSite.end());
-  }
-};
-
 struct PhysicalRange {
   int64_t start = -1;
   int64_t end = -1;
+};
+
+struct AcceptedRangePattern {
+  llvm::SmallVector<PhysicalRange, 4> ranges;
+  mlir::Operation *rotatingLoop = nullptr;
 };
 
 struct IssueRecord {
   mlir::Operation *operation = nullptr;
   mlir::Operation *wait = nullptr;
   mlir::Block *block = nullptr;
-  MessageKey key;
-  PhysicalRange range;
+  MessageBaseKey key;
+  AcceptedRangePattern rangePattern;
   int64_t bytes = -1;
   unsigned issueIndex = 0;
   unsigned waitIndex = 0;
@@ -88,9 +67,15 @@ struct IssueRecord {
   bool isSend = false;
 };
 
-struct MatchedMessage {
-  IssueRecord *send = nullptr;
-  IssueRecord *recv = nullptr;
+struct DynamicIssue {
+  unsigned issue = 0;
+  PhysicalRange range;
+  uint64_t selector = 0;
+};
+
+struct DynamicMessageStream {
+  llvm::SmallVector<DynamicIssue, 16> sends;
+  llvm::SmallVector<DynamicIssue, 16> recvs;
 };
 
 static bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
@@ -172,8 +157,103 @@ getStaticViewOffsetBytes(mlir::Operation *op, mlir::MemRefType viewType) {
   return offsetBytes;
 }
 
-static mlir::FailureOr<PhysicalRange>
-resolveAcceptedRange(mlir::Operation *op, mlir::Value buffer, int64_t bytes) {
+static mlir::LogicalResult collectPlannedSPMRoots(
+    mlir::Operation *op, mlir::Value value,
+    llvm::DenseSet<mlir::Value> &active,
+    llvm::SmallVectorImpl<mlir::memref::AllocOp> &roots) {
+  value = resolveTileRegionBoundaryValue(value);
+  if (!active.insert(value).second)
+    return mlir::success();
+  auto finish = [&](mlir::LogicalResult result) {
+    active.erase(value);
+    return result;
+  };
+
+  if (auto allocation = value.getDefiningOp<mlir::memref::AllocOp>()) {
+    if (!llvm::is_contained(roots, allocation))
+      roots.push_back(allocation);
+    return finish(mlir::success());
+  }
+  if (auto view = mlir::dyn_cast_or_null<mlir::ViewLikeOpInterface>(
+          value.getDefiningOp()))
+    return finish(
+        collectPlannedSPMRoots(op, view.getViewSource(), active, roots));
+
+  if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+    mlir::Block *owner = argument.getOwner();
+    auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+        owner ? owner->getParentOp() : nullptr);
+    if (!loop || owner != loop.getBody() || argument.getArgNumber() == 0)
+      return finish(op->emitError(
+          "direct_dte_acceptance: rotating SPM value must be rooted in a "
+          "static scf.for iter_arg"));
+    unsigned index = argument.getArgNumber() - 1;
+    if (index >= loop.getInitArgs().size())
+      return finish(op->emitError(
+          "direct_dte_acceptance: scf.for iter_arg has no matching init"));
+    if (mlir::failed(
+            collectPlannedSPMRoots(op, loop.getInitArgs()[index], active,
+                                   roots)))
+      return finish(mlir::failure());
+    auto yield =
+        mlir::dyn_cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+    if (!yield || index >= yield.getResults().size())
+      return finish(op->emitError(
+          "direct_dte_acceptance: scf.for iter_arg has no matching yield"));
+    return finish(collectPlannedSPMRoots(
+        op, yield.getResults()[index], active, roots));
+  }
+
+  auto result = mlir::dyn_cast<mlir::OpResult>(value);
+  auto loop =
+      result ? mlir::dyn_cast<mlir::scf::ForOp>(result.getOwner())
+             : mlir::scf::ForOp();
+  if (loop) {
+    unsigned index = result.getResultNumber();
+    auto yield =
+        mlir::dyn_cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+    if (index >= loop.getInitArgs().size() || !yield ||
+        index >= yield.getResults().size())
+      return finish(op->emitError(
+          "direct_dte_acceptance: scf.for result has no exact recurrence"));
+    if (mlir::failed(
+            collectPlannedSPMRoots(op, loop.getInitArgs()[index], active,
+                                   roots)))
+      return finish(mlir::failure());
+    return finish(collectPlannedSPMRoots(
+        op, yield.getResults()[index], active, roots));
+  }
+
+  return finish(op->emitError(
+      "direct_dte_acceptance: buffer must be rooted in a planned SPM "
+      "allocation or a static rotating slot family"));
+}
+
+static std::optional<uint64_t> getStaticTripCount(mlir::scf::ForOp loop) {
+  std::optional<int64_t> lower = mlir::getConstantIntValue(
+      mlir::getAsOpFoldResult(loop.getLowerBound()));
+  std::optional<int64_t> upper = mlir::getConstantIntValue(
+      mlir::getAsOpFoldResult(loop.getUpperBound()));
+  std::optional<int64_t> step = mlir::getConstantIntValue(
+      mlir::getAsOpFoldResult(loop.getStep()));
+  if (!lower || !upper || !step || *step <= 0)
+    return std::nullopt;
+  if (*lower >= *upper)
+    return uint64_t{0};
+  __int128 span =
+      static_cast<__int128>(*upper) - static_cast<__int128>(*lower);
+  __int128 count =
+      (span + static_cast<__int128>(*step) - 1) /
+      static_cast<__int128>(*step);
+  if (count < 0 ||
+      count > static_cast<__int128>(std::numeric_limits<uint64_t>::max()))
+    return std::nullopt;
+  return static_cast<uint64_t>(count);
+}
+
+static mlir::FailureOr<AcceptedRangePattern>
+resolveAcceptedRanges(mlir::Operation *op, mlir::Value buffer,
+                      int64_t bytes) {
   auto viewType = mlir::dyn_cast<mlir::MemRefType>(buffer.getType());
   if (!viewType || !isWaferSPMMemRefType(viewType))
     return op->emitError(
@@ -187,39 +267,73 @@ resolveAcceptedRange(mlir::Operation *op, mlir::Value buffer, int64_t bytes) {
   if (mlir::failed(viewOffset))
     return mlir::failure();
 
-  mlir::Value root = getRootViewSource(buffer);
-  auto rootType = mlir::dyn_cast<mlir::MemRefType>(root.getType());
-  auto alloc = root.getDefiningOp<mlir::memref::AllocOp>();
-  if (!rootType || !isWaferSPMMemRefType(rootType) || !alloc)
-    return op->emitError(
-        "direct_dte_acceptance: buffer must be rooted in a planned SPM "
-        "allocation");
-  auto acceptedOffset =
-      alloc->getAttrOfType<SPMOffsetAttr>(kWaferSPMOffsetAttrName);
-  if (!acceptedOffset)
-    return op->emitError(
-        "direct_dte_acceptance: SPM root is missing accepted wafer.spm.offset");
-  std::optional<WaferPhysicalTensorInfo> rootInfo =
-      computeWaferPhysicalTensorInfo(rootType);
-  if (!rootInfo || rootInfo->physicalBytes < 0)
-    return op->emitError(
-        "direct_dte_acceptance: root physical range is not representable");
+  llvm::SmallVector<mlir::memref::AllocOp, 4> roots;
+  llvm::DenseSet<mlir::Value> active;
+  if (mlir::failed(collectPlannedSPMRoots(op, buffer, active, roots)) ||
+      roots.empty())
+    return mlir::failure();
 
-  int64_t start = 0;
-  int64_t end = 0;
-  int64_t rootEnd = 0;
-  if (!checkedAdd(acceptedOffset.getOffset(), *viewOffset, start) ||
-      !checkedAdd(start, bytes, end) ||
-      !checkedAdd(acceptedOffset.getOffset(), rootInfo->physicalBytes, rootEnd))
-    return op->emitError(
-        "direct_dte_acceptance: accepted SPM range overflows int64");
   WaferTargetPolicy policy = getDefaultWaferTargetPolicy();
-  if (start < policy.memory.spmBase || end > policy.memory.spmLimit ||
-      end > rootEnd)
+  llvm::SmallVector<PhysicalRange, 4> ranges;
+  for (mlir::memref::AllocOp allocation : roots) {
+    auto rootType = mlir::dyn_cast<mlir::MemRefType>(allocation.getType());
+    if (!rootType || !isWaferSPMMemRefType(rootType))
+      return op->emitError(
+          "direct_dte_acceptance: rotating root is not a Wafer SPM "
+          "allocation");
+    auto acceptedOffset =
+        allocation->getAttrOfType<SPMOffsetAttr>(kWaferSPMOffsetAttrName);
+    if (!acceptedOffset)
+      return op->emitError(
+          "direct_dte_acceptance: SPM root is missing accepted "
+          "wafer.spm.offset");
+    std::optional<WaferPhysicalTensorInfo> rootInfo =
+        computeWaferPhysicalTensorInfo(rootType);
+    if (!rootInfo || rootInfo->physicalBytes < 0)
+      return op->emitError(
+          "direct_dte_acceptance: root physical range is not representable");
+
+    int64_t start = 0;
+    int64_t end = 0;
+    int64_t rootEnd = 0;
+    if (!checkedAdd(acceptedOffset.getOffset(), *viewOffset, start) ||
+        !checkedAdd(start, bytes, end) ||
+        !checkedAdd(acceptedOffset.getOffset(), rootInfo->physicalBytes,
+                    rootEnd))
+      return op->emitError(
+          "direct_dte_acceptance: accepted SPM range overflows int64");
+    if (start < policy.memory.spmBase || end > policy.memory.spmLimit ||
+        end > rootEnd)
+      return op->emitError(
+          "direct_dte_acceptance: issue range is outside its accepted SPM "
+          "allocation");
+    ranges.push_back(PhysicalRange{start, end});
+  }
+  mlir::Value root = getRootViewSource(buffer);
+  if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(root)) {
+    mlir::Block *owner = argument.getOwner();
+    auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+        owner ? owner->getParentOp() : nullptr);
+    if (loop && owner == loop.getBody() && argument.getArgNumber() > 0)
+      return AcceptedRangePattern{std::move(ranges), loop.getOperation()};
+  }
+  if (auto result = mlir::dyn_cast<mlir::OpResult>(root)) {
+    if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(result.getOwner())) {
+      std::optional<uint64_t> tripCount = getStaticTripCount(loop);
+      if (!tripCount || ranges.empty())
+        return op->emitError(
+            "direct_dte_acceptance: rotating loop result requires a "
+            "representable static trip count");
+      PhysicalRange finalRange =
+          ranges[static_cast<size_t>(*tripCount % ranges.size())];
+      ranges.assign(1, finalRange);
+    }
+  }
+  if (ranges.size() > 1)
     return op->emitError(
-        "direct_dte_acceptance: issue range is outside its accepted SPM "
-        "allocation");
-  return PhysicalRange{start, end};
+        "direct_dte_acceptance: multi-root SPM range has no explicit static "
+        "rotation");
+  return AcceptedRangePattern{std::move(ranges), nullptr};
 }
 
 static mlir::FailureOr<mlir::Operation *> findUniqueSameBlockWait(
@@ -348,21 +462,11 @@ static MessageBaseKey makeMessageBaseKey(int64_t rank, int64_t peer,
                          message.getRound(), message.getPayloadSlice());
 }
 
-static MessageKey makeMessageKey(const MessageBaseKey &base,
-                                 int64_t sequentialReuseIndex,
-                                 llvm::ArrayRef<StructuredLoopSite> loopSite) {
-  return MessageKey{std::get<0>(base),    std::get<1>(base),
-                    std::get<2>(base),    std::get<3>(base),
-                    std::get<4>(base),    std::get<5>(base),
-                    sequentialReuseIndex, {loopSite.begin(), loopSite.end()}};
-}
-
 static mlir::LogicalResult
 collectIssues(llvm::ArrayRef<mlir::ModuleOp> rankModules,
               llvm::SmallVectorImpl<IssueRecord> &issues) {
   for (size_t rankIndex = 0; rankIndex < rankModules.size(); ++rankIndex) {
     mlir::ModuleOp module = rankModules[rankIndex];
-    std::map<MessageBaseKey, int64_t> sequentialReuseCounts;
     llvm::DenseMap<mlir::Operation *, unsigned> operationIndices;
     module.walk([&](mlir::Block *block) {
       for (auto [index, operation] : llvm::enumerate(*block))
@@ -412,14 +516,14 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> rankModules,
       MessageBaseKey messageBase =
           makeMessageBaseKey(static_cast<int64_t>(rankIndex), peer, message,
                              static_cast<bool>(send));
-      int64_t sequentialReuseIndex = sequentialReuseCounts[messageBase]++;
       mlir::FailureOr<llvm::SmallVector<StructuredLoopSite, 4>> loopSite =
           getStructuredLoopSite(operation);
-      mlir::FailureOr<PhysicalRange> range =
-          resolveAcceptedRange(operation, buffer, bytes);
+      mlir::FailureOr<AcceptedRangePattern> rangePattern =
+          resolveAcceptedRanges(operation, buffer, bytes);
       mlir::FailureOr<mlir::Operation *> wait =
           findUniqueSameBlockWait(operation, token, operationIndices);
-      if (mlir::failed(loopSite) || mlir::failed(range) || mlir::failed(wait)) {
+      if (mlir::failed(loopSite) || mlir::failed(rangePattern) ||
+          mlir::failed(wait)) {
         result = mlir::failure();
         return mlir::WalkResult::interrupt();
       }
@@ -428,15 +532,113 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> rankModules,
         return mlir::WalkResult::interrupt();
       }
       issues.push_back(IssueRecord{
-          operation, *wait, operation->getBlock(),
-          makeMessageKey(messageBase, sequentialReuseIndex, *loopSite), *range,
-          bytes, operationIndices.lookup(operation),
+          operation, *wait, operation->getBlock(), messageBase,
+          std::move(*rangePattern), bytes, operationIndices.lookup(operation),
           operationIndices.lookup(*wait), -1, static_cast<bool>(send)});
       return mlir::WalkResult::advance();
     });
     if (mlir::failed(result))
       return mlir::failure();
   }
+  return mlir::success();
+}
+
+static mlir::FailureOr<PhysicalRange> resolveDynamicRange(
+    const IssueRecord &issue,
+    const llvm::DenseMap<mlir::Operation *, uint64_t> &loopIterations) {
+  if (issue.rangePattern.ranges.empty())
+    return issue.operation->emitError(
+        "direct_dte_acceptance: accepted SPM range pattern is empty");
+  if (!issue.rangePattern.rotatingLoop)
+    return issue.rangePattern.ranges.front();
+  auto iteration =
+      loopIterations.find(issue.rangePattern.rotatingLoop);
+  if (iteration == loopIterations.end())
+    return issue.operation->emitError(
+        "direct_dte_acceptance: rotating SPM range is not controlled by the "
+        "issue's dynamic loop instance");
+  return issue.rangePattern.ranges[static_cast<size_t>(
+      iteration->second % issue.rangePattern.ranges.size())];
+}
+
+static mlir::LogicalResult appendDynamicIssues(
+    mlir::Operation *operation,
+    llvm::ArrayRef<IssueRecord> issues,
+    const llvm::DenseMap<mlir::Operation *, unsigned> &issueIndices,
+    const llvm::DenseSet<mlir::Operation *> &issueAncestors,
+    llvm::DenseMap<mlir::Operation *, uint64_t> &loopIterations,
+    llvm::MutableArrayRef<uint64_t> occurrenceCounts,
+    std::map<MessageBaseKey, DynamicMessageStream> &streams) {
+  auto issue = issueIndices.find(operation);
+  if (issue != issueIndices.end()) {
+    mlir::FailureOr<PhysicalRange> range =
+        resolveDynamicRange(issues[issue->second], loopIterations);
+    if (mlir::failed(range))
+      return mlir::failure();
+    DynamicMessageStream &stream = streams[issues[issue->second].key];
+    auto &instances =
+        issues[issue->second].isSend ? stream.sends : stream.recvs;
+    uint64_t selector = occurrenceCounts[issue->second]++;
+    instances.push_back(DynamicIssue{issue->second, *range, selector});
+  }
+
+  if (!issueAncestors.contains(operation))
+    return mlir::success();
+
+  if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(operation)) {
+    std::optional<uint64_t> tripCount = getStaticTripCount(loop);
+    if (!tripCount)
+      return loop.emitError(
+          "direct_dte_acceptance: DTE execution stream requires a "
+          "representable static loop trip count");
+    for (uint64_t iteration = 0; iteration < *tripCount; ++iteration) {
+      loopIterations[loop.getOperation()] = iteration;
+      for (mlir::Operation &nested : *loop.getBody())
+        if (mlir::failed(appendDynamicIssues(
+                &nested, issues, issueIndices, issueAncestors, loopIterations,
+                occurrenceCounts, streams)))
+          return mlir::failure();
+    }
+    loopIterations.erase(loop.getOperation());
+    return mlir::success();
+  }
+
+  for (mlir::Region &region : operation->getRegions()) {
+    if (region.empty())
+      continue;
+    if (!region.hasOneBlock())
+      return operation->emitError(
+          "direct_dte_acceptance: DTE execution stream requires single-block "
+          "structured control");
+    for (mlir::Operation &nested : region.front())
+      if (mlir::failed(appendDynamicIssues(
+              &nested, issues, issueIndices, issueAncestors, loopIterations,
+              occurrenceCounts, streams)))
+        return mlir::failure();
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult buildDynamicMessageStreams(
+    llvm::ArrayRef<mlir::ModuleOp> rankModules,
+    llvm::ArrayRef<IssueRecord> issues,
+    std::map<MessageBaseKey, DynamicMessageStream> &streams) {
+  llvm::DenseMap<mlir::Operation *, unsigned> issueIndices;
+  llvm::DenseSet<mlir::Operation *> issueAncestors;
+  for (auto [index, issue] : llvm::enumerate(issues)) {
+    issueIndices.try_emplace(issue.operation, static_cast<unsigned>(index));
+    for (mlir::Operation *ancestor = issue.operation->getParentOp(); ancestor;
+         ancestor = ancestor->getParentOp())
+      issueAncestors.insert(ancestor);
+  }
+
+  llvm::DenseMap<mlir::Operation *, uint64_t> loopIterations;
+  llvm::SmallVector<uint64_t, 32> occurrenceCounts(issues.size(), 0);
+  for (mlir::ModuleOp module : rankModules)
+    if (mlir::failed(appendDynamicIssues(
+            module.getOperation(), issues, issueIndices, issueAncestors,
+            loopIterations, occurrenceCounts, streams)))
+      return mlir::failure();
   return mlir::success();
 }
 
@@ -483,9 +685,12 @@ allocateReceiverFSMs(llvm::SmallVectorImpl<IssueRecord> &issues) {
           break;
         }
       if (selected < 0)
-        return issue->operation->emitError(
-            "direct_dte_acceptance: more than four receiver FSM live ranges "
-            "overlap");
+        return issue->operation->emitError()
+               << "direct_dte_acceptance: more than four receiver FSM live "
+                  "ranges overlap (issue_index="
+               << issue->issueIndex << ", live_until=[" << liveUntil[0] << ","
+               << liveUntil[1] << "," << liveUntil[2] << ","
+               << liveUntil[3] << "])";
       issue->receiverFsmId = selected;
       liveUntil[selected] = static_cast<int64_t>(issue->waitIndex);
     }
@@ -493,29 +698,214 @@ allocateReceiverFSMs(llvm::SmallVectorImpl<IssueRecord> &issues) {
   return mlir::success();
 }
 
-static mlir::LogicalResult
-matchMessages(llvm::SmallVectorImpl<IssueRecord> &issues,
-              std::map<MessageKey, MatchedMessage> &messages) {
-  for (IssueRecord &issue : issues) {
-    MatchedMessage &matched = messages[issue.key];
-    IssueRecord *&slot = issue.isSend ? matched.send : matched.recv;
-    if (slot)
-      return issue.operation->emitError(
-          "direct_dte_acceptance: duplicate send or receive message identity");
-    slot = &issue;
+static mlir::FailureOr<mlir::Value>
+materializeRouteSelector(mlir::Operation *issue) {
+  llvm::SmallVector<mlir::scf::ForOp, 4> loops;
+  for (mlir::Operation *parent = issue->getParentOp(); parent;
+       parent = parent->getParentOp())
+    if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent))
+      loops.push_back(loop);
+  std::reverse(loops.begin(), loops.end());
+  if (loops.empty())
+    return issue->emitError(
+        "direct_dte_acceptance: selector-table binding requires an enclosing "
+        "static loop");
+
+  mlir::OpBuilder builder(issue);
+  mlir::Location location = issue->getLoc();
+  mlir::Value ordinal =
+      builder.create<mlir::arith::ConstantIndexOp>(location, 0);
+  for (mlir::scf::ForOp loop : loops) {
+    std::optional<uint64_t> tripCount = getStaticTripCount(loop);
+    if (!tripCount || *tripCount == 0 ||
+        *tripCount >
+            static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+      return issue->emitError(
+          "direct_dte_acceptance: route selector loop trip count is not "
+          "representable");
+    mlir::Value relative = builder.create<mlir::arith::SubIOp>(
+        location, loop.getInductionVar(), loop.getLowerBound());
+    mlir::Value iteration = builder.create<mlir::arith::DivUIOp>(
+        location, relative, loop.getStep());
+    ordinal = builder.create<mlir::arith::MulIOp>(
+        location, ordinal,
+        builder.create<mlir::arith::ConstantIndexOp>(
+            location, static_cast<int64_t>(*tripCount)));
+    ordinal =
+        builder.create<mlir::arith::AddIOp>(location, ordinal, iteration);
   }
-  for (auto &entry : messages) {
-    MatchedMessage &matched = entry.second;
-    if (!matched.send || !matched.recv) {
-      mlir::Operation *anchor =
-          matched.send ? matched.send->operation : matched.recv->operation;
-      return anchor->emitError(
-          "direct_dte_acceptance: message identity has no matching peer "
-          "issue");
+  return builder
+      .create<mlir::arith::IndexCastOp>(location, builder.getI64Type(),
+                                        ordinal)
+      .getResult();
+}
+
+static mlir::LogicalResult matchDynamicMessages(
+    llvm::ArrayRef<IssueRecord> issues,
+    std::map<MessageBaseKey, DynamicMessageStream> &streams,
+    llvm::SmallVectorImpl<std::pair<mlir::Operation *, DirectDTEBindingAttr>>
+        &acceptedBindings) {
+  struct SendRoute {
+    uint64_t selector = 0;
+    int64_t remoteAddress = -1;
+    int64_t receiverFsmId = -1;
+    int64_t sourceRelativeDisplacement = 0;
+  };
+  llvm::DenseMap<unsigned, llvm::SmallVector<SendRoute, 8>> sendRoutes;
+  llvm::SmallVector<bool, 32> observed(issues.size(), false);
+
+  for (auto &entry : streams) {
+    DynamicMessageStream &stream = entry.second;
+    if (stream.sends.size() != stream.recvs.size()) {
+      const DynamicIssue *instance =
+          !stream.sends.empty()
+              ? &stream.sends.front()
+              : (!stream.recvs.empty() ? &stream.recvs.front() : nullptr);
+      if (!instance)
+        continue;
+      return issues[instance->issue].operation->emitError()
+             << "direct_dte_acceptance: dynamic send/receive counts differ "
+                "(source="
+             << std::get<0>(entry.first)
+             << ", destination=" << std::get<1>(entry.first)
+             << ", communication_id=" << std::get<2>(entry.first)
+             << ", round=" << std::get<4>(entry.first)
+             << ", payload_slice=" << std::get<5>(entry.first)
+             << ", sends=" << stream.sends.size()
+             << ", receives=" << stream.recvs.size() << ")";
     }
-    if (matched.send->bytes != matched.recv->bytes)
-      return matched.recv->operation->emitError(
-          "direct_dte_acceptance: matched send and receive byte counts differ");
+
+    for (auto [sendInstance, recvInstance] :
+         llvm::zip(stream.sends, stream.recvs)) {
+      const IssueRecord &send = issues[sendInstance.issue];
+      const IssueRecord &recv = issues[recvInstance.issue];
+      if (send.bytes != recv.bytes)
+        return recv.operation->emitError(
+            "direct_dte_acceptance: dynamically matched send and receive byte "
+            "counts differ");
+      __int128 displacement =
+          static_cast<__int128>(recvInstance.range.start) -
+          static_cast<__int128>(sendInstance.range.start);
+      if (displacement <
+              static_cast<__int128>(std::numeric_limits<int64_t>::min()) ||
+          displacement >
+              static_cast<__int128>(std::numeric_limits<int64_t>::max()))
+        return send.operation->emitError(
+            "direct_dte_acceptance: source-relative remote address "
+            "displacement is not representable");
+      observed[sendInstance.issue] = true;
+      observed[recvInstance.issue] = true;
+      sendRoutes[sendInstance.issue].push_back(SendRoute{
+          sendInstance.selector, recvInstance.range.start,
+          recv.receiverFsmId, static_cast<int64_t>(displacement)});
+    }
+  }
+
+  for (auto [index, issue] : llvm::enumerate(issues)) {
+    unsigned issueIndex = static_cast<unsigned>(index);
+    if (!observed[issueIndex])
+      return issue.operation->emitError(
+          "direct_dte_acceptance: static DTE site has no dynamic peer "
+          "execution");
+
+    mlir::MLIRContext *context = issue.operation->getContext();
+    mlir::DenseI64ArrayAttr emptyTable =
+        mlir::DenseI64ArrayAttr::get(context, {});
+    if (!issue.isSend) {
+      acceptedBindings.push_back(
+          {issue.operation,
+           DirectDTEBindingAttr::get(
+               context, DTEAllocationProfile::Normal, issue.receiverFsmId,
+               DTERemoteAddressMode::Absolute,
+               issue.rangePattern.ranges.front().start, emptyTable,
+               DTECompletionProfile::SenderWaitReceiverFSM)});
+      continue;
+    }
+
+    auto routes = sendRoutes.find(issueIndex);
+    if (routes == sendRoutes.end() || routes->second.empty())
+      return issue.operation->emitError(
+          "direct_dte_acceptance: send site has no accepted dynamic route");
+    std::map<uint64_t, std::pair<int64_t, int64_t>> bySelector;
+    bool absoluteStable = true;
+    bool fsmStable = true;
+    bool displacementStable = true;
+    int64_t firstRemote = routes->second.front().remoteAddress;
+    int64_t firstFsm = routes->second.front().receiverFsmId;
+    int64_t firstDisplacement =
+        routes->second.front().sourceRelativeDisplacement;
+    for (const SendRoute &route : routes->second) {
+      auto [slot, inserted] = bySelector.try_emplace(
+          route.selector,
+          std::make_pair(route.remoteAddress, route.receiverFsmId));
+      if (!inserted &&
+          slot->second !=
+              std::make_pair(route.remoteAddress, route.receiverFsmId))
+        return issue.operation->emitError(
+            "direct_dte_acceptance: one route selector would require "
+            "different remote address or receiver FSM bindings");
+      absoluteStable &= route.remoteAddress == firstRemote;
+      fsmStable &= route.receiverFsmId == firstFsm;
+      displacementStable &=
+          route.sourceRelativeDisplacement == firstDisplacement;
+    }
+
+    DTERemoteAddressMode mode = DTERemoteAddressMode::Absolute;
+    int64_t address = firstRemote;
+    mlir::DenseI64ArrayAttr table = emptyTable;
+    if (absoluteStable && fsmStable) {
+      mode = DTERemoteAddressMode::Absolute;
+    } else if (displacementStable && fsmStable) {
+      mode = DTERemoteAddressMode::SourceRelative;
+      address = firstDisplacement;
+    } else {
+      llvm::SmallVector<std::pair<int64_t, int64_t>, 8> orderedRoutes;
+      orderedRoutes.reserve(bySelector.size());
+      uint64_t expectedSelector = 0;
+      for (const auto &[selector, route] : bySelector) {
+        if (selector != expectedSelector++)
+          return issue.operation->emitError(
+              "direct_dte_acceptance: dynamic route selectors are not "
+              "contiguous");
+        orderedRoutes.push_back(route);
+      }
+      size_t period = 1;
+      for (; period < orderedRoutes.size(); ++period) {
+        bool repeats = true;
+        for (size_t index = period; index < orderedRoutes.size(); ++index)
+          if (orderedRoutes[index] != orderedRoutes[index % period]) {
+            repeats = false;
+            break;
+          }
+        if (repeats)
+          break;
+      }
+      llvm::SmallVector<int64_t, 12> flattened;
+      flattened.reserve(period * 3);
+      for (size_t selector = 0; selector < period; ++selector) {
+        flattened.push_back(static_cast<int64_t>(selector));
+        flattened.push_back(orderedRoutes[selector].first);
+        flattened.push_back(orderedRoutes[selector].second);
+      }
+      table = mlir::DenseI64ArrayAttr::get(context, flattened);
+      mode = DTERemoteAddressMode::SelectorTable;
+    }
+    acceptedBindings.push_back(
+        {issue.operation,
+         DirectDTEBindingAttr::get(
+             context, DTEAllocationProfile::Normal, firstFsm, mode, address,
+             table,
+             DTECompletionProfile::SenderWaitReceiverFSM)});
+  }
+  for (auto &[operation, binding] : acceptedBindings) {
+    if (binding.getRemoteAddressMode() !=
+        DTERemoteAddressMode::SelectorTable)
+      continue;
+    mlir::FailureOr<mlir::Value> selector =
+        materializeRouteSelector(operation);
+    if (mlir::failed(selector))
+      return mlir::failure();
+    operation->insertOperands(1, *selector);
   }
   return mlir::success();
 }
@@ -533,21 +923,15 @@ acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> rankModules) {
       mlir::failed(allocateReceiverFSMs(issues)))
     return mlir::failure();
 
-  std::map<MessageKey, MatchedMessage> messages;
-  if (mlir::failed(matchMessages(issues, messages)))
+  std::map<MessageBaseKey, DynamicMessageStream> streams;
+  if (mlir::failed(buildDynamicMessageStreams(rankModules, issues, streams)))
     return mlir::failure();
 
   llvm::SmallVector<std::pair<mlir::Operation *, DirectDTEBindingAttr>, 32>
       acceptedBindings;
-  for (auto &entry : messages) {
-    MatchedMessage &matched = entry.second;
-    auto binding = DirectDTEBindingAttr::get(
-        matched.recv->operation->getContext(), DTEAllocationProfile::Normal,
-        matched.recv->receiverFsmId, matched.recv->range.start,
-        DTECompletionProfile::SenderWaitReceiverFSM);
-    acceptedBindings.push_back({matched.send->operation, binding});
-    acceptedBindings.push_back({matched.recv->operation, binding});
-  }
+  if (mlir::failed(
+          matchDynamicMessages(issues, streams, acceptedBindings)))
+    return mlir::failure();
   for (auto &[operation, binding] : acceptedBindings)
     operation->setAttr("binding", binding);
   return TransportContract::DirectDTE;

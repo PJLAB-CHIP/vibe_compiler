@@ -218,6 +218,128 @@ module {
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
 }
 
+TEST(ReadyOrderTest, PlacesIndependentGemmInsideDTEIssueWaitWindow) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  registry.insert<mlir::async::AsyncDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module =
+      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @pipeline() {
+    %send_buffer = memref.alloc()
+        : memref<8xf16, #wafer.memory<spm, tensor>>
+    %lhs = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, cx>>
+    %rhs = memref.alloc()
+        : memref<3x4xf16, #wafer.memory<spm, cx>>
+    %result = memref.alloc()
+        : memref<2x4xf16, #wafer.memory<spm, cx>>
+    %token = wafer.instr.dte_send %send_buffer
+        {peer = 0 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+        : memref<8xf16, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %token : !async.token
+    wafer.instr.gemm %lhs, %rhs into %result
+        {m = 2 : i64, k = 3 : i64, n = 4 : i64}
+        : memref<2x3xf16, #wafer.memory<spm, cx>>,
+          memref<3x4xf16, #wafer.memory<spm, cx>>
+      into memref<2x4xf16, #wafer.memory<spm, cx>>
+    return
+  }
+}
+)mlir",
+                                              mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(*module)));
+  EXPECT_NE(wafer::scheduleIndependentInstructionsByReadyOrder(
+                module->getOperation()),
+            0u);
+  ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(*module)));
+
+  llvm::SmallVector<mlir::Operation *, 4> ordered;
+  module->walk([&](mlir::Operation *operation) {
+    if (mlir::isa<wafer::WaferInstructionOpInterface,
+                  wafer::SyncNCCJoinOp>(operation))
+      ordered.push_back(operation);
+  });
+  ASSERT_EQ(ordered.size(), 4u);
+  EXPECT_TRUE(mlir::isa<wafer::InstrDTESendOp>(ordered[0]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrGemmOp>(ordered[1]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrDTEWaitOp>(ordered[2]));
+  EXPECT_TRUE(mlir::isa<wafer::SyncNCCJoinOp>(ordered[3]));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+}
+
+TEST(ReadyOrderTest, PreservesSingleSenderReleaseBeforeNextDTEIssue) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  registry.insert<mlir::async::AsyncDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module =
+      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @single_sender() {
+    %send0 = memref.alloc()
+        : memref<8xf16, #wafer.memory<spm, tensor>>
+    %send1 = memref.alloc()
+        : memref<8xf16, #wafer.memory<spm, tensor>>
+    %lhs = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, cx>>
+    %rhs = memref.alloc()
+        : memref<3x4xf16, #wafer.memory<spm, cx>>
+    %result = memref.alloc()
+        : memref<2x4xf16, #wafer.memory<spm, cx>>
+    %token0 = wafer.instr.dte_send %send0
+        {peer = 0 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+        : memref<8xf16, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %token0 : !async.token
+    %token1 = wafer.instr.dte_send %send1
+        {peer = 0 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 1, slice = 0>}
+        : memref<8xf16, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %token1 : !async.token
+    wafer.instr.gemm %lhs, %rhs into %result
+        {m = 2 : i64, k = 3 : i64, n = 4 : i64}
+        : memref<2x3xf16, #wafer.memory<spm, cx>>,
+          memref<3x4xf16, #wafer.memory<spm, cx>>
+      into memref<2x4xf16, #wafer.memory<spm, cx>>
+    return
+  }
+}
+)mlir",
+                                              mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(*module)));
+  EXPECT_NE(wafer::scheduleIndependentInstructionsByReadyOrder(
+                module->getOperation()),
+            0u);
+
+  llvm::SmallVector<mlir::Operation *, 8> ordered;
+  module->walk([&](mlir::Operation *operation) {
+    if (mlir::isa<wafer::WaferInstructionOpInterface,
+                  wafer::SyncNCCJoinOp>(operation))
+      ordered.push_back(operation);
+  });
+  ASSERT_EQ(ordered.size(), 6u);
+  EXPECT_TRUE(mlir::isa<wafer::InstrDTESendOp>(ordered[0]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrGemmOp>(ordered[1]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrDTEWaitOp>(ordered[2]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrDTESendOp>(ordered[3]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrDTEWaitOp>(ordered[4]));
+  EXPECT_TRUE(mlir::isa<wafer::SyncNCCJoinOp>(ordered[5]));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+}
+
 TEST(ReadyOrderTest, ParticipatingJoinOrdersLaterIssueOnSameWorker) {
   mlir::DialectRegistry registry;
   wafer::registerAllDialects(registry);

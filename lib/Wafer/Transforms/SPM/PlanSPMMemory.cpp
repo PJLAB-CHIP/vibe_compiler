@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
@@ -54,18 +55,14 @@ static mlir::scf::YieldOp getSingleBlockYield(mlir::Region &region) {
   return mlir::dyn_cast<mlir::scf::YieldOp>(region.front().getTerminator());
 }
 
-static mlir::LogicalResult verifyCompletionControlFlow(mlir::Operation *scope) {
-  mlir::WalkResult result = scope->walk([&](mlir::scf::ForOp forOp) {
-    bool carriesToken = llvm::any_of(forOp.getInitArgs(), hasAsyncTokenType) ||
-                        llvm::any_of(forOp.getResults(), hasAsyncTokenType);
-    if (!carriesToken)
-      return mlir::WalkResult::advance();
-    forOp.emitError()
-        << "unsupported_completion_control_flow: SPM memory planning cannot "
-           "prove loop-carried DTE token completion";
-    return mlir::WalkResult::interrupt();
-  });
-  return result.wasInterrupted() ? mlir::failure() : mlir::success();
+static bool isStaticallyNonEmpty(mlir::scf::ForOp loop) {
+  std::optional<int64_t> lower =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getLowerBound()));
+  std::optional<int64_t> upper =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getUpperBound()));
+  std::optional<int64_t> step =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getStep()));
+  return lower && upper && step && *step > 0 && *lower < *upper;
 }
 
 static mlir::LogicalResult
@@ -352,9 +349,27 @@ private:
     std::optional<mp::ProgramPoint> point = timeline.lookup(op);
     if (!point)
       return;
+    mp::PathCondition completionPath = point->path;
+    for (mlir::Operation *parent = op->getParentOp(); parent;
+         parent = parent->getParentOp()) {
+      if (mlir::isa<mlir::scf::IfOp>(parent))
+        break;
+      if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
+        if (isStaticallyNonEmpty(loop))
+          if (std::optional<mp::ProgramPoint> loopPoint =
+                  timeline.lookup(loop))
+            completionPath = loopPoint->path;
+        break;
+      }
+      if (mlir::isa<TileRegionOp, mlir::func::FuncOp, mlir::async::FuncOp>(
+              parent))
+        break;
+    }
 
     for (mlir::Value token : op.getTokens()) {
-      for (DTECompletionRef waited : completionsAt(token, point->path)) {
+      llvm::SmallVector<DTECompletionRef, 2> waitedRefs =
+          completionsAt(token, completionPath);
+      for (DTECompletionRef waited : waitedRefs) {
         llvm::SmallVector<DTECompletionRef, 8> remaining;
         for (DTECompletionRef pending : pendingCompletions) {
           if (pending.originToken != waited.originToken ||
@@ -417,6 +432,84 @@ private:
     }
   }
 
+  void mapForRegionIterArgs(mlir::scf::ForOp forOp) {
+    std::optional<mp::ProgramPoint> point = timeline.lookup(forOp);
+    if (!point)
+      return;
+    for (auto [init, iterArg] :
+         llvm::zip(forOp.getInitArgs(), forOp.getRegionIterArgs())) {
+      if (!hasAsyncTokenType(init))
+        continue;
+      llvm::SmallVector<DTECompletionRef, 2> refs =
+          completionsAt(init, point->path);
+      if (!refs.empty())
+        completionRefs[iterArg] = std::move(refs);
+    }
+  }
+
+  mlir::LogicalResult mapForResults(mlir::scf::ForOp forOp) {
+    auto yield =
+        mlir::dyn_cast<mlir::scf::YieldOp>(forOp.getBody()->getTerminator());
+    std::optional<mp::ProgramPoint> yieldPoint =
+        yield ? timeline.lookup(yield.getOperation()) : std::nullopt;
+    std::optional<mp::ProgramPoint> loopPoint = timeline.lookup(forOp);
+    if (!yield || !yieldPoint || !loopPoint)
+      return mlir::success();
+
+    for (auto [index, result] : llvm::enumerate(forOp.getResults())) {
+      if (!hasAsyncTokenType(result))
+        continue;
+      if (index >= forOp.getInitArgs().size() ||
+          index >= yield->getNumOperands())
+        continue;
+      llvm::SmallVector<DTECompletionRef, 2> refs =
+          completionsAt(yield->getOperand(index), yieldPoint->path);
+      bool yieldsLoopLocalCompletion =
+          llvm::any_of(refs, [&](const DTECompletionRef &ref) {
+            mlir::Operation *origin = ref.originToken.getDefiningOp();
+            return origin && forOp->isProperAncestor(origin);
+          });
+      if (yieldsLoopLocalCompletion && !isStaticallyNonEmpty(forOp))
+        return forOp.emitError()
+               << "unsupported_async_completion_flow: dynamically optional "
+                  "loop-carried DTE issue has no exact completion instance "
+                  "proof";
+      if (!isStaticallyNonEmpty(forOp)) {
+        llvm::SmallVector<DTECompletionRef, 2> initial =
+            completionsAt(forOp.getInitArgs()[index], loopPoint->path);
+        auto hasSameOrigins = [](llvm::ArrayRef<DTECompletionRef> lhs,
+                                 llvm::ArrayRef<DTECompletionRef> rhs) {
+          return llvm::all_of(lhs, [&](const DTECompletionRef &ref) {
+            return llvm::any_of(rhs, [&](const DTECompletionRef &other) {
+              return ref.originToken == other.originToken;
+            });
+          });
+        };
+        if (!hasSameOrigins(refs, initial) ||
+            !hasSameOrigins(initial, refs))
+          return forOp.emitError()
+                 << "unsupported_async_completion_flow: dynamically optional "
+                    "loop may select different DTE completion identities";
+        refs = std::move(initial);
+      }
+      llvm::SmallVector<DTECompletionRef, 2> relaxed;
+      for (DTECompletionRef ref : refs) {
+        // The result is selected after the complete recurrence. Loop-internal
+        // decisions no longer constrain the dynamic handle it represents;
+        // outer structured decisions remain in the loop entry path.
+        ref.path = loopPoint->path;
+        if (!llvm::any_of(relaxed, [&](const DTECompletionRef &existing) {
+              return existing.originToken == ref.originToken &&
+                     existing.path == ref.path;
+            }))
+          relaxed.push_back(ref);
+      }
+      if (!relaxed.empty())
+        completionRefs[result] = std::move(relaxed);
+    }
+    return mlir::success();
+  }
+
   void mapTileRegionBlockArgs(TileRegionOp tileRegion) {
     std::optional<mp::ProgramPoint> point = timeline.lookup(tileRegion);
     if (!point || tileRegion.getBody().empty())
@@ -465,7 +558,10 @@ private:
       if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(op)) {
         processWait(wait);
       } else if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+        mapForRegionIterArgs(forOp);
         if (mlir::failed(processRegion(forOp.getRegion())))
+          return mlir::failure();
+        if (mlir::failed(mapForResults(forOp)))
           return mlir::failure();
       } else if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(op)) {
         if (mlir::failed(processRegion(ifOp.getThenRegion())) ||
@@ -652,10 +748,6 @@ verifySPMAsyncFunctionClosures(mlir::ModuleOp moduleOp) {
   moduleOp.walk([&](mlir::async::FuncOp funcOp) {
     if (mlir::failed(result) || funcOp.isExternal())
       return;
-    if (mlir::failed(verifyCompletionControlFlow(funcOp.getOperation()))) {
-      result = mlir::failure();
-      return;
-    }
 
     mp::TimelineFailure timelineFailure;
     mlir::FailureOr<mp::StructuredTimeline> timeline =
@@ -691,9 +783,6 @@ verifySPMAsyncFunctionClosures(mlir::ModuleOp moduleOp) {
 
 static mlir::LogicalResult
 verifyTileRegionCompletion(TileRegionOp tileRegion, mlir::func::FuncOp funcOp) {
-  if (mlir::failed(verifyCompletionControlFlow(tileRegion.getOperation())))
-    return mlir::failure();
-
   mp::TimelineFailure timelineFailure;
   mlir::FailureOr<mp::StructuredTimeline> timeline =
       mp::StructuredTimeline::build(tileRegion.getOperation(),
@@ -742,9 +831,6 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
   });
   if (mlir::failed(completionResult))
     return completionResult;
-
-  if (mlir::failed(verifyCompletionControlFlow(funcOp.getOperation())))
-    return mlir::failure();
 
   mp::TimelineFailure timelineFailure;
   mlir::FailureOr<mp::StructuredTimeline> timeline =

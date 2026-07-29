@@ -1689,6 +1689,7 @@ getProfileTargetSiteKind(const TargetCallDescriptor &descriptor) {
   case TargetCallBuiltin::DirectDTEBegin:
   case TargetCallBuiltin::DirectDTEBeginAfterPrepare:
   case TargetCallBuiltin::DirectDTESendPrepare:
+  case TargetCallBuiltin::DirectDTESendIssue:
   case TargetCallBuiltin::DirectDTERecvPrepare:
   case TargetCallBuiltin::DirectDTEFinish:
     return ProfileTargetSiteKind::DirectDTEControl;

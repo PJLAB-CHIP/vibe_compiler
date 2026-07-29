@@ -118,6 +118,10 @@ getTargetScheduleCostPolicy(TargetProfileId targetProfile) {
         (uint32_t{1} << static_cast<uint32_t>(InstrFamily::RDMA)) |
         (uint32_t{1} << static_cast<uint32_t>(InstrFamily::WDMA));
     policy.qualifiedOverlapWorker = static_cast<uint32_t>(NCCWorker::Worker0);
+    policy.qualifiedDirectDTEOverlapFamilyMask =
+        (uint32_t{1} << static_cast<uint32_t>(InstrFamily::DTE)) |
+        (uint32_t{1} << static_cast<uint32_t>(InstrFamily::CT)) |
+        (uint32_t{1} << static_cast<uint32_t>(InstrFamily::NE));
   }
   return policy;
 }

@@ -23,9 +23,9 @@ using namespace wafer;
 using namespace wafer::compiler;
 using namespace wafer::model;
 
-llvm::CallInst *findSendPrepareCall(llvm::Module &module) {
+llvm::CallInst *findSendIssueCall(llvm::Module &module) {
   const llvm::StringRef symbol =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare).symbol;
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue).symbol;
   for (llvm::Function &function : module)
     for (llvm::BasicBlock &block : function)
       for (llvm::Instruction &instruction : block)
@@ -46,7 +46,7 @@ TEST(SystemCTargetModelNoProgressTest,
 
   llvm::Module &rankZeroModule =
       const_cast<llvm::Module &>(bundle->getModules().front().getModule());
-  llvm::CallInst *send = findSendPrepareCall(rankZeroModule);
+  llvm::CallInst *send = findSendIssueCall(rankZeroModule);
   ASSERT_NE(send, nullptr);
   ASSERT_EQ(send->arg_size(), 7u);
   auto *fsm = llvm::dyn_cast<llvm::ConstantInt>(send->getArgOperand(5));

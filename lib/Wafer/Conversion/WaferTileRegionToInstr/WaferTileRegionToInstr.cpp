@@ -516,6 +516,22 @@ private:
     if (contract.behavior == LocalInstructionCompletion::OrderedPending)
       return mlir::success();
 
+    // Direct DTE completion observes only its own typed event. It neither
+    // consumes nor completes an NCC worker frontier, so independent NCC work
+    // may remain in flight while the transport is awaited.
+    if (mlir::isa<InstrDTEWaitOp>(operation))
+      return mlir::success();
+
+    // A Direct DTE issue observes only its explicit SPM buffer. Ignore the
+    // rootless communication-resource effect here and complete exactly the
+    // NCC workers whose value-associated accesses conflict with that buffer.
+    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation)) {
+      uint32_t conflicts = getExternalConflictMask(
+          operation, state, /*ignoreTypedIssueResources=*/true);
+      insertNCCJoinBefore(operation, conflicts, state);
+      return mlir::success();
+    }
+
     if (mlir::isa<mlir::CallOpInterface>(operation)) {
       insertNCCJoinBefore(operation, state.workers, state);
       return mlir::success();

@@ -1558,6 +1558,19 @@
 - 防复发：不得以任务号、单个优化名、fixture或case增加forced-winner模式。新增选择输入必须是稳定的通用
   compiler contract；否则测试停留在候选边界，不能伪装成production artifact路径。
 
+## 2026-07-29 全局候选search的单个choice失败不能折叠整个候选前沿
+
+- 现象：tile、multi-buffer、异步issue、wait移动或transfer elimination被组成一个不可拆分的大候选；
+  其中一个resource、legality或cost gate失败后，选择器丢弃全部优化，直接回到最基础的reserved
+  baseline，即使其它优化choice本身合法且有收益。
+- 根因：候选表示和late gate把多个可独立选择、逐步组合的优化维度误当成“全有或全无”的单一模式，
+  没有保留semantic parent、单维变化的sibling以及精确失败tuple之间的关系。
+- 修复模式：把每项优化建模为独立choice维度，并在统一搜索中组合。某个choice或精确tuple失败时只剪
+  该点，保留其它已合法的choice和优化sibling继续参与cost selection；只有全部优化组合均不可用时才
+  回到reserved baseline。不得用case matcher、forced winner或板端profile旁路代替这个候选前沿。
+- 防复发：构造至少两个独立优化维度，让其中一个组合稳定触发late gate失败，断言其它优化sibling仍在
+  production候选中且可被选中；同时检查候选数量和work-preservation，防止局部失败静默清空整个前沿。
+
 ## 2026-07-26 ReduceScatter Direct不能对同root批量issue后再wait
 
 - 现象：新增ReduceScatter Direct/Ring characterization的首个256B no-card在reserved baseline的

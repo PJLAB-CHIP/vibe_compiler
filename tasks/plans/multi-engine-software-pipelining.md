@@ -1,7 +1,7 @@
 # Multi-Engine Software Pipelining 实施计划
 
-状态：Q38保持`doing`，当前执行顺序以`tasks/progress.md`为准；本计划可与profiler实现并行收敛，
-但production实现和状态切换仍由任务队列统一管理。
+状态：Q38已完成；全局candidate search整改及Direct-DTE与compute并行的剩余闭环已拆分到Q39，
+当前执行顺序以`tasks/progress.md`为准。
 
 ## Pipeline Contract
 
@@ -98,10 +98,11 @@ Pipeline position:
   独立slot、唯一末尾worker0 join且无steady join。closed target schedule policy从accepted Instr IR识别
   FP16/BF16、worker0、rotating SPM state及exact RDMA+CT+WDMA engine group；它不读取source shape、case名、
   任务号、fixture或buffer名。该ordinal capability优先于SPM high-water这一capacity事实，但不伪造cycle。
-- 普通production现已选择该fully gated fixed-slot候选；同源baseline/production最终ELF和scheduler digest不同，
+- 普通production现已选择RDMA+CT+WDMA的fully gated fixed-slot候选；同源baseline/production最终ELF和scheduler digest不同，
   package/no-card、SystemC和fresh板端16 MiB exact output均通过。本轮各一次TX same-stream event为
   baseline 1.756 ms、production 1.654 ms，只作为单次profile观察；promotion依据还包括此前同组matched重复资格。
-  Q38仍为`doing`，因为非零worker command ABI和真实Direct-DTE issue尚未闭合。
+  Direct-DTE typed issue与exact wait/release已经打通；对应普通production overlap winner由Q39继续，
+  非零worker command ABI属于独立的Q38.W later项，二者均不属于Q38完成边界。
 
 ### 1.2 Compiler stack waitfinish 审计
 
@@ -113,7 +114,7 @@ Pipeline position:
 | Instr completion interface | 所有Compute/Movement写resource的op都曾被归入“等待全域fence”，blocking op又被归入无scope barrier | ordinary NCC issue与blocking waitfinish被错误捆绑；ArgMax/ArgMin当前例外确有host writeback需求 | 旧分类已删除；共享合同现为`OrderedPending`、`ParticipantJoin`、`SynchronousWriteback`和非NCC `None` |
 | Tile→Instr general lowering | 2个结构边界、1个tile store及10个compute/composite位置显式创建`local_fence` | WDMA、same-worker gather/compute/reduce、loop backedge和region exit本身均不是drain理由 | 结构创建点已归零；general lowering只发typed issue，统一DAG placement生成必要join |
 | Collective lowering | 两层lowering共18个显式创建点，混合local copy、NCC compute、DTE send/wait与round forwarding | NCC→DTE source的真实handoff可能必须；DTE wait后的same-worker consumer、local copy后的NCC consumer和final region fence通常不必 | 结构创建点已归零；保留exact DTE token，只在真实NCC producer→DTE source cut放join并跨slot/round尽量batch |
-| Direct DTE target path | current send TargetCall只prepare参数，真正`send_async`/completion/release都在后续wait中；model却在prepare时建立endpoint并可匹配copy | 当前`send → independent NCC → wait`不构成真实transport overlap，model还会高估；raw DTE能力不能代签production调用点 | 先拆typed DTE issue与exact wait/release并对齐CRT/model，之后才生成DTE+NCC overlap candidate |
+| Direct DTE target path | send prepare、typed issue与exact wait/release已经分离，CRT/model在issue点建立endpoint/effect | 合法fixed-slot候选能形成真实`issue → independent compute → wait`，但普通production仍必须同时证明tile/SPM和动态work不退化 | 继续由all-rank binding、whole-card resource和target gate闭合；当前剩余问题是把actual fixed-slot realization接回tile搜索，而不是再改transport语义 |
 | Ready-order | 一个无scope barrier曾连接全部前驱/后继，把DTE也包进local completion顺序 | 对单worker NCC aggregate drain过宽尚可保守，对DTE语义错误且会掩盖缺wait | 已按participant关系连接typed join；DTE完全由token edge管理 |
 | SPM/DDR lifetime | 每个local issue曾延寿到全域fence；loop backedge pending直接拒绝，SPM按结构region分别收口 | 把“allocation仍被device访问”误写成“host必须waitfinish”，并使function末尾一次真实drain也无法覆盖前面region，是稳态fence的主要反向压力 | 已改为function-wide worker-aware frontier；same-worker exact hazard后继可接管有序reuse并跨backedge/region，只有真实domain exit要求join |
 | Full-buffer handoff | producer WDMA后只允许fence/yield，借fence识别resident handoff边界；删除WDMA后保留其fence | fence是当前形状偶然条件，不是handoff语义，残留fence会让resident winner仍执行waitfinish | 已从SSA/effect/last-use与typed participant重证；改写后重建physical hazard |
@@ -429,9 +430,10 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
 6. **Whole-frontier host late gates（checkpoint已落地）**：每个pipeline clone重新SPM/DDR/Instr/Target gate，
    跨rank correspondence和atomic failure闭合；Unknown profitability不成为normal winner，也没有
    fixed-slot专用selection模式。
-7. **True Direct-DTE async seam**：把production send prepare与真实transport issue分开，物化typed issue和
-   exact wait/release；CRT与model在同一点建立endpoint/effect。此checkpoint前DTE+NCC只保留correctness，
-   不生成overlap winner。
+7. **True Direct-DTE async seam（transport checkpoint已落地，selection移交Q39）**：production send
+   prepare与真实transport issue已分开，typed issue和exact wait/release已物化，CRT与model在同一点建立
+   endpoint/effect；动态all-rank message stream和rotating SPM receiver地址由physical binding闭合。
+   当前fixed-slot realization尚未进入tile候选的精确搜索闭环，因此还没有普通production overlap winner。
 8. **Nonzero worker activation**：typed issue worker、participant join、TargetCall/CRT/model状态已经存在；
    本checkpoint继续闭合worker1/2 command ABI、cross-worker actual clone和late gate。optional rotating idle
    join作为独立target capability资格化；不能把现有逐participant by-worker wait伪装成低成本mask wait。
@@ -495,6 +497,6 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
 - 实现阶段同步`tasks/progress.md`及直接受影响的06、08-17编号合同；worker纵向启用前必须先改11/14/17，
   不能让计划领先于accepted IR/ABI事实。
 - 可复用实现、调试或验证模式才进入`memory/`；单个shape、case和临时qualification状态不沉淀。
-- Q38只有在normal production multi-buffer winner、完整late gates、fresh board correctness及对应versioned
-  target-contract evidence真实闭合后才能标记`done`；只生成clone、只通过host或只完成qualification都不是
-  任务完成。
+- Q38以RDMA+CT+WDMA normal production multi-buffer winner、完整late gates、fresh board correctness及
+  对应versioned target-contract evidence闭合。全局candidate search失败隔离和Direct-DTE/compute overlap
+  的production winner属于Q39完成门禁。

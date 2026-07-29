@@ -452,14 +452,14 @@ TileRegionBodyEmitter::convertAllToAll(LinalgExtCollectiveAllToAllOp op,
         DTEMessageAttr::get(builder.getContext(), *communicationId,
                             DTEProtocolPhase::AllToAll, distance, targetIndex);
     auto dteSend = builder.create<InstrDTESendOp>(
-        op.getLoc(), tokenType, sendIt->buffer,
+        op.getLoc(), tokenType, sendIt->buffer, mlir::Value(),
         builder.getI64IntegerAttr(sendIt->peer),
         builder.getI64IntegerAttr(*bytes), message, DirectDTEBindingAttr());
     auto recvMessage =
         DTEMessageAttr::get(builder.getContext(), *communicationId,
                             DTEProtocolPhase::AllToAll, distance, localRank);
     auto dteRecv = builder.create<InstrDTERecvOp>(
-        op.getLoc(), tokenType, recvIt->buffer,
+        op.getLoc(), tokenType, recvIt->buffer, mlir::Value(),
         builder.getI64IntegerAttr(recvIt->peer),
         builder.getI64IntegerAttr(*bytes), recvMessage, DirectDTEBindingAttr());
     llvm::SmallVector<mlir::Value, 2> roundTokens{dteSend.getToken(),
@@ -568,7 +568,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertCollectivePermute(
                                        DTEProtocolPhase::CollectivePermute,
                                        /*round=*/0, *sendPayloadSlice);
     auto send = builder.create<InstrDTESendOp>(
-        op.getLoc(), tokenType, *input, builder.getI64IntegerAttr(*sendPeer),
+        op.getLoc(), tokenType, *input, mlir::Value(),
+        builder.getI64IntegerAttr(*sendPeer),
         builder.getI64IntegerAttr(*bytes), message, DirectDTEBindingAttr());
     tokens.push_back(send.getToken());
   }
@@ -577,7 +578,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertCollectivePermute(
                                        DTEProtocolPhase::CollectivePermute,
                                        /*round=*/0, *recvPayloadSlice);
     auto recv = builder.create<InstrDTERecvOp>(
-        op.getLoc(), tokenType, resultBuffer,
+        op.getLoc(), tokenType, resultBuffer, mlir::Value(),
         builder.getI64IntegerAttr(*recvPeer), builder.getI64IntegerAttr(*bytes),
         message, DirectDTEBindingAttr());
     tokens.push_back(recv.getToken());
