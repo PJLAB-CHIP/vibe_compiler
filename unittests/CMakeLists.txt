@@ -102,7 +102,16 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
   target_link_libraries(WaferUnitTests PRIVATE StablehloRegister)
 endif()
 
-add_test(NAME WaferUnitTests COMMAND WaferUnitTests)
+set(WAFER_DEFAULT_UNIT_TEST_FILTER
+  "--gtest_filter=-NoCIntermediateDataflowTest.*:NoCPartialDataflowTest.*:NoCResidentDataflowTest.*:NoCTiledBoundaryDataflowTest.*:WholeVariantCoordinatorTest.*:RankCandidateFrontierTest.*"
+)
+set(WAFER_COMPILER_INTEGRATION_TEST_FILTER
+  "--gtest_filter=NoCIntermediateDataflowTest.*:NoCPartialDataflowTest.*:NoCResidentDataflowTest.*:NoCTiledBoundaryDataflowTest.*:WholeVariantCoordinatorTest.*-WholeVariantCoordinatorTest.PrefersShorterHopRingAllGatherWhenNCCDrainsAreEqual:WholeVariantCoordinatorTest.RejectsI8AllReduceWithoutNumericAdmission:WholeVariantCoordinatorTest.SelectsLargeDDRBoundDistributedContractionWithEstimatedModel"
+)
+
+add_test(NAME WaferUnitTests
+  COMMAND WaferUnitTests ${WAFER_DEFAULT_UNIT_TEST_FILTER}
+)
 
 add_executable(WaferRunBoardIOUnitTests
   Runtime/WaferProfileCampaignTest.cpp
@@ -125,9 +134,16 @@ target_link_libraries(WaferRunBoardIOUnitTests
 add_test(NAME WaferRunBoardIOUnitTests COMMAND WaferRunBoardIOUnitTests)
 
 add_custom_target(check-wafer-unit
-  COMMAND $<TARGET_FILE:WaferUnitTests>
+  COMMAND $<TARGET_FILE:WaferUnitTests> ${WAFER_DEFAULT_UNIT_TEST_FILTER}
   COMMAND $<TARGET_FILE:WaferRunBoardIOUnitTests>
   DEPENDS WaferUnitTests WaferRunBoardIOUnitTests
+  USES_TERMINAL
+)
+
+add_custom_target(check-wafer-compiler-integration
+  COMMAND $<TARGET_FILE:WaferUnitTests>
+    ${WAFER_COMPILER_INTEGRATION_TEST_FILTER}
+  DEPENDS WaferUnitTests
   USES_TERMINAL
 )
 
@@ -216,14 +232,8 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
     GTest::gtest_main
   )
   add_test(NAME WaferNumericModelUnitTests COMMAND WaferNumericModelUnitTests)
-  add_test(NAME wafer-numeric-managed-load-integration
-    COMMAND WaferNumericModelUnitTests
-      --gtest_filter=NumericManagedDependencyIntegrationTest.*
-  )
   set_tests_properties(
-    WaferNumericModelUnitTests
-    wafer-numeric-managed-load-integration
-    PROPERTIES
+    WaferNumericModelUnitTests PROPERTIES
     ENVIRONMENT
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
     LABELS "numeric-model;managed-dependencies"

@@ -153,7 +153,7 @@ func.func @distinct_for() {
   return
 }
 
-// FOR: unsupported_async_completion_flow
+// FOR: missing_async_completion
 
 //--- group-alias.mlir
 async.func @touch_group_alias(

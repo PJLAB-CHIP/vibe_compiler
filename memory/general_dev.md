@@ -292,16 +292,22 @@
 - 相同code object可能由vendor runtime复用为同一个module handle。adapter按`handle -> digest + logical owner count`维护所有权：
   同handle同digest只在最后一个logical owner释放时真正unload；同handle不同digest是provider contract violation并立即quarantine。
   query deadline要在每次低层query前后检查，不能只在完整rank轮询结束后检查，否则慢调用会使整体deadline失真。
-- `ctest`通过不等于关键program/E2E gate被执行。涉及frontend/SPMD/program pipeline或声称
-  主链路跑通时，先跑`cmake --build build/wafer-dev --target check-wafer-lit -- -j128`；需要审计
-  unsupported清单时，使用`build/wafer-dev/CMakeCache.txt`中配置的`LLVM_EXTERNAL_LIT`执行
-  `-sv --show-unsupported build/wafer-dev/test`，不要硬编码开发机Python路径。
+- `ctest`通过不等于关键program/E2E gate被执行。默认`check-wafer-lit`只运行Dialect、Frontend、
+  Pipelines、Spmd和Transforms中的直接IR合同；涉及完整program/source-to-package主链路时，必须点名运行
+  对应Tools lit。需要审计unsupported清单时，使用`build/wafer-dev/CMakeCache.txt`中配置的
+  `LLVM_EXTERNAL_LIT`执行相应目录或文件的`-sv --show-unsupported`，不要硬编码开发机Python路径。
   structured-program production gate必须执行统一`wafer-compile`到verified structured tensor program；
   `wafer-compile-spmd-partition.test`和`wafer-compile-structured-tensor-program.test`必须在配置了
   `WAFER_XLA_SPMD_PARTITIONER_HELPER`后实际执行，不能只用`ctest passed`宣称完成。
 - focused Tools lit可能同时解析`wafer-compile`、`wafer-compile-test`和`wafer-run`。只增量构建其中一个target会让
   同一configured test tree混入旧CLI binary，并以`unknown argument/option`形成假回归；运行前应构建该test的全部直接
-  tool依赖或统一`check-wafer-lit`，出现CLI参数不识别时先核对各binary mtime和target，而不是修改测试预期。
+  tool依赖，出现CLI参数不识别时先核对各binary mtime和target，而不是修改测试预期。
+- 默认`check-wafer-unit`不重放NoC complete-tuple生成和whole-variant production search等分钟级integration
+  suites；这些suite仍由同一gtest executable承载，通过`check-wafer-compiler-integration`点名运行。局部改动先跑
+  对应suite/filter，任务的完整source/package/no-card证明由该任务自己的直接case承担，不能让默认unit代签。
+- model-scale frontier/search workload不进入聚合integration target；局部profitability、numeric和bounded-plan
+  合同由小型analysis/planner unit覆盖，真实大输入的编译时间、winner、package和no-card必须由拥有该边界的任务
+  直接case证明。不要让一个数分钟的旧gtest同时代签策略正确性、规模上界和source-to-package资格。
 - optional dependency收口必须保留两个独立build：full-feature配置显式启用StableHLO/Shardy、source-built
   PyTorch/XLA、pinned-XLA helper、numeric、oneDNN和SystemC，要求对应required tests不再因dependency
   unavailable而unsupported；feature-off配置显式关闭这些feature并验证预期unsupported清单及core binary link closure。
@@ -359,9 +365,8 @@
   `cmake -S . -B build/wafer-dev -DWAFER_XLA_SPMD_PARTITIONER_HELPER=$PWD/build/xla-spmd-helper/wafer_xla_spmd_partitioner`。
   production `wafer-compile` 不接收 helper 路径；driver 从 build-time
   `WAFER_XLA_SPMD_PARTITIONER_HELPER` 解析 helper。`wafer-opt` 只处理显式 MLIR 的IR-local debug/test，
-  不拥有 program-directory orchestration。`cmake --build
-  build/wafer-dev --target check-wafer-lit`会运行真实SPMD partition和structured-program driver gate；没有配置
-  helper 时该 gate 通过 `REQUIRES: xla-spmd-helper` 自动 unsupported。只有启用unit tests的build可用显式
+  不拥有 program-directory orchestration。真实SPMD partition和structured-program driver gate位于`test/Tools`，
+  必须由其owner点名运行；没有配置helper时通过`REQUIRES: xla-spmd-helper`显示为unsupported。只有启用unit tests的build可用显式
   `WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER`做failure-injection override；production binary忽略该环境变量，
   不能把ambient runtime environment变成helper选择协议。
 - PyTorch/XLA StableHLO program directory 的 `data/<parameter>` 由 upstream exporter 用 `np.save` 写入，因此

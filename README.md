@@ -119,8 +119,9 @@ ctest --test-dir build/wafer-dev --output-on-failure
 
 常用验证入口：
 
-- `check-wafer-lit`：lit/FileCheck/Python tool tests；
-- `check-wafer-unit`：C++ unit tests；
+- `check-wafer-lit`：Dialect、Frontend、Pipelines、Spmd和Transforms中的直接IR tests；
+- `check-wafer-unit`：直接C++ unit tests；
+- `check-wafer-compiler-integration`：点名运行NoC complete-tuple和whole-variant search suites；
 - `check-wafer`：执行当前配置中实际存在的全部 mandatory 子 gate；
 - `ctest --output-on-failure`：运行已注册的配置、依赖、feature 和 integration tests。
 

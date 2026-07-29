@@ -449,13 +449,26 @@ static mlir::LogicalResult verifyIssueBufferIsolation(mlir::Operation *issue,
 
 static int64_t getStructuredLoopSiblingOrdinal(mlir::scf::ForOp loop) {
   // This is a path in the structured-control tree, not an ordinal assigned to
-  // DTE issues.  It distinguishes sibling main/edge loop families while
-  // leaving the typed DTE message identity unchanged.
+  // DTE issues.  It distinguishes sibling transport-bearing main/edge loop
+  // families while leaving unrelated static control and the typed DTE message
+  // identity unchanged.
   int64_t ordinal = 0;
   for (mlir::Operation &sibling : *loop->getBlock()) {
     if (&sibling == loop.getOperation())
       return ordinal;
-    if (mlir::isa<mlir::scf::ForOp>(sibling))
+    auto siblingLoop = mlir::dyn_cast<mlir::scf::ForOp>(sibling);
+    if (!siblingLoop)
+      continue;
+    bool containsTransport = false;
+    siblingLoop.walk([&](mlir::Operation *operation) {
+      if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(
+              operation)) {
+        containsTransport = true;
+        return mlir::WalkResult::interrupt();
+      }
+      return mlir::WalkResult::advance();
+    });
+    if (containsTransport)
       ++ordinal;
   }
   llvm_unreachable("scf.for must be present in its parent block");
@@ -1341,14 +1354,27 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
           "direct_dte_acceptance: message identity has different executable "
           "send and receive occurrence counts");
     }
+    llvm::SmallVector<bool, 4> matchedReceives(occurrences.receives.size(),
+                                               false);
+    for (unsigned sendIndex : occurrences.sends) {
+      auto indexedReceives = llvm::enumerate(occurrences.receives);
+      auto recvPosition = llvm::find_if(
+          indexedReceives, [&](auto indexedReceive) {
+            return !matchedReceives[indexedReceive.index()] &&
+                   trace.actions[sendIndex].occurrencePath ==
+                       trace.actions[indexedReceive.value()].occurrencePath;
+          });
+      if (recvPosition == indexedReceives.end())
+        return trace.actions[sendIndex].operation->emitError(
+            "direct_dte_acceptance: matched message call/region/loop "
+            "occurrence paths are not structurally identical across ranks");
+      auto indexedReceive = *recvPosition;
+      matchedReceives[indexedReceive.index()] = true;
+    }
     for (auto [sendIndex, recvIndex] :
          llvm::zip_equal(occurrences.sends, occurrences.receives)) {
       TransportAction &send = trace.actions[sendIndex];
       TransportAction &recv = trace.actions[recvIndex];
-      if (send.occurrencePath != recv.occurrencePath)
-        return send.operation->emitError(
-            "direct_dte_acceptance: matched message call/region/loop "
-            "occurrence paths are not structurally identical across ranks");
       if (send.issue->bytes != recv.issue->bytes)
         return recv.operation->emitError(
             "direct_dte_acceptance: matched send and receive byte counts "

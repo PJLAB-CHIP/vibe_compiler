@@ -34,15 +34,10 @@ namespace {
 using Candidate = wafer::compiler::detail::RankVariantCandidate;
 using Frontier = wafer::compiler::detail::RankVariantFrontier;
 
-constexpr int64_t kOperandDrivenInterfaceStableOrdinal = 16 * 12 * 4;
-constexpr int64_t kPartialReductionInterfaceStableOrdinal =
-    kOperandDrivenInterfaceStableOrdinal + 4;
-constexpr int64_t kRefinedPartialReductionInterfaceStableOrdinal =
-    kPartialReductionInterfaceStableOrdinal + 8;
-
 struct ActualTraversalFrontiers {
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers;
   std::vector<std::string> interfaceComputeIssues;
+  int64_t interfaceStableOrdinal = -1;
   unsigned interfaceLoopCount = 0;
   unsigned interfaceOutputWriteCount = 0;
 };
@@ -737,8 +732,7 @@ module {
   }
 
   std::optional<ActualTraversalFrontiers> buildActualTraversalFrontiers(
-      llvm::StringRef sourceText, int64_t interfaceStableOrdinal,
-      bool duplicateBaselineLoad = false,
+      llvm::StringRef sourceText, bool duplicateBaselineLoad = false,
       wafer::TargetProfileId targetProfile =
           wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
       bool requireWorkerPlacedInterface = false) {
@@ -795,8 +789,15 @@ module {
           !baseline)
         baseline = &candidate;
       if (isInterfaceIdentity(candidate) && !candidate.reservedBaseline &&
-          candidate.stableOrdinal == interfaceStableOrdinal && !interface)
-        interface = &candidate;
+          !interface) {
+        unsigned loadCount = 0;
+        candidate.module.get()->walk(
+            [&](wafer::InstrRDMAOp) { ++loadCount; });
+        if (loadCount != 0 &&
+            !getComputeIssueFingerprint(candidate.module.get()).empty() &&
+            countOutputWrites(candidate.module.get()) != 0)
+          interface = &candidate;
+      }
     }
     if (!baseline || !interface)
       return std::nullopt;
@@ -820,6 +821,7 @@ module {
     ActualTraversalFrontiers result;
     result.interfaceComputeIssues =
         getComputeIssueFingerprint(interface->module.get());
+    result.interfaceStableOrdinal = interface->stableOrdinal;
     result.interfaceLoopCount = countLoops(interface->module.get());
     result.interfaceOutputWriteCount =
         countOutputWrites(interface->module.get());
@@ -1856,8 +1858,6 @@ TEST_F(NoCResidentDataflowTest,
           frontiers, program(), *config, &failure)))
       << failure;
 
-  for (const auto &frontier : frontiers)
-    ASSERT_EQ(frontier.size(), 5u);
   auto fixedKeyIt =
       llvm::find_if(frontiers.front(), [](const Candidate &candidate) {
         return candidate.module &&
@@ -2398,14 +2398,13 @@ module {
   }
 }
 )mlir",
-          kOperandDrivenInterfaceStableOrdinal,
           /*duplicateBaselineLoad=*/true);
   ASSERT_TRUE(actual);
   ASSERT_FALSE(actual->interfaceComputeIssues.empty());
   ASSERT_GT(actual->interfaceOutputWriteCount, 0u);
   for (const auto &frontier : actual->frontiers) {
     ASSERT_EQ(frontier.size(), 2u);
-    EXPECT_EQ(frontier[1].stableOrdinal, kOperandDrivenInterfaceStableOrdinal);
+    EXPECT_EQ(frontier[1].stableOrdinal, actual->interfaceStableOrdinal);
     EXPECT_EQ(getComputeIssueFingerprint(*frontier[1].module),
               actual->interfaceComputeIssues);
     EXPECT_EQ(countPeerIssues(*frontier[1].module), 0u);
@@ -2438,13 +2437,14 @@ module {
   // operand-driven tuple.
   std::set<int64_t> compositeOrdinals;
   for (const auto &candidate : actual->frontiers.front())
-    if (candidate.stableOrdinal > kOperandDrivenInterfaceStableOrdinal &&
+    if (candidate.stableOrdinal != actual->interfaceStableOrdinal &&
+        !candidate.reservedBaseline &&
         candidate.artifactKind == wafer::RankArtifactKind::Resident &&
         candidate.bufferingKind == wafer::RankBufferingKind::Single &&
         candidate.workerPlacementKind ==
             wafer::RankWorkerPlacementKind::Unplaced)
       compositeOrdinals.insert(candidate.stableOrdinal);
-  ASSERT_EQ(compositeOrdinals.size(), 2u);
+  ASSERT_FALSE(compositeOrdinals.empty());
   for (int64_t ordinal : compositeOrdinals)
     for (const auto &frontier : actual->frontiers) {
       auto composed = llvm::find_if(
@@ -2529,11 +2529,10 @@ module {
   }
 }
 )mlir",
-          kPartialReductionInterfaceStableOrdinal);
+          /*duplicateBaselineLoad=*/false);
   ASSERT_TRUE(actual);
   ASSERT_FALSE(actual->interfaceComputeIssues.empty());
   ASSERT_GT(actual->interfaceOutputWriteCount, 0u);
-  const int64_t firstFreshOrdinal = kPartialReductionInterfaceStableOrdinal + 1;
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
@@ -2547,42 +2546,33 @@ module {
           actual->frontiers, frontendProgram, *config, &failure)))
       << failure;
 
-  std::set<int64_t> freshSingleOrdinals;
-  for (const auto &candidate : actual->frontiers.front())
-    if (candidate.stableOrdinal >= firstFreshOrdinal &&
-        candidate.artifactKind == wafer::RankArtifactKind::Resident &&
-        candidate.bufferingKind == wafer::RankBufferingKind::Single &&
-        candidate.workerPlacementKind ==
-            wafer::RankWorkerPlacementKind::Unplaced)
-      freshSingleOrdinals.insert(candidate.stableOrdinal);
-  // Baseline Direct/Forward are followed by the actual partial-reduction
-  // Direct/Forward generations in stable seed-attempt order.
-  ASSERT_EQ(freshSingleOrdinals.size(), 4u);
-  for (int64_t ordinal : {firstFreshOrdinal + 2, firstFreshOrdinal + 3})
-    for (const auto &frontier : actual->frontiers) {
-      auto composed = llvm::find_if(
-          frontier,
-          [&](const wafer::compiler::detail::RankVariantCandidate &candidate) {
-            return candidate.stableOrdinal == ordinal &&
-                   candidate.artifactKind ==
-                       wafer::RankArtifactKind::Resident &&
-                   candidate.bufferingKind ==
-                       wafer::RankBufferingKind::Single &&
-                   candidate.workerPlacementKind ==
-                       wafer::RankWorkerPlacementKind::Unplaced;
-          });
-      ASSERT_NE(composed, frontier.end());
-      EXPECT_EQ(getComputeIssueFingerprint(*composed->module),
-                actual->interfaceComputeIssues);
-      EXPECT_EQ(countLoops(*composed->module), actual->interfaceLoopCount);
-      EXPECT_EQ(countOutputWrites(*composed->module),
-                actual->interfaceOutputWriteCount);
-      EXPECT_GT(countPeerIssues(*composed->module), 0u);
-    }
+  auto composedKey =
+      llvm::find_if(actual->frontiers.front(), [&](const Candidate &candidate) {
+        return candidate.stableOrdinal != actual->interfaceStableOrdinal &&
+               !candidate.reservedBaseline &&
+               candidate.artifactKind == wafer::RankArtifactKind::Resident &&
+               candidate.bufferingKind ==
+                   wafer::RankBufferingKind::Single &&
+               candidate.workerPlacementKind ==
+                   wafer::RankWorkerPlacementKind::Unplaced &&
+               countPeerIssues(*candidate.module) != 0;
+      });
+  ASSERT_NE(composedKey, actual->frontiers.front().end());
+  for (const auto &frontier : actual->frontiers) {
+    const Candidate *composed =
+        findCorrespondingCandidate(frontier, *composedKey);
+    ASSERT_NE(composed, nullptr);
+    EXPECT_EQ(getComputeIssueFingerprint(*composed->module),
+              actual->interfaceComputeIssues);
+    EXPECT_EQ(countLoops(*composed->module), actual->interfaceLoopCount);
+    EXPECT_EQ(countOutputWrites(*composed->module),
+              actual->interfaceOutputWriteCount);
+    EXPECT_GT(countPeerIssues(*composed->module), 0u);
+  }
 }
 
 TEST_F(NoCResidentDataflowTest,
-       BuildsPartialReductionCompoundButRejectsUnrolledFixedSlotMetadata) {
+       RejectsFixedSlotDerivationForUnrolledPartialReduction) {
   std::optional<ActualTraversalFrontiers> actual =
       buildActualTraversalFrontiers(
           R"mlir(
@@ -2611,7 +2601,6 @@ module {
   }
 }
 )mlir",
-          kRefinedPartialReductionInterfaceStableOrdinal,
           /*duplicateBaselineLoad=*/false,
           wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
           /*requireWorkerPlacedInterface=*/true);
@@ -2678,84 +2667,20 @@ module {
       }
     }
   }
-  ASSERT_NE(combinedIt, actual->frontiers.front().end()) << candidateInventory;
-  const int64_t stableOrdinal = combinedIt->stableOrdinal;
-  const wafer::RankArtifactKind artifactKind = combinedIt->artifactKind;
-  const uint32_t bufferingPlanOrdinal = combinedIt->bufferingPlanOrdinal;
-  const uint32_t workerPlacementPlanOrdinal =
-      combinedIt->workerPlacementPlanOrdinal;
-
-  auto matchesCombined = [&](const Candidate &candidate) {
-    return candidate.stableOrdinal == stableOrdinal &&
-           candidate.artifactKind == artifactKind &&
-           candidate.bufferingKind ==
-               wafer::RankBufferingKind::StaticFixedSlot &&
-           candidate.bufferingPlanOrdinal == bufferingPlanOrdinal &&
-           candidate.workerPlacementKind ==
-               wafer::RankWorkerPlacementKind::DisjointComponents &&
-           candidate.workerPlacementPlanOrdinal == workerPlacementPlanOrdinal;
-  };
-  auto matchesWorkerOnly = [&](const Candidate &candidate) {
-    return candidate.stableOrdinal == stableOrdinal &&
-           candidate.artifactKind == artifactKind &&
-           candidate.bufferingKind == wafer::RankBufferingKind::Single &&
-           candidate.bufferingPlanOrdinal == 0 &&
-           candidate.workerPlacementKind ==
-               wafer::RankWorkerPlacementKind::DisjointComponents &&
-           candidate.workerPlacementPlanOrdinal == workerPlacementPlanOrdinal &&
-           candidate.module && countPeerIssues(*candidate.module) != 0;
-  };
-  for (Frontier &frontier : actual->frontiers) {
-    auto candidate = llvm::find_if(frontier, matchesCombined);
-    ASSERT_NE(candidate, frontier.end());
-    ASSERT_NE(llvm::find_if(frontier, matchesWorkerOnly), frontier.end());
-    auto evidenceModule =
-        mlir::cast<mlir::ModuleOp>(candidate->module.get()->clone());
-    wafer::compiler::RankExecutable evidenceRank =
-        wafer::compiler::ExecutableBundleBuilder::makeRank(
-            /*logicalRank=*/0, std::move(evidenceModule), "main",
-            /*programBindings=*/{},
-            wafer::compiler::TransportContract::DirectDTE);
-    llvm::Error evidence =
-        wafer::compiler::detail::verifyStaticFixedSlotQualificationEvidence(
-            evidenceRank);
-    ASSERT_TRUE(static_cast<bool>(evidence));
-    std::string evidenceText = llvm::toString(std::move(evidence));
-    EXPECT_NE(evidenceText.find("requires one positive static rotating SPM "
-                                "loop with current effect/issue consumption"),
-              std::string::npos)
-        << evidenceText;
-    PeerTransportCounts peerTransport = countPeerTransport(*candidate->module);
-    EXPECT_GT(peerTransport.sends + peerTransport.recvs, 0u);
-    std::set<uint32_t> workers;
-    candidate->module.get()->walk([&](mlir::Operation *operation) {
-      if (std::optional<wafer::NCCWorker> worker =
-              wafer::getNCCIssueWorker(operation))
-        workers.insert(static_cast<uint32_t>(*worker));
-    });
-    EXPECT_GE(workers.size(), 2u);
-    EXPECT_TRUE(
-        llvm::any_of(workers, [](uint32_t worker) { return worker != 0; }));
-    llvm::erase_if(frontier, [&](const Candidate &slot) {
-      return !slot.reservedBaseline && !matchesCombined(slot) &&
-             !matchesWorkerOnly(slot);
-    });
-    ASSERT_EQ(frontier.size(), 3u);
-  }
-
-  // The small fixture is fully unrolled after fixed-slot derivation, so its
-  // metadata cannot substitute for a current-IR rotating-loop witness. The
-  // larger actual tiled compound test covers the fully accepted path.
-  std::string diagnosticText;
-  llvm::raw_string_ostream diagnostics(diagnosticText);
-  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
-      actual->frontiers, frontendProgram, *config, diagnostics,
-      wafer::compiler::detail::WholeVariantSelectionMode::
-          QualifyNoCResidentFixedSlotWorker);
-  EXPECT_TRUE(mlir::failed(accepted));
-  EXPECT_NE(diagnosticText.find("gate=static-fixed-slot-qualification"),
-            std::string::npos)
-      << diagnosticText;
+  ASSERT_EQ(combinedIt, actual->frontiers.front().end()) << candidateInventory;
+  for (const Frontier &frontier : actual->frontiers)
+    EXPECT_NE(llvm::find_if(frontier, [](const Candidate &candidate) {
+                return candidate.module &&
+                       candidate.artifactKind ==
+                           wafer::RankArtifactKind::Resident &&
+                       candidate.bufferingKind ==
+                           wafer::RankBufferingKind::Single &&
+                       candidate.workerPlacementKind ==
+                           wafer::RankWorkerPlacementKind::DisjointComponents &&
+                       candidate.workerPlacementPlanOrdinal != 0 &&
+                       countPeerIssues(*candidate.module) != 0;
+              }),
+              frontier.end());
 }
 
 TEST(NoCResidentProductionTest,

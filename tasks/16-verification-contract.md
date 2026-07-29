@@ -1,12 +1,13 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-07-29同步Q37 hardware characterization、轻量板端执行合同与production optimizer成对板测合同；optimizer 8+1
-及collective 9组pre-board/no-card资产已完成，真实板端执行均为`pending`，不计作board/performance evidence。
+状态：2026-07-29同步Q37 hardware characterization、轻量板端执行合同、production optimizer成对板测合同
+与默认测试减负边界；历史optimizer/collective/calibration资产由对应owner按需调用，不再进入默认CTest。
 Q6.B configured-board gate中的rank-one kernel、16-rank kernel、model和kernel内Direct DTE prepared phases已按本文
 完成真实板端execution evidence，Q22.C更广板端numeric correlation仍为独立later gate。保留Q32.V typed
 target-capability vertical、Q31标准7B单block多seed数值证据及已完成Q22.N/B/L/H/S/V和Q22 model-only汇总；
-Q39 generic NoC-resident与NoC×fixed-slot×nonzero-worker同候选的repo-owned host gate已经闭合，fresh
-configured-board baseline/winner correctness保持`pending`；Q32.T与Q3.6 Count保持later独立合同。
+Q39 generic NoC-resident与NoC×fixed-slot×nonzero-worker同候选的repo-owned host gate、configured-board
+baseline/winner 6/6 exact correctness及winner profile均已闭合；高wait与Direct-DTE overlap后续边界归Q40，
+编译搜索资源归Q41。Q32.T与Q3.6 Count保持later独立合同。
 本文是跨stage稳定验证合同，不是`tasks/plans/`中的动态实施计划。它拥有完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
 
@@ -115,12 +116,19 @@ performance；board单case不是scale或全输入域完成。
 
 稳定入口：
 
-- `check-wafer-lit`：全部lit/FileCheck/Python tool tests；
-- `check-wafer-unit`：实际运行C++ gtest executable；
+- `check-wafer-lit`：Dialect、Frontend、Pipelines、Spmd和Transforms中的直接IR lit；`Tools`完整
+  source-to-package/qualification/workload测试由owner点名运行；
+- `check-wafer-unit`：运行直接C++ gtest；NoC complete-tuple与whole-variant production search等长时
+  integration suites由`check-wafer-compiler-integration`点名运行；model-scale search/workload不在聚合入口
+  重放，编译上界和完整package由对应任务直接case证明；
 - `check-wafer`：依赖并执行以上两者；
-- CTest：注册lit、Python runtime adapter和C++ unit tests；
+- 默认CTest：注册lit、直接C++ unit、runtime安全/profile schema、一个普通与一个Direct-DTE
+  source-to-package/no-card seam，以及直接依赖配置gate；
+- 已完成硬件校准、characterization、pending inventory、批量campaign和重复profile package生成保留为
+  owner按需入口，不进入默认CTest；后续任务只运行自己的直接case；
 - configured vertical tests：需要importer/XLA helper/target toolchain时用feature控制；
-- board tests：单独feature和environment，不与no-card混计。
+- board tests：单独feature和environment；显式board配置可以注册其preflight companion，但任务执行仍只选择
+  当前case，不把完整qualification矩阵混入局部gate。
 - target-model tests：plain C++ numeric/bulk component tests分别属于Q22.N/Q22.B mandatory；SystemC对整个项目是可选target-model
   feature，但feature启用时缺依赖必须configuration fail，target-call/SystemC tests必须真实执行且分别属于Q22.H/Q22.S
   mandatory；未启用的单个build中正式profile为unavailable，不能用该build冒充已经由feature-on gate签发的Q22.S能力，direct

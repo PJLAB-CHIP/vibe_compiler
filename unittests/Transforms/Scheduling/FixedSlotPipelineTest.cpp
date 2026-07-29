@@ -57,6 +57,19 @@ protected:
     return loops;
   }
 
+  template <typename OpTy>
+  static bool hasOperationBetween(mlir::Operation *begin,
+                                  mlir::Operation *end) {
+    if (!begin || !end || begin->getBlock() != end->getBlock())
+      return false;
+    for (mlir::Operation *operation = begin->getNextNode();
+         operation && operation != end;
+         operation = operation->getNextNode())
+      if (mlir::isa<OpTy>(operation))
+        return true;
+    return false;
+  }
+
   static std::string threeStageSource(unsigned tripCount,
                                       bool preserveIterArg = false,
                                       unsigned elements = 4) {
@@ -764,8 +777,7 @@ module {
   EXPECT_EQ(print(source->getOperation()), before);
 }
 
-TEST_F(FixedSlotPipelineTest,
-       RejectsUnknownAliasAndLegacyCompletionButAcceptsTypedJoin) {
+TEST_F(FixedSlotPipelineTest, RejectsUnknownAliasAndAcceptsTypedJoin) {
   auto unknownAlias = parse(R"mlir(
 module {
   func.func @unknown_alias(
@@ -809,20 +821,7 @@ module {
             std::string::npos);
   EXPECT_EQ(print(unknownAlias->getOperation()), before);
 
-  std::string legacySource = threeStageSource(/*tripCount=*/3);
   const std::string needle = "      wafer.instr.wdma %computed to %output";
-  legacySource.insert(legacySource.find(needle),
-                      "      wafer.instr.local_fence\n");
-  auto legacyCompletion = parse(legacySource);
-  ASSERT_TRUE(legacyCompletion);
-  before = print(legacyCompletion->getOperation());
-  failureReason.clear();
-  auto legacyCandidate = wafer::deriveStaticFixedSlotPipelineCandidate(
-      *legacyCompletion, collectLoops(*legacyCompletion).front(),
-      &failureReason);
-  EXPECT_TRUE(mlir::failed(legacyCandidate));
-  EXPECT_EQ(print(legacyCompletion->getOperation()), before);
-
   std::string completionSource = threeStageSource(/*tripCount=*/3);
   completionSource.insert(completionSource.find(needle),
                           "      wafer.instr.ncc_join [0]\n");
@@ -1172,7 +1171,9 @@ module {
   ASSERT_TRUE(send);
   ASSERT_TRUE(wait);
   ASSERT_TRUE(join);
-  EXPECT_TRUE(join->isBeforeInBlock(send));
+  EXPECT_TRUE(send->isBeforeInBlock(wait));
+  EXPECT_TRUE(hasOperationBetween<wafer::InstrElementwiseOp>(send, wait));
+  EXPECT_TRUE(wait->isBeforeInBlock(join));
   ASSERT_EQ(join.getParticipants().size(), 1u);
   EXPECT_EQ(join.getParticipants().front(), 0);
   EXPECT_TRUE(send->isBeforeInBlock(wait));
@@ -1232,7 +1233,8 @@ module {
   ASSERT_TRUE(recv);
   ASSERT_TRUE(wait);
   ASSERT_TRUE(consumer);
-  EXPECT_TRUE(consumer->isBeforeInBlock(recv));
+  EXPECT_TRUE(recv->isBeforeInBlock(consumer));
+  EXPECT_TRUE(consumer->isBeforeInBlock(wait));
   EXPECT_TRUE(recv->isBeforeInBlock(wait));
   ASSERT_EQ(wait.getTokens().size(), 1u);
   EXPECT_EQ(wait.getTokens().front().getDefiningOp(), recv.getOperation());
@@ -1302,9 +1304,9 @@ module {
   ASSERT_TRUE(wait);
   ASSERT_TRUE(compute);
   ASSERT_TRUE(wdma);
-  EXPECT_TRUE(compute->isBeforeInBlock(recv));
-  EXPECT_TRUE(wdma->isBeforeInBlock(recv));
   EXPECT_TRUE(recv->isBeforeInBlock(wait));
+  EXPECT_TRUE(hasOperationBetween<wafer::InstrElementwiseOp>(recv, wait));
+  EXPECT_TRUE(wdma->isBeforeInBlock(recv));
   ASSERT_EQ(wait.getTokens().size(), 1u);
   EXPECT_EQ(wait.getTokens().front().getDefiningOp(), recv.getOperation());
   unsigned steadyJoins = 0;
@@ -1470,15 +1472,19 @@ module {
   ASSERT_EQ(sends.size(), 2u);
   ASSERT_EQ(waits.size(), 2u);
   ASSERT_TRUE(consumer);
-  EXPECT_TRUE(consumer->isBeforeInBlock(sends.front()));
+  bool overlapsCompute = false;
   for (unsigned index = 0; index < sends.size(); ++index) {
     EXPECT_TRUE(sends[index]->isBeforeInBlock(waits[index]));
+    overlapsCompute |=
+        hasOperationBetween<wafer::InstrElementwiseOp>(sends[index],
+                                                       waits[index]);
     ASSERT_EQ(waits[index].getTokens().size(), 1u);
     EXPECT_EQ(waits[index].getTokens().front().getDefiningOp(),
               sends[index].getOperation());
     if (index + 1 < sends.size())
       EXPECT_TRUE(waits[index]->isBeforeInBlock(sends[index + 1]));
   }
+  EXPECT_TRUE(overlapsCompute);
   unsigned steadyJoins = 0;
   kernel.walk([&](wafer::SyncNCCJoinOp) { ++steadyJoins; });
   EXPECT_EQ(steadyJoins, 0u) << print(candidate->module->getOperation());
@@ -1540,8 +1546,9 @@ module {
   ASSERT_TRUE(send);
   ASSERT_EQ(waits.size(), 2u);
   ASSERT_TRUE(consumer);
-  EXPECT_TRUE(consumer->isBeforeInBlock(recv));
   EXPECT_TRUE(recv->isBeforeInBlock(waits.front()));
+  EXPECT_TRUE(
+      hasOperationBetween<wafer::InstrElementwiseOp>(recv, waits.front()));
   EXPECT_TRUE(waits.front()->isBeforeInBlock(send));
   EXPECT_TRUE(send->isBeforeInBlock(waits.back()));
   ASSERT_EQ(waits.front().getTokens().size(), 1u);
@@ -1617,20 +1624,23 @@ module {
   unsigned steadyJoins = 0;
   kernel.walk([&](wafer::SyncNCCJoinOp join) {
     ++steadyJoins;
-    EXPECT_TRUE(join->isBeforeInBlock(sends.front()));
     ASSERT_EQ(join.getParticipants().size(), 1u);
     EXPECT_EQ(join.getParticipants().front(), 0);
   });
   EXPECT_EQ(steadyJoins, 1u) << print(candidate->module->getOperation());
-  EXPECT_TRUE(producer->isBeforeInBlock(sends.front()));
+  bool overlapsProducer = false;
   for (unsigned index = 0; index < sends.size(); ++index) {
     EXPECT_TRUE(sends[index]->isBeforeInBlock(waits[index]));
+    overlapsProducer |=
+        hasOperationBetween<wafer::InstrElementwiseOp>(sends[index],
+                                                       waits[index]);
     ASSERT_EQ(waits[index].getTokens().size(), 1u);
     EXPECT_EQ(waits[index].getTokens().front().getDefiningOp(),
               sends[index].getOperation());
     if (index + 1 < sends.size())
       EXPECT_TRUE(waits[index]->isBeforeInBlock(sends[index + 1]));
   }
+  EXPECT_TRUE(overlapsProducer);
 }
 
 TEST_F(FixedSlotPipelineTest,
@@ -1721,17 +1731,19 @@ module {
   ASSERT_EQ(handoff.getParticipants().size(), 1u);
   EXPECT_EQ(handoff.getParticipants().front(), 0);
   EXPECT_TRUE(rdma->isBeforeInBlock(handoff));
-  EXPECT_TRUE(handoff->isBeforeInBlock(sends.front()));
-  EXPECT_TRUE(compute->isBeforeInBlock(sends.front()));
-  EXPECT_TRUE(wdma->isBeforeInBlock(sends.front()));
+  bool overlapsCompute = false;
   for (unsigned index = 0; index < sends.size(); ++index) {
     EXPECT_TRUE(sends[index]->isBeforeInBlock(waits[index]));
+    overlapsCompute |=
+        hasOperationBetween<wafer::InstrElementwiseOp>(sends[index],
+                                                       waits[index]);
     ASSERT_EQ(waits[index].getTokens().size(), 1u);
     EXPECT_EQ(waits[index].getTokens().front().getDefiningOp(),
               sends[index].getOperation());
     if (index + 1 < sends.size())
       EXPECT_TRUE(waits[index]->isBeforeInBlock(sends[index + 1]));
   }
+  EXPECT_TRUE(overlapsCompute);
   unsigned steadyJoins = 0;
   kernel.walk([&](wafer::SyncNCCJoinOp) { ++steadyJoins; });
   EXPECT_EQ(steadyJoins, 1u) << print(candidate->module->getOperation());

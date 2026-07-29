@@ -2191,3 +2191,15 @@
 - 防复发：固定K-sharded large contraction与M-sharded replicated-operand两个同源benchmark，分别运行ordinary
   和profile编译；CI/qualification检查package发布、阶段计数、候选上界、wall time与peak RSS。任何“进入真实
   模型后再看”的方案都不成立；简单GEMM未满足有界编译成本前，不得声称NoC-resident pipeline具备model-scale。
+
+## 2026-07-29 Direct-DTE occurrence不能绑定无关静态位置
+
+- 现象：两端typed message stream和transport-bearing call/loop occurrence完全对应，仅一端在前面多出空
+  `scf.for`或把同一message的静态tail放到loop前，Direct-DTE acceptance仍报告occurrence path不一致。
+- 根因：structured path把所有sibling loop的绝对ordinal当身份，并把两端按执行顺序配对后逐项要求path相同；
+  前者把无关控制变成协议，后者混淆“动态stream配对顺序”和“typed occurrence集合对应”。
+- 修复模式：loop ordinal只统计transport-bearing sibling；先证明两端typed occurrence path multiset一致，再按
+  实际dynamic message stream顺序配对和构造wait graph。不同message的call顺序错位、集合缺失、binding不一致及
+  真实wait cycle继续fail closed。
+- 防复发：正例同时覆盖无关静态loop和相同occurrence集合的不同静态放置；负例覆盖不同message的helper call
+  顺序、static site多binding、数量不等及跨rank wait cycle。不得用函数名、绝对walk ordinal或源码位置恢复身份。

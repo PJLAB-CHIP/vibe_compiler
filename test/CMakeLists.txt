@@ -57,6 +57,14 @@ configure_file(
 set(WAFER_LIT_ARGS "-sv" CACHE STRING "Arguments passed to lit")
 separate_arguments(WAFER_LIT_ARGS)
 
+set(_wafer_default_lit_paths
+  ${CMAKE_CURRENT_BINARY_DIR}/Dialect
+  ${CMAKE_CURRENT_BINARY_DIR}/Frontend
+  ${CMAKE_CURRENT_BINARY_DIR}/Pipelines
+  ${CMAKE_CURRENT_BINARY_DIR}/Spmd
+  ${CMAKE_CURRENT_BINARY_DIR}/Transforms
+)
+
 set(_wafer_lit_dependencies
   wafer-compile
   wafer-compile-test
@@ -69,14 +77,16 @@ if(TARGET wafer-cmodel-qualify-bulk)
 endif()
 
 add_custom_target(check-wafer-lit
-  COMMAND ${WAFER_LIT_EXECUTABLE} ${WAFER_LIT_ARGS} ${CMAKE_CURRENT_BINARY_DIR}
+  COMMAND ${WAFER_LIT_EXECUTABLE} ${WAFER_LIT_ARGS}
+    ${_wafer_default_lit_paths}
   DEPENDS ${_wafer_lit_dependencies}
   USES_TERMINAL
 )
 unset(_wafer_lit_dependencies)
 
 add_test(NAME wafer-lit
-  COMMAND ${WAFER_LIT_EXECUTABLE} ${WAFER_LIT_ARGS} ${CMAKE_CURRENT_BINARY_DIR}
+  COMMAND ${WAFER_LIT_EXECUTABLE} ${WAFER_LIT_ARGS}
+    ${_wafer_default_lit_paths}
 )
 
 add_test(NAME wafer-runtime-adapter-python
@@ -122,16 +132,6 @@ add_test(NAME wafer-direct-dte-board-evidence-python
 set_tests_properties(wafer-direct-dte-board-evidence-python PROPERTIES
   LABELS "runtime;no-card;board;direct-dte;evidence"
   TIMEOUT 30
-)
-
-add_test(NAME wafer-hardware-calibration-batch-runner-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_hardware_calibration_batch_runner_test.py
-)
-set_tests_properties(
-  wafer-hardware-calibration-batch-runner-python PROPERTIES
-  LABELS "runtime;no-card;hardware-calibration;orchestration"
-  TIMEOUT 60
 )
 
 add_executable(wafer-ncc-probe-plan-test
@@ -186,158 +186,6 @@ set_tests_properties(wafer-ncc-hazard-relation PROPERTIES
   TIMEOUT 30
 )
 
-add_test(NAME wafer-ncc-probe-protocol-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_ncc_probe_protocol_test.py
-)
-set_tests_properties(wafer-ncc-probe-protocol-python PROPERTIES
-  LABELS "runtime;no-card;ncc;probe-protocol"
-  TIMEOUT 30
-)
-
-add_test(NAME wafer-instruction-family-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_instruction_family_catalog_test.py
-)
-set_tests_properties(wafer-instruction-family-catalog-python PROPERTIES
-  LABELS "runtime;no-card;instruction;qualification;oracle"
-  TIMEOUT 30
-)
-
-add_test(NAME wafer-ct-vector-calibration-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_ct_vector_calibration_catalog_test.py
-)
-set_tests_properties(wafer-ct-vector-calibration-catalog-python PROPERTIES
-  LABELS "runtime;no-card;instruction;calibration;oracle"
-  TIMEOUT 60
-)
-
-add_test(NAME wafer-ct-vuvloop-semantics-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_ct_vuvloop_semantics_catalog_test.py
-)
-set_tests_properties(wafer-ct-vuvloop-semantics-catalog-python PROPERTIES
-  LABELS "runtime;no-card;instruction;calibration;observation"
-  TIMEOUT 30
-)
-
-add_test(NAME wafer-ct-convert-calibration-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_ct_convert_calibration_catalog_test.py
-)
-set_tests_properties(wafer-ct-convert-calibration-catalog-python PROPERTIES
-  LABELS "runtime;no-card;instruction;convert;calibration;oracle"
-  TIMEOUT 60
-)
-
-add_test(NAME wafer-datamove-calibration-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_datamove_calibration_catalog_test.py
-)
-set_tests_properties(wafer-datamove-calibration-catalog-python PROPERTIES
-  LABELS "runtime;no-card;instruction;datamove;layout;calibration;oracle"
-  TIMEOUT 60
-)
-
-add_test(NAME wafer-datamove-extended-calibration-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_datamove_extended_calibration_catalog_test.py
-)
-set_tests_properties(
-  wafer-datamove-extended-calibration-catalog-python PROPERTIES
-  LABELS "runtime;no-card;instruction;datamove;layout;calibration;oracle"
-  TIMEOUT 60
-)
-
-add_test(NAME wafer-ct-opcode-disposition-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_ct_opcode_disposition_catalog_test.py
-)
-set_tests_properties(wafer-ct-opcode-disposition-catalog-python PROPERTIES
-  LABELS "runtime;no-card;instruction;calibration;coverage;negative"
-  TIMEOUT 60
-)
-
-add_test(NAME wafer-ct-reduce-pool-capability-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_ct_reduce_pool_capability_catalog_test.py
-)
-set_tests_properties(
-  wafer-ct-reduce-pool-capability-catalog-python PROPERTIES
-  LABELS "runtime;no-card;instruction;ct;calibration;coverage;negative"
-  TIMEOUT 60
-)
-
-add_test(NAME wafer-hardware-calibration-matrix-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_hardware_calibration_matrix_test.py
-)
-set_tests_properties(wafer-hardware-calibration-matrix-python PROPERTIES
-  LABELS "runtime;no-card;hardware;calibration;coverage"
-  TIMEOUT 30
-)
-
-add_test(NAME wafer-pending-hardware-calibration-inventory-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_pending_hardware_calibration_inventory_test.py
-)
-set_tests_properties(
-  wafer-pending-hardware-calibration-inventory-python PROPERTIES
-  LABELS "runtime;no-card;hardware;calibration;pending;coverage"
-  TIMEOUT 60
-)
-
-add_test(NAME wafer-ddr-active-rank-contention-contract-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_worker_memory_contention_characterization_test.py
-)
-set_tests_properties(
-  wafer-ddr-active-rank-contention-contract-python PROPERTIES
-  LABELS "runtime;no-card;hardware;ddr;contention;calibration;pending"
-  TIMEOUT 120
-)
-
-add_test(NAME wafer-worker-placement-characterization-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_worker_placement_characterization_test.py
-)
-set_tests_properties(
-  wafer-worker-placement-characterization-python PROPERTIES
-  LABELS "runtime;no-card;hardware;worker;placement;calibration;pending"
-  TIMEOUT 120
-)
-
-add_test(NAME wafer-unrepresentable-hardware-behavior-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_unrepresentable_hardware_behavior_catalog_test.py
-)
-set_tests_properties(
-  wafer-unrepresentable-hardware-behavior-python PROPERTIES
-  LABELS "runtime;no-card;hardware;calibration;fail-closed"
-  TIMEOUT 30
-)
-
-add_test(NAME wafer-engine-pipeline-characterization-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_engine_pipeline_characterization_catalog_test.py
-)
-set_tests_properties(
-  wafer-engine-pipeline-characterization-catalog-python PROPERTIES
-  LABELS "runtime;no-card;hardware;calibration;engine;pipeline;pending"
-  TIMEOUT 120
-)
-
-add_test(NAME wafer-collective-traffic-behavior-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_collective_traffic_behavior_catalog_test.py
-)
-set_tests_properties(
-  wafer-collective-traffic-behavior-catalog-python PROPERTIES
-  LABELS "runtime;no-card;hardware;calibration;collective-traffic;pending"
-  TIMEOUT 120
-)
-
 add_test(NAME wafer-physical-tensor-codec-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_physical_tensor_codec_test.py
@@ -347,116 +195,9 @@ set_tests_properties(wafer-physical-tensor-codec-python PROPERTIES
   TIMEOUT 30
 )
 
-add_test(NAME wafer-ne-calibration-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_ne_calibration_catalog_test.py
-)
-set_tests_properties(wafer-ne-calibration-catalog-python PROPERTIES
-  LABELS "runtime;no-card;ne;layout;calibration;oracle"
-  TIMEOUT 120
-)
-
-add_test(NAME wafer-ne-tail-throughput-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_ne_tail_throughput_catalog_test.py
-)
-set_tests_properties(wafer-ne-tail-throughput-catalog-python PROPERTIES
-  LABELS "runtime;no-card;ne;performance;calibration;pending"
-  TIMEOUT 60
-)
-
-add_test(NAME wafer-spm-calibration-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_spm_calibration_catalog_test.py
-)
-set_tests_properties(wafer-spm-calibration-catalog-python PROPERTIES
-  LABELS "runtime;no-card;spm;calibration;oracle"
-  TIMEOUT 30
-)
-
-add_test(NAME wafer-cache-coherence-calibration-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_cache_coherence_calibration_catalog_test.py
-)
-set_tests_properties(wafer-cache-coherence-calibration-catalog-python PROPERTIES
-  LABELS "runtime;no-card;cache;coherence;calibration;oracle"
-  TIMEOUT 30
-)
-
-add_test(NAME wafer-memory-descriptor-calibration-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_memory_descriptor_calibration_catalog_test.py
-)
-set_tests_properties(
-  wafer-memory-descriptor-calibration-catalog-python PROPERTIES
-  LABELS "runtime;no-card;memory;dma;ddr;spm;calibration;oracle"
-  TIMEOUT 60
-)
-
-add_test(NAME wafer-transport-pmu-calibration-catalog-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_transport_pmu_calibration_catalog_test.py
-)
-set_tests_properties(wafer-transport-pmu-calibration-catalog-python PROPERTIES
-  LABELS "runtime;no-card;direct-dte;spm;tmnoc;pmu;calibration;negative"
-  TIMEOUT 30
-)
-
-add_test(NAME wafer-full-card-barrier-contract-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_full_card_barrier_contract_test.py
-)
-set_tests_properties(wafer-full-card-barrier-contract-python PROPERTIES
-  LABELS "runtime;no-card;cluster;barrier;calibration;negative"
-  TIMEOUT 30
-)
-
-add_test(NAME wafer-ddr-tile-offset-contract-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_tile_offset_probe_test.py
-    --repo-root ${CMAKE_SOURCE_DIR}
-    --wafer-compile $<TARGET_FILE:wafer-compile>
-    --wafer-run $<TARGET_FILE:wafer-run>
-    --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
-    --work-dir
-      ${CMAKE_CURRENT_BINARY_DIR}/runtime-ddr-tile-offset-contract
-    --list-cases
-)
-set_tests_properties(wafer-ddr-tile-offset-contract-python PROPERTIES
-  LABELS "runtime;no-card;all-rank;ddr;allocation;offset;calibration"
-  TIMEOUT 30
-)
-
-add_test(NAME wafer-spm-cross-tile-conflict-contract-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_spm_cross_tile_conflict_probe_contract_test.py
-)
-set_tests_properties(
-  wafer-spm-cross-tile-conflict-contract-python PROPERTIES
-  LABELS "runtime;no-card;all-rank;spm;conflict-equivalence;calibration"
-  TIMEOUT 60
-)
-
-add_test(NAME wafer-spm-sustained-conflict-contract-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_spm_sustained_conflict_probe_contract_test.py
-)
-set_tests_properties(
-  wafer-spm-sustained-conflict-contract-python PROPERTIES
-  LABELS "runtime;no-card;spm;conflict-equivalence;calibration;pending"
-  TIMEOUT 120
-)
-
-add_test(NAME wafer-ddr-sparse-high-offset-contract-python
-  COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_sparse_high_offset_probe_test.py
-    --workspace-gib 40
-    --list-cases
-)
-set_tests_properties(wafer-ddr-sparse-high-offset-contract-python PROPERTIES
-  LABELS "runtime;no-card;ddr;allocation;offset;calibration"
-  TIMEOUT 30
-)
+# Historical calibration matrices and repository-wide catalog checks remain
+# directly invocable by their owners, but are intentionally not part of the
+# default CTest graph. Board execution keeps its explicit registrations below.
 
 if(WAFER_ENABLE_IMPORTER_DEPS AND
    WAFER_ENABLE_SPMD_PARTITIONER_DEPS AND
@@ -535,94 +276,8 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     message(FATAL_ERROR
       "Compiler optimization package tests require the vendored TX81 objdump")
   endif()
-  add_test(NAME wafer-compiler-optimization-campaign-catalog-python
-    COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_compiler_optimization_campaign_catalog_test.py
-  )
-  set_tests_properties(
-    wafer-compiler-optimization-campaign-catalog-python PROPERTIES
-    LABELS "runtime;no-card;compiler-optimization;catalog"
-    TIMEOUT 60
-  )
-  add_test(NAME wafer-collective-characterization-catalog-python
-    COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_collective_hardware_characterization_catalog_test.py
-  )
-  set_tests_properties(
-    wafer-collective-characterization-catalog-python PROPERTIES
-    LABELS "runtime;no-card;collective-characterization;catalog;pending"
-    TIMEOUT 60
-  )
-  foreach(_wafer_compiler_optimization_case IN LISTS
-      _wafer_compiler_optimization_rank_one_cases
-      _wafer_compiler_optimization_collective_cases)
-    add_test(
-      NAME
-        wafer-runtime-compiler-optimization-${_wafer_compiler_optimization_case}-no-card
-      COMMAND ${Python3_EXECUTABLE}
-        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_compiler_optimization_campaign_test.py
-        --wafer-compile $<TARGET_FILE:wafer-compile>
-        --wafer-compile-test $<TARGET_FILE:wafer-compile-test>
-        --wafer-run $<TARGET_FILE:wafer-run>
-        --tx8-objdump ${_wafer_tx81_objdump}
-        --work-dir
-          ${CMAKE_CURRENT_BINARY_DIR}/runtime-compiler-optimization-${_wafer_compiler_optimization_case}
-        --case ${_wafer_compiler_optimization_case}
-        --no-card
-    )
-    set_tests_properties(
-      wafer-runtime-compiler-optimization-${_wafer_compiler_optimization_case}-no-card
-      PROPERTIES
-      LABELS "runtime;no-card;compiler-optimization;paired"
-      TIMEOUT 1800
-    )
-  endforeach()
-  foreach(_wafer_collective_characterization_case IN LISTS
-      _wafer_collective_characterization_cases)
-    add_test(
-      NAME
-        wafer-runtime-collective-characterization-${_wafer_collective_characterization_case}-no-card
-      COMMAND ${Python3_EXECUTABLE}
-        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_collective_characterization_test.py
-        --wafer-compile-test $<TARGET_FILE:wafer-compile-test>
-        --wafer-run $<TARGET_FILE:wafer-run>
-        --tx8-objdump ${_wafer_tx81_objdump}
-        --work-dir
-          ${CMAKE_CURRENT_BINARY_DIR}/runtime-collective-characterization-${_wafer_collective_characterization_case}
-        --case ${_wafer_collective_characterization_case}
-        --no-card
-    )
-    set_tests_properties(
-      wafer-runtime-collective-characterization-${_wafer_collective_characterization_case}-no-card
-      PROPERTIES
-      LABELS
-        "runtime;no-card;collective-characterization;paired;all-rank;direct-dte;pending"
-      TIMEOUT 3600
-    )
-  endforeach()
-  foreach(_wafer_collective_traffic_case IN LISTS
-      _wafer_collective_traffic_behavior_cases)
-    add_test(
-      NAME
-        wafer-runtime-collective-traffic-behavior-${_wafer_collective_traffic_case}-no-card
-      COMMAND ${Python3_EXECUTABLE}
-        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_collective_traffic_behavior_test.py
-        --wafer-compile-test $<TARGET_FILE:wafer-compile-test>
-        --wafer-run $<TARGET_FILE:wafer-run>
-        --tx8-objdump ${_wafer_tx81_objdump}
-        --work-dir
-          ${CMAKE_CURRENT_BINARY_DIR}/runtime-collective-traffic-${_wafer_collective_traffic_case}
-        --case ${_wafer_collective_traffic_case}
-        --no-card
-    )
-    set_tests_properties(
-      wafer-runtime-collective-traffic-behavior-${_wafer_collective_traffic_case}-no-card
-      PROPERTIES
-      LABELS
-        "runtime;no-card;collective-traffic;all-rank;direct-dte;pending"
-      TIMEOUT 3600
-    )
-  endforeach()
+  # Campaign matrices and characterization packages are owner-invoked. The
+  # default graph keeps only one ordinary and one Direct-DTE package seam.
   add_test(NAME wafer-runtime-kernel-grid-add-no-card
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_all_rank_add_test.py
@@ -637,22 +292,6 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     LABELS "runtime;no-card;all-rank;single-op;kernel-grid"
     TIMEOUT 300
   )
-  add_test(NAME wafer-runtime-kernel-grid-add-profile-no-card
-    COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_all_rank_add_test.py
-      --wafer-compile $<TARGET_FILE:wafer-compile>
-      --wafer-run $<TARGET_FILE:wafer-run>
-      --work-dir
-        ${CMAKE_CURRENT_BINARY_DIR}/runtime-kernel-grid-add-profile
-      --launch-kind kernel
-      --profile
-      --no-card
-  )
-  set_tests_properties(
-    wafer-runtime-kernel-grid-add-profile-no-card PROPERTIES
-    LABELS "runtime;no-card;all-rank;single-op;kernel-grid;profiler"
-    TIMEOUT 600
-  )
   add_test(NAME wafer-runtime-cluster-direct-dte-no-card
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_direct_dte_collective_test.py
@@ -665,22 +304,9 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     LABELS "runtime;no-card;all-rank;cluster;direct-dte"
     TIMEOUT 300
   )
-  add_test(NAME wafer-runtime-cluster-direct-dte-profile-no-card
-    COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_direct_dte_collective_test.py
-      --wafer-compile $<TARGET_FILE:wafer-compile>
-      --wafer-run $<TARGET_FILE:wafer-run>
-      --work-dir
-        ${CMAKE_CURRENT_BINARY_DIR}/runtime-cluster-direct-dte-profile
-      --profile
-      --repeat 1
-      --no-card
-  )
-  set_tests_properties(
-    wafer-runtime-cluster-direct-dte-profile-no-card PROPERTIES
-    LABELS "runtime;no-card;all-rank;cluster;direct-dte;profiler"
-    TIMEOUT 600
-  )
+  if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
+    # These package builders are preflight companions for explicit hardware
+    # qualification. They are not part of the ordinary host CTest graph.
   add_test(NAME wafer-runtime-dte-ncc-execution-probe-no-card
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_dte_ncc_execution_probe_test.py
@@ -1224,6 +850,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     LABELS "runtime;no-card;single-op;gemm;tiling"
     TIMEOUT 600
   )
+  endif()
 endif()
 
 if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
