@@ -45,8 +45,9 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
 
 ### 板端测试
 
-- 无板阶段必须为待上板case实际生成完整package并通过no-card；未满足时不得进入上板清单。只做当前case的
-  定向验证，共享资格仅在相关变化或失败时检查，禁止每case重复或全量审计。
+- 任何包含板端验证的任务，无板阶段都必须推进到`board-ready`：case、oracle和runner完整，实际生成完整
+  package并通过no-card；不得留到上板时补。只做当前case的定向验证，禁止重复共享资格或全量审计。
+  `board-ready`不是`done`；真实板测通过后才能完成。
 - 同一重启会话且软硬件身份未变化时，环境资格只确认一次；不为每个 case 重复版本、反汇编、状态、
   heartbeat 或其它无关 gate。
 - 编译器/runtime功能纵向和qualification板测的默认数据类型使用FP16或BF16；只有测试目标本身是

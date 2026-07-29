@@ -15,6 +15,7 @@ pipeline contract、实验结论、测试数字、失败修复过程和历史复
 - 新任务先进入本表并绑定编号设计owner；非小修再建立`tasks/plans/`实施计划。
 - 状态变化只更新对应row；不得追加按日期、轮次或测试批次展开的worklog。
 - 后续任务gate只验证直接影响面；除非任务本身改动相关ABI/runtime/firmware，否则禁止全量审计和无关回归。
+- 包含板端验证的任务必须把`board-ready`写为无卡阶段门禁；`board-ready`不得标记为`done`。
 
 ## 当前调度
 
@@ -33,8 +34,8 @@ Q42 + Q32.C -> Q41 compiler search scalability               [later: after Q42]
 | Q38 | `multi-engine-software-pipelining` | `done` | Q32、Q6.B、Q37 | complete-rank actual clone、真实fixed-slot multi-buffer、prologue/steady/epilogue、waitfinish normal form、V3 typed worker与Direct-DTE prepare/issue/exact wait-release、issue-time exact range hazard、package/no-card、TargetCall/SystemC、profiler和digest-bound qualification companion均闭合；worker0 rotating SPM FP16/BF16 RDMA+CT+WDMA普通production winner已经fresh板端exact correctness与matched资格。NoC-resident dataflow归Q39；全局choice组合与更广Direct-DTE/compute overlap归Q40。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
 | Q39 | `noc-resident-tile-dataflow` | `done` | Q38非板端Direct-DTE/fixed-slot合同闭合；Q38板端资格作为独立external gate | complete-rank NoC-resident candidate、静态profitability、package/no-card闭合；K-sharded `4096³`同源baseline/winner板端6/6 exact，winner profile保持16-rank exact并生成有效报告。高wait与未闭合overlap转交Q40，编译搜索耗时转交Q41。 | 02-13、16-17；`tasks/plans/noc-resident-tile-dataflow.md` |
 | Q42 | `test-load-reduction` | `next` | 无 | 核心目标是减负：让全部现有case更少、更快、更直接，同时保留必要正确性；删除重复检查和无关suite，不建新测试体系。 | 16；`tasks/plans/test-gate-scope-reduction.md` |
-| Q40 | `composed-choice-search-and-dte-overlap` | `later` | Q39、Q42完成 | 重构tile、storage、buffer、order、communication和issue/wait的bounded semantic choice；吸收Q39 profile暴露的3840 send、3840 recv、7680 DTE wait与`issue_event_count=0`，闭合Direct-DTE issue/compute并行、latest-unavoidable matching wait和release。测试只判定wait/issue直接合同和指定matched case，不绑定共享资格或全量suite。 | 06、08-13、16 |
-| Q41 | `compiler-search-scalability` | `later` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 专注whole-variant search编译时间：补齐阶段时间、RSS和candidate/attempt/late-gate/clone/lowering/capture计数，删除不改变winner/artifact的重复工作并建立显式上界。测试只判定搜索工作量、编译时间和winner不变，不跑板端、target model或全量suite。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
+| Q40 | `composed-choice-search-and-dte-overlap` | `later` | Q39、Q42完成 | 无卡阶段必须推进到`board-ready`：指定matched case、完整package和no-card闭合，但不得标`done`。真实板端exact-output和matched A/B通过后完成；测试只判wait/issue直接合同，不绑定无关suite。 | 06、08-13、16 |
+| Q41 | `compiler-search-scalability` | `later` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 无卡阶段必须推进到`board-ready`：搜索上界、编译时间、winner不变、K=1024 case完整package和no-card闭合，但不得标`done`。真实板端exact-output及winner profile有效后完成；不跑target model或无关suite。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
 
 ## Later / External Gates
 
