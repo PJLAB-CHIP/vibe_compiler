@@ -53,7 +53,7 @@ using namespace wafer;
 using namespace wafer::compiler;
 using namespace wafer::model;
 
-constexpr int64_t kElementCount = 524288;
+constexpr int64_t kElementCount = 8388608;
 constexpr uint64_t kTensorBytes =
     static_cast<uint64_t>(kElementCount) * sizeof(uint16_t);
 constexpr uint64_t kABISlotBase = UINT64_C(0x10000000);
@@ -100,7 +100,7 @@ std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
 }
 
 llvm::Expected<ExecutableBundle>
-buildQualifiedFixedSlotExecutable(std::string &diagnosticText) {
+buildFixedSlotExecutableForModelTest(std::string &diagnosticText) {
   auto context = createCompilerContext();
   auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -113,28 +113,28 @@ module {
     axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
     policy = "explicit", shape = array<i64: 1>, topology = @default
   }
-  func.func @main(%lhs: tensor<524288xf16>, %rhs: tensor<524288xf16>)
-      -> tensor<524288xf16> {
-    %out = tensor.empty() : tensor<524288xf16>
+  func.func @main(%lhs: tensor<8388608xf16>, %rhs: tensor<8388608xf16>)
+      -> tensor<8388608xf16> {
+    %out = tensor.empty() : tensor<8388608xf16>
     %sum = linalg.generic {
         indexing_maps = [affine_map<(d0) -> (d0)>,
                          affine_map<(d0) -> (d0)>,
                          affine_map<(d0) -> (d0)>],
         iterator_types = ["parallel"]}
-      ins(%lhs, %rhs : tensor<524288xf16>, tensor<524288xf16>)
-      outs(%out : tensor<524288xf16>) {
+      ins(%lhs, %rhs : tensor<8388608xf16>, tensor<8388608xf16>)
+      outs(%out : tensor<8388608xf16>) {
     ^bb0(%lhs_value: f16, %rhs_value: f16, %unused: f16):
       %value = arith.addf %lhs_value, %rhs_value : f16
       linalg.yield %value : f16
-    } -> tensor<524288xf16>
-    return %sum : tensor<524288xf16>
+    } -> tensor<8388608xf16>
+    return %sum : tensor<8388608xf16>
   }
 }
 )mlir",
       mlir::ParserConfig(context.get()));
   if (!tensorProgram)
     return llvm::createStringError(
-        "failed to parse fixed-slot qualification source");
+        "failed to parse fixed-slot model test source");
 
   frontend::FrontendProgramVerificationResult program;
   program.logicalRankCount = 1;
@@ -148,16 +148,9 @@ module {
     return config.takeError();
 
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  llvm::Expected<ExecutableBundle> executable =
-      wafer::compiler::detail::buildExecutableBundle(
-          context, *tensorProgram, std::move(program), *config, diagnostics,
-          std::nullopt,
-          wafer::compiler::detail::WholeVariantSelectionMode::
-              QualifyStaticFixedSlot);
-  if (!executable)
-    return executable.takeError();
-  tensorProgram = nullptr;
-  return std::move(*executable);
+  return wafer::compiler::detail::buildExecutableBundle(
+      context, *tensorProgram, std::move(program), *config, diagnostics,
+      std::nullopt);
 }
 
 size_t countCallsTo(const llvm::Module &module, llvm::StringRef symbol) {
@@ -224,10 +217,10 @@ const ABIRange *findContainingRange(llvm::ArrayRef<ABIRange> ranges,
 }
 
 TEST(SystemCTargetModelFixedSlotIntegrationTest,
-     ExecutesQualifiedRotatingSlotsWithOnlyTerminalWorkerJoin) {
+     ExecutesRotatingSlotsWithOnlyTerminalWorkerJoin) {
   std::string diagnosticText;
   llvm::Expected<ExecutableBundle> executable =
-      buildQualifiedFixedSlotExecutable(diagnosticText);
+      buildFixedSlotExecutableForModelTest(diagnosticText);
   ASSERT_TRUE(static_cast<bool>(executable))
       << diagnosticText << llvm::toString(executable.takeError());
   ASSERT_EQ(executable->getRankExecutables().size(), 1u);
@@ -322,8 +315,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   TargetCallRankArguments rankArguments{0, {}};
   std::vector<ABIRange> abiRanges;
   std::vector<TargetModelInputBinding> inputBindings;
-  const std::array<uint64_t, 2> inputBits{UINT64_C(0x3c00),
-                                          UINT64_C(0x4000)};
+  const std::array<uint64_t, 2> inputBits{UINT64_C(0x3c00), UINT64_C(0x4000)};
   for (const KernelABISlot &slot : targetModule.getKernelABISlots()) {
     ASSERT_GE(slot.ordinal, 0);
     ASSERT_EQ(slot.byteSize, static_cast<int64_t>(kTensorBytes));

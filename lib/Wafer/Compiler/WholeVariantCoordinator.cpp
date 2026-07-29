@@ -115,7 +115,6 @@ rankMatchesCollectiveCharacterization(const RankExecutable &rank,
     break;
   case WholeVariantSelectionMode::Production:
   case WholeVariantSelectionMode::ReservedBaseline:
-  case WholeVariantSelectionMode::QualifyStaticFixedSlot:
     return false;
   }
   return observeCollectivePhases(rank) == expected;
@@ -313,24 +312,6 @@ struct PreTargetWholeVariant {
   std::vector<wafer::RankBufferingKind> selectedBufferingKinds;
   std::vector<uint32_t> selectedBufferingPlanOrdinals;
 };
-
-static bool matchesStaticFixedSlotQualification(
-    const PreTargetWholeVariant &candidate) {
-  const size_t rankCount = candidate.ranks.size();
-  return rankCount != 0 &&
-         candidate.selectedReservedBaselines.size() == rankCount &&
-         candidate.selectedBufferingKinds.size() == rankCount &&
-         candidate.selectedBufferingPlanOrdinals.size() == rankCount &&
-         llvm::none_of(candidate.selectedReservedBaselines,
-                       [](bool reserved) { return reserved; }) &&
-         llvm::all_of(candidate.selectedBufferingKinds,
-                      [](wafer::RankBufferingKind kind) {
-                        return kind ==
-                               wafer::RankBufferingKind::StaticFixedSlot;
-                      }) &&
-         llvm::all_of(candidate.selectedBufferingPlanOrdinals,
-                      [](uint32_t ordinal) { return ordinal > 0; });
-}
 
 static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
     llvm::ArrayRef<size_t> candidateIndices,
@@ -586,12 +567,31 @@ compareNCCDrainCost(const analysis::WholeCardInstructionProgramCost &left,
   return ParetoOrder::Equivalent;
 }
 
+static ParetoOrder compareQualifiedOverlapWindows(
+    const analysis::WholeCardInstructionProgramCost &left,
+    const analysis::WholeCardInstructionProgramCost &right) {
+  const analysis::ScheduleCostMetric &leftWindows =
+      left.aggregateQualifiedOverlapWindowCount;
+  const analysis::ScheduleCostMetric &rightWindows =
+      right.aggregateQualifiedOverlapWindowCount;
+  if (!leftWindows.isKnown() || !rightWindows.isKnown())
+    return ParetoOrder::Unknown;
+  if (leftWindows.value > rightWindows.value)
+    return ParetoOrder::LeftDominates;
+  if (leftWindows.value < rightWindows.value)
+    return ParetoOrder::RightDominates;
+  return ParetoOrder::Equivalent;
+}
+
 static ParetoOrder compareExactWholeVariantCost(
     const analysis::WholeCardInstructionProgramCost &left,
     const analysis::WholeCardInstructionProgramCost &right) {
   ParetoOrder drainOrder = compareNCCDrainCost(left, right);
   if (drainOrder != ParetoOrder::Equivalent)
     return drainOrder;
+  ParetoOrder overlapOrder = compareQualifiedOverlapWindows(left, right);
+  if (overlapOrder != ParetoOrder::Equivalent)
+    return overlapOrder;
 
   const MetricPair dimensions[] = {
       {&left.aggregateCompute.npuF16Bf16LogicalOps,
@@ -1049,8 +1049,6 @@ selectAcceptedWholeVariants(
                                          /*productionIsReservedBaseline=*/true};
   const bool characterize =
       isCollectiveCharacterizationSelection(selectionMode);
-  const bool qualifyStaticFixedSlot =
-      selectionMode == WholeVariantSelectionMode::QualifyStaticFixedSlot;
 
   llvm::SmallVector<AcceptedWholeVariant, kWholeVariantParetoLimit>
       paretoFrontier;
@@ -1061,9 +1059,6 @@ selectAcceptedWholeVariants(
       return;
     if (characterize &&
         !matchesCollectiveCharacterization(preTarget->ranks, selectionMode))
-      return;
-    if (qualifyStaticFixedSlot &&
-        !matchesStaticFixedSlotQualification(*preTarget))
       return;
     if (!wouldRetainParetoCandidate(*preTarget, paretoFrontier))
       return;
@@ -1099,23 +1094,6 @@ selectAcceptedWholeVariants(
                      "test-only collective characterization alternative '"
                   << getCollectiveCharacterizationAlternative(selectionMode)
                   << "'\n";
-      return mlir::failure();
-    }
-    return AcceptedProductionAndBaseline{
-        std::move(*selected), std::nullopt,
-        /*productionIsReservedBaseline=*/false};
-  }
-  if (qualifyStaticFixedSlot) {
-    std::optional<AcceptedWholeVariant> selected;
-    for (AcceptedWholeVariant &candidate : paretoFrontier)
-      if (!selected || isPreferredOver(candidate, *selected, selectionPolicy))
-        selected.emplace(std::move(candidate));
-    if (!selected) {
-      diagnostics
-          << "wafer-compile: no fully accepted whole variant matches "
-             "test-only static fixed-slot qualification\n";
-      for (const std::string &failure : failures)
-        diagnostics << "  - " << failure << "\n";
       return mlir::failure();
     }
     return AcceptedProductionAndBaseline{

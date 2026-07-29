@@ -267,6 +267,24 @@ PAIRED_DRIVER_BINDINGS = {
             ),
         ),
     ),
+    "long-steady-elementwise-add": DriverOracleBinding(
+        "long_steady_add_oracle",
+        "def long_steady_add_payloads",
+        (
+            (
+                ExecutableEvidenceCapability.TARGET_CALL_PRESENCE,
+                "require_call",
+            ),
+            (
+                ExecutableEvidenceCapability.TARGET_CALL_COUNT_RELATION,
+                "count_fragment(winner, fragment)",
+            ),
+            (
+                ExecutableEvidenceCapability.SCHEDULER_BODY_DIFFERENCE,
+                "baseline.scheduler_body_sha256 == winner.scheduler_body_sha256",
+            ),
+        ),
+    ),
     "ready-order-movement-first": DriverOracleBinding(
         "ready_order_oracle",
         "def ready_order_payloads",
@@ -564,6 +582,39 @@ CAMPAIGN_CASES = (
             | {
                 ExecutableEvidenceCapability.TARGET_CALL_COUNT_RELATION,
                 ExecutableEvidenceCapability.TARGET_WORKSPACE_RELATION,
+            },
+        ),
+    ),
+    _paired_case(
+        "long-steady-elementwise-add",
+        "static-fixed-slot-overlap",
+        SourceKind.STABLEHLO_SOURCE_PROGRAM,
+        1,
+        BoardBatch.RANK_ONE_LOCAL,
+        45,
+        _oracle(
+            StructuralOracleKind.TARGET_CALL_RELATION,
+            (
+                "both final scheduler bodies call elementwise add",
+                "the production scheduler body differs from its reserved baseline",
+                "the production body carries the generated prologue, steady loop, "
+                "and epilogue structure",
+            ),
+            NumericOracleKind.FULL_EXACT,
+            (
+                "the complete 16 MiB f16 output is checked exactly",
+                "complement-prefilled output detects partial writes",
+            ),
+            PerformanceOracleKind.BALANCED_HOST_PROCESS_OBSERVATION,
+            (
+                "balanced baseline/winner host-process elapsed samples are archived",
+                "the samples are not PMU, device cycles, or promotion evidence",
+            ),
+            PAIRED_COMMON_CAPABILITIES
+            | {
+                ExecutableEvidenceCapability.TARGET_CALL_PRESENCE,
+                ExecutableEvidenceCapability.TARGET_CALL_COUNT_RELATION,
+                ExecutableEvidenceCapability.SCHEDULER_BODY_DIFFERENCE,
             },
         ),
     ),
@@ -873,6 +924,10 @@ PRODUCTION_OWNER_BY_AXIS = {
         "lib/Wafer/Transforms/PhysicalDataflow/ReadyOrder.cpp",
         "scheduleIndependentInstructionsByReadyOrder",
     ),
+    "static-fixed-slot-overlap-selection": _anchor(
+        "lib/Wafer/Compiler/WholeVariantCoordinator.cpp",
+        "compareQualifiedOverlapWindows",
+    ),
     "collective-direct": _anchor(
         "lib/Wafer/Conversion/WaferTensorProgramToTileRegion/CollectiveLowering.cpp",
         "TileRegionBodyEmitter::convertAllReduce",
@@ -1114,6 +1169,21 @@ OPTIMIZATION_AXES = (
         "ready-order-movement-first",
         "A non-source order is useful only if it changes board blocking or overlap.",
         observables=("target call order", "full output", "host observation"),
+    ),
+    _axis(
+        "static-fixed-slot-overlap-selection",
+        "candidate-selection",
+        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        "long-steady-elementwise-add",
+        (
+            "A legal rotating fixed-slot candidate is useful only when normal "
+            "production selection publishes a distinct executable."
+        ),
+        observables=(
+            "scheduler body difference",
+            "full exact output",
+            "host observation",
+        ),
     ),
     _axis(
         "collective-direct",

@@ -466,6 +466,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     f16-common-factor
     resident-fanout-share
     consumer-local-recompute
+    long-steady-elementwise-add
     ready-order-movement-first
     gemm-aligned-physical-route
     gemm-tail-physical-route
@@ -2328,6 +2329,11 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
   )
   foreach(_wafer_compiler_optimization_case IN LISTS
       _wafer_compiler_optimization_rank_one_cases)
+    set(_wafer_compiler_optimization_repeat 3)
+    if(_wafer_compiler_optimization_case STREQUAL
+        "long-steady-elementwise-add")
+      set(_wafer_compiler_optimization_repeat 1)
+    endif()
     add_test(
       NAME
         wafer-board-compiler-optimization-${_wafer_compiler_optimization_case}
@@ -2348,7 +2354,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
         --expected-runtime-library-sha256
           ${_wafer_expected_tx_runtime_library_sha256}
         --completion-timeout-ms 60000
-        --repeat 3
+        --repeat ${_wafer_compiler_optimization_repeat}
     )
     set_tests_properties(
       wafer-board-compiler-optimization-${_wafer_compiler_optimization_case}

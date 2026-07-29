@@ -115,6 +115,7 @@ class CampaignCase:
 F16_16384 = TensorSpec((16384,), "f16", "float16")
 F16_32768 = TensorSpec((32768,), "f16", "float16")
 F16_524288 = TensorSpec((524288,), "f16", "float16")
+F16_8388608 = TensorSpec((8388608,), "f16", "float16")
 F16_8192 = TensorSpec((8192,), "f16", "float16")
 F16_4096 = TensorSpec((4096,), "f16", "float16")
 F16_64_128 = TensorSpec((64, 128), "f16", "float16")
@@ -197,6 +198,16 @@ def recompute_module() -> str:
     %middle = stablehlo.multiply %other, %other : tensor<524288xf16>
     %right = stablehlo.multiply %producer, %producer : tensor<524288xf16>""",
         "%left, %middle, %right",
+    )
+
+
+def long_steady_add_module() -> str:
+    return elementwise_module(
+        "%lhs: tensor<8388608xf16>, %rhs: tensor<8388608xf16>",
+        "tensor<8388608xf16>",
+        """\
+    %result = stablehlo.add %lhs, %rhs : tensor<8388608xf16>""",
+        "%result",
     )
 
 
@@ -334,6 +345,16 @@ def recompute_payloads() -> PairedPayloads:
     )
 
 
+def long_steady_add_payloads() -> PairedPayloads:
+    indices = np.arange(8388608, dtype=np.int32)
+    lhs = ((indices % 31) - 15).astype("<f2")
+    rhs = (((indices * 7) % 29) - 14).astype("<f2")
+    result = (lhs + rhs).astype("<f2")
+    return unchanged_numeric_payloads(
+        replicated([lhs, rhs]), replicated([result])
+    )
+
+
 def ready_order_payloads() -> PairedPayloads:
     indices = np.arange(8192, dtype=np.int32)
     a = ((indices % 15) - 7).astype("<f2")
@@ -465,6 +486,35 @@ def recompute_oracle(
             "recompute winner did not exchange compute for spill storage: "
             f"mul {baseline_mul}->{winner_mul}, "
             f"workspace {baseline.workspace_bytes}->{winner.workspace_bytes}"
+        )
+
+
+def long_steady_add_oracle(
+    baseline: TargetStructure, winner: TargetStructure
+) -> None:
+    require_call(baseline.counts, "elementwise_add", present=True)
+    require_call(winner.counts, "elementwise_add", present=True)
+    if baseline.scheduler_body_sha256 == winner.scheduler_body_sha256:
+        raise RuntimeError(
+            "long steady production scheduler is identical to its baseline"
+        )
+    fragments = ("_rdma", "elementwise_add", "_wdma")
+    if not all(
+        count_fragment(winner, fragment)
+        > count_fragment(baseline, fragment)
+        for fragment in fragments
+    ):
+        raise RuntimeError(
+            "production scheduler does not expose distinct "
+            "prologue/steady/epilogue target callsites"
+        )
+    if (
+        baseline.straight_line_calls is None
+        or winner.straight_line_calls is not None
+    ):
+        raise RuntimeError(
+            "fixed-slot pair must change a straight-line baseline into a looped "
+            "production scheduler"
         )
 
 
@@ -617,6 +667,17 @@ CASES = {
             recompute_module,
             recompute_payloads,
             recompute_oracle,
+        ),
+        CampaignCase(
+            "long-steady-elementwise-add",
+            "static-fixed-slot-candidate",
+            1,
+            RANK_ONE_LAUNCH_KIND,
+            (F16_8388608, F16_8388608),
+            (F16_8388608,),
+            long_steady_add_module,
+            long_steady_add_payloads,
+            long_steady_add_oracle,
         ),
         CampaignCase(
             "ready-order-movement-first",
@@ -1720,7 +1781,7 @@ def main() -> int:
                 raise RuntimeError(f"{name} no-card output omitted execution state")
         print(
             f"compiler_optimization_no_card: case={case.key} "
-            "paired_packages=true target_structure_distinct=true"
+            "paired_packages=true target_structure_checked=true"
         )
         return 0
 

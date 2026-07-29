@@ -8,16 +8,13 @@ namespace wafer::compiler::detail {
 /// Controls which already-generated, fully accepted whole-rank variant is
 /// committed by the compiler. Production evaluates the accepted frontier;
 /// ReservedBaseline commits the unique conservative candidate carried by each
-/// rank frontier. QualifyStaticFixedSlot selects only an actual fixed-slot
-/// realization that passes the same late gates; it does not alter production
-/// cost or preference. The characterization modes select a fully accepted
-/// variant only when its final instruction IR contains exactly the requested
-/// collective algorithm phase for that collective family. These are internal
-/// test seams, not user options or alternate IR contracts.
+/// rank frontier. The characterization modes select a fully accepted variant
+/// only when its final instruction IR contains exactly the requested collective
+/// algorithm phase for that collective family. These are internal test seams,
+/// not user options or alternate IR contracts.
 enum class WholeVariantSelectionMode {
   Production,
   ReservedBaseline,
-  QualifyStaticFixedSlot,
   CharacterizeAllGatherDirect,
   CharacterizeAllGatherRing,
   CharacterizeReduceScatterDirect,
@@ -31,7 +28,6 @@ isCollectiveCharacterizationSelection(WholeVariantSelectionMode mode) {
   switch (mode) {
   case WholeVariantSelectionMode::Production:
   case WholeVariantSelectionMode::ReservedBaseline:
-  case WholeVariantSelectionMode::QualifyStaticFixedSlot:
     return false;
   case WholeVariantSelectionMode::CharacterizeAllGatherDirect:
   case WholeVariantSelectionMode::CharacterizeAllGatherRing:
@@ -61,7 +57,6 @@ getCollectiveCharacterizationAlternative(WholeVariantSelectionMode mode) {
     return "all-reduce-tree";
   case WholeVariantSelectionMode::Production:
   case WholeVariantSelectionMode::ReservedBaseline:
-  case WholeVariantSelectionMode::QualifyStaticFixedSlot:
     return "";
   }
   return "";

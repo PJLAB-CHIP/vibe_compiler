@@ -48,6 +48,9 @@ void walkInstructionProgram(
 void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost);
 void collectDataDependencyDepth(mlir::Operation *root,
                                 InstructionProgramCost &cost);
+void collectQualifiedOverlapWindows(mlir::Operation *root,
+                                    InstructionProgramCost &cost,
+                                    const TargetScheduleCostPolicy &policy);
 void collectSPMHighWater(mlir::Operation *root, InstructionProgramCost &cost,
                          const TargetScheduleCostPolicy &policy);
 

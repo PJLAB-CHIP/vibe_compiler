@@ -21,6 +21,7 @@ EXPECTED_CASE_KEYS = {
     "f16-common-factor",
     "resident-fanout-share",
     "consumer-local-recompute",
+    "long-steady-elementwise-add",
     "ready-order-movement-first",
     "gemm-aligned-physical-route",
     "gemm-tail-physical-route",
@@ -46,6 +47,7 @@ EXPECTED_AXIS_KEYS = {
     "integer-modular-common-factor",
     "static-loop-invariant-hoist",
     "static-buffering-ready-order",
+    "static-fixed-slot-overlap-selection",
     "collective-direct",
     "collective-ring-all-gather",
     "collective-ordered-tree-all-reduce",
@@ -356,6 +358,7 @@ def main() -> int:
         "f16-common-factor",
         "resident-fanout-share",
         "consumer-local-recompute",
+        "long-steady-elementwise-add",
         "ready-order-movement-first",
         "gemm-aligned-physical-route",
         "gemm-tail-physical-route",
@@ -514,6 +517,9 @@ def main() -> int:
     }
     assert shared_families["resource-aware-order"] == {
         "ready-order-movement-first",
+    }
+    assert shared_families["static-fixed-slot-overlap"] == {
+        "long-steady-elementwise-add",
     }
     assert shared_families["collective-algorithms"] == {"tree-all-reduce"}
     assert shared_families["direct-dte-transport-evidence"] == {

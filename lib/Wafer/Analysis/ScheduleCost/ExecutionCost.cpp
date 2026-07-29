@@ -402,9 +402,8 @@ evaluateConstantIndex(mlir::Value value,
       !activeValues.insert(value).second)
     return {};
 
-  auto evaluateBinary =
-      [&](mlir::Value lhsValue, mlir::Value rhsValue,
-          auto checkedOperation) -> ConstantIndex {
+  auto evaluateBinary = [&](mlir::Value lhsValue, mlir::Value rhsValue,
+                            auto checkedOperation) -> ConstantIndex {
     ConstantIndex lhs = evaluateConstantIndex(lhsValue, activeValues);
     ConstantIndex rhs = evaluateConstantIndex(rhsValue, activeValues);
     if (lhs.knowledge == ConstantIndexKnowledge::Overflow ||
@@ -421,23 +420,20 @@ evaluateConstantIndex(mlir::Value value,
 
   ConstantIndex result;
   if (auto add = value.getDefiningOp<mlir::arith::AddIOp>()) {
-    result = evaluateBinary(
-        add.getLhs(), add.getRhs(),
-        [](int64_t lhs, int64_t rhs, int64_t &folded) {
-          return llvm::AddOverflow(lhs, rhs, folded);
-        });
+    result = evaluateBinary(add.getLhs(), add.getRhs(),
+                            [](int64_t lhs, int64_t rhs, int64_t &folded) {
+                              return llvm::AddOverflow(lhs, rhs, folded);
+                            });
   } else if (auto sub = value.getDefiningOp<mlir::arith::SubIOp>()) {
-    result = evaluateBinary(
-        sub.getLhs(), sub.getRhs(),
-        [](int64_t lhs, int64_t rhs, int64_t &folded) {
-          return llvm::SubOverflow(lhs, rhs, folded);
-        });
+    result = evaluateBinary(sub.getLhs(), sub.getRhs(),
+                            [](int64_t lhs, int64_t rhs, int64_t &folded) {
+                              return llvm::SubOverflow(lhs, rhs, folded);
+                            });
   } else if (auto mul = value.getDefiningOp<mlir::arith::MulIOp>()) {
-    result = evaluateBinary(
-        mul.getLhs(), mul.getRhs(),
-        [](int64_t lhs, int64_t rhs, int64_t &folded) {
-          return llvm::MulOverflow(lhs, rhs, folded);
-        });
+    result = evaluateBinary(mul.getLhs(), mul.getRhs(),
+                            [](int64_t lhs, int64_t rhs, int64_t &folded) {
+                              return llvm::MulOverflow(lhs, rhs, folded);
+                            });
   }
   activeValues.erase(value);
   return result;
@@ -813,6 +809,98 @@ void collectDataDependencyDepth(mlir::Operation *root,
     degrade(cost.readyOrderPriorityInversions, ScheduleCostKnowledge::Unknown,
             ScheduleCostReason::UnsupportedControlFlow);
   }
+}
+
+namespace {
+
+static bool isSPMValue(mlir::Value value) {
+  auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+  MemoryAttr memory = type ? getWaferMemoryAttr(type) : MemoryAttr{};
+  return memory && memory.getSpace() == MemorySpace::SPM;
+}
+
+static bool hasRotatingSPMState(mlir::scf::ForOp loop) {
+  mlir::Block::BlockArgListType iterArgs = loop.getRegionIterArgs();
+  if (iterArgs.empty())
+    return false;
+  auto yield = mlir::cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+  for (auto [index, iterArg] : llvm::enumerate(iterArgs)) {
+    if (!isSPMValue(iterArg))
+      continue;
+    mlir::Value yielded = yield.getOperand(index);
+    if (yielded != iterArg && isSPMValue(yielded) &&
+        llvm::is_contained(iterArgs, yielded))
+      return true;
+  }
+  return false;
+}
+
+static bool instructionUsesOnlyF16Bf16ShapedValues(mlir::Operation *operation) {
+  bool sawShaped = false;
+  for (mlir::Value operand : operation->getOperands()) {
+    auto shaped = mlir::dyn_cast<mlir::ShapedType>(operand.getType());
+    if (!shaped)
+      continue;
+    sawShaped = true;
+    mlir::Type elementType = shaped.getElementType();
+    if (!elementType.isF16() && !mlir::isa<mlir::BFloat16Type>(elementType))
+      return false;
+  }
+  return sawShaped;
+}
+
+static bool isQualifiedOverlapWindow(mlir::scf::ForOp loop,
+                                     const TargetScheduleCostPolicy &policy) {
+  if (policy.qualifiedOverlapFamilyMask == 0 || !hasRotatingSPMState(loop))
+    return false;
+
+  std::optional<int64_t> lower =
+      mlir::getConstantIntValue(loop.getLowerBound());
+  std::optional<int64_t> upper =
+      mlir::getConstantIntValue(loop.getUpperBound());
+  std::optional<int64_t> step = mlir::getConstantIntValue(loop.getStep());
+  if (!lower || !upper || !step || *step <= 0 || *upper <= *lower)
+    return false;
+
+  uint32_t familyMask = 0;
+  for (mlir::Operation &operation : loop.getBody()->without_terminator()) {
+    auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(&operation);
+    if (!instruction)
+      continue;
+    NCCCompletionContract completion = getNCCCompletionContract(&operation);
+    if (completion.behavior != LocalInstructionCompletion::OrderedPending ||
+        !completion.issueWorker ||
+        static_cast<uint32_t>(*completion.issueWorker) !=
+            policy.qualifiedOverlapWorker ||
+        !instructionUsesOnlyF16Bf16ShapedValues(&operation))
+      return false;
+    const uint32_t family =
+        static_cast<uint32_t>(instruction.getInstructionFamily());
+    if (family >= 32)
+      return false;
+    familyMask |= uint32_t{1} << family;
+  }
+  return familyMask == policy.qualifiedOverlapFamilyMask;
+}
+
+} // namespace
+
+void collectQualifiedOverlapWindows(mlir::Operation *root,
+                                    InstructionProgramCost &cost,
+                                    const TargetScheduleCostPolicy &policy) {
+  bool unsupportedControlFlow = false;
+  root->walk([&](mlir::Operation *operation) {
+    if (mlir::isa<mlir::scf::IfOp, mlir::func::CallOp>(operation)) {
+      unsupportedControlFlow = true;
+      return;
+    }
+    auto loop = mlir::dyn_cast<mlir::scf::ForOp>(operation);
+    if (loop && isQualifiedOverlapWindow(loop, policy))
+      add(cost.qualifiedOverlapWindowCount, Quantity{1});
+  });
+  if (unsupportedControlFlow)
+    degrade(cost.qualifiedOverlapWindowCount, ScheduleCostKnowledge::Unknown,
+            ScheduleCostReason::UnsupportedControlFlow);
 }
 
 } // namespace wafer::analysis::detail

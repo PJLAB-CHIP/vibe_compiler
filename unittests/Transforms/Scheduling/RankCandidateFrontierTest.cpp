@@ -16,6 +16,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -269,7 +270,7 @@ module {
 }
 
 TEST(RankCandidateFrontierTest,
-     BuildsPlacedStaticFixedSlotsFromProductionTensorProgram) {
+     BuildsLongSteadyPlacedStaticFixedSlotsFromProductionTensorProgram) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
                   mlir::bufferization::BufferizationDialect,
@@ -285,21 +286,21 @@ TEST(RankCandidateFrontierTest,
 
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
-  func.func @main(%lhs: tensor<524288xf32>, %rhs: tensor<524288xf32>)
-      -> tensor<524288xf32> {
-    %out = tensor.empty() : tensor<524288xf32>
+  func.func @main(%lhs: tensor<8388608xf16>, %rhs: tensor<8388608xf16>)
+      -> tensor<8388608xf16> {
+    %out = tensor.empty() : tensor<8388608xf16>
     %sum = linalg.generic {
         indexing_maps = [affine_map<(d0) -> (d0)>,
                          affine_map<(d0) -> (d0)>,
                          affine_map<(d0) -> (d0)>],
         iterator_types = ["parallel"]}
-      ins(%lhs, %rhs : tensor<524288xf32>, tensor<524288xf32>)
-      outs(%out : tensor<524288xf32>) {
-    ^bb0(%lhs_value: f32, %rhs_value: f32, %unused: f32):
-      %value = arith.addf %lhs_value, %rhs_value : f32
-      linalg.yield %value : f32
-    } -> tensor<524288xf32>
-    return %sum : tensor<524288xf32>
+      ins(%lhs, %rhs : tensor<8388608xf16>, tensor<8388608xf16>)
+      outs(%out : tensor<8388608xf16>) {
+    ^bb0(%lhs_value: f16, %rhs_value: f16, %unused: f16):
+      %value = arith.addf %lhs_value, %rhs_value : f16
+      linalg.yield %value : f16
+    } -> tensor<8388608xf16>
+    return %sum : tensor<8388608xf16>
   }
 }
 )mlir",
@@ -332,6 +333,17 @@ module {
   fixed->module->walk([&](mlir::scf::ForOp loop) { loops.push_back(loop); });
   ASSERT_EQ(loops.size(), 1u);
   mlir::scf::ForOp steady = loops.front();
+  std::optional<int64_t> lower =
+      mlir::getConstantIntValue(steady.getLowerBound());
+  std::optional<int64_t> upper =
+      mlir::getConstantIntValue(steady.getUpperBound());
+  std::optional<int64_t> step = mlir::getConstantIntValue(steady.getStep());
+  ASSERT_TRUE(lower);
+  ASSERT_TRUE(upper);
+  ASSERT_TRUE(step);
+  ASSERT_GT(*step, 0);
+  ASSERT_GT(*upper, *lower);
+  EXPECT_GE((*upper - *lower + *step - 1) / *step, 32);
 
   unsigned rdmaCount = 0;
   unsigned computeCount = 0;

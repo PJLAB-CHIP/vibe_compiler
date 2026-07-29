@@ -52,6 +52,7 @@ COMPILER_OPTIMIZATION_PAIRED_CASES = (
     "f16-common-factor",
     "resident-fanout-share",
     "consumer-local-recompute",
+    "long-steady-elementwise-add",
     "ready-order-movement-first",
     "gemm-aligned-physical-route",
     "gemm-tail-physical-route",

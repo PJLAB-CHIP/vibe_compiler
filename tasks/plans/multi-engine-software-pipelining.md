@@ -36,7 +36,7 @@ Pipeline position:
   board execution。
 - User-level driver / named pipeline:
   现有wafer-compile source-to-bundle production pipeline；不增加用户手工pass拼装、schedule模式或
-  workload-specific开关。compiler-private qualification seam只选择已经通过全部late gate的actual clone。
+  workload-specific开关，也不保留fixed-slot专用forced-winner模式。
 - Explicit non-goals:
   不按buffer/op名字恢复stage或依赖，不把Q37 case key写进IR，不建立任意dynamic-loop modulo scheduler，
   不猜queue resident/full、bank、arbiter、route、latency或cycle，不由pair资格推导三路/五路同时overlap，
@@ -48,8 +48,9 @@ Pipeline position:
   NCC drain；same-worker跨迭代RAW/WAR/WAW只保持真实issue edge。serial baseline和optimized clone经过相同
   rank/whole-variant、SPM/DDR、Instr、Target、package、model/no-card gate；只有跨Kcore/Direct-DTE/
   worker/host的真实handoff或terminal允许最小participant join，且循环内不可避免的join必须经capacity-bounded
-  batching摊销。三阶段group经compiler-private fresh board qualification后，只能由后续compiler revision
-  更新versioned target-contract capability；当前实卡身份、PMU结果或runtime profile绝不成为scheduler输入。
+  batching摊销。三阶段group的离线matched qualification只能由后续compiler revision更新versioned
+  target-contract capability；临时实验入口不得提交为另一条compiler模式，当前实卡身份、PMU结果或runtime
+  profile绝不成为scheduler输入。
   随后normal production winner和fresh final-artifact board correctness闭合。只有legality为
   Unsupported/Unknown时拒绝候选；
   profitability Unknown的合法候选可保留用于qualification，但不能凭伪造收益击败baseline。
@@ -93,11 +94,14 @@ Pipeline position:
   steady/nonterminal participant wait均为0，只保留函数末尾worker0 join。
 - SCF流水生成的stage-shift index表达式由DDR planner和Target preflight共享同一个overflow-safe静态range
   evaluator；SPM high-water可解析rotating `iter_args`的全部外部slot origin，Unknown origin继续fail closed。
-- compiler-private no-card纵向已从同一真实source构建qualification bundle，经过target LLVM、TargetCall动态
-  transaction和SystemC完整524288元素数值执行；target stream保持lhs/rhs/output各2个独立slot、唯一末尾
-  worker0 join且无steady join。该纵向只消费静态compiler target合同，不连接或探测实卡。
-  Q38仍为`doing`，因为normal winner的compiler-shipped capability、package publication/no-card package gate、
-  非零worker command ABI、真实Direct-DTE issue和fresh board qualification尚未全部闭合。
+- 长steady-state FP16 rank-frontier回归从普通source生成至少32轮steady kernel，保持lhs/rhs/output各2个
+  独立slot、唯一末尾worker0 join且无steady join。closed target schedule policy从accepted Instr IR识别
+  FP16/BF16、worker0、rotating SPM state及exact RDMA+CT+WDMA engine group；它不读取source shape、case名、
+  任务号、fixture或buffer名。该ordinal capability优先于SPM high-water这一capacity事实，但不伪造cycle。
+- 普通production现已选择该fully gated fixed-slot候选；同源baseline/production最终ELF和scheduler digest不同，
+  package/no-card、SystemC和fresh板端16 MiB exact output均通过。本轮各一次TX same-stream event为
+  baseline 1.756 ms、production 1.654 ms，只作为单次profile观察；promotion依据还包括此前同组matched重复资格。
+  Q38仍为`doing`，因为非零worker command ABI和真实Direct-DTE issue尚未闭合。
 
 ### 1.2 Compiler stack waitfinish 审计
 
@@ -134,7 +138,7 @@ whole-program verifier证明。
    cross-worker CT+RDMA cell的稳定FU-union只形成compiler-shipped target-contract-scoped profitability key，
    不成为唯一legality白名单。
 4. **pair不能代签group。** 一个window中每个pair都已qualified，仍不能推出三engine或更多engine同时overlap。
-   group/window资格独立登记；首个三阶段production clone必须用自己的final accepted artifact取得fresh资格。
+   group/window资格独立登记；首个三阶段normal production artifact必须取得fresh资格。
 5. **Unknown不是零。** profitability Unknown的DTE+NCC、未闭合group或新geometry可进入frontier和qualification，
    但normal selection不得把Unknown当正收益、零cycle或无限慢。
 6. **capacity是硬门，high-water不是速度。** 额外slot先通过fixed-capacity packing；不能让“地址更低”或
@@ -193,7 +197,7 @@ ProfitabilityEvidence:
 | same-worker dependency chain | RAW/WAR/WAW保持issue order；RAR只有额外resource/control edge才保序；包括loop-carried slot reuse均不逐edge wait | wait-once与4KiB no-intermediate-wait证据形成`QualifiedDrainElision`，不写固定cycle |
 | current `local_fence` / `TsmWaitfinish` | 只完成current default worker NCC pending set；不完成其它worker、Direct DTE、barrier或cache publication | blocking poll且会连带drain该worker所有engine；只允许baseline或IR证明不可避免的domain exit，不能出现在optimized steady state |
 | typed multi-worker join | typed participant op与CRT exact by-worker lowering已闭合；一个participant对应一次完整`TsmWaitfinish_bywork`，current非零worker issue仍由preflight拒绝 | participant-mask rotating idle poll是待qualification的target capability，不能由characterization probe直接代签 |
-| 三engine及更大window | pairwise legality都成立且真实buffer/resource无hazard时可生成qualification candidate | 初始为`Unknown`；不能由10个pair推导group收益 |
+| 三engine及更大window | pairwise legality都成立且真实buffer/resource无hazard时可生成qualification candidate | worker0 rotating SPM上的FP16/BF16 exact RDMA+CT+WDMA group已由独立matched资格提升为`QualifiedOverlap`；其它group保持`Unknown`，不能由10个pair推导 |
 | cross-worker NCC | 只有typed worker placement、跨workerhazard处理和participant join纵向闭合后才Supported | 当前仅CT+RDMA的一个semantic envelope有窄正证据；其它为`Unknown` |
 | Direct DTE + NCC | current production send只prepare、实际transport在wait内，故不能生成overlap winner；完成typed DTE issue与exact wait/release纵向后，独立buffer/window才可Supported | raw路径有bounded correctness但production profitability仍`Unknown`，没有共同device time base |
 | queue depth | D和D+1总提交可完成，但slot/lifetime仍必须合法 | 不进入window size或latency；resident/full保持Unknown |
@@ -380,11 +384,13 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
 - cross-worker增加的terminal participant wait只有包含真实lowered join的exact end-to-end资格才能被overlap收益
   抵消；不能为了“使用三个worker”无证据扩大join count。
 - 所有收益轴Unknown的candidate不会仅凭dependency depth、ready inversion或untimed model击败baseline；
-  它可通过compiler-private seam进入board qualification。
+  仓库不为它增加专用forced-winner模式。
 - qualification使用同source/static target contract的reserved serial baseline和fully late-gated optimized
   clone，检查final ELF确实不同、steady CFG中真实blocking join inventory、完整CPU expected、guard、status、
   terminal和cleanup，
   再用matched重复的end-to-end plan与PMU判断drain-elision及exact pair/group。只看FU-union不能覆盖额外join。
+- 若离线qualification需要临时提取尚未成为normal winner的candidate，该实验入口只存在于未提交的实验改动；
+  它不能成为compiler、package或测试的长期控制面，也不能替代最终普通production产物的fresh gate。
 - qualification通过本身不改变当前编译结果，也不写入实卡或本地profile。只有经过评审的后续compiler revision
   才能把结论写入closed、versioned target-contract capability row；normal `wafer-compile`在该revision中才允许
   该静态row影响winner。Q9 profiler只观察最终普通artifact；它不创建candidate、不反向签发legality，也不是
@@ -393,8 +399,8 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
 ### 6.3 Qualification provenance
 
 - accepted Instr本体是buffer/stage/order/completion的唯一semantic owner。
-- compiler-private characterization companion可只读记录final accepted Instr digest、slot root/range、engine/window、
-  completion和对应final manifest digest，供board gate确认被测包确由production producer生成。
+- qualification投影可只读记录final accepted Instr digest、slot root/range、engine/window、completion和对应
+  final manifest digest，供board gate确认被测包确由production producer生成。
 - 该投影不进入normal manifest runtime语义，不被compiler、runtime或target model回读；手写packet、raw adapter、
   文件名或未绑定JSON不能代签。
 
@@ -421,8 +427,8 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
    prologue/steady/epilogue、single/odd/even trip和capacity fallback；形成独立buffering derivation并已接入
    production rank frontier。
 6. **Whole-frontier host late gates（checkpoint已落地）**：每个pipeline clone重新SPM/DDR/Instr/Target gate，
-   跨rank correspondence、qualification-only selection和atomic failure闭合；Unknown profitability不成为
-   normal winner。
+   跨rank correspondence和atomic failure闭合；Unknown profitability不成为normal winner，也没有
+   fixed-slot专用selection模式。
 7. **True Direct-DTE async seam**：把production send prepare与真实transport issue分开，物化typed issue和
    exact wait/release；CRT与model在同一点建立endpoint/effect。此checkpoint前DTE+NCC只保留correctness，
    不生成overlap winner。
@@ -431,10 +437,10 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
    join作为独立target capability资格化；不能把现有逐participant by-worker wait伪装成低成本mask wait。
 9. **Qualification artifact**：从final accepted IR只读派生digest-bound结构证明，解除production three-stage
    catalog的missing-producer fail-closed。
-10. **离线board qualification与compiler revision promotion**：同源serial/optimized fresh qualification后，
-   只允许经评审更新compiler-shipped drain-elision/group capability row；不产生per-card、本地或runtime
-   scheduling profile。normal production winner通过package/no-card、CPU expected和fresh board correctness，
-   final-artifact profiler只报告该winner。
+10. **离线board qualification与compiler revision promotion（首个group已落地）**：同源serial/optimized
+   matched资格已把worker0 rotating SPM FP16/BF16 RDMA+CT+WDMA exact group写入compiler-shipped ordinal
+   capability；不产生per-card、本地或runtime scheduling profile。普通production winner已通过package/no-card、
+   SystemC、CPU expected和fresh board correctness/profile。其它engine group仍须各自资格，不能复用本行。
 
 ## 8. 验证
 
@@ -468,11 +474,11 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
   ordered-reuse共址在accepted offset后形成exact same-worker hazard，cross-worker/Unknown共址拒绝；
   queue depth不得改变slot count，SPM/DDR bank/color attr或fixed-offset cost为negative。
 - frontier：baseline不可变，pipeline derivation不冒充ready-order，all-rank key一致，late rank失败原子淘汰，
-  pre-target drain metric闭合后再Pareto，qualification-only Unknown candidate不泄漏到normal winner。
+  pre-target drain metric闭合后再Pareto，Unknown candidate不泄漏到normal winner。
 
 ### 8.2 Vertical gates
 
-- actual frontier：同一source产生serial baseline与真实fixed-slot pipeline clone；accepted IR直接显示slot、
+- actual frontier：同一source产生serial baseline与真实fixed-slot pipeline clone；candidate IR直接显示slot、
   rotation、跨engine同window issue和minimum-strength latest-unavoidable completion；steady loop内
   `local_fence`/typed NCC join、lowered `wafer_tx81_local_fence`及`TsmWaitfinish*`调用数均为0，epilogue只
   按真实pending participant出现exact terminal join。

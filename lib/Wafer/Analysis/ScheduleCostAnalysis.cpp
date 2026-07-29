@@ -110,7 +110,16 @@ void add(ScheduleCostMetric &metric, Quantity quantity) {
 
 TargetScheduleCostPolicy
 getTargetScheduleCostPolicy(TargetProfileId targetProfile) {
-  return TargetScheduleCostPolicy(targetProfile);
+  TargetScheduleCostPolicy policy(targetProfile);
+  if (targetProfile == TargetProfileId::waferTx81SingleCardKernelV1() ||
+      targetProfile == TargetProfileId::waferTx81SingleCardKernelV2()) {
+    policy.qualifiedOverlapFamilyMask =
+        (uint32_t{1} << static_cast<uint32_t>(InstrFamily::CT)) |
+        (uint32_t{1} << static_cast<uint32_t>(InstrFamily::RDMA)) |
+        (uint32_t{1} << static_cast<uint32_t>(InstrFamily::WDMA));
+    policy.qualifiedOverlapWorker = static_cast<uint32_t>(NCCWorker::Worker0);
+  }
+  return policy;
 }
 
 const ScheduleCostMetric &
@@ -131,6 +140,7 @@ analyzeInstructionProgramCost(mlir::Operation *root,
     return cost;
   detail::collectExecutionCost(root, cost);
   detail::collectDataDependencyDepth(root, cost);
+  detail::collectQualifiedOverlapWindows(root, cost, policy);
   detail::collectSPMHighWater(root, cost, policy);
   return cost;
 }
@@ -317,6 +327,8 @@ WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
                    rankCost.dataDependencyDepth);
     addMetric(result.aggregateReadyOrderPriorityInversions,
               rankCost.readyOrderPriorityInversions);
+    addMetric(result.aggregateQualifiedOverlapWindowCount,
+              rankCost.qualifiedOverlapWindowCount);
     maximizeMetric(result.maximumRankSPMHighWaterBytes,
                    rankCost.spmHighWaterBytes);
     addMetric(result.summedRankSPMHighWaterBytes, rankCost.spmHighWaterBytes);

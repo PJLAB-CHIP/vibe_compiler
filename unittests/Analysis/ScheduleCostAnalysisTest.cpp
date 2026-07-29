@@ -161,6 +161,8 @@ module {
   EXPECT_EQ(cost.nonTerminalNCCParticipantWaitCount.value, 6u);
   ASSERT_TRUE(cost.intrinsicNCCDrainCount.isKnown());
   EXPECT_EQ(cost.intrinsicNCCDrainCount.value, 0u);
+  ASSERT_TRUE(cost.qualifiedOverlapWindowCount.isKnown());
+  EXPECT_EQ(cost.qualifiedOverlapWindowCount.value, 0u);
   ASSERT_TRUE(cost.spmHighWaterBytes.isKnown());
   EXPECT_EQ(cost.spmHighWaterBytes.value, 264u);
 }
@@ -380,7 +382,87 @@ module {
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       RejectsRotatingSCFSlotWithAnUnknownOrigin) {
+       RecognizesQualifiedF16RotatingRDMACTWDMAWindow) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(
+      %lhs: memref<4xf16, #wafer.memory<ddr, tensor>>,
+      %rhs: memref<4xf16, #wafer.memory<ddr, tensor>>,
+      %output: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    %lhs0 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %lhs1 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %rhs0 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %rhs1 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66304>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %out0 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66560>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %out1 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66816>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %result:6 = scf.for %index = %c0 to %c8 step %c1
+        iter_args(%lhs_current = %lhs0, %lhs_next = %lhs1,
+                  %rhs_current = %rhs0, %rhs_next = %rhs1,
+                  %out_current = %out0, %out_next = %out1)
+        -> (memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>) {
+      wafer.instr.rdma %lhs to %lhs_current
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>}
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+         to memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.rdma %rhs to %rhs_current
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>}
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+         to memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.elementwise <add> %lhs_next, %rhs_next into %out_next
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+         into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.wdma %out_current to %output
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+         to memref<4xf16, #wafer.memory<ddr, tensor>>
+      scf.yield %lhs_next, %lhs_current, %rhs_next, %rhs_current,
+                %out_next, %out_current
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  ASSERT_TRUE(cost.qualifiedOverlapWindowCount.isKnown());
+  EXPECT_EQ(cost.qualifiedOverlapWindowCount.value, 1u);
+}
+
+TEST_F(ScheduleCostAnalysisTest, RejectsRotatingSCFSlotWithAnUnknownOrigin) {
   auto module = parse(R"mlir(
 module {
   func.func @main(

@@ -389,12 +389,11 @@ TEST_F(WholeVariantCoordinatorTest,
   for (int rank = 0; rank < 16; ++rank) {
     frontiers[rank].push_back(
         candidate("    wafer.instr.local_fence", 16, 100, 9, true));
-    frontiers[rank].push_back(
-        candidate("", 16, 0, 0, false, wafer::RankArtifactKind::Spill,
-                  rank == 0 ? wafer::RankBufferingKind::StaticFixedSlot
-                            : wafer::RankBufferingKind::Single,
-                  rank == 0 ? /*bufferingPlanOrdinal=*/1
-                            : /*bufferingPlanOrdinal=*/0));
+    frontiers[rank].push_back(candidate(
+        "", 16, 0, 0, false, wafer::RankArtifactKind::Spill,
+        rank == 0 ? wafer::RankBufferingKind::StaticFixedSlot
+                  : wafer::RankBufferingKind::Single,
+        rank == 0 ? /*bufferingPlanOrdinal=*/1 : /*bufferingPlanOrdinal=*/0));
   }
 
   wafer::frontend::FrontendProgramVerificationResult program;
@@ -445,7 +444,7 @@ TEST_F(WholeVariantCoordinatorTest,
 }
 
 TEST_F(WholeVariantCoordinatorTest,
-       QualifiesProductionStaticFixedSlotThroughWholeVariantLateGates) {
+       SelectsLongSteadyStaticFixedSlotThroughProductionLateGates) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -456,21 +455,21 @@ module {
     axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
     policy = "explicit", shape = array<i64: 1>, topology = @default
   }
-  func.func @main(%lhs: tensor<524288xf32>, %rhs: tensor<524288xf32>)
-      -> tensor<524288xf32> {
-    %out = tensor.empty() : tensor<524288xf32>
+  func.func @main(%lhs: tensor<8388608xf16>, %rhs: tensor<8388608xf16>)
+      -> tensor<8388608xf16> {
+    %out = tensor.empty() : tensor<8388608xf16>
     %sum = linalg.generic {
         indexing_maps = [affine_map<(d0) -> (d0)>,
                          affine_map<(d0) -> (d0)>,
                          affine_map<(d0) -> (d0)>],
         iterator_types = ["parallel"]}
-      ins(%lhs, %rhs : tensor<524288xf32>, tensor<524288xf32>)
-      outs(%out : tensor<524288xf32>) {
-    ^bb0(%lhs_value: f32, %rhs_value: f32, %unused: f32):
-      %value = arith.addf %lhs_value, %rhs_value : f32
-      linalg.yield %value : f32
-    } -> tensor<524288xf32>
-    return %sum : tensor<524288xf32>
+      ins(%lhs, %rhs : tensor<8388608xf16>, tensor<8388608xf16>)
+      outs(%out : tensor<8388608xf16>) {
+    ^bb0(%lhs_value: f16, %rhs_value: f16, %unused: f16):
+      %value = arith.addf %lhs_value, %rhs_value : f16
+      linalg.yield %value : f16
+    } -> tensor<8388608xf16>
+    return %sum : tensor<8388608xf16>
   }
 }
 )mlir",
@@ -491,35 +490,33 @@ module {
           wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   ASSERT_TRUE(mlir::succeeded(finalized));
 
-  bool sawProductionFixedSlot = false;
+  bool sawFixedSlot = false;
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   for (wafer::compiler::detail::FinalizedRankCandidate &candidate :
        *finalized) {
-    sawProductionFixedSlot |=
-        !candidate.reservedBaseline &&
-        candidate.bufferingKind ==
-            wafer::RankBufferingKind::StaticFixedSlot &&
-        candidate.bufferingPlanOrdinal > 0;
-    frontiers[0].push_back(
-        {std::move(candidate.module), candidate.stableOrdinal,
-         candidate.artifactKind, candidate.reservedBaseline,
-         candidate.bufferingKind, candidate.bufferingPlanOrdinal});
+    if (!candidate.reservedBaseline &&
+        candidate.bufferingKind == wafer::RankBufferingKind::StaticFixedSlot &&
+        candidate.bufferingPlanOrdinal > 0)
+      sawFixedSlot = true;
+    frontiers[0].push_back({std::move(candidate.module),
+                            candidate.stableOrdinal, candidate.artifactKind,
+                            candidate.reservedBaseline, candidate.bufferingKind,
+                            candidate.bufferingPlanOrdinal});
   }
-  ASSERT_TRUE(sawProductionFixedSlot);
+  ASSERT_TRUE(sawFixedSlot);
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
       wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   wafer::frontend::FrontendProgramVerificationResult program =
-      replicated1DProgram(/*inputCount=*/2, /*elementCount=*/524288, "f32");
+      replicated1DProgram(/*inputCount=*/2, /*elementCount=*/8388608, "f16");
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
   auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
       frontiers, program, *config, diagnostics,
-      wafer::compiler::detail::WholeVariantSelectionMode::
-          QualifyStaticFixedSlot,
+      wafer::compiler::detail::WholeVariantSelectionMode::Production,
       &statistics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
 
@@ -531,8 +528,9 @@ module {
   EXPECT_GT(accepted->selectedBufferingPlanOrdinals.front(), 0u);
   ASSERT_EQ(accepted->selectedReservedBaselines.size(), 1u);
   EXPECT_FALSE(accepted->selectedReservedBaselines.front());
-  EXPECT_GE(statistics.targetGateInvocations, 2u);
-  EXPECT_GE(statistics.targetRankGateInvocations, 2u);
+  EXPECT_GT(statistics.targetGateInvocations, 1u);
+  EXPECT_EQ(statistics.targetRankGateInvocations,
+            statistics.targetGateInvocations);
 
   ASSERT_EQ(accepted->resourceCost.rankCosts.size(), 1u);
   const wafer::analysis::InstructionProgramCost &cost =
@@ -551,63 +549,8 @@ module {
   EXPECT_EQ(cost.nonTerminalNCCParticipantWaitCount.value, 0u);
   EXPECT_TRUE(cost.intrinsicNCCDrainCount.isKnown());
   EXPECT_EQ(cost.intrinsicNCCDrainCount.value, 0u);
-
-  mlir::ModuleOp selected = accepted->ranks.front().getModule();
-  llvm::SmallVector<mlir::scf::ForOp, 2> loops;
-  llvm::SmallVector<wafer::SyncNCCJoinOp, 2> joins;
-  unsigned localFenceCount = 0;
-  unsigned nestedSPMAllocations = 0;
-  unsigned externalSPMAllocations = 0;
-  unsigned ddrAllocations = 0;
-  std::set<int64_t> spmOffsets;
-  selected.walk([&](mlir::scf::ForOp loop) { loops.push_back(loop); });
-  selected.walk([&](wafer::SyncNCCJoinOp join) { joins.push_back(join); });
-  selected.walk([&](wafer::SyncLocalFenceOp) { ++localFenceCount; });
-  selected.walk([&](mlir::memref::AllocOp allocation) {
-    if (wafer::isWaferSPMMemRefType(allocation.getType())) {
-      if (allocation->getParentOfType<mlir::scf::ForOp>()) {
-        ++nestedSPMAllocations;
-        return;
-      }
-      ++externalSPMAllocations;
-      auto offset = allocation->getAttrOfType<wafer::SPMOffsetAttr>(
-          wafer::kWaferSPMOffsetAttrName);
-      ASSERT_TRUE(offset);
-      spmOffsets.insert(offset.getOffset());
-      return;
-    }
-    if (!wafer::isWaferDDRMemRefType(allocation.getType()))
-      return;
-    ++ddrAllocations;
-    EXPECT_TRUE(allocation->getAttrOfType<wafer::DDROffsetAttr>(
-        wafer::kWaferDDROffsetAttrName));
-  });
-
-  ASSERT_EQ(loops.size(), 1u);
-  unsigned rdmaCount = 0;
-  unsigned addCount = 0;
-  unsigned wdmaCount = 0;
-  unsigned steadyJoinCount = 0;
-  loops.front().walk([&](wafer::InstrRDMAOp) { ++rdmaCount; });
-  loops.front().walk([&](wafer::InstrElementwiseOp op) {
-    addCount += op.getKind() == wafer::InstrElementwiseKind::Add;
-  });
-  loops.front().walk([&](wafer::InstrWDMAOp) { ++wdmaCount; });
-  loops.front().walk([&](wafer::SyncNCCJoinOp) { ++steadyJoinCount; });
-  EXPECT_EQ(rdmaCount, 2u);
-  EXPECT_EQ(addCount, 1u);
-  EXPECT_EQ(wdmaCount, 1u);
-  EXPECT_EQ(steadyJoinCount, 0u);
-
-  EXPECT_EQ(localFenceCount, 0u);
-  ASSERT_EQ(joins.size(), 1u);
-  EXPECT_FALSE(joins.front()->getParentOfType<mlir::scf::ForOp>());
-  ASSERT_EQ(joins.front().getParticipants().size(), 1u);
-  EXPECT_EQ(joins.front().getParticipants().front(), 0);
-  EXPECT_EQ(nestedSPMAllocations, 0u);
-  EXPECT_EQ(externalSPMAllocations, 6u);
-  EXPECT_EQ(spmOffsets.size(), 6u);
-  EXPECT_GT(ddrAllocations, 0u);
+  EXPECT_TRUE(cost.qualifiedOverlapWindowCount.isKnown());
+  EXPECT_EQ(cost.qualifiedOverlapWindowCount.value, 1u);
 }
 
 TEST_F(WholeVariantCoordinatorTest,

@@ -1544,6 +1544,20 @@
   只记correctness，no-card/ELF只记pre-board readiness；没有PMU measurement basis、候选相关性、重复和held-out时，不把
   paired host wall time写成hardware speedup或Q9 ranking参数。
 
+## 2026-07-29 不用优化专用forced-winner模式代替production选择
+
+- 现象：为验证一个尚未被normal policy选中的fixed-slot候选，在whole-variant selection enum、测试编译入口和
+  package实验中增加了该优化专用的forced-winner分支。虽然候选仍经过late gate，这会让“候选可执行”和
+  “production会选择它”看起来像同一条长期pipeline，也把单个任务的实验需求固化进compiler控制面。
+- 根因：把离线candidate qualification当成了production selection的一种常驻模式；测试需要取得候选，不等于
+  compiler应长期提供另一套选择语义。
+- 修复模式：删除优化专用selector及其编译/package入口。候选生成、buffer、completion和placement结构在
+  rank-frontier/IR层直接验证；若必须做板端性能实验，只使用不提交的临时提取入口。实验结果只能推动通用、
+  versioned target capability和normal selection revision，最终package/no-card/board gate重新从普通
+  `wafer-compile`产物闭合。
+- 防复发：不得以任务号、单个优化名、fixture或case增加forced-winner模式。新增选择输入必须是稳定的通用
+  compiler contract；否则测试停留在候选边界，不能伪装成production artifact路径。
+
 ## 2026-07-26 ReduceScatter Direct不能对同root批量issue后再wait
 
 - 现象：新增ReduceScatter Direct/Ring characterization的首个256B no-card在reserved baseline的

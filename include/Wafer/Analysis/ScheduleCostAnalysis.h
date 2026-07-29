@@ -73,6 +73,12 @@ struct TargetScheduleCostPolicy {
       : targetProfile(targetProfile) {}
 
   TargetProfileId targetProfile;
+  /// Exact same-worker NCC engine group with compiler-shipped overlap
+  /// qualification. A zero mask means the target contract has no qualified
+  /// group. Bits use the closed InstrFamily enum values; this is an ordinal
+  /// profitability fact, not a latency estimate.
+  uint32_t qualifiedOverlapFamilyMask = 0;
+  uint32_t qualifiedOverlapWorker = 0;
   uint64_t cardDDRBytesPerSecond = 200'000'000'000ULL;
   uint64_t directionalNoCBytesPerSecond = 128'000'000'000ULL;
   uint64_t f16Bf16NPULogicalOpsPerSecondPerTile = 8'000'000'000'000ULL;
@@ -160,6 +166,12 @@ struct InstructionProgramCost {
   /// equivalent.
   ScheduleCostMetric readyOrderPriorityInversions;
 
+  /// Number of static rotating-buffer loops whose direct instruction window
+  /// exactly matches a compiler-shipped target overlap capability. Higher is
+  /// preferred before capacity high-water; it is an ordinal IR fact, not a
+  /// cycle or time estimate.
+  ScheduleCostMetric qualifiedOverlapWindowCount;
+
   /// Maximum accepted SPM address end relative to the target SPM base. This is
   /// address-space high-water, not liveness-aware peak allocation.
   ScheduleCostMetric spmHighWaterBytes;
@@ -202,6 +214,9 @@ struct WholeCardInstructionProgramCost {
   /// Sum of rank-local ready-priority inversions for exact-resource and
   /// dependency-depth-equivalent static policy tie-breaking.
   ScheduleCostMetric aggregateReadyOrderPriorityInversions;
+
+  /// Sum of target-qualified rotating-buffer overlap windows across ranks.
+  ScheduleCostMetric aggregateQualifiedOverlapWindowCount;
 
   ScheduleCostMetric maximumRankSPMHighWaterBytes;
   ScheduleCostMetric summedRankSPMHighWaterBytes;
