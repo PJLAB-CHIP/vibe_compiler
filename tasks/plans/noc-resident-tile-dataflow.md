@@ -225,7 +225,9 @@ planning与fixed-slot periodic site specialization之后，gate从current comple
 accepted call closure，以typed source/destination/message identity、call/TileRegion/常量loop occurrence及
 rank内issue/wait顺序建依赖图：V3 send issue等待peer receive prepare，exact wait等待matching send。
 message/call occurrence不等、一个static site需要不同binding、未调用helper、无法证明的control或图中存在cycle
-都会整代原子拒绝；成功时只证明transport可进展，不保存graph，也不移动wait或发明pipeline stage。
+都会整代原子拒绝；成功时只证明transport可进展，不保存graph，也不移动wait或发明pipeline stage。纯
+elementwise add/multiply source已经通过同一production owner：replicated input由16次DDR read收敛为1次owner
+read和15份peer traffic，winner/baseline均通过target model，最终ELF不含GEMM调用。
 
 required output store仍保持原样，不改变host-visible ABI。当前output publication只在所有rank的frontend
 boundary、produced-value SSA/effect equivalence、exact full-buffer WDMA和final-writer关系全部一致时，
@@ -540,7 +542,8 @@ NoC bytes/messages。
 
 以下case检验同一generic合同的不同dataflow形态，不是operator注册表。当前已覆盖replicated
 input/parameter、producer-store/consumer-reload intermediate、tree/ring partial、replicated output、
-large contraction、compound GEMM/add/mul以及NoC/fixed-slot/typed-worker actual composition。compound只证明
+纯elementwise add/mul非GEMM纵向、large contraction、compound GEMM/add/mul以及
+NoC/fixed-slot/typed-worker actual composition。compound只证明
 其final IR实际出现的boundary+partial+downstream compute+required output coverage；intermediate和output
 publication由独立角色测试拥有。SUMMA row/column panel、dynamic/ragged tile和未实现target op仍是未来空间，
 不进入Q39当前协议。
@@ -640,6 +643,7 @@ Softmax、LayerNorm和attention名字不进入generic opportunity discovery。�
    15份显式peer traffic；intermediate host tests证明owner local reuse和所有参与rank零额外intermediate
    WDMA/RDMA；output host tests证明round-2 all-and-only publication及descriptor/final-writer负例；tree/ring
    partial source纵向证明matching spill/reload消失、slice/round/message精确并通过model/package/no-card。
+   pure elementwise winner独立覆盖无GEMM的replicated-input fan-out、add/mul compute和required output；
    large contraction覆盖大GEMM，compound winner覆盖boundary+partial+GEMM/add/mul+required output；它不
    代签intermediate/output publication。NoC×fixed-slot×nonzero-worker由同一actual candidate的
    target-model、ELF、package、attestation和no-card qualification纵向闭合。
@@ -662,8 +666,8 @@ current SSA/effect/range证明的recompute或producer chain均是明确非目标
 | IR | owner RDMA、intermediate zero-DDR、tree/ring partial、round-2 output、local merge、bytes/peer/message、DTE token/wait、actual worker/loop及required store全部显式 | 不保留role/owner/channel/stage side protocol |
 | Lifetime/scheduling | Direct/ReceiveForward、SPM/fixed-slot/worker late gates；receive-prep-before-issue；call-expanded whole-program wait graph；Q38 odd/even/tail和same/cross-worker流水 | Unknown alias/control/message occurrence原子拒绝 |
 | Cost | DDR/SPM/NoC/compute/join从final IR重算；partitioned unique shard不报DDR下降；policy-aware exact Pareto选择 | Unknown不伪装为零或cycle |
-| Genericity | 四materializer覆盖五类role，不含op/shape/name matcher；GEMM与elementwise两个compute family、large contraction和compound均覆盖 | case只验证协议，不成为matcher |
-| Vertical | input、tree/ring partial、large contraction、compound、strict boundary-only ring及独立fixed-slot/worker纵向均闭合；intermediate/output/parameter各有独立原子正负例；NoC×fixed-slot×nonzero-worker同候选的target model、ELF、package、attestation和no-card fresh纵向已闭合 | configured board fresh correctness仍为external gate |
+| Genericity | 四materializer覆盖五类role，不含op/shape/name matcher；纯elementwise非GEMM与GEMM两个compute family、large contraction和compound均覆盖 | case只验证协议，不成为matcher |
+| Vertical | input、纯elementwise非GEMM、tree/ring partial、large contraction、compound、strict boundary-only ring及独立fixed-slot/worker纵向均闭合；intermediate/output/parameter各有独立原子正负例；NoC×fixed-slot×nonzero-worker同候选的target model、ELF、package、attestation和no-card fresh纵向已闭合 | configured board fresh correctness仍为external gate |
 | Board | 尚未执行Q39 configured-board gate | 同源baseline/winner单进程fresh correctness；Q9只观察最终package，不给compiler live feedback |
 
 ## 11. 完成定义
