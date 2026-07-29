@@ -23,6 +23,7 @@ pipeline contract、实验结论、测试数字、失败修复过程和历史复
 Q32 + Q6.B -> Q9 profiler foundation                         [done]
 Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [done]
 Q38 -> Q39 NoC-resident tile dataflow                        [done]
+Q43 Vibe Compiler collaboration review materials             [done]
 Q42 test gate scope reduction                                [next]
 Q42 + Q39 -> Q40 composed search and DTE overlap             [later: after Q42]
 Q42 + Q32.C -> Q41 compiler search scalability               [later: after Q42]
@@ -33,6 +34,7 @@ Q42 + Q32.C -> Q41 compiler search scalability               [later: after Q42]
 | Q9 | `production-artifact-profiler` | `done` | Q32、Q6.B、configured board | 未插桩Primary TX stream launch-to-completion设备包络、分离的host diagnostics、Trace来源的五类NCC per-tile engine active ns/work-volume摘要、独立Direct-DTE cycles/raw activity、Count/Trace、逐次保留真实动态调用与rdcycle的16-tile timeline、exclusive语义成本与非加和Trace-only成本、final Instr静态work与硬件峰值下界对照、exact output、三文件专业UI和profile全树`0777`均闭合；不构造card-wide纯engine elapsed，静态cost不回灌ranking。Ranking feedback保留为后续独立门禁。 | 06、14-16；`tasks/archive/board-profiler.md` |
 | Q38 | `multi-engine-software-pipelining` | `done` | Q32、Q6.B、Q37 | complete-rank actual clone、真实fixed-slot multi-buffer、prologue/steady/epilogue、waitfinish normal form、V3 typed worker与Direct-DTE prepare/issue/exact wait-release、issue-time exact range hazard、package/no-card、TargetCall/SystemC、profiler和digest-bound qualification companion均闭合；worker0 rotating SPM FP16/BF16 RDMA+CT+WDMA普通production winner已经fresh板端exact correctness与matched资格。NoC-resident dataflow归Q39；全局choice组合与更广Direct-DTE/compute overlap归Q40。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
 | Q39 | `noc-resident-tile-dataflow` | `done` | Q38非板端Direct-DTE/fixed-slot合同闭合；Q38板端资格作为独立external gate | complete-rank NoC-resident candidate、静态profitability、package/no-card闭合；K-sharded `4096³`同源baseline/winner板端6/6 exact，winner profile保持16-rank exact并生成有效报告。高wait与未闭合overlap转交Q40，编译搜索耗时转交Q41。 | 02-13、16-17；`tasks/plans/noc-resident-tile-dataflow.md` |
+| Q43 | `compiler-collaboration-review-materials` | `done` | Q9、Q37-Q39完成证据 | 37页可编辑Vibe Compiler汇报PPT、PPT内备注、逐页讲稿、PDF/逐页预览、素材来源表和TX81当前profile硬件行为导读已交付；每页有视觉，真实IR、图表和findings可追溯，生成插图不承担技术证明，未修改compiler/runtime主线合同。 | 01、06、16；`tasks/archive/vibe-compiler-collaboration-review.md` |
 | Q42 | `test-load-reduction` | `next` | 无 | 核心目标是减负：让全部现有case更少、更快、更直接，同时保留必要正确性；删除重复检查和无关suite，不建新测试体系。 | 16；`tasks/plans/test-gate-scope-reduction.md` |
 | Q40 | `composed-choice-search-and-dte-overlap` | `later` | Q39、Q42完成 | 无卡阶段必须推进到`board-ready`：指定matched case、完整package和no-card闭合，但不得标`done`。真实板端exact-output和matched A/B通过后完成；测试只判wait/issue直接合同，不绑定无关suite。 | 06、08-13、16 |
 | Q41 | `compiler-search-scalability` | `later` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 无卡阶段必须推进到`board-ready`：搜索上界、编译时间、winner不变、K=1024 case完整package和no-card闭合，但不得标`done`。真实板端exact-output及winner profile有效后完成；不跑target model或无关suite。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
