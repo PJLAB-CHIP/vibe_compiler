@@ -11,6 +11,7 @@ add_mlir_library(WaferTransforms
   Scheduling/RedundantTransferElimination.cpp
   Scheduling/ScheduleTensorProgram.cpp
   Scheduling/StructuredSchedulingScope.cpp
+  Scheduling/WorkerPlacement.cpp
   DDR/PlanDDRMemory.cpp
   MemoryPlanning/LifetimeAnalysis.cpp
   MemoryPlanning/MiniMallocPacking.cpp

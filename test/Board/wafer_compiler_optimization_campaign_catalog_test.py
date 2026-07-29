@@ -328,11 +328,11 @@ def main() -> int:
     } == set(catalog.AxisDisposition)
     assert catalog.BOARD_AXES
     assert catalog.HOST_ONLY_AXES
-    assert catalog.FUTURE_SOFTWARE_PIPELINE_AXES
+    assert catalog.PENDING_CONFIGURED_BOARD_AXES
     disposition_partitions = (
         {axis.key for axis in catalog.BOARD_AXES},
         {axis.key for axis in catalog.HOST_ONLY_AXES},
-        {axis.key for axis in catalog.FUTURE_SOFTWARE_PIPELINE_AXES},
+        {axis.key for axis in catalog.PENDING_CONFIGURED_BOARD_AXES},
     )
     assert set().union(*disposition_partitions) == EXPECTED_AXIS_KEYS
     assert all(
@@ -485,7 +485,7 @@ def main() -> int:
         for asset in axis.host_assets:
             assert (repo / asset).is_file(), f"{axis.key}: missing {asset}"
 
-    for axis in catalog.FUTURE_SOFTWARE_PIPELINE_AXES:
+    for axis in catalog.PENDING_CONFIGURED_BOARD_AXES:
         assert not axis.board_observables
         assert axis.host_assets == catalog.SOFTWARE_PIPELINE_PLAN
         assert axis.evidence_key not in catalog.CASES_BY_KEY
@@ -535,7 +535,7 @@ def main() -> int:
     ), "catalog accidentally regressed to one board case per pass/axis"
     assert {
         axis.evidence_key
-        for axis in catalog.FUTURE_SOFTWARE_PIPELINE_AXES
+        for axis in catalog.PENDING_CONFIGURED_BOARD_AXES
     } == {
         "queue-saturation-response",
         "spm-conflict-equivalence",
@@ -590,7 +590,8 @@ def main() -> int:
         f"board_axes={len(catalog.BOARD_AXES)} "
         f"cases={len(catalog.CAMPAIGN_CASES)} "
         f"host_only={len(catalog.HOST_ONLY_AXES)} "
-        f"future={len(catalog.FUTURE_SOFTWARE_PIPELINE_AXES)} passed"
+        f"pending_configured_board="
+        f"{len(catalog.PENDING_CONFIGURED_BOARD_AXES)} passed"
     )
     return 0
 

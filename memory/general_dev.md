@@ -166,6 +166,12 @@
 - SystemC `wait()`会保留当前JIT/C++ stack；任何跨wait持有的endpoint/event引用都必须放在追加时引用稳定的owner中，不能指向
   可能被其它rank `push_back`扩容的`std::vector`元素。Direct DTE source具体读取点必须由model profile明确；当前untimed
   profile在typed sender/receiver匹配完成点读取source、原子写destination并完成双方event，不在send call到达时提前snapshot。
+  ordinary NCC effect虽然在functional memory中原子commit，ordered-pending期间仍要保存typed read/write byte footprint：
+  DTE issue的source不得与pending write重叠，destination不得与pending read/write重叠；matching participant join必须在
+  DTE issue之前清除对应hazard，post-issue join不能追认已经提交的传输。strided access可保守扩成bounding interval，
+  unknown/overflow保持fail closed。不能用“rank上存在任意pending NCC”替代range conflict，否则disjoint
+  elementwise/GEMM会被错误串行化并可能形成全rank假deadlock；也不能先发布peer-ready再等待late join，否则会错误接受
+  真实CRT `send_async`已经越过的依赖。
 - 用 `python3 tools/bootstrap_deps.py --python` 把固定版本 Python 测试工具安装到
   `third_party/python`。
 - 用 `python3 tools/bootstrap_deps.py --importer-sources` shallow fetch 固定版本 PyTorch/XLA、StableHLO、
@@ -278,6 +284,11 @@
 - ready-order处理`wafer.instr.dte_wait`时必须沿token派生in-flight buffer effect：send wait延续source read，recv wait形成destination
   completion write，并沿ViewLike追到storage base。focused unit同时覆盖recv-before-consumer与send-before-overwrite；production
   qualification还要读回最终ELF顺序。反汇编前核对artifact的mtime、shape和digest，避免把并发重编译留下的旧产物当成当前结果。
+- Direct DTE的可重叠window必须绑定target ABI revision。V3 lowering对每个sender发射
+  `send_prepare -> send_issue_v3`，issue内部只做peer-ready、attach和async submission，exact wait只做
+  completion/release；profiler分别给issue与wait建立typed site。V1/V2没有issue symbol，wait内auto-issue只作兼容，
+  不能伪造为独立window。包含V3 DTE的手写/compile-only module必须让同一module中的ordinary NCC call也使用V3
+  worker参数，禁止混合旧prototype。
 - 相同code object可能由vendor runtime复用为同一个module handle。adapter按`handle -> digest + logical owner count`维护所有权：
   同handle同digest只在最后一个logical owner释放时真正unload；同handle不同digest是provider contract violation并立即quarantine。
   query deadline要在每次低层query前后检查，不能只在完整rank轮询结束后检查，否则慢调用会使整体deadline失真。
@@ -1040,10 +1051,12 @@
 
 ## 静态多buffer软件流水
 
-- fixed-slot流水必须从unplaced complete-rank IR派生：先用typed instruction、SSA、MemoryEffects、alias root和
-  completion domain建立DAG，再把loop-local static allocation变成loop-external普通allocation family，以
-  `scf.for iter_args/yield`表达slot rotation，最后交给SCF utility机械生成prologue/steady/epilogue。公共派生
-  API遇到已有SPM/DDR physical offset必须拒绝；否则clone会复制物理地址事实，使多个逻辑slot静默重叠。
+- fixed-slot流水必须从尚无SPM/DDR physical offset的complete-rank IR派生；production顺序中它可以接收已经
+  materialize actual worker attrs和minimum joins的typed-worker sibling，但必须原样保留该assignment。随后用
+  typed instruction、SSA、MemoryEffects、alias root和completion domain建立DAG，把loop-local static
+  allocation变成loop-external普通allocation family，以`scf.for iter_args/yield`表达slot rotation，最后交给
+  SCF utility机械生成prologue/steady/epilogue。公共派生API遇到已有SPM/DDR physical offset必须拒绝；否则
+  clone会复制物理地址事实，使多个逻辑slot静默重叠。
 - slot数由每个root的`lastStage - firstStage + 1` lifetime span和capacity共同决定，不固定双缓冲，也不读取
   header queue depth。队列的D/D+1只能证明有界总提交，不证明resident window；SPM high-water和fixed-capacity
   placement必须在每个actual clone上重算，并检查每个slot获得不同的half-open physical range。
@@ -1057,3 +1070,51 @@
 - `TargetProfileId`在scheduler入口只代表compiler-shipped、versioned target/ABI合同。候选生成必须离线确定，
   不得读取实卡身份、Q9 profiler、PMU、runtime历史或本地校准缓存；板端结果只能离线验证实现，若要改变静态
   capability，必须通过后续compiler revision评审发布，不能形成per-card schedule。
+- fixed-slot source-to-package资格不要把accepted Instr schedule塞进manifest。testing seam从同一次fully accepted
+  `ExecutableBundle`派生闭合attestation，至少绑定accepted module digest、placed SPM roots、static loop/root rotation、
+  engine×worker issue、DTE token/exact wait和completion；activation最后写入并同时绑定attestation及staged
+  schema-v6 manifest bytes。package与相邻qualification目录用双rename no-replace transaction发布，companion失败后
+  回滚package；normal production mode不检查也不生成这个testing sibling。需要数值资格时复用同次retained
+  TargetLLVMModuleBundle进入SystemC，不重新lower或重编。
+- 把root-path storage coalescing扩展到loop body时，`StructuredTimeline`只给出一次静态body顺序，不能代表
+  dynamic iteration。最小安全入口应显式建立loop context，只接受direct、无条件、static-positive loop，
+  要求root定义在loop外，并让alias access/forwarding同时携带owner和path；另外证明destination copy后只读、
+  source snapshot、replacement dominance、同path exact DTE wait及backedge completion。任一证明Unknown就保留
+  movement，self-copy也不能在这些门禁前提前删除。
+- cheap candidate geometry必须按最终物理instruction实际编码字段分类验证。high-level reduction scope不等于
+  最终一定发射CT Reduce；unit-local reduction若最终是CT elementwise，应使用其`uint32_t elem_count`合同，
+  只有真实CT Reduce traversal和NE GEMM窄维度才施加各自`uint16_t`字段限制。
+
+## NoC-resident complete-tuple合成
+
+- NoC dataflow的生成单位是correspondence一致的complete-rank actual tuple，不是某个rank的局部rewrite。
+  input/parameter、required output、intermediate和已有collective partial等materializer都只消费当前clone，
+  按依赖顺序累计改写；任何rank的relation、message、lifetime、SPM、completion或target gate失败都丢弃整组，
+  不向frontier部分提交，也不保存role枚举、owner表或shadow schedule。
+- worker placement是独立post-Instr candidate维度，不是resident role materializer或metadata的附带字段。
+  materialized canonical/unplaced current Instr先从SSA、typed value-associated effects、exact或保守static
+  ranges及stable issue order形成all-rank atomic sibling；worker选择直接写入actual issue attrs，旧
+  compiler-generated joins删除后从current IR fresh建立minimum joins。Unknown conflict保持同lane，已有
+  nonzero assignment不原地重写。fixed-slot只在保留各自worker assignment的siblings上继续派生；每个结果
+  fresh重跑SPM/DDR、Direct-DTE、resource和target gate。
+- `RankArtifactKind`、buffering kind和worker-placement kind只记录candidate来源及correspondence轴，不能代替
+  accepted IR语义。需要证明NoC residency时，从当前Instr IR沿TileRegion边界、透明cast和ViewLike追踪DDR
+  movement root：RDMA只能读entry DDR参数，WDMA只能写唯一entry return可达的DDR root；private allocation、
+  helper-local/unknown root和无法解释的alias一律fail closed。即使标签为`Spill`，current IR满足该条件也可
+  resident；即使标签为`Resident`，仍有private spill/reload也必须拒绝。
+- 多机制组合资格必须在同一个pre-target tuple上同时检查actual IR：NoC send/recv、actual typed NCC
+  workers、fresh minimum joins及随后派生的worker-preserving fixed-slot loop/root rotation分别存在，并继续
+  通过相同completion、resource、TargetCall、package及model
+  gates。三个独立passing candidate、metadata拼接或最终aggregate计数都不能证明NoC×fixed-slot×worker组合。
+- source vertical的role归因必须由final IR/profile重证。一个compound source可同时证明boundary owner-load、
+  collective partial、下游compute family和required output coverage，但只有出现对应round/message与DDR cut时
+  才能声称intermediate或output publication materializer实际触发；独立role单测不能被文案合并成“一个case包含
+  全部role”。
+- communication report区分static issue bytes和dynamic executed bytes。常量loop中的一条静态DTE site必须
+  发布`issue_bytes`及完整loop multiplicity，并满足
+  `issue_bytes * constant_loop_multiplicity == executed_bytes`；report/profile总流量按executed bytes求和，
+  不能因tiling把一份payload拆成多次静态执行就仍断言multiplicity为1。
+- NoC equivalence class、communication ID和owner是可见的物理编译结果，必须由rank-major current-IR
+  discovery ordinal、program member ordinal及exact global-tile/structured-path/SSA-effect等价确定。
+  `llvm::hash_code`在启用ABI breaking checks的构建中可能按进程加盐，只能作同次analysis的预筛，不能参与
+  排序、取模或tie-break。回归同时固定具体owner/communication ID，并用两个独立compiler进程比较完整package bytes。

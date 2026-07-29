@@ -24,6 +24,9 @@ public:
   static constexpr TargetProfileId waferTx81SingleCardKernelV2() {
     return TargetProfileId(Value::WaferTx81SingleCardKernelV2);
   }
+  static constexpr TargetProfileId waferTx81SingleCardKernelV3() {
+    return TargetProfileId(Value::WaferTx81SingleCardKernelV3);
+  }
 
   friend constexpr bool operator==(TargetProfileId lhs, TargetProfileId rhs) {
     return lhs.value == rhs.value;
@@ -35,7 +38,8 @@ public:
 private:
   enum class Value : uint8_t {
     WaferTx81SingleCardKernelV1,
-    WaferTx81SingleCardKernelV2
+    WaferTx81SingleCardKernelV2,
+    WaferTx81SingleCardKernelV3
   };
 
   explicit constexpr TargetProfileId(Value value) : value(value) {}
@@ -78,6 +82,9 @@ public:
   static constexpr KernelRuntimeABIId waferTx81KernelV2() {
     return KernelRuntimeABIId(Value::WaferTx81KernelV2);
   }
+  static constexpr KernelRuntimeABIId waferTx81KernelV3() {
+    return KernelRuntimeABIId(Value::WaferTx81KernelV3);
+  }
 
   friend constexpr bool operator==(KernelRuntimeABIId lhs,
                                    KernelRuntimeABIId rhs) {
@@ -89,7 +96,11 @@ public:
   }
 
 private:
-  enum class Value : uint8_t { WaferTx81KernelV1, WaferTx81KernelV2 };
+  enum class Value : uint8_t {
+    WaferTx81KernelV1,
+    WaferTx81KernelV2,
+    WaferTx81KernelV3
+  };
 
   explicit constexpr KernelRuntimeABIId(Value value) : value(value) {}
 

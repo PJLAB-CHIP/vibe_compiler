@@ -71,7 +71,9 @@ void expectBefore(mlir::Operation *before, mlir::Operation *after) {
   ASSERT_NE(before, nullptr);
   ASSERT_NE(after, nullptr);
   ASSERT_EQ(before->getBlock(), after->getBlock());
-  EXPECT_TRUE(before->isBeforeInBlock(after));
+  EXPECT_TRUE(before->isBeforeInBlock(after))
+      << "expected " << before->getName().getStringRef().str() << " before "
+      << after->getName().getStringRef().str();
 }
 
 void expectBeforeTerminalPublication(wafer::SyncNCCJoinOp join) {
@@ -301,7 +303,10 @@ module {
   ASSERT_EQ(waits.size(), 1u);
   ASSERT_EQ(wdmas.size(), 1u);
   expectBefore(joins.front(), sends.front());
-  expectBefore(joins.front(), recvs.front());
+  // Receive preparation is deliberately earlier than the participant drain:
+  // peers may issue as soon as their own source is ready, while the local
+  // drain only protects the later send source and result assembly.
+  expectBefore(recvs.front(), joins.front());
   auto remoteAssembly = llvm::find_if(gathers, [&](auto gather) {
     return gather->getBlock() == waits.front()->getBlock() &&
            waits.front()->isBeforeInBlock(gather);
@@ -494,7 +499,7 @@ TEST_F(CollectiveCompletionTest,
   ASSERT_EQ(joins.size(), 2u);
   ASSERT_EQ(wdmas.size(), 1u);
   expectBefore(joins.front(), sends.front());
-  expectBefore(joins.front(), recvs.front());
+  expectBefore(recvs.front(), joins.front());
   expectBefore(sends.front(), waits.front());
   expectBefore(recvs.front(), waits.front());
   expectBefore(waits.front(), wdmas.front());

@@ -22,6 +22,33 @@
 
 namespace wafer::compiler::detail {
 
+mlir::LogicalResult publishPackageAndCompanionNoReplace(
+    llvm::StringRef stagedPackage, llvm::StringRef outputPackage,
+    llvm::StringRef stagedCompanion, llvm::StringRef outputCompanion,
+    llvm::raw_ostream &diagnostics,
+    DirectoryPublicationFunction publishDirectory) {
+  if (!publishDirectory || stagedPackage.empty() || outputPackage.empty() ||
+      stagedCompanion.empty() || outputCompanion.empty()) {
+    reject(diagnostics, "package companion publication contract is invalid");
+    return mlir::failure();
+  }
+  if (publishDirectory(stagedPackage, outputPackage, diagnostics))
+    return mlir::failure();
+  if (!publishDirectory(stagedCompanion, outputCompanion, diagnostics))
+    return mlir::success();
+
+  if (std::error_code rollbackError =
+          llvm::sys::fs::rename(outputPackage, stagedPackage)) {
+    reject(diagnostics,
+           "failed to roll back package after companion publication failure: " +
+               rollbackError.message());
+    return mlir::failure();
+  }
+  reject(diagnostics,
+         "companion publication failed; package publication was rolled back");
+  return mlir::failure();
+}
+
 mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
@@ -148,6 +175,16 @@ mlir::LogicalResult runCompilationTransaction(
     reject(diagnostics,
            "refusing to replace existing profile companion directory: '" +
                canonicalProfileOutput.str().str() + "'");
+    return mlir::failure();
+  }
+  llvm::SmallString<256> canonicalQualificationOutput(canonicalOutput);
+  canonicalQualificationOutput += ".qualification";
+  if (producesStaticFixedSlotQualificationCompanion(selectionMode) &&
+      pathEntryExists(canonicalQualificationOutput)) {
+    reject(diagnostics,
+           "refusing to replace existing fixed-slot qualification companion "
+           "directory: '" +
+               canonicalQualificationOutput.str().str() + "'");
     return mlir::failure();
   }
 
@@ -323,22 +360,24 @@ mlir::LogicalResult runCompilationTransaction(
 
   llvm::SmallString<256> stagedPackage(transactionRoot);
   llvm::sys::path::append(stagedPackage, "package");
-  if (publishDirectoryNoReplace(stagedPackage, canonicalOutput, diagnostics))
-    return mlir::failure();
-  if (options.shouldProduceProfileCompanion()) {
+  if (producesStaticFixedSlotQualificationCompanion(selectionMode)) {
+    llvm::SmallString<256> stagedCompanion(transactionRoot);
+    llvm::sys::path::append(stagedCompanion, "qualification-companion");
+    if (mlir::failed(publishPackageAndCompanionNoReplace(
+            stagedPackage, canonicalOutput, stagedCompanion,
+            canonicalQualificationOutput, diagnostics,
+            publishDirectoryNoReplace)))
+      return mlir::failure();
+  } else if (options.shouldProduceProfileCompanion()) {
     llvm::SmallString<256> stagedCompanion(transactionRoot);
     llvm::sys::path::append(stagedCompanion, "profile-companion");
-    if (publishDirectoryNoReplace(stagedCompanion, canonicalProfileOutput,
-                                  diagnostics)) {
-      if (std::error_code rollbackError =
-              llvm::sys::fs::rename(canonicalOutput, stagedPackage))
-        reject(diagnostics,
-               "failed to roll back package after profile companion "
-               "publication failure: " +
-                   rollbackError.message());
+    if (mlir::failed(publishPackageAndCompanionNoReplace(
+            stagedPackage, canonicalOutput, stagedCompanion,
+            canonicalProfileOutput, diagnostics, publishDirectoryNoReplace)))
       return mlir::failure();
-    }
-  }
+  } else if (publishDirectoryNoReplace(stagedPackage, canonicalOutput,
+                                       diagnostics))
+    return mlir::failure();
   if (retainedExecutableBundle)
     retainedExecutableBundle->emplace(std::move(*executableBundle));
   if (retainedTargetLLVMModuleBundle)

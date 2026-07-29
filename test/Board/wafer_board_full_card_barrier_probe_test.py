@@ -22,7 +22,6 @@ import wafer_board_direct_dte_collective_test as cluster_seed
 RANK_COUNT = 16
 UNSUPPORTED_PARTICIPANT_COUNTS = (1, 2, 4, 8, 15)
 RESOURCE_BYTES = 256
-SLOTS_PER_RANK = 3
 LAUNCH_KIND = "kernel"
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
@@ -59,6 +58,14 @@ class BarrierCalibrationCase:
 
     def as_dict(self) -> dict[str, object]:
         return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass(frozen=True)
+class ProbeSlotLayout:
+    slots_per_rank: int
+    input_ordinal: int
+    output_ordinal: int
+    status_ordinal: int
 
 
 BARRIER_POSITIVE_CASES = (
@@ -180,7 +187,6 @@ def validate_host_contract() -> None:
         or len(epoch2) != RANK_COUNT
         or epoch1 & epoch2
         or RECORD_OFFSET + 16 * 8 != RESOURCE_BYTES
-        or SLOTS_PER_RANK != 3
     ):
         raise RuntimeError("barrier probe host contract is malformed")
     for rank in range(RANK_COUNT):
@@ -198,7 +204,12 @@ def validate_host_contract() -> None:
 
 def compile_package(
     args: argparse.Namespace,
-) -> tuple[pathlib.Path, pathlib.Path, dict[tuple[int, str, int], int]]:
+) -> tuple[
+    pathlib.Path,
+    pathlib.Path,
+    dict[tuple[int, str, int], int],
+    ProbeSlotLayout,
+]:
     source = cluster_seed.write_fixture(args.work_dir)
     package = args.work_dir / "package"
     result = run(
@@ -217,16 +228,16 @@ def compile_package(
     if "published verified package" not in result.stdout:
         raise RuntimeError("wafer-compile did not publish the cluster seed")
     bindings = cluster_seed.validate_manifest(package)
-    validate_terminal_slots(package, bindings)
+    slot_layout = validate_terminal_slots(package, bindings)
     manifest = json.loads((package / "manifest.json").read_text())
     module_path = package / manifest["modules"][0]["path"]
-    return package, module_path, bindings
+    return package, module_path, bindings, slot_layout
 
 
 def validate_terminal_slots(
     package: pathlib.Path,
     bindings: dict[tuple[int, str, int], int],
-) -> None:
+) -> ProbeSlotLayout:
     manifest = json.loads((package / "manifest.json").read_text())
     entries = manifest.get("entries")
     resources = manifest.get("resources")
@@ -254,6 +265,7 @@ def validate_terminal_slots(
         or len(entries) != RANK_COUNT
     ):
         raise RuntimeError("cluster terminal publication ids are not unique")
+    common_layout: ProbeSlotLayout | None = None
     for entry in entries:
         rank = entry.get("rank")
         slots = entry.get("slots")
@@ -263,19 +275,35 @@ def validate_terminal_slots(
             not isinstance(rank, int)
             or not 0 <= rank < RANK_COUNT
             or not isinstance(slots, list)
-            or [slot.get("ordinal") for slot in slots] != [0, 1, 2]
+            or not slots
+            or not all(isinstance(slot, dict) for slot in slots)
+            or [slot.get("ordinal") for slot in slots]
+            != list(range(len(slots)))
             or not isinstance(transport, dict)
         ):
-            raise RuntimeError("cluster rank does not expose canonical 3 slots")
+            raise RuntimeError(
+                "cluster rank does not expose canonical ordered slots"
+            )
         status_id = transport.get("status_resource")
         status = resources_by_id.get(status_id)
+        input_id = bindings[(rank, "user_input", 0)]
+        output_id = bindings[(rank, "output", 0)]
+        input_slots = [
+            slot for slot in slots if slot.get("resource") == input_id
+        ]
+        output_slots = [
+            slot for slot in slots if slot.get("resource") == output_id
+        ]
+        status_slots = [
+            slot for slot in slots if slot.get("resource") == status_id
+        ]
         if (
-            slots[0].get("resource")
-            != bindings[(rank, "user_input", 0)]
-            or slots[1].get("resource") != bindings[(rank, "output", 0)]
-            or slots[2].get("resource") != status_id
-            or [slot.get("access") for slot in slots]
-            != ["read_only", "write_only", "read_write"]
+            len(input_slots) != 1
+            or input_slots[0].get("access") != "read_only"
+            or len(output_slots) != 1
+            or output_slots[0].get("access") != "write_only"
+            or len(status_slots) != 1
+            or status_slots[0].get("access") != "read_write"
             or transport.get("kind") != "direct_dte"
             or transport.get("status_abi") != cluster_seed.STATUS_ABI
             or transport.get("host_watchdog_required") is not True
@@ -300,12 +328,30 @@ def validate_terminal_slots(
             }
         ):
             raise RuntimeError(
-                f"rank {rank} terminal status is not canonical slot 2"
+                f"rank {rank} terminal resources are not canonically bound"
             )
+        layout = ProbeSlotLayout(
+            slots_per_rank=len(slots),
+            input_ordinal=input_slots[0]["ordinal"],
+            output_ordinal=output_slots[0]["ordinal"],
+            status_ordinal=status_slots[0]["ordinal"],
+        )
+        if common_layout is None:
+            common_layout = layout
+        elif layout != common_layout:
+            raise RuntimeError(
+                "cluster rank-major slot layout differs across ranks"
+            )
+    if common_layout is None:
+        raise RuntimeError("cluster rank-major slot layout is missing")
+    return common_layout
 
 
 def build_probe(
-    args: argparse.Namespace, package: pathlib.Path, module_path: pathlib.Path
+    args: argparse.Namespace,
+    package: pathlib.Path,
+    module_path: pathlib.Path,
+    slot_layout: ProbeSlotLayout,
 ) -> None:
     deps = args.repo_root / "third_party" / "tx8_deps"
     tool_bin = deps / TOOLCHAIN_DIR / "bin"
@@ -346,6 +392,13 @@ def build_probe(
             "-Wall",
             "-Wextra",
             "-Werror",
+            (
+                "-DWAFER_BARRIER_SLOTS_PER_RANK="
+                f"{slot_layout.slots_per_rank}"
+            ),
+            f"-DWAFER_BARRIER_INPUT_SLOT={slot_layout.input_ordinal}",
+            f"-DWAFER_BARRIER_OUTPUT_SLOT={slot_layout.output_ordinal}",
+            f"-DWAFER_BARRIER_STATUS_SLOT={slot_layout.status_ordinal}",
             f"-I{INPUT_DIR}",
             f"-I{args.repo_root / 'runtime' / 'wafer_crt' / 'include'}",
             f"-I{args.repo_root / 'include'}",
@@ -585,8 +638,8 @@ def main() -> int:
             return 77
         validate_board_args(args)
 
-    package, module_path, bindings = compile_package(args)
-    build_probe(args, package, module_path)
+    package, module_path, bindings, slot_layout = compile_package(args)
+    build_probe(args, package, module_path, slot_layout)
     verify_no_card(args, package)
     if args.no_card:
         return 0

@@ -738,8 +738,9 @@ static uint64_t wafer_mdc_engine_result(const WaferMDCRequest *request,
 
 static void wafer_mdc_set_packet_worker(uint32_t *inter_type,
                                         uint32_t worker) {
-  *inter_type =
-      (*inter_type & ~UINT32_C(0x300)) | ((worker % 3U) << 8);
+  *inter_type = (*inter_type & ~WAFER_TX81_NCC_WORKER_INTER_TYPE_MASK) |
+                ((worker % WAFER_TX81_NCC_WORKER_COUNT)
+                 << WAFER_TX81_NCC_WORKER_INTER_TYPE_SHIFT);
 }
 
 static void *wafer_mdc_prepared_packet(

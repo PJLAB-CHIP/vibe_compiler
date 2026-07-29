@@ -156,9 +156,16 @@ ENGINE_PIPELINE_BLOCKED_CELL_KEYS = tuple(
     if cell.disposition
     in {
         engine_pipeline.Disposition.FAIL_CLOSED_MISSING_ADAPTER,
-        engine_pipeline.Disposition.FAIL_CLOSED_MISSING_PRODUCER,
         engine_pipeline.Disposition.FAIL_CLOSED_UNSAFE_WINDOW,
     }
+)
+ENGINE_PIPELINE_PENDING_PRODUCTION_CELL_KEYS = tuple(
+    cell.key
+    for cell in engine_pipeline.THREE_STAGE_PENDING_BOARD_CELLS
+    if (
+        cell.disposition
+        == engine_pipeline.Disposition.PENDING_CONFIGURED_BOARD
+    )
 )
 SPM_SUSTAINED_CELL_KEYS = tuple(cell.key for cell in spm_sustained.CELLS)
 SPM_SUSTAINED_GROUP_KEYS = tuple(group.key for group in spm_sustained.GROUPS)
@@ -393,15 +400,15 @@ FAMILIES = (
         ),
     ),
     PendingCalibrationFamily(
-        key="engine-pipeline-unrepresentable-cells",
+        key="production-software-pipeline-configured-board-qualification",
         disposition=BLOCKED_EXTERNAL,
-        execution_scope="host-fail-closed",
+        execution_scope="configured-board-source-package-qualification",
         bindings=(
             _binding(
                 "test/Board/"
                 "wafer_engine_pipeline_characterization_catalog.py",
                 "ALL_CELLS",
-                ENGINE_PIPELINE_BLOCKED_CELL_KEYS,
+                ENGINE_PIPELINE_PENDING_PRODUCTION_CELL_KEYS,
                 "key",
             ),
         ),
@@ -412,17 +419,20 @@ FAMILIES = (
         ),
         runner_batch=None,
         oracle=(
-            "adapter-capacity-and-tdma-window-rejection",
-            "accepted-instr-production-provenance-gate",
+            "manifest-bound-accepted-instr-fixed-slot-qualification",
+            "typed-worker-and-current-ir-completion-proof",
+            "same-source-baseline-winner-full-correctness",
             "no-handwritten-double-slot-as-production-vertical",
         ),
         activation_gate=(
-            "host-gate-only",
-            "real-adapter-or-production-producer-required",
+            "host-exact-package-model-no-card-closed",
+            "fresh-configured-board-session-required",
         ),
         blocker=(
-            "the production three-stage accepted-Instr multi-buffer producer "
-            "is not implemented yet"
+            "the compiler-owned multi-buffer producer and host gates are "
+            "closed; only fresh configured-board baseline/winner "
+            "qualification remains, and no repo-owned board campaign asset "
+            "currently supplies that evidence"
         ),
     ),
     PendingCalibrationFamily(

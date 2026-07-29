@@ -4,6 +4,7 @@
 #include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
 
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
 
 #include "gtest/gtest.h"
 
@@ -21,17 +22,19 @@ namespace {
 
 using wafer::RankArtifactKind;
 using wafer::RankBufferingKind;
+using wafer::RankWorkerPlacementKind;
 using wafer::compiler::detail::RankVariantMetadataFrontier;
 using wafer::compiler::detail::RankVariantSlotMetadata;
 using wafer::compiler::detail::WholeVariantAttemptPlan;
 using wafer::compiler::detail::WholeVariantAttemptPlanFailure;
 
 constexpr size_t kLegacyProductLimit = 64;
-constexpr size_t kLegacyCoordinatedLimit = 64;
+constexpr size_t kCoordinatedLimit = 64;
 
 using CandidateOrder = std::vector<std::vector<size_t>>;
 using CorrespondenceKey =
-    std::tuple<int64_t, RankArtifactKind, RankBufferingKind, uint32_t>;
+    std::tuple<int64_t, RankArtifactKind, RankBufferingKind, uint32_t,
+               RankWorkerPlacementKind, uint32_t>;
 
 struct Combination {
   std::vector<size_t> positions;
@@ -60,9 +63,9 @@ indicesForPositions(const std::vector<size_t> &positions,
   return indices;
 }
 
-/// Independent copy of the eager coordinator enumeration that existed before
-/// context-transfer filtering. Tests compare every original slot index, not
-/// only the correspondence key or final candidate count.
+/// Independent copy of the bounded coordinator enumeration. Tests compare
+/// every original slot index, not only the correspondence key or final
+/// candidate count.
 static LegacyAttemptReference enumerateLegacyAttempts(
     const std::vector<RankVariantMetadataFrontier> &frontiers) {
   LegacyAttemptReference reference;
@@ -74,15 +77,19 @@ static LegacyAttemptReference enumerateLegacyAttempts(
       if (frontier[index].reservedBaseline)
         reference.reservedBaselineIndices.push_back(index);
     }
-    std::sort(
-        order[rank].begin(), order[rank].end(), [&](size_t lhs, size_t rhs) {
-          const RankVariantSlotMetadata &left = frontier[lhs];
-          const RankVariantSlotMetadata &right = frontier[rhs];
-          return std::tie(left.stableOrdinal, left.artifactKind,
-                          left.bufferingKind, left.bufferingPlanOrdinal, lhs) <
-                 std::tie(right.stableOrdinal, right.artifactKind,
-                          right.bufferingKind, right.bufferingPlanOrdinal, rhs);
-        });
+    std::sort(order[rank].begin(), order[rank].end(),
+              [&](size_t lhs, size_t rhs) {
+                const RankVariantSlotMetadata &left = frontier[lhs];
+                const RankVariantSlotMetadata &right = frontier[rhs];
+                return std::tie(left.stableOrdinal, left.artifactKind,
+                                left.bufferingKind, left.bufferingPlanOrdinal,
+                                left.workerPlacementKind,
+                                left.workerPlacementPlanOrdinal, lhs) <
+                       std::tie(right.stableOrdinal, right.artifactKind,
+                                right.bufferingKind, right.bufferingPlanOrdinal,
+                                right.workerPlacementKind,
+                                right.workerPlacementPlanOrdinal, rhs);
+              });
   }
 
   std::set<std::vector<size_t>> attempted;
@@ -116,10 +123,11 @@ static LegacyAttemptReference enumerateLegacyAttempts(
   std::set<CorrespondenceKey> keys;
   for (const RankVariantSlotMetadata &candidate : frontiers.front())
     keys.insert({candidate.stableOrdinal, candidate.artifactKind,
-                 candidate.bufferingKind, candidate.bufferingPlanOrdinal});
+                 candidate.bufferingKind, candidate.bufferingPlanOrdinal,
+                 candidate.workerPlacementKind,
+                 candidate.workerPlacementPlanOrdinal});
+  std::vector<std::vector<size_t>> coordinatedCandidates;
   for (CorrespondenceKey key : keys) {
-    if (reference.coordinatedAttemptCount >= kLegacyCoordinatedLimit)
-      break;
     std::vector<size_t> indices;
     bool complete = true;
     for (const RankVariantMetadataFrontier &frontier : frontiers) {
@@ -129,7 +137,9 @@ static LegacyAttemptReference enumerateLegacyAttempts(
         if (candidate.stableOrdinal != std::get<0>(key) ||
             candidate.artifactKind != std::get<1>(key) ||
             candidate.bufferingKind != std::get<2>(key) ||
-            candidate.bufferingPlanOrdinal != std::get<3>(key))
+            candidate.bufferingPlanOrdinal != std::get<3>(key) ||
+            candidate.workerPlacementKind != std::get<4>(key) ||
+            candidate.workerPlacementPlanOrdinal != std::get<5>(key))
           continue;
         if (!match || index < *match)
           match = index;
@@ -140,10 +150,27 @@ static LegacyAttemptReference enumerateLegacyAttempts(
       }
       indices.push_back(*match);
     }
-    if (!complete || !attempted.insert(indices).second)
+    if (!complete || attempted.count(indices))
       continue;
+    coordinatedCandidates.push_back(std::move(indices));
+  }
+  auto appendCoordinated = [&](size_t index) {
+    std::vector<size_t> indices = std::move(coordinatedCandidates[index]);
+    if (!attempted.insert(indices).second)
+      return;
     ++reference.coordinatedAttemptCount;
     reference.optimizedCandidateIndices.push_back(std::move(indices));
+  };
+  if (coordinatedCandidates.size() <= kCoordinatedLimit) {
+    for (size_t index = 0; index < coordinatedCandidates.size(); ++index)
+      appendCoordinated(index);
+  } else {
+    const size_t span = coordinatedCandidates.size() - 1;
+    const size_t intervals = kCoordinatedLimit - 1;
+    const size_t quotient = span / intervals;
+    const size_t remainder = span % intervals;
+    for (size_t sample = 0; sample < kCoordinatedLimit; ++sample)
+      appendCoordinated(sample * quotient + (sample * remainder) / intervals);
   }
   return reference;
 }
@@ -154,9 +181,10 @@ static bool hasCompleteCorrespondence(
   std::optional<CorrespondenceKey> key;
   for (size_t rank = 0; rank < indices.size(); ++rank) {
     const RankVariantSlotMetadata &candidate = frontiers[rank][indices[rank]];
-    CorrespondenceKey current{candidate.stableOrdinal, candidate.artifactKind,
-                              candidate.bufferingKind,
-                              candidate.bufferingPlanOrdinal};
+    CorrespondenceKey current{
+        candidate.stableOrdinal,       candidate.artifactKind,
+        candidate.bufferingKind,       candidate.bufferingPlanOrdinal,
+        candidate.workerPlacementKind, candidate.workerPlacementPlanOrdinal};
     if (key && current != *key)
       return false;
     key = current;
@@ -191,8 +219,17 @@ static RankVariantSlotMetadata
 slot(int64_t ordinal, RankArtifactKind kind = RankArtifactKind::Spill,
      bool reservedBaseline = false,
      RankBufferingKind bufferingKind = RankBufferingKind::Single,
-     uint32_t bufferingPlanOrdinal = 0) {
-  return {ordinal, kind, reservedBaseline, bufferingKind, bufferingPlanOrdinal};
+     uint32_t bufferingPlanOrdinal = 0,
+     RankWorkerPlacementKind workerPlacementKind =
+         RankWorkerPlacementKind::Unplaced,
+     uint32_t workerPlacementPlanOrdinal = 0) {
+  return {ordinal,
+          kind,
+          reservedBaseline,
+          bufferingKind,
+          bufferingPlanOrdinal,
+          workerPlacementKind,
+          workerPlacementPlanOrdinal};
 }
 
 TEST(WholeVariantAttemptPlanTest,
@@ -220,7 +257,7 @@ TEST(WholeVariantAttemptPlanTest,
 }
 
 TEST(WholeVariantAttemptPlanTest,
-     MatchesLegacyLimitsWithMissingReorderedAndDuplicateKeys) {
+     MatchesBoundedQuantilesWithMissingReorderedAndDuplicateKeys) {
   constexpr size_t rankCount = 16;
   std::vector<RankVariantMetadataFrontier> frontiers(rankCount);
   for (size_t rank = 0; rank < rankCount; ++rank) {
@@ -251,10 +288,27 @@ TEST(WholeVariantAttemptPlanTest,
             reference.productUniqueAttemptCount);
   EXPECT_EQ(plan.coordinatedAttemptCount, 64u);
   EXPECT_EQ(plan.reservedBaselineIndices, reference.reservedBaselineIndices);
-  EXPECT_EQ(plan.optimizedCandidateIndices,
+  ASSERT_GE(plan.optimizedCandidateIndices.size(),
+            reference.optimizedCandidateIndices.size());
+  EXPECT_EQ(std::vector<std::vector<size_t>>(
+                plan.optimizedCandidateIndices.begin(),
+                plan.optimizedCandidateIndices.begin() +
+                    reference.optimizedCandidateIndices.size()),
             reference.optimizedCandidateIndices);
-  EXPECT_EQ(plan.requiredModuleIndices,
-            requiredByLegacyAttempts(reference, frontiers));
+  std::vector<std::vector<size_t>> expectedRequired =
+      requiredByLegacyAttempts(reference, frontiers);
+  auto requireBand = [&](const std::vector<std::vector<size_t>> &band) {
+    for (const std::vector<size_t> &candidateIndices : band)
+      for (auto [rank, index] : llvm::enumerate(candidateIndices))
+        if (!llvm::is_contained(expectedRequired[rank], index)) {
+          expectedRequired[rank].push_back(index);
+          llvm::sort(expectedRequired[rank]);
+        }
+  };
+  requireBand(plan.workerPlacedCandidateIndices);
+  requireBand(plan.fixedSlotCandidateIndices);
+  requireBand(plan.genericCandidateIndices);
+  EXPECT_EQ(plan.requiredModuleIndices, expectedRequired);
 
   size_t allSlots = 0;
   for (const RankVariantMetadataFrontier &frontier : frontiers)
@@ -272,6 +326,38 @@ TEST(WholeVariantAttemptPlanTest,
                              plan.requiredModuleIndices[rank].end(), index),
                   0);
   }
+}
+
+TEST(WholeVariantAttemptPlanTest,
+     QuantileSamplingIncludesBothEndsAndBoundsUnvisitedKeyGap) {
+  RankVariantMetadataFrontier frontier;
+  frontier.push_back(slot(0, RankArtifactKind::Spill,
+                          /*reservedBaseline=*/true));
+  for (int64_t ordinal = 1; ordinal < 256; ++ordinal)
+    frontier.push_back(slot(ordinal, RankArtifactKind::Resident));
+  std::vector<RankVariantMetadataFrontier> frontiers{std::move(frontier)};
+
+  WholeVariantAttemptPlan plan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(frontiers, 1);
+  ASSERT_TRUE(plan.isValid());
+  ASSERT_EQ(plan.coordinatedAttemptCount, kCoordinatedLimit);
+  ASSERT_LE(plan.boundedProductUniqueAttemptCount,
+            plan.optimizedCandidateIndices.size());
+
+  llvm::ArrayRef<std::vector<size_t>> coordinated(
+      plan.optimizedCandidateIndices.data() +
+          plan.boundedProductUniqueAttemptCount,
+      plan.coordinatedAttemptCount);
+  ASSERT_EQ(coordinated.size(), kCoordinatedLimit);
+  std::vector<int64_t> ordinals;
+  for (const std::vector<size_t> &indices : coordinated) {
+    ASSERT_EQ(indices.size(), 1u);
+    ordinals.push_back(frontiers[0][indices.front()].stableOrdinal);
+  }
+  EXPECT_EQ(ordinals.front(), 64);
+  EXPECT_EQ(ordinals.back(), 255);
+  for (auto [lhs, rhs] : llvm::zip(ordinals, llvm::drop_begin(ordinals)))
+    EXPECT_LE(rhs - lhs, 4);
 }
 
 TEST(WholeVariantAttemptPlanTest,
@@ -315,6 +401,8 @@ TEST(WholeVariantAttemptPlanTest,
   WholeVariantAttemptPlan plan =
       wafer::compiler::detail::buildWholeVariantAttemptPlan(frontiers, 2);
   ASSERT_TRUE(plan.isValid());
+  EXPECT_EQ(plan.fixedSlotCandidateIndices,
+            (std::vector<std::vector<size_t>>{{1, 2}}));
   EXPECT_EQ(plan.requiredModuleIndices[0], (std::vector<size_t>{0, 1}));
   EXPECT_EQ(plan.requiredModuleIndices[1], (std::vector<size_t>{0, 2}));
 }
@@ -336,8 +424,249 @@ TEST(WholeVariantAttemptPlanTest,
   WholeVariantAttemptPlan plan =
       wafer::compiler::detail::buildWholeVariantAttemptPlan(frontiers, 2);
   ASSERT_TRUE(plan.isValid());
+  EXPECT_TRUE(plan.fixedSlotCandidateIndices.empty());
   EXPECT_EQ(plan.requiredModuleIndices[0], (std::vector<size_t>{0}));
   EXPECT_EQ(plan.requiredModuleIndices[1], (std::vector<size_t>{0}));
+}
+
+TEST(WholeVariantAttemptPlanTest,
+     WorkerPlacementIsAnIndependentCorrespondenceDimension) {
+  std::vector<RankVariantMetadataFrontier> frontiers(2);
+  frontiers[0] = {
+      slot(0, RankArtifactKind::Spill, true),
+      slot(5, RankArtifactKind::Spill, false, RankBufferingKind::Single, 0,
+           RankWorkerPlacementKind::DisjointComponents, 1),
+  };
+  frontiers[1] = {
+      slot(0, RankArtifactKind::Spill, true),
+      slot(5, RankArtifactKind::Spill),
+      slot(5, RankArtifactKind::Spill, false, RankBufferingKind::Single, 0,
+           RankWorkerPlacementKind::DisjointComponents, 1),
+  };
+
+  WholeVariantAttemptPlan plan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(frontiers, 2);
+  ASSERT_TRUE(plan.isValid());
+  EXPECT_EQ(plan.workerPlacedCandidateIndices,
+            (std::vector<std::vector<size_t>>{{1, 2}}));
+  EXPECT_EQ(plan.requiredModuleIndices[0], (std::vector<size_t>{0, 1}));
+  EXPECT_EQ(plan.requiredModuleIndices[1], (std::vector<size_t>{0, 2}));
+}
+
+TEST(WholeVariantAttemptPlanTest,
+     DistinctWorkerPlacementPlansCannotCorrespondByKindAlone) {
+  std::vector<RankVariantMetadataFrontier> frontiers(2);
+  frontiers[0] = {
+      slot(0, RankArtifactKind::Spill, true),
+      slot(5, RankArtifactKind::Spill, false, RankBufferingKind::Single, 0,
+           RankWorkerPlacementKind::DisjointComponents, 3),
+  };
+  frontiers[1] = {
+      slot(0, RankArtifactKind::Spill, true),
+      slot(5, RankArtifactKind::Spill, false, RankBufferingKind::Single, 0,
+           RankWorkerPlacementKind::DisjointComponents, 4),
+  };
+
+  WholeVariantAttemptPlan plan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(frontiers, 2);
+  ASSERT_TRUE(plan.isValid());
+  EXPECT_TRUE(plan.workerPlacedCandidateIndices.empty());
+  EXPECT_EQ(plan.requiredModuleIndices[0], (std::vector<size_t>{0}));
+  EXPECT_EQ(plan.requiredModuleIndices[1], (std::vector<size_t>{0}));
+}
+
+TEST(WholeVariantAttemptPlanTest,
+     BuriedCompleteWorkerSeedIsBoundedAndRequiredForOwnerImport) {
+  using wafer::compiler::detail::SerializedRankVariantCandidate;
+  using wafer::compiler::detail::SerializedRankVariantFrontier;
+
+  constexpr size_t rankCount = 2;
+  constexpr size_t genericCount = 160;
+  constexpr size_t workerCount =
+      wafer::kWorkerPlacementRankFrontierAdmissionLimit + 2;
+  constexpr size_t fixedCount = wafer::kFixedSlotRankFrontierAdmissionLimit + 2;
+  std::vector<RankVariantMetadataFrontier> metadata(rankCount);
+  for (size_t rank = 0; rank < rankCount; ++rank) {
+    metadata[rank].push_back(slot(0, RankArtifactKind::Spill, true));
+    for (size_t index = 1; index <= genericCount; ++index)
+      metadata[rank].push_back(
+          slot(static_cast<int64_t>(index), RankArtifactKind::Resident));
+    for (size_t worker = 0; worker < workerCount; ++worker)
+      metadata[rank].push_back(
+          slot(1000 + static_cast<int64_t>(worker),
+               RankArtifactKind::SpillReady, false, RankBufferingKind::Single,
+               0, RankWorkerPlacementKind::DisjointComponents,
+               static_cast<uint32_t>(worker) + 1 +
+                   (worker >= wafer::kWorkerPlacementRankFrontierAdmissionLimit
+                        ? static_cast<uint32_t>(rank) * 100
+                        : 0)));
+    for (size_t fixed = 0; fixed < fixedCount; ++fixed)
+      metadata[rank].push_back(
+          slot(2000 + static_cast<int64_t>(fixed), RankArtifactKind::Resident,
+               false, RankBufferingKind::StaticFixedSlot,
+               static_cast<uint32_t>(fixed) + 1 +
+                   (fixed >= wafer::kFixedSlotRankFrontierAdmissionLimit
+                        ? static_cast<uint32_t>(rank) * 100
+                        : 0)));
+  }
+
+  WholeVariantAttemptPlan plan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(metadata,
+                                                            rankCount);
+  ASSERT_TRUE(plan.isValid());
+  ASSERT_EQ(plan.workerPlacedCandidateIndices.size(),
+            wafer::kWorkerPlacementRankFrontierAdmissionLimit);
+  for (size_t worker = 0;
+       worker < wafer::kWorkerPlacementRankFrontierAdmissionLimit; ++worker)
+    EXPECT_EQ(plan.workerPlacedCandidateIndices[worker],
+              (std::vector<size_t>{genericCount + 1 + worker,
+                                   genericCount + 1 + worker}));
+  ASSERT_EQ(plan.fixedSlotCandidateIndices.size(),
+            wafer::kFixedSlotRankFrontierAdmissionLimit);
+  for (size_t fixed = 0; fixed < wafer::kFixedSlotRankFrontierAdmissionLimit;
+       ++fixed)
+    EXPECT_EQ(plan.fixedSlotCandidateIndices[fixed],
+              (std::vector<size_t>{genericCount + 1 + workerCount + fixed,
+                                   genericCount + 1 + workerCount + fixed}));
+  ASSERT_EQ(plan.genericCandidateIndices.size(), 8u);
+  const size_t genericSpan = genericCount - 1;
+  const size_t genericIntervals = plan.genericCandidateIndices.size() - 1;
+  const size_t genericQuotient = genericSpan / genericIntervals;
+  const size_t genericRemainder = genericSpan % genericIntervals;
+  for (size_t generic = 0; generic < plan.genericCandidateIndices.size();
+       ++generic) {
+    const size_t sampled = generic * genericQuotient +
+                           (generic * genericRemainder) / genericIntervals;
+    EXPECT_EQ(plan.genericCandidateIndices[generic],
+              (std::vector<size_t>{sampled + 1, sampled + 1}));
+  }
+
+  WholeVariantAttemptPlan repeated =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(metadata,
+                                                            rankCount);
+  EXPECT_EQ(repeated.workerPlacedCandidateIndices,
+            plan.workerPlacedCandidateIndices);
+  EXPECT_EQ(repeated.fixedSlotCandidateIndices, plan.fixedSlotCandidateIndices);
+  EXPECT_EQ(repeated.genericCandidateIndices, plan.genericCandidateIndices);
+
+  std::vector<SerializedRankVariantFrontier> serialized(rankCount);
+  for (size_t rank = 0; rank < rankCount; ++rank) {
+    std::set<size_t> required(plan.requiredModuleIndices[rank].begin(),
+                              plan.requiredModuleIndices[rank].end());
+    for (auto [index, candidate] : llvm::enumerate(metadata[rank])) {
+      SerializedRankVariantCandidate slot;
+      slot.moduleText =
+          required.count(index) ? "module {}" : "unrequired invalid MLIR";
+      slot.stableOrdinal = candidate.stableOrdinal;
+      slot.artifactKind = candidate.artifactKind;
+      slot.reservedBaseline = candidate.reservedBaseline;
+      slot.bufferingKind = candidate.bufferingKind;
+      slot.bufferingPlanOrdinal = candidate.bufferingPlanOrdinal;
+      slot.workerPlacementKind = candidate.workerPlacementKind;
+      slot.workerPlacementPlanOrdinal = candidate.workerPlacementPlanOrdinal;
+      serialized[rank].push_back(std::move(slot));
+    }
+  }
+
+  mlir::MLIRContext ownerContext;
+  auto imported =
+      wafer::compiler::detail::importRankVariantFrontiersIntoOwnerContext(
+          ownerContext, serialized, rankCount);
+  if (!imported) {
+    ADD_FAILURE() << llvm::toString(imported.takeError());
+    return;
+  }
+  for (const auto &frontier : *imported)
+    for (size_t worker = 0; worker < workerCount; ++worker)
+      EXPECT_EQ(static_cast<bool>(frontier[genericCount + 1 + worker].module),
+                worker < wafer::kWorkerPlacementRankFrontierAdmissionLimit);
+  for (const auto &frontier : *imported) {
+    for (const std::vector<size_t> &generic : plan.genericCandidateIndices)
+      ASSERT_TRUE(frontier[generic.front()].module);
+    for (size_t fixed = 0; fixed < fixedCount; ++fixed)
+      EXPECT_EQ(static_cast<bool>(
+                    frontier[genericCount + 1 + workerCount + fixed].module),
+                fixed < wafer::kFixedSlotRankFrontierAdmissionLimit);
+  }
+}
+
+TEST(WholeVariantAttemptPlanTest,
+     PhysicalBandQuantilesKeepTailCompoundTupleAttemptable) {
+  constexpr size_t rankCount = 2;
+  constexpr size_t workerCount =
+      wafer::kWorkerPlacementRankFrontierAdmissionLimit * 3;
+  std::vector<RankVariantMetadataFrontier> frontiers(rankCount);
+  for (size_t rank = 0; rank < rankCount; ++rank) {
+    frontiers[rank].push_back(slot(0, RankArtifactKind::Spill, true));
+    for (size_t worker = 0; worker + 1 < workerCount; ++worker)
+      frontiers[rank].push_back(
+          slot(1000 + static_cast<int64_t>(worker),
+               RankArtifactKind::SpillReady, false, RankBufferingKind::Single,
+               0, RankWorkerPlacementKind::DisjointComponents,
+               static_cast<uint32_t>(worker) + 1));
+    frontiers[rank].push_back(slot(5000, RankArtifactKind::Resident, false,
+                                   RankBufferingKind::StaticFixedSlot, 7,
+                                   RankWorkerPlacementKind::DisjointComponents,
+                                   99));
+  }
+
+  WholeVariantAttemptPlan plan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(frontiers,
+                                                            rankCount);
+  ASSERT_TRUE(plan.isValid());
+  ASSERT_EQ(plan.workerPlacedCandidateIndices.size(),
+            wafer::kWorkerPlacementRankFrontierAdmissionLimit);
+  const std::vector<size_t> tail(rankCount, workerCount);
+  EXPECT_EQ(plan.workerPlacedCandidateIndices.back(), tail);
+  EXPECT_NE(std::find(plan.optimizedCandidateIndices.begin(),
+                      plan.optimizedCandidateIndices.end(), tail),
+            plan.optimizedCandidateIndices.end());
+  for (size_t rank = 0; rank < rankCount; ++rank)
+    EXPECT_NE(std::find(plan.requiredModuleIndices[rank].begin(),
+                        plan.requiredModuleIndices[rank].end(), workerCount),
+              plan.requiredModuleIndices[rank].end());
+}
+
+TEST(WholeVariantAttemptPlanTest,
+     IncompleteWorkerSeedRemainsMetadataOnlyDuringOwnerImport) {
+  using wafer::compiler::detail::SerializedRankVariantCandidate;
+  using wafer::compiler::detail::SerializedRankVariantFrontier;
+
+  auto makeSerialized = [](int64_t ordinal, bool baseline, uint32_t workerPlan,
+                           llvm::StringRef moduleText) {
+    SerializedRankVariantCandidate candidate;
+    candidate.moduleText = moduleText.str();
+    candidate.stableOrdinal = ordinal;
+    candidate.artifactKind = RankArtifactKind::Spill;
+    candidate.reservedBaseline = baseline;
+    if (!baseline) {
+      candidate.workerPlacementKind =
+          RankWorkerPlacementKind::DisjointComponents;
+      candidate.workerPlacementPlanOrdinal = workerPlan;
+    }
+    return candidate;
+  };
+
+  std::vector<SerializedRankVariantFrontier> serialized(2);
+  serialized[0].push_back(makeSerialized(0, true, 0, "module {}"));
+  serialized[0].push_back(
+      makeSerialized(5, false, 1, "unrequired invalid MLIR"));
+  serialized[1].push_back(makeSerialized(0, true, 0, "module {}"));
+  serialized[1].push_back(
+      makeSerialized(5, false, 2, "unrequired invalid MLIR"));
+
+  mlir::MLIRContext ownerContext;
+  auto imported =
+      wafer::compiler::detail::importRankVariantFrontiersIntoOwnerContext(
+          ownerContext, serialized, /*expectedRankCount=*/2);
+  if (!imported) {
+    ADD_FAILURE() << llvm::toString(imported.takeError());
+    return;
+  }
+  for (const auto &frontier : *imported) {
+    ASSERT_TRUE(frontier.front().module);
+    EXPECT_FALSE(frontier.back().module);
+  }
 }
 
 TEST(WholeVariantAttemptPlanTest,
@@ -349,7 +678,10 @@ TEST(WholeVariantAttemptPlanTest,
                        RankArtifactKind artifactKind, bool reservedBaseline,
                        RankBufferingKind bufferingKind =
                            RankBufferingKind::Single,
-                       uint32_t bufferingPlanOrdinal = 0) {
+                       uint32_t bufferingPlanOrdinal = 0,
+                       RankWorkerPlacementKind workerPlacementKind =
+                           RankWorkerPlacementKind::Unplaced,
+                       uint32_t workerPlacementPlanOrdinal = 0) {
     SerializedRankVariantCandidate candidate;
     candidate.moduleText = moduleText.str();
     candidate.stableOrdinal = stableOrdinal;
@@ -357,6 +689,8 @@ TEST(WholeVariantAttemptPlanTest,
     candidate.reservedBaseline = reservedBaseline;
     candidate.bufferingKind = bufferingKind;
     candidate.bufferingPlanOrdinal = bufferingPlanOrdinal;
+    candidate.workerPlacementKind = workerPlacementKind;
+    candidate.workerPlacementPlanOrdinal = workerPlacementPlanOrdinal;
     return candidate;
   };
 
@@ -366,14 +700,16 @@ TEST(WholeVariantAttemptPlanTest,
                  RankArtifactKind::Spill, false),
       serialized("module {}", 0, RankArtifactKind::Spill, true),
       serialized("module {}", 1, RankArtifactKind::Resident, false,
-                 RankBufferingKind::StaticFixedSlot, 7),
+                 RankBufferingKind::StaticFixedSlot, 7,
+                 RankWorkerPlacementKind::DisjointComponents, 1),
   };
   frontiers[1] = {
       serialized("also not valid MLIR and must remain unparsed", 20,
                  RankArtifactKind::Spill, false),
       serialized("module {}", 0, RankArtifactKind::Spill, true),
       serialized("module {}", 1, RankArtifactKind::Resident, false,
-                 RankBufferingKind::StaticFixedSlot, 7),
+                 RankBufferingKind::StaticFixedSlot, 7,
+                 RankWorkerPlacementKind::DisjointComponents, 1),
   };
 
   mlir::MLIRContext ownerContext;
@@ -410,10 +746,108 @@ TEST(WholeVariantAttemptPlanTest,
     EXPECT_FALSE(frontier[2].reservedBaseline);
     EXPECT_EQ(frontier[2].bufferingKind, RankBufferingKind::StaticFixedSlot);
     EXPECT_EQ(frontier[2].bufferingPlanOrdinal, 7u);
+    EXPECT_EQ(frontier[2].workerPlacementKind,
+              RankWorkerPlacementKind::DisjointComponents);
+    EXPECT_EQ(frontier[2].workerPlacementPlanOrdinal, 1u);
     materializedModuleCount += frontier[1].module ? 1 : 0;
     materializedModuleCount += frontier[2].module ? 1 : 0;
   }
   EXPECT_EQ(materializedModuleCount, 4u);
+}
+
+TEST(WholeVariantAttemptPlanTest, RequiredInvalidOwnerImportModuleStillFails) {
+  using wafer::compiler::detail::SerializedRankVariantCandidate;
+  using wafer::compiler::detail::SerializedRankVariantFrontier;
+
+  SerializedRankVariantCandidate required;
+  required.moduleText = "not valid MLIR";
+  required.stableOrdinal = 0;
+  required.reservedBaseline = true;
+  std::vector<SerializedRankVariantFrontier> frontiers(1);
+  frontiers.front().push_back(std::move(required));
+
+  mlir::MLIRContext ownerContext;
+  auto imported =
+      wafer::compiler::detail::importRankVariantFrontiersIntoOwnerContext(
+          ownerContext, frontiers, /*expectedRankCount=*/1);
+  ASSERT_FALSE(static_cast<bool>(imported));
+  EXPECT_NE(llvm::toString(imported.takeError())
+                .find("failed to import a lowered scheduling candidate"),
+            std::string::npos);
+}
+
+TEST(WholeVariantAttemptPlanTest,
+     CompactionKeepsPostImportCandidateReachableAfterQuantileReplanning) {
+  using wafer::compiler::detail::RankVariantCandidate;
+  using wafer::compiler::detail::SerializedRankVariantCandidate;
+  using wafer::compiler::detail::SerializedRankVariantFrontier;
+
+  constexpr size_t originalCandidateCount = 256;
+  RankVariantMetadataFrontier metadata;
+  metadata.reserve(originalCandidateCount);
+  for (size_t index = 0; index < originalCandidateCount; ++index)
+    metadata.push_back(
+        slot(static_cast<int64_t>(index),
+             index == 0 ? RankArtifactKind::Spill : RankArtifactKind::Resident,
+             /*reservedBaseline=*/index == 0));
+  WholeVariantAttemptPlan importPlan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan({metadata}, 1);
+  ASSERT_TRUE(importPlan.isValid());
+
+  std::vector<bool> required(originalCandidateCount, false);
+  for (size_t index : importPlan.requiredModuleIndices.front())
+    required[index] = true;
+  std::vector<SerializedRankVariantFrontier> serialized(1);
+  for (size_t index = 0; index < originalCandidateCount; ++index) {
+    SerializedRankVariantCandidate candidate;
+    candidate.moduleText =
+        required[index] ? "module {}" : "deliberately invalid unrequired MLIR";
+    candidate.stableOrdinal = static_cast<int64_t>(index);
+    candidate.artifactKind =
+        index == 0 ? RankArtifactKind::Spill : RankArtifactKind::Resident;
+    candidate.reservedBaseline = index == 0;
+    serialized.front().push_back(std::move(candidate));
+  }
+
+  mlir::MLIRContext ownerContext;
+  auto imported =
+      wafer::compiler::detail::importRankVariantFrontiersIntoOwnerContext(
+          ownerContext, serialized, /*expectedRankCount=*/1);
+  if (!imported) {
+    ADD_FAILURE() << llvm::toString(imported.takeError());
+    return;
+  }
+  wafer::compiler::detail::compactImportedRankVariantFrontiers(*imported);
+  ASSERT_LT(imported->front().size(), originalCandidateCount);
+  EXPECT_TRUE(llvm::all_of(imported->front(),
+                           [](const RankVariantCandidate &candidate) {
+                             return static_cast<bool>(candidate.module);
+                           }));
+
+  auto appendedModule =
+      mlir::parseSourceString<mlir::ModuleOp>("module {}", &ownerContext);
+  ASSERT_TRUE(appendedModule);
+  imported->front().push_back({std::move(appendedModule), 1000,
+                               RankArtifactKind::Resident,
+                               /*reservedBaseline=*/false});
+
+  std::vector<RankVariantMetadataFrontier> replanningMetadata(1);
+  for (const RankVariantCandidate &candidate : imported->front())
+    replanningMetadata.front().push_back(
+        {candidate.stableOrdinal, candidate.artifactKind,
+         candidate.reservedBaseline, candidate.bufferingKind,
+         candidate.bufferingPlanOrdinal, candidate.workerPlacementKind,
+         candidate.workerPlacementPlanOrdinal});
+  WholeVariantAttemptPlan replanned =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(
+          replanningMetadata, /*expectedRankCount=*/1);
+  ASSERT_TRUE(replanned.isValid());
+  EXPECT_TRUE(llvm::any_of(
+      replanned.optimizedCandidateIndices,
+      [&](const std::vector<size_t> &indices) {
+        return indices.size() == 1 &&
+               imported->front()[indices.front()].stableOrdinal == 1000;
+      }));
 }
 
 TEST(WholeVariantAttemptPlanTest,
@@ -477,6 +911,45 @@ TEST(WholeVariantAttemptPlanTest,
   EXPECT_EQ(nonCanonicalFixedPlan.failure,
             WholeVariantAttemptPlanFailure::CandidateDomain);
   EXPECT_EQ(nonCanonicalFixedPlan.getRequiredModuleCount(), 1u);
+
+  std::vector<RankVariantMetadataFrontier> workerPlacedBaseline(1);
+  workerPlacedBaseline[0] = {
+      slot(0, RankArtifactKind::Spill, true, RankBufferingKind::Single, 0,
+           RankWorkerPlacementKind::DisjointComponents,
+           /*workerPlacementPlanOrdinal=*/1),
+  };
+  WholeVariantAttemptPlan workerPlacedBaselinePlan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(
+          workerPlacedBaseline, 1);
+  EXPECT_EQ(workerPlacedBaselinePlan.failure,
+            WholeVariantAttemptPlanFailure::ReservedBaseline);
+  EXPECT_EQ(workerPlacedBaselinePlan.getRequiredModuleCount(), 1u);
+
+  std::vector<RankVariantMetadataFrontier> nonCanonicalUnplaced(1);
+  nonCanonicalUnplaced[0] = {
+      slot(0, RankArtifactKind::Spill, true, RankBufferingKind::Single, 0,
+           RankWorkerPlacementKind::Unplaced,
+           /*workerPlacementPlanOrdinal=*/9),
+  };
+  WholeVariantAttemptPlan nonCanonicalUnplacedPlan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(
+          nonCanonicalUnplaced, 1);
+  EXPECT_EQ(nonCanonicalUnplacedPlan.failure,
+            WholeVariantAttemptPlanFailure::CandidateDomain);
+  EXPECT_EQ(nonCanonicalUnplacedPlan.getRequiredModuleCount(), 1u);
+
+  std::vector<RankVariantMetadataFrontier> nonCanonicalWorkerPlaced(1);
+  nonCanonicalWorkerPlaced[0] = {
+      slot(0, RankArtifactKind::Spill, true, RankBufferingKind::Single, 0,
+           RankWorkerPlacementKind::DisjointComponents,
+           /*workerPlacementPlanOrdinal=*/0),
+  };
+  WholeVariantAttemptPlan nonCanonicalWorkerPlacedPlan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(
+          nonCanonicalWorkerPlaced, 1);
+  EXPECT_EQ(nonCanonicalWorkerPlacedPlan.failure,
+            WholeVariantAttemptPlanFailure::CandidateDomain);
+  EXPECT_EQ(nonCanonicalWorkerPlacedPlan.getRequiredModuleCount(), 1u);
 }
 
 TEST(WholeVariantAttemptPlanTest, IsDeterministicAcrossRepeatedPlanning) {
@@ -495,6 +968,10 @@ TEST(WholeVariantAttemptPlanTest, IsDeterministicAcrossRepeatedPlanning) {
   ASSERT_TRUE(second.isValid());
   EXPECT_EQ(first.reservedBaselineIndices, second.reservedBaselineIndices);
   EXPECT_EQ(first.optimizedCandidateIndices, second.optimizedCandidateIndices);
+  EXPECT_EQ(first.workerPlacedCandidateIndices,
+            second.workerPlacedCandidateIndices);
+  EXPECT_EQ(first.fixedSlotCandidateIndices, second.fixedSlotCandidateIndices);
+  EXPECT_EQ(first.genericCandidateIndices, second.genericCandidateIndices);
   EXPECT_EQ(first.requiredModuleIndices, second.requiredModuleIndices);
   EXPECT_EQ(first.boundedProductPositionCount,
             second.boundedProductPositionCount);

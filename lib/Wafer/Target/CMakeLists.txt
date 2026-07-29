@@ -26,6 +26,7 @@ add_mlir_library(WaferTarget
   TargetFormat.cpp
   TargetNumericCapability.cpp
   TargetProfile.cpp
+  TargetSchedulingCapability.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport

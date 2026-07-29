@@ -148,6 +148,40 @@ private:
   std::string llvmClangXX;
 };
 
+class TargetCompilationProduct;
+
+namespace testing {
+enum class CollectiveCharacterizationAlgorithm;
+
+mlir::FailureOr<TargetCompilationProduct>
+compileProgramWithReservedBaselineTargetCompilation(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+mlir::FailureOr<TargetCompilationProduct>
+compileProgramForStaticFixedSlotTargetQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+mlir::FailureOr<TargetCompilationProduct>
+compileProgramForWorkerPlacementTargetQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+mlir::FailureOr<TargetCompilationProduct>
+compileProgramForNoCResidentFixedSlotWorkerTargetQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+mlir::FailureOr<TargetCompilationProduct>
+compileProgramForCollectiveCharacterizationTargetCompilation(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain,
+    CollectiveCharacterizationAlgorithm algorithm, llvm::StringRef reportPath,
+    llvm::raw_ostream &diagnostics);
+} // namespace testing
+
 /// Owner-backed result retained by downstream consumers that need the same
 /// accepted rank domain and the exact target LLVM modules already consumed by
 /// target artifact publication. Neither member is reconstructed from the
@@ -174,6 +208,33 @@ private:
                                      llvm::StringRef xlaSpmdPartitionerHelper,
                                      const TargetToolchain &targetToolchain,
                                      llvm::raw_ostream &diagnostics);
+  friend mlir::FailureOr<TargetCompilationProduct>
+  testing::compileProgramWithReservedBaselineTargetCompilation(
+      CompilationRequest request, llvm::StringRef outputProgramDirectory,
+      llvm::StringRef xlaSpmdPartitionerHelper,
+      const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+  friend mlir::FailureOr<TargetCompilationProduct>
+  testing::compileProgramForStaticFixedSlotTargetQualification(
+      CompilationRequest request, llvm::StringRef outputProgramDirectory,
+      llvm::StringRef xlaSpmdPartitionerHelper,
+      const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+  friend mlir::FailureOr<TargetCompilationProduct>
+  testing::compileProgramForWorkerPlacementTargetQualification(
+      CompilationRequest request, llvm::StringRef outputProgramDirectory,
+      llvm::StringRef xlaSpmdPartitionerHelper,
+      const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+  friend mlir::FailureOr<TargetCompilationProduct>
+  testing::compileProgramForNoCResidentFixedSlotWorkerTargetQualification(
+      CompilationRequest request, llvm::StringRef outputProgramDirectory,
+      llvm::StringRef xlaSpmdPartitionerHelper,
+      const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+  friend mlir::FailureOr<TargetCompilationProduct>
+  testing::compileProgramForCollectiveCharacterizationTargetCompilation(
+      CompilationRequest request, llvm::StringRef outputProgramDirectory,
+      llvm::StringRef xlaSpmdPartitionerHelper,
+      const TargetToolchain &targetToolchain,
+      testing::CollectiveCharacterizationAlgorithm algorithm,
+      llvm::StringRef reportPath, llvm::raw_ostream &diagnostics);
 
   TargetCompilationProduct(ExecutableBundle executableBundle,
                            TargetLLVMModuleBundle targetLLVMModuleBundle)

@@ -204,7 +204,9 @@ static uint64_t wafer_ncc_probe_mismatch8(const volatile uint8_t *actual,
 }
 
 static void wafer_ncc_probe_set_worker(uint32_t *inter_type, uint32_t worker) {
-  *inter_type = (*inter_type & ~UINT32_C(0x300)) | ((worker % 3U) << 8);
+  *inter_type = (*inter_type & ~WAFER_TX81_NCC_WORKER_INTER_TYPE_MASK) |
+                ((worker % WAFER_TX81_NCC_WORKER_COUNT)
+                 << WAFER_TX81_NCC_WORKER_INTER_TYPE_SHIFT);
 }
 
 static int wafer_ncc_probe_prepare_ct(WaferNccProbeInstruction *instruction,

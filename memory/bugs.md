@@ -1880,11 +1880,13 @@
 - 修复模式：抽取一个private、overflow-safe静态index range evaluator，DDR与Target共同消费并保留各自诊断；
   Unknown expression、dynamic/invalid bounds、非singleton乘法、unsigned division非法或溢出全部fail closed。
   loop-carried view按init与yield联合求range；identity pass-through保留已有证明，nonidentity recurrence无法
-  建立有限保守上界时保持Unknown并拒绝candidate。
+  建立有限保守上界时保持Unknown并拒绝candidate。遇到nested loop result时递归证明其yield回到同一carried
+  index，再沿对应init继续；只比较nested yield是否直接等于iter-arg会误拒多层identity wrapper。
   fixed-slot API显式要求unplaced input，在clone前扫描并拒绝任何SPM/DDR offset，随后由每个candidate独立重跑
   SPM/DDR packing、range verifier和Target late gate。
 - 防复发：正例覆盖`iv + stage displacement`一直到Target lowering及identity carried view，负例覆盖unknown
-  origin、overflow和backedge yield超出root的nonidentity recurrence；
+  origin、overflow和backedge yield超出root的nonidentity recurrence；identity正例必须包含至少三层
+  loop-result逐层yield到外层的链；
   placement测试必须检查所有外部slot offset唯一、arena合法且源module未被修改。
 
 ## 2026-07-28 resident handoff之后仍需通用storage-coalescing proof
@@ -1967,3 +1969,153 @@
   也不是engine active求和。
 - 后续：检查并消除重复搬运和非必要`TsmWaitfinish*`，推进movement/compute/collective流水；上述单次样本
   只记录问题，不进入通用cost或scheduler。
+
+## 2026-07-28 pending NCC存在性不能代替DTE的range conflict
+
+- 现象：16-rank NoC-resident target-model vertical中，rank 0已经发出Direct-DTE endpoint，其余rank在完全
+  不相交的SPM地址上还有pending `memset`/compute；SystemC却把所有endpoint留在unresolved状态并报告no-progress。
+  同类实现也会让本可并行的DTE与elementwise/GEMM无条件串行。
+- 根因：旧模型只保存“该rank有pending NCC”这一布尔事实。它不知道ordinary command实际读取/写入哪些bytes，
+  因而DTE匹配只能对任意pending command fail closed；这把completion domain边界误当成whole-SPM hazard。
+- 修复模式：每个ordered-pending `TargetModelCommandEffect`在commit前同时生成typed read/write byte footprint，
+  并按`(rank, issue ordinal)`持有至matching participant join。DTE source只与overlap pending write冲突；
+  DTE destination与overlap pending read/write冲突。matching participant join必须先于DTE issue；issue-time
+  hazard在发布peer-ready或模拟`send_async`前以`dte-issue-order` fail closed，post-issue join不能追认已经
+  提交的传输。compact access保留exact interval，strided access使用overflow-safe conservative span，
+  无法有界化时仍fail closed；join必须删除恰好对应的pending summary。
+- 防复发：同一all-rank SystemC fixture交叉覆盖elementwise和GEMM，验证disjoint成功、overlap在issue处确定
+  失败和pre-issue matching join成功；另以source write、destination read、destination write分别覆盖
+  `overlap -> DTE issue -> late join -> wait`负例，并断言其不是`no-progress`。不能只测一个opcode、只测
+  write footprint，或让post-issue join掩盖错误的issue顺序。
+
+## 2026-07-29 candidate生成标签不能证明最终NoC residency
+
+- 现象：严格all-reduce ring资格最初要求所有rank的artifact kind为`Resident`，但source纵向中真正消除
+  partial spill/reload的ring candidate仍保留`Spill`/`SpillReady`生成标签，导致合法tuple全部被拒绝；
+  相反，手工标成`Resident`的candidate仍可能包含private DDR spill。
+- 根因：artifact kind属于frontier generation/correspondence provenance，finalization、跨role累计rewrite及
+  后续lowering都可能改变当前IR的DDR行为。把标签当作语义事实既会false negative，也会让stale metadata
+  false positive；aggregate DDR byte count同样无法区分boundary movement和private spill。
+- 修复模式：qualification从每个accepted rank的current Instr IR重建DDR movement root，只允许entry DDR
+  argument上的RDMA及唯一entry return root上的WDMA；沿明确的TileRegion、透明memref cast和ViewLike alias，
+  对private allocation、unknown producer、helper-local root或不完整return关系fail closed。collective算法
+  仍由typed final message phase逐rank精确匹配，reserved状态单独拒绝。
+- 防复发：正例必须用`Spill`和`SpillReady`标签证明boundary-only IR仍可选；负例必须用`Resident`标签加
+  private spill/reload证明仍拒绝，并独立覆盖reserved candidate。source vertical继续检查slice/round/message、
+  target model、ELF、package和no-card，不能以qualification mode本身代签执行事实。
+
+## 2026-07-29 静态callsite不能代替动态loop work
+
+- 现象：ring report已正确执行一个完整chunk，但断言把每条静态issue的operand bytes直接当成chunk bytes，
+  因而在source tiling生成`32768 bytes × 4 iterations`时错误期待`131072 bytes × 1`。同样，fixed-slot
+  prologue/steady/epilogue会复制GEMM/elementwise静态调用点；拿winner与baseline的ELF callsite数量相等来证明
+  compute保持不变，会拒绝数值和动态work均正确的流水化schedule。
+- 根因：忽略了compact SCF中静态callsite与dynamic occurrence的区别；只看site operand会低估或误写最终
+  message traffic，反过来只看aggregate又无法审计具体round/slice。
+- 修复模式：每条message同时保留`issue_bytes`、所有常量祖先loop的乘积和`executed_bytes`，并验证乘法
+  overflow、round/slice tuple及跨rank端点匹配；总流量只对executed bytes求和。dynamic或不可证明loop继续
+  fail closed，不能猜trip count。compute保持性由final Instr cost按同一loop multiplicity计算exact logical
+  ops，再与数值oracle并列验证；ELF callsite只证明目标family/ABI实际存在。
+- 防复发：测试固定检查`issue_bytes * multiplicity == executed_bytes == logical chunk bytes`，同时检查
+  round、slice、send/recv数和跨rank总量；跨不同buffering/tiling schedule不比较静态compute callsite数量，
+  而比较loop-aware logical work及CPU expected。不要把某次tiling恰好产生的callsite形态提升为协议。
+
+## 2026-07-29 静态timeline不能直接授权loop-body storage coalescing
+
+- 现象：完整、连续、unit-descriptor的SPM GatherScatter在loop外可安全合并，但原analysis把loop body一律标成
+  non-root path；直接删除该限制又会把一次静态body事件顺序误当成所有动态iteration，可能让loop后use、
+  source mutation或跨backedge未完成DTE错误共享同一root。
+- 根因：alias access只记录event而没有owner/path，forwarding也没有scope；self-copy还可在root、path和completion
+  门禁前提前删除。由此既无法证明合法loop case，也无法拒绝replacement不支配use或exact wait跨iteration的case。
+- 修复模式：建立严格loop context，只接受direct、无条件、static-positive `scf.for`和loop-invariant
+  compiler-owned roots；alias access/forwarding携带owner/path，destination限定copy后同path只读，source
+  snapshot、DTE interval和replacement dominance分别证明。loop-local/iter-arg、nested/conditional、
+  mutation、loop后use及跨backedge outstanding event全部fail closed；self-copy走相同门禁。
+- 防复发：正例同时覆盖same-shape、cross-encoding和loop内exact-wait后consumer；负例必须覆盖dynamic/zero、
+  nested/conditional、两侧loop-local root、iter-arg/yield、copy前access、copy后source write、loop后use、
+  outstanding DTE跨copy/backedge和dynamic self-copy。静态单轮FileCheck不能替代这些dynamic-safety负例。
+
+## 2026-07-29 high-level reduction不能借用未发射CT Reduce的窄字段
+
+- 现象：Direct-DTE profile的本地轴为`458752`个`f16`，候选`458752/229376/114688`都被统一
+  `uint16_t traversal`门禁拒绝，直到`57344`才通过；实际target stream只发CT Add和Direct DTE，并无CT Reduce。
+- 根因：cheap geometry看到fused scope含high-level reduction，就把CT Reduce `Data_Shape`的`uint16_t`限制
+  施加到全部候选维度，混淆了上层数学wrapper与最终物理instruction字段。CT elementwise的`elem_count`
+  实际是`uint32_t`。
+- 修复模式：GEMM继续验证真实NE窄维度；非GEMM reduction只有effective local reduction dimension大于1时
+  才施加CT Reduce shape限制。unit-local reduction让complete target/ABI gate按实际CT Add `uint32_t`
+  element count验证，不能在cheap gate提前代签另一instruction family。
+- 防复发：candidate-selection正例必须选择大于65535的unit-local reduction traversal，同时以local reduction
+  dimension 2和真实wide CT Reduce保持负例；source vertical再从final ELF核对实际elementwise count并重放
+  target-model/CPU expected/no-card。单看high-level op名或scope不能恢复target field width。
+
+## 2026-07-29 物理候选的前缀预算会永久饿死后置组合
+
+- 现象：actual NoC、worker和fixed-slot已经能形成完整同候选，但whole-variant attempt plan只保留每个
+  correspondence band的前缀；上游先产生足够多的低ordinal候选后，后置的合法组合永远不会进入target gate。
+- 根因：candidate cap本应限制编译成本，却被实现成对稳定有序domain的prefix语义；增加head/tail配额只会把
+  starvation移到中间。另一个隐患是generation在全部rank/final gate成功前就递增共享worker配额，失败clone也会
+  消耗后续合法候选的容量。
+- 修复模式：先收集完整typed correspondence domain，再在固定总预算内做包含首尾的确定性等距quantile采样；
+  worker、fixed-slot和ordinary generic tuple使用独立有界band并公平交错。generation使用tentative计数，只有整组
+  all-rank commit成功才发布计数；同一generation先保留直接worker realization，再让其fixed-slot siblings消费
+  剩余额度。
+- 防复发：构造超过cap的完整domain并断言中部、尾部的稳定采样与重复确定性；另用前一generation晚失败、后一
+  generation合法的case证明额度回滚。测试必须检查实际attempt/import索引及current IR，不只检查candidate总数。
+
+## 2026-07-29 fixed-slot选择证明和publication清单不能共用同一量词
+
+- 现象：selector已从current IR找到真实、被effect/issue消费的SPM root rotation，最终qualification companion却因
+  同一loop中另一个可证明不变的SPM iter-arg而拒绝；反向放宽公共parser又可能让unknown recurrence进入attestation。
+- 根因：选择只需要一个满足全部legality条件的existential execution witness；publication必须完整盘点accepted call
+  closure中的root、loop和rotation。把后者的universal inventory parser复用于前者会被无关loop/root误伤，把前者的
+  tolerant逻辑复用于后者则会发布不完整事实。
+- 修复模式：selector单独寻找static-positive、planned/nonoverlap、真实direct effect/issue消费的rotation cycle，
+  跳过无关但可解释的iter-arg和loop；publication继续检查全部root/loop，只把可证明same-root invariant的SPM
+  iter-arg记为non-rotation，unknown、不同root transition、conflicting successor和无法解释的alias仍fail closed。
+- 防复发：同一测试族同时覆盖“有效rotation + 无关固定iter-arg”的选择与attestation正例、dead/nested effect负例、
+  unknown recurrence、不同root transition、root overlap和dynamic loop publication负例；Tools纵向必须真正发布并
+  read back companion，不能用selector unit代签。
+
+## 2026-07-29 跨rank fixed-loop correspondence不能使用walk ordinal
+
+- 现象：每个rank拥有相同数量的`scf.for`时，按walk ordinal配对可能把不同bounds、不同region sibling或不同nesting的
+  loop拼成一个complete fixed-slot tuple；局部派生均合法，但all-rank metadata错误声称它们是同一realization。
+- 根因：operation walk顺序只是当前module的遍历偶然，不是跨rank结构身份；rank-specific send/recv数量又使body
+  fingerprint或operation count同样不稳定。
+- 修复模式：以anchor loop的exact constant `(lower, upper, step)`和到public entry的typed structured operation
+  path作为最小correspondence key；每个其它rank必须恰有一个匹配。路径或bounds不一致、private helper路径不可证明、
+  零匹配或多匹配都跳过该complete plan，不退回ordinal或名字。ordinal只用于成功候选的稳定plan编号。
+- 防复发：负例分别保持相同loop count但改变bounds、保持bounds但改变region sibling/nesting；正例允许各rank有不同
+  通信角色和send/recv数量，仍要求完整path+bounds对应。
+
+## 2026-07-29 DDR boundary root必须沿SCF recurrence证明不变量
+
+- 现象：NoC-resident候选只把entry input读入、把returned output写回，但movement operand经过`scf.for`
+  iter-arg/result后，boundary-only资格把它当unknown；若简单把loop init当root，又会错误接受yield切换到另一个DDR
+  boundary或private root的candidate。
+- 根因：loop-carried value同时有init和backedge两个来源，单向def-use追踪不能证明每次动态iteration的storage root；
+  cycle guard还会把普通`yield %same_iter_arg` identity recurrence误判为不可解析。
+- 修复模式：对loop result/region iter-arg同时解析init与yield，只有整个reachable recurrence component的init和
+  external yield都收敛到同一exact root才返回；same-index identity及同root的cross-index透明alias轮换可沿该root
+  收敛，alternating distinct roots、unknown producer和非透明view均fail closed。TileRegion、同type cast和
+  ViewLike边只在各自storage-preserving合同内继续追踪。
+- 防复发：正例覆盖direct boundary、loop result、same-index identity和同root cross-index透明alias；负例覆盖两个
+  entry root交替、private root、不同root permutation、cycle和unknown producer。artifact kind或aggregate DDR
+  bytes不能参与证明。
+
+## 2026-07-29 进程加盐hash不能决定NoC owner和通信顺序
+
+- 现象：同一输入分别用ordinary和profile模式编译时，source program完全相同，但最终ELF和manifest digest不同；
+  重复进程中required-output producer会漂移到不同logical rank，完整package byte diff不稳定。
+- 根因：NoC input/parameter、intermediate和output materializer把`llvm::hash_combine`/
+  `OperationEquivalence::computeHash`的数值用于group排序、`% rank_count` owner选择和tie-break。启用
+  `LLVM_ENABLE_ABI_BREAKING_CHECKS`时LLVM明确使用per-process execution seed；即使hash equality可在同一进程
+  预筛等价候选，其数值也不是跨进程canonical identity。
+- 修复模式：按rank-major current-IR walk建立稳定discovery domain，以exact global-tile relation、typed structured
+  path及SSA/effect producer proof做equivalence class；communication ID按class顺序分配，owner只用program member/
+  class ordinal和logical-rank有序候选集做确定性选择。物理payload不兼容仍归入同一logical occurrence后原子拒绝，
+  不能被拆成貌似合法的rank子组。
+- 防复发：单测固定多group的具体`(communication_id, owner_rank)`和output publisher owner；Tools测试必须从两个
+  独立compiler进程生成ordinary/profile package并做完整递归byte diff。禁止任何`hash % owner_count`、
+  hash排序或hash tie-break进入可见artifact决策。

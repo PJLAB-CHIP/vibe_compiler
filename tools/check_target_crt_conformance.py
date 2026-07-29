@@ -383,7 +383,7 @@ def check_convert_route_contract(
 
     invocations = re.findall(
         r"^\s*WAFER_DEFINE_CONVERT_(ZP|ROUND|PLAIN)\(\s*"
-        r"(wafer_tx81_convert_[a-z0-9_]+)\s*,\s*([A-Z0-9_]+)\s*\)\s*$",
+        r"(wafer_tx81_convert_[a-z0-9_]+_v3)\s*,\s*([A-Z0-9_]+)\s*\)\s*$",
         source_text,
         re.MULTILINE,
     )
@@ -394,10 +394,15 @@ def check_convert_route_contract(
         if symbol in actual_symbols:
             fail(f"runtime CRT convert definitions: duplicate symbol {symbol}")
         actual_symbols[symbol] = (group, method)
+    expected_v3_symbols = {
+        f"{symbol}_v3": contract for symbol, contract in expected_symbols.items()
+    }
     require_exact_set(
-        set(actual_symbols), set(expected_symbols), "runtime CRT convert symbols"
+        set(actual_symbols),
+        set(expected_v3_symbols),
+        "runtime CRT V3 convert symbols",
     )
-    for symbol, expected in expected_symbols.items():
+    for symbol, expected in expected_v3_symbols.items():
         if actual_symbols[symbol] != expected:
             fail(
                 f"runtime CRT convert definition mismatch for {symbol}: "
@@ -409,20 +414,31 @@ def check_convert_route_contract(
         header_text,
         re.DOTALL,
     )
-    if len(declarations) != 36:
-        fail(f"runtime CRT convert declarations: expected 36, found {len(declarations)}")
+    if len(declarations) != 72:
+        fail(f"runtime CRT convert declarations: expected 72, found {len(declarations)}")
     declaration_symbols = [symbol for symbol, _ in declarations]
     if len(set(declaration_symbols)) != len(declaration_symbols):
         fail("runtime CRT convert declarations: duplicate symbol")
     require_exact_set(
-        set(declaration_symbols), set(expected_symbols), "runtime CRT convert declarations"
+        set(declaration_symbols),
+        set(expected_symbols) | set(expected_v3_symbols),
+        "runtime CRT convert declarations",
     )
-    expected_signature = (
+    expected_legacy_signature = (
         "uint64_t src, uint64_t dst, uint32_t elem_count, "
         "uint32_t zero_point, uint32_t rounding_mode"
     )
+    expected_v3_signature = (
+        "uint64_t src, uint64_t dst, uint32_t elem_count, "
+        "uint32_t zero_point, uint32_t rounding_mode, uint32_t worker"
+    )
     for symbol, signature in declarations:
         normalized = re.sub(r"\s+", " ", signature).strip()
+        expected_signature = (
+            expected_v3_signature
+            if symbol.endswith("_v3")
+            else expected_legacy_signature
+        )
         if normalized != expected_signature:
             fail(f"runtime CRT convert declaration has wrong ABI for {symbol}")
 
@@ -435,13 +451,15 @@ def check_convert_route_contract(
     require_pattern(
         lowering_text,
         r"lowerConvert\(InstrConvertOp\s+op\).*?"
-        r"emitCall\(op\.getLoc\(\),\s*"
-        r"getTargetCallDescriptor\(op\.getKind\(\)\),\s*args\)",
+        r"emitNCCCall\(op\.getLoc\(\),\s*"
+        r"getTargetCallDescriptor\(op\.getKind\(\),\s*targetProfile\),\s*args,\s*"
+        r"op\.getWorker\(\)\)",
         "target convert typed descriptor lowering",
     )
     require_pattern(
         registry_text,
-        r'\("convert_"\s*\+\s*stringifyEnum\(\*kind\)\)\.str\(\),\s*'
+        r'\("convert_"\s*\+\s*stringifyEnum\(\*kind\)\s*\+\s*suffix\)'
+        r"\.str\(\),\s*"
         r"signature\(2,\s*3\),\s*\*kind",
         "target convert shared registry ABI",
     )
@@ -513,6 +531,89 @@ def check_direct_dte_lifecycle(source_text: str) -> None:
         ],
         "Direct DTE sender local/remote SPM address materialization",
     )
+    for needle in [
+        "direct_sync_wait(",
+        "direct_dte_attach(",
+        "direct_dte_send_async(",
+        "direct_dte_wait_done(",
+        "direct_dte_release(",
+    ]:
+        require_absent(
+            send_prepare,
+            needle,
+            "Direct DTE send prepare must remain transport-effect free",
+        )
+
+    issue_helper = function_body(source_text, "wafer_direct_dte_issue_sender")
+    require_in_order(
+        issue_helper,
+        [
+            "direct_sync_wait(info->tile_this, info->dst_tile);",
+            "direct_dte_attach(",
+            "direct_dte_send_async(info);",
+            "wafer_direct_dte_sender.issued = true;",
+        ],
+        "Direct DTE shared sender issue helper",
+    )
+    require_absent(
+        issue_helper,
+        "direct_dte_wait_done(",
+        "Direct DTE sender issue helper must not wait for completion",
+    )
+
+    send_issue = function_body(
+        source_text, "wafer_tx81_direct_dte_send_issue_v3"
+    )
+    require_contains(
+        send_issue,
+        "(void)wafer_direct_dte_issue_sender(event, true);",
+        "Direct DTE V3 explicit issue profiler route",
+    )
+    for needle in [
+        "direct_sync_wait(",
+        "direct_dte_attach(",
+        "direct_dte_send_async(",
+        "direct_dte_wait_done(",
+    ]:
+        require_absent(
+            send_issue,
+            needle,
+            "Direct DTE V3 public issue must delegate to the shared helper",
+        )
+
+    require_pattern(
+        source_text,
+        r"\bwafer_tx81_direct_dte_send_issue_v3\s*\(",
+        "Direct DTE V3 explicit issue symbol",
+    )
+    require_absent(
+        source_text,
+        "wafer_tx81_direct_dte_send_issue(",
+        "legacy Direct DTE explicit issue symbol",
+    )
+
+    wait = function_body(source_text, "wafer_tx81_direct_dte_wait")
+    require_in_order(
+        wait,
+        [
+            "!wafer_direct_dte_sender.issued",
+            "wafer_direct_dte_issue_sender(event, false)",
+            "direct_dte_wait_done(info);",
+            "direct_dte_release(info->dte_node);",
+            "wafer_direct_dte_sender.active = false;",
+        ],
+        "Direct DTE exact sender completion and release",
+    )
+    for needle in [
+        "direct_sync_wait(",
+        "direct_dte_attach(",
+        "direct_dte_send_async(",
+    ]:
+        require_absent(
+            wait,
+            needle,
+        "Direct DTE wait must delegate legacy issue and own only completion",
+        )
 
     recv_prepare = function_body(
         source_text, "wafer_tx81_direct_dte_recv_prepare"
@@ -545,7 +646,7 @@ def check_dma(source_text: str) -> None:
     ]:
         require_contains(conversion, needle, "DMA checked byte to element conversion")
 
-    rdma = function_body(source_text, "wafer_tx81_rdma")
+    rdma = function_body(source_text, "wafer_tx81_rdma_v3")
     require_contains(rdma, "(void)byte_count;", "RDMA")
     require_in_order(rdma, ["rdma->AddSrcDst", "rdma->ConfigStrideIteration"], "RDMA")
     require_contains(
@@ -566,7 +667,7 @@ def check_dma(source_text: str) -> None:
         "RDMA checked element geometry",
     )
 
-    wdma = function_body(source_text, "wafer_tx81_wdma")
+    wdma = function_body(source_text, "wafer_tx81_wdma_v3")
     require_contains(wdma, "(void)byte_count;", "WDMA")
     require_in_order(wdma, ["wdma->AddSrcDst", "wdma->ConfigStrideIteration"], "WDMA")
     require_contains(
@@ -591,16 +692,17 @@ def check_dma(source_text: str) -> None:
 def check_gather_scatter_and_mask(
     source_text: str, header_text: str, lowering_text: str
 ) -> None:
-    gather = function_body(source_text, "wafer_tx81_gather_scatter")
+    gather = function_body(source_text, "wafer_tx81_gather_scatter_v3")
     for needle in ["wafer_stride_iteration", "move->GatherScatter", "inner_bytes", "&src_si", "&dst_si"]:
         require_contains(gather, needle, "GatherScatter")
 
-    mask_move = function_body(source_text, "wafer_tx81_mask_move")
+    mask_move = function_body(source_text, "wafer_tx81_mask_move_v3")
     require_contains(mask_move, "move->MaskMove", "MaskMove")
     signature = (
-        r"void\s+wafer_tx81_mask_move\s*\(\s*uint64_t\s+src\s*,\s*"
+        r"void\s+wafer_tx81_mask_move_v3\s*\(\s*uint64_t\s+src\s*,\s*"
         r"uint32_t\s+mask\s*,\s*uint64_t\s+dst\s*,\s*"
-        r"uint32_t\s+elem_count\s*,\s*uint32_t\s+format\s*\)"
+        r"uint32_t\s+elem_count\s*,\s*uint32_t\s+format\s*,\s*"
+        r"uint32_t\s+worker\s*\)"
     )
     require_pattern(header_text, signature + r"\s*;", "MaskMove public header ABI")
     require_pattern(source_text, signature + r"\s*\{", "MaskMove source ABI")
@@ -667,7 +769,16 @@ def check_arg_writeback(
         "SPM mapping helper",
     )
     body = function_body(source_text, "wafer_arg_writeback")
-    require_contains(body, "TsmWaitfinish()", "argmax/argmin writeback wait")
+    require_contains(
+        body,
+        "worker >= WAFER_TX81_NCC_WORKER_COUNT",
+        "argmax/argmin worker-domain guard",
+    )
+    require_contains(
+        body,
+        "TsmWaitfinish_bywork(worker)",
+        "argmax/argmin exact-worker writeback wait",
+    )
     for needle in [
         "uint64_t value_addr = wafer_spm_mapped_addr(value_dst);",
         "uint64_t index_addr = wafer_spm_mapped_addr(index_dst);",
@@ -705,12 +816,12 @@ def check_arg_writeback(
         "legacy mapped-SPM cache publication helper",
     )
     for symbol in [
-        "wafer_tx81_peripheral_argmax",
-        "wafer_tx81_peripheral_argmin",
+        "wafer_tx81_peripheral_argmax_v3",
+        "wafer_tx81_peripheral_argmin_v3",
     ]:
         require_contains(
             function_body(source_text, symbol),
-            "wafer_arg_writeback(value_dst, index_dst, format, &instr);",
+            "wafer_arg_writeback(value_dst, index_dst, format, worker, &instr);",
             f"{symbol} mapped writeback",
         )
 
@@ -762,6 +873,184 @@ def check_local_completion_ordering(source_text: str) -> None:
         ncc_join,
         "TsmWaitfinish();",
         "typed NCC join must not widen to the default-worker wait",
+    )
+
+
+def check_ncc_worker_command_abi(
+    header_text: str,
+    source_text: str,
+    lowering_text: str,
+    registry_text: str,
+    ncc_abi_text: str,
+) -> None:
+    shared_signatures = {
+        "wafer_tx81_local_fence": "void",
+        "wafer_tx81_ncc_join": "uint32_t participant_mask",
+        "wafer_tx81_direct_dte_begin":
+            "uint64_t status_addr, uint32_t rank_count",
+        "wafer_tx81_direct_dte_begin_after_prepare":
+            "uint64_t status_addr, uint32_t rank_count",
+        "wafer_tx81_direct_dte_send_prepare":
+            "uint64_t src, uint64_t remote_dst, uint32_t byte_count, "
+            "uint32_t local_tile, uint32_t remote_tile, "
+            "uint32_t remote_fsm_id, uint32_t is_high_performance",
+        "wafer_tx81_direct_dte_recv_prepare":
+            "uint64_t dst, uint32_t byte_count, uint32_t local_tile, "
+            "uint32_t remote_tile, uint32_t local_fsm_id",
+        "wafer_tx81_direct_dte_wait": "uint64_t event",
+        "wafer_tx81_direct_dte_finish": "void",
+    }
+    declarations = re.findall(
+        r"\b(?:void|uint64_t)\s+(wafer_tx81_[a-z0-9_]+)\s*"
+        r"\(([^;{}]*)\)\s*;",
+        header_text,
+        re.DOTALL,
+    )
+    if len(declarations) != 217:
+        fail(
+            "runtime CRT worker ABI: expected 217 public declarations, found "
+            f"{len(declarations)}"
+        )
+    signatures = {
+        symbol: re.sub(r"\s+", " ", signature).strip()
+        for symbol, signature in declarations
+    }
+    if len(signatures) != len(declarations):
+        fail("runtime CRT worker ABI: duplicate public declaration")
+
+    for symbol, signature in shared_signatures.items():
+        if signatures.get(symbol) != signature:
+            fail(
+                f"runtime CRT shared ABI changed for {symbol}: "
+                f"expected `{signature}`, found `{signatures.get(symbol)}`"
+            )
+    if signatures.get("wafer_tx81_direct_dte_send_issue_v3") != "uint64_t event":
+        fail("runtime CRT V3 Direct DTE issue has the wrong ABI")
+    if "wafer_tx81_direct_dte_send_issue" in signatures:
+        fail("runtime CRT exposes explicit Direct DTE issue in the legacy ABI")
+
+    legacy_symbols = {
+        symbol
+        for symbol in signatures
+        if symbol not in shared_signatures and not symbol.endswith("_v3")
+    }
+    v3_ordinary_symbols = {
+        symbol
+        for symbol in signatures
+        if symbol.endswith("_v3")
+        and symbol != "wafer_tx81_direct_dte_send_issue_v3"
+    }
+    if len(legacy_symbols) != 104 or len(v3_ordinary_symbols) != 104:
+        fail(
+            "runtime CRT worker ABI: expected 104 legacy and 104 V3 ordinary "
+            f"declarations, found {len(legacy_symbols)}/"
+            f"{len(v3_ordinary_symbols)}"
+        )
+    for legacy_symbol in legacy_symbols:
+        legacy_signature = signatures[legacy_symbol]
+        if legacy_signature.endswith("uint32_t worker"):
+            fail(
+                "runtime CRT legacy ordinary call unexpectedly carries worker: "
+                f"{legacy_symbol}"
+            )
+        v3_symbol = (
+            "wafer_tx81_gemm_oriented_v3"
+            if legacy_symbol == "wafer_tx81_gemm_oriented_v2"
+            else f"{legacy_symbol}_v3"
+        )
+        if v3_symbol not in v3_ordinary_symbols:
+            fail(f"runtime CRT legacy call has no V3 counterpart: {legacy_symbol}")
+        expected_v3_signature = f"{legacy_signature}, uint32_t worker"
+        if signatures[v3_symbol] != expected_v3_signature:
+            fail(
+                f"runtime CRT V3 ABI must only append worker for {legacy_symbol}: "
+                f"expected `{expected_v3_signature}`, "
+                f"found `{signatures[v3_symbol]}`"
+            )
+
+        legacy_body = function_body(source_text, legacy_symbol)
+        require_pattern(
+            legacy_body,
+            re.escape(v3_symbol) + r"\s*\(.*,\s*0\s*\);",
+            f"{legacy_symbol} fixed-worker0 forwarding",
+        )
+        if legacy_body.count(v3_symbol) != 1:
+            fail(
+                f"runtime CRT legacy wrapper must call {v3_symbol} exactly once"
+            )
+        require_absent(
+            legacy_body,
+            "wafer_execute_",
+            f"{legacy_symbol} must remain a pure V3 worker0 compatibility wrapper",
+        )
+
+    require_pattern(
+        ncc_abi_text,
+        r"#define\s+WAFER_TX81_NCC_WORKER_INTER_TYPE_SHIFT\s+8U",
+        "shared NCC packet worker shift",
+    )
+    require_pattern(
+        ncc_abi_text,
+        r"#define\s+WAFER_TX81_NCC_WORKER_INTER_TYPE_MASK\s+"
+        r"\\\s*\n\s*\(UINT32_C\(0x3\)\s*<<\s*"
+        r"WAFER_TX81_NCC_WORKER_INTER_TYPE_SHIFT\)",
+        "shared NCC packet worker mask",
+    )
+    worker_helper = function_body(source_text, "wafer_set_ncc_worker")
+    for needle in [
+        "worker >= WAFER_TX81_NCC_WORKER_COUNT",
+        "*inter_type & ~WAFER_TX81_NCC_WORKER_INTER_TYPE_MASK",
+        "worker << WAFER_TX81_NCC_WORKER_INTER_TYPE_SHIFT",
+    ]:
+        require_contains(worker_helper, needle, "NCC packet worker encoding")
+    for engine in ["ct", "ne", "rdma", "wdma", "td"]:
+        execute = function_body(source_text, f"wafer_execute_{engine}")
+        require_in_order(
+            execute,
+            ["wafer_set_ncc_worker(&instr->inter_type, worker)", "TsmExecute"],
+            f"{engine.upper()} exact-worker issue",
+        )
+
+    if re.search(
+        r"wafer_execute_(?:ct|ne|rdma|wdma|td)\s*\(\s*&instr\s*\)",
+        source_text,
+    ):
+        fail("runtime CRT retains worker-less NCC issue sites")
+    require_pattern(
+        registry_text,
+        r"fixedWorker\s*=\s*NCCWorker::Worker0\s*;",
+        "target-call registry legacy fixed NCC worker ABI",
+    )
+    require_pattern(
+        registry_text,
+        r"workerArgument\s*=\s*arguments\.size\(\);\s*"
+        r"arguments\.push_back\(Scalar::I32\);",
+        "target-call registry V3 trailing NCC worker ABI",
+    )
+    require_pattern(
+        registry_text,
+        r"addEnumSelectedCalls\(\"\",\s*oldOrdinary,\s*false\);.*?"
+        r"assert\(result\.size\(\)\s*==\s*112.*?"
+        r"addEnumSelectedCalls\(\"_v3\",\s*v3Only,\s*true\);.*?"
+        r'addVoid\("direct_dte_send_issue_v3".*?'
+        r"assert\(result\.size\(\)\s*==\s*217",
+        "target-call registry frozen legacy prefix and V3 suffix closure",
+    )
+    require_pattern(
+        lowering_text,
+        r"FunctionLowering::emitNCCCall\(.*?"
+        r"fixedNCCWorker.*?emitCall\(loc,\s*descriptor,\s*args\).*?"
+        r"nccWorkerArgument.*?"
+        r"constantI32\(loc,\s*static_cast<uint32_t>\(worker\)\)",
+        "target lowering fixed-worker and explicit-worker ABI selection",
+    )
+    require_pattern(
+        lowering_text,
+        r"targetProfile\s*!=\s*"
+        r"TargetProfileId::waferTx81SingleCardKernelV3\(\).*?"
+        r"worker\s*&&\s*\*worker\s*!=\s*NCCWorker::Worker0.*?"
+        r"nonzero NCC workers require",
+        "target preflight keeps nonzero workers exclusive to V3",
     )
 
 
@@ -842,18 +1131,29 @@ def check_expanded_profile_completion(expanded_source_text: str) -> None:
         "expanded profile TASK_DONE polarity",
     )
 
-    for function_name in ("wafer_arg_writeback", "wafer_tx81_local_fence"):
-        body = function_body(expanded_source_text, function_name)
-        require_contains(
-            body,
-            "wafer_profile_wait_local_completion();",
-            f"expanded {function_name} profile completion route",
-        )
-        require_absent(
-            body,
-            "TsmWaitfinish();",
-            f"expanded {function_name} must use the checked profile helper",
-        )
+    arg_writeback = function_body(expanded_source_text, "wafer_arg_writeback")
+    require_contains(
+        arg_writeback,
+        "wafer_profile_wait_ncc_worker_completion(worker);",
+        "expanded wafer_arg_writeback exact-worker completion route",
+    )
+    require_absent(
+        arg_writeback,
+        "TsmWaitfinish_bywork(worker);",
+        "expanded wafer_arg_writeback must use the checked profile helper",
+    )
+
+    local_fence = function_body(expanded_source_text, "wafer_tx81_local_fence")
+    require_contains(
+        local_fence,
+        "wafer_profile_wait_local_completion();",
+        "expanded local-fence profile completion route",
+    )
+    require_absent(
+        local_fence,
+        "TsmWaitfinish();",
+        "expanded local fence must use the checked profile helper",
+    )
 
     worker_wait = function_body(
         expanded_source_text, "wafer_profile_wait_ncc_worker_completion"
@@ -949,7 +1249,7 @@ def check_relation_logic_convert(source_text: str) -> None:
 
 
 def check_gemm_conv(source_text: str) -> None:
-    gemm = function_body(source_text, "wafer_tx81_gemm")
+    gemm = function_body(source_text, "wafer_tx81_gemm_v3")
     gemm_sequence = [
             "gemm->AddInput",
             "gemm->ConfigMKN",
@@ -975,7 +1275,7 @@ def check_gemm_conv(source_text: str) -> None:
         "v1 GEMM semantic NN to hardware orientation",
     )
 
-    oriented_gemm = function_body(source_text, "wafer_tx81_gemm_oriented_v2")
+    oriented_gemm = function_body(source_text, "wafer_tx81_gemm_oriented_v3")
     require_in_order(
         oriented_gemm,
         gemm_sequence,
@@ -1040,6 +1340,9 @@ def main() -> int:
     vendor_header_text = read_text(
         repo_root / "third_party" / "tx8_deps" / "include" / "instr_def.h"
     )
+    ncc_abi_text = read_text(
+        repo_root / "include" / "Wafer" / "ABI" / "Tx81NCCABI.h"
+    )
 
     logical_formats, project_codes = check_data_format_code_contract(
         target_format_text, vendor_header_text
@@ -1062,6 +1365,9 @@ def main() -> int:
     check_gather_scatter_and_mask(source_text, header_text, lowering_text)
     check_arg_writeback(source_text, instruction_ops_text, lowering_text)
     check_local_completion_ordering(source_text)
+    check_ncc_worker_command_abi(
+        header_text, source_text, lowering_text, registry_text, ncc_abi_text
+    )
     if args.expanded_profile_crt:
         check_expanded_profile_completion(
             read_text(pathlib.Path(args.expanded_profile_crt))

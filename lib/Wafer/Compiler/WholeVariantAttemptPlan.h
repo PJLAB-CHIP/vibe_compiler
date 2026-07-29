@@ -22,6 +22,9 @@ struct RankVariantSlotMetadata {
   bool reservedBaseline = false;
   wafer::RankBufferingKind bufferingKind = wafer::RankBufferingKind::Single;
   uint32_t bufferingPlanOrdinal = 0;
+  wafer::RankWorkerPlacementKind workerPlacementKind =
+      wafer::RankWorkerPlacementKind::Unplaced;
+  uint32_t workerPlacementPlanOrdinal = 0;
 };
 
 using RankVariantMetadataFrontier = std::vector<RankVariantSlotMetadata>;
@@ -39,6 +42,14 @@ struct WholeVariantAttemptPlan {
   WholeVariantAttemptPlanFailure failure = WholeVariantAttemptPlanFailure::None;
   std::vector<size_t> reservedBaselineIndices;
   std::vector<std::vector<size_t>> optimizedCandidateIndices;
+  /// Bounded complete typed physical-realization tuples appended to the
+  /// ordinary attempt sequence and retained for post-import composition.
+  std::vector<std::vector<size_t>> workerPlacedCandidateIndices;
+  std::vector<std::vector<size_t>> fixedSlotCandidateIndices;
+  /// Bounded complete Single+Unplaced correspondence tuples. NoC seed
+  /// selection consumes this explicit band so saturated physical bands cannot
+  /// starve ordinary dataflow opportunities.
+  std::vector<std::vector<size_t>> genericCandidateIndices;
   std::vector<std::vector<size_t>> requiredModuleIndices;
   size_t boundedProductPositionCount = 0;
   size_t boundedProductUniqueAttemptCount = 0;
@@ -52,10 +63,18 @@ struct WholeVariantAttemptPlan {
 };
 
 /// Reproduces the production coordinator's reserved-baseline allowance,
-/// 64-position Cartesian walk, and 64 complete-correspondence walk without
-/// inspecting or materializing MLIR modules. On malformed metadata,
+/// 64-position Cartesian walk, and bounded 64 complete-correspondence walk
+/// without inspecting or materializing MLIR modules. When more than 64
+/// complete tuples exist, the correspondence walk samples deterministic
+/// evenly spaced quantiles including both endpoints, so no full upstream
+/// prefix can starve the rest of the domain. On malformed metadata,
 /// requiredModuleIndices conservatively names every slot so the coordinator
-/// retains its existing structural diagnostics.
+/// retains its existing structural diagnostics. Complete disjoint-worker and
+/// otherwise fixed-slot tuples have separate frontier-bounded attempt/import
+/// allowances so later physical-dataflow stages can compose them without an
+/// unbounded import. A bounded ordinary Single+Unplaced correspondence band is
+/// retained independently so typed physical bands cannot starve generic NoC
+/// seeds under the fixed total seed budget.
 WholeVariantAttemptPlan buildWholeVariantAttemptPlan(
     llvm::ArrayRef<RankVariantMetadataFrontier> frontiers,
     int64_t expectedRankCount);

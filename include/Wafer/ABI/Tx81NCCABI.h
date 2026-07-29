@@ -6,6 +6,9 @@
 #include <stdint.h>
 
 #define WAFER_TX81_NCC_WORKER_COUNT 3U
+#define WAFER_TX81_NCC_WORKER_INTER_TYPE_SHIFT 8U
+#define WAFER_TX81_NCC_WORKER_INTER_TYPE_MASK                              \
+  (UINT32_C(0x3) << WAFER_TX81_NCC_WORKER_INTER_TYPE_SHIFT)
 #define WAFER_TX81_NCC_ALL_WORKERS_MASK                                  \
   ((UINT32_C(1) << WAFER_TX81_NCC_WORKER_COUNT) - UINT32_C(1))
 

@@ -21,7 +21,7 @@ import wafer_worker_placement_characterization_catalog as catalog
 import wafer_worker_placement_probe_protocol as protocol
 
 
-TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
+TARGET_PROFILE = "wafer-tx81-single-card-kernel-v3"
 LAUNCH_KIND = "kernel"
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"

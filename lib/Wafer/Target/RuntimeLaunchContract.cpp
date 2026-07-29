@@ -198,7 +198,8 @@ bool isRuntimeLaunchContractCompatible(const RuntimeLaunchContract &launch,
   const auto *kernel = launch.getKernel();
   if (kernel && kernel->form == KernelLaunchForm::PerRank)
     return true;
-  return targetProfile == TargetProfileId::waferTx81SingleCardKernelV1();
+  return targetProfile == TargetProfileId::waferTx81SingleCardKernelV1() ||
+         targetProfile == TargetProfileId::waferTx81SingleCardKernelV3();
 }
 
 } // namespace wafer

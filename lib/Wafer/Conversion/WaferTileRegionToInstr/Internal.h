@@ -306,6 +306,8 @@ void populateComputeLoweringPatterns(mlir::RewritePatternSet &patterns,
 void populateFillLoweringPattern(mlir::RewritePatternSet &patterns);
 void populateConstantPredicateSelectCanonicalizationPattern(
     mlir::RewritePatternSet &patterns);
+void populatePeerLoweringPatterns(mlir::RewritePatternSet &patterns,
+                                  std::string *failureReason);
 void populateCollectiveLoweringPatterns(mlir::RewritePatternSet &patterns,
                                         const TileRegionToInstrOptions &options,
                                         std::string *failureReason);

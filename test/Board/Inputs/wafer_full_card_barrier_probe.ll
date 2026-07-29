@@ -5,6 +5,11 @@ declare i32 @init_tile_id(i32, i32)
 declare void @direct_sync_init(i32)
 declare void @wafer_tx81_full_card_barrier_probe(i32, i64, i64, i64, i64)
 
+@wafer_barrier_slots_per_rank = external hidden constant i64
+@wafer_barrier_input_slot = external hidden constant i64
+@wafer_barrier_output_slot = external hidden constant i64
+@wafer_barrier_status_slot = external hidden constant i64
+
 define void @__wafer_kernel_prepare(ptr %rank_major_slots) {
 entry:
   %pid = call i32 @__get_pid(i32 0)
@@ -17,10 +22,14 @@ define void @main(ptr %rank_major_slots) {
 entry:
   %pid = call i32 @__get_pid(i32 0)
   %pid64 = zext i32 %pid to i64
-  %row = mul i64 %pid64, 3
-  %input.index = add i64 %row, 0
-  %output.index = add i64 %row, 1
-  %status.index = add i64 %row, 2
+  %slots.per.rank = load i64, ptr @wafer_barrier_slots_per_rank, align 8
+  %input.ordinal = load i64, ptr @wafer_barrier_input_slot, align 8
+  %output.ordinal = load i64, ptr @wafer_barrier_output_slot, align 8
+  %status.ordinal = load i64, ptr @wafer_barrier_status_slot, align 8
+  %row = mul i64 %pid64, %slots.per.rank
+  %input.index = add i64 %row, %input.ordinal
+  %output.index = add i64 %row, %output.ordinal
+  %status.index = add i64 %row, %status.ordinal
   %input.slot = getelementptr inbounds i64, ptr %rank_major_slots, i64 %input.index
   %output.slot = getelementptr inbounds i64, ptr %rank_major_slots, i64 %output.index
   %status.slot = getelementptr inbounds i64, ptr %rank_major_slots, i64 %status.index

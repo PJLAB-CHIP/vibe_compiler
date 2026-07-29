@@ -39,8 +39,8 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
   operand/out tile并融合producer；当前只启用单输入、单输出、shape-preserving `all_reduce`，其每个dynamic loop
   instance只处理当前tile，完整result由显式insert/writeback拼接。其它collective在各自gate闭合前仍是full traversal。
 - NoC-resident扩展同时允许从已resident或peer到达的operand tile通过`TilingInterface`正向物化consumer tile，并只通过
-  `PartialReductionOpInterface`物化partial/merge；input、intermediate、partial和output角色均由current boundary与SSA
-  relation派生，不进入固定枚举或operator matcher。
+  `PartialReductionOpInterface`物化partial/merge；input/parameter、intermediate、partial和output角色均由current
+  boundary与SSA relation派生，不进入固定枚举或operator matcher。
 - 通过`WaferTargetImplementationOpInterface::materializeSelectedImplementation`创建typed
   `wafer.tile.*` compute。
 - 物化 Wafer-tagged memref、standard/typed view、resident SSA edge、显式 movement、spill/reload、
@@ -81,8 +81,9 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
       或在无任何published mutation的情况下返回failure。成功IR只含typed operation/region/type/
       attribute、memref/view、compute、movement、event和SSA；不依赖任何外部解释对象。
     - Downstream consumer:
-      target-abstract legality、complete-rank instruction lowering、whole-rank SPM planning、
-      whole-variant DDR planning、communication/transport/ABI gates以及all-rank atomic commit。
+      target-abstract legality和complete-rank instruction lowering；materialized canonical/unplaced Instr
+      随后先原子派生typed worker sibling，再在保留worker assignment的siblings上派生fixed-slot，最后进入
+      fresh whole-rank SPM、whole-variant DDR、communication/transport/ABI gates以及all-rank atomic commit。
     - User-level driver / named pipeline:
       wafer-compile source-to-bundle production pipeline。wafer-opt只可对同一op/interface/
       conversion做局部parser、verifier和rewrite测试，不形成第二条compile pipeline。
@@ -372,8 +373,12 @@ side attr。
 - immutable prepacked resource publication；
 - dynamic shape、复杂mask、advanced fusion和target-specific composite；
 - 需要新runtime/ABI/SystemC consumer的movement或completion形态。
-- NoC-resident input/intermediate/partial/output tile ownership、peer fanout/forward/reduction与跨engine fixed-slot
-  pipeline；它以真实Direct-DTE issue、exact wait/release和generic multi-engine software pipeline闭合为前置。
+- NoC-resident属于独立pipeline扩展：result/operand/partial interface traversal、input/parameter owner
+  fanout、intermediate zero-DDR cut、tree/ring slice-precise partial、round-2 output publication、同clone
+  multi-role composition和call-expanded whole-program wait graph均已有实现与host legality gate。post-Instr
+  typed worker sibling从canonical/unplaced current IR原子派生，worker-preserving fixed-slot随后派生；
+  NoC×fixed-slot×typed-worker同候选的source/package/model/no-card纵向已经闭合，fresh configured-board
+  correctness仍不纳入Q32/Q39非板端证据。
 - Q32.N floating reassociation/tree、generic online reduction、non-GEMM FMA contraction及超出current integer-domain
   exact/modular子集的algebraic distribution/factorization；
 

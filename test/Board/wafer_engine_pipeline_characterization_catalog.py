@@ -30,14 +30,15 @@ Pipeline position:
   every performance cell has at least three sample-major counterbalanced board
   launches with exact manifest-matched terminal completion, and its complete
   matched activation group has a stable device-PMU direction.  The three-stage
-  family remains fail-closed until a production accepted-Instr structural
-  evidence surface exists.
+  preparation gate accepts only the compiler-owned, manifest-bound fixed-slot
+  accepted-Instr qualification sibling.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import enum
+import hashlib
 import json
 import pathlib
 import statistics
@@ -46,11 +47,13 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 
 import wafer_ncc_probe_protocol as ncc_protocol
+import wafer_memory_descriptor_calibration_catalog as memory_catalog
 
 
 FMT_FP16 = ncc_protocol.DMA_FORMAT_FP16
 FP16_ELEMENT_BYTES = 2
 MIN_REPEATS = 3
+QUALIFICATION_SPM_ALIGNMENT = 256
 CALIBRATION_SESSION_ENVIRONMENT = "WAFER_CALIBRATION_SESSION_ID"
 RUNTIME_LIFECYCLE = (
     "preflight",
@@ -93,9 +96,10 @@ class Disposition(str, enum.Enum):
     BOARD_EXECUTABLE = "board-executable"
     BOARD_EXECUTABLE_EXTERNAL = "board-executable-external"
     DELEGATED_BOARD_EVIDENCE = "delegated-board-evidence"
+    PENDING_CONFIGURED_BOARD = "pending-configured-board"
+    HOST_EXACT_CLOSED = "host-exact-closed"
     FAIL_CLOSED_MISSING_ADAPTER = "fail-closed-missing-adapter"
     FAIL_CLOSED_UNSAFE_WINDOW = "fail-closed-unsafe-window"
-    FAIL_CLOSED_MISSING_PRODUCER = "fail-closed-missing-producer"
 
 
 class Phase(str, enum.Enum):
@@ -931,9 +935,7 @@ def _three_stage_core_cells() -> tuple[MatrixCell, ...]:
                                 if iterations in (1, 3, 8)
                                 else Phase.CALIBRATION
                             ),
-                            disposition=(
-                                Disposition.FAIL_CLOSED_MISSING_PRODUCER
-                            ),
+                            disposition=Disposition.PENDING_CONFIGURED_BOARD,
                             dimensions=(
                                 ("ingress", Engine.RDMA.value),
                                 ("compute", compute.value),
@@ -947,10 +949,12 @@ def _three_stage_core_cells() -> tuple[MatrixCell, ...]:
                             correctness=CORRECTNESS,
                             measurement=PIPELINE_MEASUREMENT,
                             reason=(
-                                "the production compiler does not yet emit an "
-                                "accepted Instr multi-buffer structural report; "
-                                "a raw three-lane request cannot prove slot "
-                                "rotation or prologue/steady/epilogue"
+                                "the compiler-owned accepted-Instr fixed-slot "
+                                "qualification closes current-IR structure and "
+                                "host package/model/no-card gates; this cell "
+                                "still requires fresh configured-board "
+                                "baseline/winner correctness, which a raw "
+                                "three-lane request cannot provide"
                             ),
                             safe_alternative_keys=(
                                 "delegated/handwritten-double-slot-negative",
@@ -975,9 +979,7 @@ def _three_stage_negative_cells() -> tuple[MatrixCell, ...]:
                         key=key,
                         family=Family.PRODUCTION_THREE_STAGE,
                         phase=Phase.HELD_OUT,
-                        disposition=(
-                            Disposition.FAIL_CLOSED_MISSING_PRODUCER
-                        ),
+                        disposition=Disposition.HOST_EXACT_CLOSED,
                         dimensions=(
                             ("ingress", Engine.RDMA.value),
                             ("compute", compute.value),
@@ -997,8 +999,10 @@ def _three_stage_negative_cells() -> tuple[MatrixCell, ...]:
                         reason=(
                             "an over-capacity two-slot candidate must be "
                             "rejected before allocation and retain the "
-                            "one-slot/serial production fallback; no producer "
-                            "currently materializes either candidate"
+                            "one-slot/serial production fallback; the "
+                            "compiler-owned producer and host exact rejection "
+                            "gate now materialize and distinguish these "
+                            "alternatives without board execution"
                         ),
                     )
                 )
@@ -1016,7 +1020,7 @@ def _three_stage_negative_cells() -> tuple[MatrixCell, ...]:
                     key=key,
                     family=Family.PRODUCTION_THREE_STAGE,
                     phase=Phase.HELD_OUT,
-                    disposition=Disposition.FAIL_CLOSED_MISSING_PRODUCER,
+                    disposition=Disposition.HOST_EXACT_CLOSED,
                     dimensions=(
                         ("ingress", Engine.RDMA.value),
                         ("compute", compute.value),
@@ -1028,9 +1032,9 @@ def _three_stage_negative_cells() -> tuple[MatrixCell, ...]:
                     correctness=CORRECTNESS,
                     measurement=PIPELINE_MEASUREMENT,
                     reason=(
-                        "typed SSA/range effects must prevent an unsafe slot "
-                        "rotation; a disjoint raw request cannot stand in for "
-                        "this production legality negative"
+                        "typed SSA/range effects and the production host exact "
+                        "gate reject the unsafe slot rotation; a disjoint raw "
+                        "request cannot stand in for this legality proof"
                     ),
                 )
             )
@@ -1039,7 +1043,7 @@ def _three_stage_negative_cells() -> tuple[MatrixCell, ...]:
             key="pipeline/production-provenance/handwritten-double-slot",
             family=Family.PRODUCTION_THREE_STAGE,
             phase=Phase.HELD_OUT,
-            disposition=Disposition.FAIL_CLOSED_MISSING_PRODUCER,
+            disposition=Disposition.HOST_EXACT_CLOSED,
             dimensions=(
                 ("negative_kind", "handwritten-provenance"),
                 ("iterations", "1/2/3/4"),
@@ -1077,6 +1081,8 @@ ENGINE_PAIR_CELLS = _pair_cells()
 THREE_STAGE_CORE_CELLS = _three_stage_core_cells()
 THREE_STAGE_NEGATIVE_CELLS = _three_stage_negative_cells()
 THREE_STAGE_CELLS = THREE_STAGE_CORE_CELLS + THREE_STAGE_NEGATIVE_CELLS
+THREE_STAGE_PENDING_BOARD_CELLS = THREE_STAGE_CORE_CELLS
+THREE_STAGE_HOST_EXACT_CELLS = THREE_STAGE_NEGATIVE_CELLS
 ALL_CELLS = SINGLE_ENGINE_CELLS + ENGINE_PAIR_CELLS + THREE_STAGE_CELLS
 CELLS_BY_KEY = {cell.key: cell for cell in ALL_CELLS}
 BOARD_PROBES = tuple(
@@ -1589,54 +1595,733 @@ def evaluate_pair_activation(
 def production_pipeline_preparation_gate(
     package_dir: pathlib.Path | None,
 ) -> ProductionPreparationDecision:
-    """Reject until production exposes authenticated accepted-Instr structure.
+    """Validate the closed compiler-owned fixed-slot qualification sibling."""
 
-    The current schema-v6 manifest can authenticate modules and resources, but
-    it has no field that binds an accepted Instr schedule or its multi-buffer
-    structure.  Consequently even a numerically correct package cannot prove
-    this family, and a separately supplied JSON/handwritten raw request is
-    deliberately not accepted.
-    """
+    def fail(message: str) -> None:
+        raise ValueError(message)
 
-    reasons = [
-        (
-            "no production accepted-Instr multi-buffer evidence producer is "
-            "registered in the current compiler"
-        ),
-        (
-            "the handwritten NCC double-slot observation is hardware-only "
-            "and cannot establish source provenance or slot rotation"
-        ),
-    ]
+    def load_closed_json(path: pathlib.Path, label: str) -> dict[str, object]:
+        def reject_duplicates(
+            pairs: list[tuple[str, object]],
+        ) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in pairs:
+                if key in result:
+                    fail(f"{label} contains duplicate field {key!r}")
+                result[key] = value
+            return result
+
+        try:
+            value = json.loads(
+                path.read_text(encoding="utf-8"),
+                object_pairs_hook=reject_duplicates,
+            )
+        except (OSError, json.JSONDecodeError) as error:
+            fail(f"{label} is unreadable: {error}")
+        if not isinstance(value, dict):
+            fail(f"{label} is not an object")
+        return value
+
+    def require_fields(
+        value: object, fields: set[str], label: str
+    ) -> dict[str, object]:
+        if not isinstance(value, dict):
+            fail(f"{label} is not an object")
+        actual = set(value)
+        if actual != fields:
+            fail(
+                f"{label} fields differ: missing={sorted(fields - actual)!r} "
+                f"unknown={sorted(actual - fields)!r}"
+            )
+        return value
+
+    def exact_int(value: object, label: str, minimum: int = 0) -> int:
+        if type(value) is not int or value < minimum:
+            fail(f"{label} must be an integer >= {minimum}")
+        return value
+
+    def signed_int(value: object, label: str) -> int:
+        if type(value) is not int:
+            fail(f"{label} must be an integer")
+        return value
+
+    def exact_bool(value: object, label: str) -> bool:
+        if type(value) is not bool:
+            fail(f"{label} must be a boolean")
+        return value
+
+    def exact_string(value: object, label: str) -> str:
+        if not isinstance(value, str) or not value:
+            fail(f"{label} must be a non-empty string")
+        return value
+
+    def digest_bytes(payload: bytes) -> str:
+        return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    def require_digest(value: object, label: str) -> str:
+        digest = exact_string(value, label)
+        if (
+            not digest.startswith("sha256:")
+            or len(digest) != len("sha256:") + 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in digest[len("sha256:") :]
+            )
+        ):
+            fail(f"{label} is not a canonical sha256 digest")
+        return digest
+
+    def require_list(value: object, label: str) -> list[object]:
+        if not isinstance(value, list):
+            fail(f"{label} is not an array")
+        return value
+
+    reasons: list[str] = []
     checked: str | None = None
-    if package_dir is not None:
-        package = package_dir.resolve()
-        checked = str(package)
-        manifest_path = package / "manifest.json"
-        if not manifest_path.is_file():
-            reasons.append("production package has no manifest.json")
-        else:
-            try:
-                manifest = json.loads(manifest_path.read_text())
-            except (OSError, json.JSONDecodeError):
-                reasons.append("production package manifest is unreadable")
-            else:
-                if not isinstance(manifest, dict):
-                    reasons.append("production package manifest is not an object")
-                elif manifest.get("schema_version") == 6:
-                    reasons.append(
-                        "schema-v6 package manifest exposes no authenticated "
-                        "accepted-Instr structural evidence"
-                    )
-                else:
-                    reasons.append(
-                        "unknown package schema is not accepted as pipeline "
-                        "evidence"
-                    )
-    else:
+    if package_dir is None:
         reasons.append("no production package was supplied")
+    else:
+        package = package_dir.absolute()
+        checked = str(package)
+        companion = pathlib.Path(str(package) + ".qualification")
+        try:
+            if not package.is_dir() or package.is_symlink():
+                fail("production package is not a regular directory")
+            manifest_path = package / "manifest.json"
+            if not manifest_path.is_file() or manifest_path.is_symlink():
+                fail("production package has no regular manifest.json")
+            manifest = load_closed_json(
+                manifest_path, "production package manifest"
+            )
+            if manifest.get("schema_version") != 6:
+                fail("production package schema is not the accepted schema-v6")
+            manifest_rank_count = exact_int(
+                manifest.get("rank_count"),
+                "production manifest rank_count",
+                1,
+            )
+            manifest_target = manifest.get("target")
+            if not isinstance(manifest_target, dict):
+                fail("production manifest target is not an object")
+            manifest_profile = exact_string(
+                manifest_target.get("profile"),
+                "production manifest target profile",
+            )
+            manifest_digest = digest_bytes(manifest_path.read_bytes())
+
+            if not companion.is_dir() or companion.is_symlink():
+                fail("production package has no regular qualification sibling")
+            entries = {entry.name: entry for entry in companion.iterdir()}
+            expected_entries = {"activation.json", "attestation.json"}
+            if set(entries) != expected_entries:
+                fail(
+                    "qualification sibling members differ: "
+                    f"missing={sorted(expected_entries - set(entries))!r} "
+                    f"unknown={sorted(set(entries) - expected_entries)!r}"
+                )
+            for name, entry in entries.items():
+                if not entry.is_file() or entry.is_symlink():
+                    fail(
+                        f"qualification sibling member {name!r} is not a "
+                        "regular file"
+                    )
+
+            attestation_path = entries["attestation.json"]
+            activation = require_fields(
+                load_closed_json(
+                    entries["activation.json"],
+                    "qualification activation",
+                ),
+                {
+                    "schema",
+                    "schema_version",
+                    "manifest_sha256",
+                    "attestation_sha256",
+                },
+                "qualification activation",
+            )
+            if (
+                activation["schema"]
+                != "wafer-static-fixed-slot-qualification-activation"
+                or exact_int(
+                    activation["schema_version"],
+                    "qualification activation schema_version",
+                    1,
+                )
+                != 1
+            ):
+                fail("qualification activation schema is unknown")
+            if (
+                require_digest(
+                    activation["manifest_sha256"],
+                    "qualification activation manifest digest",
+                )
+                != manifest_digest
+            ):
+                fail("qualification activation has a stale manifest binding")
+            if (
+                require_digest(
+                    activation["attestation_sha256"],
+                    "qualification activation attestation digest",
+                )
+                != digest_bytes(attestation_path.read_bytes())
+            ):
+                fail("qualification attestation bytes were tampered")
+
+            attestation = require_fields(
+                load_closed_json(
+                    attestation_path, "qualification attestation"
+                ),
+                {
+                    "schema",
+                    "schema_version",
+                    "selection_kind",
+                    "manifest_sha256",
+                    "accepted_instr_digest_basis",
+                    "target",
+                    "ranks",
+                },
+                "qualification attestation",
+            )
+            if (
+                attestation["schema"]
+                != "wafer-static-fixed-slot-qualification"
+                or exact_int(
+                    attestation["schema_version"],
+                    "qualification attestation schema_version",
+                    1,
+                )
+                != 1
+            ):
+                fail("qualification attestation schema is unknown")
+            if attestation["selection_kind"] != "static-fixed-slot":
+                fail("qualification selection kind is not static-fixed-slot")
+            if (
+                attestation["accepted_instr_digest_basis"]
+                != "final-accepted-instr-module-text-v1"
+            ):
+                fail("qualification accepted-Instr digest basis is unknown")
+            if (
+                require_digest(
+                    attestation["manifest_sha256"],
+                    "qualification attestation manifest digest",
+                )
+                != manifest_digest
+            ):
+                fail("qualification attestation has a stale manifest binding")
+
+            target = require_fields(
+                attestation["target"],
+                {"profile", "rank_count", "logical_ranks"},
+                "qualification target",
+            )
+            if target["profile"] != manifest_profile:
+                fail("qualification target profile differs from manifest")
+            if manifest_profile not in {
+                "wafer-tx81-single-card-kernel-v1",
+                "wafer-tx81-single-card-kernel-v2",
+                "wafer-tx81-single-card-kernel-v3",
+            }:
+                fail("qualification target profile is not closed")
+            if (
+                exact_int(
+                    target["rank_count"],
+                    "qualification target rank_count",
+                    1,
+                )
+                != manifest_rank_count
+            ):
+                fail("qualification rank_count differs from manifest")
+            logical_ranks = require_list(
+                target["logical_ranks"],
+                "qualification target logical_ranks",
+            )
+            if (
+                any(type(rank) is not int for rank in logical_ranks)
+                or logical_ranks != list(range(manifest_rank_count))
+            ):
+                fail("qualification logical rank domain is not canonical")
+
+            ranks = require_list(attestation["ranks"], "qualification ranks")
+            if len(ranks) != manifest_rank_count:
+                fail("qualification ranks do not cover the manifest domain")
+            engine_order = {
+                "ct": 0,
+                "ne": 1,
+                "rdma": 2,
+                "wdma": 3,
+                "tdma": 4,
+            }
+            for logical_rank, raw_rank in enumerate(ranks):
+                rank = require_fields(
+                    raw_rank,
+                    {
+                        "logical_rank",
+                        "accepted_instr_sha256",
+                        "spm_alloc_roots",
+                        "static_loops",
+                        "engine_worker_issues",
+                        "dte",
+                        "completion",
+                    },
+                    f"qualification rank {logical_rank}",
+                )
+                if (
+                    exact_int(
+                        rank["logical_rank"],
+                        f"qualification rank {logical_rank} identity",
+                    )
+                    != logical_rank
+                ):
+                    fail(
+                        f"qualification rank {logical_rank} identity is not "
+                        "canonical"
+                    )
+                require_digest(
+                    rank["accepted_instr_sha256"],
+                    f"qualification rank {logical_rank} accepted-Instr digest",
+                )
+
+                roots = require_list(
+                    rank["spm_alloc_roots"],
+                    f"qualification rank {logical_rank} SPM roots",
+                )
+                if len(roots) < 2:
+                    fail(
+                        f"qualification rank {logical_rank} has fewer than "
+                        "two SPM roots"
+                    )
+                root_intervals: list[tuple[int, int, int]] = []
+                for ordinal, raw_root in enumerate(roots):
+                    root = require_fields(
+                        raw_root,
+                        {
+                            "ordinal",
+                            "offset",
+                            "bytes",
+                            "range_begin",
+                            "range_end",
+                        },
+                        f"qualification rank {logical_rank} SPM root {ordinal}",
+                    )
+                    if (
+                        exact_int(
+                            root["ordinal"],
+                            f"qualification rank {logical_rank} root ordinal",
+                        )
+                        != ordinal
+                    ):
+                        fail(
+                            f"qualification rank {logical_rank} SPM root "
+                            "ordinals are not dense"
+                        )
+                    offset = exact_int(
+                        root["offset"],
+                        f"qualification rank {logical_rank} root offset",
+                    )
+                    byte_count = exact_int(
+                        root["bytes"],
+                        f"qualification rank {logical_rank} root bytes",
+                        1,
+                    )
+                    range_begin = exact_int(
+                        root["range_begin"],
+                        f"qualification rank {logical_rank} range_begin",
+                    )
+                    range_end = exact_int(
+                        root["range_end"],
+                        f"qualification rank {logical_rank} range_end",
+                        1,
+                    )
+                    if range_begin != offset or range_end != offset + byte_count:
+                        fail(
+                            f"qualification rank {logical_rank} SPM root "
+                            "range is inconsistent"
+                        )
+                    if (
+                        range_begin
+                        < memory_catalog.SPM_ALLOCATABLE_BEGIN
+                        or range_end > memory_catalog.SPM_ALLOCATABLE_END
+                    ):
+                        fail(
+                            f"qualification rank {logical_rank} SPM root "
+                            "is outside the allocatable target arena"
+                        )
+                    if range_begin % QUALIFICATION_SPM_ALIGNMENT != 0:
+                        fail(
+                            f"qualification rank {logical_rank} SPM root "
+                            "is not placement-aligned"
+                        )
+                    root_intervals.append((range_begin, range_end, ordinal))
+                root_intervals.sort()
+                for previous, current in zip(
+                    root_intervals, root_intervals[1:]
+                ):
+                    if previous[1] > current[0]:
+                        fail(
+                            f"qualification rank {logical_rank} SPM root "
+                            "intervals overlap"
+                        )
+
+                loops = require_list(
+                    rank["static_loops"],
+                    f"qualification rank {logical_rank} static loops",
+                )
+                if not loops:
+                    fail(
+                        f"qualification rank {logical_rank} has no static loop"
+                    )
+                saw_root_cycle = False
+                for ordinal, raw_loop in enumerate(loops):
+                    loop = require_fields(
+                        raw_loop,
+                        {
+                            "ordinal",
+                            "lower",
+                            "upper",
+                            "step",
+                            "trip_count",
+                            "iter_arg_count",
+                            "spm_iter_arg_rotations",
+                        },
+                        f"qualification rank {logical_rank} loop {ordinal}",
+                    )
+                    if (
+                        exact_int(
+                            loop["ordinal"],
+                            f"qualification rank {logical_rank} loop ordinal",
+                        )
+                        != ordinal
+                    ):
+                        fail(
+                            f"qualification rank {logical_rank} loop "
+                            "ordinals are not dense"
+                        )
+                    lower = signed_int(
+                        loop["lower"],
+                        f"qualification rank {logical_rank} loop lower",
+                    )
+                    upper = signed_int(
+                        loop["upper"],
+                        f"qualification rank {logical_rank} loop upper",
+                    )
+                    step = exact_int(
+                        loop["step"],
+                        f"qualification rank {logical_rank} loop step",
+                        1,
+                    )
+                    trip_count = exact_int(
+                        loop["trip_count"],
+                        f"qualification rank {logical_rank} loop trip_count",
+                        1,
+                    )
+                    expected_trips = (
+                        0 if upper <= lower else (upper - lower + step - 1) // step
+                    )
+                    if trip_count != expected_trips:
+                        fail(
+                            f"qualification rank {logical_rank} loop trip "
+                            "count is inconsistent"
+                        )
+                    iter_arg_count = exact_int(
+                        loop["iter_arg_count"],
+                        f"qualification rank {logical_rank} iter_arg_count",
+                    )
+                    rotations = require_list(
+                        loop["spm_iter_arg_rotations"],
+                        f"qualification rank {logical_rank} SPM rotations",
+                    )
+                    spm_args: set[int] = set()
+                    initial_roots: set[int] = set()
+                    next_roots: set[int] = set()
+                    for rotation_ordinal, raw_rotation in enumerate(rotations):
+                        rotation = require_fields(
+                            raw_rotation,
+                            {
+                                "iter_arg",
+                                "initial_root",
+                                "next_iter_arg",
+                                "next_root",
+                            },
+                            (
+                                f"qualification rank {logical_rank} loop "
+                                f"{ordinal} rotation {rotation_ordinal}"
+                            ),
+                        )
+                        iter_arg = exact_int(
+                            rotation["iter_arg"],
+                            "qualification rotation iter_arg",
+                        )
+                        initial_root = exact_int(
+                            rotation["initial_root"],
+                            "qualification rotation initial_root",
+                        )
+                        next_iter_arg = exact_int(
+                            rotation["next_iter_arg"],
+                            "qualification rotation next_iter_arg",
+                        )
+                        next_root = exact_int(
+                            rotation["next_root"],
+                            "qualification rotation next_root",
+                        )
+                        if (
+                            iter_arg >= iter_arg_count
+                            or next_iter_arg >= iter_arg_count
+                            or initial_root >= len(roots)
+                            or next_root >= len(roots)
+                            or iter_arg in spm_args
+                            or initial_root in initial_roots
+                            or next_root in next_roots
+                            or initial_root == next_root
+                        ):
+                            fail(
+                                f"qualification rank {logical_rank} SPM "
+                                "root cycle is not a bounded permutation"
+                            )
+                        spm_args.add(iter_arg)
+                        initial_roots.add(initial_root)
+                        next_roots.add(next_root)
+                    if initial_roots != next_roots:
+                        fail(
+                            f"qualification rank {logical_rank} SPM root "
+                            "cycle is not closed"
+                        )
+                    saw_root_cycle |= len(initial_roots) >= 2
+                if not saw_root_cycle:
+                    fail(
+                        f"qualification rank {logical_rank} has no proven "
+                        "multi-root nonidentity SPM cycle"
+                    )
+
+                issue_rows = require_list(
+                    rank["engine_worker_issues"],
+                    f"qualification rank {logical_rank} engine issues",
+                )
+                issue_keys: list[tuple[int, int]] = []
+                issue_engines: set[str] = set()
+                issue_total = 0
+                for issue_ordinal, raw_issue in enumerate(issue_rows):
+                    issue = require_fields(
+                        raw_issue,
+                        {"engine", "worker", "count"},
+                        (
+                            f"qualification rank {logical_rank} engine issue "
+                            f"{issue_ordinal}"
+                        ),
+                    )
+                    engine = exact_string(
+                        issue["engine"], "qualification issue engine"
+                    )
+                    if engine not in engine_order:
+                        fail("qualification issue engine is unknown")
+                    worker = exact_int(
+                        issue["worker"], "qualification issue worker"
+                    )
+                    if worker >= 3:
+                        fail("qualification issue worker is outside [0, 3)")
+                    count = exact_int(
+                        issue["count"], "qualification issue count", 1
+                    )
+                    issue_keys.append((engine_order[engine], worker))
+                    issue_engines.add(engine)
+                    issue_total += count
+                if issue_keys != sorted(set(issue_keys)):
+                    fail(
+                        f"qualification rank {logical_rank} engine issue "
+                        "inventory is not canonical"
+                    )
+                if not (
+                    {"rdma", "wdma"} <= issue_engines
+                    and issue_engines & {"ct", "ne"}
+                ):
+                    fail(
+                        f"qualification rank {logical_rank} lacks a typed "
+                        "load/compute/store pipeline"
+                    )
+
+                dte = require_fields(
+                    rank["dte"],
+                    {"token_count", "issues", "waits"},
+                    f"qualification rank {logical_rank} DTE inventory",
+                )
+                token_count = exact_int(
+                    dte["token_count"], "qualification DTE token_count"
+                )
+                dte_issues = require_list(
+                    dte["issues"], "qualification DTE issues"
+                )
+                if len(dte_issues) != token_count:
+                    fail("qualification DTE token count differs from issues")
+                for ordinal, raw_issue in enumerate(dte_issues):
+                    issue = require_fields(
+                        raw_issue,
+                        {"ordinal", "kind", "peer", "bytes", "token"},
+                        f"qualification DTE issue {ordinal}",
+                    )
+                    if (
+                        exact_int(
+                            issue["ordinal"],
+                            "qualification DTE issue ordinal",
+                        )
+                        != ordinal
+                        or exact_int(
+                            issue["token"],
+                            "qualification DTE issue token",
+                        )
+                        != ordinal
+                    ):
+                        fail("qualification DTE issue ordinals are not dense")
+                    if issue["kind"] not in {"send", "recv"}:
+                        fail("qualification DTE issue kind is unknown")
+                    peer = exact_int(issue["peer"], "qualification DTE peer")
+                    if (
+                        peer >= manifest_rank_count
+                        or peer == logical_rank
+                    ):
+                        fail("qualification DTE peer is outside rank domain")
+                    exact_int(
+                        issue["bytes"], "qualification DTE issue bytes", 1
+                    )
+                dte_waits = require_list(
+                    dte["waits"], "qualification DTE waits"
+                )
+                waited_tokens: list[int] = []
+                for ordinal, raw_wait in enumerate(dte_waits):
+                    wait = require_fields(
+                        raw_wait,
+                        {"ordinal", "tokens"},
+                        f"qualification DTE wait {ordinal}",
+                    )
+                    if (
+                        exact_int(
+                            wait["ordinal"],
+                            "qualification DTE wait ordinal",
+                        )
+                        != ordinal
+                    ):
+                        fail("qualification DTE wait ordinals are not dense")
+                    tokens = require_list(
+                        wait["tokens"], "qualification DTE wait tokens"
+                    )
+                    if not tokens:
+                        fail("qualification DTE wait has no tokens")
+                    waited_tokens.extend(
+                        exact_int(token, "qualification DTE wait token")
+                        for token in tokens
+                    )
+                if sorted(waited_tokens) != list(range(token_count)):
+                    fail(
+                        "qualification DTE waits do not consume every token "
+                        "exactly once"
+                    )
+
+                completion = require_fields(
+                    rank["completion"],
+                    {"participant_joins", "behaviors"},
+                    f"qualification rank {logical_rank} completion inventory",
+                )
+                joins = require_list(
+                    completion["participant_joins"],
+                    "qualification participant joins",
+                )
+                if not joins:
+                    fail("qualification has no typed participant join")
+                saw_terminal_join = False
+                for ordinal, raw_join in enumerate(joins):
+                    join = require_fields(
+                        raw_join,
+                        {
+                            "ordinal",
+                            "participants",
+                            "inside_static_loop",
+                        },
+                        f"qualification participant join {ordinal}",
+                    )
+                    if (
+                        exact_int(
+                            join["ordinal"],
+                            "qualification participant join ordinal",
+                        )
+                        != ordinal
+                    ):
+                        fail(
+                            "qualification participant join ordinals are "
+                            "not dense"
+                        )
+                    participants = require_list(
+                        join["participants"],
+                        "qualification join participants",
+                    )
+                    if (
+                        not participants
+                        or participants
+                        != sorted(set(participants))
+                        or any(
+                            type(participant) is not int
+                            or participant < 0
+                            or participant >= 3
+                            for participant in participants
+                        )
+                    ):
+                        fail(
+                            "qualification participant set is not canonical"
+                        )
+                    inside = exact_bool(
+                        join["inside_static_loop"],
+                        "qualification join loop location",
+                    )
+                    saw_terminal_join |= not inside
+                if not saw_terminal_join:
+                    fail(
+                        "qualification has no completion join outside the "
+                        "static loop"
+                    )
+                behaviors = require_list(
+                    completion["behaviors"],
+                    "qualification completion behaviors",
+                )
+                expected_behaviors = (
+                    "ordered-pending",
+                    "participant-join",
+                    "synchronous-writeback",
+                )
+                if len(behaviors) != len(expected_behaviors):
+                    fail("qualification completion behaviors are incomplete")
+                behavior_counts: dict[str, int] = {}
+                for expected_kind, raw_behavior in zip(
+                    expected_behaviors, behaviors, strict=True
+                ):
+                    behavior = require_fields(
+                        raw_behavior,
+                        {"kind", "count"},
+                        f"qualification completion behavior {expected_kind}",
+                    )
+                    if behavior["kind"] != expected_kind:
+                        fail(
+                            "qualification completion behavior order is not "
+                            "canonical"
+                        )
+                    behavior_counts[expected_kind] = exact_int(
+                        behavior["count"],
+                        f"qualification completion count {expected_kind}",
+                    )
+                if behavior_counts["participant-join"] != len(joins):
+                    fail(
+                        "qualification participant join count is inconsistent"
+                    )
+                if (
+                    behavior_counts["ordered-pending"]
+                    + behavior_counts["synchronous-writeback"]
+                    != issue_total
+                ):
+                    fail(
+                        "qualification engine issue and completion counts "
+                        "differ"
+                    )
+        except (OSError, ValueError) as error:
+            reasons.append(str(error))
     return ProductionPreparationDecision(
-        ready=False,
+        ready=not reasons,
         reasons=tuple(reasons),
         checked_package=checked,
         rejected_delegated_asset=(
@@ -1705,12 +2390,18 @@ def validate_catalog() -> None:
                     f"{cell.key}: serial/window controls are incomplete"
                 )
     if any(
-        cell.disposition
-        != Disposition.FAIL_CLOSED_MISSING_PRODUCER
-        for cell in THREE_STAGE_CELLS
+        cell.disposition != Disposition.PENDING_CONFIGURED_BOARD
+        for cell in THREE_STAGE_CORE_CELLS
     ):
         raise RuntimeError(
-            "three-stage cell became executable without a production producer"
+            "three-stage positive cell lost its configured-board gate"
+        )
+    if any(
+        cell.disposition != Disposition.HOST_EXACT_CLOSED
+        for cell in THREE_STAGE_NEGATIVE_CELLS
+    ):
+        raise RuntimeError(
+            "three-stage structural negative lost its host-exact owner"
         )
     grouped_cells = tuple(
         cell_key

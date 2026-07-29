@@ -5,6 +5,15 @@
 
 extern void hrt_barrier(void);
 
+__attribute__((visibility("hidden"))) const uint64_t
+    wafer_barrier_slots_per_rank = WAFER_BARRIER_SLOTS_PER_RANK;
+__attribute__((visibility("hidden"))) const uint64_t
+    wafer_barrier_input_slot = WAFER_BARRIER_INPUT_SLOT;
+__attribute__((visibility("hidden"))) const uint64_t
+    wafer_barrier_output_slot = WAFER_BARRIER_OUTPUT_SLOT;
+__attribute__((visibility("hidden"))) const uint64_t
+    wafer_barrier_status_slot = WAFER_BARRIER_STATUS_SLOT;
+
 static void wafer_barrier_cache_range(uint64_t begin, uint32_t bytes,
                                       uint32_t invalidate_only) {
   enum {
@@ -66,7 +75,8 @@ static uint64_t wafer_barrier_verify_epoch(
   uint64_t mismatches = 0;
   for (uint32_t peer = 0; peer < WAFER_BARRIER_RANKS; ++peer) {
     uint64_t peer_output =
-        rank_major_slots[peer * WAFER_BARRIER_SLOTS_PER_RANK + 1];
+        rank_major_slots[peer * wafer_barrier_slots_per_rank +
+                         wafer_barrier_output_slot];
     wafer_barrier_cache_range(peer_output + slot_offset,
                               WAFER_BARRIER_CACHE_LINE_BYTES, 1);
     const volatile uint64_t *marker =

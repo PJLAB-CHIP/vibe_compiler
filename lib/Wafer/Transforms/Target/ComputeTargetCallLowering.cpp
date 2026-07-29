@@ -84,8 +84,9 @@ mlir::LogicalResult FunctionLowering::lowerFill(InstrFillOp op) {
   appendI32(op.getLoc(), args, *scalar);
   appendI32(op.getLoc(), args, *elements);
   appendI32(op.getLoc(), args, *fmt);
-  emitCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::Memset),
-           args);
+  emitNCCCall(op.getLoc(),
+              getTargetCallDescriptor(TargetCallBuiltin::Memset, targetProfile),
+              args, op.getWorker());
   return mlir::success();
 }
 
@@ -117,7 +118,8 @@ mlir::LogicalResult FunctionLowering::lowerElementwise(InstrElementwiseOp op) {
   args.push_back(*dest);
   appendI32(op.getLoc(), args, *elements);
   appendI32(op.getLoc(), args, *fmt);
-  emitCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args);
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+              args, op.getWorker());
   return mlir::success();
 }
 
@@ -139,8 +141,9 @@ mlir::LogicalResult FunctionLowering::lowerBit2Fp(InstrBit2FpOp op) {
   args.push_back(*dest);
   appendI32(op.getLoc(), args, *elements);
   appendI32(op.getLoc(), args, *fmt);
-  emitCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::Bit2FP),
-           args);
+  emitNCCCall(op.getLoc(),
+              getTargetCallDescriptor(TargetCallBuiltin::Bit2FP, targetProfile),
+              args, op.getWorker());
   return mlir::success();
 }
 
@@ -165,8 +168,10 @@ mlir::LogicalResult FunctionLowering::lowerMaskMove(InstrMaskMoveOp op) {
   args.push_back(*dest);
   appendI32(op.getLoc(), args, *elements);
   appendI32(op.getLoc(), args, *fmt);
-  emitCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::MaskMove),
-           args);
+  emitNCCCall(
+      op.getLoc(),
+      getTargetCallDescriptor(TargetCallBuiltin::MaskMove, targetProfile), args,
+      op.getWorker());
   return mlir::success();
 }
 
@@ -193,7 +198,8 @@ mlir::LogicalResult FunctionLowering::lowerReduce(InstrReduceOp op) {
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getDimAttr()));
   appendArrayI32(op.getLoc(), args, *shape);
   appendI32(op.getLoc(), args, *fmt);
-  emitCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args);
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+              args, op.getWorker());
   return mlir::success();
 }
 
@@ -215,7 +221,8 @@ mlir::LogicalResult FunctionLowering::lowerConvert(InstrConvertOp op) {
             getOptionalIntegerAttrValue(op.getZeroPointAttr(), -1));
   appendI32(op.getLoc(), args,
             getOptionalIntegerAttrValue(op.getRoundingModeAttr(), -1));
-  emitCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args);
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+              args, op.getWorker());
   return mlir::success();
 }
 
@@ -242,18 +249,23 @@ mlir::LogicalResult FunctionLowering::lowerGemm(InstrGemmOp op) {
             getOptionalIntegerAttrValue(op.getBatchCountAttr(), 1));
   appendI32(op.getLoc(), args, *fmt);
   if (op.getLhsOrientationAttr()) {
-    if (getTargetProfileRecord(targetProfile).kernelRuntimeABI !=
-        KernelRuntimeABIId::waferTx81KernelV2())
+    KernelRuntimeABIId runtimeABI =
+        getTargetProfileRecord(targetProfile).kernelRuntimeABI;
+    if (runtimeABI != KernelRuntimeABIId::waferTx81KernelV2() &&
+        runtimeABI != KernelRuntimeABIId::waferTx81KernelV3())
       return op.emitError()
              << "unsupported_target_abi: explicit GEMM orientations require "
-                "wafer-tx81-kernel-v2";
+                "wafer-tx81-kernel-v2 or wafer-tx81-kernel-v3";
     appendI32(op.getLoc(), args, static_cast<int64_t>(*op.getLhsOrientation()));
     appendI32(op.getLoc(), args, static_cast<int64_t>(*op.getRhsOrientation()));
-    emitCall(op.getLoc(),
-             getTargetCallDescriptor(TargetCallBuiltin::GemmOrientedV2), args);
+    emitNCCCall(op.getLoc(),
+                getTargetCallDescriptor(TargetCallBuiltin::GemmOrientedV2,
+                                        targetProfile),
+                args, op.getWorker());
   } else {
-    emitCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::Gemm),
-             args);
+    emitNCCCall(op.getLoc(),
+                getTargetCallDescriptor(TargetCallBuiltin::Gemm, targetProfile),
+                args, op.getWorker());
   }
   return mlir::success();
 }
@@ -283,7 +295,8 @@ mlir::LogicalResult FunctionLowering::lowerConv(InstrConvOp op) {
   appendArrayI32(op.getLoc(), args, op.getKernelStrides());
   appendArrayI32(op.getLoc(), args, op.getDilations());
   appendI32(op.getLoc(), args, *fmt);
-  emitCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args);
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+              args, op.getWorker());
   return mlir::success();
 }
 
@@ -309,7 +322,8 @@ mlir::LogicalResult FunctionLowering::lowerPool(InstrPoolOp op) {
   appendArrayI32(op.getLoc(), args, op.getPads());
   appendArrayI32(op.getLoc(), args, op.getKernelStrides());
   appendI32(op.getLoc(), args, *fmt);
-  emitCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args);
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+              args, op.getWorker());
   return mlir::success();
 }
 
@@ -339,7 +353,8 @@ mlir::LogicalResult FunctionLowering::lowerUnpool(InstrUnpoolOp op) {
   appendArrayI32(op.getLoc(), args, op.getDestShape());
   appendArrayI32(op.getLoc(), args, op.getKernelStrides());
   appendI32(op.getLoc(), args, *fmt);
-  emitCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args);
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+              args, op.getWorker());
   return mlir::success();
 }
 

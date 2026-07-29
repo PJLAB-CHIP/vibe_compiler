@@ -127,8 +127,9 @@ bool isNCCEngine(uint8_t engine) {
 }
 
 bool isDirectDTEKind(uint8_t kind) {
-  return kind >= WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT &&
-         kind <= WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_CLEANUP;
+  return (kind >= WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT &&
+          kind <= WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_CLEANUP) ||
+         kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE;
 }
 
 bool snapshotStableMaskIsValid(const WaferTx81ProfilerPMUSnapshot &snapshot) {
@@ -426,12 +427,15 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
             "TX81 profiler NCC completion-wait field combination is invalid");
       break;
     case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT:
+    case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE:
       if (event.engine != WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE ||
           !observationValid || event.observation_count != 2 ||
           !operationValid || !isTx81ProfilerSiteValid(event) || ambiguous ||
           localWait || workerWait || directSend == directReceive ||
           isTx81ProfilerWorkerValid(event) ||
-          (!directCounterValid && event.counter_delta != 0))
+          (!directCounterValid && event.counter_delta != 0) ||
+          (event.kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE &&
+           !directSend))
         return invalid(
             "TX81 profiler Direct-DTE aggregate field combination is invalid");
       break;
@@ -500,7 +504,8 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
   }
   const WaferTx81ProfilerTSMCallEvent *directAggregate = nullptr;
   for (const auto &event : record.events) {
-    if (event.kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT) {
+    if (event.kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE ||
+        event.kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT) {
       directAggregate = &event;
       continue;
     }
@@ -509,7 +514,14 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
       directAggregate = nullptr;
       continue;
     }
-    if (directAggregate == nullptr ||
+    const bool issuePhase =
+        event.kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT ||
+        event.kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE;
+    const bool issueAggregate =
+        directAggregate != nullptr &&
+        directAggregate->kind ==
+            WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE;
+    if (directAggregate == nullptr || issuePhase != issueAggregate ||
         directAggregate->site_id != event.site_id ||
         directAggregate->site_begin_cycle != event.site_begin_cycle ||
         directAggregate->site_end_cycle != event.site_end_cycle ||

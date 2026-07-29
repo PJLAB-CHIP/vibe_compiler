@@ -6,6 +6,7 @@ add_mlir_library(WaferAnalysis
   ScheduleCost/ExecutionCost.cpp
   ScheduleCost/SPMHighWater.cpp
   ScheduleCostAnalysis.cpp
+  StaticBufferRange.cpp
 
   LINK_LIBS PUBLIC
   WaferIR

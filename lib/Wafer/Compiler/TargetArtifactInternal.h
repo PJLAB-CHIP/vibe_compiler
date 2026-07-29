@@ -111,7 +111,8 @@ struct ProfileTargetCallSite {
 /// are retained only for diagnostics and never recover the typed identity.
 llvm::Expected<std::vector<ProfileTargetCallSite>>
 collectProfileTargetCallSites(const llvm::Module &module,
-                              llvm::StringRef entrySymbol);
+                              llvm::StringRef entrySymbol,
+                              TargetProfileId targetProfile);
 
 /// Verifies that a trace clone preserves the final production artifact's
 /// rank-local site order and exact typed target-call identity. Instrumentation
@@ -119,18 +120,19 @@ collectProfileTargetCallSites(const llvm::Module &module,
 /// canonical source position written to the companion.
 llvm::Error verifyProfileTargetCallSiteIdentity(
     const llvm::Module &productionModule, llvm::StringRef productionEntrySymbol,
-    const llvm::Module &traceModule, llvm::StringRef traceEntrySymbol);
+    const llvm::Module &traceModule, llvm::StringRef traceEntrySymbol,
+    TargetProfileId targetProfile);
 
 /// Adds profile entry bracketing for every non-None capture and per-site
 /// bracketing only for Trace. Count relies on the profile CRT helpers to count
 /// the real NCC issue and Direct-DTE wait calls without per-site branches.
 llvm::Error instrumentProfileTargetModule(llvm::Module &module,
                                           llvm::StringRef entrySymbol,
+                                          TargetProfileId targetProfile,
                                           ProfileCaptureKind capture);
-llvm::Error
-verifyProfileTargetModuleInstrumentation(const llvm::Module &module,
-                                         llvm::StringRef entrySymbol,
-                                         ProfileCaptureKind capture);
+llvm::Error verifyProfileTargetModuleInstrumentation(
+    const llvm::Module &module, llvm::StringRef entrySymbol,
+    TargetProfileId targetProfile, ProfileCaptureKind capture);
 
 /// Owns one synthesized LLVM module and its uniquing context. Declaration
 /// order ensures the module is destroyed before its context.

@@ -269,7 +269,7 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
   if (hasDirectDTEContract &&
       mlir::failed(injectDirectDTEStatusLifecycle(
           moduleOp, dteEntrySymbol, transportStatusArgumentIndex, *dteRankCount,
-          dteBeginBuiltin, usedCallees)))
+          dteBeginBuiltin, targetProfile, usedCallees)))
     return mlir::failure();
 
   if (mlir::failed(declareCallees(moduleOp, usedCallees)))

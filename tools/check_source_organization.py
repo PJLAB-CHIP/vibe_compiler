@@ -31,6 +31,7 @@ NUMERIC_SEMANTICS_SOURCES = (
     "NumericSemanticsInternal.cpp",
 )
 TENSOR_PROGRAM_TO_TILE_REGION_SOURCES = (
+    "BidirectionalTiling.cpp",
     "BodyEmitter.cpp",
     "CandidateMaterialization.cpp",
     "CandidateSupport.cpp",

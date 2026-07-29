@@ -108,7 +108,8 @@ static void addNPUCost(InstructionProgramCost &cost, mlir::Type type,
   }
 }
 
-static NoCCollectiveKind classifyCollective(DTEProtocolPhase phase) {
+static std::optional<NoCCollectiveKind>
+classifyCollective(DTEProtocolPhase phase) {
   switch (phase) {
   case DTEProtocolPhase::CollectivePermute:
     return NoCCollectiveKind::CollectivePermute;
@@ -124,6 +125,12 @@ static NoCCollectiveKind classifyCollective(DTEProtocolPhase phase) {
   case DTEProtocolPhase::AllReduceTreeReduce:
   case DTEProtocolPhase::AllReduceTreeBroadcast:
     return NoCCollectiveKind::AllReduce;
+  case DTEProtocolPhase::PeerDataflow:
+    // Peer-resident dataflow is an exact point-to-point transfer rather than
+    // an instance of one of the five collective families. Its payload still
+    // contributes to aggregate transmit/receive, event/instruction, and
+    // whole-card minimum-hop link-byte demand.
+    return std::nullopt;
   }
   llvm_unreachable("unhandled DTE protocol phase");
 }
@@ -287,8 +294,10 @@ static void collectNoCCost(mlir::Operation *op, InstructionProgramCost &cost,
             : Quantity{static_cast<uint64_t>(send.getBytes())};
     Quantity total = multiply(bytes, multiplicity);
     add(cost.noc.aggregateTransmitBytes, total);
-    NoCCollectiveKind kind = classifyCollective(send.getMessage().getPhase());
-    add(cost.noc.collectiveTransmitBytes[static_cast<size_t>(kind)], total);
+    std::optional<NoCCollectiveKind> kind =
+        classifyCollective(send.getMessage().getPhase());
+    if (kind)
+      add(cost.noc.collectiveTransmitBytes[static_cast<size_t>(*kind)], total);
     markDirectionalNoCUnknown(cost);
     return;
   }

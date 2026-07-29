@@ -66,7 +66,9 @@ mlir::LogicalResult FunctionLowering::lowerRDMA(InstrRDMAOp op) {
   appendArrayI32(op.getLoc(), args, op.getSrcStrides());
   appendArrayI32(op.getLoc(), args, op.getSrcIterations());
   appendI32(op.getLoc(), args, *fmt);
-  emitCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::RDMA), args);
+  emitNCCCall(op.getLoc(),
+              getTargetCallDescriptor(TargetCallBuiltin::RDMA, targetProfile),
+              args, op.getWorker());
   return mlir::success();
 }
 
@@ -93,7 +95,9 @@ mlir::LogicalResult FunctionLowering::lowerWDMA(InstrWDMAOp op) {
   appendArrayI32(op.getLoc(), args, op.getDstStrides());
   appendArrayI32(op.getLoc(), args, op.getDstIterations());
   appendI32(op.getLoc(), args, *fmt);
-  emitCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::WDMA), args);
+  emitNCCCall(op.getLoc(),
+              getTargetCallDescriptor(TargetCallBuiltin::WDMA, targetProfile),
+              args, op.getWorker());
   return mlir::success();
 }
 
@@ -121,8 +125,10 @@ FunctionLowering::lowerGatherScatter(InstrGatherScatterOp op) {
   appendArrayI32(op.getLoc(), args, op.getSrcIterations());
   appendArrayI32(op.getLoc(), args, op.getDstStrides());
   appendArrayI32(op.getLoc(), args, op.getDstIterations());
-  emitCall(op.getLoc(),
-           getTargetCallDescriptor(TargetCallBuiltin::GatherScatter), args);
+  emitNCCCall(
+      op.getLoc(),
+      getTargetCallDescriptor(TargetCallBuiltin::GatherScatter, targetProfile),
+      args, op.getWorker());
   return mlir::success();
 }
 
@@ -171,13 +177,17 @@ FunctionLowering::lowerTDMADataMove(InstrTDMADataMoveOp op) {
   appendI32(op.getLoc(), args, *fmt);
 
   if (op.getKind() == InstrDataMoveKind::Pad) {
-    emitCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::TDMAPad),
-             args);
+    emitNCCCall(
+        op.getLoc(),
+        getTargetCallDescriptor(TargetCallBuiltin::TDMAPad, targetProfile),
+        args, op.getWorker());
     return mlir::success();
   }
   if (op.getKind() == InstrDataMoveKind::Img2Col) {
-    emitCall(op.getLoc(),
-             getTargetCallDescriptor(TargetCallBuiltin::TDMAImg2Col), args);
+    emitNCCCall(
+        op.getLoc(),
+        getTargetCallDescriptor(TargetCallBuiltin::TDMAImg2Col, targetProfile),
+        args, op.getWorker());
     return mlir::success();
   }
   llvm_unreachable("transform-like TDMA kinds handled above");

@@ -82,6 +82,11 @@ extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
     return 0;
   }
   const TargetCallDescriptor &descriptor = descriptors[descriptorIndex];
+  if (!isTargetCallAvailableForProfile(descriptor, context->targetProfile)) {
+    context->invocation->failure =
+        "target-call bridge used a descriptor outside the invocation profile";
+    return 0;
+  }
   if (argumentCount != descriptor.arguments.size()) {
     context->invocation->failure =
         "target-call bridge used an invalid argument count";
@@ -94,12 +99,18 @@ extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
     context->invocation->failure = llvm::toString(payload.takeError());
     return 0;
   }
+  llvm::Expected<std::optional<NCCWorker>> worker =
+      decodeTargetCallNCCWorker(descriptor, argumentValues);
+  if (!worker) {
+    context->invocation->failure = llvm::toString(worker.takeError());
+    return 0;
+  }
   TargetTransaction transaction{
       context->logicalRank, context->nextIssueOrdinal++, std::move(*payload)};
-  if (descriptor.issueDomain && descriptor.issueDomain->nccWorker)
-    transaction.nccIssueDomain = TargetNCCIssueDomain{
-        descriptor.issueDomain->engine, *descriptor.issueDomain->nccWorker,
-        descriptor.issueDomain->completionBehavior};
+  if (descriptor.issueDomain && *worker)
+    transaction.nccIssueDomain =
+        TargetNCCIssueDomain{descriptor.issueDomain->engine, **worker,
+                             descriptor.issueDomain->completionBehavior};
   llvm::Expected<uint64_t> issueResult =
       context->invocation->sink->issue(transaction);
   if (!issueResult) {
@@ -238,11 +249,12 @@ static llvm::Error preflightModule(const TargetLLVMModule &targetModule) {
       return llvm::createStringError(
           "target module contains an unsupported personality function");
     if (function.isDeclaration() && !function.isIntrinsic()) {
-      const TargetCallDescriptor *descriptor =
-          findTargetCallDescriptor(function.getName());
+      const TargetCallDescriptor *descriptor = findTargetCallDescriptor(
+          function.getName(), targetModule.getTargetProfileId());
       if (!descriptor)
         return llvm::createStringError(
-            "target module contains unknown external call @%s",
+            "target module contains unknown or profile-incompatible external "
+            "call @%s",
             function.getName().str().c_str());
       if (llvm::Error error = verifyDescriptorType(function, *descriptor))
         return error;
@@ -302,6 +314,10 @@ static llvm::Error defineTargetCallBridges(llvm::Module &module,
     llvm::Function *function = module.getFunction(descriptor.symbol);
     if (!function)
       continue;
+    if (!isTargetCallAvailableForProfile(descriptor, context.targetProfile))
+      return llvm::createStringError(
+          "target call bridge symbol is unavailable for the invocation "
+          "profile");
     if (!function->isDeclaration())
       return llvm::createStringError(
           "target call bridge symbol is already defined");

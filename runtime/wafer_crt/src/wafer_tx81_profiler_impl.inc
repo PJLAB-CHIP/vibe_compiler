@@ -44,6 +44,7 @@ static uint64_t wafer_profile_active_site_begin_cycle;
 static uint32_t wafer_profile_active_site_first_event;
 static uint32_t wafer_profile_direct_event_index;
 static uint32_t wafer_profile_direct_role_metadata;
+static uint8_t wafer_profile_direct_aggregate_kind;
 static uint64_t wafer_profile_direct_operation_begin_cycle;
 static uint64_t wafer_profile_direct_observation_begin_cycle;
 static uint64_t wafer_profile_direct_start_counters[2];
@@ -63,6 +64,7 @@ static void wafer_profile_reset_binding(void) {
   wafer_profile_active_site_first_event = 0;
   wafer_profile_direct_event_index = UINT32_MAX;
   wafer_profile_direct_role_metadata = 0;
+  wafer_profile_direct_aggregate_kind = 0;
   wafer_profile_direct_operation_begin_cycle = 0;
   wafer_profile_direct_observation_begin_cycle = 0;
   wafer_profile_direct_start_counters[0] = 0;
@@ -632,7 +634,9 @@ void wafer_tx81_profile_site_end(uint32_t site_id) {
 }
 
 static uint32_t wafer_profile_worker_metadata(uint32_t inter_type) {
-  uint32_t worker = (inter_type >> 8) & UINT32_C(0x3);
+  uint32_t worker =
+      (inter_type & WAFER_TX81_NCC_WORKER_INTER_TYPE_MASK) >>
+      WAFER_TX81_NCC_WORKER_INTER_TYPE_SHIFT;
   if (worker >= WAFER_TX81_PROFILER_WORKERS)
     return 0;
   return worker | WAFER_TX81_PROFILER_EVENT_WORKER_VALID;
@@ -885,9 +889,17 @@ wafer_profile_wait_ncc_worker_completion(uint32_t worker) {
   return 1U;
 }
 
-static void wafer_profile_direct_dte_begin(uint64_t direct_event) {
+static void wafer_profile_direct_dte_begin(uint64_t direct_event,
+                                           uint8_t aggregate_kind) {
   if (wafer_profile_header == NULL)
     return;
+  if ((aggregate_kind != WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE &&
+       aggregate_kind != WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT) ||
+      (aggregate_kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE &&
+       direct_event != WAFER_DIRECT_DTE_SEND_EVENT)) {
+    wafer_profile_mark_protocol_error();
+    return;
+  }
   uint32_t role = 0;
   if (direct_event == WAFER_DIRECT_DTE_SEND_EVENT)
     role = WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SEND;
@@ -898,6 +910,7 @@ static void wafer_profile_direct_dte_begin(uint64_t direct_event) {
   else
     wafer_profile_mark_protocol_error();
   wafer_profile_direct_role_metadata = role;
+  wafer_profile_direct_aggregate_kind = aggregate_kind;
   if ((wafer_profile_header->flags & WAFER_TX81_PROFILER_RECORD_COUNT_ONLY) !=
       0U) {
     ++wafer_profile_header->next_sequence;
@@ -911,8 +924,7 @@ static void wafer_profile_direct_dte_begin(uint64_t direct_event) {
   }
   wafer_profile_observe_ncc_activity();
   wafer_profile_direct_event_index = wafer_profile_allocate_event(
-      WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE,
-      WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT, role);
+      WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE, aggregate_kind, role);
   uint64_t sample_begin_cycle = wafer_profile_cycle();
   wafer_profile_direct_start_valid_mask = 0;
   wafer_profile_direct_start_counters[0] =
@@ -983,6 +995,7 @@ static void wafer_profile_direct_dte_end(void) {
   }
   wafer_profile_direct_event_index = UINT32_MAX;
   wafer_profile_direct_role_metadata = 0;
+  wafer_profile_direct_aggregate_kind = 0;
   wafer_profile_direct_operation_begin_cycle = 0;
   wafer_profile_direct_observation_begin_cycle = 0;
   wafer_profile_observe_ncc_activity();
@@ -998,10 +1011,18 @@ static uint32_t wafer_profile_direct_dte_phase_begin(uint8_t kind) {
   }
   if (!wafer_profile_is_trace_capture())
     return UINT32_MAX;
+  uint32_t is_issue_phase =
+      kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT ||
+      kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE;
+  uint32_t is_wait_phase =
+      kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_COMPLETION_WAIT ||
+      kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_CLEANUP;
   if (wafer_profile_direct_event_index == UINT32_MAX ||
       wafer_profile_direct_role_metadata == 0U ||
-      kind < WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT ||
-      kind > WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_CLEANUP) {
+      ((!is_issue_phase || wafer_profile_direct_aggregate_kind !=
+                               WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE) &&
+       (!is_wait_phase || wafer_profile_direct_aggregate_kind !=
+                              WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT))) {
     wafer_profile_mark_protocol_error();
     return UINT32_MAX;
   }

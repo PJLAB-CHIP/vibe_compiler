@@ -8,21 +8,28 @@ namespace wafer::compiler::detail {
 /// Controls which already-generated, fully accepted whole-rank variant is
 /// committed by the compiler. Production evaluates the accepted frontier;
 /// ReservedBaseline commits the unique conservative candidate carried by each
-/// rank frontier. QualifyStaticFixedSlot selects only an actual fixed-slot
-/// realization that passes the same late gates; it does not alter production
-/// cost or preference. The characterization modes select a fully accepted
-/// variant only when its final instruction IR contains exactly the requested
-/// collective algorithm phase for that collective family. These are internal
+/// rank frontier. Qualification modes select only an actual fixed-slot or
+/// disjoint-component worker realization that passes the same late gates; they
+/// do not alter production cost or preference. The characterization modes
+/// select a fully accepted variant only when its final instruction IR contains
+/// exactly the requested collective algorithm phase for that collective
+/// family. The NoC-resident ring qualification additionally rejects reserved
+/// candidates and proves from every accepted rank's current IR that DDR
+/// movement is limited to entry-boundary reads and returned-output writes;
+/// artifact-generation labels are not semantic residency. These are internal
 /// test seams, not user options or alternate IR contracts.
 enum class WholeVariantSelectionMode {
   Production,
   ReservedBaseline,
   QualifyStaticFixedSlot,
+  QualifyWorkerPlacement,
+  QualifyNoCResidentFixedSlotWorker,
   CharacterizeAllGatherDirect,
   CharacterizeAllGatherRing,
   CharacterizeReduceScatterDirect,
   CharacterizeReduceScatterRing,
   CharacterizeAllReduceRing,
+  QualifyNoCResidentAllReduceRing,
   CharacterizeAllReduceTree,
 };
 
@@ -32,12 +39,15 @@ isCollectiveCharacterizationSelection(WholeVariantSelectionMode mode) {
   case WholeVariantSelectionMode::Production:
   case WholeVariantSelectionMode::ReservedBaseline:
   case WholeVariantSelectionMode::QualifyStaticFixedSlot:
+  case WholeVariantSelectionMode::QualifyWorkerPlacement:
+  case WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker:
     return false;
   case WholeVariantSelectionMode::CharacterizeAllGatherDirect:
   case WholeVariantSelectionMode::CharacterizeAllGatherRing:
   case WholeVariantSelectionMode::CharacterizeReduceScatterDirect:
   case WholeVariantSelectionMode::CharacterizeReduceScatterRing:
   case WholeVariantSelectionMode::CharacterizeAllReduceRing:
+  case WholeVariantSelectionMode::QualifyNoCResidentAllReduceRing:
   case WholeVariantSelectionMode::CharacterizeAllReduceTree:
     return true;
   }
@@ -56,15 +66,29 @@ getCollectiveCharacterizationAlternative(WholeVariantSelectionMode mode) {
   case WholeVariantSelectionMode::CharacterizeReduceScatterRing:
     return "reduce-scatter-ring";
   case WholeVariantSelectionMode::CharacterizeAllReduceRing:
+  case WholeVariantSelectionMode::QualifyNoCResidentAllReduceRing:
     return "all-reduce-ring";
   case WholeVariantSelectionMode::CharacterizeAllReduceTree:
     return "all-reduce-tree";
   case WholeVariantSelectionMode::Production:
   case WholeVariantSelectionMode::ReservedBaseline:
   case WholeVariantSelectionMode::QualifyStaticFixedSlot:
+  case WholeVariantSelectionMode::QualifyWorkerPlacement:
+  case WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker:
     return "";
   }
   return "";
+}
+
+/// Static fixed-slot qualification publishes an attestation companion as part
+/// of the same no-replace transaction as its canonical package. The compound
+/// qualification reuses that exact companion schema while adding independent
+/// NoC-residency and worker-placement selection predicates.
+constexpr bool producesStaticFixedSlotQualificationCompanion(
+    WholeVariantSelectionMode mode) {
+  return mode == WholeVariantSelectionMode::QualifyStaticFixedSlot ||
+         mode ==
+             WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker;
 }
 
 } // namespace wafer::compiler::detail

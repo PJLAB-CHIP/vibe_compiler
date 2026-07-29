@@ -137,6 +137,84 @@ module {
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
+class InterfaceTraversalCandidateSelectionTest : public ::testing::Test {
+protected:
+  InterfaceTraversalCandidateSelectionTest() {
+    registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                    mlir::bufferization::BufferizationDialect,
+                    mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                    mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                    mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                    wafer::WaferDialect>();
+    mlir::linalg::registerTilingInterfaceExternalModels(registry);
+    mlir::tensor::registerTilingInterfaceExternalModels(registry);
+    wafer::registerTargetImplementationExternalModels(registry);
+    context = std::make_unique<mlir::MLIRContext>(registry);
+    context->loadAllAvailableDialects();
+  }
+
+  struct Run {
+    mlir::OwningOpRef<mlir::ModuleOp> source;
+    mlir::OwningOpRef<mlir::ModuleOp> taskModule;
+    std::optional<SelectedCandidate> selected;
+  };
+
+  Run select(llvm::StringRef sourceText,
+             wafer::CandidateTileTraversalKind traversalKind,
+             unsigned taskAlternativeOrdinal) {
+    Run run;
+    run.source =
+        mlir::parseSourceString<mlir::ModuleOp>(sourceText, context.get());
+    if (!run.source) {
+      ADD_FAILURE() << "failed to parse interface traversal source";
+      return run;
+    }
+    llvm::SmallVector<wafer::structured_scheduler::StructuredSchedulingScope, 1>
+        scopes;
+    if (mlir::failed(
+            wafer::structured_scheduler::discoverStructuredSchedulingScopes(
+                *run.source, scopes)) ||
+        scopes.size() != 1) {
+      ADD_FAILURE() << "failed to discover one interface traversal scope";
+      return run;
+    }
+    run.taskModule =
+        wafer::structured_scheduler::cloneScopeToStandaloneModule(scopes[0]);
+    mlir::func::FuncOp task =
+        run.taskModule
+            ? wafer::structured_scheduler::findSingleTaskFunction(
+                  *run.taskModule)
+            : mlir::func::FuncOp{};
+    if (!task) {
+      ADD_FAILURE() << "failed to clone interface traversal task";
+      return run;
+    }
+
+    wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
+    SelectionConfig config(
+        policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+    config.logicalRank = 0;
+    config.preferredTileSizes = {8, 4, 2, 1};
+    config.maxCandidatesPerDim = 4;
+    config.maxSearchCandidates = 8;
+    config.searchBeamWidth = 4;
+    config.traversalKind = traversalKind;
+    config.taskAlternativeOrdinal = taskAlternativeOrdinal;
+    mlir::FailureOr<SelectedCandidate> selected =
+        wafer::tensor_program_scheduling::selectCandidateForScope(
+            scopes.front(), task, "interface-traversal", config);
+    if (mlir::failed(selected)) {
+      ADD_FAILURE() << "interface traversal candidate selection failed";
+      return run;
+    }
+    run.selected.emplace(std::move(*selected));
+    return run;
+  }
+
+  mlir::DialectRegistry registry;
+  std::unique_ptr<mlir::MLIRContext> context;
+};
+
 TEST(CandidateSelectionTest, RejectsUnknownOrUnsupportedRankingDimensions) {
   CandidateStats unknown;
   unknown.program.spmMovementBytes.knowledge =
@@ -444,11 +522,17 @@ module {
       traversalRoots->front().getOperation()));
   EXPECT_FALSE(getYieldedRootLinalgOps(wrapped));
 
-  // The all-reduce wrapper directs M/N search through the local GEMM, but it
-  // must not expose local K=256 as a compiler-created reduction split axis.
+  // Ordinary traversal uses the wrapper only for M/N pressure. It must not
+  // expose local K=256 as a reduction split axis unless the independent
+  // PartialReduction interface recipe was selected explicitly.
   auto reductionRanges = getStaticRootReductionRanges(wrapped);
   ASSERT_TRUE(mlir::succeeded(reductionRanges));
   EXPECT_TRUE(reductionRanges->empty());
+  auto partialReductionRanges = getStaticRootReductionRanges(
+      wrapped, wafer::CandidateTileTraversalKind::PartialReduction);
+  ASSERT_TRUE(mlir::succeeded(partialReductionRanges));
+  EXPECT_EQ(*partialReductionRanges,
+            (llvm::SmallVector<int64_t, 2>{256}));
 
   CandidateSpec tile{/*tileSizes=*/{256, 256},
                      /*reductionSplitSizes=*/{}};
@@ -536,6 +620,366 @@ module {
   ASSERT_TRUE(fitting);
   EXPECT_EQ(*fitting, 3 * 512 * 512 * static_cast<int64_t>(sizeof(uint16_t)));
   EXPECT_LE(*fitting, 3080192 - 65536);
+}
+
+TEST(CandidateSelectionTest,
+     UnitLocalReductionDoesNotBorrowCTReduceTraversalNarrowing) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::tensor::TensorDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @unit_local_reduce(%input: tensor<1x458752xf16>)
+      -> tensor<458752xf16> {
+    %zero = arith.constant 0.0 : f16
+    %empty = tensor.empty() : tensor<458752xf16>
+    %out = linalg.fill ins(%zero : f16)
+        outs(%empty : tensor<458752xf16>) -> tensor<458752xf16>
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d1)>
+        ],
+        iterator_types = ["reduction", "parallel"]
+      } ins(%input : tensor<1x458752xf16>)
+        outs(%out : tensor<458752xf16>) {
+    ^bb0(%value: f16, %acc: f16):
+      %sum = arith.addf %value, %acc : f16
+      linalg.yield %sum : f16
+    } -> tensor<458752xf16>
+    return %result : tensor<458752xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp task =
+      source->lookupSymbol<mlir::func::FuncOp>("unit_local_reduce");
+  ASSERT_TRUE(task);
+
+  CandidateSpec fullTraversal{/*tileSizes=*/{458752},
+                              /*reductionSplitSizes=*/{}};
+  EXPECT_FALSE(getCheapTargetGeometryFailure(
+      task, fullTraversal, /*reductionRanges=*/{1}));
+  EXPECT_TRUE(getCheapTargetGeometryFailure(
+      task, fullTraversal, /*reductionRanges=*/{2}));
+
+  CandidateSpec narrowTraversalWideReduction{
+      /*tileSizes=*/{57344},
+      /*reductionSplitSizes=*/{65536}};
+  EXPECT_TRUE(getCheapTargetGeometryFailure(
+      task, narrowTraversalWideReduction, /*reductionRanges=*/{65536}));
+}
+
+TEST_F(InterfaceTraversalCandidateSelectionTest,
+       UnitLocalReductionCanSelectTraversalBeyondCTReduceLimit) {
+  Run run = select(R"mlir(
+module {
+  func.func @unit_local_reduce(%input: tensor<1x458752xf16>)
+      -> tensor<458752xf16> {
+    %zero = arith.constant 0.0 : f16
+    %empty = tensor.empty() : tensor<458752xf16>
+    %out = linalg.fill ins(%zero : f16)
+        outs(%empty : tensor<458752xf16>) -> tensor<458752xf16>
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d1)>
+        ],
+        iterator_types = ["reduction", "parallel"]
+      } ins(%input : tensor<1x458752xf16>)
+        outs(%out : tensor<458752xf16>) {
+    ^bb0(%value: f16, %acc: f16):
+      %sum = arith.addf %value, %acc : f16
+      linalg.yield %sum : f16
+    } -> tensor<458752xf16>
+    return %result : tensor<458752xf16>
+  }
+}
+)mlir",
+                   wafer::CandidateTileTraversalKind::ResultDriven,
+                   /*taskAlternativeOrdinal=*/0);
+  ASSERT_TRUE(run.selected);
+  ASSERT_TRUE(run.selected->module);
+  EXPECT_EQ(run.selected->spec.tileSizes,
+            (llvm::SmallVector<int64_t, 2>{114688}));
+  EXPECT_TRUE(run.selected->spec.reductionSplitSizes.empty());
+  EXPECT_EQ(run.selected->candidateCount, 3);
+  EXPECT_EQ(run.selected->completeEvaluationCount, 3);
+  EXPECT_EQ(run.selected->rejectedCount, 2);
+}
+
+TEST_F(InterfaceTraversalCandidateSelectionTest,
+       IndependentRecipeAcceptsOperandDrivenActualClone) {
+  Run run = select(R"mlir(
+module {
+  func.func @pointwise(%lhs: tensor<4x6xf32>, %rhs: tensor<4x6xf32>,
+                       %out: tensor<4x6xf32>) -> tensor<4x6xf32> {
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>
+        ],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%lhs, %rhs : tensor<4x6xf32>, tensor<4x6xf32>)
+        outs(%out : tensor<4x6xf32>) {
+    ^bb0(%left: f32, %right: f32, %old: f32):
+      %sum = arith.addf %left, %right : f32
+      linalg.yield %sum : f32
+    } -> tensor<4x6xf32>
+    return %result : tensor<4x6xf32>
+  }
+}
+)mlir",
+                   wafer::CandidateTileTraversalKind::OperandDriven,
+                   /*taskAlternativeOrdinal=*/0);
+  ASSERT_TRUE(run.selected);
+  ASSERT_TRUE(run.selected->module);
+  EXPECT_EQ(run.selected->spec.traversalKind,
+            wafer::CandidateTileTraversalKind::OperandDriven);
+  EXPECT_EQ(run.selected->candidateCount, 1);
+  EXPECT_EQ(run.selected->completeEvaluationCount, 1);
+  EXPECT_EQ(run.selected->rejectedCount, 0);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*run.selected->module)));
+}
+
+TEST_F(InterfaceTraversalCandidateSelectionTest,
+       IndependentRecipeAcceptsPartialReductionActualClone) {
+  Run run = select(R"mlir(
+module {
+  func.func @sum(%input: tensor<4x8xf32>, %out: tensor<4xf32>)
+      -> tensor<4xf32> {
+    %zero = arith.constant 0.0 : f32
+    %init = linalg.fill ins(%zero : f32)
+        outs(%out : tensor<4xf32>) -> tensor<4xf32>
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0)>
+        ],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%input : tensor<4x8xf32>)
+        outs(%init : tensor<4xf32>) {
+    ^bb0(%value: f32, %acc: f32):
+      %sum = arith.addf %value, %acc : f32
+      linalg.yield %sum : f32
+    } -> tensor<4xf32>
+    return %result : tensor<4xf32>
+  }
+}
+)mlir",
+                   wafer::CandidateTileTraversalKind::PartialReduction,
+                   /*taskAlternativeOrdinal=*/0);
+  ASSERT_TRUE(run.selected);
+  ASSERT_TRUE(run.selected->module);
+  EXPECT_EQ(run.selected->spec.traversalKind,
+            wafer::CandidateTileTraversalKind::PartialReduction);
+  EXPECT_EQ(run.selected->spec.reductionSplitSizes,
+            (llvm::SmallVector<int64_t, 2>{8}));
+  EXPECT_EQ(run.selected->candidateCount, 1);
+  EXPECT_EQ(run.selected->completeEvaluationCount, 1);
+  EXPECT_EQ(run.selected->rejectedCount, 0);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*run.selected->module)));
+}
+
+TEST_F(InterfaceTraversalCandidateSelectionTest,
+       PartialReductionRecipeFeedsExistingTypedAllReduceProtocol) {
+  Run run = select(R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {topology = @default, axes = ["rank"], shape = array<i64: 2>,
+       policy = "all_available", endpoints = array<i64>}
+  func.func @local_sum_all_reduce(%input: tensor<4x8xf32>,
+                                  %out: tensor<4xf32>)
+      -> tensor<4xf32> {
+    %zero = arith.constant 0.0 : f32
+    %empty = tensor.empty() : tensor<4xf32>
+    %init = linalg.fill ins(%zero : f32)
+        outs(%empty : tensor<4xf32>) -> tensor<4xf32>
+    %local = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0)>
+        ],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%input : tensor<4x8xf32>)
+        outs(%init : tensor<4xf32>) {
+    ^bb0(%value: f32, %acc: f32):
+      %sum = arith.addf %value, %acc : f32
+      linalg.yield %sum : f32
+    } -> tensor<4xf32>
+    %reduced = wafer.linalg_ext.collective.all_reduce
+        ins(%local : tensor<4xf32>)
+        outs(%out : tensor<4xf32>) {
+    ^bb0(%left: f32, %right: f32):
+      %sum = arith.addf %left, %right : f32
+      wafer.linalg_ext.collective.yield %sum : f32
+    } {channel_id = 73 : i64, rank_group = array<i64: 0, 1>}
+        -> tensor<4xf32>
+    return %reduced : tensor<4xf32>
+  }
+}
+)mlir",
+                   wafer::CandidateTileTraversalKind::PartialReduction,
+                   /*taskAlternativeOrdinal=*/0);
+  ASSERT_TRUE(run.selected);
+  ASSERT_TRUE(run.selected->module);
+  EXPECT_EQ(run.selected->spec.traversalKind,
+            wafer::CandidateTileTraversalKind::PartialReduction);
+  EXPECT_EQ(run.selected->spec.reductionSplitSizes,
+            (llvm::SmallVector<int64_t, 2>{8}));
+  unsigned dteIssues = 0;
+  unsigned localReductions = 0;
+  run.selected->module->walk([&](mlir::Operation *operation) {
+    dteIssues += mlir::isa<wafer::InstrDTESendOp,
+                           wafer::InstrDTERecvOp>(operation);
+    localReductions += mlir::isa<wafer::InstrElementwiseOp>(operation);
+  });
+  EXPECT_GT(dteIssues, 0u);
+  EXPECT_GT(localReductions, 0u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*run.selected->module)));
+}
+
+TEST(CandidateSelectionTest,
+     OperandDrivenProductionCloneRejectsUnknownBoundaryCover) {
+  constexpr llvm::StringLiteral task = R"mlir(
+module {
+  func.func @broadcast(%input: tensor<6xf32>, %out: tensor<4x6xf32>)
+      -> tensor<4x6xf32> {
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>
+        ],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%input : tensor<6xf32>) outs(%out : tensor<4x6xf32>) {
+    ^bb0(%value: f32, %old: f32):
+      linalg.yield %value : f32
+    } -> tensor<4x6xf32>
+    return %result : tensor<4x6xf32>
+  }
+}
+)mlir";
+  wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
+  SelectionConfig config(
+      policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  config.logicalRank = 0;
+  CandidateSpec candidate{/*tileSizes=*/{2, 3},
+                          /*reductionSplitSizes=*/{}};
+  candidate.traversalKind =
+      wafer::CandidateTileTraversalKind::OperandDriven;
+  CandidateCheckResult result = evaluateCandidateOnStandaloneTaskText(
+      task, /*traversalShape=*/{4, 6}, candidate, config);
+  EXPECT_NE(result.failureReason.find(
+                "operand-driven complete traversal found no exact boundary "
+                "tile seed"),
+            std::string::npos)
+      << result.failureReason;
+  EXPECT_TRUE(result.acceptedModuleText.empty());
+}
+
+TEST(CandidateSelectionTest,
+     PartialReductionProductionCloneRejectsUnsupportedNumericRegrouping) {
+  constexpr llvm::StringLiteral task = R"mlir(
+module {
+  func.func @unsigned_max(%input: tensor<4x8xi32>, %out: tensor<4xi32>)
+      -> tensor<4xi32> {
+    %zero = arith.constant 0 : i32
+    %init = linalg.fill ins(%zero : i32)
+        outs(%out : tensor<4xi32>) -> tensor<4xi32>
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0)>
+        ],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%input : tensor<4x8xi32>)
+        outs(%init : tensor<4xi32>) {
+    ^bb0(%value: i32, %acc: i32):
+      %maximum = arith.maxui %value, %acc : i32
+      linalg.yield %maximum : i32
+    } -> tensor<4xi32>
+    return %result : tensor<4xi32>
+  }
+}
+)mlir";
+  wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
+  SelectionConfig config(
+      policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  config.logicalRank = 0;
+  CandidateSpec candidate{/*tileSizes=*/{2},
+                          /*reductionSplitSizes=*/{4}};
+  candidate.traversalKind =
+      wafer::CandidateTileTraversalKind::PartialReduction;
+  CandidateCheckResult result = evaluateCandidateOnStandaloneTaskText(
+      task, /*traversalShape=*/{4}, candidate, config);
+  EXPECT_NE(result.failureReason.find(
+                "candidate reduction split cannot preserve unsigned min/max "
+                "semantics"),
+            std::string::npos)
+      << result.failureReason;
+  EXPECT_TRUE(result.acceptedModuleText.empty());
+}
+
+TEST(CandidateSelectionTest,
+     TypedAllReducePartialRecipeRejectsUnsupportedLocalRegrouping) {
+  constexpr llvm::StringLiteral task = R"mlir(
+module {
+  func.func @local_unsigned_max_all_reduce(%input: tensor<4x8xi32>,
+                                           %out: tensor<4xi32>)
+      -> tensor<4xi32> {
+    %zero = arith.constant 0 : i32
+    %empty = tensor.empty() : tensor<4xi32>
+    %init = linalg.fill ins(%zero : i32)
+        outs(%empty : tensor<4xi32>) -> tensor<4xi32>
+    %local = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0)>
+        ],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%input : tensor<4x8xi32>)
+        outs(%init : tensor<4xi32>) {
+    ^bb0(%value: i32, %acc: i32):
+      %maximum = arith.maxui %value, %acc : i32
+      linalg.yield %maximum : i32
+    } -> tensor<4xi32>
+    %reduced = wafer.linalg_ext.collective.all_reduce
+        ins(%local : tensor<4xi32>)
+        outs(%out : tensor<4xi32>) {
+    ^bb0(%left: i32, %right: i32):
+      %maximum = arith.maxui %left, %right : i32
+      wafer.linalg_ext.collective.yield %maximum : i32
+    } {channel_id = 74 : i64, rank_group = array<i64: 0, 1>}
+        -> tensor<4xi32>
+    return %reduced : tensor<4xi32>
+  }
+}
+)mlir";
+  wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
+  SelectionConfig config(
+      policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  config.logicalRank = 0;
+  CandidateSpec candidate{/*tileSizes=*/{2},
+                          /*reductionSplitSizes=*/{4}};
+  candidate.traversalKind =
+      wafer::CandidateTileTraversalKind::PartialReduction;
+  CandidateCheckResult result = evaluateCandidateOnStandaloneTaskText(
+      task, /*traversalShape=*/{4}, candidate, config);
+  EXPECT_NE(result.failureReason.find(
+                "candidate reduction split cannot preserve unsigned min/max "
+                "semantics"),
+            std::string::npos)
+      << result.failureReason;
+  EXPECT_TRUE(result.acceptedModuleText.empty());
 }
 
 TEST_F(CandidateSearchExecutionTest,

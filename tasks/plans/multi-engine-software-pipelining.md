@@ -1,7 +1,7 @@
 # Multi-Engine Software Pipelining 实施计划
 
-状态：Q38保持`doing`，当前执行顺序以`tasks/progress.md`为准；本计划可与profiler实现并行收敛，
-但production实现和状态切换仍由任务队列统一管理。
+状态：Q38非板端实现与host gates已经闭合，保持`blocked: board`；唯一剩余门禁是configured-board
+同源fresh qualification和normal production winner correctness，状态仍以`tasks/progress.md`为准。
 
 ## Pipeline Contract
 
@@ -9,9 +9,10 @@
 Pipeline position:
 - Upstream artifact / IR:
   已验证并按logical rank specialize的complete static instruction program；structured traversal loop、
-  SSA use-def、普通allocation/view、MemoryEffectOpInterface、instruction family、Direct DTE token/wait和
-  typed NCC issue worker/participant join均已显式，SPM/DDR physical offset尚未提交。current operator call
-  ABI只兑现worker0 issue，非零worker由target preflight拒绝；该限制不能由硬件校准side table补写。
+  SSA use-def、普通allocation/view、MemoryEffectOpInterface、instruction family、Direct DTE
+  prepare/issue/token/wait和typed NCC issue worker/participant join均已显式，SPM/DDR physical offset尚未
+  提交。V1/V2 ordinary operator call ABI冻结为原始arity和worker0；只有显式V3 profile使用独立`_v3`
+  symbol、末尾typed worker scalar及真实Direct-DTE issue。该versioned边界不能由硬件校准side table补写。
   driver把编译请求中已有的versioned `TargetProfileId`显式传入rank-frontier，不能在scheduler内另选默认值；
   该ID只是静态target/ABI合同，不来自实卡探测、Q9 profiler或运行时状态。
 - Current stage responsibility:
@@ -20,16 +21,17 @@ Pipeline position:
   completion gate的clone不进入调度。唯一reserved conservative spill保持未优化copy并独立走相同late gates，
   作为任何后续target拒绝的事务性回退。随后从current unplaced IR重算address/resource/completion dependency DAG，
   在isolated complete-rank actual
-  clone中生成有限serial、issue-window、multi-buffer和worker-placement alternatives。optimized clone用
+  clone中生成有限serial、issue-window、multi-buffer和worker-placement alternatives；worker1/2
+  alternatives只在V3 target合同下进入late gate。optimized clone用
   固定普通allocation root、loop-carried slot rotation、prologue/steady/epilogue、DAG-legal issue order和
   waitfinish-free same-worker ordered stream直接表达steady-state软件流水；只有不能由issue order、exact
   event或同域placement落实的handoff/publication才物化latest-unavoidable typed join。legality capability与
   profitability evidence分开；收益Unknown不等于程序非法。
 - Output artifact / IR:
-  唯一accepted instruction/memory/completion program。buffering、worker placement、issue order、token/join
-  和structured control flow都在accepted IR本体中；不产生shadow schedule、名字协议或供编译器回读的
-  side table。板端qualification所需结构证明只能是从final accepted IR只读派生并与final artifact digest
-  绑定的审计投影，不能成为runtime或selection输入。
+  唯一accepted instruction/memory/completion program。buffering、worker placement、issue order、DTE
+  prepare/issue/token/wait/release、participant join和structured control flow都在accepted IR本体中；
+  不产生shadow schedule、名字协议或供编译器回读的side table。板端qualification所需结构证明只能是从
+  final accepted IR只读派生并与final manifest digest双向绑定的审计投影，不能成为runtime或selection输入。
 - Downstream consumer:
   Instr whole-program completion verifier、SPM/DDR lifetime与fixed-capacity placement、Direct DTE
   acceptance、target LLVM/CRT lowering、whole-card candidate selection、package/runtime、target model及
@@ -66,6 +68,14 @@ Pipeline position:
   alias、effect/lifetime、alignment及DTE exact wait证明storage coalescing，不按operator、通信协议、
   shape或size-1轴匹配。每次删除movement后先fresh重建completion，再生成DAG/window和SPM plan；reserved
   spill保持原copy并在rank/whole-variant/target任一late gate拒绝优化sibling时提供回退。
+- 同一normalization已扩展到direct、无条件、static-positive loop body：只接受loop-invariant
+  compiler-owned roots和copy后只读destination，alias forwarding携带owner/path，并显式证明source snapshot、
+  dominance、exact wait及backedge安全。dynamic/zero/nested/conditional、loop-local/iter-arg、
+  mutation、loop后use或跨backedge outstanding DTE均保留真实movement；静态timeline不代替动态iteration证明。
+- cheap geometry只验证最终选中指令真实编码字段。unit-local reduction wrapper最终发射CT Add+Direct-DTE时，
+  遍历轴按`uint32_t elem_count`验证；只有真实local reduction维度大于1才施加CT Reduce
+  `uint16_t Data_Shape`，NE GEMM继续按自身窄字段验证。16-rank `458752`元素Direct-DTE纵向因此选择
+  `114688`元素tile，而不是被错误截断到`57344`。
 - ready-order现已从typed worker issue、participant join、SSA、root-normalized view、RAW/WAR/WAW和DTE
   token重算约束；join只屏障其participant NCC domain，不再把DTE包进普通local completion。它仍只是
   candidate order变体，不是fixed-slot软件流水模型。
@@ -80,7 +90,9 @@ Pipeline position:
   count掩盖。每次候选改写仍必须重跑completion normal form与physical hazard。
 - Instr、TargetCall descriptor、frontend transaction和functional model已经携带typed worker/completion
   identity；model维护三个worker pending watermark，participant join只完成mask覆盖的NCC worker，不完成
-  Direct DTE。current operator command ABI仍只支持worker0 issue，worker1/2 candidate尚未开放。
+  Direct DTE。V1/V2冻结为104个legacy ordinary worker0 calls；V3另有104个`_v3` ordinary calls并在末尾携带
+  worker，因而worker1/2 candidate只在V3开放。registry保持原112-descriptor prefix不变，总计217个
+  descriptor；V1/V2/V3各自可见111/112/113个calls。
 - production `ExecutionConfig`中的静态`TargetProfileId`现已原样贯穿rank-frontier、并行candidate
   evaluation、import后cost重算和scheduled-rank finalization；缺少该编译目标合同的内部调用在分析前
   fail closed。它不读取实卡、PMU、Q9产物或runtime状态，也不建立per-card schedule。
@@ -96,8 +108,17 @@ Pipeline position:
 - compiler-private no-card纵向已从同一真实source构建qualification bundle，经过target LLVM、TargetCall动态
   transaction和SystemC完整524288元素数值执行；target stream保持lhs/rhs/output各2个独立slot、唯一末尾
   worker0 join且无steady join。该纵向只消费静态compiler target合同，不连接或探测实卡。
-  Q38仍为`doing`，因为normal winner的compiler-shipped capability、package publication/no-card package gate、
-  非零worker command ABI、真实Direct-DTE issue和fresh board qualification尚未全部闭合。
+- V3 worker纵向从actual worker-placement clone经过target LLVM、独立`_v3` calls、CRT/device link、
+  package/no-card、SystemC数值和CPU expected；V1/V2非零worker在effect前精确拒绝。functional model只证明
+  typed worker completion和数值，不推断物理queue、吞吐、公平性或并发时序。
+- Direct-DTE V3 production seam已拆成prepare、显式issue和exact wait/release；V1/V2保留原symbol与
+  wait-auto-issue兼容行为，不伪造独立issue profiler phase。SystemC在同一语义点建立endpoint，并按
+  `(rank, issue ordinal)`保存typed pending read/write range；DTE source只受重叠pending write阻塞，destination
+  只受重叠pending read/write阻塞，disjoint NCC compute可继续前进。
+- qualification companion已从final accepted Instr派生SPM roots、真实rotation cycle、engine/worker issue、
+  DTE issue/token/wait和participant joins，并与final Instr及manifest digest绑定后同package原子发布。
+  普通production不读取该companion。Q38非板端实现和host gates闭合后，状态只因configured fresh board
+  qualification及normal winner correctness保持未完成。
 
 ### 1.2 Compiler stack waitfinish 审计
 
@@ -109,14 +130,14 @@ Pipeline position:
 | Instr completion interface | 所有Compute/Movement写resource的op都曾被归入“等待全域fence”，blocking op又被归入无scope barrier | ordinary NCC issue与blocking waitfinish被错误捆绑；ArgMax/ArgMin当前例外确有host writeback需求 | 旧分类已删除；共享合同现为`OrderedPending`、`ParticipantJoin`、`SynchronousWriteback`和非NCC `None` |
 | Tile→Instr general lowering | 2个结构边界、1个tile store及10个compute/composite位置显式创建`local_fence` | WDMA、same-worker gather/compute/reduce、loop backedge和region exit本身均不是drain理由 | 结构创建点已归零；general lowering只发typed issue，统一DAG placement生成必要join |
 | Collective lowering | 两层lowering共18个显式创建点，混合local copy、NCC compute、DTE send/wait与round forwarding | NCC→DTE source的真实handoff可能必须；DTE wait后的same-worker consumer、local copy后的NCC consumer和final region fence通常不必 | 结构创建点已归零；保留exact DTE token，只在真实NCC producer→DTE source cut放join并跨slot/round尽量batch |
-| Direct DTE target path | current send TargetCall只prepare参数，真正`send_async`/completion/release都在后续wait中；model却在prepare时建立endpoint并可匹配copy | 当前`send → independent NCC → wait`不构成真实transport overlap，model还会高估；raw DTE能力不能代签production调用点 | 先拆typed DTE issue与exact wait/release并对齐CRT/model，之后才生成DTE+NCC overlap candidate |
+| Direct DTE target path | 旧send TargetCall只prepare参数，真正`send_async`/completion/release都在后续wait中；旧model却在prepare时建立endpoint并可匹配copy | 旧`send → independent NCC → wait`不构成真实transport overlap，model还会高估；raw DTE能力不能代签production调用点 | V3已物化独立typed issue TargetCall，CRT在issue完成peer-ready与`send_async`，wait只完成completion/release；V1/V2保持wait-auto-issue兼容，profiler分别报告V3 issue与所有版本completion wait |
 | Ready-order | 一个无scope barrier曾连接全部前驱/后继，把DTE也包进local completion顺序 | 对单worker NCC aggregate drain过宽尚可保守，对DTE语义错误且会掩盖缺wait | 已按participant关系连接typed join；DTE完全由token edge管理 |
 | SPM/DDR lifetime | 每个local issue曾延寿到全域fence；loop backedge pending直接拒绝，SPM按结构region分别收口 | 把“allocation仍被device访问”误写成“host必须waitfinish”，并使function末尾一次真实drain也无法覆盖前面region，是稳态fence的主要反向压力 | 已改为function-wide worker-aware frontier；same-worker exact hazard后继可接管有序reuse并跨backedge/region，只有真实domain exit要求join |
 | Full-buffer handoff | producer WDMA后只允许fence/yield，借fence识别resident handoff边界；删除WDMA后保留其fence | fence是当前形状偶然条件，不是handoff语义，残留fence会让resident winner仍执行waitfinish | 已从SSA/effect/last-use与typed participant重证；改写后重建physical hazard |
 | Schedule cost / selection | fence只计一条普通instruction；async token只计event，静态循环虽乘multiplicity但无blocking-drain维度；SCF dependency metric又直接Unknown | 会严重低估waitfinish并可能在多buffer clone得到收益证据前被pre-target Pareto淘汰；static operation budget本身可继续把join计作一条op，但不能代替性能metric | 已有steady/nonterminal/total participant calls、join-op与intrinsic drain；participant calls在pre-target selection中优先 |
-| TargetCall / target LLVM / CRT | 零operand `local_fence`无条件lower到无scope TargetCall，再调用default-worker `TsmWaitfinish()`及前后ordering fence | accurately实现了旧op，却暴露出op本身scope不足且代价极重 | 112-call surface已有typed participant join；current CRT逐participant执行exact by-worker blocking wait |
+| TargetCall / target LLVM / CRT | 零operand `local_fence`无条件lower到无scope TargetCall，再调用default-worker `TsmWaitfinish()`及前后ordering fence | accurately实现了旧op，却暴露出op本身scope不足且代价极重 | 原112-descriptor prefix保持稳定；V1/V2 ordinary calls冻结worker0，V3 `_v3` ordinary calls携带worker；typed participant join逐participant执行exact by-worker blocking wait |
 | Peripheral ArgMax/ArgMin | wrapper issue CT后立即waitfinish，再由CPU读packet writeback并写mapped SPM；current functional model只有schema而无对应kernel/control effect | 当前确实必须，是host-observed synchronous island，不得被普通fence消除；model不能代签其hidden drain | 从typed Instr语义在pre-target静态计入并阻断pipeline；未来另案拆async issue/deferred writeback和model effect后才可合并 |
-| Functional target model | transaction只有rank+ordinal；local fence等待该rank所有更早ordinal，可能连DTE一起完成；DTE send又比production更早生效 | scope与issue point都大于真实硬件，会让缺失DTE wait或伪overlap程序在model中误过 | 已有worker watermark与participant join，join不完成DTE；DTE对pending NCC observer目前按rank全worker保守阻塞，待exact range effect再收窄 |
+| Functional target model | transaction只有rank+ordinal；local fence等待该rank所有更早ordinal，可能连DTE一起完成；DTE send又比production更早生效 | scope与issue point都大于真实硬件，会让缺失DTE wait或伪overlap程序在model中误过 | 已有worker watermark与participant join，join不完成DTE；V3 endpoint只在explicit issue建立，V1/V2在wait兼容issue；pending NCC effect按issue保存exact typed read/write range，DTE只在实际重叠或不可表示时阻塞 |
 | Package / runtime terminal | manifest只表达`entry_return`，runtime在entry返回后不会补NCC drain | terminal drain必要但完全依赖accepted IR在return前证明；runtime没有资格补scheduler事实 | accepted IR显式join所有且仅实际pending workers，package只投影已验证的entry return |
 
 因此31个production conversion显式创建点已经删除而不是逐个换成另一种wait；general
@@ -192,10 +213,10 @@ ProfitabilityEvidence:
 | default-worker CT/NE/RDMA/WDMA/TDMA | individual typed op/format/layout通过，且generic pair activation、range dependency和matching completion闭合时可形成有界window | 10个same-worker pair在各自已测semantic envelope内为`QualifiedOverlap` |
 | same-worker dependency chain | RAW/WAR/WAW保持issue order；RAR只有额外resource/control edge才保序；包括loop-carried slot reuse均不逐edge wait | wait-once与4KiB no-intermediate-wait证据形成`QualifiedDrainElision`，不写固定cycle |
 | current `local_fence` / `TsmWaitfinish` | 只完成current default worker NCC pending set；不完成其它worker、Direct DTE、barrier或cache publication | blocking poll且会连带drain该worker所有engine；只允许baseline或IR证明不可避免的domain exit，不能出现在optimized steady state |
-| typed multi-worker join | typed participant op与CRT exact by-worker lowering已闭合；一个participant对应一次完整`TsmWaitfinish_bywork`，current非零worker issue仍由preflight拒绝 | participant-mask rotating idle poll是待qualification的target capability，不能由characterization probe直接代签 |
+| typed multi-worker join | typed participant op与CRT exact by-worker lowering已闭合；一个participant对应一次完整`TsmWaitfinish_bywork`；V3 ordinary issue可显式选择三个worker，V1/V2非零worker仍在effect前拒绝 | participant-mask rotating idle poll是独立待qualification的target capability，不能由characterization probe直接代签 |
 | 三engine及更大window | pairwise legality都成立且真实buffer/resource无hazard时可生成qualification candidate | 初始为`Unknown`；不能由10个pair推导group收益 |
-| cross-worker NCC | 只有typed worker placement、跨workerhazard处理和participant join纵向闭合后才Supported | 当前仅CT+RDMA的一个semantic envelope有窄正证据；其它为`Unknown` |
-| Direct DTE + NCC | current production send只prepare、实际transport在wait内，故不能生成overlap winner；完成typed DTE issue与exact wait/release纵向后，独立buffer/window才可Supported | raw路径有bounded correctness但production profitability仍`Unknown`，没有共同device time base |
+| cross-worker NCC | V3下typed worker placement、跨workerhazard处理、ordinary `_v3` issue和participant join纵向闭合后为Supported；V1/V2为Unsupported/Unknown并拒绝candidate | 当前仅CT+RDMA的一个semantic envelope有窄正证据；其它profitability为`Unknown`，model不提供时序代签 |
+| Direct DTE + NCC | V3 production具有prepare→explicit issue→exact wait/release；独立buffer、typed range和matching event闭合时为Supported。V1/V2的wait-auto-issue兼容路径不取得该overlap legality | production profitability仍`Unknown`，issue/wait profiler window与未校准raw PMU不构成共同device time base |
 | queue depth | D和D+1总提交可完成，但slot/lifetime仍必须合法 | 不进入window size或latency；resident/full保持Unknown |
 | ordinary SPM arena | current compiler target合同只允许`[0x10000, 0x2F0000)`，并继续检查真实half-open range end、alignment和reserved区 | exact bank mapping仍Unknown；64 KiB历史粒度不成为legality、slot或overlap规则 |
 | SCALAR/CSR ordinary issue | `Excluded` | 不进入inventory或scheduler |
@@ -332,14 +353,16 @@ epoch并一次join；仍无法摊销时，该join是pipeline cut，必须取得�
 2. 带canonical非空participant集合的typed NCC join已经成为accepted-IR completion op；legacy
    `local_fence`只兼容解释为`join {worker0}`，production conversion不再生成它。
 3. join lowering已经按canonical participant顺序生成exact by-worker wait并让cost看到真实调用数；不能把一个
-   IR participant set伪装成一个零成本mask wait。ordinary issue的owner-backed packet worker字段尚未纵向闭合，
-   current target capability只接受worker0，worker1/2在effect前拒绝。rotating task-done+ibcounter idle poll
-   只有在独立typed CRT、model和fresh board qualification闭合后，才能成为另一target lowering capability；
-   不暴露raw `inter_type`/`bywork`给上层。
+   IR participant set伪装成一个零成本mask wait。V1/V2 ordinary ABI保持原始symbol/arity并固定worker0；
+   V3为全部104个ordinary NCC calls提供独立`_v3` symbol，在exact末尾scalar中编码typed worker，
+   TargetCall decoder、CRT packet构造和model消费同一字段。rotating task-done+ibcounter idle poll只有在独立
+   typed CRT、model和fresh board qualification闭合后，才能成为另一target lowering capability；不暴露raw
+   `inter_type`/`bywork`给上层。
 4. functional target model已经按worker domain验证issue、participant completion和buffer visibility，并保持
    untimed；local join只清对应NCC worker watermark，绝不能因rank ordinal顺便完成Direct DTE；模型不建模未知
    arbiter、公平性或同时启动。
-5. scheduler优先把有RAW/WAR/WAW的dependency component放在同一worker，三worker主要承载disjoint
+5. scheduler从unplaced actual clone派生bounded worker alternatives，优先把有RAW/WAR/WAW的dependency
+   component放在同一worker，三worker主要承载disjoint
    components/lanes。只有compiler-shipped target contract明确支持的coarse cut才生成跨worker dependency
    clone；跨worker冲突range在consumer/reuse前必须join，disjoint range可并行发射并在terminal一次合并。
 
@@ -415,7 +438,8 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
    complete-rank unplaced actual clone统一删除exact full-buffer redundant movement；reserved spill
    保留原始copy作为late-gate fallback。standard view保留source storage
    encoding，cross-encoding alias提升compiler-owned source alignment，任何consumer verifier、snapshot、
-   unknown escape、partial/permutation或DTE in-flight门禁不闭合都保留movement。rewrite后重建completion、
+   unknown escape、partial/permutation或DTE in-flight门禁不闭合都保留movement。direct static-positive
+   loop body使用同一proof并增加path、iteration snapshot、dominance和backedge门禁；rewrite后重建completion、
    DAG、lifetime、SPM和cost。
 5. **Generic fixed-slot pipeline（checkpoint已落地）**：static loop外固定slot、rotation、
    prologue/steady/epilogue、single/odd/even trip和capacity fallback；形成独立buffering derivation并已接入
@@ -423,14 +447,16 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
 6. **Whole-frontier host late gates（checkpoint已落地）**：每个pipeline clone重新SPM/DDR/Instr/Target gate，
    跨rank correspondence、qualification-only selection和atomic failure闭合；Unknown profitability不成为
    normal winner。
-7. **True Direct-DTE async seam**：把production send prepare与真实transport issue分开，物化typed issue和
-   exact wait/release；CRT与model在同一点建立endpoint/effect。此checkpoint前DTE+NCC只保留correctness，
-   不生成overlap winner。
-8. **Nonzero worker activation**：typed issue worker、participant join、TargetCall/CRT/model状态已经存在；
-   本checkpoint继续闭合worker1/2 command ABI、cross-worker actual clone和late gate。optional rotating idle
-   join作为独立target capability资格化；不能把现有逐participant by-worker wait伪装成低成本mask wait。
-9. **Qualification artifact**：从final accepted IR只读派生digest-bound结构证明，解除production three-stage
-   catalog的missing-producer fail-closed。
+7. **True Direct-DTE async seam（checkpoint已落地）**：V3把production send prepare与真实transport issue
+   分开，物化typed issue和exact wait/release；CRT与model在同一点建立endpoint/effect，profiler把issue与
+   completion wait分成不可重复相加的窗口。V1/V2维持原ABI和wait-auto-issue兼容。
+8. **Nonzero worker activation（checkpoint已落地）**：V3 ordinary TargetCall/CRT ABI末尾携带worker，
+   worker1/2 actual clone、cross-worker completion、target/package/no-card及SystemC/CPU纵向已经闭合；
+   V1/V2非零worker精确拒绝。optional rotating idle join仍是独立target capability，不能把现有逐participant
+   by-worker wait伪装成低成本mask wait。
+9. **Qualification artifact（checkpoint已落地）**：从final accepted IR只读派生SPM root/rotation、
+   engine-worker/DTE/completion结构证明，与final Instr及manifest digest绑定并随package事务原子发布；
+   production three-stage gate不再因missing producer失败，普通runtime/compiler不回读companion。
 10. **离线board qualification与compiler revision promotion**：同源serial/optimized fresh qualification后，
    只允许经评审更新compiler-shipped drain-elision/group capability row；不产生per-card、本地或runtime
    scheduling profile。normal production winner通过package/no-card、CPU expected和fresh board correctness，
@@ -449,10 +475,12 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
   metadata-only cast、read-only fanout、writable last-use donation、cross-encoding alignment提升和
   DTE exact wait后复用正例；partial/permutation/broadcast、physical-map不等价strided、snapshot分叉、
   external/unknown source、显式deallocation、非零view offset、unknown escape、unsupported control flow
-  及DTE issue到exact wait区间负例；reserved baseline与优化sibling的GS inventory必须不同且各自通过late gate。
+  及DTE issue到exact wait区间负例；loop正例覆盖same-shape、cross-encoding和exact-wait后consumer，loop负例
+  覆盖dynamic/zero/nested/conditional、loop-local/iter-arg、mutation、copy前access、loop后use/dominance、
+  跨backedge及跨copy outstanding DTE；reserved baseline与优化sibling的GS inventory必须不同且各自通过late gate。
 - loop：1/2/3/4/奇/偶trip、stage不足、prologue/steady/epilogue、slot permutation、tail、loop-carried
   distance、body allocation escape和nested/dynamic拒绝；loop-carried DDR view覆盖init/yield range联合、
-  identity pass-through正例及无法求有限上界的nonidentity recurrence拒绝。
+  单层及多层nested loop-result identity pass-through正例，以及无法求有限上界的nonidentity recurrence拒绝。
 - completion：逐edge wait消除、NCC→Kcore、NCC→DTE、DTE→NCC、source/destination early reuse、
   same-worker RAW/WAR/WAW跨backedge复用无join、cross-worker alias无join拒绝、minimal participant和terminal；
   WDMA/backedge/region exit本身不能产生join；pending可透明跨tile-region，但无typed summary的call/
@@ -463,12 +491,17 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
   不混入；group overlap Unknown但qualified drain elision仍可胜出。
 - scheduling/model：typed NCC join只屏障participant NCC issue，不给DTE添加隐式edge；model中local join不完成
   DTE event，FullBufferHandoff和ready-order改写后重建physical hazard；production/model在typed DTE issue
-  之前都不得产生transport effect，issue之后必须由同一exact token wait/release。
+  之前都不得产生transport effect，issue之后必须由同一exact token wait/release。pending elementwise、
+  convert、reduce、GEMM（formal/bulk/managed）及movement均携带typed read/write footprint；DTE与其相离时
+  可继续前进，source重叠pending write或destination重叠pending read/write时必须等待matching participant join。
 - resource：至少两个真实slot、capacity刚好/超限、alignment/reservation、SPM/DDR planner重算；
   ordered-reuse共址在accepted offset后形成exact same-worker hazard，cross-worker/Unknown共址拒绝；
   queue depth不得改变slot count，SPM/DDR bank/color attr或fixed-offset cost为negative。
 - frontier：baseline不可变，pipeline derivation不冒充ready-order，all-rank key一致，late rank失败原子淘汰，
   pre-target drain metric闭合后再Pareto，qualification-only Unknown candidate不泄漏到normal winner。
+- versioned ABI：原112-descriptor prefix、V1/V2 symbol/arity和worker0语义不变；V3 `_v3` trailing worker及
+  DTE issue只对V3可见。registry/CRT/header/device-link/profile companion分别闭合217与111/112/113可见集合，
+  任一跨profile symbol污染都在target effect或静态conformance gate前拒绝。
 
 ### 8.2 Vertical gates
 
@@ -479,6 +512,9 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
 - production：至少一个非名字特化的tiled movement+compute+writeback source通过SPM/DDR、Instr、Target、
   package、model/no-card和完整CPU expected；final site map与ELF调用点统计只能从本轮normalized final
   artifact派生，并证明被消除的GatherScatter没有重新出现在target lowering。
+- large Direct-DTE：16-rank source的本地轴为`458752`个`f16`元素，candidate selection选择
+  `114688`元素CT Add tile，final ELF的`elem_count`为`0x1c000`；package、target-model、CPU expected、
+  profile/no-card重放同一artifact。该数字是当前回归输入，不是通用tile协议。
 - board qualification：单进程串行、bounded timeout、serial/optimized matched order、完整result/guard/status/
   terminal/cleanup和结构attestation；首个异常停批，不retry/reset/power。
 - final winner：compiler-shipped target-contract capability更新后的普通production artifact重新通过fresh

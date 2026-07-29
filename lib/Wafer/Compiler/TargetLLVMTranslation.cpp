@@ -400,7 +400,8 @@ translatePreparedTargetRank(PreparedTargetRank prepared,
       llvm::formatv("wafer.target.rank.{0:D5}", prepared.logicalRank).str());
   llvmModule->setTargetTriple(kTargetLLVMTriple);
   if (llvm::Error error = instrumentProfileTargetModule(
-          *llvmModule, entrySymbol, prepared.profileCapture))
+          *llvmModule, entrySymbol, prepared.targetProfile,
+          prepared.profileCapture))
     return std::move(error);
   attachTargetLLVMMetadata(*llvmModule, prepared, entrySymbol);
   if (llvm::Error error = verifyTargetLLVMModule(

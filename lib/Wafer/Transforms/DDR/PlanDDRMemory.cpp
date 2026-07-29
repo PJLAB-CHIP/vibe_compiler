@@ -481,7 +481,9 @@ private:
             }
             break;
           }
-          if (yielded != nestedFor.getRegionIterArgs()[index])
+          std::optional<unsigned> nestedIndex =
+              getAddressPreservingCarriedIndex(nestedFor, yielded);
+          if (!nestedIndex || *nestedIndex != index)
             return std::nullopt;
           value = nestedFor.getInitArgs()[index];
           continue;

@@ -4,6 +4,7 @@
 
 #include "Wafer/InitAll.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
+#include "Wafer/Target/TargetFormat.h"
 
 #include "Wafer/Compiler/ExecutableBundleInternal.h"
 
@@ -31,10 +32,12 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
 
 #include <cstdint>
 #include <memory>
@@ -102,7 +105,8 @@ std::vector<RawLogicalValue> makeRankValues(int64_t logicalRank) {
 } // namespace
 
 llvm::Expected<compiler::TargetLLVMModuleBundle>
-buildDirectDTETargetBundle(std::string &diagnosticText) {
+buildDirectDTETargetBundle(std::string &diagnosticText,
+                           TargetProfileId targetProfile) {
   auto context = createCompilerContext();
   auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -132,9 +136,8 @@ module {
   program.distributedInputs = {partitionedBoundary(0)};
   program.distributedOutputs = {partitionedBoundary(0)};
   llvm::Expected<compiler::ExecutionConfig> config =
-      compiler::ExecutionConfig::createForSingleCard(
-          16, TargetProfileId::waferTx81SingleCardKernelV1(),
-          RuntimeLaunchKind::Kernel);
+      compiler::ExecutionConfig::createForSingleCard(16, targetProfile,
+                                                     RuntimeLaunchKind::Kernel);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
@@ -202,19 +205,21 @@ buildDirectDTEInvocationData(const compiler::TargetLLVMModuleBundle &bundle) {
   return result;
 }
 
-llvm::Expected<NCCJoinRewriteResult> rewriteNCCJoinsAfter(
-    compiler::TargetLLVMModuleBundle &bundle, TargetCallBuiltin anchor) {
+llvm::Expected<NCCJoinRewriteResult>
+rewriteNCCJoinsAfter(compiler::TargetLLVMModuleBundle &bundle,
+                     TargetCallBuiltin anchor) {
+  const TargetProfileId targetProfile =
+      bundle.getExecutionConfig().getTargetProfileId();
   const TargetCallDescriptor &anchorDescriptor =
-      getTargetCallDescriptor(anchor);
+      getTargetCallDescriptor(anchor, targetProfile);
   const TargetCallDescriptor &legacyFenceDescriptor =
-      getTargetCallDescriptor(TargetCallBuiltin::LocalFence);
+      getTargetCallDescriptor(TargetCallBuiltin::LocalFence, targetProfile);
   const TargetCallDescriptor &joinDescriptor =
-      getTargetCallDescriptor(TargetCallBuiltin::NCCJoin);
+      getTargetCallDescriptor(TargetCallBuiltin::NCCJoin, targetProfile);
   NCCJoinRewriteResult result;
 
   for (const compiler::TargetLLVMModule &targetModule : bundle.getModules()) {
-    llvm::Module &module =
-        const_cast<llvm::Module &>(targetModule.getModule());
+    llvm::Module &module = const_cast<llvm::Module &>(targetModule.getModule());
     llvm::SmallVector<llvm::CallInst *, 8> anchors;
     llvm::SmallVector<llvm::CallInst *, 8> joins;
     llvm::SmallVector<llvm::ReturnInst *, 4> returns;
@@ -244,13 +249,13 @@ llvm::Expected<NCCJoinRewriteResult> rewriteNCCJoinsAfter(
 
     llvm::Function *join = module.getFunction(joinDescriptor.symbol);
     if (!join) {
-      llvm::FunctionType *joinType = llvm::FunctionType::get(
-          llvm::Type::getVoidTy(module.getContext()),
-          {llvm::Type::getInt32Ty(module.getContext())},
-          /*isVarArg=*/false);
-      join = llvm::Function::Create(joinType,
-                                    llvm::GlobalValue::ExternalLinkage,
-                                    joinDescriptor.symbol, module);
+      llvm::FunctionType *joinType =
+          llvm::FunctionType::get(llvm::Type::getVoidTy(module.getContext()),
+                                  {llvm::Type::getInt32Ty(module.getContext())},
+                                  /*isVarArg=*/false);
+      join =
+          llvm::Function::Create(joinType, llvm::GlobalValue::ExternalLinkage,
+                                 joinDescriptor.symbol, module);
       join->setCallingConv(llvm::CallingConv::C);
     }
     for (llvm::CallInst *anchorCall : anchors) {
@@ -260,23 +265,329 @@ llvm::Expected<NCCJoinRewriteResult> rewriteNCCJoinsAfter(
             "Direct-DTE anchor call has no following insertion point");
       llvm::IRBuilder<> builder(next);
       builder.CreateCall(
-          join,
-          {builder.getInt32(uint32_t{1}
-                            << static_cast<uint32_t>(NCCWorker::Worker0))});
+          join, {builder.getInt32(
+                    uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0))});
       ++result.insertedJoinCount;
     }
     for (llvm::ReturnInst *returnInstruction : returns) {
       llvm::IRBuilder<> builder(returnInstruction);
       builder.CreateCall(
-          join,
-          {builder.getInt32(uint32_t{1}
-                            << static_cast<uint32_t>(NCCWorker::Worker0))});
+          join, {builder.getInt32(
+                    uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0))});
       ++result.insertedTerminalJoinCount;
     }
   }
   if (result.insertedJoinCount == 0)
     return llvm::createStringError(
         "Direct-DTE bundle has no requested join anchor call");
+  return result;
+}
+
+namespace {
+
+llvm::Function *getOrDeclareTargetCall(llvm::Module &module,
+                                       const TargetCallDescriptor &descriptor) {
+  if (llvm::Function *function = module.getFunction(descriptor.symbol))
+    return function;
+  llvm::SmallVector<llvm::Type *, 8> arguments;
+  for (TargetCallScalarType scalar : descriptor.arguments)
+    arguments.push_back(scalar == TargetCallScalarType::I64
+                            ? llvm::Type::getInt64Ty(module.getContext())
+                            : llvm::Type::getInt32Ty(module.getContext()));
+  llvm::Type *result = descriptor.result == TargetCallResultType::Void
+                           ? llvm::Type::getVoidTy(module.getContext())
+                           : llvm::Type::getInt64Ty(module.getContext());
+  llvm::Function *function = llvm::Function::Create(
+      llvm::FunctionType::get(result, arguments, /*isVarArg=*/false),
+      llvm::GlobalValue::ExternalLinkage, descriptor.symbol, module);
+  function->setCallingConv(llvm::CallingConv::C);
+  return function;
+}
+
+} // namespace
+
+llvm::Expected<PendingComputeDTERewriteResult>
+insertPendingComputeBeforeDTEReceive(compiler::TargetLLVMModuleBundle &bundle,
+                                     PendingComputeDTEAccessMode accessMode) {
+  const TargetProfileId targetProfile =
+      bundle.getExecutionConfig().getTargetProfileId();
+  if (targetProfile != TargetProfileId::waferTx81SingleCardKernelV3())
+    return llvm::createStringError(
+        "pending-compute Direct-DTE rewrite requires the V3 target profile");
+  const TargetCallDescriptor &receiveDescriptor = getTargetCallDescriptor(
+      TargetCallBuiltin::DirectDTERecvPrepare, targetProfile);
+  const TargetCallDescriptor &elementwiseDescriptor =
+      getTargetCallDescriptor(InstrElementwiseKind::Add, targetProfile);
+  const TargetCallDescriptor &gemmDescriptor =
+      getTargetCallDescriptor(TargetCallBuiltin::Gemm, targetProfile);
+  const TargetCallDescriptor &joinDescriptor =
+      getTargetCallDescriptor(TargetCallBuiltin::NCCJoin, targetProfile);
+  const TargetCallDescriptor &fenceDescriptor =
+      getTargetCallDescriptor(TargetCallBuiltin::LocalFence, targetProfile);
+  const TargetCallDescriptor &waitDescriptor =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait, targetProfile);
+  const TargetDataFormatCodeRecord *format =
+      findTargetDataFormatCode(targetProfile, LogicalFormat::F32);
+  if (!format)
+    return llvm::createStringError(
+        "V3 target profile has no F32 data-format code");
+  if (elementwiseDescriptor.arguments.size() != 6 ||
+      gemmDescriptor.arguments.size() != 9 ||
+      joinDescriptor.arguments.size() != 1)
+    return llvm::createStringError(
+        "pending-compute test descriptors have unexpected V3 signatures");
+
+  PendingComputeDTERewriteResult result;
+  for (const compiler::TargetLLVMModule &targetModule : bundle.getModules()) {
+    llvm::Module &module = const_cast<llvm::Module &>(targetModule.getModule());
+    llvm::SmallVector<llvm::CallInst *, 2> receives;
+    for (llvm::Function &function : module)
+      for (llvm::BasicBlock &block : function)
+        for (llvm::Instruction &instruction : block)
+          if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
+            if (llvm::Function *callee = call->getCalledFunction())
+              if (callee->getName() == receiveDescriptor.symbol)
+                receives.push_back(call);
+    for (llvm::CallInst *receive : receives) {
+      auto *receiveDestination =
+          llvm::dyn_cast<llvm::ConstantInt>(receive->getArgOperand(0));
+      if (!receiveDestination)
+        return llvm::createStringError(
+            "Direct-DTE receive destination is not a static SPM address");
+      const uint64_t lhs = accessMode == PendingComputeDTEAccessMode::Disjoint
+                               ? UINT64_C(0x2d0000)
+                               : receiveDestination->getZExtValue();
+      if (lhs == receiveDestination->getZExtValue())
+        ++result.overlappingReadCount;
+      constexpr uint64_t rhs = UINT64_C(0x2d1000);
+      constexpr uint64_t destination = UINT64_C(0x2d2000);
+
+      llvm::IRBuilder<> builder(receive);
+      llvm::CallInst *compute = nullptr;
+      if ((targetModule.getLogicalRank() & 1) == 0) {
+        llvm::Function *elementwise =
+            getOrDeclareTargetCall(module, elementwiseDescriptor);
+        compute = builder.CreateCall(
+            elementwise,
+            {builder.getInt64(lhs), builder.getInt64(rhs),
+             builder.getInt64(destination), builder.getInt32(4),
+             builder.getInt32(format->dataFormatCode),
+             builder.getInt32(static_cast<uint32_t>(NCCWorker::Worker0))});
+        ++result.elementwiseCount;
+      } else {
+        llvm::Function *gemm = getOrDeclareTargetCall(module, gemmDescriptor);
+        compute = builder.CreateCall(
+            gemm,
+            {builder.getInt64(lhs), builder.getInt64(rhs),
+             builder.getInt64(destination), builder.getInt32(2),
+             builder.getInt32(2), builder.getInt32(2), builder.getInt32(1),
+             builder.getInt32(format->dataFormatCode),
+             builder.getInt32(static_cast<uint32_t>(NCCWorker::Worker0))});
+        ++result.gemmCount;
+      }
+      compute->setCallingConv(llvm::CallingConv::C);
+
+      llvm::Function *join = getOrDeclareTargetCall(module, joinDescriptor);
+      llvm::IRBuilder<> setupBuilder(compute);
+      llvm::CallInst *setupJoin = setupBuilder.CreateCall(
+          join, {setupBuilder.getInt32(
+                    uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0))});
+      setupJoin->setCallingConv(llvm::CallingConv::C);
+      ++result.insertedSetupJoinCount;
+
+      bool foundWait = false;
+      for (llvm::Instruction *cursor = compute->getNextNode(); cursor;) {
+        llvm::Instruction *next = cursor->getNextNode();
+        if (auto *call = llvm::dyn_cast<llvm::CallInst>(cursor)) {
+          llvm::Function *callee = call->getCalledFunction();
+          if (callee && callee->getName() == waitDescriptor.symbol) {
+            foundWait = true;
+            break;
+          }
+          if (callee && (callee->getName() == joinDescriptor.symbol ||
+                         callee->getName() == fenceDescriptor.symbol)) {
+            call->eraseFromParent();
+            ++result.removedInterveningJoinCount;
+          }
+        }
+        cursor = next;
+      }
+      if (!foundWait)
+        return llvm::createStringError(
+            "injected pending compute has no following Direct-DTE wait");
+
+      if (accessMode == PendingComputeDTEAccessMode::OverlapWithPreIssueJoin) {
+        llvm::CallInst *joinCall = builder.CreateCall(
+            join, {builder.getInt32(uint32_t{1} << static_cast<uint32_t>(
+                                        NCCWorker::Worker0))});
+        joinCall->setCallingConv(llvm::CallingConv::C);
+        ++result.insertedJoinCount;
+      }
+    }
+    std::string verification;
+    llvm::raw_string_ostream stream(verification);
+    if (llvm::verifyModule(module, &stream))
+      return llvm::createStringError(
+          "pending-compute Direct-DTE rewrite produced invalid LLVM IR: " +
+          stream.str());
+  }
+  if (result.elementwiseCount == 0 || result.gemmCount == 0)
+    return llvm::createStringError(
+        "pending-compute Direct-DTE rewrite did not cover both families");
+  return result;
+}
+
+llvm::Expected<LateJoinDTERewriteResult>
+insertPendingComputeWithLateJoin(compiler::TargetLLVMModuleBundle &bundle,
+                                 LateJoinDTEAccessMode accessMode) {
+  const TargetProfileId targetProfile =
+      bundle.getExecutionConfig().getTargetProfileId();
+  if (targetProfile != TargetProfileId::waferTx81SingleCardKernelV3())
+    return llvm::createStringError(
+        "late-join Direct-DTE rewrite requires the V3 target profile");
+
+  const TargetCallDescriptor &sendPrepareDescriptor = getTargetCallDescriptor(
+      TargetCallBuiltin::DirectDTESendPrepare, targetProfile);
+  const TargetCallDescriptor &sendIssueDescriptor = getTargetCallDescriptor(
+      TargetCallBuiltin::DirectDTESendIssue, targetProfile);
+  const TargetCallDescriptor &receiveDescriptor = getTargetCallDescriptor(
+      TargetCallBuiltin::DirectDTERecvPrepare, targetProfile);
+  const TargetCallDescriptor &elementwiseDescriptor =
+      getTargetCallDescriptor(InstrElementwiseKind::Add, targetProfile);
+  const TargetCallDescriptor &joinDescriptor =
+      getTargetCallDescriptor(TargetCallBuiltin::NCCJoin, targetProfile);
+  const TargetCallDescriptor &fenceDescriptor =
+      getTargetCallDescriptor(TargetCallBuiltin::LocalFence, targetProfile);
+  const TargetDataFormatCodeRecord *format =
+      findTargetDataFormatCode(targetProfile, LogicalFormat::F32);
+  if (!format)
+    return llvm::createStringError(
+        "V3 target profile has no F32 data-format code");
+  if (elementwiseDescriptor.arguments.size() != 6 ||
+      joinDescriptor.arguments.size() != 1)
+    return llvm::createStringError(
+        "late-join test descriptors have unexpected V3 signatures");
+
+  LateJoinDTERewriteResult result;
+  for (const compiler::TargetLLVMModule &targetModule : bundle.getModules()) {
+    llvm::Module &module = const_cast<llvm::Module &>(targetModule.getModule());
+    llvm::SmallVector<llvm::CallInst *, 2> sendPrepares;
+    llvm::SmallVector<llvm::CallInst *, 2> sendIssues;
+    llvm::SmallVector<llvm::CallInst *, 2> receives;
+    for (llvm::Function &function : module)
+      for (llvm::BasicBlock &block : function)
+        for (llvm::Instruction &instruction : block) {
+          auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
+          llvm::Function *callee = call ? call->getCalledFunction() : nullptr;
+          if (!callee)
+            continue;
+          if (callee->getName() == sendPrepareDescriptor.symbol)
+            sendPrepares.push_back(call);
+          if (callee->getName() == sendIssueDescriptor.symbol)
+            sendIssues.push_back(call);
+          if (callee->getName() == receiveDescriptor.symbol)
+            receives.push_back(call);
+        }
+    if (sendPrepares.size() != 1 || sendIssues.size() != 1 ||
+        receives.size() != 1)
+      return llvm::createStringError(
+          "late-join Direct-DTE fixture requires exactly one send prepare, "
+          "send issue, and receive prepare per rank");
+
+    llvm::CallInst *sendPrepare = sendPrepares.front();
+    llvm::CallInst *sendIssue = sendIssues.front();
+    llvm::CallInst *receive = receives.front();
+    auto *sendSource =
+        llvm::dyn_cast<llvm::ConstantInt>(sendPrepare->getArgOperand(0));
+    auto *receiveDestination =
+        llvm::dyn_cast<llvm::ConstantInt>(receive->getArgOperand(0));
+    if (!sendSource || !receiveDestination)
+      return llvm::createStringError(
+          "late-join Direct-DTE fixture requires static SPM endpoints");
+
+    constexpr uint64_t safeLHS = UINT64_C(0x2d0000);
+    constexpr uint64_t safeRHS = UINT64_C(0x2d1000);
+    constexpr uint64_t safeDestination = UINT64_C(0x2d2000);
+    uint64_t lhs = safeLHS;
+    uint64_t destination = safeDestination;
+    llvm::Instruction *computeAnchor = receive;
+    switch (accessMode) {
+    case LateJoinDTEAccessMode::SourceWrite:
+      destination = sendSource->getZExtValue();
+      computeAnchor = sendIssue;
+      break;
+    case LateJoinDTEAccessMode::DestinationRead:
+      lhs = receiveDestination->getZExtValue();
+      break;
+    case LateJoinDTEAccessMode::DestinationWrite:
+      destination = receiveDestination->getZExtValue();
+      break;
+    }
+
+    llvm::Function *elementwise =
+        getOrDeclareTargetCall(module, elementwiseDescriptor);
+    llvm::Function *join = getOrDeclareTargetCall(module, joinDescriptor);
+    llvm::IRBuilder<> builder(computeAnchor);
+    llvm::CallInst *compute = builder.CreateCall(
+        elementwise,
+        {builder.getInt64(lhs), builder.getInt64(safeRHS),
+         builder.getInt64(destination), builder.getInt32(4),
+         builder.getInt32(format->dataFormatCode),
+         builder.getInt32(static_cast<uint32_t>(NCCWorker::Worker0))});
+    compute->setCallingConv(llvm::CallingConv::C);
+    ++result.insertedComputeCount;
+
+    llvm::IRBuilder<> setupBuilder(compute);
+    llvm::CallInst *setupJoin = setupBuilder.CreateCall(
+        join, {setupBuilder.getInt32(
+                  uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0))});
+    setupJoin->setCallingConv(llvm::CallingConv::C);
+    ++result.insertedSetupJoinCount;
+
+    bool reachedIssue = false;
+    for (llvm::Instruction *cursor = compute->getNextNode(); cursor;) {
+      llvm::Instruction *next = cursor->getNextNode();
+      if (cursor == sendIssue) {
+        reachedIssue = true;
+        break;
+      }
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(cursor)) {
+        llvm::Function *callee = call->getCalledFunction();
+        if (callee && (callee->getName() == joinDescriptor.symbol ||
+                       callee->getName() == fenceDescriptor.symbol)) {
+          call->eraseFromParent();
+          ++result.removedPreIssueJoinCount;
+        }
+      }
+      cursor = next;
+    }
+    if (!reachedIssue)
+      return llvm::createStringError(
+          "late-join pending compute does not precede the Direct-DTE issue "
+          "in one basic block");
+
+    llvm::Instruction *afterIssue = sendIssue->getNextNode();
+    if (!afterIssue)
+      return llvm::createStringError(
+          "Direct-DTE issue has no late-join insertion point");
+    llvm::IRBuilder<> lateJoinBuilder(afterIssue);
+    llvm::CallInst *lateJoin = lateJoinBuilder.CreateCall(
+        join, {lateJoinBuilder.getInt32(
+                  uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0))});
+    lateJoin->setCallingConv(llvm::CallingConv::C);
+    ++result.insertedLateJoinCount;
+
+    std::string verification;
+    llvm::raw_string_ostream stream(verification);
+    if (llvm::verifyModule(module, &stream))
+      return llvm::createStringError(
+          "late-join Direct-DTE rewrite produced invalid LLVM IR: " +
+          stream.str());
+  }
+  if (result.insertedComputeCount != bundle.getModules().size() ||
+      result.insertedLateJoinCount != bundle.getModules().size())
+    return llvm::createStringError(
+        "late-join Direct-DTE rewrite did not cover every rank");
   return result;
 }
 

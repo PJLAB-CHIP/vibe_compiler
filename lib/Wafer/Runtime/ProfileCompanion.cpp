@@ -1004,6 +1004,8 @@ llvm::Expected<ProfileTargetSiteKind> parseSiteKind(llvm::StringRef value,
     return ProfileTargetSiteKind::NCCCompletion;
   if (value == "direct-dte-control")
     return ProfileTargetSiteKind::DirectDTEControl;
+  if (value == "direct-dte-issue")
+    return ProfileTargetSiteKind::DirectDTEIssue;
   if (value == "direct-dte-wait")
     return ProfileTargetSiteKind::DirectDTEWait;
   return invalid(context + " is not a supported profile target site kind");
@@ -1061,7 +1063,8 @@ parseOptionalEngine(const llvm::json::Object &object, llvm::StringRef context,
 
 llvm::Expected<ProfileTargetCallSite>
 parseSite(const llvm::json::Value &value, uint64_t index,
-          const PackageParseLimits &limits, llvm::StringRef rankContext) {
+          const PackageParseLimits &limits, llvm::StringRef rankContext,
+          TargetProfileId targetProfile) {
   std::string context =
       (rankContext + ".sites[" + llvm::Twine(index) + "]").str();
   llvm::Expected<const llvm::json::Object *> object =
@@ -1126,6 +1129,10 @@ parseSite(const llvm::json::Value &value, uint64_t index,
   if (descriptor.symbol != *symbol)
     return invalid(context +
                    " target-call registry ordinal/symbol do not agree");
+  if (!isTargetCallAvailableForProfile(descriptor, targetProfile))
+    return invalid(context +
+                   " target-call descriptor is unavailable for the package "
+                   "target profile");
   const ProfileTargetSiteKind descriptorKind =
       getProfileTargetSiteKind(descriptor);
   if (descriptorKind != *siteKind)
@@ -1135,6 +1142,7 @@ parseSite(const llvm::json::Value &value, uint64_t index,
       getDescriptorEngine(descriptor);
   const bool kindRequiresEngine =
       *siteKind == ProfileTargetSiteKind::NCCCommand ||
+      *siteKind == ProfileTargetSiteKind::DirectDTEIssue ||
       *siteKind == ProfileTargetSiteKind::DirectDTEWait;
   if (kindRequiresEngine && (!descriptorEngine || !*engine))
     return invalid(context + " site_kind requires its typed engine");
@@ -1147,9 +1155,10 @@ parseSite(const llvm::json::Value &value, uint64_t index,
       **engine == ProfileTSMEngine::DirectDTE)
     return invalid(context +
                    " ncc-command must name a CT/NE/RDMA/WDMA/TDMA engine");
-  if (*siteKind == ProfileTargetSiteKind::DirectDTEWait &&
+  if ((*siteKind == ProfileTargetSiteKind::DirectDTEIssue ||
+       *siteKind == ProfileTargetSiteKind::DirectDTEWait) &&
       **engine != ProfileTSMEngine::DirectDTE)
-    return invalid(context + " direct-dte-wait must name DIRECT_DTE");
+    return invalid(context + " Direct-DTE issue/wait must name DIRECT_DTE");
 
   site.siteId = *siteId;
   site.targetCallOrdinal = *targetCallOrdinal;
@@ -1166,7 +1175,8 @@ parseSite(const llvm::json::Value &value, uint64_t index,
 llvm::Expected<ProfileRankSiteMap>
 parseRankSiteMap(const llvm::json::Value &value, uint64_t index,
                  const PackageParseLimits &limits, uint64_t &totalRecords,
-                 llvm::StringRef variantContext) {
+                 llvm::StringRef variantContext,
+                 TargetProfileId targetProfile) {
   std::string context =
       (variantContext + ".ranks[" + llvm::Twine(index) + "]").str();
   llvm::Expected<const llvm::json::Object *> object =
@@ -1195,7 +1205,7 @@ parseRankSiteMap(const llvm::json::Value &value, uint64_t index,
   result.sites.reserve((*sites)->size());
   for (auto [siteIndex, siteValue] : llvm::enumerate(**sites)) {
     llvm::Expected<ProfileTargetCallSite> site =
-        parseSite(siteValue, siteIndex, limits, context);
+        parseSite(siteValue, siteIndex, limits, context, targetProfile);
     if (!site)
       return site.takeError();
     result.sites.push_back(std::move(*site));
@@ -1214,7 +1224,7 @@ parseRankSiteMap(const llvm::json::Value &value, uint64_t index,
 
 llvm::Expected<std::vector<ProfileVariantSiteMap>>
 parseSiteMaps(const llvm::json::Object &root, const PackageParseLimits &limits,
-              uint64_t &totalRecords) {
+              uint64_t &totalRecords, TargetProfileId targetProfile) {
   if (llvm::Error error = requireFields(
           root,
           {"schema", "schema_version", "site_basis", "correlation_basis",
@@ -1279,8 +1289,8 @@ parseSiteMaps(const llvm::json::Object &root, const PackageParseLimits &limits,
       return invalid(context + " must contain all and only 16 ranks");
     variant.ranks.reserve((*ranks)->size());
     for (auto [rankIndex, rankValue] : llvm::enumerate(**ranks)) {
-      llvm::Expected<ProfileRankSiteMap> rank =
-          parseRankSiteMap(rankValue, rankIndex, limits, totalRecords, context);
+      llvm::Expected<ProfileRankSiteMap> rank = parseRankSiteMap(
+          rankValue, rankIndex, limits, totalRecords, context, targetProfile);
       if (!rank)
         return rank.takeError();
       variant.ranks.push_back(std::move(*rank));
@@ -1673,10 +1683,18 @@ loadCapturePackage(const RawCapturePackage &capture,
 ProfileTargetSiteKind
 getProfileTargetSiteKind(const TargetCallDescriptor &descriptor) {
   if (std::optional<TargetCallTSMEngine> engine =
-          getTargetCallTSMEngine(descriptor))
-    return *engine == TargetCallTSMEngine::DirectDTE
-               ? ProfileTargetSiteKind::DirectDTEWait
-               : ProfileTargetSiteKind::NCCCommand;
+          getTargetCallTSMEngine(descriptor)) {
+    if (*engine != TargetCallTSMEngine::DirectDTE)
+      return ProfileTargetSiteKind::NCCCommand;
+    const auto *builtin = std::get_if<TargetCallBuiltin>(&descriptor.semantic);
+    if (!builtin)
+      llvm_unreachable("Direct-DTE target call is not a builtin");
+    if (*builtin == TargetCallBuiltin::DirectDTESendIssue)
+      return ProfileTargetSiteKind::DirectDTEIssue;
+    if (*builtin == TargetCallBuiltin::DirectDTEWait)
+      return ProfileTargetSiteKind::DirectDTEWait;
+    llvm_unreachable("unknown Direct-DTE engine target call");
+  }
 
   const auto *builtin = std::get_if<TargetCallBuiltin>(&descriptor.semantic);
   if (!builtin)
@@ -1702,6 +1720,7 @@ getProfileTargetSiteKind(const TargetCallDescriptor &descriptor) {
   case TargetCallBuiltin::GemmOrientedV2:
   case TargetCallBuiltin::TDMAPad:
   case TargetCallBuiltin::TDMAImg2Col:
+  case TargetCallBuiltin::DirectDTESendIssue:
   case TargetCallBuiltin::DirectDTEWait:
     llvm_unreachable("engine target call lost its typed issue domain");
   }
@@ -1777,6 +1796,8 @@ llvm::StringRef stringifyProfileTargetSiteKind(ProfileTargetSiteKind kind) {
     return "ncc-completion";
   case ProfileTargetSiteKind::DirectDTEControl:
     return "direct-dte-control";
+  case ProfileTargetSiteKind::DirectDTEIssue:
+    return "direct-dte-issue";
   case ProfileTargetSiteKind::DirectDTEWait:
     return "direct-dte-wait";
   }
@@ -1893,12 +1914,6 @@ loadVerifiedProfileCompanion(llvm::StringRef companionRoot,
       parseVariants(*variantsJSON->root.getAsObject(), limits, totalRecords);
   if (!rawVariants)
     return rawVariants.takeError();
-  llvm::Expected<std::vector<ProfileVariantSiteMap>> siteMaps =
-      parseSiteMaps(*siteMapJSON->root.getAsObject(), limits, totalRecords);
-  if (!siteMaps)
-    return siteMaps.takeError();
-  if (llvm::Error error = verifyVariantGraph(*rawVariants, *plan, *siteMaps))
-    return std::move(error);
 
   std::vector<ProfileVariantPackage> packages;
   packages.reserve(rawVariants->size());
@@ -1912,6 +1927,15 @@ loadVerifiedProfileCompanion(llvm::StringRef companionRoot,
   if (packages.size() != 1 ||
       packages.front().getRole() != ProfileVariantRole::FinalArtifact)
     return invalid("profile companion final artifact is incomplete");
+
+  const TargetProfileId targetProfile =
+      packages.front().getPackage().getManifest().targetProfile;
+  llvm::Expected<std::vector<ProfileVariantSiteMap>> siteMaps = parseSiteMaps(
+      *siteMapJSON->root.getAsObject(), limits, totalRecords, targetProfile);
+  if (!siteMaps)
+    return siteMaps.takeError();
+  if (llvm::Error error = verifyVariantGraph(*rawVariants, *plan, *siteMaps))
+    return std::move(error);
 
   std::vector<ProfileCapturePackage> captures;
   captures.reserve(plan->capturePackages.size());

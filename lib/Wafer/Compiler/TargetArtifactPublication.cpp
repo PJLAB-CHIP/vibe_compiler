@@ -265,7 +265,8 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
     else if (llvm::Error error =
                  detail::verifyProfileTargetModuleInstrumentation(
                      targetLLVMModule.getModule(),
-                     targetLLVMModule.getEntrySymbol(), profileCapture))
+                     targetLLVMModule.getEntrySymbol(),
+                     targetLLVMModule.getTargetProfileId(), profileCapture))
       return detail::fail(
           diagnostics,
           "target LLVM profiler instrumentation verification failed: " +

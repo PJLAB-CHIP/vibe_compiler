@@ -133,7 +133,9 @@ finalizeScheduledRankCandidateFrontier(
     finalized.emplace_back(std::move(candidate.module), candidate.stableOrdinal,
                            candidate.artifactKind, candidate.reservedBaseline,
                            candidate.bufferingKind,
-                           candidate.bufferingPlanOrdinal);
+                           candidate.bufferingPlanOrdinal,
+                           candidate.workerPlacementKind,
+                           candidate.workerPlacementPlanOrdinal);
   }
 
   if (finalized.empty())

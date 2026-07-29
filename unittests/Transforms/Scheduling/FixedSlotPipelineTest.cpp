@@ -8,6 +8,7 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -28,7 +29,7 @@ namespace {
 class FixedSlotPipelineTest : public ::testing::Test {
 protected:
   FixedSlotPipelineTest() {
-    registry.insert<mlir::arith::ArithDialect,
+    registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
                     mlir::bufferization::BufferizationDialect,
                     mlir::func::FuncDialect, mlir::memref::MemRefDialect,
                     mlir::scf::SCFDialect>();
@@ -636,8 +637,7 @@ TEST_F(FixedSlotPipelineTest, RejectsPlacedInputBeforeSlotCloning) {
   ASSERT_TRUE(source);
   mlir::memref::AllocOp placedAllocation;
   source->walk([&](mlir::memref::AllocOp allocation) {
-    if (!placedAllocation &&
-        wafer::isWaferSPMMemRefType(allocation.getType()))
+    if (!placedAllocation && wafer::isWaferSPMMemRefType(allocation.getType()))
       placedAllocation = allocation;
   });
   ASSERT_TRUE(placedAllocation);
@@ -710,7 +710,7 @@ module {
   EXPECT_EQ(print(source->getOperation()), before);
 }
 
-TEST_F(FixedSlotPipelineTest, RejectsUnknownAliasAndCompletionIsland) {
+TEST_F(FixedSlotPipelineTest, RejectsUnknownAliasAndLegacyCompletionIsland) {
   auto unknownAlias = parse(R"mlir(
 module {
   func.func @unknown_alias(
@@ -757,7 +757,7 @@ module {
   std::string completionSource = threeStageSource(/*tripCount=*/3);
   const std::string needle = "      wafer.instr.wdma %computed to %output";
   completionSource.insert(completionSource.find(needle),
-                          "      wafer.instr.ncc_join [0]\n");
+                          "      wafer.instr.local_fence\n");
   auto completion = parse(completionSource);
   ASSERT_TRUE(completion);
   before = print(completion->getOperation());
@@ -982,6 +982,1067 @@ TEST_F(FixedSlotPipelineTest, LeavesCapacityRejectionToDownstreamPlanner) {
       *source, collectLoops(*source).front(), &failureReason);
   ASSERT_TRUE(mlir::succeeded(candidate)) << failureReason;
   EXPECT_EQ(candidate->slotAllocationCount, 4u);
+}
+
+TEST_F(FixedSlotPipelineTest,
+       AcceptsCrossWorkerFanInOnlyAfterExactParticipantJoin) {
+  auto parseJoined = [&](bool includeJoin) {
+    std::string join = includeJoin ? "wafer.instr.ncc_join [1]" : "";
+    return parse((R"mlir(
+module {
+  func.func @cross_worker_fanin() {
+    %output = memref.alloc()
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    scf.for %iv = %c0 to %c3 step %c1 {
+      %left = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %right = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %result = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.fill %left, %zero
+          {worker = #wafer.ncc_worker<worker1>}
+          : memref<4xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.instr.fill %right, %zero
+          : memref<4xf16, #wafer.memory<spm, tensor>>, f16
+)mlir" +
+                  join +
+                  R"mlir(
+      wafer.instr.elementwise <add> %left, %right into %result
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.wdma %result to %output
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           dst_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+         to memref<4xf16, #wafer.memory<ddr, tensor>>
+      scf.yield
+    }
+    return
+  }
+}
+)mlir"));
+  };
+
+  auto joined = parseJoined(/*includeJoin=*/true);
+  ASSERT_TRUE(joined);
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *joined, collectLoops(*joined).front(), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(candidate)) << failureReason;
+  EXPECT_GE(candidate->stageCount, 2u);
+  EXPECT_GE(candidate->slotAllocationCount, 2u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*candidate->module)));
+
+  auto missingJoin = parseJoined(/*includeJoin=*/false);
+  ASSERT_TRUE(missingJoin);
+  auto rejected = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *missingJoin, collectLoops(*missingJoin).front(), &failureReason);
+  EXPECT_TRUE(mlir::failed(rejected));
+  EXPECT_NE(failureReason.find("explicit preceding participant join"),
+            std::string::npos)
+      << failureReason;
+}
+
+TEST_F(FixedSlotPipelineTest,
+       PipelinesNCCProducerThroughDTESendAndExactSourceRelease) {
+  auto source = parse(R"mlir(
+module {
+  func.func @ncc_to_dte_send() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.for %iv = %c0 to %c4 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.ncc_join [0]
+      %sent = wafer.instr.dte_send %slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 30, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %sent : !async.token
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  const std::string before = print(source->getOperation());
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(candidate)) << failureReason;
+  EXPECT_EQ(candidate->stageCount, 3u);
+  EXPECT_EQ(candidate->slotAllocationCount, 3u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*candidate->module)));
+  EXPECT_EQ(print(source->getOperation()), before);
+
+  mlir::scf::ForOp kernel = collectLoops(*candidate->module).front();
+  wafer::InstrDTESendOp send;
+  wafer::InstrDTEWaitOp wait;
+  wafer::SyncNCCJoinOp join;
+  kernel.walk([&](wafer::InstrDTESendOp operation) { send = operation; });
+  kernel.walk([&](wafer::InstrDTEWaitOp operation) { wait = operation; });
+  kernel.walk([&](wafer::SyncNCCJoinOp operation) { join = operation; });
+  ASSERT_TRUE(send);
+  ASSERT_TRUE(wait);
+  ASSERT_TRUE(join);
+  EXPECT_TRUE(join->isBeforeInBlock(send));
+  ASSERT_EQ(join.getParticipants().size(), 1u);
+  EXPECT_EQ(join.getParticipants().front(), 0);
+  EXPECT_TRUE(send->isBeforeInBlock(wait));
+  ASSERT_EQ(wait.getTokens().size(), 1u);
+  EXPECT_EQ(wait.getTokens().front().getDefiningOp(), send.getOperation());
+  EXPECT_FALSE(
+      mlir::isa_and_nonnull<wafer::SyncNCCJoinOp>(wait->getPrevNode()));
+  unsigned steadyJoins = 0;
+  kernel.walk([&](wafer::SyncNCCJoinOp) { ++steadyJoins; });
+  EXPECT_EQ(steadyJoins, 1u) << print(candidate->module->getOperation());
+}
+
+TEST_F(FixedSlotPipelineTest,
+       PipelinesDTEReceiveCompletionBeforeNCCDestinationReuse) {
+  auto source = parse(R"mlir(
+module {
+  func.func @dte_recv_to_ncc() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %iv = %c0 to %c3 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %received = wafer.instr.dte_recv %slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 31, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %received : !async.token
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(candidate)) << failureReason;
+  EXPECT_EQ(candidate->stageCount, 2u);
+  EXPECT_EQ(candidate->slotAllocationCount, 2u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*candidate->module)));
+
+  mlir::scf::ForOp kernel = collectLoops(*candidate->module).front();
+  wafer::InstrDTERecvOp recv;
+  wafer::InstrDTEWaitOp wait;
+  wafer::InstrElementwiseOp consumer;
+  kernel.walk([&](wafer::InstrDTERecvOp operation) { recv = operation; });
+  kernel.walk([&](wafer::InstrDTEWaitOp operation) { wait = operation; });
+  kernel.walk(
+      [&](wafer::InstrElementwiseOp operation) { consumer = operation; });
+  ASSERT_TRUE(recv);
+  ASSERT_TRUE(wait);
+  ASSERT_TRUE(consumer);
+  EXPECT_TRUE(consumer->isBeforeInBlock(recv));
+  EXPECT_TRUE(recv->isBeforeInBlock(wait));
+  ASSERT_EQ(wait.getTokens().size(), 1u);
+  EXPECT_EQ(wait.getTokens().front().getDefiningOp(), recv.getOperation());
+  unsigned steadyJoins = 0;
+  kernel.walk([&](wafer::SyncNCCJoinOp) { ++steadyJoins; });
+  EXPECT_EQ(steadyJoins, 0u) << print(candidate->module->getOperation());
+}
+
+TEST_F(FixedSlotPipelineTest,
+       RebuildsLeadingNCCBackedgeCompletionAtRotatingSlotReuse) {
+  auto source = parse(R"mlir(
+module {
+  func.func @leading_backedge_join_to_dte_receive() {
+    %output = memref.alloc()
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c6 = arith.constant 6 : index
+    scf.for %iv = %c0 to %c6 step %c1 {
+      %received_slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %computed_slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.ncc_join [0]
+      %received = wafer.instr.dte_recv %received_slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 43, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %received : !async.token
+      wafer.instr.elementwise <add> %received_slot, %received_slot into %computed_slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.wdma %computed_slot to %output
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           dst_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+         to memref<4xf16, #wafer.memory<ddr, tensor>>
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(candidate)) << failureReason;
+  EXPECT_EQ(candidate->stageCount, 3u);
+  EXPECT_EQ(candidate->slotAllocationCount, 4u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*candidate->module)));
+
+  mlir::scf::ForOp kernel = collectLoops(*candidate->module).front();
+  wafer::InstrDTERecvOp recv;
+  wafer::InstrDTEWaitOp wait;
+  wafer::InstrElementwiseOp compute;
+  wafer::InstrWDMAOp wdma;
+  kernel.walk([&](wafer::InstrDTERecvOp operation) { recv = operation; });
+  kernel.walk([&](wafer::InstrDTEWaitOp operation) { wait = operation; });
+  kernel.walk(
+      [&](wafer::InstrElementwiseOp operation) { compute = operation; });
+  kernel.walk([&](wafer::InstrWDMAOp operation) { wdma = operation; });
+  ASSERT_TRUE(recv);
+  ASSERT_TRUE(wait);
+  ASSERT_TRUE(compute);
+  ASSERT_TRUE(wdma);
+  EXPECT_TRUE(compute->isBeforeInBlock(recv));
+  EXPECT_TRUE(wdma->isBeforeInBlock(recv));
+  EXPECT_TRUE(recv->isBeforeInBlock(wait));
+  ASSERT_EQ(wait.getTokens().size(), 1u);
+  EXPECT_EQ(wait.getTokens().front().getDefiningOp(), recv.getOperation());
+  unsigned steadyJoins = 0;
+  kernel.walk([&](wafer::SyncNCCJoinOp) { ++steadyJoins; });
+  // Slot rotation delays the overwrite but does not prove that an
+  // OrderedPending NCC reader has completed by the time the slot recurs. The
+  // minimum-completion normalizer must therefore rebuild this exact cut.
+  EXPECT_EQ(steadyJoins, 1u) << print(candidate->module->getOperation());
+}
+
+TEST_F(FixedSlotPipelineTest,
+       RejectsLeadingNCCBackedgeCompletionForExternalRoot) {
+  auto source = parse(R"mlir(
+module {
+  func.func @external_backedge_join() {
+    %shared = memref.alloc()
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %output = memref.alloc()
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.for %iv = %c0 to %c4 step %c1 {
+      %computed = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.ncc_join [0]
+      %received = wafer.instr.dte_recv %shared
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 44, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %received : !async.token
+      wafer.instr.elementwise <add> %shared, %shared into %computed
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.wdma %computed to %output
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           dst_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+         to memref<4xf16, #wafer.memory<ddr, tensor>>
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  const std::string before = print(source->getOperation());
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  EXPECT_TRUE(mlir::failed(candidate));
+  EXPECT_NE(failureReason.find("not a slotizable loop-local allocation"),
+            std::string::npos)
+      << failureReason;
+  EXPECT_EQ(print(source->getOperation()), before);
+}
+
+TEST_F(FixedSlotPipelineTest,
+       RejectsLeadingNCCBackedgeCompletionWithWrongParticipant) {
+  auto source = parse(R"mlir(
+module {
+  func.func @wrong_backedge_participant() {
+    %output = memref.alloc()
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.for %iv = %c0 to %c4 step %c1 {
+      %received_slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %computed_slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.ncc_join [1]
+      %received = wafer.instr.dte_recv %received_slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 45, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %received : !async.token
+      wafer.instr.elementwise <add> %received_slot, %received_slot into %computed_slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.wdma %computed_slot to %output
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           dst_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+         to memref<4xf16, #wafer.memory<ddr, tensor>>
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  const std::string before = print(source->getOperation());
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  EXPECT_TRUE(mlir::failed(candidate));
+  EXPECT_NE(failureReason.find("do not exactly match the loop-tail pending "
+                               "frontier"),
+            std::string::npos)
+      << failureReason;
+  EXPECT_EQ(print(source->getOperation()), before);
+}
+
+TEST_F(FixedSlotPipelineTest,
+       PipelinesTwoNonOverlappingDTESendWindowsInOneIteration) {
+  auto source = parse(R"mlir(
+module {
+  func.func @two_dte_send_windows() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.for %iv = %c0 to %c4 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %first = wafer.instr.dte_send %slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 34, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %first : !async.token
+      %second = wafer.instr.dte_send %slot
+          {peer = 1 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 34, phase = collective_permute, round = 1, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %second : !async.token
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(candidate)) << failureReason;
+  EXPECT_EQ(candidate->stageCount, 2u);
+  EXPECT_EQ(candidate->slotAllocationCount, 2u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*candidate->module)));
+
+  mlir::scf::ForOp kernel = collectLoops(*candidate->module).front();
+  llvm::SmallVector<wafer::InstrDTESendOp, 2> sends;
+  llvm::SmallVector<wafer::InstrDTEWaitOp, 2> waits;
+  wafer::InstrElementwiseOp consumer;
+  kernel.walk(
+      [&](wafer::InstrDTESendOp operation) { sends.push_back(operation); });
+  kernel.walk(
+      [&](wafer::InstrDTEWaitOp operation) { waits.push_back(operation); });
+  kernel.walk(
+      [&](wafer::InstrElementwiseOp operation) { consumer = operation; });
+  ASSERT_EQ(sends.size(), 2u);
+  ASSERT_EQ(waits.size(), 2u);
+  ASSERT_TRUE(consumer);
+  EXPECT_TRUE(consumer->isBeforeInBlock(sends.front()));
+  for (unsigned index = 0; index < sends.size(); ++index) {
+    EXPECT_TRUE(sends[index]->isBeforeInBlock(waits[index]));
+    ASSERT_EQ(waits[index].getTokens().size(), 1u);
+    EXPECT_EQ(waits[index].getTokens().front().getDefiningOp(),
+              sends[index].getOperation());
+    if (index + 1 < sends.size())
+      EXPECT_TRUE(waits[index]->isBeforeInBlock(sends[index + 1]));
+  }
+  unsigned steadyJoins = 0;
+  kernel.walk([&](wafer::SyncNCCJoinOp) { ++steadyJoins; });
+  EXPECT_EQ(steadyJoins, 0u) << print(candidate->module->getOperation());
+}
+
+TEST_F(FixedSlotPipelineTest,
+       PipelinesDTEReceiveThenSendAsEndpointSafeWindows) {
+  auto source = parse(R"mlir(
+module {
+  func.func @dte_receive_then_send_windows() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.for %iv = %c0 to %c4 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %received = wafer.instr.dte_recv %slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 35, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %received : !async.token
+      %sent = wafer.instr.dte_send %slot
+          {peer = 1 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 35, phase = collective_permute, round = 1, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %sent : !async.token
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(candidate)) << failureReason;
+  EXPECT_EQ(candidate->stageCount, 2u);
+  EXPECT_EQ(candidate->slotAllocationCount, 2u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*candidate->module)));
+
+  mlir::scf::ForOp kernel = collectLoops(*candidate->module).front();
+  wafer::InstrDTERecvOp recv;
+  wafer::InstrDTESendOp send;
+  llvm::SmallVector<wafer::InstrDTEWaitOp, 2> waits;
+  wafer::InstrElementwiseOp consumer;
+  kernel.walk([&](wafer::InstrDTERecvOp operation) { recv = operation; });
+  kernel.walk([&](wafer::InstrDTESendOp operation) { send = operation; });
+  kernel.walk(
+      [&](wafer::InstrDTEWaitOp operation) { waits.push_back(operation); });
+  kernel.walk(
+      [&](wafer::InstrElementwiseOp operation) { consumer = operation; });
+  ASSERT_TRUE(recv);
+  ASSERT_TRUE(send);
+  ASSERT_EQ(waits.size(), 2u);
+  ASSERT_TRUE(consumer);
+  EXPECT_TRUE(consumer->isBeforeInBlock(recv));
+  EXPECT_TRUE(recv->isBeforeInBlock(waits.front()));
+  EXPECT_TRUE(waits.front()->isBeforeInBlock(send));
+  EXPECT_TRUE(send->isBeforeInBlock(waits.back()));
+  ASSERT_EQ(waits.front().getTokens().size(), 1u);
+  ASSERT_EQ(waits.back().getTokens().size(), 1u);
+  EXPECT_EQ(waits.front().getTokens().front().getDefiningOp(),
+            recv.getOperation());
+  EXPECT_EQ(waits.back().getTokens().front().getDefiningOp(),
+            send.getOperation());
+  unsigned steadyJoins = 0;
+  kernel.walk([&](wafer::SyncNCCJoinOp) { ++steadyJoins; });
+  EXPECT_EQ(steadyJoins, 0u) << print(candidate->module->getOperation());
+}
+
+TEST_F(FixedSlotPipelineTest, PipelinesNCCProducerAcrossThreeDTESendWindows) {
+  auto source = parse(R"mlir(
+module {
+  func.func @ncc_producer_to_three_dte_windows() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.for %iv = %c0 to %c4 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.ncc_join [0]
+      %first = wafer.instr.dte_send %slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 36, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %first : !async.token
+      %second = wafer.instr.dte_send %slot
+          {peer = 1 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 36, phase = collective_permute, round = 1, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %second : !async.token
+      %third = wafer.instr.dte_send %slot
+          {peer = 2 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 36, phase = collective_permute, round = 2, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %third : !async.token
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(candidate)) << failureReason;
+  EXPECT_EQ(candidate->stageCount, 2u);
+  EXPECT_EQ(candidate->slotAllocationCount, 2u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*candidate->module)));
+
+  mlir::scf::ForOp kernel = collectLoops(*candidate->module).front();
+  wafer::InstrElementwiseOp producer;
+  llvm::SmallVector<wafer::InstrDTESendOp, 3> sends;
+  llvm::SmallVector<wafer::InstrDTEWaitOp, 3> waits;
+  kernel.walk(
+      [&](wafer::InstrElementwiseOp operation) { producer = operation; });
+  kernel.walk(
+      [&](wafer::InstrDTESendOp operation) { sends.push_back(operation); });
+  kernel.walk(
+      [&](wafer::InstrDTEWaitOp operation) { waits.push_back(operation); });
+  ASSERT_TRUE(producer);
+  ASSERT_EQ(sends.size(), 3u);
+  ASSERT_EQ(waits.size(), 3u);
+  unsigned steadyJoins = 0;
+  kernel.walk([&](wafer::SyncNCCJoinOp join) {
+    ++steadyJoins;
+    EXPECT_TRUE(join->isBeforeInBlock(sends.front()));
+    ASSERT_EQ(join.getParticipants().size(), 1u);
+    EXPECT_EQ(join.getParticipants().front(), 0);
+  });
+  EXPECT_EQ(steadyJoins, 1u) << print(candidate->module->getOperation());
+  EXPECT_TRUE(producer->isBeforeInBlock(sends.front()));
+  for (unsigned index = 0; index < sends.size(); ++index) {
+    EXPECT_TRUE(sends[index]->isBeforeInBlock(waits[index]));
+    ASSERT_EQ(waits[index].getTokens().size(), 1u);
+    EXPECT_EQ(waits[index].getTokens().front().getDefiningOp(),
+              sends[index].getOperation());
+    if (index + 1 < sends.size())
+      EXPECT_TRUE(waits[index]->isBeforeInBlock(sends[index + 1]));
+  }
+}
+
+TEST_F(FixedSlotPipelineTest,
+       PipelinesExplicitRDMAHandoffAcrossThreeDTESendWindows) {
+  auto source = parse(R"mlir(
+module {
+  func.func @rdma_handoff_to_three_dte_windows() {
+    %input = memref.alloc()
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+    %output = memref.alloc()
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    scf.for %iv = %c0 to %c8 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.rdma %input to %slot
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           src_iterations = array<i64: 1, 1, 1>,
+           src_strides = array<i64: 0, 0, 0>}
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+         to memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.ncc_join [0]
+      %first = wafer.instr.dte_send %slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 40, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %first : !async.token
+      %second = wafer.instr.dte_send %slot
+          {peer = 1 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 40, phase = collective_permute, round = 1, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %second : !async.token
+      %third = wafer.instr.dte_send %slot
+          {peer = 2 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 40, phase = collective_permute, round = 2, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %third : !async.token
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.wdma %slot to %output
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           dst_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+         to memref<4xf16, #wafer.memory<ddr, tensor>>
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(candidate)) << failureReason;
+  EXPECT_EQ(candidate->stageCount, 4u);
+  EXPECT_EQ(candidate->slotAllocationCount, 4u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*candidate->module)));
+
+  mlir::scf::ForOp kernel = collectLoops(*candidate->module).front();
+  wafer::InstrRDMAOp rdma;
+  wafer::SyncNCCJoinOp handoff;
+  wafer::InstrElementwiseOp compute;
+  wafer::InstrWDMAOp wdma;
+  llvm::SmallVector<wafer::InstrDTESendOp, 3> sends;
+  llvm::SmallVector<wafer::InstrDTEWaitOp, 3> waits;
+  kernel.walk([&](wafer::InstrRDMAOp operation) { rdma = operation; });
+  kernel.walk([&](wafer::SyncNCCJoinOp operation) { handoff = operation; });
+  kernel.walk(
+      [&](wafer::InstrDTESendOp operation) { sends.push_back(operation); });
+  kernel.walk(
+      [&](wafer::InstrDTEWaitOp operation) { waits.push_back(operation); });
+  kernel.walk(
+      [&](wafer::InstrElementwiseOp operation) { compute = operation; });
+  kernel.walk([&](wafer::InstrWDMAOp operation) { wdma = operation; });
+  ASSERT_TRUE(rdma);
+  ASSERT_TRUE(handoff);
+  ASSERT_TRUE(compute);
+  ASSERT_TRUE(wdma);
+  ASSERT_EQ(sends.size(), 3u);
+  ASSERT_EQ(waits.size(), 3u);
+  ASSERT_EQ(handoff.getParticipants().size(), 1u);
+  EXPECT_EQ(handoff.getParticipants().front(), 0);
+  EXPECT_TRUE(rdma->isBeforeInBlock(handoff));
+  EXPECT_TRUE(handoff->isBeforeInBlock(sends.front()));
+  EXPECT_TRUE(compute->isBeforeInBlock(sends.front()));
+  EXPECT_TRUE(wdma->isBeforeInBlock(sends.front()));
+  for (unsigned index = 0; index < sends.size(); ++index) {
+    EXPECT_TRUE(sends[index]->isBeforeInBlock(waits[index]));
+    ASSERT_EQ(waits[index].getTokens().size(), 1u);
+    EXPECT_EQ(waits[index].getTokens().front().getDefiningOp(),
+              sends[index].getOperation());
+    if (index + 1 < sends.size())
+      EXPECT_TRUE(waits[index]->isBeforeInBlock(sends[index + 1]));
+  }
+  unsigned steadyJoins = 0;
+  kernel.walk([&](wafer::SyncNCCJoinOp) { ++steadyJoins; });
+  EXPECT_EQ(steadyJoins, 1u) << print(candidate->module->getOperation());
+}
+
+TEST_F(FixedSlotPipelineTest,
+       RejectsNCCProducerToDTEWithoutExplicitParticipantHandoff) {
+  auto source = parse(R"mlir(
+module {
+  func.func @ncc_to_dte_without_handoff() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %iv = %c0 to %c3 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      %sent = wafer.instr.dte_send %slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 41, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %sent : !async.token
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  const std::string before = print(source->getOperation());
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  EXPECT_TRUE(mlir::failed(candidate));
+  EXPECT_NE(failureReason.find("requires an explicit preceding participant "
+                               "join"),
+            std::string::npos)
+      << failureReason;
+  EXPECT_EQ(print(source->getOperation()), before);
+}
+
+TEST_F(FixedSlotPipelineTest, RejectsNCCJoinWithExtraObserverParticipant) {
+  auto source = parse(R"mlir(
+module {
+  func.func @ncc_join_with_extra_participant() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %iv = %c0 to %c3 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.ncc_join [0, 1]
+      %sent = wafer.instr.dte_send %slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 42, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %sent : !async.token
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  const std::string before = print(source->getOperation());
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  EXPECT_TRUE(mlir::failed(candidate));
+  EXPECT_NE(failureReason.find("participant has no preceding pending "
+                               "producer"),
+            std::string::npos)
+      << failureReason;
+  EXPECT_EQ(print(source->getOperation()), before);
+}
+
+TEST_F(FixedSlotPipelineTest, RejectsTwoDTESendersSharingOneExactWait) {
+  auto source = parse(R"mlir(
+module {
+  func.func @two_senders_one_wait() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %iv = %c0 to %c3 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %first = wafer.instr.dte_send %slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 37, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      %second = wafer.instr.dte_send %slot
+          {peer = 1 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 37, phase = collective_permute, round = 1, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %first, %second : !async.token, !async.token
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  const std::string before = print(source->getOperation());
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  EXPECT_TRUE(mlir::failed(candidate));
+  EXPECT_NE(failureReason.find("cannot contain multiple sender issues"),
+            std::string::npos)
+      << failureReason;
+  EXPECT_EQ(print(source->getOperation()), before);
+}
+
+TEST_F(FixedSlotPipelineTest, RejectsOverlappingDTEEndpointWindows) {
+  auto source = parse(R"mlir(
+module {
+  func.func @overlapping_dte_windows() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %iv = %c0 to %c3 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %first = wafer.instr.dte_send %slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 38, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      %second = wafer.instr.dte_send %slot
+          {peer = 1 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 38, phase = collective_permute, round = 1, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %first : !async.token
+      wafer.instr.dte_wait %second : !async.token
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  const std::string before = print(source->getOperation());
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  EXPECT_TRUE(mlir::failed(candidate));
+  EXPECT_NE(failureReason.find("completion windows must not overlap"),
+            std::string::npos)
+      << failureReason;
+  EXPECT_EQ(print(source->getOperation()), before);
+}
+
+TEST_F(FixedSlotPipelineTest, RejectsDTEIssueWithoutExactWait) {
+  auto source = parse(R"mlir(
+module {
+  func.func @dte_issue_without_wait() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %iv = %c0 to %c3 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %sent = wafer.instr.dte_send %slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 39, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  const std::string before = print(source->getOperation());
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  EXPECT_TRUE(mlir::failed(candidate));
+  EXPECT_NE(failureReason.find("requires exactly one wait use"),
+            std::string::npos)
+      << failureReason;
+  EXPECT_EQ(print(source->getOperation()), before);
+}
+
+TEST_F(FixedSlotPipelineTest,
+       SpecializesEvenAndOddPeriodicDTELoopsToStaticAllocationSites) {
+  for (unsigned tripCount : {6U, 5U}) {
+    std::string text = R"mlir(
+module {
+  func.func @periodic_dte() {
+    %slot0 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %slot1 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %upper = arith.constant )mlir";
+    text += std::to_string(tripCount);
+    text += R"mlir( : index
+    %result:2 = scf.for %iv = %c0 to %upper step %c1
+        iter_args(%current = %slot0, %next = %slot1)
+        -> (memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>) {
+      %received = wafer.instr.dte_recv %current
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 51, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %received : !async.token
+      scf.yield %next, %current
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir";
+    auto module = parse(text);
+    ASSERT_TRUE(module) << "trip count " << tripCount;
+
+    std::string failureReason;
+    ASSERT_TRUE(mlir::succeeded(wafer::specializePeriodicDirectDTESites(
+        llvm::ArrayRef<mlir::ModuleOp>{*module}, &failureReason)))
+        << failureReason;
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+    unsigned loopIssues = 0;
+    unsigned straightLineIssues = 0;
+    module->walk([&](wafer::InstrDTERecvOp recv) {
+      mlir::Value root = recv.getBuffer();
+      EXPECT_TRUE(
+          static_cast<bool>(root.getDefiningOp<mlir::memref::AllocOp>()));
+      if (recv->getParentOfType<mlir::scf::ForOp>())
+        ++loopIssues;
+      else
+        ++straightLineIssues;
+    });
+    EXPECT_EQ(loopIssues, 2u);
+    EXPECT_EQ(straightLineIssues, tripCount % 2);
+  }
+}
+
+TEST_F(FixedSlotPipelineTest,
+       RejectsDynamicPeriodicDTELoopWithoutMutatingInput) {
+  auto module = parse(R"mlir(
+module {
+  func.func @dynamic_periodic_dte(%upper: index) {
+    %slot0 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %slot1 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %result:2 = scf.for %iv = %c0 to %upper step %c1
+        iter_args(%current = %slot0, %next = %slot1)
+        -> (memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>) {
+      %received = wafer.instr.dte_recv %current
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 52, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %received : !async.token
+      scf.yield %next, %current
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  const std::string before = print(module->getOperation());
+
+  std::string failureReason;
+  EXPECT_TRUE(mlir::failed(wafer::specializePeriodicDirectDTESites(
+      llvm::ArrayRef<mlir::ModuleOp>{*module}, &failureReason)));
+  EXPECT_NE(failureReason.find("requires static non-negative loop bounds"),
+            std::string::npos)
+      << failureReason;
+  EXPECT_EQ(print(module->getOperation()), before);
+}
+
+TEST_F(FixedSlotPipelineTest, RejectsDTESendSourceReuseBeforeExactWait) {
+  auto source = parse(R"mlir(
+module {
+  func.func @early_send_source_reuse() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %iv = %c0 to %c3 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %sent = wafer.instr.dte_send %slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 32, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.dte_wait %sent : !async.token
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  const std::string before = print(source->getOperation());
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  EXPECT_TRUE(mlir::failed(candidate));
+  EXPECT_NE(failureReason.find("precedes its exact wait"), std::string::npos)
+      << failureReason;
+  EXPECT_EQ(print(source->getOperation()), before);
+}
+
+TEST_F(FixedSlotPipelineTest, RejectsDTEReceiveUseBeforeExactWait) {
+  auto source = parse(R"mlir(
+module {
+  func.func @early_recv_destination_use() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %iv = %c0 to %c3 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %received = wafer.instr.dte_recv %slot
+          {peer = 0 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 33, phase = collective_permute, round = 0, slice = 0>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.dte_wait %received : !async.token
+      scf.yield
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  const std::string before = print(source->getOperation());
+
+  std::string failureReason;
+  auto candidate = wafer::deriveStaticFixedSlotPipelineCandidate(
+      *source, collectLoops(*source).front(), &failureReason);
+  EXPECT_TRUE(mlir::failed(candidate));
+  EXPECT_NE(failureReason.find("precedes its exact wait"), std::string::npos)
+      << failureReason;
+  EXPECT_EQ(print(source->getOperation()), before);
 }
 
 } // namespace

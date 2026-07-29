@@ -340,6 +340,8 @@ llvm::StringRef stringifyEventKind(uint8_t kind) {
     return "ncc-completion-wait";
   case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT:
     return "direct-dte-wait";
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE:
+    return "direct-dte-issue";
   case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT:
     return "direct-dte-peer-ready-wait";
   case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE:
@@ -383,11 +385,14 @@ bool eventMatchesSite(const ProfileTargetCallSite &site,
             site.siteKind == ProfileTargetSiteKind::NCCCompletion) &&
            event.engine == WAFER_TX81_PROFILER_ENGINE_NONE;
   case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT:
-  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT:
-  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE:
   case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_COMPLETION_WAIT:
   case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_CLEANUP:
     return site.siteKind == ProfileTargetSiteKind::DirectDTEWait &&
+           site.engine && engineMatches(*site.engine, event.engine);
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE:
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT:
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE:
+    return site.siteKind == ProfileTargetSiteKind::DirectDTEIssue &&
            site.engine && engineMatches(*site.engine, event.engine);
   case WAFER_TX81_PROFILER_EVENT_TARGET_SITE:
     return event.engine == WAFER_TX81_PROFILER_ENGINE_NONE;
@@ -631,7 +636,9 @@ void emitCandidateEvidence(llvm::json::OStream &json,
                     json.attribute("wait_scope", "worker");
                   else
                     json.attribute("wait_scope", llvm::json::Value(nullptr));
-                  if (event.kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT)
+                  if (event.kind ==
+                          WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE ||
+                      event.kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT)
                     json.attribute("dte_counter_valid",
                                    isTx81ProfilerDirectDTECounterValid(event));
                   else

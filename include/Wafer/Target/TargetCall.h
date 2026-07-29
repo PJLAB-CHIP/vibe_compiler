@@ -11,6 +11,7 @@
 #include "llvm/Support/Error.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -219,6 +220,9 @@ struct TargetDirectDTESendTransaction {
   uint32_t remoteFSM;
   bool highPerformance;
 };
+struct TargetDirectDTESendIssueTransaction {
+  uint64_t event;
+};
 struct TargetDirectDTEReceiveTransaction {
   uint64_t destination;
   uint32_t byteCount;
@@ -241,8 +245,9 @@ using TargetTransactionPayload = std::variant<
     TargetPeripheralBilinearTransaction, TargetPeripheralLUTTransaction,
     TargetPeripheralRandomTransaction, TargetPeripheralElementMaskTransaction,
     TargetNCCJoinTransaction, TargetDirectDTEBeginTransaction,
-    TargetDirectDTESendTransaction, TargetDirectDTEReceiveTransaction,
-    TargetDirectDTEWaitTransaction, TargetDirectDTEFinishTransaction>;
+    TargetDirectDTESendTransaction, TargetDirectDTESendIssueTransaction,
+    TargetDirectDTEReceiveTransaction, TargetDirectDTEWaitTransaction,
+    TargetDirectDTEFinishTransaction>;
 
 } // namespace compiler
 
@@ -263,6 +268,7 @@ enum class TargetCallBuiltin : uint8_t {
   DirectDTEBegin,
   DirectDTEBeginAfterPrepare,
   DirectDTESendPrepare,
+  DirectDTESendIssue,
   DirectDTERecvPrepare,
   DirectDTEWait,
   DirectDTEFinish,
@@ -284,14 +290,27 @@ enum class TargetCallTSMEngine : uint8_t {
   DirectDTE
 };
 
-/// Typed issue-domain metadata owned by the target-call registry. An NCC
-/// command carries its exact worker. Direct DTE carries no NCC worker because
-/// its completion is represented by its opaque event/wait transaction.
+/// Typed issue-domain metadata owned by the target-call registry. Closed
+/// worker-0 ABIs carry their worker as fixed metadata. Worker-aware ABIs carry
+/// it in one exact registered argument position. Direct DTE carries neither
+/// because its completion is represented by its opaque event/wait
+/// transaction.
 struct TargetCallIssueDomain {
   TargetCallTSMEngine engine;
-  std::optional<NCCWorker> nccWorker;
+  std::optional<NCCWorker> fixedNCCWorker;
+  std::optional<size_t> nccWorkerArgument;
   LocalInstructionCompletion completionBehavior =
       LocalInstructionCompletion::None;
+};
+
+/// Explicit profile availability for one public target-call ABI descriptor.
+/// The bit values are registry implementation details, not a serialized ABI.
+enum class TargetCallProfileAvailability : uint8_t {
+  V1 = 1u << 0,
+  V2 = 1u << 1,
+  V3 = 1u << 2,
+  V1AndV2 = (1u << 0) | (1u << 1),
+  All = (1u << 0) | (1u << 1) | (1u << 2),
 };
 
 /// A semantic identity owned by typed compiler enums, never reconstructed
@@ -309,6 +328,7 @@ struct TargetCallDescriptor {
   std::vector<TargetCallScalarType> arguments;
   TargetCallSemantic semantic;
   std::optional<TargetCallIssueDomain> issueDomain;
+  TargetCallProfileAvailability availability;
 };
 
 struct TargetCallDecodeContext {
@@ -316,12 +336,19 @@ struct TargetCallDecodeContext {
   int64_t rankCount;
 };
 
-/// Returns the closed 112-call surface emitted by target LLVM lowering.
+/// Returns the closed, versioned target-call surface. The original 112
+/// descriptors remain first and byte-for-byte stable; V3-only descriptors are
+/// appended so existing profiler site identities do not move.
 llvm::ArrayRef<TargetCallDescriptor> getTargetCallDescriptors();
 
 const TargetCallDescriptor *findTargetCallDescriptor(llvm::StringRef symbol);
 const TargetCallDescriptor *
-findTargetCallDescriptor(const TargetCallSemantic &semantic);
+findTargetCallDescriptor(llvm::StringRef symbol, TargetProfileId targetProfile);
+const TargetCallDescriptor *
+findTargetCallDescriptor(const TargetCallSemantic &semantic,
+                         TargetProfileId targetProfile);
+bool isTargetCallAvailableForProfile(const TargetCallDescriptor &descriptor,
+                                     TargetProfileId targetProfile);
 
 std::optional<TargetCallTSMEngine>
 getTargetCallTSMEngine(const TargetCallSemantic &semantic);
@@ -329,14 +356,24 @@ std::optional<TargetCallTSMEngine>
 getTargetCallTSMEngine(const TargetCallDescriptor &descriptor);
 llvm::StringRef stringifyTargetCallTSMEngine(TargetCallTSMEngine engine);
 
-const TargetCallDescriptor &getTargetCallDescriptor(TargetCallBuiltin call);
-const TargetCallDescriptor &getTargetCallDescriptor(InstrElementwiseKind kind);
-const TargetCallDescriptor &getTargetCallDescriptor(InstrReduceKind kind);
-const TargetCallDescriptor &getTargetCallDescriptor(InstrConvertKind kind);
-const TargetCallDescriptor &getTargetCallDescriptor(InstrConvKind kind);
-const TargetCallDescriptor &getTargetCallDescriptor(InstrPoolKind kind);
-const TargetCallDescriptor &getTargetCallDescriptor(InstrUnpoolKind kind);
-const TargetCallDescriptor &getTargetCallDescriptor(InstrPeripheralKind kind);
+const TargetCallDescriptor &
+getTargetCallDescriptor(TargetCallBuiltin call, TargetProfileId targetProfile);
+const TargetCallDescriptor &
+getTargetCallDescriptor(InstrElementwiseKind kind,
+                        TargetProfileId targetProfile);
+const TargetCallDescriptor &
+getTargetCallDescriptor(InstrReduceKind kind, TargetProfileId targetProfile);
+const TargetCallDescriptor &
+getTargetCallDescriptor(InstrConvertKind kind, TargetProfileId targetProfile);
+const TargetCallDescriptor &
+getTargetCallDescriptor(InstrConvKind kind, TargetProfileId targetProfile);
+const TargetCallDescriptor &
+getTargetCallDescriptor(InstrPoolKind kind, TargetProfileId targetProfile);
+const TargetCallDescriptor &
+getTargetCallDescriptor(InstrUnpoolKind kind, TargetProfileId targetProfile);
+const TargetCallDescriptor &
+getTargetCallDescriptor(InstrPeripheralKind kind,
+                        TargetProfileId targetProfile);
 
 /// Decodes one exact ABI argument vector into the descriptor's typed payload.
 /// This is the only field-position factory shared by the JIT frontend and
@@ -345,6 +382,12 @@ llvm::Expected<compiler::TargetTransactionPayload>
 decodeTargetCallPayload(const TargetCallDescriptor &descriptor,
                         const TargetCallDecodeContext &context,
                         llvm::ArrayRef<uint64_t> arguments);
+
+/// Decodes the exact NCC worker carried by a registered issue call. Absence
+/// means that the call does not issue an NCC command.
+llvm::Expected<std::optional<NCCWorker>>
+decodeTargetCallNCCWorker(const TargetCallDescriptor &descriptor,
+                          llvm::ArrayRef<uint64_t> arguments);
 
 } // namespace wafer
 

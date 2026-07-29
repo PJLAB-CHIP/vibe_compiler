@@ -170,3 +170,34 @@ func.func @branch_dte_waits_clear_all_paths(
 // CHECK: wafer.instr.dte_wait %[[DTE_TOKEN]]
 // CHECK: else
 // CHECK: wafer.instr.dte_wait %[[DTE_TOKEN]]
+
+func.func @typed_dte_resource_does_not_observe_disjoint_pending_ncc_buffer(
+    %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  %region = wafer.tile.region(%boundary
+      : memref<128xf16, #wafer.memory<ddr, tensor>>)
+      -> (memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<128xf16, #wafer.memory<ddr, tensor>>):
+    %zero = arith.constant 0.000000e+00 : f16
+    %produced = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %received = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.fill %produced, %zero
+        : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    %token = wafer.instr.dte_recv %received
+        {peer = 1 : i64, bytes = 256 : i64,
+         message = #wafer.dte_message<communication = 1, phase = peer_dataflow, round = 0, slice = 0>}
+        : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %token : !async.token
+    wafer.instr.ncc_join [0]
+    wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @typed_dte_resource_does_not_observe_disjoint_pending_ncc_buffer
+// CHECK: %[[PRODUCED:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+// CHECK: %[[RECEIVED:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+// CHECK: wafer.instr.fill %[[PRODUCED]]
+// CHECK: %[[RECV_TOKEN:.+]] = wafer.instr.dte_recv %[[RECEIVED]]
+// CHECK: wafer.instr.dte_wait %[[RECV_TOKEN]]

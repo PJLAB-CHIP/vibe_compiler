@@ -4,9 +4,15 @@
 #include <stdint.h>
 
 #define WAFER_BARRIER_RANKS UINT32_C(16)
-#define WAFER_BARRIER_SLOTS_PER_RANK UINT32_C(3)
 #define WAFER_BARRIER_RESOURCE_BYTES UINT32_C(256)
 #define WAFER_BARRIER_CACHE_LINE_BYTES UINT32_C(64)
+
+#if !defined(WAFER_BARRIER_SLOTS_PER_RANK) ||                            \
+    !defined(WAFER_BARRIER_INPUT_SLOT) ||                               \
+    !defined(WAFER_BARRIER_OUTPUT_SLOT) ||                              \
+    !defined(WAFER_BARRIER_STATUS_SLOT)
+#error "barrier probe slot layout must come from the verified manifest"
+#endif
 
 #define WAFER_BARRIER_REQUEST_MAGIC UINT64_C(0x5742464352455154)
 #define WAFER_BARRIER_REQUEST_SCHEMA UINT64_C(1)

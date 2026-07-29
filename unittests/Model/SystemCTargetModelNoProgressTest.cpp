@@ -25,7 +25,9 @@ using namespace wafer::model;
 
 llvm::CallInst *findSendPrepareCall(llvm::Module &module) {
   const llvm::StringRef symbol =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare).symbol;
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare,
+                              TargetProfileId::waferTx81SingleCardKernelV1())
+          .symbol;
   for (llvm::Function &function : module)
     for (llvm::BasicBlock &block : function)
       for (llvm::Instruction &instruction : block)
@@ -90,6 +92,6 @@ TEST(SystemCTargetModelNoProgressTest,
 } // namespace
 
 extern "C" int sc_main(int argc, char **argv) {
-  testing::InitGoogleTest(&argc, argv);
+  ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

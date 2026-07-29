@@ -312,6 +312,12 @@ int main(int argc, char **argv) {
       std::getenv("WAFER_TEST_FAIL_AFTER_PACKAGE_LOGICAL_RANK");
   const char *reservedBaseline =
       std::getenv("WAFER_TEST_SELECT_RESERVED_BASELINE");
+  const char *staticFixedSlot =
+      std::getenv("WAFER_TEST_SELECT_STATIC_FIXED_SLOT");
+  const char *workerPlacement =
+      std::getenv("WAFER_TEST_SELECT_WORKER_PLACEMENT");
+  const char *noCResidentFixedSlotWorker =
+      std::getenv("WAFER_TEST_SELECT_NOC_RESIDENT_FIXED_SLOT_WORKER");
   const char *collectiveAlternative =
       std::getenv("WAFER_TEST_COLLECTIVE_CHARACTERIZATION_ALTERNATIVE");
   const char *collectiveReport =
@@ -319,8 +325,10 @@ int main(int argc, char **argv) {
   unsigned failureInjectionCount = (failureRank ? 1u : 0u) +
                                    (targetFailureRank ? 1u : 0u) +
                                    (packageFailureRank ? 1u : 0u);
-  if (options.profile && (failureInjectionCount != 0 || reservedBaseline ||
-                          collectiveAlternative || collectiveReport)) {
+  if (options.profile &&
+      (failureInjectionCount != 0 || reservedBaseline || staticFixedSlot ||
+       workerPlacement || noCResidentFixedSlotWorker ||
+       collectiveAlternative || collectiveReport)) {
     llvm::errs() << "wafer-compile: --profile cannot be combined with "
                     "test-only compilation controls\n";
     return 1;
@@ -336,13 +344,36 @@ int main(int argc, char **argv) {
            "combined with failure injection\n";
     return 1;
   }
+  if (staticFixedSlot && failureInjectionCount != 0) {
+    llvm::errs()
+        << "wafer-compile: test-only static fixed-slot qualification cannot "
+           "be combined with failure injection\n";
+    return 1;
+  }
+  if (workerPlacement && failureInjectionCount != 0) {
+    llvm::errs()
+        << "wafer-compile: test-only worker-placement qualification cannot "
+           "be combined with failure injection\n";
+    return 1;
+  }
+  if (noCResidentFixedSlotWorker && failureInjectionCount != 0) {
+    llvm::errs()
+        << "wafer-compile: test-only NoC-resident fixed-slot worker "
+           "qualification cannot be combined with failure injection\n";
+    return 1;
+  }
   if (collectiveAlternative && failureInjectionCount != 0) {
     llvm::errs()
         << "wafer-compile: test-only collective characterization cannot be "
            "combined with failure injection\n";
     return 1;
   }
-  if (reservedBaseline && collectiveAlternative) {
+  unsigned wholeVariantSelectionCount =
+      (reservedBaseline ? 1u : 0u) + (staticFixedSlot ? 1u : 0u) +
+      (workerPlacement ? 1u : 0u) +
+      (noCResidentFixedSlotWorker ? 1u : 0u) +
+      (collectiveAlternative ? 1u : 0u);
+  if (wholeVariantSelectionCount > 1) {
     llvm::errs()
         << "wafer-compile: test-only whole-variant selections are mutually "
            "exclusive\n";
@@ -358,6 +389,23 @@ int main(int argc, char **argv) {
   if (reservedBaseline && llvm::StringRef(reservedBaseline) != "1") {
     llvm::errs()
         << "wafer-compile: invalid test-only reserved-baseline selection\n";
+    return 1;
+  }
+  if (staticFixedSlot && llvm::StringRef(staticFixedSlot) != "1") {
+    llvm::errs() << "wafer-compile: invalid test-only static fixed-slot "
+                    "qualification\n";
+    return 1;
+  }
+  if (workerPlacement && llvm::StringRef(workerPlacement) != "1") {
+    llvm::errs() << "wafer-compile: invalid test-only worker-placement "
+                    "qualification\n";
+    return 1;
+  }
+  if (noCResidentFixedSlotWorker &&
+      llvm::StringRef(noCResidentFixedSlotWorker) != "1") {
+    llvm::errs()
+        << "wafer-compile: invalid test-only NoC-resident fixed-slot worker "
+           "qualification\n";
     return 1;
   }
   if (failureRank) {
@@ -393,25 +441,92 @@ int main(int argc, char **argv) {
             *targetToolchain, parsedFailureRank, llvm::errs());
   } else if (reservedBaseline) {
     if (options.targetModel) {
-      llvm::errs() << "wafer-compile: test-only reserved-baseline selection "
-                      "does not support target-model execution\n";
-      return 1;
+      mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
+          compiledProgram = wafer::compiler::testing::
+              compileProgramWithReservedBaselineTargetCompilation(
+                  std::move(*request), *options.outputProgramDirectory,
+                  helperPath, *targetToolchain, llvm::errs());
+      if (mlir::succeeded(compiledProgram)) {
+        targetCompilationProduct.emplace(std::move(*compiledProgram));
+        compilationStatus = mlir::success();
+      }
+    } else {
+      mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
+          wafer::compiler::testing::compileProgramWithReservedBaseline(
+              std::move(*request), *options.outputProgramDirectory, helperPath,
+              *targetToolchain, llvm::errs());
+      if (mlir::succeeded(compiledProgram)) {
+        executableBundle.emplace(std::move(*compiledProgram));
+        compilationStatus = mlir::success();
+      }
     }
-    mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
-        wafer::compiler::testing::compileProgramWithReservedBaseline(
-            std::move(*request), *options.outputProgramDirectory, helperPath,
-            *targetToolchain, llvm::errs());
-    if (mlir::succeeded(compiledProgram)) {
-      executableBundle.emplace(std::move(*compiledProgram));
-      compilationStatus = mlir::success();
+  } else if (staticFixedSlot) {
+    if (options.targetModel) {
+      mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
+          compiledProgram = wafer::compiler::testing::
+              compileProgramForStaticFixedSlotTargetQualification(
+                  std::move(*request), *options.outputProgramDirectory,
+                  helperPath, *targetToolchain, llvm::errs());
+      if (mlir::succeeded(compiledProgram)) {
+        targetCompilationProduct.emplace(std::move(*compiledProgram));
+        compilationStatus = mlir::success();
+      }
+    } else {
+      mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
+          wafer::compiler::testing::
+              compileProgramForStaticFixedSlotQualification(
+                  std::move(*request), *options.outputProgramDirectory,
+                  helperPath, *targetToolchain, llvm::errs());
+      if (mlir::succeeded(compiledProgram)) {
+        executableBundle.emplace(std::move(*compiledProgram));
+        compilationStatus = mlir::success();
+      }
+    }
+  } else if (workerPlacement) {
+    if (options.targetModel) {
+      mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
+          compiledProgram = wafer::compiler::testing::
+              compileProgramForWorkerPlacementTargetQualification(
+                  std::move(*request), *options.outputProgramDirectory,
+                  helperPath, *targetToolchain, llvm::errs());
+      if (mlir::succeeded(compiledProgram)) {
+        targetCompilationProduct.emplace(std::move(*compiledProgram));
+        compilationStatus = mlir::success();
+      }
+    } else {
+      mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
+          wafer::compiler::testing::
+              compileProgramForWorkerPlacementQualification(
+                  std::move(*request), *options.outputProgramDirectory,
+                  helperPath, *targetToolchain, llvm::errs());
+      if (mlir::succeeded(compiledProgram)) {
+        executableBundle.emplace(std::move(*compiledProgram));
+        compilationStatus = mlir::success();
+      }
+    }
+  } else if (noCResidentFixedSlotWorker) {
+    if (options.targetModel) {
+      mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
+          compiledProgram = wafer::compiler::testing::
+              compileProgramForNoCResidentFixedSlotWorkerTargetQualification(
+                  std::move(*request), *options.outputProgramDirectory,
+                  helperPath, *targetToolchain, llvm::errs());
+      if (mlir::succeeded(compiledProgram)) {
+        targetCompilationProduct.emplace(std::move(*compiledProgram));
+        compilationStatus = mlir::success();
+      }
+    } else {
+      mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
+          wafer::compiler::testing::
+              compileProgramForNoCResidentFixedSlotWorkerQualification(
+                  std::move(*request), *options.outputProgramDirectory,
+                  helperPath, *targetToolchain, llvm::errs());
+      if (mlir::succeeded(compiledProgram)) {
+        executableBundle.emplace(std::move(*compiledProgram));
+        compilationStatus = mlir::success();
+      }
     }
   } else if (collectiveAlternative) {
-    if (options.targetModel) {
-      llvm::errs()
-          << "wafer-compile: test-only collective characterization does not "
-             "support target-model execution\n";
-      return 1;
-    }
     using Algorithm =
         wafer::compiler::testing::CollectiveCharacterizationAlgorithm;
     std::optional<Algorithm> algorithm;
@@ -425,7 +540,8 @@ int main(int argc, char **argv) {
     else if (alternative == "reduce-scatter-ring")
       algorithm = Algorithm::ReduceScatterRing;
     else if (alternative == "all-reduce-ring")
-      algorithm = Algorithm::AllReduceRing;
+      algorithm = options.targetModel ? Algorithm::NoCResidentAllReduceRing
+                                      : Algorithm::AllReduceRing;
     else if (alternative == "all-reduce-tree")
       algorithm = Algorithm::AllReduceTree;
     if (!algorithm) {
@@ -434,13 +550,28 @@ int main(int argc, char **argv) {
              "alternative\n";
       return 1;
     }
-    mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
-        wafer::compiler::testing::compileProgramForCollectiveCharacterization(
-            std::move(*request), *options.outputProgramDirectory, helperPath,
-            *targetToolchain, *algorithm, collectiveReport, llvm::errs());
-    if (mlir::succeeded(compiledProgram)) {
-      executableBundle.emplace(std::move(*compiledProgram));
-      compilationStatus = mlir::success();
+    if (options.targetModel) {
+      mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
+          compiledProgram = wafer::compiler::testing::
+              compileProgramForCollectiveCharacterizationTargetCompilation(
+                  std::move(*request), *options.outputProgramDirectory,
+                  helperPath, *targetToolchain, *algorithm, collectiveReport,
+                  llvm::errs());
+      if (mlir::succeeded(compiledProgram)) {
+        targetCompilationProduct.emplace(std::move(*compiledProgram));
+        compilationStatus = mlir::success();
+      }
+    } else {
+      mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
+          wafer::compiler::testing::
+              compileProgramForCollectiveCharacterization(
+                  std::move(*request), *options.outputProgramDirectory,
+                  helperPath, *targetToolchain, *algorithm, collectiveReport,
+                  llvm::errs());
+      if (mlir::succeeded(compiledProgram)) {
+        executableBundle.emplace(std::move(*compiledProgram));
+        compilationStatus = mlir::success();
+      }
     }
   } else
 #endif

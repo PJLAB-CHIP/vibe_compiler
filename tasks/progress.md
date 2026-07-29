@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-28
+更新时间：2026-07-29
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -19,13 +19,15 @@ pipeline contract、实验结论、测试数字、失败修复过程和历史复
 
 ```text
 Q32 + Q6.B -> Q9 profiler foundation                         [done]
-Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [doing]
+Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [blocked: board]
+Q38 host closure -> Q39 NoC-resident tile dataflow           [blocked: board]
 ```
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q9 | `production-artifact-profiler` | `done` | Q32、Q6.B、configured board | 未插桩Primary TX stream launch-to-completion设备包络、分离的host diagnostics、Trace来源的五类NCC per-tile engine active ns/work-volume摘要、独立Direct-DTE cycles/raw activity、Count/Trace、逐次保留真实动态调用与rdcycle的16-tile timeline、exclusive语义成本与非加和Trace-only成本、final Instr静态work与硬件峰值下界对照、exact output、三文件专业UI和profile全树`0777`均闭合；不构造card-wide纯engine elapsed，静态cost不回灌ranking。Ranking feedback保留为后续独立门禁。 | 06、14-16；`tasks/archive/board-profiler.md` |
-| Q38 | `multi-engine-software-pipelining` | `doing` | Q32、Q6.B、Q37 | 从complete-rank unplaced actual clone生成legality-safe issue window、真实fixed-slot multi-buffer、prologue/steady/epilogue、zero-avoidable/zero-steady-state waitfinish normal form及typed worker alternatives；same-worker跨迭代RAW/WAR/WAW只保留issue edge，minimum-strength join仅用于真实domain exit。typed worker0 issue/participant join、whole-rank completion/lifetime、participant-aware ready-order/handoff/model、drain-aware selection、通用relation-backed redundant-transfer normalization及reserved spill事务性回退、generic fixed-slot production rank/whole host late gates、静态target合同贯通及no-card TargetCall/SystemC数值纵向checkpoint已落地；当前继续闭合package publication/no-card package gate、非零worker command ABI、真实Direct-DTE issue与qualification。drain-elision与pair/group overlap独立，queue depth不作为window；scheduler只消费IR和compiler-shipped静态target合同，不读取实卡/Q9/runtime profile。每个候选重过host exact late gates，板端只执行fully gated同源qualification与最终normal production winner。Q9只观测最终产物，不是IR实现前置。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
+| Q38 | `multi-engine-software-pipelining` | `blocked` | Q32、Q6.B、Q37 | complete-rank actual clone、真实fixed-slot multi-buffer、typed worker、V3 Direct-DTE prepare/issue/exact wait-release、issue-time exact NCC range hazard、package/no-card、TargetCall/SystemC数值、profiler及digest-bound qualification companion的repo-owned非板端合同和release host gate均已闭合。尚缺的唯一条件是configured board上的同源fresh qualification和normal production winner correctness；板端结果不得由host/model代签，Q9也不回灌scheduler。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
+| Q39 | `noc-resident-tile-dataflow` | `blocked` | Q38非板端Direct-DTE/fixed-slot合同闭合；Q38板端资格作为独立external gate | 从typed global/local rank slice、standard tiling/reduction interface、IndexRelation、SSA/effect与mesh通用合成input、parameter、intermediate、partial/reduction和output tile的DDR/NoC/SPM dataflow；accepted complete-rank IR直接表达owner-only load、peer send/recv、local compute/reduce、token/wait及required output publication，不保留owner/channel/shadow plan。五类role、worker-first typed sibling到worker-preserving fixed-slot、至少两个compute family、compound source、large contraction及复杂case均已通过package/SystemC/CPU/no-card；唯一剩余门禁是configured-board同源baseline/winner fresh correctness，host/model不得代签。 | 02-13、16-17；`tasks/plans/noc-resident-tile-dataflow.md` |
 
 ## Later / External Gates
 
@@ -39,7 +41,6 @@ Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [doing]
 | Q22.K | `target-model-packet-provenance` | `later` | Q22、owner-approved vendor package或公开规范 | 建立可引用的CRT/packet/MMIO provenance；缺失不阻塞functional CModel。 | 14、16、17 |
 | Q22.P | `target-model-timing-calibration` | `later` | Q32、Q22.C、validated PMU/timing environment | 校准LT/AT；没有RTL/vendor cycle证据不声明cycle accuracy。 | 16、17 |
 | Q32.T | `compiler-transform-control` | `later` | Q32、明确的external control-plane consumer | 复用现有rewrite/conversion；Transform IR不保存frontier、不替代all-rank coordinator。 | 01、05-08、10、16、18 |
-| Q39 | `noc-resident-tile-dataflow` | `later` | Q38闭合真实Direct-DTE issue/exact wait/release和generic fixed-slot pipeline | 从typed global/local rank slice、Tiling/PartialReduction interface、IndexRelation、SSA/effect与mesh通用合成input、intermediate、partial和output tile的DDR owner、peer fan-out/forward/reduce、SPM residency及writeback；accepted complete-rank IR直接表达owner-only load、peer send/recv、compute/reduce、token/wait和SCF pipeline，不保留owner/channel/shadow plan。至少两个compute family、一个compound source、一个large contraction和一个复杂case通过同源baseline/winner完整late gates及fresh board correctness，证明DDR transaction真实下降且NoC traffic显式。 | 02-13、16-17；`tasks/plans/noc-resident-tile-dataflow.md` |
 | Q3.6 | `crt-writeback-scalar` | `later` | 明确Count predicate及wrapper/target/model evidence | 独立闭合typed instruction、effect/completion、ABI/CRT、model和必要package readback。 | 11、14-17 |
 
 不在当前DAG中的model/distributed/executable dialect、MPMD/rank class、跨卡coherent variant、
@@ -104,8 +105,8 @@ WCRE/global registry、capability lease、跨model state migration、共享weigh
 
 ## 导航
 
-- 当前计划：`tasks/plans/multi-engine-software-pipelining.md`；Q39后续设计：
-  `tasks/plans/noc-resident-tile-dataflow.md`。
+- 当前计划：`tasks/plans/noc-resident-tile-dataflow.md`与
+  `tasks/plans/multi-engine-software-pipelining.md`分别记录Q39、Q38的configured-board external gate。
 - Q9完成证据：`tasks/archive/board-profiler.md`。
 - 编号设计与归档导航：`tasks/README.md`。
 - 硬件校准结论：`docs/tx81-compiler-hardware-calibration.md`。

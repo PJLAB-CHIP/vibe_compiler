@@ -60,7 +60,8 @@ wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
     int64_t currentLogicalRank,
     std::optional<TargetImplementationKind> selectedAlternative,
-    bool useDirectMappedBoundaryTransfer) {
+    bool useDirectMappedBoundaryTransfer,
+    CandidateTileTraversalKind traversalKind) {
   if (failureReason)
     failureReason->clear();
 
@@ -72,7 +73,7 @@ wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
   TensorProgramScope scope(*cloned);
   if (mlir::failed(materializeCompleteCandidateTraversal(
           scope, candidateTileSizes, candidateReductionTileSizes,
-          failureReason)))
+          traversalKind, failureReason)))
     return mlir::failure();
   if (mlir::failed(convertTensorProgramToTileRegionModuleInPlace(
           *candidateModule, function.getContext(), currentLogicalRank,

@@ -137,7 +137,8 @@ llvm::Expected<std::string> getTargetCallArgumentSignature(
 
 llvm::Expected<std::vector<CollectedProfileTargetCallSite>>
 collectProfileTargetCallSitesImpl(const llvm::Module &module,
-                                  llvm::StringRef entrySymbol) {
+                                  llvm::StringRef entrySymbol,
+                                  TargetProfileId targetProfile) {
   const llvm::Function *entry = module.getFunction(entrySymbol);
   if (!entry || entry->isDeclaration())
     return llvm::createStringError(
@@ -178,6 +179,12 @@ collectProfileTargetCallSitesImpl(const llvm::Module &module,
           ++instructionOrdinal;
           continue;
         }
+        if (!isTargetCallAvailableForProfile(*descriptor, targetProfile))
+          return llvm::createStringError(
+              llvm::errc::invalid_argument,
+              "profile target call '%s' is unavailable for profile '%s'",
+              descriptor->symbol.c_str(),
+              stringifyTargetProfileId(targetProfile).str().c_str());
         if (!llvm::isa<llvm::CallInst>(call))
           return llvm::createStringError(
               llvm::errc::invalid_argument,
@@ -189,9 +196,8 @@ collectProfileTargetCallSitesImpl(const llvm::Module &module,
 
         const uint64_t descriptorOrdinal =
             static_cast<uint64_t>(descriptor - descriptors.data());
-        llvm::Expected<std::string> signature =
-            getTargetCallArgumentSignature(*call, *descriptor,
-                                           descriptorOrdinal, valueIdentity);
+        llvm::Expected<std::string> signature = getTargetCallArgumentSignature(
+            *call, *descriptor, descriptorOrdinal, valueIdentity);
         if (!signature)
           return signature.takeError();
         std::string occurrenceKey =
@@ -298,9 +304,10 @@ verifyProfileCaptureKernelABISlots(llvm::ArrayRef<KernelABISlot> slots,
 
 llvm::Expected<std::vector<ProfileTargetCallSite>>
 collectProfileTargetCallSites(const llvm::Module &module,
-                              llvm::StringRef entrySymbol) {
+                              llvm::StringRef entrySymbol,
+                              TargetProfileId targetProfile) {
   llvm::Expected<std::vector<CollectedProfileTargetCallSite>> collected =
-      collectProfileTargetCallSitesImpl(module, entrySymbol);
+      collectProfileTargetCallSitesImpl(module, entrySymbol, targetProfile);
   if (!collected)
     return collected.takeError();
   std::vector<ProfileTargetCallSite> sites;
@@ -312,13 +319,16 @@ collectProfileTargetCallSites(const llvm::Module &module,
 
 llvm::Error verifyProfileTargetCallSiteIdentity(
     const llvm::Module &productionModule, llvm::StringRef productionEntrySymbol,
-    const llvm::Module &traceModule, llvm::StringRef traceEntrySymbol) {
+    const llvm::Module &traceModule, llvm::StringRef traceEntrySymbol,
+    TargetProfileId targetProfile) {
   llvm::Expected<std::vector<ProfileTargetCallSite>> production =
-      collectProfileTargetCallSites(productionModule, productionEntrySymbol);
+      collectProfileTargetCallSites(productionModule, productionEntrySymbol,
+                                    targetProfile);
   if (!production)
     return production.takeError();
   llvm::Expected<std::vector<ProfileTargetCallSite>> trace =
-      collectProfileTargetCallSites(traceModule, traceEntrySymbol);
+      collectProfileTargetCallSites(traceModule, traceEntrySymbol,
+                                    targetProfile);
   if (!trace)
     return trace.takeError();
   if (production->size() != trace->size())
@@ -348,6 +358,7 @@ llvm::Error verifyProfileTargetCallSiteIdentity(
 
 llvm::Error instrumentProfileTargetModule(llvm::Module &module,
                                           llvm::StringRef entrySymbol,
+                                          TargetProfileId targetProfile,
                                           ProfileCaptureKind capture) {
   if (capture == ProfileCaptureKind::None)
     return llvm::Error::success();
@@ -359,7 +370,7 @@ llvm::Error instrumentProfileTargetModule(llvm::Module &module,
         "profile target entry is missing its final i64 record address");
 
   llvm::Expected<std::vector<CollectedProfileTargetCallSite>> sites =
-      collectProfileTargetCallSitesImpl(module, entrySymbol);
+      collectProfileTargetCallSitesImpl(module, entrySymbol, targetProfile);
   if (!sites)
     return sites.takeError();
 
@@ -433,10 +444,9 @@ llvm::Error instrumentProfileTargetModule(llvm::Module &module,
   return llvm::Error::success();
 }
 
-llvm::Error
-verifyProfileTargetModuleInstrumentation(const llvm::Module &module,
-                                         llvm::StringRef entrySymbol,
-                                         ProfileCaptureKind capture) {
+llvm::Error verifyProfileTargetModuleInstrumentation(
+    const llvm::Module &module, llvm::StringRef entrySymbol,
+    TargetProfileId targetProfile, ProfileCaptureKind capture) {
   auto hasSymbol = [&](llvm::StringRef symbol) {
     return module.getFunction(symbol) != nullptr;
   };
@@ -572,7 +582,7 @@ verifyProfileTargetModuleInstrumentation(const llvm::Module &module,
     return siteEndCalls.takeError();
 
   llvm::Expected<std::vector<CollectedProfileTargetCallSite>> sites =
-      collectProfileTargetCallSitesImpl(module, entrySymbol);
+      collectProfileTargetCallSitesImpl(module, entrySymbol, targetProfile);
   if (!sites)
     return sites.takeError();
   if (siteBeginCalls->size() != sites->size() ||

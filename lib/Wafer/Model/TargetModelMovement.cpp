@@ -27,6 +27,13 @@ makeLayout(uint32_t innerBytes, const std::array<uint32_t, 3> &strides,
   return TargetModelStridedByteLayout{innerBytes, strides, iterations};
 }
 
+TargetModelCommandEffect
+withReads(TargetModelCommandEffect effect,
+          std::vector<TargetModelByteRead> pendingReads) {
+  effect.pendingReads = std::move(pendingReads);
+  return effect;
+}
+
 } // namespace
 
 llvm::Expected<std::vector<uint8_t>>
@@ -61,12 +68,16 @@ executeMovement(const compiler::TargetTransaction &transaction,
     if (!payload)
       return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
                          llvm::toString(payload.takeError()));
-    return TargetModelCommandEffect{
-        {TargetModelByteWrite{transaction.logicalRank,
-                              TargetModelAddressSpace::RankSPM,
-                              value.destination, 1, std::move(*payload)}},
-        {},
-        TargetModelControlAction::None};
+    return withReads(
+        TargetModelCommandEffect{
+            {TargetModelByteWrite{transaction.logicalRank,
+                                  TargetModelAddressSpace::RankSPM,
+                                  value.destination, 1, std::move(*payload)}},
+            {},
+            TargetModelControlAction::None},
+        {TargetModelByteRead{transaction.logicalRank,
+                             TargetModelAddressSpace::CardDDR, value.source,
+                             value.byteCount, layout}});
   }
 
   llvm::Expected<std::vector<uint8_t>> payload = readSnapshot(
@@ -74,12 +85,17 @@ executeMovement(const compiler::TargetTransaction &transaction,
       value.source, value.byteCount);
   if (!payload)
     return payload.takeError();
-  return TargetModelCommandEffect{
-      {TargetModelByteWrite{transaction.logicalRank,
-                            TargetModelAddressSpace::CardDDR, value.destination,
-                            1, std::move(*payload), layout}},
-      {},
-      TargetModelControlAction::None};
+  return withReads(
+      TargetModelCommandEffect{
+          {TargetModelByteWrite{transaction.logicalRank,
+                                TargetModelAddressSpace::CardDDR,
+                                value.destination, 1, std::move(*payload),
+                                layout}},
+          {},
+          TargetModelControlAction::None},
+      {TargetModelByteRead{transaction.logicalRank,
+                           TargetModelAddressSpace::RankSPM, value.source,
+                           value.byteCount, std::nullopt}});
 }
 
 llvm::Expected<TargetModelCommandEffect>
@@ -118,12 +134,17 @@ executeGatherScatter(const compiler::TargetTransaction &transaction,
   if (!snapshot)
     return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
                        llvm::toString(snapshot.takeError()));
-  return TargetModelCommandEffect{
-      {TargetModelByteWrite{transaction.logicalRank,
-                            TargetModelAddressSpace::RankSPM, value.destination,
-                            1, std::move(*snapshot), destinationLayout}},
-      {},
-      TargetModelControlAction::None};
+  return withReads(
+      TargetModelCommandEffect{
+          {TargetModelByteWrite{transaction.logicalRank,
+                                TargetModelAddressSpace::RankSPM,
+                                value.destination, 1, std::move(*snapshot),
+                                destinationLayout}},
+          {},
+          TargetModelControlAction::None},
+      {TargetModelByteRead{transaction.logicalRank,
+                           TargetModelAddressSpace::RankSPM, value.source,
+                           value.byteCount, sourceLayout}});
 }
 
 } // namespace wafer::model::kernel_detail

@@ -77,8 +77,6 @@ mlir::FailureOr<int64_t> getDataFormatCode(mlir::Operation *op,
 mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp,
                                            TargetProfileId targetProfile);
 mlir::LogicalResult preflightTargetAddresses(mlir::ModuleOp moduleOp);
-mlir::LogicalResult preflightTargetNCCWorkers(mlir::ModuleOp moduleOp);
-
 mlir::FailureOr<DirectDTEEndpointDomain>
 resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp, int64_t logicalRank);
 
@@ -119,6 +117,8 @@ struct FunctionLowering {
                            TargetCallResultType result) const;
   void emitCall(mlir::Location loc, const TargetCallDescriptor &descriptor,
                 mlir::ValueRange args);
+  void emitNCCCall(mlir::Location loc, const TargetCallDescriptor &descriptor,
+                   mlir::ValueRange args, NCCWorker worker);
   mlir::Value emitI64Call(mlir::Location loc,
                           const TargetCallDescriptor &descriptor,
                           mlir::ValueRange args);
@@ -183,12 +183,11 @@ void populateTargetInstructionConversionPatterns(
     llvm::StringMap<CalleeSignature> &usedCallees,
     TargetProfileId targetProfile, const DirectDTEEndpointDomain *dteDomain);
 
-mlir::LogicalResult
-injectDirectDTEStatusLifecycle(mlir::ModuleOp moduleOp,
-                               llvm::StringRef entrySymbol,
-                               int64_t statusArgumentIndex, int64_t rankCount,
-                               TargetCallBuiltin beginBuiltin,
-                               llvm::StringMap<CalleeSignature> &usedCallees);
+mlir::LogicalResult injectDirectDTEStatusLifecycle(
+    mlir::ModuleOp moduleOp, llvm::StringRef entrySymbol,
+    int64_t statusArgumentIndex, int64_t rankCount,
+    TargetCallBuiltin beginBuiltin, TargetProfileId targetProfile,
+    llvm::StringMap<CalleeSignature> &usedCallees);
 
 mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
                                        TargetProfileId targetProfile,

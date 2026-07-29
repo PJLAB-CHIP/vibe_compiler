@@ -53,6 +53,9 @@ struct SerializedRankVariantCandidate {
   bool reservedBaseline = false;
   wafer::RankBufferingKind bufferingKind = wafer::RankBufferingKind::Single;
   uint32_t bufferingPlanOrdinal = 0;
+  wafer::RankWorkerPlacementKind workerPlacementKind =
+      wafer::RankWorkerPlacementKind::Unplaced;
+  uint32_t workerPlacementPlanOrdinal = 0;
 };
 
 using SerializedRankVariantFrontier =
@@ -60,12 +63,19 @@ using SerializedRankVariantFrontier =
 
 /// Imports exactly the module slots required by the existing bounded
 /// whole-variant attempt sequence. Every original slot and its metadata remain
-/// in the returned frontiers; an unreachable slot retains a null module.
+/// in the returned frontiers only through this import-audit boundary; an
+/// unreachable slot retains a null module.
 llvm::Expected<std::vector<RankVariantFrontier>>
 importRankVariantFrontiersIntoOwnerContext(
     mlir::MLIRContext &ownerContext,
     llvm::ArrayRef<SerializedRankVariantFrontier> serializedFrontiers,
     int64_t expectedRankCount);
+
+/// Ends the import-audit boundary by removing metadata-only tombstones.
+/// Frontier indices after this point name actual owner-context artifacts and
+/// intentionally do not preserve original serialized slot positions.
+void compactImportedRankVariantFrontiers(
+    std::vector<RankVariantFrontier> &frontiers);
 
 mlir::LogicalResult
 verifyExactExecutionConfig(mlir::ModuleOp module,

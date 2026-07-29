@@ -23,11 +23,15 @@ struct FinalizedRankCandidate {
                          wafer::RankArtifactKind artifactKind,
                          bool reservedBaseline,
                          wafer::RankBufferingKind bufferingKind,
-                         uint32_t bufferingPlanOrdinal)
+                         uint32_t bufferingPlanOrdinal,
+                         wafer::RankWorkerPlacementKind workerPlacementKind,
+                         uint32_t workerPlacementPlanOrdinal)
       : module(std::move(module)), stableOrdinal(stableOrdinal),
         artifactKind(artifactKind), reservedBaseline(reservedBaseline),
         bufferingKind(bufferingKind),
-        bufferingPlanOrdinal(bufferingPlanOrdinal) {}
+        bufferingPlanOrdinal(bufferingPlanOrdinal),
+        workerPlacementKind(workerPlacementKind),
+        workerPlacementPlanOrdinal(workerPlacementPlanOrdinal) {}
 
   FinalizedRankCandidate(FinalizedRankCandidate &&) = default;
   FinalizedRankCandidate &operator=(FinalizedRankCandidate &&) = default;
@@ -40,6 +44,8 @@ struct FinalizedRankCandidate {
   bool reservedBaseline;
   wafer::RankBufferingKind bufferingKind;
   uint32_t bufferingPlanOrdinal;
+  wafer::RankWorkerPlacementKind workerPlacementKind;
+  uint32_t workerPlacementPlanOrdinal;
 };
 
 mlir::FailureOr<std::vector<FinalizedRankCandidate>>

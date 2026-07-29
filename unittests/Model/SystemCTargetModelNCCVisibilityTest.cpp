@@ -18,17 +18,18 @@ using namespace wafer::compiler;
 using namespace wafer::model;
 
 TEST(SystemCTargetModelNCCVisibilityTest,
-     RejectsDTEObservationWhenNCCJoinIsAfterTheWait) {
+     RejectsLegacyDTEAutoIssueWhenNCCJoinIsAfterTheWait) {
   std::string diagnostics;
   llvm::Expected<TargetLLVMModuleBundle> bundle =
-      test::buildDirectDTETargetBundle(diagnostics);
+      test::buildDirectDTETargetBundle(
+          diagnostics, TargetProfileId::waferTx81SingleCardKernelV1());
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
 
-  // Remove production joins and put each replacement after its DTE wait. An
-  // eager-memory model would copy the pending NCC bytes, let the wait return,
-  // and then execute this too-late join. The worker-aware visibility model must
-  // leave the endpoint pending, so the late join is unreachable.
+  // Remove production joins and put each replacement after its DTE wait. A
+  // participant join after issue cannot retroactively order the transfer, so
+  // the issue-time visibility gate must reject the pending NCC source write
+  // before publishing peer readiness.
   llvm::Expected<test::NCCJoinRewriteResult> rewrite =
       test::rewriteNCCJoinsAfter(*bundle, TargetCallBuiltin::DirectDTEWait);
   ASSERT_TRUE(static_cast<bool>(rewrite))
@@ -55,14 +56,18 @@ TEST(SystemCTargetModelNCCVisibilityTest,
                                       /*maximumMovementSegments=*/1024));
   ASSERT_FALSE(static_cast<bool>(result));
   const std::string error = llvm::toString(result.takeError());
-  EXPECT_NE(error.find("no-progress"), std::string::npos) << error;
-  EXPECT_NE(error.find("unresolved Direct DTE/event state"), std::string::npos)
+  EXPECT_NE(error.find("dte-issue-order"), std::string::npos) << error;
+  EXPECT_NE(error.find("pending NCC source write"), std::string::npos) << error;
+  EXPECT_NE(
+      error.find("matching participant join must precede the Direct DTE issue"),
+      std::string::npos)
       << error;
+  EXPECT_EQ(error.find("no-progress"), std::string::npos) << error;
 }
 
 } // namespace
 
 extern "C" int sc_main(int argc, char **argv) {
-  testing::InitGoogleTest(&argc, argv);
+  ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

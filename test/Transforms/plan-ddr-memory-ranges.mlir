@@ -96,6 +96,52 @@ func.func @plan_identity_carried_ddr_view() {
 // CHECK: scf.for
 // CHECK: wafer.instr.rdma
 
+func.func @plan_nested_identity_carried_ddr_view() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c7 = arith.constant 7 : index
+  %ddr = memref.alloc()
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+  %spm = memref.alloc()
+      {wafer.spm.offset = #wafer.spm_offset<65536>}
+      : memref<1xf16, #wafer.memory<spm, tensor>>
+  %outer_result = scf.for %outer_iv = %c0 to %c1 step %c1
+      iter_args(%outer = %ddr)
+      -> (memref<8xf16, #wafer.memory<ddr, tensor>>) {
+    %middle_result = scf.for %middle_iv = %c0 to %c1 step %c1
+        iter_args(%middle = %outer)
+        -> (memref<8xf16, #wafer.memory<ddr, tensor>>) {
+      %inner_result = scf.for %inner_iv = %c0 to %c1 step %c1
+          iter_args(%inner = %middle)
+          -> (memref<8xf16, #wafer.memory<ddr, tensor>>) {
+        %tile = memref.subview %inner[%c7] [1] [1]
+            : memref<8xf16, #wafer.memory<ddr, tensor>>
+           to memref<1xf16, strided<[1], offset: ?>,
+                     #wafer.memory<ddr, tensor>>
+        wafer.instr.wdma %spm to %tile
+            {byte_count = 2 : i64, dst_iterations = array<i64: 1, 1, 1>,
+             dst_strides = array<i64: 0, 0, 0>, inner_bytes = 2 : i64}
+            : memref<1xf16, #wafer.memory<spm, tensor>>
+           to memref<1xf16, strided<[1], offset: ?>,
+                     #wafer.memory<ddr, tensor>>
+        scf.yield %inner
+            : memref<8xf16, #wafer.memory<ddr, tensor>>
+      }
+      scf.yield %inner_result
+          : memref<8xf16, #wafer.memory<ddr, tensor>>
+    }
+    scf.yield %middle_result
+        : memref<8xf16, #wafer.memory<ddr, tensor>>
+  }
+  wafer.instr.ncc_join [0]
+  return
+}
+
+// CHECK-LABEL: func.func @plan_nested_identity_carried_ddr_view
+// CHECK: memref.alloc() {wafer.ddr.offset = #wafer.ddr_offset<0>} : memref<8xf16, #wafer.memory<ddr, tensor>>
+// CHECK-COUNT-3: scf.for
+// CHECK: wafer.instr.wdma
+
 func.func @plan_finite_rotating_carried_ddr_views() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index

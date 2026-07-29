@@ -5,6 +5,7 @@
 
 namespace mlir {
 class DialectRegistry;
+class ModuleOp;
 class Operation;
 namespace func {
 class FuncOp;
@@ -17,6 +18,12 @@ namespace wafer {
 /// upstream structured operations.
 void registerTargetImplementationExternalModels(
     mlir::DialectRegistry &registry);
+
+/// Remove derived SPM/DDR placement and Direct-DTE binding facts from a
+/// complete rank candidate before cloning another physical realization.
+/// The candidate's ordinary SSA/control-flow/instruction IR remains the sole
+/// semantic input; every derived clone must rerun placement and verification.
+void clearRankCandidatePhysicalFacts(mlir::ModuleOp module);
 
 /// Clone a pure tensor producer at each compatible consumer after its first
 /// use.  The duplicated producer remains ordinary structured IR and is tiled

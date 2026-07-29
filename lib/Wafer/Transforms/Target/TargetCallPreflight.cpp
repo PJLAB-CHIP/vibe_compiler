@@ -1,7 +1,7 @@
 //===- Target LLVM lowering implementation -------------------------------===//
 
-#include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "MemoryPlanning/StaticIndexRange.h"
+#include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
@@ -298,8 +298,7 @@ getStaticIndexRange(mlir::memref::SubViewOp subviewOp,
   memory_planning::detail::StaticIndexRangeResult result =
       memory_planning::detail::evaluateNonNegativeStaticIndexRange(
           dynamicOffset);
-  using Failure =
-      memory_planning::detail::StaticIndexRangeFailureKind;
+  using Failure = memory_planning::detail::StaticIndexRangeFailureKind;
   switch (result.failure) {
   case Failure::None:
     return result.range;
@@ -946,12 +945,16 @@ verifyTargetInstructionFormat(mlir::Operation *op,
         return verifyTargetConvertRoute(typedOp, targetProfile);
       })
       .Case<InstrGemmOp>([&](auto typedOp) -> mlir::LogicalResult {
-        if (typedOp.getLhsOrientationAttr() &&
-            getTargetProfileRecord(targetProfile).kernelRuntimeABI !=
-                KernelRuntimeABIId::waferTx81KernelV2())
-          return typedOp.emitError()
-                 << "unsupported_target_abi: explicit GEMM orientations "
-                    "require wafer-tx81-kernel-v2";
+        if (typedOp.getLhsOrientationAttr()) {
+          KernelRuntimeABIId runtimeABI =
+              getTargetProfileRecord(targetProfile).kernelRuntimeABI;
+          if (runtimeABI != KernelRuntimeABIId::waferTx81KernelV2() &&
+              runtimeABI != KernelRuntimeABIId::waferTx81KernelV3())
+            return typedOp.emitError()
+                   << "unsupported_target_abi: explicit GEMM orientations "
+                      "require wafer-tx81-kernel-v2 or "
+                      "wafer-tx81-kernel-v3";
+        }
         return verify(typedOp.getDest(), "gemm dest");
       })
       .Case<InstrConvOp>(
@@ -991,31 +994,27 @@ verifyTargetInstructionFormat(mlir::Operation *op,
 mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp,
                                            TargetProfileId targetProfile) {
   bool failed = false;
-  moduleOp.walk([&](mlir::Operation *op) {
-    if (!isWaferInstruction(op))
-      return mlir::WalkResult::advance();
-    if (mlir::failed(verifyTargetInstructionFormat(op, targetProfile))) {
-      failed = true;
-      return mlir::WalkResult::interrupt();
-    }
-    return mlir::WalkResult::advance();
-  });
+  moduleOp.walk(
+      [&](mlir::Operation *op) {
+        if (!isWaferInstruction(op))
+          return mlir::WalkResult::advance();
+        if (targetProfile != TargetProfileId::waferTx81SingleCardKernelV3()) {
+          std::optional<NCCWorker> worker = getNCCIssueWorker(op);
+          if (worker && *worker != NCCWorker::Worker0) {
+            op->emitError()
+                << "unsupported_target_abi: nonzero NCC workers require "
+                   "wafer-tx81-kernel-v3";
+            failed = true;
+            return mlir::WalkResult::interrupt();
+          }
+        }
+        if (mlir::failed(verifyTargetInstructionFormat(op, targetProfile))) {
+          failed = true;
+          return mlir::WalkResult::interrupt();
+        }
+        return mlir::WalkResult::advance();
+      });
   return failed ? mlir::failure() : mlir::success();
-}
-
-mlir::LogicalResult preflightTargetNCCWorkers(mlir::ModuleOp moduleOp) {
-  mlir::WalkResult result = moduleOp.walk([&](mlir::Operation *op) {
-    auto issue = mlir::dyn_cast<WaferNCCIssueOpInterface>(op);
-    if (!issue || issue.getIssueWorker() == NCCWorker::Worker0)
-      return mlir::WalkResult::advance();
-    op->emitError()
-        << "unsupported_target_worker: current target operator ABI does not "
-           "encode NCC issue worker '"
-        << stringifyEnum(issue.getIssueWorker())
-        << "'; only worker0 is lowerable";
-    return mlir::WalkResult::interrupt();
-  });
-  return result.wasInterrupted() ? mlir::failure() : mlir::success();
 }
 
 mlir::LogicalResult preflightTargetAddresses(mlir::ModuleOp moduleOp) {

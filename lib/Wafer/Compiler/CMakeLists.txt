@@ -17,6 +17,10 @@ add_mlir_library(WaferCompiler
   CompilationStages.cpp
   DirectDTETransport.cpp
   ExecutableBundle.cpp
+  GlobalTileRelation.cpp
+  NoCIntermediateDataflow.cpp
+  NoCPartialDataflow.cpp
+  NoCResidentDataflow.cpp
   TensorProgramCompilation.cpp
   Package.cpp
   ProgramDirectoryTransaction.cpp
@@ -24,6 +28,7 @@ add_mlir_library(WaferCompiler
   ProgramTensorComparison.cpp
   ScheduledRankFinalization.cpp
   SpmdCompilationBridge.cpp
+  StaticFixedSlotQualification.cpp
   TargetABIPreparation.cpp
   TargetArtifact.cpp
   TargetArtifactPublication.cpp
@@ -59,6 +64,7 @@ add_mlir_library(WaferCompiler
   WaferTransforms
   MLIRArithDialect
   MLIRArithTransforms
+  MLIRArithValueBoundsOpInterfaceImpl
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
   MLIRBuiltinToLLVMIRTranslation

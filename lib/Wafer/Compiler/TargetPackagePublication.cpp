@@ -4,6 +4,7 @@
 #include "CompilationInternal.h"
 #include "ExecutableBundleInternal.h"
 #include "PackageInternal.h"
+#include "StaticFixedSlotQualification.h"
 #include "TargetArtifactInternal.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
@@ -268,7 +269,8 @@ collectTargetCallSites(llvm::StringRef variantId,
           "profile site-map rank domain is not canonical");
     llvm::Expected<std::vector<ProfileTargetCallSite>> sites =
         collectProfileTargetCallSites(rankModule.getModule(),
-                                      rankModule.getEntrySymbol());
+                                      rankModule.getEntrySymbol(),
+                                      rankModule.getTargetProfileId());
     if (!sites)
       return sites.takeError();
     for (auto [expectedSite, site] : llvm::enumerate(*sites))
@@ -406,7 +408,8 @@ static mlir::LogicalResult writeProfileCompanion(
     }
     if (llvm::Error error = verifyProfileTargetCallSiteIdentity(
             finalRank.getModule(), finalRank.getEntrySymbol(),
-            traceRank.getModule(), traceRank.getEntrySymbol())) {
+            traceRank.getModule(), traceRank.getEntrySymbol(),
+            finalRank.getTargetProfileId())) {
       reject(diagnostics, llvm::toString(std::move(error)));
       return mlir::failure();
     }
@@ -623,6 +626,15 @@ mlir::LogicalResult stageTargetPackage(
           failAfterTargetLogicalRank, failAfterPackageLogicalRank,
           targetLLVMModuleBundle)))
     return mlir::failure();
+
+  if (producesStaticFixedSlotQualificationCompanion(selectionMode)) {
+    llvm::SmallString<256> qualificationCompanion(transactionRoot);
+    llvm::sys::path::append(qualificationCompanion, "qualification-companion");
+    if (mlir::failed(stageStaticFixedSlotQualificationCompanion(
+            qualificationCompanion, stagedPackage, *compiledExecutableBundle,
+            diagnostics)))
+      return mlir::failure();
+  }
 
   executableBundle.emplace(std::move(*compiledExecutableBundle));
   return mlir::success();

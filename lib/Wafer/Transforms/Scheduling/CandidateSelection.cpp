@@ -68,6 +68,7 @@ static std::string getCandidateKey(const CandidateSpec &candidate) {
         *candidate.selectedImplementationAlternative);
   else
     os << "baseline";
+  os << "|" << static_cast<unsigned>(candidate.traversalKind);
   return os.str();
 }
 
@@ -361,14 +362,14 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
   bool supportsTiledTraversal =
       traversalRootCapability == CandidateTraversalRootCapability::Tiled;
   mlir::FailureOr<llvm::SmallVector<int64_t, 2>> reductionRanges =
-      getStaticRootReductionRanges(task);
+      getStaticRootReductionRanges(task, config.traversalKind);
   if (mlir::failed(reductionRanges)) {
     anchor->emitError()
         << "no_candidate: tile selection requires static reduction ranges";
     return mlir::failure();
   }
   std::optional<std::string> reductionSplitLegalityFailure =
-      getReductionSplitLegalityFailure(task);
+      getReductionSplitLegalityFailure(task, config.traversalKind);
   llvm::SmallVector<TargetImplementationKind, 2> implementationAlternatives =
       collectImplementationAlternatives(task);
   bool forcedImplementationApplies =
@@ -390,6 +391,12 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
   llvm::SmallVector<CandidateWorkItem, 32> queue;
   CandidateSpec initial;
   initial.tileSizes.assign(shape->begin(), shape->end());
+  initial.traversalKind = config.traversalKind;
+  if (config.traversalKind ==
+          CandidateTileTraversalKind::PartialReduction &&
+      !reductionRanges->empty() && !reductionSplitLegalityFailure)
+    initial.reductionSplitSizes.assign(reductionRanges->begin(),
+                                       reductionRanges->end());
   if (forcedImplementationApplies)
     initial.selectedImplementationAlternative =
         config.forcedImplementationAlternative;

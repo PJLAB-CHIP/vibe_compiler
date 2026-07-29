@@ -172,6 +172,9 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
     arguments.push_back(scalar == TargetCallScalarType::I64
                             ? kDDRBase + index * UINT64_C(0x1000)
                             : UINT64_C(1));
+  if (descriptor.issueDomain &&
+      descriptor.issueDomain->nccWorkerArgument.has_value())
+    arguments[*descriptor.issueDomain->nccWorkerArgument] = 0;
 
   if (const auto *builtin =
           std::get_if<TargetCallBuiltin>(&descriptor.semantic)) {
@@ -225,6 +228,7 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
       break;
     case TargetCallBuiltin::LocalFence:
     case TargetCallBuiltin::NCCJoin:
+    case TargetCallBuiltin::DirectDTESendIssue:
     case TargetCallBuiltin::DirectDTERecvPrepare:
     case TargetCallBuiltin::DirectDTEWait:
     case TargetCallBuiltin::DirectDTEFinish:
@@ -238,7 +242,11 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
                        *kind == InstrElementwiseKind::LogicAnd ||
                        *kind == InstrElementwiseKind::LogicOr ||
                        *kind == InstrElementwiseKind::LogicXor;
-    arguments.back() =
+    const size_t formatArgument =
+        arguments.size() - 1 -
+        static_cast<size_t>(descriptor.issueDomain &&
+                            descriptor.issueDomain->nccWorkerArgument);
+    arguments[formatArgument] =
         supportedFormatCode(TargetFormatEngine::CT,
                             logic ? LogicalFormat::Bool : LogicalFormat::F32);
     return arguments;
@@ -296,12 +304,14 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
 TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
   size_t validated = 0;
   for (const TargetCallDescriptor &descriptor : getTargetCallDescriptors()) {
-    const bool oriented = descriptor.semantic ==
-                          TargetCallSemantic(TargetCallBuiltin::GemmOrientedV2);
-    TargetCallDecodeContext context{
-        oriented ? TargetProfileId::waferTx81SingleCardKernelV2()
-                 : TargetProfileId::waferTx81SingleCardKernelV1(),
-        16};
+    TargetProfileId profile = TargetProfileId::waferTx81SingleCardKernelV1();
+    if (!isTargetCallAvailableForProfile(descriptor, profile)) {
+      profile = TargetProfileId::waferTx81SingleCardKernelV2();
+      if (!isTargetCallAvailableForProfile(descriptor, profile))
+        profile = TargetProfileId::waferTx81SingleCardKernelV3();
+    }
+    ASSERT_TRUE(isTargetCallAvailableForProfile(descriptor, profile));
+    TargetCallDecodeContext context{profile, 16};
     llvm::Expected<TargetTransactionPayload> payload = decodeTargetCallPayload(
         descriptor, context, makeFieldValidArguments(descriptor));
     ASSERT_TRUE(static_cast<bool>(payload))
@@ -312,7 +322,7 @@ TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
         << descriptor.symbol << ": " << llvm::toString(std::move(error));
     ++validated;
   }
-  EXPECT_EQ(validated, 112u);
+  EXPECT_EQ(validated, 217u);
 }
 
 TEST(TargetModelCompletionTest,
@@ -331,7 +341,7 @@ TEST(TargetModelCompletionTest,
   ASSERT_TRUE(state.markComplete(2));
   EXPECT_EQ(state.getNextCompletedOrdinal(), 0u);
 
-  ASSERT_TRUE(state.beginIssue(3)); // Direct-DTE wait.
+  ASSERT_TRUE(state.beginIssue(3));   // Direct-DTE wait.
   ASSERT_TRUE(state.markComplete(0)); // Matching DTE event, not the NCC join.
   EXPECT_EQ(state.getNextCompletedOrdinal(), 3u);
   ASSERT_TRUE(state.markComplete(3));
@@ -374,9 +384,8 @@ TEST(TargetModelCompletionTest,
   ASSERT_TRUE(state.hasNCCPending());
   ASSERT_TRUE(state.beginIssue(1)); // Synchronous worker-0 writeback.
 
-  llvm::SmallVector<uint64_t, 8> completed =
-      state.takeNCCParticipantPending(
-          uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0));
+  llvm::SmallVector<uint64_t, 8> completed = state.takeNCCParticipantPending(
+      uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0));
   ASSERT_EQ(completed.size(), 1u);
   ASSERT_TRUE(state.markComplete(completed.front()));
   ASSERT_TRUE(state.markComplete(1));
@@ -492,10 +501,10 @@ TEST(TargetModelKernelTest, ConvolutionWeightShapeIsNotADataShape) {
 TEST(TargetModelKernelTest,
      BoolMemsetFieldValidationRequiresPhysicalFootprintByteGranularity) {
   auto validate = [](uint32_t elementCount) {
-    return validateTargetModelTransactionFields(TargetTransaction{
-        0, 0,
-        TargetMemsetTransaction{0, UINT32_C(1), elementCount,
-                                LogicalFormat::Bool}});
+    return validateTargetModelTransactionFields(
+        TargetTransaction{0, 0,
+                          TargetMemsetTransaction{0, UINT32_C(1), elementCount,
+                                                  LogicalFormat::Bool}});
   };
 
   llvm::Error valid = validate(16);
@@ -1043,7 +1052,13 @@ TEST(TargetModelKernelTest, ControlTransactionsPreflightTypedEndpoints) {
   EXPECT_EQ(
       llvm::cantFail(executeTargetModelCommand(send, memory, makeBudget()))
           .controlAction,
-      TargetModelControlAction::DirectDTESend);
+      TargetModelControlAction::DirectDTESendPrepare);
+  TargetTransaction sendIssue{
+      0, 2, TargetDirectDTESendIssueTransaction{UINT64_C(0x100)}};
+  EXPECT_EQ(
+      llvm::cantFail(executeTargetModelCommand(sendIssue, memory, makeBudget()))
+          .controlAction,
+      TargetModelControlAction::DirectDTESendIssue);
   std::get<TargetDirectDTESendTransaction>(send.payload).localTile = 65536;
   std::string error =
       expectError(executeTargetModelCommand(send, memory, makeBudget()));

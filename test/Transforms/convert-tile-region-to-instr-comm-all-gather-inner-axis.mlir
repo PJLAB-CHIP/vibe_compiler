@@ -60,15 +60,15 @@ module {
 // CHECK-SAME: memref<16x4xf32, strided<[64, 1], offset: 60>, #wafer.memory<spm, tensor>>
 // CHECK: %[[RECV_BUF:.+]] = memref.alloc
 // CHECK-SAME: memref<16x4xf32, #wafer.memory<spm, tensor>>
+// CHECK: %[[RECV:.+]] = wafer.instr.dte_recv %[[RECV_BUF]]
+// CHECK-SAME: bytes = 256 : i64
+// CHECK-SAME: message = #wafer.dte_message<communication = 14, phase = all_gather_ring, round = 0, slice = 15>
+// CHECK-SAME: peer = 15 : i64
 // CHECK: wafer.instr.ncc_join [0]
 // CHECK: %[[SEND:.+]] = wafer.instr.dte_send %[[LOCAL_COMM]]
 // CHECK-SAME: bytes = 256 : i64
 // CHECK-SAME: message = #wafer.dte_message<communication = 14, phase = all_gather_ring, round = 0, slice = 14>
 // CHECK-SAME: peer = 13 : i64
-// CHECK: %[[RECV:.+]] = wafer.instr.dte_recv %[[RECV_BUF]]
-// CHECK-SAME: bytes = 256 : i64
-// CHECK-SAME: message = #wafer.dte_message<communication = 14, phase = all_gather_ring, round = 0, slice = 15>
-// CHECK-SAME: peer = 15 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND]], %[[RECV]]
 // CHECK: wafer.instr.gather_scatter %[[RECV_BUF]] to %[[PEER_SLOT]]
 // CHECK-SAME: dst_strides = array<i64: 256, 0, 0>

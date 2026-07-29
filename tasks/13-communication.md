@@ -50,8 +50,10 @@ Pipeline position:
   participant join均在
   op/SSA/effect中；该candidate边界不允许残留未展开collective或算法选择attr。
 - Downstream consumer:
-  instruction legality、SPM/DDR lifetime与offset planning、event-liveness、exact static cost/resource analysis，
-  以及随后完整rank domain上的Direct DTE acceptance。memory planning与all-rank message matching后，
+  instruction legality；materialized canonical/unplaced current Instr先从SSA/effects/ranges原子派生typed
+  worker sibling并fresh重建minimum joins，再从保留worker assignment的siblings派生fixed-slot；随后进入
+  SPM/DDR lifetime与offset planning、event-liveness、exact static cost/resource analysis，以及完整rank
+  domain上的Direct DTE acceptance。memory planning与all-rank message matching后，
   whole-variant analysis从final send、canonical source rank和logical peer重算minimum-hop link-byte demand。
 - User-level driver / named pipeline:
   production只由现有`wafer-compile`完整compile pipeline进入；`wafer-opt`只提供显式IR的local
@@ -107,6 +109,8 @@ post-SPMD structured collective IR
   -> enumerate a few typed direct/ring/tree parameters
   -> rewrite that clone to explicit p2p + local work + staging + token/exact wait/minimum participant join
   -> local verifier and fresh analyses
+  -> derive all-rank atomic typed worker sibling from canonical/unplaced current Instr
+  -> derive fixed-slot siblings while preserving each worker assignment
   -> whole-entry SPM/DDR/event planning
   -> all-rank message/range/completion/resource acceptance
   -> atomic DirectDTEBindingAttr commit
@@ -177,6 +181,13 @@ current SCF、token、wait和message IR验证这一关系；不得把loop ordina
 该current限制同样适用于physical-dataflow peer movement。只有generic multi-engine software pipeline已经闭合真实
 Direct-DTE issue、matching exact wait/release、fixed slots和dynamic instance legality后，才能让tile `i`的DTE与其它
 engine处理tile `i+1`并行；仅把wait文本后移或把send/recv放进loop不构成overlap。
+
+target ABI对同一accepted instruction语义有两个明确版本边界。V1/V2为已有module保留同步兼容：
+`dte_send`先lower为sender prepare，matching `dte_wait`再在CRT内部完成peer-ready、attach/async issue、
+completion和release；V3则把同一`dte_send`lower为sender prepare后紧接显式
+`direct_dte_send_issue_v3`，exact `dte_wait`只完成completion和release。这个target-call拆分不新增
+instruction op、token或旁路schedule；accepted IR仍由`dte_send`产生的SSA token和唯一wait拥有生命周期。
+V3 module必须出现显式issue call，V1/V2 module不得引用该V3-only symbol。
 
 ### 2.3 Physical-dataflow peer tile
 
@@ -336,6 +347,11 @@ wafer.instr.dte_wait(tokens...)
   把buffer consumer/overwrite移到wait之前；
 - acceptance前没有physical endpoint、DTE id、FSM id、runtime address或raw register字段；
 - acceptance后send/recv各有且仅有一个`DirectDTEBindingAttr`。
+
+在V3 target profile中，`dte_send`的target lowering必须按
+`send_prepare -> send_issue_v3`发射；issue先等待matching receiver readiness，再attach并异步提交，随后允许
+rank继续发射与该DTE range无冲突的其它engine工作。`dte_wait`仍是唯一completion/release和source-reuse边界。
+V1/V2只为既有ABI保持wait内auto-issue，不能被scheduler或profiler解释成已经具有独立issue window。
 
 send和recv保持方向明确的两个op。把方向合并到字符串attr只会削弱effect、verifier和all-rank matching，不是
 终态选择。
@@ -626,6 +642,8 @@ receiver ready / FSM monitor init
 稳定规则：
 
 - target lowering只消费committed `dte_*` op、typed binding、topology和accepted offsets；
+- V3 target profile把peer-ready/attach/async submission放在显式issue call，把completion/release放在matching
+  wait；V1/V2兼容路径由wait内部auto-issue，但不得生成或解析V3-only issue symbol；
 - target helper/call名称属于target conversion，不进入instruction op语义；
 - target module内部保留per-op p2p body与binding；
 - bundle只记录rank executable使用`DirectDTE` transport，不复制endpoint/message/action表；
@@ -711,6 +729,11 @@ p2p instruction：
 - package transport requirement与target module实际使用一致；
 - no-card preflight覆盖unsupported capability/status ABI；
 - target model按source/destination/message/range/completion执行并原子发布结果；
+- target model按profile区分V3 explicit issue与V1/V2 wait auto-issue；V3 wait-before-issue、legacy显式issue、
+  foreign/duplicate event均fail closed。pending NCC不能按“该rank存在任意未完成命令”粗粒度阻塞DTE：
+  DTE source只与overlap的pending NCC write冲突，DTE destination与overlap的pending NCC read/write冲突；
+  matching participant join必须先于DTE issue，post-issue join不能追认已经提交的传输；strided footprint
+  使用保守cover，未知range保持fail closed，disjoint已证明range允许并行；
 - rank-count=1覆盖无通信或self路径，rank-count=16覆盖真实cross-rank matching与resource failure；
 - negative tests至少覆盖missing/duplicate message、peer mismatch、bytes mismatch、range越界、缺wait、多个live
   sender、receiver FSM耗尽、pre-bound candidate、缺status slot和partial-rank failure。
@@ -788,7 +811,9 @@ send/recv、wait和insert；self slot只有local movement。任一slot的bytes�
 - collective-permute与equal-split all-to-all的direct p2p/local movement lowering；
 - `wafer.instr.dte_send`、`dte_recv`、`dte_wait`、`DTEMessageAttr`和`DirectDTEBindingAttr`；
 - 从planned SPM range和current instruction IR执行的all-rank Direct DTE acceptance；
-- target CRT/status、target model、package requirement与runtime preflight consumer。
+- target CRT/status、target model、package requirement与runtime preflight consumer；
+- V3-only显式sender issue TargetCall、CRT symbol、profile site和SystemC readiness/completion语义；V1/V2保留
+  wait auto-issue兼容，三者共享同一Instr token/wait合同。
 
 Q32.M已沿上述边界完成producer接入，Q32.S继续负责bounded joint composition：
 
@@ -814,12 +839,13 @@ ragged/segmented路径尚未实现；equal-split All-to-All的网络payload已�
 现有`MoveInsertSlice` lowering仍会为每个slot复制完整累计result，这个local movement问题必须在后续独立任务
 通过可验证的in-place/subview表示消除，不能把它写成collective网络最优。
 
-后续独立扩展包括NoC-resident input/intermediate/partial/output tile dataflow、segmented peer exchange、
-cross-card collective、raw non-unicast DTE和经硬件证据校准的compute/communication overlap cost。NoC-resident
-dataflow从typed global/local rank slice与standard tiling/reduction interface生成physical peer movement，再复用
-本文“current tile/instruction IR → Direct-DTE acceptance”的后半段；它不能修改
-“logical collective → direct clone rewrite”的语义链，也不能在Q38真实DTE issue/exact wait与fixed-slot pipeline
-闭合前宣称细粒度overlap。
+NoC-resident input/intermediate/partial/output tile dataflow已经作为Q39 current extension从typed global/local
+rank slice与standard tiling/reduction interface生成physical peer movement，并复用本文“current
+tile/instruction IR → Direct-DTE acceptance”的后半段；resident role materializer不修改compute implementation
+或“logical collective → direct clone rewrite”的语义链。post-Instr worker sibling和worker-preserving
+fixed-slot进入同一current-IR pipeline；NoC×fixed-slot×nonzero-worker同候选的
+source/package/model/no-card纵向已经闭合。后续独立扩展只包括segmented peer exchange、cross-card collective、
+raw non-unicast DTE和经硬件证据校准的compute/communication overlap cost。
 
 ## 14. 与其它设计的关系
 

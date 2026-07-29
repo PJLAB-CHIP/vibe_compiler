@@ -1020,6 +1020,51 @@ TEST_F(ScheduleCostAnalysisTest,
 }
 
 TEST_F(ScheduleCostAnalysisTest,
+       PeerDataflowHasExactP2PTrafficWithoutCollectiveAttribution) {
+  constexpr llvm::StringLiteral send = R"mlir(
+    %sent = wafer.instr.dte_send %buffer
+        {peer = 2 : i64, bytes = 8 : i64,
+         message = #wafer.dte_message<communication = 17, phase = peer_dataflow, round = 0, slice = 3>}
+        : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %sent : !async.token
+)mlir";
+  constexpr llvm::StringLiteral recv = R"mlir(
+    %received = wafer.instr.dte_recv %buffer
+        {peer = 0 : i64, bytes = 8 : i64,
+         message = #wafer.dte_message<communication = 17, phase = peer_dataflow, round = 0, slice = 3>}
+        : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %received : !async.token
+)mlir";
+
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 3> owners;
+  llvm::SmallVector<mlir::Operation *, 3> roots;
+  for (int64_t rank = 0; rank < 3; ++rank) {
+    owners.push_back(
+        makeDTERankModule(3, 3, "", rank == 0 ? send : rank == 2 ? recv : ""));
+    ASSERT_TRUE(owners.back());
+    roots.push_back(owners.back()->getOperation());
+  }
+
+  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
+      roots, wafer::analysis::getTargetScheduleCostPolicy(
+                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+  ASSERT_TRUE(cost.aggregateNoC.aggregateTransmitBytes.isKnown());
+  EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.value, 8u);
+  ASSERT_TRUE(cost.aggregateNoC.aggregateReceiveBytes.isKnown());
+  EXPECT_EQ(cost.aggregateNoC.aggregateReceiveBytes.value, 8u);
+  ASSERT_TRUE(cost.minimumHopLinkByteDemand.isKnown());
+  EXPECT_EQ(cost.minimumHopLinkByteDemand.value, 16u);
+  ASSERT_TRUE(cost.aggregateEventCount.isKnown());
+  EXPECT_EQ(cost.aggregateEventCount.value, 2u);
+  ASSERT_TRUE(cost.aggregateInstructionCount.isKnown());
+  EXPECT_EQ(cost.aggregateInstructionCount.value, 4u);
+  for (const auto &collective : cost.aggregateNoC.collectiveTransmitBytes) {
+    ASSERT_TRUE(collective.isKnown());
+    EXPECT_EQ(collective.value, 0u);
+  }
+}
+
+TEST_F(ScheduleCostAnalysisTest,
        WholeCardMinimumHopDemandPropagatesArithmeticOverflow) {
   constexpr llvm::StringLiteral overflowingSend = R"mlir(
     %c0 = arith.constant 0 : index

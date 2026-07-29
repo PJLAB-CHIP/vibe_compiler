@@ -166,6 +166,31 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     std::string *failureReason);
 
+mlir::FailureOr<mlir::Value> materializeCandidateOperandConsumerTileValue(
+    mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
+    unsigned operandNumber,
+    llvm::ArrayRef<mlir::OpFoldResult> operandTileOffsets,
+    llvm::ArrayRef<mlir::OpFoldResult> operandTileSizes,
+    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    std::string *failureReason);
+
+/// Resolves the source reduction whose PartialReductionOpInterface is allowed
+/// to create local work. A direct Linalg root resolves to itself. A wrapper is
+/// accepted only when it is an existing typed all-reduce with one exact,
+/// single-use, same-block Linalg producer; this helper never invents
+/// cross-rank semantics for an ordinary local reduction.
+mlir::FailureOr<mlir::linalg::LinalgOp>
+getCandidatePartialReductionComputeRoot(mlir::Operation *root,
+                                        std::string *failureReason);
+
+mlir::FailureOr<mlir::Value> materializeCandidatePartialReductionRootTileValue(
+    mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
+    llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    std::string *failureReason);
+
 mlir::FailureOr<mlir::Value>
 getCandidateOutputBoundary(TensorProgramScope scope, unsigned outputIndex,
                            std::string *failureReason);
@@ -200,7 +225,7 @@ void eraseDeadCandidateSupportClosure(TensorProgramScope scope);
 mlir::LogicalResult materializeCompleteCandidateTraversal(
     TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    std::string *failureReason);
+    CandidateTileTraversalKind traversalKind, std::string *failureReason);
 
 void setFailureReason(std::string *failureReason, llvm::StringRef reason);
 

@@ -23,9 +23,12 @@ using namespace wafer;
 using namespace wafer::compiler;
 using namespace wafer::model;
 
-llvm::CallInst *findSendPrepareCall(llvm::Module &module) {
+llvm::CallInst *findSendPrepareCall(llvm::Module &module,
+                                    TargetProfileId targetProfile) {
   const llvm::StringRef symbol =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare).symbol;
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare,
+                              targetProfile)
+          .symbol;
   for (llvm::Function &function : module)
     for (llvm::BasicBlock &block : function)
       for (llvm::Instruction &instruction : block)
@@ -46,7 +49,8 @@ TEST(SystemCTargetModelDTEMismatchTest,
 
   llvm::Module &rankZeroModule =
       const_cast<llvm::Module &>(bundle->getModules().front().getModule());
-  llvm::CallInst *send = findSendPrepareCall(rankZeroModule);
+  llvm::CallInst *send = findSendPrepareCall(
+      rankZeroModule, bundle->getExecutionConfig().getTargetProfileId());
   ASSERT_NE(send, nullptr);
   ASSERT_EQ(send->arg_size(), 7u);
   auto *destination = llvm::dyn_cast<llvm::ConstantInt>(send->getArgOperand(1));
@@ -81,6 +85,6 @@ TEST(SystemCTargetModelDTEMismatchTest,
 } // namespace
 
 extern "C" int sc_main(int argc, char **argv) {
-  testing::InitGoogleTest(&argc, argv);
+  ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

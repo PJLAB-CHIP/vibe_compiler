@@ -110,10 +110,13 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
         argument32(arguments, 6), *format}};
   }
   case TargetCallBuiltin::GemmOrientedV2: {
-    if (getTargetProfileRecord(context.targetProfile).kernelRuntimeABI !=
-        KernelRuntimeABIId::waferTx81KernelV2())
+    KernelRuntimeABIId runtimeABI =
+        getTargetProfileRecord(context.targetProfile).kernelRuntimeABI;
+    if (runtimeABI != KernelRuntimeABIId::waferTx81KernelV2() &&
+        runtimeABI != KernelRuntimeABIId::waferTx81KernelV3())
       return llvm::createStringError(
-          "oriented GEMM target call requires wafer-tx81-kernel-v2 ABI");
+          "oriented GEMM target call requires wafer-tx81-kernel-v2 or "
+          "wafer-tx81-kernel-v3 ABI");
     llvm::Expected<LogicalFormat> format =
         decodeFormat(context, TargetFormatEngine::NE, arguments[7]);
     if (!format)
@@ -175,6 +178,9 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
         arguments[0], arguments[1], argument32(arguments, 2),
         argument32(arguments, 3), argument32(arguments, 4),
         argument32(arguments, 5), argument32(arguments, 6) != 0}};
+  case TargetCallBuiltin::DirectDTESendIssue:
+    return TargetTransactionPayload{
+        TargetDirectDTESendIssueTransaction{arguments[0]}};
   case TargetCallBuiltin::DirectDTERecvPrepare:
     return TargetTransactionPayload{TargetDirectDTEReceiveTransaction{
         arguments[0], argument32(arguments, 1), argument32(arguments, 2),
@@ -376,6 +382,9 @@ llvm::Expected<compiler::TargetTransactionPayload>
 decodeTargetCallPayload(const TargetCallDescriptor &descriptor,
                         const TargetCallDecodeContext &context,
                         llvm::ArrayRef<uint64_t> arguments) {
+  if (!isTargetCallAvailableForProfile(descriptor, context.targetProfile))
+    return llvm::createStringError(
+        "target-call symbol is not available for the invocation profile");
   if (arguments.size() != descriptor.arguments.size())
     return llvm::createStringError(
         "target-call payload argument count does not match its descriptor");
@@ -385,25 +394,62 @@ decodeTargetCallPayload(const TargetCallDescriptor &descriptor,
       return llvm::createStringError(
           "target-call i32 payload argument does not fit uint32");
 
+  llvm::Expected<std::optional<NCCWorker>> worker =
+      decodeTargetCallNCCWorker(descriptor, arguments);
+  if (!worker)
+    return worker.takeError();
+  llvm::ArrayRef<uint64_t> payloadArguments = arguments;
+  if (descriptor.issueDomain &&
+      descriptor.issueDomain->nccWorkerArgument.has_value())
+    payloadArguments = arguments.drop_back();
+
   if (const auto *builtin =
           std::get_if<TargetCallBuiltin>(&descriptor.semantic))
-    return buildBuiltinTransaction(context, *builtin, arguments);
+    return buildBuiltinTransaction(context, *builtin, payloadArguments);
   if (const auto *kind =
           std::get_if<InstrElementwiseKind>(&descriptor.semantic))
-    return buildElementwiseTransaction(context, *kind, arguments);
+    return buildElementwiseTransaction(context, *kind, payloadArguments);
   if (const auto *kind = std::get_if<InstrReduceKind>(&descriptor.semantic))
-    return buildReduceTransaction(context, *kind, arguments);
+    return buildReduceTransaction(context, *kind, payloadArguments);
   if (const auto *kind = std::get_if<InstrConvertKind>(&descriptor.semantic))
-    return buildConvertTransaction(*kind, arguments);
+    return buildConvertTransaction(*kind, payloadArguments);
   if (const auto *kind = std::get_if<InstrConvKind>(&descriptor.semantic))
-    return buildConvTransaction(context, *kind, arguments);
+    return buildConvTransaction(context, *kind, payloadArguments);
   if (const auto *kind = std::get_if<InstrPoolKind>(&descriptor.semantic))
-    return buildPoolTransaction(context, *kind, arguments);
+    return buildPoolTransaction(context, *kind, payloadArguments);
   if (const auto *kind = std::get_if<InstrUnpoolKind>(&descriptor.semantic))
-    return buildUnpoolTransaction(context, *kind, arguments);
+    return buildUnpoolTransaction(context, *kind, payloadArguments);
   if (const auto *kind = std::get_if<InstrPeripheralKind>(&descriptor.semantic))
-    return buildPeripheralTransaction(context, *kind, arguments);
+    return buildPeripheralTransaction(context, *kind, payloadArguments);
   llvm_unreachable("unknown target-call semantic");
+}
+
+llvm::Expected<std::optional<NCCWorker>>
+decodeTargetCallNCCWorker(const TargetCallDescriptor &descriptor,
+                          llvm::ArrayRef<uint64_t> arguments) {
+  if (arguments.size() != descriptor.arguments.size())
+    return llvm::createStringError(
+        "target-call worker argument count does not match its descriptor");
+  if (!descriptor.issueDomain)
+    return std::optional<NCCWorker>{};
+  if (descriptor.issueDomain->fixedNCCWorker &&
+      descriptor.issueDomain->nccWorkerArgument)
+    return llvm::createStringError(
+        "target-call registry has conflicting NCC worker encodings");
+  if (descriptor.issueDomain->fixedNCCWorker)
+    return descriptor.issueDomain->fixedNCCWorker;
+  if (!descriptor.issueDomain->nccWorkerArgument)
+    return std::optional<NCCWorker>{};
+  size_t index = *descriptor.issueDomain->nccWorkerArgument;
+  if (index >= arguments.size() || index + 1 != arguments.size() ||
+      descriptor.arguments[index] != TargetCallScalarType::I32)
+    return llvm::createStringError(
+        "target-call registry has an invalid trailing NCC worker argument");
+  uint64_t worker = arguments[index];
+  if (worker >= kNCCWorkerCount)
+    return llvm::createStringError(
+        "target-call NCC worker is outside the target worker domain");
+  return std::optional<NCCWorker>{static_cast<NCCWorker>(worker)};
 }
 
 } // namespace wafer

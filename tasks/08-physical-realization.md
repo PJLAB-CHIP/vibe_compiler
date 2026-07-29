@@ -116,7 +116,12 @@ Pipeline position:
   movement 首次定义的 compiler-owned storage，source同样来自compiler-owned allocation且到transfer
   operand的view provenance不改变base address；外部/未知source、非零或动态view offset、任一侧显式
   deallocation均fail closed。root/view alias、effect、lifetime、alignment、
-  valid/padding、snapshot 语义和Direct DTE exact-wait区间允许 storage coalescing。证明成功时直接把
+  valid/padding、snapshot 语义和Direct DTE exact-wait区间允许 storage coalescing。root path之外，
+  当前还可处理direct、无条件、static-positive `scf.for` body，但必须额外证明source/destination均为
+  loop-invariant compiler-owned roots、全部alias access/forwarding位于同一loop path、destination只在copy后
+  只读、source snapshot跨iteration不被破坏、replacement支配全部被替换use，且任一Direct-DTE issue在同一
+  path由exact wait完成。dynamic/zero/nested/conditional、iter-arg/yield、loop-local root、跨backedge
+  outstanding event或loop后destination use均fail closed。证明成功时直接把
   destination consumers 改写到 source root 或标准 metadata view，删除 movement 与 dead allocation；
   标准 view 保留 source storage 的 memory-space/encoding 类型，只有 replacement consumer 的完整 IR
   verifier 仍合法时才提交；若被合并 destination 要求更强 alignment，则提升 compiler-owned source
@@ -129,8 +134,10 @@ Pipeline position:
   verifier-legal 标准 view 表达，仍有语义作用的 movement 保持显式；不新增 relation attr、proof
   sidecar、route id 或 shadow allocation plan。
 - Downstream consumer:
-  fresh whole-rank completion normalization/verifier、dependency DAG、ready-order 与 fixed-slot candidate
-  derivation、whole-rank lifetime/SPM fixed-capacity planning、fresh final-IR cost 和 target lowering。
+  fresh whole-rank completion normalization/verifier；canonical/unplaced current Instr先从SSA/effects/ranges
+  原子派生typed worker sibling并fresh重建minimum joins，再在保留worker assignment的siblings上派生
+  fixed-slot；随后进入whole-rank lifetime/SPM fixed-capacity planning、whole-variant DDR/Direct-DTE/resource、
+  fresh final-IR cost和target lowering。
 - User-level driver / named pipeline:
   现有 wafer-compile source-to-bundle production pipeline；局部测试调用同一 transformation library，
   不增加用户开关、operator-specific mode 或手工 pass 协议。
@@ -337,8 +344,9 @@ metadata view 必须证明没有 real data movement。给定 source view `S`、d
 - read-only sharing 下 source 不会在 destination 的观察期内被改写；
 - writable donation 下 source 在 copy 后没有独立观察或未完成异步访问，destination 的写不会破坏
   snapshot 语义；
-- Direct DTE buffer access 延长到 exact wait，NCC access/completion 由 rewrite 后的 typed worker DAG
-  重新建立；unknown escape、unsupported control flow 或不能闭合的 completion 一律保留 copy。
+- Direct DTE buffer access 延长到 exact wait；storage rewrite后先从fresh current IR重建canonical completion，
+  独立post-Instr worker sibling再以actual worker attrs和fresh minimum joins建立typed worker DAG。已有nonzero
+  assignment不原地重写；unknown escape、unsupported control flow或不能闭合的completion一律保留copy。
 - 只可沿保持base address的`memref.cast`、static collapse/expand、zero-offset subview/reinterpret/view
   provenance回溯compiler-owned root；dynamic或非零offset以及其它无法恢复exact transfer source的view
   不能借此变成full-value storage alias。
@@ -465,7 +473,7 @@ Verifier 至少检查：
 
 ### 8.3 Peer Transfer
 
-普通boundary、intermediate或partial tile的cross-rank movement使用target-abstract peer pair：
+普通boundary、intermediate或output tile的cross-rank movement使用target-abstract peer pair：
 
 ```text
 wafer.tile.peer_send %source_spm to logical_peer
@@ -481,6 +489,14 @@ peer transfer只有在global logical region、两端physical segment cover、sen
 lifetime均可证明时合法。相同bytes不证明相同tile；broadcast fanout也不能只保留一个带隐式receiver集合的op。
 未经typed target capability闭合，fanout物化为多个send或receive-then-forward，reduction物化为recv、local
 compute和forward。
+
+当前production materializer已用该pair闭合typed input/parameter owner fanout、可证明的intermediate
+producer-store/consumer-reload zero-DDR cut和replicated output round-2 publication。partial路径保留typed
+tree/ring的原Instr message/local reduce语义，不把collective伪装成peer pair：tree按contribution、
+combiner、publisher和final writer验证，ring按slice-precise reduce-scatter/all-gather provenance验证。
+同一structured block中的新receive preparation必须先于所有既有/新增transport issue，matching wait保留在
+真实consumer/reuse cut；跨block或seed已有DTE的组合由call-expanded whole-program message wait graph重证，
+cycle、message/call occurrence错位和无法证明的control整代fail closed。
 
 ### 8.4 Immutable Storage
 

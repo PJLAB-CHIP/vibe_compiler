@@ -18,7 +18,10 @@ getControlAction(const compiler::TargetTransactionPayload &payload) {
           payload))
     return TargetModelControlAction::DirectDTEBegin;
   if (std::holds_alternative<compiler::TargetDirectDTESendTransaction>(payload))
-    return TargetModelControlAction::DirectDTESend;
+    return TargetModelControlAction::DirectDTESendPrepare;
+  if (std::holds_alternative<
+          compiler::TargetDirectDTESendIssueTransaction>(payload))
+    return TargetModelControlAction::DirectDTESendIssue;
   if (std::holds_alternative<compiler::TargetDirectDTEReceiveTransaction>(
           payload))
     return TargetModelControlAction::DirectDTEReceive;

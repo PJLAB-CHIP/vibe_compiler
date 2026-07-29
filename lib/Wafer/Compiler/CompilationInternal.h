@@ -50,6 +50,19 @@ bool publishDirectoryNoReplace(llvm::StringRef source,
                                llvm::StringRef destination,
                                llvm::raw_ostream &diagnostics);
 
+using DirectoryPublicationFunction = bool (*)(
+    llvm::StringRef source, llvm::StringRef destination,
+    llvm::raw_ostream &diagnostics);
+
+/// Publish a package and its independently named companion as one recoverable
+/// transaction. If companion publication fails after the package rename, the
+/// package is moved back to its staging location before failure is returned.
+mlir::LogicalResult publishPackageAndCompanionNoReplace(
+    llvm::StringRef stagedPackage, llvm::StringRef outputPackage,
+    llvm::StringRef stagedCompanion, llvm::StringRef outputCompanion,
+    llvm::raw_ostream &diagnostics,
+    DirectoryPublicationFunction publishDirectory);
+
 mlir::OwningOpRef<mlir::ModuleOp>
 parseProgramDirectoryModule(llvm::StringRef programDirectory,
                             mlir::MLIRContext &context);
