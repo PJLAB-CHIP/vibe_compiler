@@ -57,6 +57,42 @@ compiler/CRT identity、worker/tile和PMU scope。PCI BDF、build目录和安装
 曾出现失败的实验在对应表格行中保留“初始症状 → fixture/oracle/ABI根因 → 修正后fresh结果”链路；
 只写最终通过会掩盖测试本身曾经测错了什么，只写旧失败又会把host错误误当成硬件行为。
 
+### Q39 bandwidth evidence levels
+
+NoC-resident profitability把final-IR work knowledge、静态point estimate和保守bound分成三层，不能因
+physical timing未校准就把可精确计数的工作量降成Unknown：
+
+- final Instr与typed topology能完整计数的DDR/SPM bytes、compute ops、Direct-DTE bytes/messages、
+  source/destination endpoints和minimum-hop work是exact `Known`。这里的`Known`只说明current IR work
+  完整且算术可表示，不说明物理route、arbiter或duration已知；
+- 硬件静态资料中的整卡DDR `200 GB/s`只作为total-card DDR traffic duration的乐观下界；
+- 当前部署中16 tile共享DDR的约`150 GB/s`是用户确认的nominal operating point。它只除整卡bytes一次，
+  不是每tile一份的带宽，也没有重复样本支持为guaranteed lower bound；
+- 单方向NoC `128 GB/s`是link payload serialization reference。nominal point model另以`128 GB/s`作为
+  DTE endpoint service policy prior；这两个相同数值有不同resource语义，均不是fabric aggregate、
+  collective latency或sustained lower bound；
+- physical route和arbiter仍未知。point model从typed 2D mesh构造modeled deterministic shortest path，
+  以`EstimatedRoute` assumption计peak directed-link pressure；它不是actual route或hot-link observation；
+- Direct-DTE每message `α = 10 us`、maximum modeled route每hop的route-fill prior `1 ns`、每tile SPM
+  `128 GB/s`以及instruction/event/wait control `1 ns`均为versioned compiler policy prior，不是板端测量或
+  保守bound。SPM prior只把文档中的
+  1024-bit interface和1 GHz model quantum转成point estimate。当前`α`有意惩罚小message；未来由同profile、
+  同participant、重复matched board measurement替换，而不是由论文或单次counter移植绝对常数。
+
+nominal makespan只消费上述exact work和versioned point parameters。没有current-IR+target capability共同
+qualified的multi-buffer时，DDR、NoC和compute按sequential phases计费；只有fixed-slot/multi-buffer recurrence、
+exact wait/reuse cut和capability均闭合时，steady state才取并行resource maximum。candidate nominal乘`1.20`
+仍小于baseline nominal时签发`EstimatedBenefit`并可进入normal selection；只有candidate conservative upper
+乘`1.20`小于baseline lower时才是`ProvenBenefit`。缺少sustained lower rate、route dilation、startup upper
+或hop-fill upper，只让对应upper保持Unknown，不再让point estimate或exact work变成Unknown；必要work仍为
+dynamic/unsupported或算术溢出时才`Indeterminate`。
+
+论文只提供模型结构：Stream-K支持work-centric decomposition并要求把seam/fixup计入总work；TileLink说明
+tile、resource binding和dependency signal共同决定compute/communication overlap；collective-capable NoC
+给出`α + nβ`、congestion/dilation及double-buffer steady-state resource maximum。论文平台的绝对cycle、
+bandwidth和startup数字均不进入TX81 profile。Q39仍需configured-board matched calibration/promotion与
+promotion winner的fresh correctness；静态`EstimatedBenefit`不代签这两个外部门禁。
+
 ## 硬件实验、行为结论与compiler价值
 
 | 硬件问题 | 具体实验、参数与oracle | 实际板端观察 | 硬件行为总结 | 对compiler的价值 | 不能外推什么 |

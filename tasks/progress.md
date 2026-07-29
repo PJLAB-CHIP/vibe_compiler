@@ -20,14 +20,14 @@ pipeline contract、实验结论、测试数字、失败修复过程和历史复
 ```text
 Q32 + Q6.B -> Q9 profiler foundation                         [done]
 Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [blocked: board]
-Q38 host closure -> Q39 NoC-resident tile dataflow           [blocked: board]
+Q38 host closure -> Q39 NoC-resident tile dataflow           [doing: profitability]
 ```
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q9 | `production-artifact-profiler` | `done` | Q32、Q6.B、configured board | 未插桩Primary TX stream launch-to-completion设备包络、分离的host diagnostics、Trace来源的五类NCC per-tile engine active ns/work-volume摘要、独立Direct-DTE cycles/raw activity、Count/Trace、逐次保留真实动态调用与rdcycle的16-tile timeline、exclusive语义成本与非加和Trace-only成本、final Instr静态work与硬件峰值下界对照、exact output、三文件专业UI和profile全树`0777`均闭合；不构造card-wide纯engine elapsed，静态cost不回灌ranking。Ranking feedback保留为后续独立门禁。 | 06、14-16；`tasks/archive/board-profiler.md` |
 | Q38 | `multi-engine-software-pipelining` | `blocked` | Q32、Q6.B、Q37 | complete-rank actual clone、真实fixed-slot multi-buffer、typed worker、V3 Direct-DTE prepare/issue/exact wait-release、issue-time exact NCC range hazard、package/no-card、TargetCall/SystemC数值、profiler及digest-bound qualification companion的repo-owned非板端合同和release host gate均已闭合。尚缺的唯一条件是configured board上的同源fresh qualification和normal production winner correctness；板端结果不得由host/model代签，Q9也不回灌scheduler。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
-| Q39 | `noc-resident-tile-dataflow` | `blocked` | Q38非板端Direct-DTE/fixed-slot合同闭合；Q38板端资格作为独立external gate | 从typed global/local rank slice、standard tiling/reduction interface、IndexRelation、SSA/effect与mesh通用合成input、parameter、intermediate、partial/reduction和output tile的DDR/NoC/SPM dataflow；accepted complete-rank IR直接表达owner-only load、peer send/recv、local compute/reduce、token/wait及required output publication，不保留owner/channel/shadow plan。五类role、worker-first typed sibling到worker-preserving fixed-slot、纯elementwise非GEMM与GEMM两个compute family、compound source、large contraction及复杂case均已通过package/SystemC/CPU/no-card；唯一剩余门禁是configured-board同源baseline/winner fresh correctness，host/model不得代签。 | 02-13、16-17；`tasks/plans/noc-resident-tile-dataflow.md` |
+| Q39 | `noc-resident-tile-dataflow` | `doing` | Q38非板端Direct-DTE/fixed-slot合同闭合；Q38板端资格作为独立external gate | 当前收口complete-rank candidate-selection的NoC跨资源静态profitability：final Instr可数出的整卡DDR/SPM bytes、per-rank compute ops、DTE bytes/messages/endpoints和minimum-hop work保持exact `Known`；physical route/arbiter不冒充Known，nominal以modeled deterministic shortest path `EstimatedRoute`及versioned point parameters计时。无qualified multi-buffer按sequential phases，只有current-IR fixed-slot+capability资格才按steady-state resource maximum；20% margin可签发normal `EstimatedBenefit`，真实bounds才升级`ProvenBenefit`，必要work动态/unsupported/overflow才`Indeterminate`。尚需configured-board matched calibration/promotion与同源winner fresh correctness，host/model不得代签完成。 | 02-13、16-17；`tasks/plans/noc-resident-tile-dataflow.md` |
 
 ## Later / External Gates
 

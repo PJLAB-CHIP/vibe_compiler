@@ -1,6 +1,6 @@
 # NoC-Resident Tile Dataflow 实施计划
 
-状态：Q39为`blocked: board`，repo-owned非板端合同与host gates均已闭合。共同compiler owner已经从
+状态：Q39为`doing`。共同compiler owner已经从
 correspondence一致的complete-rank actual
 tuples闭合typed input/parameter boundary的owner-only DDR load与显式peer fan-out/forward、可证明
 intermediate spill/reload cut、replicated required output的round-2 publication，以及tree/ring
@@ -11,7 +11,9 @@ input/parameter、intermediate、partial/reduction和output五类role，并在�
 tuple验证每个slice的reduce-scatter/all-gather传播、origin multiplicity和完整覆盖。无法从current IR证明的
 range、control或message occurrence仍原子拒绝。whole-program message wait graph、Q38 fixed-slot/typed worker
 realization、large contraction、compound workload及NoC×fixed-slot×nonzero-worker同候选的非板端纵向均已
-闭合；configured board同源baseline/winner fresh correctness是唯一剩余外部门禁。
+闭合。当前重新打开的host边界是complete-rank NoC跨资源profitability：合法candidate不能再因严格减少
+DDR bytes自动成为normal winner。该门禁闭合后，configured board matched performance promotion与同源
+winner fresh correctness仍是外部门禁。
 
 本计划的目标不是实现一个GEMM专用融合，也不是把collective拆小后重新排序。目标是让compiler能从当前
 structured IR和完整rank domain中，通用地选择：
@@ -142,8 +144,9 @@ Pipeline position:
 - Completion gate:
   input/parameter、intermediate、partial/reduction和output role各有interface-derived正负例；至少两个
   structured compute family、一个multi-operator compound source、一个large contraction和一个复杂
-  dataflow case产生非baseline winner，分别通过完整host/no-card/model/package与fresh board correctness；
-  final IR证明DDR transaction变化、显式NoC traffic、all-and-only output coverage与完整completion。
+  dataflow case产生fully accepted qualification candidate，分别通过完整host/no-card/model/package；
+  final IR证明DDR transaction变化、显式NoC traffic、all-and-only output coverage与完整completion。只有
+  complete-rank profitability门禁闭合的candidate才可成为normal winner，之后仍需fresh board qualification。
 ```
 
 ### C. Instruction-level asynchronous realization
@@ -186,6 +189,51 @@ Pipeline position:
   matched observation。
 ```
 
+### D. Complete-rank NoC profitability admission
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  已通过completion、SPM/DDR placement、Direct-DTE matching、whole-card resource和target capability gate的
+  disposable complete-rank actual Instr candidate，以及同一source/config中已经通过全部late gate的reserved
+  baseline；ExecutionConfig提供exact TargetProfileId和typed execution topology。
+- Current stage responsibility:
+  只从两份current final Instr fresh重算DDR read/write、per-rank CT/NE work、Direct-DTE message/bytes、
+  source/destination endpoint pressure、minimum-hop total link-byte、minimum-hop message demand、wait/join、
+  SPM movement和dependency事实。上述可由final Instr与typed topology完整计数的
+  bytes/messages/ops/endpoints/minimum-hop work保持
+  exact `Known`；`Known`不表示硬件采用某条physical route，也不表示对应duration已经测量。物理route和
+  arbiter仍未知，point model只按typed topology构造modeled deterministic shortest path，并显式记录
+  `EstimatedRoute` assumption。
+  analysis再消费compiler-shipped versioned point parameters形成nominal makespan，并把真正有证据的
+  peak floor / conservative bound分别保留。16个tile的DDR traffic只除以一次整卡共享带宽。没有qualified
+  multi-buffer时，DDR、NoC和compute按dependency-order sequential phases计费；只有current IR的fixed-slot/
+  multi-buffer结构与target capability共同通过资格后，才使用steady-state resource maximum。normal production
+  允许exact work加point model在20% margin下签发`EstimatedBenefit`；只有candidate conservative upper在同一
+  margin下严格小于baseline lower才是`ProvenBenefit`。只有必要工作量仍为dynamic/unsupported或算术无法
+  表示时才`Indeterminate`，缺少保守bound本身不再把nominal estimate降为Unknown。
+- Output artifact / IR:
+  不产生新IR、attr、side table或shadow schedule；只产生invocation-local的typed duration interval、decision
+  和reason，供whole-variant selector决定是否把已存在candidate送入normal target gate/frontier。
+- Downstream consumer:
+  production whole-variant selector；放行winner继续进入TargetCall/LLVM、device link、package、model和board
+  runtime，未放行candidate仍可由既有compiler-private qualification mode消费。
+- User-level driver / named pipeline:
+  wafer-compile source-to-bundle production pipeline中的complete-rank candidate-selection；没有NoC专用
+  public CLI、workload profile或live-card反馈。
+- Explicit non-goals:
+  不按GEMM、shape、case名或artifact kind恢复收益；不把200 GB/s峰值、150 GB/s nominal、128 GB/s
+  directional reference混成同一置信级别；不把modeled deterministic shortest path冒充physical route，
+  不猜SPM bank、worker fairness、queue occupancy或未校准group overlap。DTE startup、endpoint service、
+  hop、SPM和control的point prior只签发`EstimatedBenefit`，不能冒充板端测量或`ProvenBenefit`。
+- Completion gate:
+  host tests覆盖整卡共享DDR、read/write共同占用、4x4 mesh endpoint/link work、消息计数、Unknown传播、
+  route-independent lower bound、`EstimatedRoute`与endpoint hotspot不混淆、小payload normal baseline、
+  大DDR-bound `EstimatedBenefit`、synthetic完整bounds的`ProvenBenefit`、sequential/fixed-slot两种schedule、
+  非NoC优化不回归，以及final IR变化后fresh重算。板端promotion仍要求同source/profile/shape、平衡顺序、
+  重复Primary device elapsed、完整correctness/status/terminal和final-artifact attestation形成versioned row。
+```
+
 ## 1. 已确认事实与设计决议
 
 ### 1.1 当前实现的真实边界
@@ -226,8 +274,10 @@ accepted call closure，以typed source/destination/message identity、call/Tile
 rank内issue/wait顺序建依赖图：V3 send issue等待peer receive prepare，exact wait等待matching send。
 message/call occurrence不等、一个static site需要不同binding、未调用helper、无法证明的control或图中存在cycle
 都会整代原子拒绝；成功时只证明transport可进展，不保存graph，也不移动wait或发明pipeline stage。纯
-elementwise add/multiply source已经通过同一production owner：replicated input由16次DDR read收敛为1次owner
-read和15份peer traffic，winner/baseline均通过target model，最终ELF不含GEMM调用。
+elementwise add/multiply source已经通过同一generic candidate owner：replicated input候选由16次DDR read
+收敛为1次owner read和15份peer traffic；当前4 KiB实例因message startup/route成本无法清除production margin，
+normal production保留baseline，winner/baseline均通过target model，最终ELF不含GEMM调用。这证明op无关的
+candidate formation与profitability gate分离，不把“小case也启动NoC”当功能证明。
 
 required output store仍保持原样，不改变host-visible ABI。当前output publication只在所有rank的frontend
 boundary、produced-value SSA/effect equivalence、exact full-buffer WDMA和final-writer关系全部一致时，
@@ -515,22 +565,101 @@ candidate必须从final actual IR收集至少：
 
 - DDR read/write bytes、transactions和full-shape/intermediate materialization数；
 - SPM movement bytes、allocation high-water、fixed-slot bytes和lifetime；
-- Direct-DTE bytes/messages、source/destination rank、minimum-hop link-byte lower bound；
+- Direct-DTE bytes/messages/waits、source/destination rank、maximum endpoint pressure、
+  minimum-hop total link-byte、directed link count和idealized peak-link lower bound；
 - NCC/Kcore logical work、partial merge/recompute work；
 - issue、exact DTE wait、participant join、terminal drain和pipeline fill/drain；
 - output coverage和immutable payload identity。
 
-选择保持多维exact Pareto，不把“降低DDR”或“增加overlap”压成伪cycle。推荐静态原则：
+exact resource Pareto继续负责无tradeoff的支配关系；出现“DDR下降、candidate引入或保留NoC依赖”的
+跨资源tradeoff时，必须再过
+paired duration gate，不能让resource class字典序直接选winner。成本合同先区分事实层和估计层：
+
+- final Instr与typed topology能完整计数的DDR/SPM bytes、compute ops、DTE bytes/messages、source/destination
+  endpoint pressure和minimum-hop work是exact `Known`；
+- physical route、arbiter和实际hot-link并不因此Known。point model使用modeled deterministic shortest path
+  暴露cut/hotspot，并将该项显式标成`EstimatedRoute` assumption；在这个假设下算出的link load是模型结果，
+  不是硬件路由事实；
+- nominal duration是exact work乘versioned target point parameters的静态分析结果；conservative lower/upper
+  只由真正的硬件/校准bound形成。`EstimatedBenefit`与`ProvenBenefit`因此是不同结论。
+
+当前versioned target参数分为不同证据强度：
+
+- `200 GB/s`是整卡DDR峰值，用于DDR duration乐观下界；
+- `150 GB/s`是当前16-tile共享整卡的nominal operating point，不是每tile独享速率，也不冒充
+  guaranteed bound；
+- `128 GB/s`是单方向NoC link payload reference；point model另以`128 GB/s`作为DTE endpoint service policy
+  prior。二者数值相同但语义分开，均不是fabric aggregate、collective latency或sustained lower bound；
+- Direct-DTE每message的`α = 10 us`与maximum modeled route每hop `1 ns`是当前profile中惩罚小消息和
+  route fill的point policy prior，用来阻止小payload仅凭DDR byte下降胜出；它们不是板端测量，未来必须由
+  同profile matched board calibration替换；
+- SPM point prior为每tile `128 GB/s`，来源是1024-bit interface在1 GHz model quantum下的一beat估计；
+  instruction、DTE event release和NCC participant wait的control prior均为`1 ns`。这些值不是SPM sustained
+  bandwidth或wait latency bound；
+- CT/NE documented peak logical throughput作为compute point reference，不冒充sustained lower bound。
+
+对candidate `P`分别形成resource duration interval。整卡DDR项为：
+
+```text
+DDR lower  = total_card_bytes / 200 GB/s
+DDR nominal = total_card_bytes / 150 GB/s
+DDR upper  = Unknown，直到profile有重复样本支持的sustained lower bandwidth
+```
+
+NoC乐观lower使用route-independent
+`minimum-hop total link-byte / directed link count`形成idealized peak-link floor。nominal在modeled
+deterministic shortest path下取peak directed-link serialization、maximum transmit endpoint与maximum receive
+endpoint的最大值，每个endpoint都显式加入message `α`，再加入route fill hop prior。compute nominal按每rank
+engine work计算后跨rank取最大；SPM用maximum per-rank movement和per-tile point prior；control按maximum
+rank-local issue/event/wait计数。所有work仍来自current final IR，policy prior不回写IR。
+
+没有qualified multi-buffer时，nominal makespan为：
+
+```text
+max(DDR nominal + compute nominal + NoC nominal, SPM nominal) + control nominal
+```
+
+只有current IR具有完整fixed-slot/multi-buffer recurrence、exact wait/reuse cut，且target capability gate也
+通过时，才使用steady-state resource envelope：
+
+```text
+max(DDR nominal, compute nominal, NoC nominal, SPM nominal) + control nominal
+```
+
+这对应实际prologue/steady/epilogue结构，而不是由“存在DTE”或queue depth自动授予overlap credit。真正的
+  upper以exact minimum-hop message demand乘route dilation和hop upper覆盖串行message-hop；仍要求
+  DDR/NoC/endpoint/message startup/route dilation/hop fill/compute/SPM/control的保守参数，缺失时
+upper保持Unknown，但不影响point estimate自身可用。
+
+production先用同一参数实例做paired point comparison：
+
+```text
+candidate.nominal * 1.20 < baseline.nominal
+```
+
+该式成立时签发`EstimatedBenefit`并允许normal production选择；不成立则`Reject`。若同时具备真实
+conservative bounds且`candidate.upper * 1.20 < baseline.lower`，结论升级为`ProvenBenefit`。必要work
+仍为dynamic/unsupported或overflow时才`Indeterminate`；缺少physical route观测、startup measurement或upper
+bound只会保留显式assumption/Unknown upper，不再让全部候选退回baseline。qualification路径始终保留合法
+candidate，板端matched promotion负责校准prior并验证实际收益，不向compiler提供live feedback。
+
+具体原则：
 
 1. 额外partial或intermediate落DDR的candidate不能以Unknown overlap击败zero-extra-DDR resident candidate；
-2. DDR减少、NoC增加、SPM增加和compute/reduce增加是显式tradeoff，保留frontier；
-3. route未知时只使用topology可证明的minimum-hop link bytes，不推导per-link latency或aggregate bandwidth数值；
+2. DDR减少而candidate引入或保留NoC依赖，以及SPM增加、compute/reduce增加，都是显式tradeoff，保留frontier；
+3. physical route未知时，lower只使用topology可证明的minimum-hop work；nominal可使用显式
+   `EstimatedRoute`的modeled deterministic shortest path，但不能把其peak link load伪装成actual hot-link、
+   aggregate guaranteed bandwidth或duration upper bound；
 4. Q9只profile最终baseline/winner package，不能把live card measurement回灌compiler ranking；
-5. production promotion要求同源、同ABI、完整correctness后的matched end-to-end observation，不能只看某个
-   engine active counter。
+5. overlap只由current-IR multi-buffer/fixed-slot事实和target capability共同开放；单个pair、DTE async
+   correctness或仅存在多个engine不能代签pipeline group；
+6. `EstimatedBenefit`是静态production选择，不是板端promotion证据。真正校准和Q39 completion仍要求同源、
+   同ABI、完整correctness后的matched end-to-end observation，不能只看某个engine active counter。
 
 NoC aggregate bandwidth在本设计中体现为：一个global tile避免多次DDR取得后，可以由多个rank并行执行
-owner load、peer transfer、local compute和forward。它是候选结构的动机，不是未经校准的硬件常数。
+owner load、peer transfer、local compute和forward；nominal模型用typed topology的directed link count和
+modeled deterministic shortest path、endpoint maxima区分mesh并行与单点注入热点。它可以在显式assumption
+和margin下签发静态`EstimatedBenefit`，但不是物理route证明或`ProvenBenefit`。
 
 成本比较必须按unique global tile group计数，而不是按boundary的`replicated/partitioned`标签推断收益。
 replicated case只有actual重复load被删除时才有DDR read reduction；partitioned case通常每个shard只有一个
@@ -580,10 +709,10 @@ Softmax、LayerNorm和attention名字不进入generic opportunity discovery。�
 
 | 工作 | 可迁移结论 | 不直接照搬 |
 | --- | --- | --- |
-| Stream-K | work quantum可独立于output tile；额外partial seam应有界；hybrid schedule必须把fixup/memory work计入cost | GPU CTA、workspace/fixup协议和特定GEMM matcher |
-| TileLink | compute/communication tile解耦；tile ready/wait、push/pull和resource binding应可组合；pipeline不能越过memory dependency | 通用signal/channel side table、Triton/NVSHMEM地址模型 |
+| Stream-K | work-centric decomposition应按总work quantum和尾部不均衡建模；额外partial seam、fixup和memory work必须进入同一cost | GPU CTA、workspace/fixup协议、论文中的绝对性能数和特定GEMM matcher |
+| TileLink | compute/communication tile可解耦；tile ready/wait、push/pull、resource binding和dependency signal共同决定何时能overlap | 通用signal/channel side table、Triton/NVSHMEM地址模型和论文平台参数 |
 | Flux | AllGather-like input通信是compute prologue依赖，ReduceScatter-like output通信是epilogue依赖；过细拆kernel可能损失compute效率 | GEMM prologue/epilogue专用kernel和GPU remote pointer |
-| Lightweight Collective-Capable NoC | input multicast、reduction、double buffering和NoC aggregate traffic可减少external-memory压力；fine-grain fabric operation能隐藏software batch barrier | router multicast/reduction、Direct Compute Access和论文中的cycle/bandwidth参数不是TX81事实 |
+| Lightweight Collective-Capable NoC | 通信按`α + nβ`、congestion/dilation和endpoint压力建模；input multicast、reduction及qualified double buffering可减少external-memory压力，steady state取compute/communication resource maximum | router multicast/reduction、Direct Compute Access及论文中的cycle/bandwidth绝对参数不是TX81事实 |
 | FlatAttention | 多tile聚合SPM可放大reuse；input load+row/column multicast、local compute、reduce和async多engine可形成完整dataflow | attention专用group形状、softmax公式和假设的hardware collective |
 | COMET | compound op必须显式计collective、memory hierarchy位置、operation dependency、ramp-up/down和resource contention | 独立YAML mapping tree和长期collective plan |
 | TileFlow / LoopTree | 跨operator tiling、retention、recompute和resource binding要联合考虑；intermediate不应默认落DDR | 另建tree IR或离线mapping artifact |
@@ -643,16 +772,19 @@ Softmax、LayerNorm和attention名字不进入generic opportunity discovery。�
    15份显式peer traffic；intermediate host tests证明owner local reuse和所有参与rank零额外intermediate
    WDMA/RDMA；output host tests证明round-2 all-and-only publication及descriptor/final-writer负例；tree/ring
    partial source纵向证明matching spill/reload消失、slice/round/message精确并通过model/package/no-card。
-   pure elementwise winner独立覆盖无GEMM的replicated-input fan-out、add/mul compute和required output；
-   large contraction覆盖大GEMM，compound winner覆盖boundary+partial+GEMM/add/mul+required output；它不
+   pure elementwise纵向独立覆盖无GEMM的replicated-input fan-out candidate、add/mul compute、required output
+   以及小payload profitability回退；large contraction覆盖大GEMM estimated winner，compound qualification覆盖
+   boundary+partial+GEMM/add/mul+required output；它不
    代签intermediate/output publication。NoC×fixed-slot×nonzero-worker由同一actual candidate的
    target-model、ELF、package、attestation和no-card qualification纵向闭合。
 
 ### 9.2 外部门禁与明确扩展边界
 
-Q39现为`blocked: board`，不是`done`。唯一剩余completion gate是在同一configured board session中对同源
-baseline/winner做单进程、bounded、fresh correctness；Q9只观察final package，不给
-compiler live feedback。SUMMA专用panel mapping、dynamic/ragged rank tile、跨卡routing、runtime token
+Q39现为`doing`，不是`done`。当前静态模型以exact final-IR work、versioned point parameters、
+`EstimatedRoute`和current-IR schedule qualification闭合normal production profitability；之后还需在同一
+configured board session中对同源baseline/candidate做matched、重复、bounded performance qualification，
+用结果替换/校准`α`等policy prior，并对promotion后的winner做fresh correctness。Q9只观察final package，
+不给compiler live feedback。SUMMA专用panel mapping、dynamic/ragged rank tile、跨卡routing、runtime token
 routing、partitioned/range-changing output publication、普通local reduction自动发明collective，以及无法由
 current SSA/effect/range证明的recompute或producer chain均是明确非目标；若要推进，先建立新的tracking item，
 不能重新写成Q39未闭合的隐含任务。
@@ -665,10 +797,10 @@ current SSA/effect/range证明的recompute或producer chain均是明确非目标
 | Complete tuples | baseline-first；canonical Single/Unplaced current Instr先原子派生typed DisjointComponents sibling，再派生worker-preserving StaticFixedSlot；已有nonzero/fixed-slot不原地重写；四materializer同clone累计；null/mixed/伪metadata跳过；failure atomic | 五类tile role、worker/fixed-slot和structured occurrence保持complete-rank correspondence |
 | IR | owner RDMA、intermediate zero-DDR、tree/ring partial、round-2 output、local merge、bytes/peer/message、DTE token/wait、actual worker/loop及required store全部显式 | 不保留role/owner/channel/stage side protocol |
 | Lifetime/scheduling | Direct/ReceiveForward、SPM/fixed-slot/worker late gates；receive-prep-before-issue；call-expanded whole-program wait graph；Q38 odd/even/tail和same/cross-worker流水 | Unknown alias/control/message occurrence原子拒绝 |
-| Cost | DDR/SPM/NoC/compute/join从final IR重算；partitioned unique shard不报DDR下降；policy-aware exact Pareto选择 | Unknown不伪装为零或cycle |
-| Genericity | 四materializer覆盖五类role，不含op/shape/name matcher；纯elementwise非GEMM与GEMM两个compute family、large contraction和compound均覆盖 | case只验证协议，不成为matcher |
-| Vertical | input、纯elementwise非GEMM、tree/ring partial、large contraction、compound、strict boundary-only ring及独立fixed-slot/worker纵向均闭合；intermediate/output/parameter各有独立原子正负例；NoC×fixed-slot×nonzero-worker同候选的target model、ELF、package、attestation和no-card fresh纵向已闭合 | configured board fresh correctness仍为external gate |
-| Board | 尚未执行Q39 configured-board gate | 同源baseline/winner单进程fresh correctness；Q9只观察最终package，不给compiler live feedback |
+| Cost | DDR/SPM/NoC message+endpoint/compute/join从final IR exact重算；partitioned unique shard不报DDR下降；200 peak lower、150 DDR nominal、128 link/endpoint point reference和10 us message `α`分级；modeled deterministic shortest path标`EstimatedRoute`；无qualified multi-buffer按sequential phases，qualified fixed-slot按steady-state maximum；20% margin区分`EstimatedBenefit`/`ProvenBenefit` | dynamic/unsupported work才`Indeterminate`；configured-board matched calibration与winner correctness尚未闭合 |
+| Genericity | 四materializer覆盖五类role，不含op/shape/name matcher；纯elementwise非GEMM和GEMM两个compute family均进入同一candidate/model，small elementwise回退而large contraction清除margin，compound也覆盖 | case只验证协议，不成为matcher |
+| Vertical | input、纯elementwise非GEMM小payload回退、tree/ring partial、large contraction positive、compound qualification、strict boundary-only ring及独立fixed-slot/worker纵向均闭合；intermediate/output/parameter各有独立原子正负例；NoC×fixed-slot×nonzero-worker同候选的target model、ELF、package、attestation和no-card fresh纵向已闭合 | configured board fresh correctness仍为external gate |
+| Board | 尚未执行Q39 configured-board profitability/correctness gate | 同源baseline/candidate matched重复performance；promotion后winner单进程fresh correctness；Q9只观察最终package，不给compiler live feedback |
 
 ## 11. 完成定义
 
@@ -679,14 +811,20 @@ Q39只有同时满足以下条件才可`done`：
    同一个bounded complete-tuple actual-clone owner；
 3. peer movement、resident buffers、compute/reduce、writeback和completion全部存在于accepted IR，而不是
    从seed metadata或case角色推断；
-4. 至少两个compute family和一个compound source选择非baseline winner；
-5. 一个large contraction和一个复杂dataflow case证明DDR transaction下降、NoC traffic显式、SPM合法；
+4. 至少两个compute family和一个compound source产生fully accepted qualification candidate；exact work加
+   versioned point model清除20% margin时可产生normal `EstimatedBenefit`，完整bounds只能把结论升级为
+   `ProvenBenefit`；
+5. 一个large contraction和一个复杂dataflow case证明DDR transaction下降、NoC traffic显式、SPM合法，
+   并进入matched performance qualification；
 6. 真实DTE issue/exact wait和generic software pipeline直接消费这些candidate，NoC/fixed-slot/
    nonzero-worker需要的组合关系由actual IR及typed completion证明；
-7. baseline与winner通过相同host/no-card/model/package gate以及fresh board correctness；
+7. baseline与candidate通过相同host/no-card/model/package gate；matched board performance形成可审计
+   promotion证据，promotion后的winner再通过fresh board correctness；
 8. 文档、queue、memory与代码一致，operator-specific原型和旁路协议清理并提交。
 
 只有论文分析、cost model、局部pass、手写peer IR、GEMM microcase、raw DTE probe、结构上出现send/recv，或
-“理论上DDR更少”都不算完成。五类role、tree/ring、同clone累计、generic traversal和multi-engine composition
+“理论上DDR更少”、nominal crossover或单个engine counter都不算完成。五类role、tree/ring、同clone累计、
+generic traversal和multi-engine composition
 分别由自己的current-IR gate拥有；compound不能代签未在其final message traffic中出现的intermediate或output
-publication。所有非板端门禁闭合后仍须等待fresh board correctness，才能把Q39从`blocked: board`改为`done`。
+publication。所有非板端门禁闭合后仍须等待matched performance promotion与fresh winner correctness，才能把
+Q39改为`done`。

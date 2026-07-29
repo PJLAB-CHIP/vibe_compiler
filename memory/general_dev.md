@@ -587,8 +587,10 @@
   不能同时保留原始full collective与tiled clone。shared-input peers要么作为完整SSA-compatible closure整体加入，要么完全不加入；
   不枚举cost-ranked prefix。
 - winner只读取final instruction IR、validated SPM/DDR placement、transport/completion和whole-card exact resource vector。
-  complete Known dimensions上的Pareto与target-owned static policy可以选择resource tradeoff；不再计算或保存scalar time，
-  也不把静态resource改善称作board/time收益。
+  ordinary Pareto阶段不再计算或保存旧coarse/saturating scalar time；complete Known dimensions上的Pareto先处理
+  exact dominance，DDR下降但candidate引入或保留NoC依赖的跨资源tradeoff随后进入Q39 typed point/interval
+  profitability gate。
+  `EstimatedBenefit`只表示versioned static model清除margin，仍不能称作board-measured time收益。
 - rank-local semantic generation和physical derivation是两个不同的correspondence维度：stable ordinal匹配source/recipe/scope，
   artifact kind匹配spill、spill-ready、resident或resident-ready。all-rank tuple必须同时匹配两者；只匹配ordinal会把不同
   physical program拼在一起，即使每个rank单独通过verifier和resource gate也可能破坏collective数值语义。
@@ -1118,3 +1120,26 @@
   discovery ordinal、program member ordinal及exact global-tile/structured-path/SSA-effect等价确定。
   `llvm::hash_code`在启用ABI breaking checks的构建中可能按进程加盐，只能作同次analysis的预筛，不能参与
   排序、取模或tie-break。回归同时固定具体owner/communication ID，并用两个独立compiler进程比较完整package bytes。
+
+## Complete-rank NoC profitability
+
+- NoC跨资源选择必须相对同一source/config中已通过全部late gate的reserved baseline，从两份current final Instr
+  fresh重算；不能复用rank-local估分、artifact label或先前candidate的analysis。
+- `ScheduleCostKnowledge::Known`只描述final Instr与typed topology能完整精确计数的work：DDR/SPM bytes、
+  compute ops、DTE bytes/messages、endpoint pressure和minimum-hop work。它不证明物理route、arbiter或
+  duration；不要因为timing calibration缺失把这些work改成Unknown。
+- DDR read/write先在16-rank完整domain求和，再只除以一次整卡带宽。`200 GB/s`只作DDR lower，`150 GB/s`
+  是整卡nominal operating point；`128 GB/s`分别作为directional link reference和显式分开的DTE endpoint
+  point prior。modeled deterministic shortest path必须标`EstimatedRoute`，不能冒充actual hot-link。
+- point model还显式携带message `α`、maximum-route fill hop、SPM和control prior；当前Direct-DTE
+  `α=10 us`是versioned policy prior，不是测量，未来由matched board calibration替换。论文只贡献
+  `α+nβ`、congestion/dilation、
+  work-centric partition和double-buffer resource-envelope等结构，绝对参数不能直接移植。
+- 没有qualified multi-buffer时，DDR/NoC/compute按sequential phases计费；只有current-IR fixed-slot、
+  exact wait/reuse cut与target capability共同闭合才按steady-state resource maximum。point comparison以
+  `candidate.nominal * 1.20 < baseline.nominal`签发normal `EstimatedBenefit`；真实conservative
+  `candidate.upper * 1.20 < baseline.lower`才升级`ProvenBenefit`。缺少bound不导致`Indeterminate`，
+  必要work仍dynamic/unsupported或算术失败才导致它。
+- 新门禁只接管“DDR严格下降且candidate仍依赖NoC执行”的cross-resource tradeoff，包括新增/增加traffic或
+  保留已有collective；NoC-free的local resident/recompute等优化继续由现有exact Pareto/static selector处理，
+  Unknown DDR不能因此被NoC门禁误伤。

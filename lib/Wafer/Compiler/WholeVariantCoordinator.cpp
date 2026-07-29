@@ -10,6 +10,7 @@
 #include "WholeVariantAttemptPlan.h"
 #include "WholeVariantResourceAcceptance.h"
 
+#include "Wafer/Analysis/NoCProfitabilityAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetSchedulingCapability.h"
@@ -27,6 +28,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -1620,6 +1622,9 @@ selectAcceptedWholeVariants(
       WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker;
   const TargetStaticSelectionPolicy selectionPolicy =
       getDefaultWaferTargetPolicy(TileSearchEffort::Default).staticSelection;
+  const analysis::TargetScheduleCostPolicy scheduleCostPolicy =
+      analysis::getTargetScheduleCostPolicy(
+          executionConfig.getTargetProfileId());
 
   llvm::SmallVector<AcceptedWholeVariant, kWholeVariantParetoLimit>
       paretoFrontier;
@@ -1680,6 +1685,43 @@ selectAcceptedWholeVariants(
     if (selectionMode == WholeVariantSelectionMode::Production &&
         !hasNormalProductionSchedulingEvidence(*preTarget, baselineAccepted))
       return;
+    if (selectionMode == WholeVariantSelectionMode::Production) {
+      analysis::NoCTradeoffScheduleContext profitabilitySchedule;
+      if (preTarget->hasSchedulingCapabilityQuery &&
+          preTarget->schedulingProfitability.overlap ==
+              TargetSchedulingOverlapEvidence::QualifiedOverlap)
+        profitabilitySchedule.candidate =
+            analysis::StaticCrossResourceSchedule::PipelinedSteadyState;
+      analysis::NoCTradeoffProfitability profitability =
+          analysis::analyzeNoCTradeoffProfitability(
+              preTarget->resourceCost, baselineAccepted.resourceCost,
+              scheduleCostPolicy, profitabilitySchedule);
+      if (profitability.decision !=
+          analysis::NoCTradeoffDecision::NotApplicable) {
+        if (statistics)
+          ++statistics->noCProfitabilityEvaluations;
+        switch (profitability.decision) {
+        case analysis::NoCTradeoffDecision::NotApplicable:
+          llvm_unreachable("handled above");
+        case analysis::NoCTradeoffDecision::Reject:
+          if (statistics)
+            ++statistics->noCProfitabilityRejected;
+          return;
+        case analysis::NoCTradeoffDecision::Indeterminate:
+          if (statistics)
+            ++statistics->noCProfitabilityIndeterminate;
+          return;
+        case analysis::NoCTradeoffDecision::EstimatedBenefit:
+          if (statistics)
+            ++statistics->noCProfitabilityEstimated;
+          break;
+        case analysis::NoCTradeoffDecision::ProvenBenefit:
+          if (statistics)
+            ++statistics->noCProfitabilityProven;
+          break;
+        }
+      }
+    }
     if (!wouldRetainParetoCandidate(*preTarget, paretoFrontier,
                                     selectionPolicy))
       return;

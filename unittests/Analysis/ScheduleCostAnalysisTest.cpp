@@ -17,6 +17,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -85,10 +86,20 @@ TEST_F(ScheduleCostAnalysisTest, ExposesOnlyEstablishedTargetRates) {
   auto policy = wafer::analysis::getTargetScheduleCostPolicy(
       wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   EXPECT_EQ(policy.cardDDRBytesPerSecond, 200'000'000'000ULL);
+  EXPECT_EQ(policy.cardDDRNominalBytesPerSecond, 150'000'000'000ULL);
   EXPECT_EQ(policy.directionalNoCBytesPerSecond, 128'000'000'000ULL);
   EXPECT_EQ(policy.f16Bf16NPULogicalOpsPerSecondPerTile, 8'000'000'000'000ULL);
   EXPECT_EQ(policy.f16Bf16VectorLogicalOpsPerSecondPerTile, 64'000'000'000ULL);
   EXPECT_EQ(policy.f32VectorLogicalOpsPerSecondPerTile, 32'000'000'000ULL);
+  EXPECT_FALSE(policy.cardDDRSustainedBytesPerSecondLowerBound);
+  EXPECT_FALSE(policy.directionalNoCSustainedBytesPerSecondLowerBound);
+  EXPECT_FALSE(policy.dteEndpointBytesPerSecondLowerBound);
+  EXPECT_FALSE(policy.dteMessageStartupPicosecondsUpperBound);
+  EXPECT_FALSE(policy.noCHopPicosecondsUpperBound);
+  EXPECT_FALSE(policy.noCRouteDilationUpperBound);
+  EXPECT_FALSE(policy.instructionFixedPicosecondsUpperBound);
+  EXPECT_FALSE(policy.dteWaitedEventPicosecondsUpperBound);
+  EXPECT_FALSE(policy.nccParticipantWaitPicosecondsUpperBound);
   EXPECT_EQ(policy.spmAddressBase, 65536u);
   EXPECT_EQ(policy.spmAddressLimit, 3080192u);
 }
@@ -379,8 +390,7 @@ module {
   EXPECT_EQ(cost.spmHighWaterBytes.value, 264u);
 }
 
-TEST_F(ScheduleCostAnalysisTest,
-       RejectsRotatingSCFSlotWithAnUnknownOrigin) {
+TEST_F(ScheduleCostAnalysisTest, RejectsRotatingSCFSlotWithAnUnknownOrigin) {
   auto module = parse(R"mlir(
 module {
   func.func @main(
@@ -441,6 +451,11 @@ module {
   EXPECT_EQ(cost.noc.aggregateTransmitBytes.value, 16u);
   ASSERT_TRUE(cost.noc.aggregateReceiveBytes.isKnown());
   EXPECT_EQ(cost.noc.aggregateReceiveBytes.value, 16u);
+  EXPECT_EQ(cost.noc.staticIssueSiteCount.value, 2u);
+  EXPECT_EQ(cost.noc.transmitMessageCount.value, 1u);
+  EXPECT_EQ(cost.noc.receiveMessageCount.value, 1u);
+  EXPECT_EQ(cost.noc.waitOperationCount.value, 1u);
+  EXPECT_EQ(cost.noc.waitedEventCount.value, 2u);
   ASSERT_TRUE(cost.noc.collective(NoCCollectiveKind::AllReduce).isKnown());
   EXPECT_EQ(cost.noc.collective(NoCCollectiveKind::AllReduce).value, 16u);
   for (NoCDirection direction : {NoCDirection::North, NoCDirection::South,
@@ -989,6 +1004,68 @@ TEST_F(ScheduleCostAnalysisTest,
   ASSERT_TRUE(farCost.minimumHopLinkByteDemand.isKnown());
   EXPECT_EQ(nearCost.minimumHopLinkByteDemand.value, 16u);
   EXPECT_EQ(farCost.minimumHopLinkByteDemand.value, 48u);
+  ASSERT_TRUE(nearCost.minimumHopMessageDemand.isKnown());
+  ASSERT_TRUE(farCost.minimumHopMessageDemand.isKnown());
+  EXPECT_EQ(nearCost.minimumHopMessageDemand.value, 1u);
+  EXPECT_EQ(farCost.minimumHopMessageDemand.value, 3u);
+  ASSERT_TRUE(nearCost.directedNoCLinkCount.isKnown());
+  ASSERT_TRUE(farCost.directedNoCLinkCount.isKnown());
+  EXPECT_EQ(nearCost.directedNoCLinkCount.value, 6u);
+  EXPECT_EQ(farCost.directedNoCLinkCount.value, 6u);
+  ASSERT_TRUE(nearCost.idealizedMinimumPeakLinkByteDemand.isKnown());
+  ASSERT_TRUE(farCost.idealizedMinimumPeakLinkByteDemand.isKnown());
+  EXPECT_EQ(nearCost.idealizedMinimumPeakLinkByteDemand.value, 3u);
+  EXPECT_EQ(farCost.idealizedMinimumPeakLinkByteDemand.value, 8u);
+  ASSERT_TRUE(nearCost.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
+  ASSERT_TRUE(farCost.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
+  EXPECT_EQ(nearCost.modeledNoCRoute.kind,
+            wafer::analysis::ModeledNoCRouteKind::CanonicalShortestPath);
+  EXPECT_EQ(nearCost.modeledNoCRoute.peakDirectedLinkByteDemand.value, 16u);
+  EXPECT_EQ(farCost.modeledNoCRoute.peakDirectedLinkByteDemand.value, 16u);
+  ASSERT_TRUE(nearCost.maximumNoCHopCount.isKnown());
+  ASSERT_TRUE(farCost.maximumNoCHopCount.isKnown());
+  EXPECT_EQ(nearCost.maximumNoCHopCount.value, 1u);
+  EXPECT_EQ(farCost.maximumNoCHopCount.value, 3u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       WholeCardNoCFreeProgramKeepsTopologyFactsSeparateFromZeroTraffic) {
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 4> owners;
+  llvm::SmallVector<mlir::Operation *, 4> roots;
+  for (int64_t rank = 0; rank < 4; ++rank) {
+    owners.push_back(makeDTERankModule(4, 4, "", ""));
+    ASSERT_TRUE(owners.back());
+    roots.push_back(owners.back()->getOperation());
+  }
+  const auto policy = wafer::analysis::getTargetScheduleCostPolicy(
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  auto cost =
+      wafer::analysis::analyzeWholeCardInstructionProgramCost(roots, policy);
+  ASSERT_TRUE(cost.directedNoCLinkCount.isKnown());
+  EXPECT_EQ(cost.directedNoCLinkCount.value, 6u);
+  ASSERT_TRUE(cost.minimumHopLinkByteDemand.isKnown());
+  EXPECT_EQ(cost.minimumHopLinkByteDemand.value, 0u);
+  ASSERT_TRUE(cost.minimumHopMessageDemand.isKnown());
+  EXPECT_EQ(cost.minimumHopMessageDemand.value, 0u);
+  ASSERT_TRUE(cost.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
+  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.value, 0u);
+
+  auto missing0 = makeDTERankModule(2, 2, "", "", false);
+  auto missing1 = makeDTERankModule(2, 2, "", "", false);
+  ASSERT_TRUE(missing0);
+  ASSERT_TRUE(missing1);
+  llvm::SmallVector<mlir::Operation *, 2> missingRoots{
+      missing0->getOperation(), missing1->getOperation()};
+  auto missingCost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
+      missingRoots, policy);
+  EXPECT_EQ(missingCost.directedNoCLinkCount.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(missingCost.directedNoCLinkCount.reason,
+            ScheduleCostReason::InvalidExecutionTopology);
+  ASSERT_TRUE(missingCost.minimumHopLinkByteDemand.isKnown());
+  EXPECT_EQ(missingCost.minimumHopLinkByteDemand.value, 0u);
+  ASSERT_TRUE(missingCost.minimumHopMessageDemand.isKnown());
+  EXPECT_EQ(missingCost.minimumHopMessageDemand.value, 0u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
@@ -1017,6 +1094,82 @@ TEST_F(ScheduleCostAnalysisTest,
                  wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
   ASSERT_TRUE(cost.minimumHopLinkByteDemand.isKnown());
   EXPECT_EQ(cost.minimumHopLinkByteDemand.value, 24u);
+  ASSERT_TRUE(cost.minimumHopMessageDemand.isKnown());
+  EXPECT_EQ(cost.minimumHopMessageDemand.value, 6u);
+  ASSERT_TRUE(cost.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
+  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.value, 12u);
+  ASSERT_TRUE(cost.maximumNoCHopCount.isKnown());
+  EXPECT_EQ(cost.maximumNoCHopCount.value, 2u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       EndpointPressureDistinguishesEqualMeshLinkByteDemand) {
+  constexpr llvm::StringLiteral sendLeft = R"mlir(
+    %sent = wafer.instr.dte_send %buffer
+        {peer = 0 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 1, phase = peer_dataflow, round = 0, slice = 0>}
+        : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+)mlir";
+  constexpr llvm::StringLiteral sendRight = R"mlir(
+    %sent = wafer.instr.dte_send %buffer
+        {peer = 2 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 2, phase = peer_dataflow, round = 0, slice = 0>}
+        : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+)mlir";
+  constexpr llvm::StringLiteral sendBoth = R"mlir(
+    %left = wafer.instr.dte_send %buffer
+        {peer = 0 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 1, phase = peer_dataflow, round = 0, slice = 0>}
+        : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+    %right = wafer.instr.dte_send %buffer
+        {peer = 0 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 2, phase = peer_dataflow, round = 0, slice = 0>}
+        : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+)mlir";
+
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 4> balancedOwners;
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 4> hotspotOwners;
+  llvm::SmallVector<mlir::Operation *, 4> balancedRoots;
+  llvm::SmallVector<mlir::Operation *, 4> hotspotRoots;
+  for (int64_t rank = 0; rank < 4; ++rank) {
+    llvm::StringRef balancedBody = rank == 1   ? sendLeft
+                                   : rank == 3 ? sendRight
+                                               : "";
+    llvm::StringRef hotspotBody = rank == 1 ? sendBoth : "";
+    balancedOwners.push_back(makeDTERankModule(4, 4, "", balancedBody));
+    hotspotOwners.push_back(makeDTERankModule(4, 4, "", hotspotBody));
+    ASSERT_TRUE(balancedOwners.back());
+    ASSERT_TRUE(hotspotOwners.back());
+    balancedRoots.push_back(balancedOwners.back()->getOperation());
+    hotspotRoots.push_back(hotspotOwners.back()->getOperation());
+  }
+
+  const auto policy = wafer::analysis::getTargetScheduleCostPolicy(
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  auto balanced = wafer::analysis::analyzeWholeCardInstructionProgramCost(
+      balancedRoots, policy);
+  auto hotspot = wafer::analysis::analyzeWholeCardInstructionProgramCost(
+      hotspotRoots, policy);
+  ASSERT_TRUE(balanced.aggregateNoC.aggregateTransmitBytes.isKnown());
+  ASSERT_TRUE(hotspot.aggregateNoC.aggregateTransmitBytes.isKnown());
+  EXPECT_EQ(balanced.aggregateNoC.aggregateTransmitBytes.value, 32u);
+  EXPECT_EQ(hotspot.aggregateNoC.aggregateTransmitBytes.value, 32u);
+  ASSERT_TRUE(balanced.minimumHopLinkByteDemand.isKnown());
+  ASSERT_TRUE(hotspot.minimumHopLinkByteDemand.isKnown());
+  EXPECT_EQ(balanced.minimumHopLinkByteDemand.value, 32u);
+  EXPECT_EQ(hotspot.minimumHopLinkByteDemand.value, 32u);
+  ASSERT_TRUE(balanced.idealizedMinimumPeakLinkByteDemand.isKnown());
+  ASSERT_TRUE(hotspot.idealizedMinimumPeakLinkByteDemand.isKnown());
+  EXPECT_EQ(balanced.idealizedMinimumPeakLinkByteDemand.value,
+            hotspot.idealizedMinimumPeakLinkByteDemand.value);
+  ASSERT_TRUE(balanced.maximumRankNoCTransmitBytes.isKnown());
+  ASSERT_TRUE(hotspot.maximumRankNoCTransmitBytes.isKnown());
+  EXPECT_EQ(balanced.maximumRankNoCTransmitBytes.value, 16u);
+  EXPECT_EQ(hotspot.maximumRankNoCTransmitBytes.value, 32u);
+  ASSERT_TRUE(balanced.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
+  ASSERT_TRUE(hotspot.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
+  EXPECT_EQ(balanced.modeledNoCRoute.peakDirectedLinkByteDemand.value, 16u);
+  EXPECT_EQ(hotspot.modeledNoCRoute.peakDirectedLinkByteDemand.value, 32u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
@@ -1039,8 +1192,10 @@ TEST_F(ScheduleCostAnalysisTest,
   llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 3> owners;
   llvm::SmallVector<mlir::Operation *, 3> roots;
   for (int64_t rank = 0; rank < 3; ++rank) {
-    owners.push_back(
-        makeDTERankModule(3, 3, "", rank == 0 ? send : rank == 2 ? recv : ""));
+    owners.push_back(makeDTERankModule(3, 3, "",
+                                       rank == 0   ? send
+                                       : rank == 2 ? recv
+                                                   : ""));
     ASSERT_TRUE(owners.back());
     roots.push_back(owners.back()->getOperation());
   }
@@ -1052,8 +1207,19 @@ TEST_F(ScheduleCostAnalysisTest,
   EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.value, 8u);
   ASSERT_TRUE(cost.aggregateNoC.aggregateReceiveBytes.isKnown());
   EXPECT_EQ(cost.aggregateNoC.aggregateReceiveBytes.value, 8u);
+  EXPECT_EQ(cost.aggregateNoC.staticIssueSiteCount.value, 2u);
+  EXPECT_EQ(cost.aggregateNoC.transmitMessageCount.value, 1u);
+  EXPECT_EQ(cost.aggregateNoC.receiveMessageCount.value, 1u);
+  EXPECT_EQ(cost.aggregateNoC.waitOperationCount.value, 2u);
+  EXPECT_EQ(cost.aggregateNoC.waitedEventCount.value, 2u);
+  EXPECT_EQ(cost.maximumRankNoCTransmitBytes.value, 8u);
+  EXPECT_EQ(cost.maximumRankNoCReceiveBytes.value, 8u);
+  EXPECT_EQ(cost.maximumRankNoCTransmitMessageCount.value, 1u);
+  EXPECT_EQ(cost.maximumRankNoCReceiveMessageCount.value, 1u);
   ASSERT_TRUE(cost.minimumHopLinkByteDemand.isKnown());
   EXPECT_EQ(cost.minimumHopLinkByteDemand.value, 16u);
+  ASSERT_TRUE(cost.minimumHopMessageDemand.isKnown());
+  EXPECT_EQ(cost.minimumHopMessageDemand.value, 2u);
   ASSERT_TRUE(cost.aggregateEventCount.isKnown());
   EXPECT_EQ(cost.aggregateEventCount.value, 2u);
   ASSERT_TRUE(cost.aggregateInstructionCount.isKnown());
@@ -1092,6 +1258,48 @@ TEST_F(ScheduleCostAnalysisTest,
             ScheduleCostKnowledge::Overflow);
   EXPECT_EQ(cost.minimumHopLinkByteDemand.reason,
             ScheduleCostReason::ArithmeticOverflow);
+  ASSERT_TRUE(cost.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
+  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.value,
+            std::numeric_limits<uint64_t>::max() - 1);
+  ASSERT_TRUE(cost.maximumNoCHopCount.isKnown());
+  EXPECT_EQ(cost.maximumNoCHopCount.value, 2u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       WholeCardModeledRoutePropagatesSharedLinkOverflow) {
+  constexpr llvm::StringLiteral overflowingSharedLink = R"mlir(
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %cmax = arith.constant 9223372036854775807 : index
+    scf.for %i = %c0 to %cmax step %c1 {
+      %first = wafer.instr.dte_send %buffer
+          {peer = 1 : i64, bytes = 2 : i64,
+           message = #wafer.dte_message<communication = 31, phase = peer_dataflow, round = 0, slice = 0>}
+          : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+      %second = wafer.instr.dte_send %buffer
+          {peer = 1 : i64, bytes = 2 : i64,
+           message = #wafer.dte_message<communication = 32, phase = peer_dataflow, round = 0, slice = 0>}
+          : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+    }
+)mlir";
+  auto rank0 = makeDTERankModule(2, 2, "", overflowingSharedLink);
+  auto rank1 = makeDTERankModule(2, 2, "", "");
+  ASSERT_TRUE(rank0);
+  ASSERT_TRUE(rank1);
+  llvm::SmallVector<mlir::Operation *, 2> roots{rank0->getOperation(),
+                                                rank1->getOperation()};
+  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
+      roots, wafer::analysis::getTargetScheduleCostPolicy(
+                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.knowledge,
+            ScheduleCostKnowledge::Overflow);
+  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.reason,
+            ScheduleCostReason::ArithmeticOverflow);
+  ASSERT_TRUE(cost.minimumHopMessageDemand.isKnown());
+  EXPECT_EQ(cost.minimumHopMessageDemand.value,
+            std::numeric_limits<uint64_t>::max() - 1);
+  ASSERT_TRUE(cost.maximumNoCHopCount.isKnown());
+  EXPECT_EQ(cost.maximumNoCHopCount.value, 1u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
@@ -1114,6 +1322,13 @@ TEST_F(ScheduleCostAnalysisTest,
   EXPECT_EQ(cost.minimumHopLinkByteDemand.knowledge,
             ScheduleCostKnowledge::Unknown);
   EXPECT_EQ(cost.minimumHopLinkByteDemand.reason,
+            ScheduleCostReason::InvalidExecutionTopology);
+  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.reason,
+            ScheduleCostReason::InvalidExecutionTopology);
+  EXPECT_EQ(cost.maximumNoCHopCount.knowledge, ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.maximumNoCHopCount.reason,
             ScheduleCostReason::InvalidExecutionTopology);
 }
 
@@ -1142,6 +1357,16 @@ TEST_F(ScheduleCostAnalysisTest,
             ScheduleCostKnowledge::Unknown);
   EXPECT_EQ(cost.minimumHopLinkByteDemand.reason,
             ScheduleCostReason::DynamicLoopTripCount);
+  EXPECT_EQ(cost.minimumHopMessageDemand.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.minimumHopMessageDemand.reason,
+            ScheduleCostReason::DynamicLoopTripCount);
+  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.reason,
+            ScheduleCostReason::DynamicLoopTripCount);
+  ASSERT_TRUE(cost.maximumNoCHopCount.isKnown());
+  EXPECT_EQ(cost.maximumNoCHopCount.value, 1u);
 }
 
 } // namespace

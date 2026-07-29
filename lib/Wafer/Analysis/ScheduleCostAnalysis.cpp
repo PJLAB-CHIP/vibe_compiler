@@ -176,8 +176,13 @@ static void addComputeCost(ScheduleComputeCost &aggregate,
 
 static void addNoCCost(ScheduleNoCCost &aggregate,
                        const ScheduleNoCCost &rankCost) {
+  addMetric(aggregate.staticIssueSiteCount, rankCost.staticIssueSiteCount);
   addMetric(aggregate.aggregateTransmitBytes, rankCost.aggregateTransmitBytes);
   addMetric(aggregate.aggregateReceiveBytes, rankCost.aggregateReceiveBytes);
+  addMetric(aggregate.transmitMessageCount, rankCost.transmitMessageCount);
+  addMetric(aggregate.receiveMessageCount, rankCost.receiveMessageCount);
+  addMetric(aggregate.waitOperationCount, rankCost.waitOperationCount);
+  addMetric(aggregate.waitedEventCount, rankCost.waitedEventCount);
   for (size_t index = 0; index < aggregate.directionalTransmitBytes.size();
        ++index)
     addMetric(aggregate.directionalTransmitBytes[index],
@@ -192,6 +197,12 @@ struct PendingHopTransmit {
   size_t sourceRank = 0;
   int64_t peer = -1;
   detail::Quantity payloadBytes;
+  detail::Quantity messageCount;
+};
+
+struct ModeledDirectedLinkLoad {
+  ExecutionDirectedLink link;
+  uint64_t bytes = 0;
 };
 
 static mlir::ModuleOp getContainingModule(mlir::Operation *root) {
@@ -202,14 +213,30 @@ static mlir::ModuleOp getContainingModule(mlir::Operation *root) {
   return root->getParentOfType<mlir::ModuleOp>();
 }
 
-static void
-collectMinimumHopLinkByteDemand(llvm::ArrayRef<mlir::Operation *> rankRoots,
-                                ScheduleCostMetric &minimumHopLinkByteDemand) {
+static void collectMinimumHopLinkByteDemand(
+    llvm::ArrayRef<mlir::Operation *> rankRoots,
+    ScheduleCostMetric &minimumHopLinkByteDemand,
+    ScheduleCostMetric &minimumHopMessageDemand,
+    ScheduleCostMetric &directedNoCLinkCount,
+    ScheduleCostMetric &idealizedMinimumPeakLinkByteDemand,
+    ModeledNoCRouteCost &modeledNoCRoute,
+    ScheduleCostMetric &maximumNoCHopCount) {
   llvm::SmallVector<PendingHopTransmit, 32> transmits;
-  bool hasKnownPositiveTransmit = false;
   for (auto [sourceRank, root] : llvm::enumerate(rankRoots)) {
     if (!root) {
       detail::degrade(minimumHopLinkByteDemand, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(minimumHopMessageDemand, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(directedNoCLinkCount, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(idealizedMinimumPeakLinkByteDemand,
+                      ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(modeledNoCRoute.peakDirectedLinkByteDemand,
+                      ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(maximumNoCHopCount, ScheduleCostKnowledge::Unknown,
                       ScheduleCostReason::InvalidExecutionTopology);
       continue;
     }
@@ -226,27 +253,47 @@ collectMinimumHopLinkByteDemand(llvm::ArrayRef<mlir::Operation *> rankRoots,
       detail::Quantity payload = detail::multiply(bytes, multiplicity);
       if (payload.knowledge != ScheduleCostKnowledge::Known) {
         detail::add(minimumHopLinkByteDemand, payload);
-        return;
+        detail::add(idealizedMinimumPeakLinkByteDemand, payload);
+        detail::add(modeledNoCRoute.peakDirectedLinkByteDemand, payload);
       }
-      if (payload.value == 0)
+      if (multiplicity.knowledge == ScheduleCostKnowledge::Known &&
+          multiplicity.value == 0)
         return;
-      hasKnownPositiveTransmit = true;
       transmits.push_back({static_cast<size_t>(sourceRank),
-                           send.getPeerAttr().getInt(), payload});
+                           send.getPeerAttr().getInt(), payload, multiplicity});
     };
     auto markUnsupported = [&]() {
       detail::degrade(minimumHopLinkByteDemand,
                       ScheduleCostKnowledge::Unsupported,
                       ScheduleCostReason::UnsupportedControlFlow);
+      detail::degrade(minimumHopMessageDemand,
+                      ScheduleCostKnowledge::Unsupported,
+                      ScheduleCostReason::UnsupportedControlFlow);
+      detail::degrade(idealizedMinimumPeakLinkByteDemand,
+                      ScheduleCostKnowledge::Unsupported,
+                      ScheduleCostReason::UnsupportedControlFlow);
+      detail::degrade(modeledNoCRoute.peakDirectedLinkByteDemand,
+                      ScheduleCostKnowledge::Unsupported,
+                      ScheduleCostReason::UnsupportedControlFlow);
+      detail::degrade(maximumNoCHopCount, ScheduleCostKnowledge::Unsupported,
+                      ScheduleCostReason::UnsupportedControlFlow);
     };
     detail::walkInstructionProgram(root, collect, markUnsupported);
   }
 
-  // Zero final sends imply an exact zero link-byte demand independently of
-  // topology. This keeps compute-only whole variants analyzable while still
-  // requiring typed topology for every positive communication edge.
-  if (!hasKnownPositiveTransmit)
+  // Zero final sends imply exact zero traffic independently of topology, but
+  // directedNoCLinkCount is still a topology fact and must not remain a
+  // fabricated Known(0). A missing topology therefore degrades only that fact
+  // for an otherwise exact NoC-free program.
+  if (transmits.empty() && !minimumHopLinkByteDemand.isKnown())
+    detail::degrade(idealizedMinimumPeakLinkByteDemand,
+                    minimumHopLinkByteDemand.knowledge,
+                    minimumHopLinkByteDemand.reason);
+  if (rankRoots.empty()) {
+    detail::degrade(directedNoCLinkCount, ScheduleCostKnowledge::Unknown,
+                    ScheduleCostReason::InvalidExecutionTopology);
     return;
+  }
 
   llvm::SmallVector<ExecutionTopologyAnalysis, 16> rankTopologies;
   rankTopologies.reserve(rankRoots.size());
@@ -255,14 +302,42 @@ collectMinimumHopLinkByteDemand(llvm::ArrayRef<mlir::Operation *> rankRoots,
     mlir::FailureOr<ExecutionTopologyAnalysis> topology =
         ExecutionTopologyAnalysis::create(module);
     if (mlir::failed(topology)) {
+      detail::degrade(directedNoCLinkCount, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      if (transmits.empty())
+        return;
       detail::degrade(minimumHopLinkByteDemand, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(minimumHopMessageDemand, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(idealizedMinimumPeakLinkByteDemand,
+                      ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(modeledNoCRoute.peakDirectedLinkByteDemand,
+                      ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(maximumNoCHopCount, ScheduleCostKnowledge::Unknown,
                       ScheduleCostReason::InvalidExecutionTopology);
       return;
     }
     if (topology->getRankCount() != static_cast<int64_t>(rankRoots.size()) ||
         (!rankTopologies.empty() &&
          !rankTopologies.front().isEquivalentTo(*topology))) {
+      detail::degrade(directedNoCLinkCount, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      if (transmits.empty())
+        return;
       detail::degrade(minimumHopLinkByteDemand, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(minimumHopMessageDemand, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(idealizedMinimumPeakLinkByteDemand,
+                      ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(modeledNoCRoute.peakDirectedLinkByteDemand,
+                      ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(maximumNoCHopCount, ScheduleCostKnowledge::Unknown,
                       ScheduleCostReason::InvalidExecutionTopology);
       return;
     }
@@ -270,17 +345,81 @@ collectMinimumHopLinkByteDemand(llvm::ArrayRef<mlir::Operation *> rankRoots,
   }
 
   const ExecutionTopologyAnalysis &topology = rankTopologies.front();
+  directedNoCLinkCount.value = topology.getDirectedLinkCount();
+  if (transmits.empty())
+    return;
+  llvm::SmallVector<ModeledDirectedLinkLoad, 32> modeledLinkLoads;
   for (const PendingHopTransmit &transmit : transmits) {
     std::optional<uint64_t> hops = topology.getShortestHopDistance(
         static_cast<int64_t>(transmit.sourceRank), transmit.peer);
-    if (!hops) {
+    mlir::FailureOr<llvm::SmallVector<ExecutionDirectedLink, 8>> route =
+        topology.getCanonicalShortestPath(
+            static_cast<int64_t>(transmit.sourceRank), transmit.peer);
+    if (!hops || mlir::failed(route) || route->size() != *hops) {
       detail::degrade(minimumHopLinkByteDemand, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(minimumHopMessageDemand, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(idealizedMinimumPeakLinkByteDemand,
+                      ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(modeledNoCRoute.peakDirectedLinkByteDemand,
+                      ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      detail::degrade(maximumNoCHopCount, ScheduleCostKnowledge::Unknown,
                       ScheduleCostReason::InvalidExecutionTopology);
       return;
     }
+    if (maximumNoCHopCount.isKnown())
+      maximumNoCHopCount.value = std::max(maximumNoCHopCount.value, *hops);
     detail::add(minimumHopLinkByteDemand,
                 detail::multiply(transmit.payloadBytes, *hops));
+    detail::add(minimumHopMessageDemand,
+                detail::multiply(transmit.messageCount, *hops));
+    if (transmit.payloadBytes.knowledge != ScheduleCostKnowledge::Known)
+      continue;
+    for (const ExecutionDirectedLink &link : *route) {
+      auto existing =
+          std::find_if(modeledLinkLoads.begin(), modeledLinkLoads.end(),
+                       [&](const ModeledDirectedLinkLoad &load) {
+                         return load.link == link;
+                       });
+      if (existing == modeledLinkLoads.end()) {
+        modeledLinkLoads.push_back({link, transmit.payloadBytes.value});
+        continue;
+      }
+      uint64_t sum = 0;
+      if (!detail::checkedAdd(existing->bytes, transmit.payloadBytes.value,
+                              sum)) {
+        detail::degrade(modeledNoCRoute.peakDirectedLinkByteDemand,
+                        ScheduleCostKnowledge::Overflow,
+                        ScheduleCostReason::ArithmeticOverflow);
+        continue;
+      }
+      existing->bytes = sum;
+    }
   }
+  if (modeledNoCRoute.peakDirectedLinkByteDemand.isKnown())
+    for (const ModeledDirectedLinkLoad &load : modeledLinkLoads)
+      modeledNoCRoute.peakDirectedLinkByteDemand.value = std::max(
+          modeledNoCRoute.peakDirectedLinkByteDemand.value, load.bytes);
+  if (!minimumHopLinkByteDemand.isKnown()) {
+    detail::degrade(idealizedMinimumPeakLinkByteDemand,
+                    minimumHopLinkByteDemand.knowledge,
+                    minimumHopLinkByteDemand.reason);
+    return;
+  }
+  const uint64_t links = directedNoCLinkCount.value;
+  if (links == 0) {
+    if (minimumHopLinkByteDemand.value != 0)
+      detail::degrade(idealizedMinimumPeakLinkByteDemand,
+                      ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+    return;
+  }
+  idealizedMinimumPeakLinkByteDemand.value =
+      minimumHopLinkByteDemand.value / links +
+      static_cast<uint64_t>(minimumHopLinkByteDemand.value % links != 0);
 }
 
 } // namespace
@@ -298,6 +437,14 @@ WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
     addMetric(result.aggregateDDRWriteBytes, rankCost.ddrWriteBytes);
     addMetric(result.aggregateSPMMovementBytes, rankCost.spmMovementBytes);
     addNoCCost(result.aggregateNoC, rankCost.noc);
+    maximizeMetric(result.maximumRankNoCTransmitBytes,
+                   rankCost.noc.aggregateTransmitBytes);
+    maximizeMetric(result.maximumRankNoCReceiveBytes,
+                   rankCost.noc.aggregateReceiveBytes);
+    maximizeMetric(result.maximumRankNoCTransmitMessageCount,
+                   rankCost.noc.transmitMessageCount);
+    maximizeMetric(result.maximumRankNoCReceiveMessageCount,
+                   rankCost.noc.receiveMessageCount);
     addMetric(result.aggregateInstructionCount, rankCost.instructionCount);
     addMetric(result.aggregateEventCount, rankCost.eventCount);
     addMetric(result.aggregateNCCJoinCount, rankCost.nccJoinCount);
@@ -322,7 +469,11 @@ WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
     addMetric(result.summedRankSPMHighWaterBytes, rankCost.spmHighWaterBytes);
     result.rankCosts.push_back(std::move(rankCost));
   }
-  collectMinimumHopLinkByteDemand(rankRoots, result.minimumHopLinkByteDemand);
+  collectMinimumHopLinkByteDemand(
+      rankRoots, result.minimumHopLinkByteDemand,
+      result.minimumHopMessageDemand, result.directedNoCLinkCount,
+      result.idealizedMinimumPeakLinkByteDemand, result.modeledNoCRoute,
+      result.maximumNoCHopCount);
   return result;
 }
 
@@ -371,6 +522,8 @@ llvm::StringRef stringifyScheduleCostReason(ScheduleCostReason reason) {
     return "unsupported-instruction-semantics";
   case ScheduleCostReason::UnsupportedComputeType:
     return "unsupported-compute-type";
+  case ScheduleCostReason::MissingPerformanceCalibration:
+    return "missing-performance-calibration";
   case ScheduleCostReason::ArithmeticOverflow:
     return "arithmetic-overflow";
   }

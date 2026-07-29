@@ -81,6 +81,11 @@ struct AcceptedProductionAndBaseline {
 struct WholeVariantSelectionStatistics {
   uint64_t targetGateInvocations = 0;
   uint64_t targetRankGateInvocations = 0;
+  uint64_t noCProfitabilityEvaluations = 0;
+  uint64_t noCProfitabilityRejected = 0;
+  uint64_t noCProfitabilityIndeterminate = 0;
+  uint64_t noCProfitabilityEstimated = 0;
+  uint64_t noCProfitabilityProven = 0;
 };
 
 /// Prove from one accepted rank's current IR that every DDR movement is

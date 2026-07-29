@@ -60,6 +60,8 @@ module {
   EXPECT_EQ(rank3->tileY, 1);
   EXPECT_EQ(rank3->tileX, 1);
   EXPECT_EQ(topology->getShortestHopDistance(0, 3), 2u);
+  // Four undirected edges, counted once in each direction.
+  EXPECT_EQ(topology->getDirectedLinkCount(), 8u);
 }
 
 TEST_F(ExecutionTopologyAnalysisTest,
@@ -89,10 +91,47 @@ module {
   EXPECT_EQ(rank0->tileX, 2);
   EXPECT_EQ(rank1->tileX, 0);
   EXPECT_EQ(topology->getShortestHopDistance(0, 1), 4u);
+  // A full 3x3 mesh has 24 directed links; removing the center removes its
+  // eight directed incidences.
+  EXPECT_EQ(topology->getDirectedLinkCount(), 16u);
 
   auto matrix = topology->getShortestHopMatrix({1, 0});
   ASSERT_TRUE(mlir::succeeded(matrix));
   EXPECT_EQ(*matrix, (llvm::SmallVector<uint64_t, 16>{0, 4, 4, 0}));
+
+  auto route = topology->getCanonicalShortestPath(0, 1);
+  ASSERT_TRUE(mlir::succeeded(route));
+  ASSERT_EQ(route->size(), 4u);
+  // Row-major BFS tie-breaking chooses the upper path around the unavailable
+  // center rather than depending on incidental neighbor insertion order.
+  EXPECT_EQ((*route)[0].source,
+            (wafer::analysis::ExecutionEndpoint{0, 0, 1, 2}));
+  EXPECT_EQ((*route)[0].destination,
+            (wafer::analysis::ExecutionEndpoint{0, 0, 0, 2}));
+  EXPECT_EQ((*route)[3].source,
+            (wafer::analysis::ExecutionEndpoint{0, 0, 0, 0}));
+  EXPECT_EQ((*route)[3].destination,
+            (wafer::analysis::ExecutionEndpoint{0, 0, 1, 0}));
+}
+
+TEST_F(ExecutionTopologyAnalysisTest, CountsDirectedLinksInFourByFourMesh) {
+  auto module = parse(R"mlir(
+module {
+  wafer.target.topology @topology {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @mesh {
+    topology = @topology, axes = ["rank"], shape = array<i64: 16>,
+    policy = "all_available", endpoints = array<i64>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  auto topology = wafer::analysis::ExecutionTopologyAnalysis::create(*module);
+  ASSERT_TRUE(mlir::succeeded(topology));
+  // 4 * 3 horizontal plus 4 * 3 vertical links, each bidirectional.
+  EXPECT_EQ(topology->getDirectedLinkCount(), 48u);
 }
 
 TEST_F(ExecutionTopologyAnalysisTest, DerivesCardTorusWraparoundFromTypedIR) {
@@ -130,6 +169,14 @@ module {
   ASSERT_TRUE(mlir::succeeded(torus));
   EXPECT_EQ(mesh->getShortestHopDistance(0, 1), 3u);
   EXPECT_EQ(torus->getShortestHopDistance(0, 1), 1u);
+  auto torusRoute = torus->getCanonicalShortestPath(0, 1);
+  ASSERT_TRUE(mlir::succeeded(torusRoute));
+  ASSERT_EQ(torusRoute->size(), 1u);
+  EXPECT_EQ(torusRoute->front().source,
+            (wafer::analysis::ExecutionEndpoint{0, 0, 0, 0}));
+  EXPECT_EQ(torusRoute->front().destination,
+            (wafer::analysis::ExecutionEndpoint{0, 3, 0, 0}));
+  EXPECT_TRUE(mlir::failed(torus->getCanonicalShortestPath(0, 2)));
 }
 
 TEST_F(ExecutionTopologyAnalysisTest,

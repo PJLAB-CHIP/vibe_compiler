@@ -646,11 +646,12 @@
   class让spill与resident的scalar estimate都饱和到最大值，selector因此错误保留spill。
 - 根因：把coarse、saturating的时间投影当成唯一序关系；它丢失了原始cost vector上“所有dimension不更差且至少一项
   更低”的信息。直接调小常量或忽略未校准class又会制造没有hardware依据的timing claim。
-- 修复模式：Q32.G已删除scalar estimate和time projection。当前只从complete final IR重算NPU/vector compute classes、
-  DDR read/write、SPM movement、NoC transmit/receive、instruction、event、dependency/order和validated high-water，先保留
-  exact Pareto，再由target-owned static resource policy处理Known tradeoff。任一required dimension unknown时保持保守。
+- 修复模式：Q32.G已删除旧coarse/saturating scalar estimate和time projection。当前只从complete final IR重算
+  NPU/vector compute classes、DDR read/write、SPM movement、NoC transmit/receive、instruction、event、
+  dependency/order和validated high-water，ordinary selector先保留exact Pareto；DDR下降但candidate引入或保留
+  NoC依赖的候选随后进入Q39独立typed point/interval gate。任一required work dimension unknown时保持保守。
 - 防复发：回归覆盖strict dominance、反向比较、真实tradeoff和unknown metric，并搜索`estimatedTimePs`及scalar winner残留；
-  static resource选择不能宣称board/time收益。
+  Q39 `EstimatedBenefit`只能宣称versioned static model清除margin，不能宣称board-measured time收益。
 
 ## 2026-07-16 rank frontier finalization不能因一个alternative失败而整体终止
 
@@ -1925,8 +1926,9 @@
   companion/evidence携带per-rank metric knowledge/value/reason和target policy rate；report按维度标理论下界、
   显式启发式或Unavailable，再与同engine measured active ns并列。
 - 防复发：activity event不能冒充额外调用，调用rdcycle不能冒充engine busy；任何bandwidth→time换算必须有当前target合同中的唯一速率和
-  正确scope，共享DDR不能当per-tile独占，未知SPM/issue/route参数不能用单case校准常数补齐，模型不得与Primary相加
-  或进入candidate ranking。
+  正确scope，共享DDR不能当per-tile独占。未测SPM/issue/route参数若用于静态selection，必须作为versioned
+  point prior / `EstimatedRoute`显式标注，不能把单case常数伪装成校准bound；compiler estimate不得与Primary
+  相加，Primary也不得live回灌ranking。
 
 ## 2026-07-28 板端case不能重复承担host合同审计
 
@@ -2119,3 +2121,28 @@
 - 防复发：单测固定多group的具体`(communication_id, owner_rank)`和output publisher owner；Tools测试必须从两个
   独立compiler进程生成ordinary/profile package并做完整递归byte diff。禁止任何`hash % owner_count`、
   hash排序或hash tie-break进入可见artifact决策。
+
+## 2026-07-29 DDR优先级不能代替NoC profitability
+
+- 现象：只要NoC-resident candidate删除一份DDR movement，whole-variant的`ExternalMovementFirst`就可能让4 KiB
+  等小payload成为production winner；该选择没有计DTE message startup、endpoint热点、mesh link pressure或
+  communication/compute依赖，也把16 tile共享DDR误读成“DDR越少必然越快”。
+- 根因：exact resource Pareto与跨资源耗时是两个问题。旧selector能比较同一资源维度的严格支配，却没有相对同源
+  reserved baseline的paired makespan合同；同时`200 GB/s` peak、约`150 GB/s` nominal和NoC单方向
+  `128 GB/s` reference缺少显式证据等级。第一次修补又把“没有保守timing bound”等同于“final-IR work
+  Unknown”，导致所有大payload也只能`Indeterminate`；这是把work knowledge、point estimate和proof bound
+  三层混成一个状态。
+- 修复模式：只对“DDR严格下降且仍依赖NoC执行”的complete-rank candidate触发独立解析模型，包括新增/增加
+  traffic或保留已有collective。从final Instr fresh统计
+  整卡DDR/SPM、per-rank engine work、message/wait、endpoint maxima和minimum-hop work；这些可数work保持
+  exact `Known`。physical route/arbiter单独未知，nominal使用显式`EstimatedRoute`的modeled deterministic
+  shortest path和versioned DDR/link/endpoint/message-`α`/hop/SPM/control point priors。无qualified
+  multi-buffer按sequential phases；只有current-IR fixed-slot、exact wait/reuse cut及capability共同成立才按
+  steady-state resource maximum。`candidate.nominal * 1.20 < baseline.nominal`签发normal
+  `EstimatedBenefit`；真正的`candidate.upper * 1.20 < baseline.lower`才升级`ProvenBenefit`。缺少保守
+  bound不再回退，只有必要work仍dynamic/unsupported或算术失败才`Indeterminate`。
+- 防复发：host测试必须同时覆盖10 us message policy prior使小payload保留baseline、大DDR-bound candidate的
+  `EstimatedBenefit`、synthetic完整bounds的`ProvenBenefit`、16-rank DDR只计一份整卡带宽、
+  route-independent floor与`EstimatedRoute`/endpoint hotspot分栏、sequential与qualified fixed-slot两种
+  schedule、Unknown work fail-closed及非NoC优化不受新门禁影响。`α=10 us`不是板端测量，后续matched board
+  calibration可替换prior；论文绝对参数、静态公式或单engine counter均不能代签Q39 promotion和fresh correctness。

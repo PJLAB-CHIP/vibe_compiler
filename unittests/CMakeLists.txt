@@ -2,6 +2,7 @@ wafer_require_gtest()
 
 add_executable(WaferUnitTests
   Analysis/ExecutionTopologyAnalysisTest.cpp
+  Analysis/NoCProfitabilityAnalysisTest.cpp
   Analysis/PhysicalDataflow/IndexRelationTest.cpp
   Analysis/ScheduleCostAnalysisTest.cpp
   Analysis/StaticBufferRangeTest.cpp

@@ -287,6 +287,7 @@ static void collectComputeCost(mlir::Operation *op,
 static void collectNoCCost(mlir::Operation *op, InstructionProgramCost &cost,
                            Quantity multiplicity) {
   if (auto send = mlir::dyn_cast<InstrDTESendOp>(op)) {
+    add(cost.noc.staticIssueSiteCount, Quantity{1});
     Quantity bytes =
         send.getBytes() < 0
             ? Quantity::unsupported(
@@ -294,6 +295,7 @@ static void collectNoCCost(mlir::Operation *op, InstructionProgramCost &cost,
             : Quantity{static_cast<uint64_t>(send.getBytes())};
     Quantity total = multiply(bytes, multiplicity);
     add(cost.noc.aggregateTransmitBytes, total);
+    add(cost.noc.transmitMessageCount, multiplicity);
     std::optional<NoCCollectiveKind> kind =
         classifyCollective(send.getMessage().getPhase());
     if (kind)
@@ -302,12 +304,20 @@ static void collectNoCCost(mlir::Operation *op, InstructionProgramCost &cost,
     return;
   }
   if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(op)) {
+    add(cost.noc.staticIssueSiteCount, Quantity{1});
     Quantity bytes =
         recv.getBytes() < 0
             ? Quantity::unsupported(
                   ScheduleCostReason::UnsupportedInstructionSemantics)
             : Quantity{static_cast<uint64_t>(recv.getBytes())};
     add(cost.noc.aggregateReceiveBytes, multiply(bytes, multiplicity));
+    add(cost.noc.receiveMessageCount, multiplicity);
+    return;
+  }
+  if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(op)) {
+    add(cost.noc.waitOperationCount, multiplicity);
+    add(cost.noc.waitedEventCount,
+        multiply(Quantity{wait.getTokens().size()}, multiplicity));
   }
 }
 
@@ -411,9 +421,8 @@ evaluateConstantIndex(mlir::Value value,
       !activeValues.insert(value).second)
     return {};
 
-  auto evaluateBinary =
-      [&](mlir::Value lhsValue, mlir::Value rhsValue,
-          auto checkedOperation) -> ConstantIndex {
+  auto evaluateBinary = [&](mlir::Value lhsValue, mlir::Value rhsValue,
+                            auto checkedOperation) -> ConstantIndex {
     ConstantIndex lhs = evaluateConstantIndex(lhsValue, activeValues);
     ConstantIndex rhs = evaluateConstantIndex(rhsValue, activeValues);
     if (lhs.knowledge == ConstantIndexKnowledge::Overflow ||
@@ -430,23 +439,20 @@ evaluateConstantIndex(mlir::Value value,
 
   ConstantIndex result;
   if (auto add = value.getDefiningOp<mlir::arith::AddIOp>()) {
-    result = evaluateBinary(
-        add.getLhs(), add.getRhs(),
-        [](int64_t lhs, int64_t rhs, int64_t &folded) {
-          return llvm::AddOverflow(lhs, rhs, folded);
-        });
+    result = evaluateBinary(add.getLhs(), add.getRhs(),
+                            [](int64_t lhs, int64_t rhs, int64_t &folded) {
+                              return llvm::AddOverflow(lhs, rhs, folded);
+                            });
   } else if (auto sub = value.getDefiningOp<mlir::arith::SubIOp>()) {
-    result = evaluateBinary(
-        sub.getLhs(), sub.getRhs(),
-        [](int64_t lhs, int64_t rhs, int64_t &folded) {
-          return llvm::SubOverflow(lhs, rhs, folded);
-        });
+    result = evaluateBinary(sub.getLhs(), sub.getRhs(),
+                            [](int64_t lhs, int64_t rhs, int64_t &folded) {
+                              return llvm::SubOverflow(lhs, rhs, folded);
+                            });
   } else if (auto mul = value.getDefiningOp<mlir::arith::MulIOp>()) {
-    result = evaluateBinary(
-        mul.getLhs(), mul.getRhs(),
-        [](int64_t lhs, int64_t rhs, int64_t &folded) {
-          return llvm::MulOverflow(lhs, rhs, folded);
-        });
+    result = evaluateBinary(mul.getLhs(), mul.getRhs(),
+                            [](int64_t lhs, int64_t rhs, int64_t &folded) {
+                              return llvm::MulOverflow(lhs, rhs, folded);
+                            });
   }
   activeValues.erase(value);
   return result;
@@ -589,8 +595,13 @@ void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
     mark(cost.ddrReadBytes);
     mark(cost.ddrWriteBytes);
     mark(cost.spmMovementBytes);
+    mark(cost.noc.staticIssueSiteCount);
     mark(cost.noc.aggregateTransmitBytes);
     mark(cost.noc.aggregateReceiveBytes);
+    mark(cost.noc.transmitMessageCount);
+    mark(cost.noc.receiveMessageCount);
+    mark(cost.noc.waitOperationCount);
+    mark(cost.noc.waitedEventCount);
     for (ScheduleCostMetric &metric : cost.noc.directionalTransmitBytes)
       mark(metric);
     for (ScheduleCostMetric &metric : cost.noc.collectiveTransmitBytes)

@@ -237,7 +237,9 @@ protected:
       llvm::raw_ostream &diagnostics,
       std::optional<wafer::analysis::InstructionProgramCost> *baselineCost =
           nullptr,
-      int64_t rankCount = 1) {
+      int64_t rankCount = 1,
+      wafer::compiler::detail::WholeVariantSelectionStatistics *statistics =
+          nullptr) {
     std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(
         static_cast<size_t>(rankCount));
     for (int64_t rank = 0; rank < rankCount; ++rank) {
@@ -287,7 +289,9 @@ protected:
       return mlir::failure();
     }
     auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
-        frontiers, program, *executionConfig, diagnostics);
+        frontiers, program, *executionConfig, diagnostics,
+        wafer::compiler::detail::WholeVariantSelectionMode::Production,
+        statistics);
     if (mlir::failed(accepted))
       return mlir::failure();
 
@@ -2930,7 +2934,7 @@ module {
 }
 
 TEST_F(WholeVariantCoordinatorTest,
-       TilesLargeKShardedF16GemmAllReduceInProductionWholeVariant) {
+       SelectsLargeDDRBoundDistributedContractionWithEstimatedModel) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -3020,13 +3024,23 @@ module {
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
-  auto accepted = selectProductionVariant(*source, program, diagnostics,
-                                          &baselineCost, /*rankCount=*/16);
+  wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
+  auto accepted =
+      selectProductionVariant(*source, program, diagnostics, &baselineCost,
+                              /*rankCount=*/16, &statistics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_TRUE(baselineCost);
   ASSERT_EQ(accepted->ranks.size(), 16u);
   EXPECT_TRUE(llvm::none_of(accepted->selectedReservedBaselines,
                             [](bool reserved) { return reserved; }));
+  EXPECT_GT(statistics.noCProfitabilityEvaluations, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityEvaluations,
+            statistics.noCProfitabilityRejected +
+                statistics.noCProfitabilityIndeterminate +
+                statistics.noCProfitabilityEstimated +
+                statistics.noCProfitabilityProven);
+  EXPECT_GT(statistics.noCProfitabilityEstimated, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityProven, 0u);
 
   constexpr int64_t fullOutputExtent = 4096;
   constexpr int64_t localContractingExtent = 256;
@@ -3104,8 +3118,10 @@ module {
   EXPECT_GT(totalSPMAllocationCount, 0u);
   ASSERT_TRUE(baselineCost->ddrReadBytes.isKnown());
   ASSERT_TRUE(baselineCost->ddrWriteBytes.isKnown());
-  EXPECT_LT(acceptedDDRReadBytes, baselineCost->ddrReadBytes.value * 16);
-  EXPECT_LE(acceptedDDRWriteBytes, baselineCost->ddrWriteBytes.value * 16);
+  EXPECT_LT(
+      acceptedDDRReadBytes + acceptedDDRWriteBytes,
+      (baselineCost->ddrReadBytes.value + baselineCost->ddrWriteBytes.value) *
+          16);
 }
 
 } // namespace

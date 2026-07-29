@@ -1081,13 +1081,33 @@ TEST_F(NoCResidentDataflowTest,
 
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
   auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
-      frontiers, program(), *config, diagnostics);
+      frontiers, program(), *config, diagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::Production,
+      &statistics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  EXPECT_TRUE(llvm::all_of(accepted->selectedReservedBaselines,
+                           [](bool reserved) { return reserved; }));
   unsigned acceptedSends = 0;
+  unsigned acceptedLoads = 0;
   for (const auto &rank : accepted->ranks)
-    rank.getModule().walk([&](wafer::InstrDTESendOp) { ++acceptedSends; });
-  EXPECT_EQ(acceptedSends, 15u) << diagnosticText;
+    rank.getModule().walk([&](mlir::Operation *operation) {
+      acceptedSends += mlir::isa<wafer::InstrDTESendOp>(operation);
+      acceptedLoads += mlir::isa<wafer::InstrRDMAOp>(operation);
+    });
+  EXPECT_EQ(acceptedSends, 0u) << diagnosticText;
+  EXPECT_EQ(acceptedLoads, 16u) << diagnosticText;
+  EXPECT_GT(statistics.noCProfitabilityEvaluations, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityEvaluations,
+            statistics.noCProfitabilityRejected +
+                statistics.noCProfitabilityIndeterminate +
+                statistics.noCProfitabilityEstimated +
+                statistics.noCProfitabilityProven);
+  EXPECT_GT(statistics.noCProfitabilityRejected, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityIndeterminate, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityEstimated, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityProven, 0u);
 }
 
 TEST_F(NoCResidentDataflowTest,
@@ -1619,9 +1639,9 @@ TEST_F(NoCResidentDataflowTest,
   ASSERT_EQ(existingSend->getBlock(), newReceive->getBlock());
   EXPECT_TRUE(newReceive->isBeforeInBlock(existingSend));
 
-  // Retain only the target sibling and the immutable baseline so production
-  // selection must replay all whole-variant Direct-DTE late gates for this
-  // mixed existing/new transport schedule.
+  // Retain only the target sibling and the immutable baseline. The candidate
+  // remains structurally legal, but its small payload does not repay the
+  // static model's message-startup and route costs.
   const int64_t targetStableOrdinal = directKey->stableOrdinal;
   const wafer::RankArtifactKind targetArtifactKind = directKey->artifactKind;
   const wafer::RankBufferingKind targetBufferingKind = directKey->bufferingKind;
@@ -1646,23 +1666,32 @@ TEST_F(NoCResidentDataflowTest,
 
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
   auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
-      frontiers, program(), *config, diagnostics);
+      frontiers, program(), *config, diagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::Production,
+      &statistics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
-  EXPECT_TRUE(llvm::all_of(accepted->selectedStableOrdinals,
-                           [&](int64_t stableOrdinal) {
-                             return stableOrdinal == targetStableOrdinal;
-                           }));
-  EXPECT_TRUE(llvm::none_of(accepted->selectedReservedBaselines,
-                            [](bool reserved) { return reserved; }));
-  EXPECT_TRUE(llvm::all_of(accepted->selectedArtifactKinds,
-                           [&](wafer::RankArtifactKind kind) {
-                             return kind == targetArtifactKind;
-                           }));
+  EXPECT_TRUE(llvm::all_of(accepted->selectedReservedBaselines,
+                           [](bool reserved) { return reserved; }));
+  EXPECT_TRUE(llvm::none_of(accepted->selectedStableOrdinals,
+                            [&](int64_t stableOrdinal) {
+                              return stableOrdinal == targetStableOrdinal;
+                            }));
+  EXPECT_GT(statistics.noCProfitabilityEvaluations, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityEvaluations,
+            statistics.noCProfitabilityRejected +
+                statistics.noCProfitabilityIndeterminate +
+                statistics.noCProfitabilityEstimated +
+                statistics.noCProfitabilityProven);
+  EXPECT_GT(statistics.noCProfitabilityRejected, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityIndeterminate, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityEstimated, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityProven, 0u);
 }
 
 TEST_F(NoCResidentDataflowTest,
-       AcceptsAcyclicMixedTransportAcrossStructuredBlockOccurrences) {
+       BuildsAcyclicMixedTransportAcrossStructuredBlockOccurrences) {
   constexpr int64_t existingCommunicationId = 73;
   std::vector<Frontier> frontiers(16);
   for (size_t rank = 0; rank < frontiers.size(); ++rank) {
@@ -1784,19 +1813,28 @@ TEST_F(NoCResidentDataflowTest,
 
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
   auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
-      frontiers, program(), *config, diagnostics);
+      frontiers, program(), *config, diagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::Production,
+      &statistics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
-  EXPECT_TRUE(llvm::all_of(accepted->selectedStableOrdinals,
-                           [&](int64_t stableOrdinal) {
-                             return stableOrdinal == targetStableOrdinal;
-                           }));
-  EXPECT_TRUE(llvm::none_of(accepted->selectedReservedBaselines,
-                            [](bool reserved) { return reserved; }));
-  EXPECT_TRUE(llvm::all_of(accepted->selectedArtifactKinds,
-                           [&](wafer::RankArtifactKind kind) {
-                             return kind == targetArtifactKind;
-                           }));
+  EXPECT_TRUE(llvm::all_of(accepted->selectedReservedBaselines,
+                           [](bool reserved) { return reserved; }));
+  EXPECT_TRUE(llvm::none_of(accepted->selectedStableOrdinals,
+                            [&](int64_t stableOrdinal) {
+                              return stableOrdinal == targetStableOrdinal;
+                            }));
+  EXPECT_GT(statistics.noCProfitabilityEvaluations, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityEvaluations,
+            statistics.noCProfitabilityRejected +
+                statistics.noCProfitabilityIndeterminate +
+                statistics.noCProfitabilityEstimated +
+                statistics.noCProfitabilityProven);
+  EXPECT_GT(statistics.noCProfitabilityRejected, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityIndeterminate, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityEstimated, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityProven, 0u);
 }
 
 TEST_F(NoCResidentDataflowTest,
@@ -2334,7 +2372,7 @@ TEST_F(NoCResidentDataflowTest,
 }
 
 TEST_F(NoCResidentDataflowTest,
-       FullSelectorChoosesOperandDrivenBoundaryComposition) {
+       FullSelectorRejectsSmallOperandDrivenBoundaryComposition) {
   std::optional<ActualTraversalFrontiers> actual =
       buildActualTraversalFrontiers(
           R"mlir(
@@ -2431,16 +2469,16 @@ module {
 
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
   auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
-      actual->frontiers, frontendProgram, *config, diagnostics);
+      actual->frontiers, frontendProgram, *config, diagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::Production,
+      &statistics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_EQ(accepted->selectedStableOrdinals.size(), 16u);
   ASSERT_EQ(accepted->selectedArtifactKinds.size(), 16u);
-  for (auto [ordinal, artifact] : llvm::zip_equal(
-           accepted->selectedStableOrdinals, accepted->selectedArtifactKinds)) {
-    EXPECT_NE(compositeOrdinals.find(ordinal), compositeOrdinals.end());
-    EXPECT_EQ(artifact, wafer::RankArtifactKind::Resident);
-  }
+  for (int64_t ordinal : accepted->selectedStableOrdinals)
+    EXPECT_EQ(compositeOrdinals.find(ordinal), compositeOrdinals.end());
   unsigned acceptedPeerIssues = 0;
   for (const wafer::compiler::RankExecutable &rank : accepted->ranks) {
     EXPECT_EQ(getComputeIssueFingerprint(rank.getModule()),
@@ -2448,7 +2486,17 @@ module {
     EXPECT_EQ(countLoops(rank.getModule()), actual->interfaceLoopCount);
     acceptedPeerIssues += countPeerIssues(rank.getModule());
   }
-  EXPECT_GT(acceptedPeerIssues, 0u);
+  EXPECT_EQ(acceptedPeerIssues, 0u);
+  EXPECT_GT(statistics.noCProfitabilityEvaluations, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityEvaluations,
+            statistics.noCProfitabilityRejected +
+                statistics.noCProfitabilityIndeterminate +
+                statistics.noCProfitabilityEstimated +
+                statistics.noCProfitabilityProven);
+  EXPECT_GT(statistics.noCProfitabilityRejected, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityIndeterminate, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityEstimated, 0u);
+  EXPECT_EQ(statistics.noCProfitabilityProven, 0u);
 }
 
 TEST_F(NoCResidentDataflowTest,
@@ -2711,7 +2759,7 @@ module {
 }
 
 TEST(NoCResidentProductionTest,
-     DefaultWholeVariantSelectsReplicatedInputNoCDataflow) {
+     DefaultWholeVariantKeepsSmallReplicatedInputBaseline) {
   mlir::DialectRegistry registry;
   wafer::compiler::detail::registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
@@ -2820,15 +2868,15 @@ module {
     });
     rank.getModule().walk([&](wafer::InstrDTEWaitOp) { ++waits; });
   }
-  EXPECT_EQ(loads, 1u);
-  EXPECT_EQ(inputSends, 15u);
-  EXPECT_EQ(inputRecvs, 15u);
+  EXPECT_EQ(loads, 16u);
+  EXPECT_EQ(inputSends, 0u);
+  EXPECT_EQ(inputRecvs, 0u);
   EXPECT_EQ(outputSends, 0u);
   EXPECT_EQ(outputRecvs, 0u);
   // Every partitioned output slice remains locally produced and published.
   EXPECT_EQ(stores, 16u);
-  EXPECT_GE(waits, 30u);
-  EXPECT_EQ(bundle->getRuntimeLaunchContract().getPhases().size(), 2u);
+  EXPECT_EQ(waits, 0u);
+  EXPECT_EQ(bundle->getRuntimeLaunchContract().getPhases().size(), 1u);
 }
 
 TEST(NoCResidentProductionTest,

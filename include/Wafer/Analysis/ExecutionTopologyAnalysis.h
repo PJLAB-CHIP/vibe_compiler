@@ -28,12 +28,23 @@ struct ExecutionEndpoint {
   }
 };
 
+/// One directed adjacency edge in the typed physical topology.
+struct ExecutionDirectedLink {
+  ExecutionEndpoint source;
+  ExecutionEndpoint destination;
+
+  bool operator==(const ExecutionDirectedLink &other) const {
+    return source == other.source && destination == other.destination;
+  }
+};
+
 /// Recomputable, read-only facts derived from the unique
 /// wafer.target.topology / wafer.execution.mesh pair in a module.
 ///
 /// The analysis models only adjacency established by the typed topology IR.
-/// Distances are unweighted shortest-hop lower bounds. They are not routes,
-/// directional link loads, congestion estimates, or execution times.
+/// Distances are unweighted shortest-hop lower bounds. The canonical path API
+/// below is a deterministic modeling mechanism, not a claim about hardware
+/// routing, directional link loads, congestion, or execution times.
 class ExecutionTopologyAnalysis {
 public:
   static mlir::FailureOr<ExecutionTopologyAnalysis>
@@ -50,6 +61,9 @@ public:
   llvm::ArrayRef<ExecutionEndpoint> getRankEndpoints() const {
     return rankEndpoints;
   }
+  /// Number of directed adjacency links in the complete available topology
+  /// graph. This is a topology fact, not a bandwidth or routing guarantee.
+  uint64_t getDirectedLinkCount() const { return directedLinkCount; }
 
   std::optional<ExecutionEndpoint> getRankEndpoint(int64_t logicalRank) const;
 
@@ -57,6 +71,15 @@ public:
   /// logical ranks, or std::nullopt for an out-of-domain/unreachable query.
   std::optional<uint64_t> getShortestHopDistance(int64_t sourceRank,
                                                  int64_t destinationRank) const;
+
+  /// Returns one deterministic shortest path as directed typed-topology
+  /// adjacency links. Equal-length alternatives are resolved by examining
+  /// every endpoint's neighbors in ascending row-major order during BFS. The
+  /// result is therefore stable for a fixed typed topology, including meshes,
+  /// card toruses and unavailable endpoints, but is only a canonical route for
+  /// static modeling.
+  mlir::FailureOr<llvm::SmallVector<ExecutionDirectedLink, 8>>
+  getCanonicalShortestPath(int64_t sourceRank, int64_t destinationRank) const;
 
   /// Returns a row-major shortest-hop matrix for the requested logical ranks.
   /// Repeated ranks are allowed and preserve caller order.
@@ -74,6 +97,7 @@ private:
   llvm::SmallVector<unsigned char, 64> endpointAvailability;
   llvm::SmallVector<ExecutionEndpoint, 16> rankEndpoints;
   llvm::SmallVector<uint64_t, 256> shortestHopDistances;
+  uint64_t directedLinkCount = 0;
 };
 
 } // namespace wafer::analysis
