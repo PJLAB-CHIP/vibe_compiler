@@ -30,8 +30,9 @@ Pipeline position:
   bank、route或性能收益，不修改compiler/runtime/test合同。
 - Completion gate:
   六页PPTX可编辑且可渲染，PDF确认为6页，逐页PNG无裁切、溢出或不可读小字；每页至少包含一个
-  结论式标题、一个多panel主技术图、一段真实IR或实验数据、三项以上对象级标注、明确的compiler影响
-  和资料/证据边界。技术数字和IR可追溯，生成图不承担技术证明；交付用户进行视觉与密度评审。
+  直接说明技术主题或设计问题的标题、一个多panel主技术图、一段真实IR或实验数据、三项以上对象级
+  标注，以及与该页内容自然衔接的compiler影响和适用范围。技术数字和IR可追溯，生成图不承担技术
+  证明；交付用户进行视觉、密度和语言表达评审。
 ```
 
 ## 六页样稿（三个代表主题）
@@ -41,20 +42,24 @@ Pipeline position:
 - 展示source、structured program、SPMD/rank-local、physical-dataflow candidate、selected tile/dataflow、
   Instr、Target LLVM、Package和runtime/board完整artifact链。
 - 每个stage标明当前责任、主要verifier/gate和下游consumer，不以pass名代替artifact边界。
-- 第一页聚焦完整artifact flow、stage responsibility、下游consumer和完成门禁。
+- 第一页以“Vibe Compiler的生产编译链路”为主题，沿实际编译顺序说明输入、物理数据流选择、目标代码
+  和package发布；验收链放在流程图下方，不再使用结论式口号概括整页。
 
 ### 2. Production bundle DAG / IR / evidence
 
 - 第二页完整展示candidate isolation、ExecutableBundle、TargetLLVMModuleBundle、TargetArtifactBundle和
   PackageBundle的汇聚关系。
 - 嵌入真实IR截取，展示resident SPM的SSA交接。
-- 完整展示parser、all-rank、model、package readback、no-card和board的单调证据链。
+- 完整展示parser、all-rank、model、package readback、no-card和board的验证顺序；文字按候选搜索、
+  bundle分工和验证路径组织。
 
 ### 3. Strided descriptor address geometry
 
 - 展示DDR endpoint的strided/scatter envelope、SPM endpoint的compact footprint、descriptor字段、
   transfer range、guard和dependency range。
 - 用真实Instr IR算出`[20,26) ∪ [36,42)` DDR reads、22B envelope和12B compact SPM footprint。
+- 标题使用“Strided RDMA的地址展开”，正文按IR寻址过程、descriptor字段和compiler range使用者展开，
+  不写成“某对象来自/不来自某对象”的判定句。
 
 ### 4. Strided oracle failure / corrected contract
 
@@ -62,12 +67,16 @@ Pipeline position:
 - 展示修正后3个standalone与36个dependency case由fresh输出39/39通过。
 - 明确compiler影响：lowering分别构造DDR strided range和SPM compact range，dependency analysis与
   allocation/guard使用各自真实physical span；不外推cache、bank、controller或未测stride。
+- 叙述采用真实debugging case的顺序：故障现象、排查过程、回归结果、对compiler实现的影响；适用范围
+  作为实验覆盖说明写入正文。
 
 ### 5. Fixed-slot candidate / stage overlap
 
 - 展示RDMA load、CT/NE compute、WDMA store在prologue/steady/epilogue中的重叠关系。
 - 展示三slot轮换和代表性candidate IR，说明slot root来自live span推导。
 - 明确stage-order时间线不是cycle-accurate测量。
+- 标题使用“Fixed-slot software pipeline”；正文分别回答为什么本例需要三个slot、slot如何写回IR、
+  短trip与容量不足时怎样处理。
 
 ### 6. Fixed-slot legality / verification
 
@@ -75,6 +84,8 @@ Pipeline position:
 - 展示same-worker hazard、illegal early reuse、legal last-consumer cut和capacity fallback。
 - 完整展示actual clone、SPM/DDR、Instr/Target、package/no-card和板端exact correctness证据链；不把
   engine不同自动解释为可重排或收益。
+- 标题使用“Slot复用的依赖与完成条件”；正文沿S0生命周期解释same-worker dependency、completion传递
+  和跨迭代WAR，最后自然衔接验证范围。
 
 ## 视觉与信息密度合同
 
@@ -83,8 +94,11 @@ Pipeline position:
 - Image2主图使用conference-quality technical figure、dense multi-panel system diagram、flat 2D
   schematic、engineering annotation和explicit memory/data/control flow；禁止isometric 3D、玻璃质感、
   futuristic chip、装饰性大留白和无法验证的内部芯片结构。
-- 每页采用约10%标题结论、70%主图/IR/数据、20%findings/证据边界的结构；正文不使用KPI卡片或大段
+- 每页采用约10%标题与导语、70%主图/IR/数据、20%机制说明与结果的结构；正文不使用KPI卡片或大段
   重复图中文字的bullet。
+- 标题优先使用技术主题、设计问题或实现对象；正文按问题背景、机制、case与结果自然展开。避免把
+  pipeline contract的“结论/证据边界/非目标”格式直接搬上slide，也避免连续使用“不是A而是B”
+  “来自A而非B”一类审计式句法。
 - 技术图中只生成可核对的几何、分区、箭头和对象类别；精确术语、IR、数字、坐标、descriptor字段、
   source和evidence等级全部由PPT可编辑对象叠加。
 - 普通正文字号不低于12pt，代码不低于9.5pt；每页2--4个panel、15--30个语义对象/标注和3--5个
@@ -101,9 +115,11 @@ Pipeline position:
 ## 当前样稿交付
 
 - `vibe-compiler-technical-samples.pptx`和同名PDF均为6页；PPT内含6份逐页备注，备注按看图顺序、
-  case、结论、证据边界和转场组织。
+  case和技术因果组织，不再按“结论/证据边界/转场”模板机械分段。
 - 六页逐页PNG与contact sheet已经按160 DPI渲染并人工检查；三个代表主题各拆成两页，完整panel、
-  标题、IR、地址推导、case matrix、时间线、数字、证据边界和source不再通过跨panel裁剪压缩。
+  标题、IR、地址推导、case matrix、时间线、数字、适用范围和source不再通过跨panel裁剪压缩。
+- 六页标题、panel heading、正文和PPT Notes已按专家技术汇报的自然叙述方式重写：使用技术主题、
+  设计问题和实现对象命名页面，按背景、机制、case与结果组织文字，移除审计报告式结论句和机械模板。
 - 三张Image2 master figure及完整figure specification/prompt已进入`assets/master-figures/`和
   `figure-specifications.md`；精确标签仍由可编辑PPT对象拥有。
 - fresh结构自检确认PPTX压缩关系完整、PDF为6页；每页均含直接写入PPT Notes区的演讲备注。
