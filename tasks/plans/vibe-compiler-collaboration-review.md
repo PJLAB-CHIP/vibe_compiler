@@ -5,6 +5,11 @@
 组合方式。页数服从完整语义panel和可读性，不为固定页数裁切图。六页通过人工评审后，才扩展完整汇报
 和读者向硬件行为文档。
 
+技术汇报的视觉、文字和讲述基线见
+`docs/presentations/2026-07-31-vibe-compiler-collaboration-review/presentation-design-research.md`。
+该文档已经沉淀本轮对MLSys、MICRO和LLVM技术报告的逐页观察；后续重做直接按其中的页面类型、说明方式
+和验收问题执行，不重复开展同一轮调研。
+
 ## Pipeline Contract
 
 ```text
