@@ -42,10 +42,10 @@ Pipeline position:
 - 展示source、structured program、SPMD/rank-local、physical-dataflow candidate、selected tile/dataflow、
   Instr、Target LLVM、Package和runtime/board完整artifact链。
 - 每个stage标明当前责任、主要verifier/gate和下游consumer，不以pass名代替artifact边界。
-- 第一页以“Vibe Compiler的生产编译链路”为主题，沿实际编译顺序说明输入、物理数据流选择、目标代码
+- 第一页以“Vibe Compiler编译流程”为主题，沿实际编译顺序说明输入、物理数据流选择、目标代码
   和package发布；验收链放在流程图下方，不再使用结论式口号概括整页。
 
-### 2. Production bundle DAG / IR / evidence
+### 2. Production bundle DAG / IR / validation
 
 - 第二页完整展示candidate isolation、ExecutableBundle、TargetLLVMModuleBundle、TargetArtifactBundle和
   PackageBundle的汇聚关系。
@@ -58,12 +58,12 @@ Pipeline position:
 - 展示DDR endpoint的strided/scatter envelope、SPM endpoint的compact footprint、descriptor字段、
   transfer range、guard和dependency range。
 - 用真实Instr IR算出`[20,26) ∪ [36,42)` DDR reads、22B envelope和12B compact SPM footprint。
-- 标题使用“Strided RDMA的地址展开”，正文按IR寻址过程、descriptor字段和compiler range使用者展开，
+- 标题使用“Strided RDMA地址模型”，正文按IR寻址过程、descriptor字段和compiler range使用者展开，
   不写成“某对象来自/不来自某对象”的判定句。
 
-### 4. Strided oracle failure / corrected contract
+### 4. Strided host-check failure / board validation
 
-- 展示旧oracle如何按DDR offset错误读取SPM，以及三个standalone case的26/32/44 mismatch。
+- 展示主机端结果校验如何按DDR offset错误读取SPM，以及三个standalone case的26/32/44 mismatch。
 - 展示修正后3个standalone与36个dependency case由fresh输出39/39通过。
 - 明确compiler影响：lowering分别构造DDR strided range和SPM compact range，dependency analysis与
   allocation/guard使用各自真实physical span；不外推cache、bank、controller或未测stride。
@@ -75,8 +75,8 @@ Pipeline position:
 - 展示RDMA load、CT/NE compute、WDMA store在prologue/steady/epilogue中的重叠关系。
 - 展示三slot轮换和代表性candidate IR，说明slot root来自live span推导。
 - 明确stage-order时间线不是cycle-accurate测量。
-- 标题使用“Fixed-slot software pipeline”；正文分别回答为什么本例需要三个slot、slot如何写回IR、
-  短trip与容量不足时怎样处理。
+- 标题使用“Fixed-slot Software Pipeline”；正文分别说明slot allocation、IR rewrite、短trip和
+  capacity fallback。
 
 ### 6. Fixed-slot legality / verification
 
@@ -84,15 +84,15 @@ Pipeline position:
 - 展示same-worker hazard、illegal early reuse、legal last-consumer cut和capacity fallback。
 - 完整展示actual clone、SPM/DDR、Instr/Target、package/no-card和板端exact correctness证据链；不把
   engine不同自动解释为可重排或收益。
-- 标题使用“Slot复用的依赖与完成条件”；正文沿S0生命周期解释same-worker dependency、completion传递
+- 标题使用“Slot复用：依赖与完成事件”；正文沿S0生命周期解释same-worker dependency、completion传递
   和跨迭代WAR，最后自然衔接验证范围。
 
 ## 视觉与信息密度合同
 
 - 使用现有`docs/images/noc-resident-k-sharded-gemm-pipeline.png`作为技术构图和信息密度参考，而不是
   复制其具体拓扑。
-- Image2主图使用conference-quality technical figure、dense multi-panel system diagram、flat 2D
-  schematic、engineering annotation和explicit memory/data/control flow；禁止isometric 3D、玻璃质感、
+- Image2主图采用论文答辩/架构评审式technical figure：白底、直角panel、细线网格、克制配色和
+  explicit memory/data/control flow；禁止圆角卡片、阴影、badge、营销图标、isometric 3D、
   futuristic chip、装饰性大留白和无法验证的内部芯片结构。
 - 每页采用约10%标题与导语、70%主图/IR/数据、20%机制说明与结果的结构；正文不使用KPI卡片或大段
   重复图中文字的bullet。
@@ -100,7 +100,7 @@ Pipeline position:
   pipeline contract的“结论/证据边界/非目标”格式直接搬上slide，也避免连续使用“不是A而是B”
   “来自A而非B”一类审计式句法。
 - 技术图中只生成可核对的几何、分区、箭头和对象类别；精确术语、IR、数字、坐标、descriptor字段、
-  source和evidence等级全部由PPT可编辑对象叠加。
+  source、验证结果和适用范围全部由PPT可编辑对象叠加。
 - 普通正文字号不低于12pt，代码不低于9.5pt；每页2--4个panel、15--30个语义对象/标注和3--5个
   直接贴近对象的callout。
 
@@ -120,8 +120,10 @@ Pipeline position:
   标题、IR、地址推导、case matrix、时间线、数字、适用范围和source不再通过跨panel裁剪压缩。
 - 六页标题、panel heading、正文和PPT Notes已按专家技术汇报的自然叙述方式重写：使用技术主题、
   设计问题和实现对象命名页面，按背景、机制、case与结果组织文字，移除审计报告式结论句和机械模板。
-- 三张Image2 master figure及完整figure specification/prompt已进入`assets/master-figures/`和
-  `figure-specifications.md`；精确标签仍由可编辑PPT对象拥有。
+- 三张技术报告版Image2 master figure及完整figure specification/prompt已进入
+  `assets/master-figures/*-report.png`和`figure-specifications.md`；精确标签仍由可编辑PPT对象拥有。
+- 六页统一使用白底、直角panel、细线、克制配色和章节式标题；圆角卡片、阴影、badge和产品信息图式
+  视觉已经移除。硬件case中的`oracle`已改为“主机端结果校验”或`host checker`。
 - fresh结构自检确认PPTX压缩关系完整、PDF为6页；每页均含直接写入PPT Notes区的演讲备注。
 - 旧37页PPT/PDF、旧版preview和装饰性generated/charts资产已删除；Q43保持`doing`，等待六页样稿
   的人工视觉与密度评审后再扩展完整汇报。
