@@ -936,8 +936,14 @@
 ## Production optimizer同源成对板测
 
 - 验证优化归因时，用同一source snapshot、payload、ExecutionConfig、target profile和host-visible ABI分别发布
-  coordinator已接受的reserved baseline与默认production winner。baseline选择只能是compiler-private test seam；
-  production driver、公开CLI和package schema保持不变，不能靠改source、关一组pass或编译两个版本构造对照。
+  coordinator已接受的reserved baseline与默认production winner。普通对照使用正式CLI的`none`/`production`
+  candidate-domain preset；单轴归因使用`production + disable-one`和`none + enable-one`互证，不能靠改source、
+  跳correctness pass或编译两个版本构造对照。每个稳定option映射一个语义alternative owner，不映射pass、case或文件；
+  canonicalization、verifier、SPM/DDR、completion、transport/resource、ABI和publication始终执行。私有selector只保留给
+  公开语义轴无法表达的accepted算法参数/结构资格，不能再次承担通用优化开关。
+- optimization configuration作为invocation-local typed value从driver传播到各candidate producer，不写入IR、package或
+  selection cost。diagnostic按稳定顺序打印canonical enabled/disabled集合；unknown、duplicate和enable/disable conflict在
+  编译/发布前拒绝。ordinary与profile必须消费同一配置并选择字节一致的production package。
 - 两份candidate必须各自重放完整SPM/DDR、instruction、transport、ABI、device-link、manifest和readback gate。先核对
   manifest resource role/type/shape/bytes/alignment与launch/completion boundary一致，再从最终linked ELF检查目标call的
   数量、种类、workspace、scheduler-body hash或已证明straight-line body中的顺序差异；没有对应解析器时不外推

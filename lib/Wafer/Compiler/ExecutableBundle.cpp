@@ -108,8 +108,8 @@ void detail::compactImportedRankVariantFrontiers(
 static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
-    ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank,
+    ExecutionConfig executionConfig, OptimizationConfig optimizations,
+    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLogicalRank,
     detail::WholeVariantSelectionMode selectionMode) {
   const detail::CompileClock::time_point totalStart =
       detail::CompileClock::now();
@@ -201,6 +201,7 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     schedulingConfig.requestShardIndex = result.requestShardIndex;
     schedulingConfig.requestShardCount = requestShardCount;
     schedulingConfig.targetProfile = executionConfig.getTargetProfileId();
+    schedulingConfig.optimizations = optimizations;
     mlir::FailureOr<std::vector<wafer::ScheduledRankCandidate>> frontier =
         wafer::buildScheduledRankCandidateFrontier(*sourceModule,
                                                    schedulingConfig);
@@ -435,7 +436,8 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
   const detail::CompileClock::time_point dataflowStart =
       detail::CompileClock::now();
   std::string dataflowFailure;
-  if (mlir::failed(detail::appendNoCResidentDataflowCandidates(
+  if (optimizations.isEnabled(OptimizationKind::NoCResidentDataflow) &&
+      mlir::failed(detail::appendNoCResidentDataflowCandidates(
           frontiers, program, executionConfig, &dataflowFailure)))
     return fail("all-rank NoC-resident candidate construction failed: " +
                 dataflowFailure);
@@ -524,11 +526,11 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
 llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
-    ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank,
+    ExecutionConfig executionConfig, OptimizationConfig optimizations,
+    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLogicalRank,
     WholeVariantSelectionMode selectionMode) {
   return buildExecutableBundleImpl(context, tensorModule, std::move(program),
-                                   executionConfig, diagnostics,
+                                   executionConfig, optimizations, diagnostics,
                                    failAfterLogicalRank, selectionMode);
 }
 

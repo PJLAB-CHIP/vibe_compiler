@@ -50,6 +50,28 @@ mlir::LogicalResult publishPackageAndCompanionNoReplace(
   return mlir::failure();
 }
 
+static void printOptimizationConfig(OptimizationConfig config,
+                                    llvm::raw_ostream &diagnostics) {
+  auto printSet = [&](bool enabled) {
+    diagnostics << '[';
+    bool first = true;
+    for (OptimizationKind kind : getSupportedOptimizationKinds()) {
+      if (config.isEnabled(kind) != enabled)
+        continue;
+      if (!first)
+        diagnostics << ',';
+      diagnostics << stringifyOptimizationKind(kind);
+      first = false;
+    }
+    diagnostics << ']';
+  };
+  diagnostics << "wafer-compile: optimization-config enabled=";
+  printSet(/*enabled=*/true);
+  diagnostics << " disabled=";
+  printSet(/*enabled=*/false);
+  diagnostics << "\n";
+}
+
 mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
@@ -96,6 +118,7 @@ mlir::LogicalResult runCompilationTransaction(
     reject(diagnostics, "profile compilation requires execution-ranks=16");
     return mlir::failure();
   }
+  printOptimizationConfig(options.getOptimizationConfig(), diagnostics);
 
   llvm::SmallString<256> canonicalSource;
   if (std::error_code error = llvm::sys::fs::real_path(
@@ -352,16 +375,17 @@ mlir::LogicalResult runCompilationTransaction(
   if (options.shouldProduceProfileCompanion()) {
     if (mlir::failed(stageProfileTargetPackages(
             tensorProgram, transactionRoot, outputName,
-            request.getExecutionConfig(), targetToolchain, diagnostics,
-            failAfterLogicalRank, failAfterTargetLogicalRank,
-            failAfterPackageLogicalRank, executableBundle, targetLLVMModules)))
+            request.getExecutionConfig(), options.getOptimizationConfig(),
+            targetToolchain, diagnostics, failAfterLogicalRank,
+            failAfterTargetLogicalRank, failAfterPackageLogicalRank,
+            executableBundle, targetLLVMModules)))
       return mlir::failure();
   } else if (mlir::failed(stageTargetPackage(
                  tensorProgram, transactionRoot, request.getExecutionConfig(),
-                 targetToolchain, diagnostics, selectionMode,
-                 failAfterLogicalRank, failAfterTargetLogicalRank,
-                 failAfterPackageLogicalRank, executableBundle,
-                 targetLLVMModules))) {
+                 options.getOptimizationConfig(), targetToolchain, diagnostics,
+                 selectionMode, failAfterLogicalRank,
+                 failAfterTargetLogicalRank, failAfterPackageLogicalRank,
+                 executableBundle, targetLLVMModules))) {
     return mlir::failure();
   }
   diagnostics << "wafer-compile: compile-stats stage=target-product"

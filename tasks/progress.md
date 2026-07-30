@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-29
+更新时间：2026-07-30
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -37,7 +37,7 @@ Q42 + Q39 -> Q40 composed search and DTE overlap             [board-ready]
 | Q43 | `compiler-collaboration-review-materials` | `doing` | Q9、Q37-Q39完成证据 | 重做面向compiler/runtime/hardware工程师的高密度技术汇报。当前门禁先交付production pipeline、strided descriptor、fixed-slot multi-engine三页代表样稿及PPTX/PDF/逐页预览；每页同时包含结论、主技术图、真实IR或数据、对象级标注、compiler影响和证据边界。旧37页版本不作为当前交付，三页视觉与信息密度确认后再扩展完整汇报。 | 01、06、16；`tasks/plans/vibe-compiler-collaboration-review.md` |
 | Q42 | `test-load-reduction` | `done` | 无 | 默认lit/unit/CTest和owner integration均只判直接合同；历史catalog、campaign、model-scale与重复package执行已退出默认入口，保留的source-to-package/no-card seam通过。 | 16；`tasks/plans/test-gate-scope-reduction.md` |
 | Q40 | `composed-choice-search-and-dte-overlap` | `board-ready` | Q39、Q42完成 | bounded whole-variant组合、V3 same-block Direct-DTE issue→FP16/BF16 CT/NE→exact wait结构witness、同tuple serialized baseline、16-rank replicated FP16 elementwise完整双package及fresh no-card已闭合；两包保持同source/cluster launch/transport ABI/binding/call inventory并以scheduler顺序区分。真实板端exact-output和matched A/B尚未执行，不得标`done`。 | 06、08-13、16；`tasks/plans/composed-choice-search-and-dte-overlap.md` |
-| Q41 | `compiler-search-scalability` | `board-ready` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 16-rank FP16 rank-invariant frontier只生成一次并按canonical request shard并行；candidate/attempt/clone/lowering/capture上界与阶段wall/RSS可观测；production profile 44.98秒、峰值134432 KiB，完整production/count/trace package均通过no-card。16-shard与未分片frontier逐module等价；真实板端exact-output及winner profile尚未执行，不得标`done`。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
+| Q41 | `compiler-search-scalability` | `board-ready` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 搜索资源与typed optimization configuration均已闭合：18个稳定语义轴支持production/none preset及逐项enable/disable，配置贯穿同一source-to-package pipeline；none唯一保留fully gated baseline，reciprocal单轴四路A/B证明最终ELF结构差异及组合等价，M-sharded K=1024 ordinary/profile production package逐字节一致且fresh no-card通过。搜索仍保持rank-invariant canonical sharding、显式资源上界和wall/RSS观测。真实板端exact-output及winner profile尚未执行，不得标`done`。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
 
 ## Later / External Gates
 

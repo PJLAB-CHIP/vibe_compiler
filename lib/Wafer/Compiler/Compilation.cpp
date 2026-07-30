@@ -306,13 +306,14 @@ CompilationRequest::create(llvm::StringRef sourceProgramDirectory,
 }
 
 llvm::Expected<CompilationOptions>
-CompilationOptions::profile(const ExecutionConfig &executionConfig) {
+CompilationOptions::profile(const ExecutionConfig &executionConfig,
+                            OptimizationConfig optimizations) {
   if (executionConfig.getRankCount() != 16 ||
       executionConfig.getRuntimeLaunchKind() != RuntimeLaunchKind::Kernel)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "profile compilation requires a 16-rank kernel launch");
-  return CompilationOptions(/*profileCompanion=*/true);
+  return CompilationOptions(/*profileCompanion=*/true, optimizations);
 }
 
 llvm::Expected<ExecutableBundle>
@@ -320,8 +321,8 @@ compileTensorProgramToExecutableBundle(llvm::StringRef tensorProgramDirectory,
                                        ExecutionConfig executionConfig,
                                        llvm::raw_ostream &diagnostics) {
   return detail::compileTensorProgramToExecutableBundleImpl(
-      tensorProgramDirectory, executionConfig, diagnostics, std::nullopt,
-      detail::WholeVariantSelectionMode::Production);
+      tensorProgramDirectory, executionConfig, OptimizationConfig::production(),
+      diagnostics, std::nullopt, detail::WholeVariantSelectionMode::Production);
 }
 
 mlir::FailureOr<ExecutableBundle> compileProgram(
@@ -359,14 +360,23 @@ mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  return compileProgramWithTargetLLVMBundle(
+      std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+      targetToolchain, CompilationOptions::standard(), diagnostics);
+}
+
+mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, CompilationOptions options,
+    llvm::raw_ostream &diagnostics) {
   std::optional<ExecutableBundle> retainedExecutableBundle;
   std::optional<TargetLLVMModuleBundle> retainedTargetLLVMModuleBundle;
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics,
-          detail::WholeVariantSelectionMode::Production,
-          CompilationOptions::standard(), std::nullopt, std::nullopt,
-          std::nullopt, &retainedExecutableBundle,
+          detail::WholeVariantSelectionMode::Production, options, std::nullopt,
+          std::nullopt, std::nullopt, &retainedExecutableBundle,
           &retainedTargetLLVMModuleBundle)))
     return mlir::failure();
   if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle) {

@@ -5,29 +5,48 @@
 # RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%one = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    %%0 = stablehlo.divide %%one, %%arg0 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.input/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
 
-# Production selects the accepted reciprocal implementation, while the
-# test-only seam publishes the fully accepted reserved baseline from the same
-# source and transaction.
+# Production selects the accepted reciprocal implementation. The public none
+# preset keeps only the fully gated conservative baseline; the same semantic
+# axis can also be disabled from production or enabled on top of none.
 # RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/production --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
-# RUN: env WAFER_TEST_SELECT_RESERVED_BASELINE=1 %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/baseline --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/baseline --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --optimization-preset=none 2>&1 | FileCheck %s --check-prefixes=NONE-CONFIG,PUBLISHED
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/disabled-implementation --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --disable-optimization=implementation-selection | FileCheck %s --check-prefix=PUBLISHED
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/only-implementation --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --optimization-preset=none --enable-optimization=implementation-selection | FileCheck %s --check-prefix=PUBLISHED
 # RUN: test -s %t.outputs/production/modules/module_00000.so
 # RUN: test -s %t.outputs/baseline/modules/module_00000.so
+# RUN: test -s %t.outputs/disabled-implementation/modules/module_00000.so
+# RUN: test -s %t.outputs/only-implementation/modules/module_00000.so
 # RUN: not cmp -s %t.outputs/production/modules/module_00000.so %t.outputs/baseline/modules/module_00000.so
+# RUN: cmp -s %t.outputs/baseline/modules/module_00000.so %t.outputs/disabled-implementation/modules/module_00000.so
+# RUN: cmp -s %t.outputs/production/modules/module_00000.so %t.outputs/only-implementation/modules/module_00000.so
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm %t.outputs/production/modules/module_00000.so | FileCheck %s --check-prefix=PRODUCTION
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm %t.outputs/baseline/modules/module_00000.so | FileCheck %s --check-prefix=BASELINE
 
-# The production binary does not consume the private environment seam.
+# The production binary still does not consume the private testing seam.
 # RUN: env WAFER_TEST_SELECT_RESERVED_BASELINE=1 wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/production-with-env --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
 # RUN: cmp -s %t.outputs/production/modules/module_00000.so %t.outputs/production-with-env/modules/module_00000.so
 
-# Baseline selection is one transaction mode and cannot be combined with a
-# rank, target-rank, or package-rank failure injection.
-# RUN: not env WAFER_TEST_SELECT_RESERVED_BASELINE=1 WAFER_TEST_FAIL_AFTER_LOGICAL_RANK=0 %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/conflicting --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=CONFLICT
-# RUN: test ! -e %t.outputs/conflicting
+# The private reserved-baseline seam remains only for failure-isolation tests
+# and cannot be combined with a failure injection.
+# RUN: not env WAFER_TEST_SELECT_RESERVED_BASELINE=1 WAFER_TEST_FAIL_AFTER_LOGICAL_RANK=0 %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/private-conflicting --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=PRIVATE-CONFLICT
 
+# Unknown, duplicate and conflicting axis specifications fail before
+# compilation or publication.
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/unknown --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --enable-optimization=unknown-axis 2>&1 | FileCheck %s --check-prefix=UNKNOWN
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/duplicate --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --enable-optimization=implementation-selection --enable-optimization=implementation-selection 2>&1 | FileCheck %s --check-prefix=DUPLICATE
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/conflicting --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --enable-optimization=implementation-selection --disable-optimization=implementation-selection 2>&1 | FileCheck %s --check-prefix=CONFLICT
+# RUN: test ! -e %t.outputs/unknown
+# RUN: test ! -e %t.outputs/duplicate
+# RUN: test ! -e %t.outputs/conflicting
+# RUN: test ! -e %t.outputs/private-conflicting
+
+# NONE-CONFIG: wafer-compile: optimization-config enabled=[] disabled=[consumer-local-recomputation,loop-invariant-code-motion,algebraic-reassociation,reduction-tree-balancing,algebraic-distribution,algebraic-factorization,implementation-selection,tile-search-alternatives,scope-composition,collective-algorithm-selection,direct-mapped-boundary-transfer,concurrent-working-set-selection,full-buffer-transfer-elision,full-buffer-residency,ready-order-scheduling,static-fixed-slot-buffering,disjoint-worker-placement,noc-resident-dataflow]
 # PUBLISHED: wafer-compile: published verified package with execution-ranks=1:
 # PRODUCTION: wafer_tx81_elementwise_recip
 # PRODUCTION-NOT: wafer_tx81_elementwise_div
 # BASELINE: wafer_tx81_elementwise_div
 # BASELINE-NOT: wafer_tx81_elementwise_recip
-# CONFLICT: wafer-compile: test-only reserved-baseline selection cannot be combined with failure injection
+# UNKNOWN: wafer-compile: unknown --enable-optimization value: unknown-axis
+# DUPLICATE: wafer-compile: duplicate --enable-optimization value: implementation-selection
+# CONFLICT: wafer-compile: optimization is both enabled and disabled: implementation-selection
+# PRIVATE-CONFLICT: wafer-compile: test-only reserved-baseline selection cannot be combined with failure injection

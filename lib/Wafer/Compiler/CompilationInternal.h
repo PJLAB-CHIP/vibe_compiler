@@ -94,12 +94,13 @@ bool runSpmdHelper(llvm::StringRef helper,
 
 llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
-    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLogicalRank,
+    OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLogicalRank,
     WholeVariantSelectionMode selectionMode);
 
 mlir::LogicalResult stageTargetPackage(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
-    const ExecutionConfig &executionConfig,
+    const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     WholeVariantSelectionMode selectionMode,
     std::optional<int64_t> failAfterLogicalRank,
@@ -111,7 +112,7 @@ mlir::LogicalResult stageTargetPackage(
 mlir::LogicalResult stageProfileTargetPackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
     llvm::StringRef publishedPackageName,
-    const ExecutionConfig &executionConfig,
+    const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLogicalRank,
     std::optional<int64_t> failAfterTargetLogicalRank,

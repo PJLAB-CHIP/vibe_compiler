@@ -40,9 +40,8 @@ constexpr wafer::TargetProfileId kTargetProfile =
     wafer::TargetProfileId::waferTx81SingleCardKernelV1();
 
 using RankCandidateSignature =
-    std::tuple<int64_t, wafer::RankArtifactKind, bool,
-               wafer::RankBufferingKind, uint32_t,
-               wafer::RankWorkerPlacementKind, uint32_t, std::string>;
+    std::tuple<int64_t, wafer::RankArtifactKind, bool, wafer::RankBufferingKind,
+               uint32_t, wafer::RankWorkerPlacementKind, uint32_t, std::string>;
 
 static RankCandidateSignature
 getRankCandidateSignature(wafer::ScheduledRankCandidate &candidate) {
@@ -60,8 +59,7 @@ getRankCandidateSignature(wafer::ScheduledRankCandidate &candidate) {
           std::move(moduleText)};
 }
 
-static std::vector<RankCandidateSignature>
-getRankCandidateSignatures(
+static std::vector<RankCandidateSignature> getRankCandidateSignatures(
     std::vector<wafer::ScheduledRankCandidate> &frontier) {
   std::vector<RankCandidateSignature> signatures;
   signatures.reserve(frontier.size());
@@ -166,12 +164,11 @@ module {
     for (wafer::ScheduledRankCandidate &candidate : *shard)
       shardCandidates.push_back(std::move(candidate));
   }
-  std::stable_sort(
-      shardCandidates.begin(), shardCandidates.end(),
-      [](const wafer::ScheduledRankCandidate &lhs,
-         const wafer::ScheduledRankCandidate &rhs) {
-        return lhs.frontierOrderOrdinal < rhs.frontierOrderOrdinal;
-      });
+  std::stable_sort(shardCandidates.begin(), shardCandidates.end(),
+                   [](const wafer::ScheduledRankCandidate &lhs,
+                      const wafer::ScheduledRankCandidate &rhs) {
+                     return lhs.frontierOrderOrdinal < rhs.frontierOrderOrdinal;
+                   });
 
   wafer::RankFrontierAdmissionState admission;
   std::vector<wafer::ScheduledRankCandidate> merged;
@@ -184,6 +181,60 @@ module {
   }
 
   EXPECT_EQ(getRankCandidateSignatures(merged), expected);
+}
+
+TEST(RankCandidateFrontierTest,
+     NoOptionalOptimizationsRetainsOnlyFullyGatedReservedBaseline) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                  wafer::WaferDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  wafer::registerTargetImplementationExternalModels(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(%lhs: tensor<4x6xf16>, %rhs: tensor<4x6xf16>,
+                  %out: tensor<4x6xf16>) -> tensor<4x6xf16> {
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>
+        ],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%lhs, %rhs : tensor<4x6xf16>, tensor<4x6xf16>)
+        outs(%out : tensor<4x6xf16>) {
+    ^bb0(%left: f16, %right: f16, %old: f16):
+      %sum = arith.addf %left, %right : f16
+      linalg.yield %sum : f16
+    } -> tensor<4x6xf16>
+    return %result : tensor<4x6xf16>
+  }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(source);
+
+  wafer::TensorProgramSchedulingConfig config;
+  config.logicalRank = 0;
+  config.candidateParallelism = 1;
+  config.targetProfile = kTargetProfile;
+  config.optimizations = wafer::OptimizationConfig::none();
+  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  ASSERT_TRUE(mlir::succeeded(frontier));
+  ASSERT_EQ(frontier->size(), 1u);
+  EXPECT_TRUE(frontier->front().reservedBaseline);
+  EXPECT_EQ(frontier->front().artifactKind, wafer::RankArtifactKind::Spill);
+  EXPECT_EQ(frontier->front().bufferingKind, wafer::RankBufferingKind::Single);
+  EXPECT_EQ(frontier->front().workerPlacementKind,
+            wafer::RankWorkerPlacementKind::Unplaced);
 }
 
 TEST(RankCandidateFrontierTest,

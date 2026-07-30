@@ -28,7 +28,6 @@ RANK_ONE_LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 CLUSTER_LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 DIRECT_DTE_STATUS_ABI = "wafer-direct-dte-status-v2"
 PROCESS_TIMEOUT_MARGIN_SECONDS = 30
-BASELINE_ENVIRONMENT_VARIABLE = "WAFER_TEST_SELECT_RESERVED_BASELINE"
 SOURCE_SNAPSHOT_PATHS = (
     pathlib.Path("functions/forward.mlir"),
     pathlib.Path("functions/forward.meta"),
@@ -1147,10 +1146,7 @@ def compile_package(
         "WAFER_TEST_FAIL_AFTER_PACKAGE_LOGICAL_RANK",
     ):
         environment.pop(failure_injection, None)
-    if reserved_baseline:
-        environment[BASELINE_ENVIRONMENT_VARIABLE] = "1"
-    else:
-        environment.pop(BASELINE_ENVIRONMENT_VARIABLE, None)
+    environment.pop("WAFER_TEST_SELECT_RESERVED_BASELINE", None)
     command = [
         str(compiler),
         "--input-program-dir",
@@ -1161,6 +1157,8 @@ def compile_package(
         f"--target-profile={TARGET_PROFILE}",
         f"--launch-kind={case.launch_kind}",
     ]
+    if reserved_baseline:
+        command.append("--optimization-preset=none")
     if profile:
         command.append("--profile")
     result = run(command, environment=environment)

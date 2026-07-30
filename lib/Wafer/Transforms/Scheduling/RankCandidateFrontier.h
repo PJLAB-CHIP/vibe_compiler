@@ -3,6 +3,7 @@
 #ifndef WAFER_LIB_TRANSFORMS_SCHEDULING_RANKCANDIDATEFRONTIER_H
 #define WAFER_LIB_TRANSFORMS_SCHEDULING_RANKCANDIDATEFRONTIER_H
 
+#include "Wafer/Support/OptimizationConfig.h"
 #include "Wafer/Target/TargetProfile.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -153,6 +154,9 @@ struct TensorProgramSchedulingConfig {
   /// profiler result. There is deliberately no scheduler-local default: an
   /// omitted contract rejects the frontier before any candidate analysis.
   std::optional<TargetProfileId> targetProfile;
+  /// Optional semantic candidate producers enabled for this invocation.
+  /// Mandatory legality and lowering stages are not represented here.
+  OptimizationConfig optimizations = OptimizationConfig::production();
 };
 
 /// Returns true exactly when rank-local scheduling cannot observe

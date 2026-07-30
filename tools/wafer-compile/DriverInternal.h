@@ -25,6 +25,9 @@ struct CommandLineOptions {
   std::optional<std::string> executionRanks;
   std::optional<std::string> targetProfile;
   std::optional<std::string> runtimeLaunchKind;
+  std::optional<std::string> optimizationPreset;
+  std::vector<std::string> enabledOptimizations;
+  std::vector<std::string> disabledOptimizations;
   bool profile = false;
   std::vector<std::string> modelInputs;
   std::vector<std::string> modelExpected;
@@ -58,6 +61,8 @@ parseIndexedPaths(llvm::ArrayRef<std::string> values, llvm::StringRef option);
 std::optional<double> parseTolerance(const std::optional<std::string> &value,
                                      llvm::StringRef option,
                                      double defaultValue);
+std::optional<OptimizationConfig>
+parseOptimizationConfig(const CommandLineOptions &options);
 std::optional<uint64_t>
 parsePositiveCount(const std::optional<std::string> &value,
                    llvm::StringRef option);

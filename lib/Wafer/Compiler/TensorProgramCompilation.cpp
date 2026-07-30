@@ -75,18 +75,21 @@ static llvm::Expected<ProductT> compileTensorProgram(
 
 llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
-    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLogicalRank,
+    OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLogicalRank,
     WholeVariantSelectionMode selectionMode) {
   return compileTensorProgram<ExecutableBundle>(
       tensorProgramDirectory, executionConfig, diagnostics,
       failAfterLogicalRank,
-      [selectionMode](std::shared_ptr<mlir::MLIRContext> &context,
+      [selectionMode,
+       optimizations](std::shared_ptr<mlir::MLIRContext> &context,
                       mlir::ModuleOp tensorModule,
                       frontend::FrontendProgramVerificationResult program,
                       ExecutionConfig config, llvm::raw_ostream &output,
                       std::optional<int64_t> failRank) {
         return buildExecutableBundle(context, tensorModule, std::move(program),
-                                     config, output, failRank, selectionMode);
+                                     config, optimizations, output, failRank,
+                                     selectionMode);
       });
 }
 

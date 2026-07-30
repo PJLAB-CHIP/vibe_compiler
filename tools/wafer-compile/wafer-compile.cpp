@@ -262,11 +262,16 @@ int main(int argc, char **argv) {
                  << llvm::toString(executionConfig.takeError()) << "\n";
     return 1;
   }
+  std::optional<wafer::OptimizationConfig> optimizationConfig =
+      parseOptimizationConfig(options);
+  if (!optimizationConfig)
+    return 1;
   wafer::compiler::CompilationOptions compilationOptions =
-      wafer::compiler::CompilationOptions::standard();
+      wafer::compiler::CompilationOptions::standard(*optimizationConfig);
   if (options.profile) {
     llvm::Expected<wafer::compiler::CompilationOptions> profileOptions =
-        wafer::compiler::CompilationOptions::profile(*executionConfig);
+        wafer::compiler::CompilationOptions::profile(*executionConfig,
+                                                     *optimizationConfig);
     if (!profileOptions) {
       llvm::errs() << "wafer-compile: "
                    << llvm::toString(profileOptions.takeError()) << "\n";
@@ -329,6 +334,18 @@ int main(int argc, char **argv) {
   unsigned failureInjectionCount = (failureRank ? 1u : 0u) +
                                    (targetFailureRank ? 1u : 0u) +
                                    (packageFailureRank ? 1u : 0u);
+  const bool hasTestOnlyCompilationControl =
+      failureInjectionCount != 0 || reservedBaseline || staticFixedSlot ||
+      directDTEComputeOverlap || serializedDirectDTECompute ||
+      workerPlacement || noCResidentFixedSlotWorker || collectiveAlternative ||
+      collectiveReport;
+  if (*optimizationConfig != wafer::OptimizationConfig::production() &&
+      hasTestOnlyCompilationControl) {
+    llvm::errs()
+        << "wafer-compile: explicit optimization configuration cannot be "
+           "combined with test-only compilation controls\n";
+    return 1;
+  }
   if (options.profile &&
       (failureInjectionCount != 0 || reservedBaseline || staticFixedSlot ||
        directDTEComputeOverlap || workerPlacement ||
@@ -644,7 +661,7 @@ int main(int argc, char **argv) {
       mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
           compiledProgram = wafer::compiler::compileProgramWithTargetLLVMBundle(
               std::move(*request), *options.outputProgramDirectory, helperPath,
-              *targetToolchain, llvm::errs());
+              *targetToolchain, compilationOptions, llvm::errs());
       if (mlir::succeeded(compiledProgram)) {
         targetCompilationProduct.emplace(std::move(*compiledProgram));
         compilationStatus = mlir::success();

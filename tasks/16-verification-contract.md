@@ -348,6 +348,20 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 `tasks/06-physical-dataflow-synthesis.md`拥有联合physical-dataflow transformation合同；本文只固定可判定的跨stage证据。
 Q29数字保留为历史实现基线，不能替代Q32 fresh gate。
 
+- public optimization configuration必须从`wafer-compile`进入同一个source-to-package transaction，经typed
+  `CompilationOptions`传播到source producer、rank recipe、accepted-rank sibling和all-rank sibling owner。`production`
+  启用全部当前语义轴，`none`关闭全部可选producer但仍产生通过完整exact gate的conservative package；显式enable/disable
+  在preset上组合。支持名必须唯一、可round-trip并全部可独立置位；unknown、duplicate及同项enable/disable conflict必须在
+  compilation/publication前失败且不留下输出目录；
+- option gate至少包含一个真实source的四路source-to-package A/B：
+  default production、`none`、`production + disable-one`和`none + enable-one`。后两者必须分别与对应expected artifact
+  byte-identical，production与baseline的最终linked ELF必须呈现被测语义轴的结构差异；四路source、rank domain、
+  TargetProfileId、launch contract、manifest ABI和全部correctness gate保持一致。另以`none`的rank-frontier unit证明只有
+  唯一fully gated reserved baseline，并以model-scale ordinary/profile package与no-card证明默认production不回归；
+- canonicalization、verifier、SPM/DDR placement、completion normalization、Direct-DTE acceptance、whole-card
+  resource、target ABI、device link、publication及readback属于mandatory correctness pipeline，不能进入disable列表。
+  配置不进入IR、candidate attrs、package schema或selection cost；compile diagnostics必须打印canonical enabled/disabled
+  集合。Q32.T的later Transform IR adapter仍是不同边界，不得把本配置解释为pass级控制面；
 - production直接消费Q15 verified program中的同一份rank-local structured tensor IR。每个source compute root必须实现
   `WaferTargetImplementationOpInterface`；Wafer op直接实现，Linalg op通过Wafer dialect extension挂接external model。
   interface只读取current operation、region、SSA、type、attribute以及Linalg、DPS、Tiling和MemoryEffect语义，并结合
@@ -1422,8 +1436,9 @@ p2p/local accumulation、chunk、topology和completion。Q36的静态minimum-hop
 完备；新增case必须能区分真实compiler选择或参数轴，并有matched control。每个需要板端区分的mechanism family必须满足：
 
 - reserved baseline是whole-variant coordinator中已通过与winner相同SPM/DDR、instruction、transport、ABI和package
-  eligibility gate的唯一all-baseline tuple；它只通过compiler-private test seam提交。正常production driver、公开CLI、
-  package schema和candidate policy不读取该选择，仍只提交默认winner；
+  eligibility gate的唯一all-baseline tuple。普通成对资格由公开`none`与`production`preset从同一driver提交；单轴对照可用
+  `disable-one`或`enable-one`组合。compiler-private selector只用于公开语义轴不能表达的accepted算法参数/结构资格，
+  不作为通用baseline入口；package schema仍不保存配置或candidate policy；
 - 两份package来自同一source snapshot、payload、rank domain、ExecutionConfig和TargetProfileId。manifest schema、
   entry/completion domain、resource role/type/shape/bytes/alignment和host binding必须一致；module digest及与目标优化对应的
   target call结构允许不同；

@@ -460,6 +460,36 @@ unknown effect、不可解释DPS tie、control-flow join、collective wait和obs
 Q32不实现独立约束语言或一次性巨型solver，但必须有界组合全部当前支持的选择轴。实现建立在Q29 transaction上：worklist里的
 每个state都拥有actual isolated MLIR clone，尚未展开的选择从该clone fresh发现，已选事实只存在于clone IR。
 
+### 5.1 可选候选域配置
+
+用户级优化控制是一次compile invocation的typed candidate-domain配置，不是pass pipeline拼接、IR attr、side table或
+测试selector。`wafer-compile`提供`production`与`none`两个preset，并允许在preset之上按稳定语义名重复指定enable或
+disable；同一项不能重复，也不能同时出现在enable与disable集合，未知名字在source compilation前拒绝。
+
+当前公开语义轴按owner分为：
+
+- source-expression：`consumer-local-recomputation`、`loop-invariant-code-motion`、
+  `algebraic-reassociation`、`reduction-tree-balancing`、`algebraic-distribution`、
+  `algebraic-factorization`；
+- rank recipe：`implementation-selection`、`tile-search-alternatives`、`scope-composition`、
+  `collective-algorithm-selection`、`direct-mapped-boundary-transfer`、
+  `concurrent-working-set-selection`；
+- accepted-rank sibling：`full-buffer-transfer-elision`、`full-buffer-residency`、
+  `ready-order-scheduling`、`static-fixed-slot-buffering`、`disjoint-worker-placement`；
+- all-rank sibling：`noc-resident-dataflow`。
+
+关闭某项只阻止对应producer向bounded domain加入alternative；已经存在的candidate不携带disabled marker，也不会因配置
+绕过verification或改变cost。`production`启用全部当前轴并保持默认production winner；`none`关闭全部可选producer，只留下
+具有独立allowance的conservative spill baseline。两种preset及任意组合仍必须执行structured/tile/instruction
+canonicalization、verifier、SPM/DDR placement、completion normalization、Direct-DTE matching、whole-card resource、
+target ABI、device link、package publication与readback。上述正确性stage不是优化项，不能被关闭。
+
+配置从`CompilationOptions`沿rank frontier、accepted-rank siblings与all-rank siblings传递，不进入source/selected IR或
+package schema；ordinary与profile compile消费同一配置并选择同一未插桩production artifact。编译诊断输出canonical
+enabled/disabled集合，使A/B记录可与相同source snapshot、ExecutionConfig、TargetProfileId、launch ABI和最终linked
+artifact共同核对。Q32.T仍只表示未来可选的rank-local Transform IR adapter，不等于本节候选域配置，也不因此提前冻结
+Transform dialect协议。
+
 稳定流程如下：
 
 1. **建立reserved baseline。** 用当前production规则形成每rank unplaced generation clone，并在独立evaluation clones上经过
@@ -665,8 +695,10 @@ reserved baseline，与默认production winner形成同源成对输入：
 - baseline与winner必须来自同一verified source snapshot、ExecutionConfig、TargetProfileId和host-visible ABI；二者分别从各自
   accepted Instr IR继续经过target translation、device link、manifest publication和readback，不能通过改source、跳pass或编译
   两个不同版本伪造对照；
-- compiler-private characterization seam只允许测试入口提交已经被同一late gate接受的all-baseline tuple。它不序列化frontier，
-  不新增公开的强制tile/layout/collective/ordinal选项，也不改变正常source-to-package driver始终提交默认winner的行为；
+- 普通baseline/winner对照分别使用公开`none`与`production`preset；单机制归因可使用
+  `production + disable-one`或`none + enable-one`。配置只缩小candidate domain，两边仍重放完全相同的correctness、
+  target和publication gate。compiler-private characterization seam仅保留给无法用语义轴表达、但需要从accepted Instr
+  phase精确选择算法参数或结构形态的资格，不得重新成为通用优化控制面；
 - 资格按最终可观察机制合并implementation/tile/physical route、resident/share/recompute、numeric DAG、ready-order和
   collective algorithm；canonicalization、alias proof、packing reject和verifier negative继续由host exact gate闭合，不按
   pass数量消耗板卡。当前LICM缺少真实公开source producer，明确保留host gate；production winner

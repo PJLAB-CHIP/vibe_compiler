@@ -4,6 +4,7 @@
 #define WAFER_COMPILER_COMPILATION_H
 
 #include "Wafer/Frontend/Program.h"
+#include "Wafer/Support/OptimizationConfig.h"
 #include "Wafer/Target/RuntimeLaunchContract.h"
 #include "Wafer/Target/TargetProfile.h"
 
@@ -95,23 +96,28 @@ private:
 /// remains outside CompilationRequest and the compiler IR.
 class CompilationOptions {
 public:
-  static CompilationOptions standard() {
-    return CompilationOptions(/*profileCompanion=*/false);
+  static CompilationOptions standard(
+      OptimizationConfig optimizations = OptimizationConfig::production()) {
+    return CompilationOptions(/*profileCompanion=*/false, optimizations);
   }
 
   /// Requests a final-artifact profile companion. The ordinary package is
   /// compiled exactly once; the companion contains profile-only captures for
   /// that same accepted 16-rank artifact.
   static llvm::Expected<CompilationOptions>
-  profile(const ExecutionConfig &executionConfig);
+  profile(const ExecutionConfig &executionConfig,
+          OptimizationConfig optimizations = OptimizationConfig::production());
 
   bool shouldProduceProfileCompanion() const { return profileCompanion; }
+  OptimizationConfig getOptimizationConfig() const { return optimizations; }
 
 private:
-  explicit CompilationOptions(bool profileCompanion)
-      : profileCompanion(profileCompanion) {}
+  explicit CompilationOptions(bool profileCompanion,
+                              OptimizationConfig optimizations)
+      : profileCompanion(profileCompanion), optimizations(optimizations) {}
 
   bool profileCompanion;
+  OptimizationConfig optimizations;
 };
 
 enum class ProgramResourceRole { UserInput, Parameter, Constant, Output };

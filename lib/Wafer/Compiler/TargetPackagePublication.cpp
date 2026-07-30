@@ -631,7 +631,7 @@ makeProfileCompanionWorldAccessible(llvm::StringRef companionRoot,
 
 mlir::LogicalResult stageTargetPackage(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
-    const ExecutionConfig &executionConfig,
+    const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     WholeVariantSelectionMode selectionMode,
     std::optional<int64_t> failAfterLogicalRank,
@@ -642,7 +642,7 @@ mlir::LogicalResult stageTargetPackage(
   const CompileClock::time_point totalStart = CompileClock::now();
   llvm::Expected<ExecutableBundle> compiledExecutableBundle =
       compileTensorProgramToExecutableBundleImpl(
-          tensorProgramDirectory, executionConfig, diagnostics,
+          tensorProgramDirectory, executionConfig, optimizations, diagnostics,
           failAfterLogicalRank, selectionMode);
   if (!compiledExecutableBundle) {
     llvm::consumeError(compiledExecutableBundle.takeError());
@@ -682,7 +682,7 @@ mlir::LogicalResult stageTargetPackage(
 mlir::LogicalResult stageProfileTargetPackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
     llvm::StringRef publishedPackageName,
-    const ExecutionConfig &executionConfig,
+    const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLogicalRank,
     std::optional<int64_t> failAfterTargetLogicalRank,
@@ -692,7 +692,7 @@ mlir::LogicalResult stageProfileTargetPackages(
   const CompileClock::time_point totalStart = CompileClock::now();
   llvm::Expected<ExecutableBundle> compiled =
       compileTensorProgramToExecutableBundleImpl(
-          tensorProgramDirectory, executionConfig, diagnostics,
+          tensorProgramDirectory, executionConfig, optimizations, diagnostics,
           failAfterLogicalRank, WholeVariantSelectionMode::Production);
   if (!compiled) {
     llvm::consumeError(compiled.takeError());

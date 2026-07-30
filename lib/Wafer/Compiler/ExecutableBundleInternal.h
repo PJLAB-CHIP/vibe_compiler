@@ -87,10 +87,23 @@ verifyExactExecutionConfig(mlir::ModuleOp module,
 llvm::Expected<ExecutableBundle> buildExecutableBundle(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
+    ExecutionConfig executionConfig, OptimizationConfig optimizations,
+    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLogicalRank,
+    WholeVariantSelectionMode selectionMode =
+        WholeVariantSelectionMode::Production);
+
+inline llvm::Expected<ExecutableBundle> buildExecutableBundle(
+    std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
+    frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLogicalRank,
     WholeVariantSelectionMode selectionMode =
-        WholeVariantSelectionMode::Production);
+        WholeVariantSelectionMode::Production) {
+  return buildExecutableBundle(context, tensorModule, std::move(program),
+                               executionConfig,
+                               OptimizationConfig::production(), diagnostics,
+                               failAfterLogicalRank, selectionMode);
+}
 
 } // namespace detail
 } // namespace wafer::compiler

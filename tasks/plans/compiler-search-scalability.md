@@ -1,7 +1,8 @@
 # Compiler Search Scalability
 
-状态：Q41 `board-ready`。Q42已完成；本任务只优化whole-variant search的编译时间，不修改Q39
-NoC-resident语义，也不处理Q40的Direct-DTE issue/wait并行。真实板端未运行。
+状态：`board-ready`。typed optimization configuration、正式CLI、单轴source-to-package A/B及模型规模
+ordinary/profile no-card已闭合；新增配置只约束哪些可选alternative进入candidate domain，不修改Q39
+NoC-resident语义或Q40的Direct-DTE issue/wait合同。真实板端未运行。
 
 ```text
 Pipeline position:
@@ -9,20 +10,66 @@ Pipeline position:
   verified rank programs、complete-rank current IR、typed candidate domain和ordinary/profile compile request。
 - Current stage responsibility:
   量化并优化candidate generation、attempt planning、analysis、late gate、clone/import/lowering和profile
-  capture construction，删除不改变candidate domain、winner或artifact的重复工作。
+  capture construction，删除不改变candidate domain、winner或artifact的重复工作；同时把当前production
+  candidate owner中的可选语义优化机制收敛为typed、可组合的optimization configuration，使同一source、
+  target和launch可以选择production全集、全关baseline或任意显式子集。
 - Output artifact / IR:
-  语义不变的accepted whole variant、package/profile companion及稳定compile-time diagnostics。
+  由显式optimization configuration约束candidate domain后产生的accepted whole variant、package/profile
+  companion及包含canonical enabled/disabled set的稳定compile-time diagnostics。配置只决定允许生成哪些
+  alternative；最终选择仍由actual IR、exact gate和既有static policy完成。
 - Downstream consumer:
   target/package/no-card/runtime、Q9 profiler和model-scale compile workflow。
 - User-level driver / named pipeline:
-  wafer-compile ordinary/profile production pipeline。
+  wafer-compile source-to-package production pipeline；`--optimization-preset`、
+  `--enable-optimization`和`--disable-optimization`共同构造typed configuration，`--profile`只请求同一
+  configuration winner的profile product。
 - Explicit non-goals:
-  不用shape/op/name matcher跳过搜索，不关闭profile，不改变Q39 legality/profitability或Q40 choice/wait合同。
+  不把pass、测试case或catalog evidence key做成长期option；不允许关闭canonicalization、verifier、
+  SPM/DDR placement、completion normalization、Direct-DTE acceptance、whole-card resource、target ABI或
+  package readback等正确性阶段；不用shape/op/name matcher跳过搜索，不改变Q39 legality/profitability或
+  Q40 choice/wait合同。
 - Completion gate:
   per-stage wall、peak RSS、candidate/attempt/late-gate/clone/lowering/capture计数完整；search work有显式上界；
-  M-sharded K=1024 case在相同Release环境满足时间门禁、winner不变、完整package生成且no-card通过时达到
-  `board-ready`，但不标`done`；真实板端exact-output和winner profile有效后完成。
+  production preset与此前default winner一致；none preset只保留fully gated conservative baseline；每个
+  public语义优化名都能独立enable/disable并可组合，unknown/duplicate/conflicting配置在编译前拒绝；至少一个
+  source-to-package A/B证明单轴关闭改变final target结构而source/launch/ABI保持一致。M-sharded K=1024 case在
+  相同Release环境满足时间门禁、完整package生成且no-card通过时恢复`board-ready`，但不标`done`；真实板端
+  exact-output和winner profile有效后完成。
 ```
+
+## Typed Optimization Configuration
+
+optimization configuration属于一次compiler invocation的typed orchestration input，不进入source IR，也不作为
+candidate attr、side table或selection cost。它只在各producer拥有的语义边界决定“这个alternative是否进入bounded
+candidate domain”：
+
+- source-expression：consumer-local recompute、loop-invariant code motion、algebraic reassociation、
+  reduction-tree balancing、algebraic distribution、algebraic factorization；
+- rank recipe：implementation selection、tile-search alternatives、scope composition、collective algorithm
+  selection、direct mapped boundary transfer、concurrent working-set selection；
+- accepted-rank sibling：full-buffer transfer elision、full-buffer residency、ready-order scheduling、
+  static fixed-slot buffering、disjoint worker placement；
+- all-rank sibling：NoC-resident dataflow。
+
+每个名字映射一个稳定的IR/alternative语义，不映射文件、pass或case。`production` preset启用全部当前支持项并保持
+既有默认行为；`none` preset关闭全部可选producer，但仍执行合法编译所必需的tiling、lowering、normalization、
+placement、binding、resource和ABI gate。显式enable/disable在preset之上应用，重复项、同项既enable又disable及未知
+名字全部拒绝，不按命令行先后覆盖。
+
+配置传播遵循单一typed value：
+
+```text
+wafer-compile options
+  -> CompilationOptions
+  -> tensor-program rank frontier
+  -> accepted-rank optional siblings
+  -> all-rank NoC optional siblings
+  -> unchanged whole-variant exact selection
+```
+
+关闭producer只缩小候选域，不修改source，不让已有candidate变成“带disabled attr”的影子状态，也不绕过任何late gate。
+同一配置的ordinary和profile compile必须选择同一production artifact；对比工具以命令行的canonical配置、source
+snapshot、target/launch和最终package结构共同建立A/B身份。
 
 ## 问题与边界
 
@@ -106,6 +153,20 @@ guard/status/lifecycle及bounded timeout，显式要求grid launch；它fresh生
 package并证明递归bytes完全一致、NE GEMM target structure一致、profile companion完整且两包均通过no-card。
 这避免把rank count错误恢复成cluster/Direct-DTE launch。无卡门禁已闭合，真实板端未执行，Q41保持
 `board-ready`而不是`done`。
+
+本轮typed configuration的fresh host证据包括：
+
+- 18个稳定语义名的唯一性、parse/stringify round-trip、`production`/`none`全集和任意typed composition unit；
+- `none` rank frontier只产生唯一conservative spill/single-buffer/unplaced reserved baseline，且canonical
+  request-shard merge与未分片frontier仍逐module一致；
+- 同一reciprocal source完成default production、`none`、disable-only implementation selection和enable-only
+  implementation selection四路完整package：两组expected ELF分别byte-identical，production/only-enabled调用
+  reciprocal target implementation，none/disabled调用divide target implementation；unknown、duplicate和conflict
+  均在publication前拒绝；
+- canonical diagnostic完整列出enabled/disabled集合；原compiler optimization campaign及NoC/partial-reduction
+  host comparison baseline已迁到正式`none` preset；
+- 16-rank FP16 M-sharded K=1024 runner再次fresh生成ordinary/profile两个production package，递归bytes一致、
+  grid launch和NE GEMM target structure一致、profile companion完整且两包均通过no-card。
 
 ## 剩余板端门禁
 

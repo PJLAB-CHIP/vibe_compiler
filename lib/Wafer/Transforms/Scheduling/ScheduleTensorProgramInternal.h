@@ -6,6 +6,7 @@
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/Internal.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/OptimizationConfig.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetSchedulingCapability.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
@@ -140,6 +141,7 @@ struct SelectionConfig {
         ddrAlignmentBytes(policy.memory.ddrAlignmentBytes) {}
 
   int64_t logicalRank = -1;
+  OptimizationConfig optimizations = OptimizationConfig::production();
   /// Selects the tile seed for this complete-clone recipe. Keeping this on the
   /// enclosing recipe, rather than adding siblings to one tile-search queue,
   /// preserves the result-driven queue order and retry budget exactly.
@@ -283,14 +285,12 @@ std::string getStandaloneTaskModuleText(mlir::func::FuncOp task);
 
 mlir::func::FuncOp findSingleSelectionTask(mlir::ModuleOp module);
 
-mlir::FailureOr<llvm::SmallVector<int64_t, 2>>
-getStaticRootReductionRanges(
+mlir::FailureOr<llvm::SmallVector<int64_t, 2>> getStaticRootReductionRanges(
     mlir::func::FuncOp task,
     CandidateTileTraversalKind traversalKind =
         CandidateTileTraversalKind::ResultDriven);
 
-std::optional<std::string>
-getReductionSplitLegalityFailure(
+std::optional<std::string> getReductionSplitLegalityFailure(
     mlir::func::FuncOp task,
     CandidateTileTraversalKind traversalKind =
         CandidateTileTraversalKind::ResultDriven);

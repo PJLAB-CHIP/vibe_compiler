@@ -214,6 +214,13 @@ private:
                                      const TargetToolchain &targetToolchain,
                                      llvm::raw_ostream &diagnostics);
   friend mlir::FailureOr<TargetCompilationProduct>
+  compileProgramWithTargetLLVMBundle(CompilationRequest request,
+                                     llvm::StringRef outputProgramDirectory,
+                                     llvm::StringRef xlaSpmdPartitionerHelper,
+                                     const TargetToolchain &targetToolchain,
+                                     CompilationOptions options,
+                                     llvm::raw_ostream &diagnostics);
+  friend mlir::FailureOr<TargetCompilationProduct>
   testing::compileProgramWithReservedBaselineTargetCompilation(
       CompilationRequest request, llvm::StringRef outputProgramDirectory,
       llvm::StringRef xlaSpmdPartitionerHelper,
@@ -263,6 +270,12 @@ mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
+mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, CompilationOptions options,
+    llvm::raw_ostream &diagnostics);
 
 /// Prepares the fixed Kernel Runtime ABI, lowers, translates, and verifies
 /// every accepted rank before atomically returning an owner-backed LLVM
