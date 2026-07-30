@@ -2216,3 +2216,44 @@
   真实wait cycle继续fail closed。
 - 防复发：正例同时覆盖无关静态loop和相同occurrence集合的不同静态放置；负例覆盖不同message的helper call
   顺序、static site多binding、数量不等及跨rank wait cycle。不得用函数名、绝对walk ordinal或源码位置恢复身份。
+
+## 2026-07-29 Direct-DTE buffer hazard不能把engine resource归属到每个operand
+
+- 现象：`dte_send`与其exact wait之间的elementwise compute只读取send source、写入另一个allocation，Direct-DTE
+  acceptance却把compute的无value `ComputeResource` write summary当成source write并拒绝合法窗口；反过来若忽略全部
+  summary而不检查operand effect，又可能把漏标memref access误认为独立。
+- 根因：rootless `MemoryEffects::EffectInstance`描述执行engine，不携带具体buffer identity；只有value-associated
+  effect能回答哪个operand被读写。send在完成前拥有pending read而非独占buffer，read/read没有数据hazard；receive则拥有
+  pending write，目的buffer上的read/write都冲突。
+- 修复模式：逐memref operand要求value-specific effect，缺失时fail closed；rootless resource effect只保留为engine
+  约束，不参与buffer root归属。send source允许value-specific read，write拒绝；receive destination的read/write均拒绝。
+  qualification再用planned static byte range证明exact disjoint，unknown root/range保持Unknown。
+- 防复发：同一测试族必须覆盖send source read正例、send source write负例、receive destination read/write负例、
+  disjoint root/range及缺operand effect；诊断同时给出issue、conflicting op和effect，不能只报泛化“资源冲突”。
+
+## 2026-07-29 Direct-DTE串行对照不能把wait提前
+
+- 现象：为构造同transport的no-overlap baseline而把matching wait移动到compute前，单rank顺序看似合法，
+  all-rank acceptance却出现receive-ready/send/wait cycle。
+- 根因：wait属于跨rankevent dependency graph；提前它会要求当前rank在peer尚未到达相应prepare/issue前完成event，
+  从而改变原candidate的communication partial order。compute是本地独立CT/NE，把compute延后不改变DTE token图。
+- 修复模式：从已fully accepted overlap tuple出发，把issue/wait之间的CT/NE按原顺序移动到wait后；清除并重新接受
+  Direct-DTE binding，逐op核对binding不变，再重跑whole-card resource、accepted-rank和target gate，并要求结构窗口计数
+  变为Known zero。
+- 防复发：matched baseline必须检查source/launch/transport ABI/binding/target-call inventory一致及scheduler hash不同；
+  任何通过提前wait、删除transport或换launch form得到的“串行包”都不能进入matched A/B。
+
+## 2026-07-29 旧的大shape overlap fixture不能代替当前target gate
+
+- 现象：`16x64 · 64x262144` GEMM + AllReduce的rank-frontier测试要求产生fixed-slot Direct-DTE/GEMM窗口，
+  但fixture使用V1 profile；V1没有显式mixed DTE/NCC capability。改用正确V3后，所有满足多tile的fixed-slot
+  邻居又被真实3 MiB SPM gate拒绝，缩小shape则失去原窗口且搜索更慢。该测试已不可能同时满足自己声称的合同。
+- 根因：历史测试把特定shape、旧target profile和“必须出现候选”绑定在一起，并在后续capability/SPM合同收紧后
+  仍留在suite；默认测试减负又让它没有及时暴露。campaign driver中同名旧case、CMake owner集合和catalog随后形成
+  三份不一致inventory。
+- 修复模式：删除失效GEMM fixture及其payload/oracle/driver entry。底层rotation、issue/wait、binding、range和
+  fixed-slot admission继续由小型直接unit验证；当前source-to-package owner改为能够通过全部真实gate的16-rank FP16
+  elementwise matched双包no-card。catalog只要求每个catalog paired entry存在driver，不反向禁止Q39等独立owner case。
+- 防复发：profile必须匹配所测ABI/capability，正例必须通过真实SPM/transport/target gate；不能为保住旧case放宽
+  capability或capacity。一个owner纵向替代另一个时，同批删除旧CMake、driver、payload/oracle和重复unit，并fresh运行
+  catalog contract。

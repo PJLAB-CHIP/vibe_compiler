@@ -271,7 +271,7 @@ def main() -> int:
     paired_case_keys = {
         case.key for case in catalog.CAMPAIGN_CASES if case.requires_pair
     }
-    assert paired_case_keys == set(driver.CASES), (
+    assert paired_case_keys.issubset(driver.CASES), (
         "new paired campaign entries must have a concrete executable driver case"
     )
     for key, executable in driver.CASES.items():
@@ -560,7 +560,9 @@ def main() -> int:
             key=lambda entry: entry.board_order,
         )
     )
-    assert tuple(driver.CASES) == paired_by_board_order
+    assert tuple(
+        case_key for case_key in driver.CASES if case_key in paired_case_keys
+    ) == paired_by_board_order
     assert tuple(calibration_runner.COMPILER_OPTIMIZATION_PAIRED_CASES) == (
         paired_by_board_order
     ), "runner registry must be the board-order view of executable paired cases"
@@ -573,14 +575,18 @@ def main() -> int:
         cmake, "_wafer_compiler_optimization_collective_cases"
     )
     assert rank_one_cases == paired_by_board_order[:-1]
-    assert collective_cases == paired_by_board_order[-1:]
+    assert tuple(
+        case_key
+        for case_key in collective_cases
+        if case_key in paired_case_keys
+    ) == paired_by_board_order[-1:]
     assert cmake.count(
         "foreach(_wafer_compiler_optimization_case IN LISTS"
-    ) == 3
+    ) == 2
     assert (
         "wafer-runtime-compiler-optimization-"
         "${_wafer_compiler_optimization_case}-no-card"
-    ) in cmake
+    ) not in cmake
     assert (
         "wafer-board-compiler-optimization-"
         "${_wafer_compiler_optimization_case}"

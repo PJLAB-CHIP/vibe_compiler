@@ -1,13 +1,14 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-07-29同步Q37 hardware characterization、轻量板端执行合同、production optimizer成对板测合同
-与默认测试减负边界；历史optimizer/collective/calibration资产由对应owner按需调用，不再进入默认CTest。
+状态：2026-07-29同步Q37 hardware characterization、轻量板端执行合同、production optimizer成对板测合同、
+Q40 Direct-DTE/compute无卡资格与默认测试减负边界；历史optimizer/collective/calibration资产由对应owner按需调用，
+不再进入默认CTest。
 Q6.B configured-board gate中的rank-one kernel、16-rank kernel、model和kernel内Direct DTE prepared phases已按本文
 完成真实板端execution evidence，Q22.C更广板端numeric correlation仍为独立later gate。保留Q32.V typed
 target-capability vertical、Q31标准7B单block多seed数值证据及已完成Q22.N/B/L/H/S/V和Q22 model-only汇总；
 Q39 generic NoC-resident与NoC×fixed-slot×nonzero-worker同候选的repo-owned host gate、configured-board
-baseline/winner 6/6 exact correctness及winner profile均已闭合；高wait与Direct-DTE overlap后续边界归Q40，
-编译搜索资源归Q41。Q32.T与Q3.6 Count保持later独立合同。
+baseline/winner 6/6 exact correctness及winner profile均已闭合；Q40 Direct-DTE/compute matched package/no-card已经
+board-ready，真实板端exact output与matched A/B仍未执行；编译搜索资源归Q41。Q32.T与Q3.6 Count保持later独立合同。
 本文是跨stage稳定验证合同，不是`tasks/plans/`中的动态实施计划。它拥有完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
 
@@ -122,8 +123,8 @@ performance；board单case不是scale或全输入域完成。
   integration suites由`check-wafer-compiler-integration`点名运行；model-scale search/workload不在聚合入口
   重放，编译上界和完整package由对应任务直接case证明；
 - `check-wafer`：依赖并执行以上两者；
-- 默认CTest：注册lit、直接C++ unit、runtime安全/profile schema、一个普通与一个Direct-DTE
-  source-to-package/no-card seam，以及直接依赖配置gate；
+- 默认CTest：注册lit、直接C++ unit、runtime安全/profile schema、一个普通、一个基础Direct-DTE及当前
+  Direct-DTE/compute qualification source-to-package/no-card seam，以及直接依赖配置gate；
 - 已完成硬件校准、characterization、pending inventory、批量campaign和重复profile package生成保留为
   owner按需入口，不进入默认CTest；后续任务只运行自己的直接case；
 - configured vertical tests：需要importer/XLA helper/target toolchain时用feature控制；
@@ -534,6 +535,27 @@ artifact或metadata摘要拼接成组合证据：
 - 当前独立NoC role、worker及fixed-slot host gates已经闭合，NoC×fixed-slot×nonzero-worker同候选也已通过
   source/package/model/no-card组合验证。该结果仍不构成board correctness或hardware overlap evidence；
   configured-board fresh baseline/winner correctness保持独立external gate。
+
+#### Q40 Direct-DTE/Compute Matched Host Gate
+
+Q40无卡门禁必须证明同一个bounded whole-variant tuple同时具有fixed-slot和可重算的Direct-DTE/compute结构窗口，
+不能用“ELF中分别存在DTE与compute call”或不同transport/launch的reserved baseline代签：
+
+- qualification只接受每rank都有V3 bound issue、唯一same-block exact wait及二者之间独立FP16/BF16 CT/NE的
+  fixed-slot tuple；planned static range与operand-specific effect证明send-source read/read可共存，
+  send-source write和receive-destination read/write冲突，unknown effect/range fail closed；
+- candidate companion绑定manifest、accepted Instr digest、all-and-only rank domain、每rank witness计数、
+  DTE issue/wait token closure、SPM roots和static loops。它是package审计摘要，不保存每个窗口的旁路schedule；
+- matched baseline从同一个已资格tuple构造，只把窗口内CT/NE按原顺序移到exact wait后；随后必须重新接受
+  Direct-DTE并逐op核对binding不变，重跑whole-card resource、accepted-rank、target和package gate，并要求
+  每rank witness计数为Known zero；
+- 唯一case是16-rank cluster、replicated `524288xf16` elementwise `2*lhs + rhs²`。固定有界整数payload让CPU
+  expected到FP16仍byte-exact；shape仅是case参数。两包必须保持source snapshot、manifest ABI、transport status、
+  Direct-DTE call inventory与payload/oracle一致，scheduler body必须不同，并分别fresh no-card；
+- hardware runner只有显式armed且device/runtime/firmware identity完整时才可执行，单进程按A/B、B/A顺序、bounded
+  timeout运行；timeout或设备异常后停止，不自动retry/reset/power。本host gate不提供硬件overlap、收益或promotion结论。
+
+达到以上条件后状态只能是`board-ready`。真实板端exact output及matched A/B未产生前不得标记`done`。
 
 ### 6.2 Optional Rank-Local Transform Control-Plane Gate
 

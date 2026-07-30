@@ -318,7 +318,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         )
         self.assertEqual(
             len(RUNNER.SELECTABLE_BATCHES["compiler-optimization-paired"]),
-            8,
+            len(RUNNER.COMPILER_OPTIMIZATION_PAIRED_CASES),
         )
         campaign = RUNNER.select_calibration_steps(
             None, ("compiler-optimization-campaign",)

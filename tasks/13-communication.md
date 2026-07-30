@@ -189,6 +189,13 @@ completion和release；V3则把同一`dte_send`lower为sender prepare后紧接�
 instruction op、token或旁路schedule；accepted IR仍由`dte_send`产生的SSA token和唯一wait拥有生命周期。
 V3 module必须出现显式issue call，V1/V2 module不得引用该V3-only symbol。
 
+Direct-DTE acceptance在issue到matching exact wait之间从current IR的
+`MemoryEffectOpInterface`验证buffer ownership。operand-specific effect才描述具体SPM访问；无value的engine resource
+summary只说明执行资源，不能被归属到每个operand，存在memref operand却缺少对应value effect时必须fail closed。send在完成前
+持续读取source，因此同一source上的read/read兼容，任何write冲突；receive在完成前拥有destination pending write，因此同一
+allocation root上的read或write都保守冲突。qualification层可以进一步用planned static byte range证明不同root或不相交range，
+但不能用名字、engine summary或未知alias恢复独立性。
+
 ### 2.3 Physical-dataflow peer tile
 
 `wafer.tile.peer_send`和`wafer.tile.peer_recv`承载普通SPM tile在两个logical rank之间的target-abstract

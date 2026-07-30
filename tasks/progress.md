@@ -26,7 +26,7 @@ Q38 -> Q39 NoC-resident tile dataflow                        [done]
 Q43 Vibe Compiler collaboration review materials             [done]
 Q42 test gate scope reduction                                [done]
 Q42 + Q32.C -> Q41 compiler search scalability               [board-ready]
-Q42 + Q39 -> Q40 composed search and DTE overlap             [next]
+Q42 + Q39 -> Q40 composed search and DTE overlap             [board-ready]
 ```
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
@@ -36,7 +36,7 @@ Q42 + Q39 -> Q40 composed search and DTE overlap             [next]
 | Q39 | `noc-resident-tile-dataflow` | `done` | Q38非板端Direct-DTE/fixed-slot合同闭合；Q38板端资格作为独立external gate | complete-rank NoC-resident candidate、静态profitability、package/no-card闭合；K-sharded `4096³`同源baseline/winner板端6/6 exact，winner profile保持16-rank exact并生成有效报告。高wait与未闭合overlap转交Q40，编译搜索耗时转交Q41。 | 02-13、16-17；`tasks/plans/noc-resident-tile-dataflow.md` |
 | Q43 | `compiler-collaboration-review-materials` | `done` | Q9、Q37-Q39完成证据 | 37页可编辑Vibe Compiler汇报PPT、PPT内备注、逐页讲稿、PDF/逐页预览、素材来源表和TX81当前profile硬件行为导读已交付；每页有视觉，真实IR、图表和findings可追溯，生成插图不承担技术证明，未修改compiler/runtime主线合同。 | 01、06、16；`tasks/archive/vibe-compiler-collaboration-review.md` |
 | Q42 | `test-load-reduction` | `done` | 无 | 默认lit/unit/CTest和owner integration均只判直接合同；历史catalog、campaign、model-scale与重复package执行已退出默认入口，保留的source-to-package/no-card seam通过。 | 16；`tasks/plans/test-gate-scope-reduction.md` |
-| Q40 | `composed-choice-search-and-dte-overlap` | `next` | Q39、Q42完成 | 无卡阶段必须推进到`board-ready`：指定matched case、完整package和no-card闭合，但不得标`done`。真实板端exact-output和matched A/B通过后完成；测试只判wait/issue直接合同，不绑定无关suite。 | 06、08-13、16 |
+| Q40 | `composed-choice-search-and-dte-overlap` | `board-ready` | Q39、Q42完成 | bounded whole-variant组合、V3 same-block Direct-DTE issue→FP16/BF16 CT/NE→exact wait结构witness、同tuple serialized baseline、16-rank replicated FP16 elementwise完整双package及fresh no-card已闭合；两包保持同source/cluster launch/transport ABI/binding/call inventory并以scheduler顺序区分。真实板端exact-output和matched A/B尚未执行，不得标`done`。 | 06、08-13、16；`tasks/plans/composed-choice-search-and-dte-overlap.md` |
 | Q41 | `compiler-search-scalability` | `board-ready` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 16-rank FP16 rank-invariant frontier只生成一次并按canonical request shard并行；candidate/attempt/clone/lowering/capture上界与阶段wall/RSS可观测；production profile 44.98秒、峰值134432 KiB，完整production/count/trace package均通过no-card。16-shard与未分片frontier逐module等价；真实板端exact-output及winner profile尚未执行，不得标`done`。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
 
 ## Later / External Gates

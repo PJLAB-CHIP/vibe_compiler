@@ -22,6 +22,8 @@ enum class WholeVariantSelectionMode {
   Production,
   ReservedBaseline,
   QualifyStaticFixedSlot,
+  QualifyDirectDTEComputeOverlap,
+  SelectSerializedDirectDTEComputeBaseline,
   QualifyWorkerPlacement,
   QualifyNoCResidentFixedSlotWorker,
   CharacterizeAllGatherDirect,
@@ -39,6 +41,8 @@ isCollectiveCharacterizationSelection(WholeVariantSelectionMode mode) {
   case WholeVariantSelectionMode::Production:
   case WholeVariantSelectionMode::ReservedBaseline:
   case WholeVariantSelectionMode::QualifyStaticFixedSlot:
+  case WholeVariantSelectionMode::QualifyDirectDTEComputeOverlap:
+  case WholeVariantSelectionMode::SelectSerializedDirectDTEComputeBaseline:
   case WholeVariantSelectionMode::QualifyWorkerPlacement:
   case WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker:
     return false;
@@ -73,6 +77,8 @@ getCollectiveCharacterizationAlternative(WholeVariantSelectionMode mode) {
   case WholeVariantSelectionMode::Production:
   case WholeVariantSelectionMode::ReservedBaseline:
   case WholeVariantSelectionMode::QualifyStaticFixedSlot:
+  case WholeVariantSelectionMode::QualifyDirectDTEComputeOverlap:
+  case WholeVariantSelectionMode::SelectSerializedDirectDTEComputeBaseline:
   case WholeVariantSelectionMode::QualifyWorkerPlacement:
   case WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker:
     return "";
@@ -84,11 +90,11 @@ getCollectiveCharacterizationAlternative(WholeVariantSelectionMode mode) {
 /// of the same no-replace transaction as its canonical package. The compound
 /// qualification reuses that exact companion schema while adding independent
 /// NoC-residency and worker-placement selection predicates.
-constexpr bool producesStaticFixedSlotQualificationCompanion(
-    WholeVariantSelectionMode mode) {
+constexpr bool
+producesStaticFixedSlotQualificationCompanion(WholeVariantSelectionMode mode) {
   return mode == WholeVariantSelectionMode::QualifyStaticFixedSlot ||
-         mode ==
-             WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker;
+         mode == WholeVariantSelectionMode::QualifyDirectDTEComputeOverlap ||
+         mode == WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker;
 }
 
 } // namespace wafer::compiler::detail

@@ -98,6 +98,37 @@ compileProgramForStaticFixedSlotTargetQualification(
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
 
+/// Commits a fully accepted V3 fixed-slot tuple only when every rank's current
+/// accepted IR contains a Direct-DTE explicit-issue -> independent FP16/BF16
+/// CT/NE -> matching exact-wait window. The fixed-slot identity and exact
+/// window are independently recomputed from the same actual tuple. This
+/// qualification does not alter normal-production profitability.
+mlir::FailureOr<ExecutableBundle>
+compileProgramForDirectDTEComputeOverlapQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
+/// Commits the same class of fully accepted V3 fixed-slot/Direct-DTE tuple as
+/// the overlap qualification, then moves the intervening CT/NE operations
+/// after their matching exact wait and reruns schedule/resource gates.
+/// This internal calibration seam publishes a same-transport serialized
+/// baseline and never produces an overlap qualification companion.
+mlir::FailureOr<ExecutableBundle>
+compileProgramForSerializedDirectDTEComputeBaseline(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
+/// Target-model form of Direct-DTE/compute overlap qualification. It retains
+/// the exact accepted executable and target LLVM modules already consumed by
+/// package and qualification-companion publication.
+mlir::FailureOr<TargetCompilationProduct>
+compileProgramForDirectDTEComputeOverlapTargetQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
 /// Runs the production publication transaction while committing a fully
 /// accepted disjoint-component NCC worker realization from each rank
 /// frontier. The selected tuple passes the same lowering, resource,

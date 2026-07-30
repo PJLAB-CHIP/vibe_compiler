@@ -665,6 +665,8 @@ mlir::LogicalResult stageTargetPackage(
     llvm::sys::path::append(qualificationCompanion, "qualification-companion");
     if (mlir::failed(stageStaticFixedSlotQualificationCompanion(
             qualificationCompanion, stagedPackage, *compiledExecutableBundle,
+            selectionMode ==
+                WholeVariantSelectionMode::QualifyDirectDTEComputeOverlap,
             diagnostics)))
       return mlir::failure();
   }

@@ -15,6 +15,7 @@
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetSchedulingCapability.h"
 #include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/PhysicalDataflow.h"
 #include "Wafer/Transforms/SoftwarePipelining.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -124,6 +125,8 @@ rankMatchesCollectiveCharacterization(const RankExecutable &rank,
   case WholeVariantSelectionMode::Production:
   case WholeVariantSelectionMode::ReservedBaseline:
   case WholeVariantSelectionMode::QualifyStaticFixedSlot:
+  case WholeVariantSelectionMode::QualifyDirectDTEComputeOverlap:
+  case WholeVariantSelectionMode::SelectSerializedDirectDTEComputeBaseline:
   case WholeVariantSelectionMode::QualifyWorkerPlacement:
   case WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker:
     return false;
@@ -701,6 +704,260 @@ matchesStaticFixedSlotQualification(const PreTargetWholeVariant &candidate) {
          });
 }
 
+static bool matchesDirectDTEComputeOverlapQualification(
+    const PreTargetWholeVariant &candidate) {
+  if (!matchesStaticFixedSlotQualification(candidate) ||
+      candidate.resourceCost.rankCosts.size() != candidate.ranks.size())
+    return false;
+  return llvm::all_of(
+      candidate.resourceCost.rankCosts,
+      [](const analysis::InstructionProgramCost &cost) {
+        return cost.directDTEComputeOverlapWindowCount.isKnown() &&
+               cost.directDTEComputeOverlapWindowCount.value > 0;
+      });
+}
+
+static std::string explainDirectDTEComputeOverlapQualification(
+    const PreTargetWholeVariant &candidate) {
+  for (auto [rankIndex, rank] : llvm::enumerate(candidate.ranks)) {
+    if (rankIndex >= candidate.resourceCost.rankCosts.size())
+      return "accepted rank/cost domains differ";
+    const analysis::ScheduleCostMetric &metric =
+        candidate.resourceCost.rankCosts[rankIndex]
+            .directDTEComputeOverlapWindowCount;
+    if (metric.isKnown() && metric.value > 0)
+      continue;
+
+    uint64_t issueCount = 0;
+    uint64_t boundIssueCount = 0;
+    uint64_t exactWaitCount = 0;
+    uint64_t issueInLoopCount = 0;
+    uint64_t computeInIssueLoopCount = 0;
+    uint64_t orderedPendingComputeCount = 0;
+    uint64_t synchronousComputeCount = 0;
+    uint64_t computeBetweenCount = 0;
+    llvm::DenseSet<mlir::Operation *> inventoriedIssueLoops;
+    rank.getModule().walk([&](mlir::Operation *operation) {
+      mlir::Value token;
+      bool bound = false;
+      if (auto send = mlir::dyn_cast<InstrDTESendOp>(operation)) {
+        token = send.getToken();
+        bound = send.getBinding().has_value();
+      } else if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(operation)) {
+        token = recv.getToken();
+        bound = recv.getBinding().has_value();
+      } else {
+        return;
+      }
+      ++issueCount;
+      if (!bound)
+        return;
+      ++boundIssueCount;
+      if (auto loop = operation->getParentOfType<mlir::scf::ForOp>()) {
+        ++issueInLoopCount;
+        if (inventoriedIssueLoops.insert(loop.getOperation()).second) {
+          for (mlir::Operation &nested : loop.getBody()->without_terminator()) {
+            auto instruction =
+                mlir::dyn_cast<WaferInstructionOpInterface>(&nested);
+            if (instruction &&
+                (instruction.getInstructionFamily() == InstrFamily::CT ||
+                 instruction.getInstructionFamily() == InstrFamily::NE)) {
+              ++computeInIssueLoopCount;
+              LocalInstructionCompletion completion =
+                  classifyLocalInstructionCompletion(&nested);
+              orderedPendingComputeCount +=
+                  completion == LocalInstructionCompletion::OrderedPending;
+              synchronousComputeCount +=
+                  completion ==
+                  LocalInstructionCompletion::SynchronousWriteback;
+            }
+          }
+        }
+      }
+      if (!token.hasOneUse())
+        return;
+      auto wait = mlir::dyn_cast<InstrDTEWaitOp>(*token.getUsers().begin());
+      if (!wait || wait->getBlock() != operation->getBlock() ||
+          !operation->isBeforeInBlock(wait))
+        return;
+      ++exactWaitCount;
+      for (mlir::Operation *between = operation->getNextNode();
+           between && between != wait.getOperation();
+           between = between->getNextNode()) {
+        auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(between);
+        if (!instruction ||
+            (instruction.getInstructionFamily() != InstrFamily::CT &&
+             instruction.getInstructionFamily() != InstrFamily::NE))
+          continue;
+        bool sawShaped = false;
+        bool onlyF16Bf16 = true;
+        for (mlir::Value operand : between->getOperands()) {
+          auto shaped = mlir::dyn_cast<mlir::ShapedType>(operand.getType());
+          if (!shaped)
+            continue;
+          sawShaped = true;
+          mlir::Type element = shaped.getElementType();
+          onlyF16Bf16 &=
+              element.isF16() || mlir::isa<mlir::BFloat16Type>(element);
+        }
+        if (sawShaped && onlyF16Bf16) {
+          ++computeBetweenCount;
+          break;
+        }
+      }
+    });
+
+    std::string diagnostic;
+    llvm::raw_string_ostream stream(diagnostic);
+    stream << "rank " << rankIndex << ": metric="
+           << analysis::stringifyScheduleCostKnowledge(metric.knowledge) << ':'
+           << metric.value
+           << " reason=" << analysis::stringifyScheduleCostReason(metric.reason)
+           << " issues=" << issueCount << " bound_issues=" << boundIssueCount
+           << " exact_same_block_waits=" << exactWaitCount
+           << " issues_in_loops=" << issueInLoopCount
+           << " ct_ne_in_issue_loops=" << computeInIssueLoopCount
+           << " ordered_pending_ct_ne=" << orderedPendingComputeCount
+           << " synchronous_ct_ne=" << synchronousComputeCount
+           << " f16_bf16_ct_ne_between=" << computeBetweenCount;
+    if (rankIndex < candidate.selectedBufferingKinds.size() &&
+        rankIndex < candidate.selectedBufferingPlanOrdinals.size())
+      stream << " buffering="
+             << static_cast<unsigned>(
+                    candidate.selectedBufferingKinds[rankIndex])
+             << '/' << candidate.selectedBufferingPlanOrdinals[rankIndex];
+    if (rankIndex < candidate.selectedWorkerPlacementKinds.size() &&
+        rankIndex < candidate.selectedWorkerPlacementPlanOrdinals.size())
+      stream << " worker="
+             << static_cast<unsigned>(
+                    candidate.selectedWorkerPlacementKinds[rankIndex])
+             << '/' << candidate.selectedWorkerPlacementPlanOrdinals[rankIndex];
+    return stream.str();
+  }
+  return "typed fixed-slot candidate identity is incomplete";
+}
+
+static mlir::LogicalResult
+serializeDirectDTEComputeWindows(PreTargetWholeVariant &candidate,
+                                 const ExecutionConfig &executionConfig) {
+  llvm::SmallVector<mlir::ModuleOp, 16> modules;
+  modules.reserve(candidate.ranks.size());
+  for (RankExecutable &rank : candidate.ranks) {
+    mlir::ModuleOp module = rank.getModule();
+    unsigned operationCount = 0;
+    module.walk([&](mlir::Operation *) { ++operationCount; });
+    bool foundWindow = false;
+    bool converged = false;
+    for (unsigned iteration = 0; iteration <= operationCount; ++iteration) {
+      llvm::SmallVector<
+          std::pair<InstrDTEWaitOp, llvm::SmallVector<mlir::Operation *, 4>>, 8>
+          windows;
+      module.walk([&](mlir::Operation *issue) {
+        mlir::Value token;
+        if (auto send = mlir::dyn_cast<InstrDTESendOp>(issue))
+          token = send.getToken();
+        else if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(issue))
+          token = recv.getToken();
+        else
+          return;
+        if (!token.hasOneUse())
+          return;
+        auto wait = mlir::dyn_cast<InstrDTEWaitOp>(*token.getUsers().begin());
+        if (!wait || wait->getBlock() != issue->getBlock() ||
+            !issue->isBeforeInBlock(wait))
+          return;
+        llvm::SmallVector<mlir::Operation *, 4> computeOperations;
+        for (mlir::Operation *between = issue->getNextNode();
+             between && between != wait.getOperation();
+             between = between->getNextNode()) {
+          auto instruction =
+              mlir::dyn_cast<WaferInstructionOpInterface>(between);
+          if (instruction &&
+              (instruction.getInstructionFamily() == InstrFamily::CT ||
+               instruction.getInstructionFamily() == InstrFamily::NE))
+            computeOperations.push_back(between);
+        }
+        if (!computeOperations.empty())
+          windows.emplace_back(wait, std::move(computeOperations));
+      });
+      if (windows.empty()) {
+        converged = true;
+        break;
+      }
+      foundWindow = true;
+      bool moved = false;
+      for (auto &[wait, computeOperations] : windows) {
+        mlir::Operation *insertionAnchor = wait.getOperation();
+        for (mlir::Operation *compute : computeOperations) {
+          if (compute->getBlock() != wait->getBlock() ||
+              !compute->isBeforeInBlock(wait))
+            continue;
+          compute->moveAfter(insertionAnchor);
+          insertionAnchor = compute;
+          moved = true;
+        }
+      }
+      if (!moved)
+        break;
+    }
+    if (!foundWindow)
+      return module.emitError(
+          "serialized Direct-DTE baseline rank has no compute window");
+    if (!converged)
+      return module.emitError(
+          "serialized Direct-DTE baseline did not converge");
+    modules.push_back(module);
+  }
+
+  llvm::SmallVector<std::pair<mlir::Operation *, DirectDTEBindingAttr>, 32>
+      originalBindings;
+  for (mlir::ModuleOp module : modules)
+    module.walk([&](mlir::Operation *operation) {
+      std::optional<DirectDTEBindingAttr> binding;
+      if (auto send = mlir::dyn_cast<InstrDTESendOp>(operation))
+        binding = send.getBinding();
+      else if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(operation))
+        binding = recv.getBinding();
+      if (!binding)
+        return;
+      originalBindings.emplace_back(operation, *binding);
+      operation->removeAttr("binding");
+    });
+  mlir::FailureOr<TransportContract> transport =
+      acceptDirectDTETransport(modules);
+  if (mlir::failed(transport) || *transport != TransportContract::DirectDTE)
+    return mlir::failure();
+  if (llvm::any_of(
+          originalBindings,
+          [](const std::pair<mlir::Operation *, DirectDTEBindingAttr> &entry) {
+            return entry.first->getAttrOfType<DirectDTEBindingAttr>(
+                       "binding") != entry.second;
+          }))
+    return modules.front().emitError(
+        "serialized Direct-DTE baseline changed physical binding");
+  mlir::FailureOr<analysis::WholeCardInstructionProgramCost> resourceCost =
+      acceptWholeVariantResources(modules, executionConfig);
+  if (mlir::failed(resourceCost))
+    return mlir::failure();
+  if (resourceCost->rankCosts.size() != candidate.ranks.size() ||
+      llvm::any_of(
+          resourceCost->rankCosts,
+          [](const analysis::InstructionProgramCost &rank) {
+            return !rank.directDTEComputeOverlapWindowCount.isKnown() ||
+                   rank.directDTEComputeOverlapWindowCount.value != 0;
+          }))
+    return modules.front().emitError(
+        "serialized Direct-DTE baseline retained a compute-overlap window");
+
+  for (auto [rankIndex, rank] : llvm::enumerate(candidate.ranks))
+    if (mlir::failed(verifyAcceptedRankModule(rank.getModule(), executionConfig,
+                                              static_cast<int64_t>(rankIndex),
+                                              rank.getTransportContract())))
+      return mlir::failure();
+  candidate.resourceCost = std::move(*resourceCost);
+  return mlir::success();
+}
+
 static bool
 matchesWorkerPlacementQualification(const PreTargetWholeVariant &candidate) {
   const size_t rankCount = candidate.ranks.size();
@@ -829,6 +1086,12 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
       failureGate = "direct-dte-site-specialization";
       return mlir::failure();
     }
+    // The complete tuple now exposes exact endpoint allocation roots instead
+    // of rotating recurrences. Recompute the ready order from this current IR
+    // so independent CT/NE work may occupy a live DTE issue/wait window while
+    // SSA, completion-domain, and typed effect hazards remain explicit edges.
+    for (mlir::ModuleOp module : moduleViews)
+      scheduleIndependentInstructionsByReadyOrder(module.getOperation());
   }
 
   mlir::FailureOr<TransportContract> transport =
@@ -1670,6 +1933,12 @@ selectAcceptedWholeVariants(
       WholeVariantSelectionMode::QualifyNoCResidentAllReduceRing;
   const bool qualifyStaticFixedSlot =
       selectionMode == WholeVariantSelectionMode::QualifyStaticFixedSlot;
+  const bool qualifyDirectDTEComputeOverlap =
+      selectionMode ==
+      WholeVariantSelectionMode::QualifyDirectDTEComputeOverlap;
+  const bool selectSerializedDirectDTEComputeBaseline =
+      selectionMode ==
+      WholeVariantSelectionMode::SelectSerializedDirectDTEComputeBaseline;
   const bool qualifyWorkerPlacement =
       selectionMode == WholeVariantSelectionMode::QualifyWorkerPlacement;
   const bool qualifyNoCResidentFixedSlotWorker =
@@ -1694,6 +1963,20 @@ selectAcceptedWholeVariants(
         return std::string("typed fixed-slot candidate identity is incomplete");
       };
   auto retainPreTarget = [&](const std::vector<size_t> &candidateIndices) {
+    if (qualifyDirectDTEComputeOverlap ||
+        selectSerializedDirectDTEComputeBaseline) {
+      if (candidateIndices.size() != frontiers.size())
+        return;
+      for (auto [rank, candidateIndex] : llvm::enumerate(candidateIndices)) {
+        if (candidateIndex >= frontiers[rank].size())
+          return;
+        const RankVariantCandidate &candidate = frontiers[rank][candidateIndex];
+        if (candidate.bufferingKind !=
+                wafer::RankBufferingKind::StaticFixedSlot ||
+            candidate.bufferingPlanOrdinal == 0)
+          return;
+      }
+    }
     mlir::FailureOr<PreTargetWholeVariant> preTarget =
         attemptPreTarget(candidateIndices);
     if (mlir::failed(preTarget))
@@ -1710,6 +1993,20 @@ selectAcceptedWholeVariants(
         !matchesStaticFixedSlotQualification(*preTarget)) {
       recordFailure(candidateIndices, "static-fixed-slot-qualification",
                     explainStaticFixedSlotQualification(*preTarget));
+      return;
+    }
+    if ((qualifyDirectDTEComputeOverlap ||
+         selectSerializedDirectDTEComputeBaseline) &&
+        !matchesDirectDTEComputeOverlapQualification(*preTarget)) {
+      recordFailure(candidateIndices,
+                    "direct-dte-compute-overlap-qualification",
+                    explainDirectDTEComputeOverlapQualification(*preTarget));
+      return;
+    }
+    if (selectSerializedDirectDTEComputeBaseline &&
+        mlir::failed(
+            serializeDirectDTEComputeWindows(*preTarget, executionConfig))) {
+      recordFailure(candidateIndices, "direct-dte-compute-serialization", "");
       return;
     }
     if (qualifyWorkerPlacement &&
@@ -1819,7 +2116,8 @@ selectAcceptedWholeVariants(
         std::move(*selected), std::nullopt,
         /*productionIsReservedBaseline=*/false};
   }
-  if (qualifyStaticFixedSlot || qualifyWorkerPlacement ||
+  if (qualifyStaticFixedSlot || qualifyDirectDTEComputeOverlap ||
+      selectSerializedDirectDTEComputeBaseline || qualifyWorkerPlacement ||
       qualifyNoCResidentFixedSlotWorker) {
     std::optional<AcceptedWholeVariant> selected;
     for (AcceptedWholeVariant &candidate : paretoFrontier)
@@ -1830,6 +2128,10 @@ selectAcceptedWholeVariants(
                      "test-only "
                   << (qualifyNoCResidentFixedSlotWorker
                           ? "NoC-resident static fixed-slot worker-placement"
+                      : selectSerializedDirectDTEComputeBaseline
+                          ? "serialized Direct-DTE compute"
+                      : qualifyDirectDTEComputeOverlap
+                          ? "Direct-DTE compute-overlap"
                       : qualifyStaticFixedSlot ? "static fixed-slot"
                                                : "worker-placement")
                   << " qualification\n";

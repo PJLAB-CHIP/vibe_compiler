@@ -843,9 +843,16 @@ static bool finalizeFixedResidentTuple(ResidentTuple &tuple,
     return false;
   llvm::SmallVector<mlir::ModuleOp, 16> views = getModuleViews(tuple);
   std::string specializationFailure;
-  return mlir::succeeded(
-             specializePeriodicDirectDTESites(views, &specializationFailure)) &&
-         finalizeResidentTuple(tuple, executionConfig);
+  if (mlir::failed(
+          specializePeriodicDirectDTESites(views, &specializationFailure)))
+    return false;
+  // Endpoint specialization replaces rotating recurrences with exact planned
+  // allocation roots. Recompute the current-IR ready order now that those
+  // stronger alias facts are available; the typed dependency DAG keeps any
+  // conflicting compute outside the live DTE event.
+  for (mlir::ModuleOp module : views)
+    scheduleIndependentInstructionsByReadyOrder(module.getOperation());
+  return finalizeResidentTuple(tuple, executionConfig);
 }
 
 template <typename Effect>

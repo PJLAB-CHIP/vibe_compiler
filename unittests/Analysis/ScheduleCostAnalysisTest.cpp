@@ -47,9 +47,14 @@ protected:
   }
 
   InstructionProgramCost analyze(mlir::ModuleOp module) {
+    return analyzeForProfile(
+        module, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  }
+
+  InstructionProgramCost analyzeForProfile(mlir::ModuleOp module,
+                                           wafer::TargetProfileId profile) {
     return wafer::analysis::analyzeInstructionProgramCost(
-        module, wafer::analysis::getTargetScheduleCostPolicy(
-                    wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+        module, wafer::analysis::getTargetScheduleCostPolicy(profile));
   }
 
   mlir::OwningOpRef<mlir::ModuleOp> makeDTERankModule(
@@ -471,6 +476,150 @@ module {
   InstructionProgramCost cost = analyze(*module);
   ASSERT_TRUE(cost.qualifiedOverlapWindowCount.isKnown());
   EXPECT_EQ(cost.qualifiedOverlapWindowCount.value, 1u);
+  ASSERT_TRUE(cost.directDTEComputeOverlapWindowCount.isKnown());
+  EXPECT_EQ(cost.directDTEComputeOverlapWindowCount.value, 0u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       DirectDTEComputeWitnessRequiresV3IssueBeforeMatchingWait) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %send0 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %send1 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %compute0 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %compute1 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66304>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c5 = arith.constant 5 : index
+    %steady_upper = arith.subi %c5, %c1 : index
+    %result:4 = scf.for %index = %c0 to %steady_upper step %c1
+        iter_args(%send_current = %send0, %send_next = %send1,
+                  %compute_current = %compute0, %compute_next = %compute1)
+        -> (memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>) {
+      %sent = wafer.instr.dte_send %send0
+          {peer = 1 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 71, phase = peer_dataflow, round = 0, slice = 0>,
+           binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 0, remote_address_mode = absolute, remote_receiver_address = 65792, route_bindings = [], completion = sender_wait_receiver_fsm>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.elementwise <add> %compute0, %compute0
+          into %compute0
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+         into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.dte_wait %sent : !async.token
+      scf.yield %send_next, %send_current, %compute_next, %compute_current
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost v3 = analyzeForProfile(
+      *module, wafer::TargetProfileId::waferTx81SingleCardKernelV3());
+  ASSERT_TRUE(v3.directDTEComputeOverlapWindowCount.isKnown());
+  EXPECT_EQ(v3.directDTEComputeOverlapWindowCount.value, 1u);
+  ASSERT_TRUE(v3.qualifiedOverlapWindowCount.isKnown());
+  EXPECT_EQ(v3.qualifiedOverlapWindowCount.value, 1u);
+
+  InstructionProgramCost v1 = analyze(*module);
+  ASSERT_TRUE(v1.directDTEComputeOverlapWindowCount.isKnown());
+  EXPECT_EQ(v1.directDTEComputeOverlapWindowCount.value, 0u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       DirectDTEComputeWitnessAcceptsSendReadInStraightLineBlock) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %send = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %sent = wafer.instr.dte_send %send
+        {peer = 1 : i64, bytes = 8 : i64,
+         message = #wafer.dte_message<communication = 72, phase = peer_dataflow, round = 0, slice = 0>,
+         binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 0, remote_address_mode = absolute, remote_receiver_address = 65792, route_bindings = [], completion = sender_wait_receiver_fsm>}
+        : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.elementwise <add> %send, %send into %dest
+        : memref<4xf16, #wafer.memory<spm, tensor>>,
+          memref<4xf16, #wafer.memory<spm, tensor>>
+       into memref<4xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.dte_wait %sent : !async.token
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyzeForProfile(
+      *module, wafer::TargetProfileId::waferTx81SingleCardKernelV3());
+  ASSERT_TRUE(cost.directDTEComputeOverlapWindowCount.isKnown());
+  EXPECT_EQ(cost.directDTEComputeOverlapWindowCount.value, 1u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       DirectDTEComputeWitnessRejectsConflictingFootprints) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %send = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %recv = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %other = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %sent = wafer.instr.dte_send %send
+        {peer = 1 : i64, bytes = 8 : i64,
+         message = #wafer.dte_message<communication = 73, phase = peer_dataflow, round = 0, slice = 0>,
+         binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 0, remote_address_mode = absolute, remote_receiver_address = 65792, route_bindings = [], completion = sender_wait_receiver_fsm>}
+        : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.elementwise <add> %other, %other into %send
+        : memref<4xf16, #wafer.memory<spm, tensor>>,
+          memref<4xf16, #wafer.memory<spm, tensor>>
+       into memref<4xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.dte_wait %sent : !async.token
+    %received = wafer.instr.dte_recv %recv
+        {peer = 1 : i64, bytes = 8 : i64,
+         message = #wafer.dte_message<communication = 74, phase = peer_dataflow, round = 0, slice = 0>,
+         binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 1, remote_address_mode = absolute, remote_receiver_address = 65536, route_bindings = [], completion = sender_wait_receiver_fsm>}
+        : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.elementwise <add> %recv, %recv into %other
+        : memref<4xf16, #wafer.memory<spm, tensor>>,
+          memref<4xf16, #wafer.memory<spm, tensor>>
+       into memref<4xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.dte_wait %received : !async.token
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyzeForProfile(
+      *module, wafer::TargetProfileId::waferTx81SingleCardKernelV3());
+  ASSERT_TRUE(cost.directDTEComputeOverlapWindowCount.isKnown());
+  EXPECT_EQ(cost.directDTEComputeOverlapWindowCount.value, 0u);
 }
 
 TEST_F(ScheduleCostAnalysisTest, RejectsRotatingSCFSlotWithAnUnknownOrigin) {

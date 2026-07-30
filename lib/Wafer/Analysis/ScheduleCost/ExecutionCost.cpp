@@ -2,6 +2,7 @@
 
 #include "Internal.h"
 
+#include "Wafer/Analysis/StaticBufferRange.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -874,16 +875,14 @@ static bool instructionUsesOnlyF16Bf16ShapedValues(mlir::Operation *operation) {
 }
 
 static bool hasStaticPositiveTripCount(mlir::scf::ForOp loop) {
-  std::optional<int64_t> lower =
-      mlir::getConstantIntValue(loop.getLowerBound());
-  std::optional<int64_t> upper =
-      mlir::getConstantIntValue(loop.getUpperBound());
-  std::optional<int64_t> step = mlir::getConstantIntValue(loop.getStep());
-  return lower && upper && step && *step > 0 && *upper > *lower;
+  Quantity tripCount = getTripCount(loop);
+  return tripCount.knowledge == ScheduleCostKnowledge::Known &&
+         tripCount.value > 0;
 }
 
-static bool isQualifiedNCCOverlapWindow(
-    mlir::scf::ForOp loop, const TargetScheduleCostPolicy &policy) {
+static bool
+isQualifiedNCCOverlapWindow(mlir::scf::ForOp loop,
+                            const TargetScheduleCostPolicy &policy) {
   if (policy.qualifiedOverlapFamilyMask == 0)
     return false;
 
@@ -908,64 +907,111 @@ static bool isQualifiedNCCOverlapWindow(
   return familyMask == policy.qualifiedOverlapFamilyMask;
 }
 
-static bool isQualifiedDirectDTEComputeWindow(
-    mlir::scf::ForOp loop, const TargetScheduleCostPolicy &policy) {
+static bool
+isDTEFootprintCompatibleWithOperation(mlir::Operation *operation,
+                                      const StaticBufferRange &eventRange,
+                                      bool eventWritesBuffer) {
+  if (operation->getNumRegions() != 0)
+    return false;
+  if (mlir::isMemoryEffectFree(operation))
+    return true;
+
+  auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
+  if (!effects)
+    return false;
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> instances;
+  effects.getEffects(instances);
+
+  // Rootless resource effects describe an execution engine, not an operand
+  // range. Every concrete memref operand must still have an operand-specific
+  // effect so an omitted access cannot be mistaken for independence.
+  for (mlir::Value operand : operation->getOperands()) {
+    if (!mlir::isa<mlir::MemRefType>(operand.getType()))
+      continue;
+    if (llvm::none_of(instances, [&](const auto &effect) {
+          return effect.getValue() == operand;
+        }))
+      return false;
+  }
+
+  for (const auto &effect : instances) {
+    mlir::Value value = effect.getValue();
+    if (!value || !mlir::isa<mlir::MemRefType>(value.getType()))
+      continue;
+    std::optional<StaticBufferRange> accessRange =
+        resolveStaticBufferRange(value);
+    if (!accessRange)
+      return false;
+    if (accessRange->root != eventRange.root ||
+        staticByteRangesAreDisjoint(accessRange->bytes, eventRange.bytes))
+      continue;
+    const bool read = llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
+    // The Direct-DTE sender and compute may read the same bytes concurrently.
+    // A receive owns a pending write, while any send-source write is a true
+    // issue-to-wait hazard.
+    if (eventWritesBuffer || !read)
+      return false;
+  }
+  return true;
+}
+
+static bool
+isQualifiedDirectDTEComputeWindow(mlir::Operation *issue,
+                                  const TargetScheduleCostPolicy &policy) {
   if (policy.qualifiedDirectDTEOverlapFamilyMask == 0)
     return false;
 
   const uint32_t dteFamily = static_cast<uint32_t>(InstrFamily::DTE);
-  if (dteFamily >= 32 ||
-      (policy.qualifiedDirectDTEOverlapFamilyMask &
-       (uint32_t{1} << dteFamily)) == 0)
+  if (dteFamily >= 32 || (policy.qualifiedDirectDTEOverlapFamilyMask &
+                          (uint32_t{1} << dteFamily)) == 0)
     return false;
 
-  for (mlir::Operation &operation : loop.getBody()->without_terminator()) {
-    mlir::Value token;
-    if (auto send = mlir::dyn_cast<InstrDTESendOp>(&operation)) {
-      if (!send.getBinding())
-        continue;
-      token = send.getToken();
-    } else if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(&operation)) {
-      if (!recv.getBinding())
-        continue;
-      token = recv.getToken();
-    } else {
-      continue;
-    }
-    if (!instructionUsesOnlyF16Bf16ShapedValues(&operation))
-      continue;
-    if (!token.hasOneUse())
-      continue;
-    auto wait = mlir::dyn_cast<InstrDTEWaitOp>(*token.getUsers().begin());
-    if (!wait || wait->getBlock() != operation.getBlock() ||
-        !operation.isBeforeInBlock(wait))
-      continue;
-    for (mlir::Operation *between = operation.getNextNode();
-         between && between != wait.getOperation();
-         between = between->getNextNode()) {
-      auto instruction =
-          mlir::dyn_cast<WaferInstructionOpInterface>(between);
-      if (!instruction ||
-          instruction.getInstructionFamily() == InstrFamily::DTE)
-        continue;
-      const uint32_t family =
-          static_cast<uint32_t>(instruction.getInstructionFamily());
-      if (family < 32 &&
-          (policy.qualifiedDirectDTEOverlapFamilyMask &
-           (uint32_t{1} << family)) != 0 &&
-          instructionUsesOnlyF16Bf16ShapedValues(between))
-        return true;
-    }
+  mlir::Value token;
+  mlir::Value buffer;
+  bool eventWritesBuffer = false;
+  if (auto send = mlir::dyn_cast<InstrDTESendOp>(issue)) {
+    if (!send.getBinding())
+      return false;
+    token = send.getToken();
+    buffer = send.getBuffer();
+  } else if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(issue)) {
+    if (!recv.getBinding())
+      return false;
+    token = recv.getToken();
+    buffer = recv.getBuffer();
+    eventWritesBuffer = true;
+  } else {
+    return false;
   }
-  return false;
-}
-
-static bool isQualifiedOverlapWindow(mlir::scf::ForOp loop,
-                                     const TargetScheduleCostPolicy &policy) {
-  if (!hasRotatingSPMState(loop) || !hasStaticPositiveTripCount(loop))
+  if (!instructionUsesOnlyF16Bf16ShapedValues(issue) || !token.hasOneUse())
     return false;
-  return isQualifiedNCCOverlapWindow(loop, policy) ||
-         isQualifiedDirectDTEComputeWindow(loop, policy);
+  auto wait = mlir::dyn_cast<InstrDTEWaitOp>(*token.getUsers().begin());
+  if (!wait || wait->getBlock() != issue->getBlock() ||
+      !issue->isBeforeInBlock(wait))
+    return false;
+  std::optional<StaticBufferRange> eventRange =
+      resolveStaticBufferRange(buffer);
+  if (!eventRange)
+    return false;
+
+  bool hasQualifiedCompute = false;
+  for (mlir::Operation *between = issue->getNextNode();
+       between && between != wait.getOperation();
+       between = between->getNextNode()) {
+    if (!isDTEFootprintCompatibleWithOperation(between, *eventRange,
+                                               eventWritesBuffer))
+      return false;
+    auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(between);
+    if (!instruction || instruction.getInstructionFamily() == InstrFamily::DTE)
+      continue;
+    const uint32_t family =
+        static_cast<uint32_t>(instruction.getInstructionFamily());
+    hasQualifiedCompute |= family < 32 &&
+                           (policy.qualifiedDirectDTEOverlapFamilyMask &
+                            (uint32_t{1} << family)) != 0 &&
+                           instructionUsesOnlyF16Bf16ShapedValues(between);
+  }
+  return hasQualifiedCompute;
 }
 
 } // namespace
@@ -979,13 +1025,31 @@ void collectQualifiedOverlapWindows(mlir::Operation *root,
       unsupportedControlFlow = true;
       return;
     }
+    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation) &&
+        isQualifiedDirectDTEComputeWindow(operation, policy))
+      add(cost.directDTEComputeOverlapWindowCount, Quantity{1});
+
     auto loop = mlir::dyn_cast<mlir::scf::ForOp>(operation);
-    if (loop && isQualifiedOverlapWindow(loop, policy))
+    if (!loop || !hasStaticPositiveTripCount(loop))
+      return;
+    if (!hasRotatingSPMState(loop))
+      return;
+    const bool ncc = isQualifiedNCCOverlapWindow(loop, policy);
+    const bool directDTE = llvm::any_of(
+        loop.getBody()->without_terminator(), [&](mlir::Operation &nested) {
+          return mlir::isa<InstrDTESendOp, InstrDTERecvOp>(&nested) &&
+                 isQualifiedDirectDTEComputeWindow(&nested, policy);
+        });
+    if (ncc || directDTE)
       add(cost.qualifiedOverlapWindowCount, Quantity{1});
   });
-  if (unsupportedControlFlow)
+  if (unsupportedControlFlow) {
     degrade(cost.qualifiedOverlapWindowCount, ScheduleCostKnowledge::Unknown,
             ScheduleCostReason::UnsupportedControlFlow);
+    degrade(cost.directDTEComputeOverlapWindowCount,
+            ScheduleCostKnowledge::Unknown,
+            ScheduleCostReason::UnsupportedControlFlow);
+  }
 }
 
 } // namespace wafer::analysis::detail

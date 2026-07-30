@@ -205,10 +205,10 @@ getStaticViewOffsetBytes(mlir::Operation *op, mlir::MemRefType viewType) {
   return offsetBytes;
 }
 
-static mlir::LogicalResult collectPlannedSPMRoots(
-    mlir::Operation *op, mlir::Value value,
-    llvm::DenseSet<mlir::Value> &active,
-    llvm::SmallVectorImpl<mlir::memref::AllocOp> &roots) {
+static mlir::LogicalResult
+collectPlannedSPMRoots(mlir::Operation *op, mlir::Value value,
+                       llvm::DenseSet<mlir::Value> &active,
+                       llvm::SmallVectorImpl<mlir::memref::AllocOp> &roots) {
   value = resolveTileRegionBoundaryValue(value);
   if (!active.insert(value).second)
     return mlir::success();
@@ -239,23 +239,21 @@ static mlir::LogicalResult collectPlannedSPMRoots(
     if (index >= loop.getInitArgs().size())
       return finish(op->emitError(
           "direct_dte_acceptance: scf.for iter_arg has no matching init"));
-    if (mlir::failed(
-            collectPlannedSPMRoots(op, loop.getInitArgs()[index], active,
-                                   roots)))
+    if (mlir::failed(collectPlannedSPMRoots(op, loop.getInitArgs()[index],
+                                            active, roots)))
       return finish(mlir::failure());
     auto yield =
         mlir::dyn_cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
     if (!yield || index >= yield.getResults().size())
       return finish(op->emitError(
           "direct_dte_acceptance: scf.for iter_arg has no matching yield"));
-    return finish(collectPlannedSPMRoots(
-        op, yield.getResults()[index], active, roots));
+    return finish(
+        collectPlannedSPMRoots(op, yield.getResults()[index], active, roots));
   }
 
   auto result = mlir::dyn_cast<mlir::OpResult>(value);
-  auto loop =
-      result ? mlir::dyn_cast<mlir::scf::ForOp>(result.getOwner())
-             : mlir::scf::ForOp();
+  auto loop = result ? mlir::dyn_cast<mlir::scf::ForOp>(result.getOwner())
+                     : mlir::scf::ForOp();
   if (loop) {
     unsigned index = result.getResultNumber();
     auto yield =
@@ -264,12 +262,11 @@ static mlir::LogicalResult collectPlannedSPMRoots(
         index >= yield.getResults().size())
       return finish(op->emitError(
           "direct_dte_acceptance: scf.for result has no exact recurrence"));
-    if (mlir::failed(
-            collectPlannedSPMRoots(op, loop.getInitArgs()[index], active,
-                                   roots)))
+    if (mlir::failed(collectPlannedSPMRoots(op, loop.getInitArgs()[index],
+                                            active, roots)))
       return finish(mlir::failure());
-    return finish(collectPlannedSPMRoots(
-        op, yield.getResults()[index], active, roots));
+    return finish(
+        collectPlannedSPMRoots(op, yield.getResults()[index], active, roots));
   }
 
   return finish(op->emitError(
@@ -278,21 +275,19 @@ static mlir::LogicalResult collectPlannedSPMRoots(
 }
 
 static std::optional<uint64_t> getStaticTripCount(mlir::scf::ForOp loop) {
-  std::optional<int64_t> lower = mlir::getConstantIntValue(
-      mlir::getAsOpFoldResult(loop.getLowerBound()));
-  std::optional<int64_t> upper = mlir::getConstantIntValue(
-      mlir::getAsOpFoldResult(loop.getUpperBound()));
-  std::optional<int64_t> step = mlir::getConstantIntValue(
-      mlir::getAsOpFoldResult(loop.getStep()));
+  std::optional<int64_t> lower =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getLowerBound()));
+  std::optional<int64_t> upper =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getUpperBound()));
+  std::optional<int64_t> step =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getStep()));
   if (!lower || !upper || !step || *step <= 0)
     return std::nullopt;
   if (*lower >= *upper)
     return uint64_t{0};
-  __int128 span =
-      static_cast<__int128>(*upper) - static_cast<__int128>(*lower);
+  __int128 span = static_cast<__int128>(*upper) - static_cast<__int128>(*lower);
   __int128 count =
-      (span + static_cast<__int128>(*step) - 1) /
-      static_cast<__int128>(*step);
+      (span + static_cast<__int128>(*step) - 1) / static_cast<__int128>(*step);
   if (count < 0 ||
       count > static_cast<__int128>(std::numeric_limits<uint64_t>::max()))
     return std::nullopt;
@@ -300,8 +295,7 @@ static std::optional<uint64_t> getStaticTripCount(mlir::scf::ForOp loop) {
 }
 
 static mlir::FailureOr<AcceptedRangePattern>
-resolveAcceptedRanges(mlir::Operation *op, mlir::Value buffer,
-                      int64_t bytes) {
+resolveAcceptedRanges(mlir::Operation *op, mlir::Value buffer, int64_t bytes) {
   auto viewType = mlir::dyn_cast<mlir::MemRefType>(buffer.getType());
   if (!viewType || !isWaferSPMMemRefType(viewType))
     return op->emitError(
@@ -408,6 +402,7 @@ static mlir::LogicalResult verifyIssueBufferIsolation(mlir::Operation *issue,
                                                       mlir::Operation *wait,
                                                       mlir::Value buffer) {
   mlir::Value root = getRootViewSource(buffer);
+  const bool issueWritesBuffer = mlir::isa<InstrDTERecvOp>(issue);
   for (mlir::Operation *operation = issue->getNextNode(); operation != wait;
        operation = operation->getNextNode()) {
     if (!operation)
@@ -433,16 +428,42 @@ static mlir::LogicalResult verifyIssueBufferIsolation(mlir::Operation *issue,
 
     llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> instances;
     effects.getEffects(instances);
+    const bool hasRootValueEffect =
+        llvm::any_of(instances, [&](const auto &effect) {
+          mlir::Value value = effect.getValue();
+          return value && getRootViewSource(value) == root;
+        });
+    if (hasRootOperand && !hasRootValueEffect)
+      return operation->emitError(
+          "direct_dte_acceptance: issue buffer has no value-specific memory "
+          "effect before its matching wait");
+
+    llvm::StringRef conflictingEffect = "unknown";
     bool conflicts = llvm::any_of(instances, [&](const auto &effect) {
       mlir::Value value = effect.getValue();
-      if (value)
-        return getRootViewSource(value) == root;
-      return hasRootOperand;
+      // Rootless resource effects summarize an execution engine (for example
+      // ComputeResource) rather than an operand range. Operand annotations
+      // carry the concrete SPM accesses used for buffer isolation.
+      if (!value || getRootViewSource(value) != root)
+        return false;
+      // A send keeps reading its source until completion, so another read of
+      // the exact source range is compatible. A receive owns a pending write
+      // to its destination, and any read or write before the exact wait is a
+      // conflict. Unknown non-read effects remain mutating and fail closed.
+      const bool read =
+          llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
+      const bool conflict = issueWritesBuffer || !read;
+      if (conflict)
+        conflictingEffect = read ? "read" : "write";
+      return conflict;
     });
     if (conflicts)
       return operation->emitError(
-          "direct_dte_acceptance: issue buffer must remain isolated until its "
-          "matching wait");
+                 "direct_dte_acceptance: issue buffer must remain isolated "
+                 "until its matching wait")
+             << ": issue=" << issue->getName()
+             << " conflict=" << operation->getName()
+             << " effect=" << conflictingEffect;
   }
   return mlir::success();
 }
@@ -595,9 +616,8 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> rankModules,
       issues.push_back(IssueRecord{
           operation, *wait, operation->getBlock(),
           static_cast<int64_t>(rankIndex), messageBase,
-          std::move(*rangePattern), bytes,
-          operationIndices.lookup(operation), operationIndices.lookup(*wait),
-          -1, static_cast<bool>(send)});
+          std::move(*rangePattern), bytes, operationIndices.lookup(operation),
+          operationIndices.lookup(*wait), -1, static_cast<bool>(send)});
       return mlir::WalkResult::advance();
     });
     if (mlir::failed(result))
@@ -614,8 +634,7 @@ static mlir::FailureOr<PhysicalRange> resolveDynamicRange(
         "direct_dte_acceptance: accepted SPM range pattern is empty");
   if (!issue.rangePattern.rotatingLoop)
     return issue.rangePattern.ranges.front();
-  auto iteration =
-      loopIterations.find(issue.rangePattern.rotatingLoop);
+  auto iteration = loopIterations.find(issue.rangePattern.rotatingLoop);
   if (iteration == loopIterations.end())
     return issue.operation->emitError(
         "direct_dte_acceptance: rotating SPM range is not controlled by the "
@@ -625,8 +644,7 @@ static mlir::FailureOr<PhysicalRange> resolveDynamicRange(
 }
 
 static mlir::LogicalResult appendDynamicIssues(
-    mlir::Operation *operation,
-    llvm::ArrayRef<IssueRecord> issues,
+    mlir::Operation *operation, llvm::ArrayRef<IssueRecord> issues,
     const llvm::DenseMap<mlir::Operation *, unsigned> &issueIndices,
     const llvm::DenseSet<mlir::Operation *> &issueAncestors,
     llvm::DenseMap<mlir::Operation *, uint64_t> &loopIterations,
@@ -657,9 +675,9 @@ static mlir::LogicalResult appendDynamicIssues(
     for (uint64_t iteration = 0; iteration < *tripCount; ++iteration) {
       loopIterations[loop.getOperation()] = iteration;
       for (mlir::Operation &nested : *loop.getBody())
-        if (mlir::failed(appendDynamicIssues(
-                &nested, issues, issueIndices, issueAncestors, loopIterations,
-                occurrenceCounts, streams)))
+        if (mlir::failed(appendDynamicIssues(&nested, issues, issueIndices,
+                                             issueAncestors, loopIterations,
+                                             occurrenceCounts, streams)))
           return mlir::failure();
     }
     loopIterations.erase(loop.getOperation());
@@ -674,9 +692,9 @@ static mlir::LogicalResult appendDynamicIssues(
           "direct_dte_acceptance: DTE execution stream requires single-block "
           "structured control");
     for (mlir::Operation &nested : region.front())
-      if (mlir::failed(appendDynamicIssues(
-              &nested, issues, issueIndices, issueAncestors, loopIterations,
-              occurrenceCounts, streams)))
+      if (mlir::failed(appendDynamicIssues(&nested, issues, issueIndices,
+                                           issueAncestors, loopIterations,
+                                           occurrenceCounts, streams)))
         return mlir::failure();
   }
   return mlir::success();
@@ -1055,8 +1073,7 @@ materializeRouteSelector(mlir::Operation *issue) {
   for (mlir::scf::ForOp loop : loops) {
     std::optional<uint64_t> tripCount = getStaticTripCount(loop);
     if (!tripCount || *tripCount == 0 ||
-        *tripCount >
-            static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+        *tripCount > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
       return issue->emitError(
           "direct_dte_acceptance: route selector loop trip count is not "
           "representable");
@@ -1068,12 +1085,10 @@ materializeRouteSelector(mlir::Operation *issue) {
         location, ordinal,
         builder.create<mlir::arith::ConstantIndexOp>(
             location, static_cast<int64_t>(*tripCount)));
-    ordinal =
-        builder.create<mlir::arith::AddIOp>(location, ordinal, iteration);
+    ordinal = builder.create<mlir::arith::AddIOp>(location, ordinal, iteration);
   }
   return builder
-      .create<mlir::arith::IndexCastOp>(location, builder.getI64Type(),
-                                        ordinal)
+      .create<mlir::arith::IndexCastOp>(location, builder.getI64Type(), ordinal)
       .getResult();
 }
 
@@ -1120,9 +1135,8 @@ static mlir::LogicalResult matchDynamicMessages(
         return recv.operation->emitError(
             "direct_dte_acceptance: dynamically matched send and receive byte "
             "counts differ");
-      __int128 displacement =
-          static_cast<__int128>(recvInstance.range.start) -
-          static_cast<__int128>(sendInstance.range.start);
+      __int128 displacement = static_cast<__int128>(recvInstance.range.start) -
+                              static_cast<__int128>(sendInstance.range.start);
       if (displacement <
               static_cast<__int128>(std::numeric_limits<int64_t>::min()) ||
           displacement >
@@ -1132,9 +1146,9 @@ static mlir::LogicalResult matchDynamicMessages(
             "displacement is not representable");
       observed[sendInstance.issue] = true;
       observed[recvInstance.issue] = true;
-      sendRoutes[sendInstance.issue].push_back(SendRoute{
-          sendInstance.selector, recvInstance.range.start,
-          recv.receiverFsmId, static_cast<int64_t>(displacement)});
+      sendRoutes[sendInstance.issue].push_back(
+          SendRoute{sendInstance.selector, recvInstance.range.start,
+                    recv.receiverFsmId, static_cast<int64_t>(displacement)});
     }
   }
 
@@ -1175,9 +1189,8 @@ static mlir::LogicalResult matchDynamicMessages(
       auto [slot, inserted] = bySelector.try_emplace(
           route.selector,
           std::make_pair(route.remoteAddress, route.receiverFsmId));
-      if (!inserted &&
-          slot->second !=
-              std::make_pair(route.remoteAddress, route.receiverFsmId))
+      if (!inserted && slot->second != std::make_pair(route.remoteAddress,
+                                                      route.receiverFsmId))
         return issue.operation->emitError(
             "direct_dte_acceptance: one route selector would require "
             "different remote address or receiver FSM bindings");
@@ -1231,15 +1244,12 @@ static mlir::LogicalResult matchDynamicMessages(
         {issue.operation,
          DirectDTEBindingAttr::get(
              context, DTEAllocationProfile::Normal, firstFsm, mode, address,
-             table,
-             DTECompletionProfile::SenderWaitReceiverFSM)});
+             table, DTECompletionProfile::SenderWaitReceiverFSM)});
   }
   for (auto &[operation, binding] : acceptedBindings) {
-    if (binding.getRemoteAddressMode() !=
-        DTERemoteAddressMode::SelectorTable)
+    if (binding.getRemoteAddressMode() != DTERemoteAddressMode::SelectorTable)
       continue;
-    mlir::FailureOr<mlir::Value> selector =
-        materializeRouteSelector(operation);
+    mlir::FailureOr<mlir::Value> selector = materializeRouteSelector(operation);
     if (mlir::failed(selector))
       return mlir::failure();
     operation->insertOperands(1, *selector);
@@ -1358,8 +1368,8 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
                                                false);
     for (unsigned sendIndex : occurrences.sends) {
       auto indexedReceives = llvm::enumerate(occurrences.receives);
-      auto recvPosition = llvm::find_if(
-          indexedReceives, [&](auto indexedReceive) {
+      auto recvPosition =
+          llvm::find_if(indexedReceives, [&](auto indexedReceive) {
             return !matchedReceives[indexedReceive.index()] &&
                    trace.actions[sendIndex].occurrencePath ==
                        trace.actions[indexedReceive.value()].occurrencePath;
@@ -1526,8 +1536,7 @@ acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> rankModules) {
 
   llvm::SmallVector<std::pair<mlir::Operation *, DirectDTEBindingAttr>, 32>
       acceptedBindings;
-  if (mlir::failed(
-          matchDynamicMessages(issues, streams, acceptedBindings)))
+  if (mlir::failed(matchDynamicMessages(issues, streams, acceptedBindings)))
     return mlir::failure();
   for (auto &[operation, binding] : acceptedBindings)
     operation->setAttr("binding", binding);

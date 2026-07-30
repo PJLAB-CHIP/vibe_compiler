@@ -41,7 +41,8 @@ llvm::Error verifyStaticFixedSlotCompanionEvidence(const RankExecutable &rank);
 /// only as immutable bytes for its publication digest.
 mlir::LogicalResult stageStaticFixedSlotQualificationCompanion(
     llvm::StringRef companionRoot, llvm::StringRef packageRoot,
-    const ExecutableBundle &bundle, llvm::raw_ostream &diagnostics);
+    const ExecutableBundle &bundle, bool requireDirectDTEComputeOverlap,
+    llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler::detail
 

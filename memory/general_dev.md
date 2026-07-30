@@ -1160,3 +1160,17 @@
 - 新门禁只接管“DDR严格下降且candidate仍依赖NoC执行”的cross-resource tradeoff，包括新增/增加traffic或
   保留已有collective；NoC-free的local resident/recompute等优化继续由现有exact Pareto/static selector处理，
   Unknown DDR不能因此被NoC门禁误伤。
+
+## Direct-DTE/compute matched qualification
+
+- overlap资格从完成SPM/DDR planning与Direct-DTE binding的accepted Instr重算：V3 bound issue、唯一same-block
+  exact wait、中间FP16/BF16 CT/NE、operand-specific effect和planned static byte range必须全部闭合。
+  fixed-slot identity从同一个complete tuple独立证明；endpoint specialization后不要求issue仍位于原rotating loop。
+- digest-bound companion只发布accepted Instr digest、每rank结构窗口计数、DTE token/wait、SPM root和static-loop
+  inventory。它用于审计package边界，不复制per-window schedule，也不能回流selection。
+- matched no-overlap baseline必须从同一个fully accepted tuple延后本地compute，并重跑transport/resource/accepted-rank/
+  target/package gate。逐op binding、cluster launch、transport status ABI、Direct-DTE call inventory、payload和CPU oracle
+  与candidate一致；scheduler顺序必须不同。
+- board-ready入口先生成两份完整package，检查companion/manifest/target structure与FP16 exact payload，再分别运行
+  fresh no-card。真实板端只在显式armed且身份参数完整时按A/B、B/A单进程串行执行；no-card、host elapsed和scheduler
+  hash都不能签发hardware overlap或profitability。

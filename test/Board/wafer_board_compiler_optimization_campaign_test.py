@@ -138,28 +138,6 @@ F16_65_129_OUT = TensorSpec((65, 129), "f16", "float16")
 F16_4096_LOCAL = TensorSpec(
     (1, 4096), "f16", "float16", source_shape=(16, 4096)
 )
-DIRECT_DTE_GEMM_RANKS = 16
-DIRECT_DTE_GEMM_M = 16
-DIRECT_DTE_GEMM_K = 1024
-DIRECT_DTE_GEMM_N = 262144
-DIRECT_DTE_GEMM_LOCAL_K = DIRECT_DTE_GEMM_K // DIRECT_DTE_GEMM_RANKS
-F16_DTE_GEMM_LHS_LOCAL = TensorSpec(
-    (DIRECT_DTE_GEMM_M, DIRECT_DTE_GEMM_LOCAL_K),
-    "f16",
-    "float16",
-    source_shape=(DIRECT_DTE_GEMM_M, DIRECT_DTE_GEMM_K),
-)
-F16_DTE_GEMM_RHS_LOCAL = TensorSpec(
-    (DIRECT_DTE_GEMM_LOCAL_K, DIRECT_DTE_GEMM_N),
-    "f16",
-    "float16",
-    source_shape=(DIRECT_DTE_GEMM_K, DIRECT_DTE_GEMM_N),
-)
-F16_DTE_GEMM_OUTPUT = TensorSpec(
-    (DIRECT_DTE_GEMM_M, DIRECT_DTE_GEMM_N),
-    "f16",
-    "float16",
-)
 NOC_RESIDENT_GEMM_RANKS = 16
 NOC_RESIDENT_GEMM_EXTENT = 4096
 NOC_RESIDENT_GEMM_LOCAL_K = (
@@ -353,39 +331,6 @@ module {{
     }}) {{dimensions = array<i64: 0>}}
       : (tensor<16x4096xf16>, tensor<f16>) -> tensor<4096xf16>
     return %result : tensor<4096xf16>
-  }}
-}}
-"""
-
-
-def direct_dte_gemm_module() -> str:
-    devices = ",".join(str(rank) for rank in range(DIRECT_DTE_GEMM_RANKS))
-    lhs_sharding = (
-        f"{{devices=[1,{DIRECT_DTE_GEMM_RANKS}]{devices}}}"
-    )
-    rhs_sharding = (
-        f"{{devices=[{DIRECT_DTE_GEMM_RANKS},1]{devices}}}"
-    )
-    return f"""\
-module {{
-  func.func @main(
-      %lhs: tensor<{DIRECT_DTE_GEMM_M}x{DIRECT_DTE_GEMM_K}xf16>
-          {{mhlo.sharding = "{lhs_sharding}"}},
-      %rhs: tensor<{DIRECT_DTE_GEMM_K}x{DIRECT_DTE_GEMM_N}xf16>
-          {{mhlo.sharding = "{rhs_sharding}"}})
-      -> (tensor<{DIRECT_DTE_GEMM_M}x{DIRECT_DTE_GEMM_N}xf16>
-          {{mhlo.sharding = "{{replicated}}"}}) {{
-    %result = "stablehlo.dot_general"(%lhs, %rhs) {{
-      dot_dimension_numbers = #stablehlo.dot<
-        lhs_contracting_dimensions = [1],
-        rhs_contracting_dimensions = [0]>,
-      precision_config = [#stablehlo<precision DEFAULT>,
-                          #stablehlo<precision DEFAULT>]
-    }} : (tensor<{DIRECT_DTE_GEMM_M}x{DIRECT_DTE_GEMM_K}xf16>,
-          tensor<{DIRECT_DTE_GEMM_K}x{DIRECT_DTE_GEMM_N}xf16>)
-        -> tensor<{DIRECT_DTE_GEMM_M}x{DIRECT_DTE_GEMM_N}xf16>
-    return %result
-        : tensor<{DIRECT_DTE_GEMM_M}x{DIRECT_DTE_GEMM_N}xf16>
   }}
 }}
 """
@@ -601,40 +546,6 @@ def all_reduce_payloads() -> PairedPayloads:
     return unchanged_numeric_payloads(
         [[input_] for input_ in inputs],
         [[expected] for _ in range(16)],
-    )
-
-
-def direct_dte_gemm_payloads() -> PairedPayloads:
-    inputs: list[list[np.ndarray]] = []
-    expected_i32 = np.zeros(
-        (DIRECT_DTE_GEMM_M, DIRECT_DTE_GEMM_N), dtype=np.int32
-    )
-    columns = np.arange(DIRECT_DTE_GEMM_N, dtype=np.int32)
-    for rank in range(DIRECT_DTE_GEMM_RANKS):
-        lhs = np.zeros(
-            (DIRECT_DTE_GEMM_M, DIRECT_DTE_GEMM_LOCAL_K), dtype="<f2"
-        )
-        local_k = np.arange(DIRECT_DTE_GEMM_LOCAL_K, dtype=np.int32)
-        global_k = rank * DIRECT_DTE_GEMM_LOCAL_K + local_k
-        lhs[global_k % DIRECT_DTE_GEMM_M, local_k] = np.float16(1.0)
-        rhs_i32 = 1 + (
-            (global_k[:, None] * 5 + columns[None, :] * 3) % 8
-        )
-        rhs_i32 = np.where(
-            (global_k[:, None] + columns[None, :]) % 2,
-            -rhs_i32,
-            rhs_i32,
-        ).astype(np.int32)
-        rhs = rhs_i32.astype("<f2")
-        for lane, row in enumerate(global_k % DIRECT_DTE_GEMM_M):
-            expected_i32[row] += rhs_i32[lane]
-        inputs.append([lhs, rhs])
-    expected = expected_i32.astype("<f2")
-    if not np.array_equal(expected.astype(np.int32), expected_i32):
-        raise RuntimeError("Direct-DTE GEMM expected values are not exact in f16")
-    return unchanged_numeric_payloads(
-        inputs,
-        [[expected.copy()] for _ in range(DIRECT_DTE_GEMM_RANKS)],
     )
 
 
@@ -896,23 +807,6 @@ def collective_oracle(
         )
 
 
-def direct_dte_gemm_oracle(
-    baseline: TargetStructure, winner: TargetStructure
-) -> None:
-    for structure in (baseline, winner):
-        for fragment in (
-            "_gemm",
-            "direct_dte_send_issue",
-            "direct_dte_recv_prepare",
-            "direct_dte_wait",
-        ):
-            require_call(structure.counts, fragment, present=True)
-    if baseline.scheduler_body_sha256 == winner.scheduler_body_sha256:
-        raise RuntimeError(
-            "Direct-DTE GEMM production scheduler is identical to its baseline"
-        )
-
-
 def noc_resident_large_gemm_oracle(
     baseline: TargetStructure, winner: TargetStructure
 ) -> None:
@@ -1085,17 +979,6 @@ CASES = {
             all_reduce_module,
             all_reduce_payloads,
             collective_oracle,
-        ),
-        CampaignCase(
-            "direct-dte-gemm-window",
-            "direct-dte-compute-overlap",
-            DIRECT_DTE_GEMM_RANKS,
-            CLUSTER_LAUNCH_KIND,
-            (F16_DTE_GEMM_LHS_LOCAL, F16_DTE_GEMM_RHS_LOCAL),
-            (F16_DTE_GEMM_OUTPUT,),
-            direct_dte_gemm_module,
-            direct_dte_gemm_payloads,
-            direct_dte_gemm_oracle,
         ),
         CampaignCase(
             "noc-resident-large-gemm",
@@ -1359,7 +1242,11 @@ def normalized_manifest(manifest: dict[str, object]) -> dict[str, object]:
 
 
 def validate_paired_packages(
-    baseline: pathlib.Path, winner: pathlib.Path, case: CampaignCase
+    baseline: pathlib.Path,
+    winner: pathlib.Path,
+    case: CampaignCase,
+    *,
+    target_profile: str = TARGET_PROFILE,
 ) -> tuple[
     dict[str, dict[tuple[int, str, int], int]],
     dict[str, set[int]],
@@ -1386,7 +1273,7 @@ def validate_paired_packages(
         )
         if (
             manifest.get("rank_count") != case.rank_count
-            or manifest.get("target", {}).get("profile") != TARGET_PROFILE
+            or manifest.get("target", {}).get("profile") != target_profile
         ):
             raise RuntimeError("paired package target contract is invalid")
         resources = manifest.get("resources")

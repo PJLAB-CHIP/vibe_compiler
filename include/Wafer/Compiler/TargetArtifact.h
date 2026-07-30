@@ -164,6 +164,11 @@ compileProgramForStaticFixedSlotTargetQualification(
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
 mlir::FailureOr<TargetCompilationProduct>
+compileProgramForDirectDTEComputeOverlapTargetQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+mlir::FailureOr<TargetCompilationProduct>
 compileProgramForWorkerPlacementTargetQualification(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
@@ -215,6 +220,11 @@ private:
       const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
   friend mlir::FailureOr<TargetCompilationProduct>
   testing::compileProgramForStaticFixedSlotTargetQualification(
+      CompilationRequest request, llvm::StringRef outputProgramDirectory,
+      llvm::StringRef xlaSpmdPartitionerHelper,
+      const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+  friend mlir::FailureOr<TargetCompilationProduct>
+  testing::compileProgramForDirectDTEComputeOverlapTargetQualification(
       CompilationRequest request, llvm::StringRef outputProgramDirectory,
       llvm::StringRef xlaSpmdPartitionerHelper,
       const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);

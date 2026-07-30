@@ -250,6 +250,14 @@ struct InstructionProgramCost {
   /// cycle or time estimate.
   ScheduleCostMetric qualifiedOverlapWindowCount;
 
+  /// Count of accepted same-block windows with one explicit bound Direct-DTE
+  /// issue, an independent FP16/BF16 CT/NE instruction, and the matching exact
+  /// wait. Fixed-slot qualification proves the originating rotating SPM
+  /// realization separately because endpoint specialization may replace the
+  /// recurrence with exact roots. This is a structural V3 witness; it does not
+  /// assert temporal overlap or profitability on hardware.
+  ScheduleCostMetric directDTEComputeOverlapWindowCount;
+
   /// Maximum accepted SPM address end relative to the target SPM base. This is
   /// address-space high-water, not liveness-aware peak allocation.
   ScheduleCostMetric spmHighWaterBytes;
@@ -338,6 +346,10 @@ struct WholeCardInstructionProgramCost {
 
   /// Sum of target-qualified rotating-buffer overlap windows across ranks.
   ScheduleCostMetric aggregateQualifiedOverlapWindowCount;
+
+  /// Sum of explicit Direct-DTE issue/compute/exact-wait windows across ranks.
+  /// A Known value is an accepted-IR structural fact, not a timing estimate.
+  ScheduleCostMetric aggregateDirectDTEComputeOverlapWindowCount;
 
   ScheduleCostMetric maximumRankSPMHighWaterBytes;
   ScheduleCostMetric summedRankSPMHighWaterBytes;

@@ -406,6 +406,15 @@ EXPLICIT_ONLY_STEPS = (
         ),
     ),
     CalibrationStep(
+        "direct-dte-compute-overlap",
+        "full-card-compiler-scheduling",
+        "wafer-board-direct-dte-compute-overlap",
+        (
+            "16-rank FP16 matched serialized-baseline versus qualified "
+            "Direct-DTE issue/compute/exact-wait correctness and A/B"
+        ),
+    ),
+    CalibrationStep(
         "runtime-kernel-grid",
         "full-card-runtime-smoke",
         "wafer-board-kernel-grid-add",
@@ -709,6 +718,9 @@ ALL_CALIBRATION_STEPS = (
 SELECTABLE_BATCHES = {
     "compiler-search-scalability": (
         "m-sharded-replicated-gemm-profile",
+    ),
+    "direct-dte-compute-overlap": (
+        "direct-dte-compute-overlap",
     ),
     "compiler-optimization-paired": tuple(
         step.key

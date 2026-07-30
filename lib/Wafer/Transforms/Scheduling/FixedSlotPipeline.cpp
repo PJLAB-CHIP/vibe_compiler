@@ -734,9 +734,8 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
     NCCCompletionContract contract = getNCCCompletionContract(operation);
     if (contract.behavior == LocalInstructionCompletion::OrderedPending) {
       if (!contract.issueWorker)
-        return failPlan(
-            failureReason,
-            "fixed-slot NCC issue has no typed worker");
+        return failPlan(failureReason,
+                        "fixed-slot NCC issue has no typed worker");
       unsigned worker = static_cast<unsigned>(*contract.issueWorker);
       if (worker >= kNCCWorkerCount)
         return failPlan(
@@ -749,9 +748,8 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
       continue;
     if (contract.participantMask == 0 ||
         (contract.participantMask & ~kAllNCCWorkersMask) != 0)
-      return failPlan(
-          failureReason,
-          "fixed-slot participant join has an invalid worker mask");
+      return failPlan(failureReason,
+                      "fixed-slot participant join has an invalid worker mask");
     for (unsigned worker = 0; worker < kNCCWorkerCount; ++worker) {
       if ((contract.participantMask & (uint32_t{1} << worker)) == 0)
         continue;
@@ -775,8 +773,7 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
             failureReason,
             "fixed-slot candidate has overlapping Direct DTE senders");
       if (lastSenderCompletion)
-        addDependency(plan, *lastSenderCompletion,
-                      static_cast<unsigned>(index),
+        addDependency(plan, *lastSenderCompletion, static_cast<unsigned>(index),
                       /*advancesStage=*/false);
       pendingSenderIssue = static_cast<unsigned>(index);
       continue;
@@ -786,8 +783,7 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
       continue;
     bool completesSender =
         llvm::any_of(wait.getTokens(), [&](mlir::Value token) {
-          return token.getDefiningOp() ==
-                 plan.operations[*pendingSenderIssue];
+          return token.getDefiningOp() == plan.operations[*pendingSenderIssue];
         });
     if (!completesSender)
       continue;
@@ -797,9 +793,8 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
     lastSenderCompletion = static_cast<unsigned>(index);
   }
   if (pendingSenderIssue)
-    return failPlan(
-        failureReason,
-        "fixed-slot Direct DTE sender has no matching completion");
+    return failPlan(failureReason,
+                    "fixed-slot Direct DTE sender has no matching completion");
 
   // Receiver FSM ids are also finite target resources. Keep each source
   // batch intact and require its exact wait before the next batch can enter
@@ -1545,22 +1540,14 @@ deriveEndpointRootPeriod(mlir::Operation *issue, mlir::scf::ForOp loop) {
   return mlir::failure();
 }
 
-static bool
-getDirectBodyDTEIssues(mlir::scf::ForOp loop,
-                       llvm::SmallVectorImpl<mlir::Operation *> &issues) {
-  for (mlir::Operation &operation : loop.getBody()->without_terminator()) {
-    if (getDirectDTEBuffer(&operation))
-      issues.push_back(&operation);
-    if (operation.getNumRegions() != 0) {
-      bool nestedDTE = false;
-      operation.walk([&](mlir::Operation *nested) {
-        nestedDTE |= static_cast<bool>(getDirectDTEBuffer(nested));
-      });
-      if (nestedDTE)
-        return false;
-    }
-  }
-  return true;
+static void getLoopDTEIssues(mlir::scf::ForOp loop,
+                             llvm::SmallVectorImpl<mlir::Operation *> &issues) {
+  loop.walk([&](mlir::Operation *operation) {
+    if (operation != loop.getOperation() &&
+        operation->getParentOfType<mlir::scf::ForOp>() == loop &&
+        getDirectDTEBuffer(operation))
+      issues.push_back(operation);
+  });
 }
 
 static bool checkedLCM(uint64_t lhs, uint64_t rhs, uint64_t &result) {
@@ -1595,10 +1582,7 @@ specializePeriodicDTEClones(llvm::ArrayRef<mlir::ModuleOp> modules,
     module.walk([&](mlir::scf::ForOp loop) { loops.push_back(loop); });
     for (mlir::scf::ForOp loop : loops) {
       llvm::SmallVector<mlir::Operation *, 4> issues;
-      if (!getDirectBodyDTEIssues(loop, issues))
-        return failSpecialization(
-            failureReason,
-            "periodic Direct-DTE specialization rejects nested DTE control");
+      getLoopDTEIssues(loop, issues);
       if (issues.empty())
         continue;
       std::optional<uint64_t> tripCount = getPositiveStaticTripCount(loop);
@@ -1657,7 +1641,8 @@ specializePeriodicDTEClones(llvm::ArrayRef<mlir::ModuleOp> modules,
   for (mlir::ModuleOp module : modules)
     module.walk([&](mlir::scf::ForOp loop) {
       llvm::SmallVector<mlir::Operation *, 4> issues;
-      if (!getDirectBodyDTEIssues(loop, issues) || issues.empty())
+      getLoopDTEIssues(loop, issues);
+      if (issues.empty())
         return;
       bool unresolved = llvm::any_of(issues, [&](mlir::Operation *issue) {
         return mlir::failed(
@@ -1679,6 +1664,22 @@ specializePeriodicDTEClones(llvm::ArrayRef<mlir::ModuleOp> modules,
         failureReason, "periodic Direct-DTE tail canonicalization failed");
 
   for (mlir::ModuleOp module : modules) {
+    mlir::LogicalResult directBody = mlir::success();
+    module.walk([&](mlir::scf::ForOp loop) {
+      llvm::SmallVector<mlir::Operation *, 4> issues;
+      getLoopDTEIssues(loop, issues);
+      for (mlir::Operation *issue : issues)
+        if (issue->getBlock() != loop.getBody()) {
+          directBody = mlir::failure();
+          return mlir::WalkResult::interrupt();
+        }
+      return mlir::WalkResult::advance();
+    });
+    if (mlir::failed(directBody))
+      return failSpecialization(
+          failureReason,
+          "periodic Direct-DTE nested control is not statically eliminable");
+
     mlir::LogicalResult rewritten = mlir::success();
     module.walk([&](mlir::Operation *operation) {
       mlir::Value buffer = getDirectDTEBuffer(operation);
@@ -1793,8 +1794,8 @@ deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
   eraseSynthesizedPointerPermutations(*candidate);
   bool containsDirectDTE = false;
   candidate->walk([&](mlir::Operation *operation) {
-    containsDirectDTE |= mlir::isa<InstrDTESendOp, InstrDTERecvOp,
-                                   InstrDTEWaitOp>(operation);
+    containsDirectDTE |=
+        mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(operation);
   });
   if (containsDirectDTE)
     scheduleIndependentInstructionsByReadyOrder(candidate->getOperation());

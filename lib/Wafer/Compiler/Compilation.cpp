@@ -532,6 +532,79 @@ testing::compileProgramForStaticFixedSlotTargetQualification(
 }
 
 mlir::FailureOr<ExecutableBundle>
+testing::compileProgramForDirectDTEComputeOverlapQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  std::optional<ExecutableBundle> retainedExecutableBundle;
+  if (mlir::failed(detail::runCompilationTransaction(
+          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          targetToolchain, diagnostics,
+          detail::WholeVariantSelectionMode::QualifyDirectDTEComputeOverlap,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle, nullptr)))
+    return mlir::failure();
+  if (!retainedExecutableBundle) {
+    detail::reject(
+        diagnostics,
+        "successful Direct-DTE compute-overlap qualification did not retain "
+        "its executable bundle");
+    return mlir::failure();
+  }
+  return std::move(*retainedExecutableBundle);
+}
+
+mlir::FailureOr<ExecutableBundle>
+testing::compileProgramForSerializedDirectDTEComputeBaseline(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  std::optional<ExecutableBundle> retainedExecutableBundle;
+  if (mlir::failed(detail::runCompilationTransaction(
+          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          targetToolchain, diagnostics,
+          detail::WholeVariantSelectionMode::
+              SelectSerializedDirectDTEComputeBaseline,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle, nullptr)))
+    return mlir::failure();
+  if (!retainedExecutableBundle) {
+    detail::reject(
+        diagnostics,
+        "successful serialized Direct-DTE compute baseline did not retain "
+        "its executable bundle");
+    return mlir::failure();
+  }
+  return std::move(*retainedExecutableBundle);
+}
+
+mlir::FailureOr<TargetCompilationProduct>
+testing::compileProgramForDirectDTEComputeOverlapTargetQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  std::optional<ExecutableBundle> retainedExecutableBundle;
+  std::optional<TargetLLVMModuleBundle> retainedTargetLLVMModuleBundle;
+  if (mlir::failed(detail::runCompilationTransaction(
+          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          targetToolchain, diagnostics,
+          detail::WholeVariantSelectionMode::QualifyDirectDTEComputeOverlap,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle,
+          &retainedTargetLLVMModuleBundle)))
+    return mlir::failure();
+  if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle) {
+    detail::reject(
+        diagnostics,
+        "successful Direct-DTE compute-overlap target qualification did not "
+        "retain its complete target compilation product");
+    return mlir::failure();
+  }
+  return TargetCompilationProduct(std::move(*retainedExecutableBundle),
+                                  std::move(*retainedTargetLLVMModuleBundle));
+}
+
+mlir::FailureOr<ExecutableBundle>
 testing::compileProgramForWorkerPlacementQualification(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
@@ -588,8 +661,7 @@ testing::compileProgramForNoCResidentFixedSlotWorkerQualification(
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics,
-          detail::WholeVariantSelectionMode::
-              QualifyNoCResidentFixedSlotWorker,
+          detail::WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker,
           CompilationOptions::standard(), std::nullopt, std::nullopt,
           std::nullopt, &retainedExecutableBundle, nullptr)))
     return mlir::failure();
@@ -613,8 +685,7 @@ testing::compileProgramForNoCResidentFixedSlotWorkerTargetQualification(
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics,
-          detail::WholeVariantSelectionMode::
-              QualifyNoCResidentFixedSlotWorker,
+          detail::WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker,
           CompilationOptions::standard(), std::nullopt, std::nullopt,
           std::nullopt, &retainedExecutableBundle,
           &retainedTargetLLVMModuleBundle)))

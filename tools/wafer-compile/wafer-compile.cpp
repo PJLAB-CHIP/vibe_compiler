@@ -314,6 +314,10 @@ int main(int argc, char **argv) {
       std::getenv("WAFER_TEST_SELECT_RESERVED_BASELINE");
   const char *staticFixedSlot =
       std::getenv("WAFER_TEST_SELECT_STATIC_FIXED_SLOT");
+  const char *directDTEComputeOverlap =
+      std::getenv("WAFER_TEST_SELECT_DIRECT_DTE_COMPUTE_OVERLAP");
+  const char *serializedDirectDTECompute =
+      std::getenv("WAFER_TEST_SELECT_SERIALIZED_DIRECT_DTE_COMPUTE");
   const char *workerPlacement =
       std::getenv("WAFER_TEST_SELECT_WORKER_PLACEMENT");
   const char *noCResidentFixedSlotWorker =
@@ -327,7 +331,8 @@ int main(int argc, char **argv) {
                                    (packageFailureRank ? 1u : 0u);
   if (options.profile &&
       (failureInjectionCount != 0 || reservedBaseline || staticFixedSlot ||
-       workerPlacement || noCResidentFixedSlotWorker ||
+       directDTEComputeOverlap || workerPlacement ||
+       serializedDirectDTECompute || noCResidentFixedSlotWorker ||
        collectiveAlternative || collectiveReport)) {
     llvm::errs() << "wafer-compile: --profile cannot be combined with "
                     "test-only compilation controls\n";
@@ -350,6 +355,16 @@ int main(int argc, char **argv) {
            "be combined with failure injection\n";
     return 1;
   }
+  if (directDTEComputeOverlap && failureInjectionCount != 0) {
+    llvm::errs() << "wafer-compile: test-only Direct-DTE compute-overlap "
+                    "qualification cannot be combined with failure injection\n";
+    return 1;
+  }
+  if (serializedDirectDTECompute && failureInjectionCount != 0) {
+    llvm::errs() << "wafer-compile: test-only serialized Direct-DTE compute "
+                    "selection cannot be combined with failure injection\n";
+    return 1;
+  }
   if (workerPlacement && failureInjectionCount != 0) {
     llvm::errs()
         << "wafer-compile: test-only worker-placement qualification cannot "
@@ -357,9 +372,8 @@ int main(int argc, char **argv) {
     return 1;
   }
   if (noCResidentFixedSlotWorker && failureInjectionCount != 0) {
-    llvm::errs()
-        << "wafer-compile: test-only NoC-resident fixed-slot worker "
-           "qualification cannot be combined with failure injection\n";
+    llvm::errs() << "wafer-compile: test-only NoC-resident fixed-slot worker "
+                    "qualification cannot be combined with failure injection\n";
     return 1;
   }
   if (collectiveAlternative && failureInjectionCount != 0) {
@@ -370,7 +384,8 @@ int main(int argc, char **argv) {
   }
   unsigned wholeVariantSelectionCount =
       (reservedBaseline ? 1u : 0u) + (staticFixedSlot ? 1u : 0u) +
-      (workerPlacement ? 1u : 0u) +
+      (directDTEComputeOverlap ? 1u : 0u) +
+      (serializedDirectDTECompute ? 1u : 0u) + (workerPlacement ? 1u : 0u) +
       (noCResidentFixedSlotWorker ? 1u : 0u) +
       (collectiveAlternative ? 1u : 0u);
   if (wholeVariantSelectionCount > 1) {
@@ -394,6 +409,20 @@ int main(int argc, char **argv) {
   if (staticFixedSlot && llvm::StringRef(staticFixedSlot) != "1") {
     llvm::errs() << "wafer-compile: invalid test-only static fixed-slot "
                     "qualification\n";
+    return 1;
+  }
+  if (directDTEComputeOverlap &&
+      llvm::StringRef(directDTEComputeOverlap) != "1") {
+    llvm::errs()
+        << "wafer-compile: invalid test-only Direct-DTE compute-overlap "
+           "qualification\n";
+    return 1;
+  }
+  if (serializedDirectDTECompute &&
+      llvm::StringRef(serializedDirectDTECompute) != "1") {
+    llvm::errs()
+        << "wafer-compile: invalid test-only serialized Direct-DTE compute "
+           "selection\n";
     return 1;
   }
   if (workerPlacement && llvm::StringRef(workerPlacement) != "1") {
@@ -482,6 +511,43 @@ int main(int argc, char **argv) {
         compilationStatus = mlir::success();
       }
     }
+  } else if (directDTEComputeOverlap) {
+    if (options.targetModel) {
+      mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
+          compiledProgram = wafer::compiler::testing::
+              compileProgramForDirectDTEComputeOverlapTargetQualification(
+                  std::move(*request), *options.outputProgramDirectory,
+                  helperPath, *targetToolchain, llvm::errs());
+      if (mlir::succeeded(compiledProgram)) {
+        targetCompilationProduct.emplace(std::move(*compiledProgram));
+        compilationStatus = mlir::success();
+      }
+    } else {
+      mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
+          wafer::compiler::testing::
+              compileProgramForDirectDTEComputeOverlapQualification(
+                  std::move(*request), *options.outputProgramDirectory,
+                  helperPath, *targetToolchain, llvm::errs());
+      if (mlir::succeeded(compiledProgram)) {
+        executableBundle.emplace(std::move(*compiledProgram));
+        compilationStatus = mlir::success();
+      }
+    }
+  } else if (serializedDirectDTECompute) {
+    if (options.targetModel) {
+      llvm::errs()
+          << "wafer-compile: serialized Direct-DTE compute selection does "
+             "not support --target-model\n";
+      return 1;
+    }
+    mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram = wafer::
+        compiler::testing::compileProgramForSerializedDirectDTEComputeBaseline(
+            std::move(*request), *options.outputProgramDirectory, helperPath,
+            *targetToolchain, llvm::errs());
+    if (mlir::succeeded(compiledProgram)) {
+      executableBundle.emplace(std::move(*compiledProgram));
+      compilationStatus = mlir::success();
+    }
   } else if (workerPlacement) {
     if (options.targetModel) {
       mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
@@ -563,11 +629,9 @@ int main(int argc, char **argv) {
       }
     } else {
       mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
-          wafer::compiler::testing::
-              compileProgramForCollectiveCharacterization(
-                  std::move(*request), *options.outputProgramDirectory,
-                  helperPath, *targetToolchain, *algorithm, collectiveReport,
-                  llvm::errs());
+          wafer::compiler::testing::compileProgramForCollectiveCharacterization(
+              std::move(*request), *options.outputProgramDirectory, helperPath,
+              *targetToolchain, *algorithm, collectiveReport, llvm::errs());
       if (mlir::succeeded(compiledProgram)) {
         executableBundle.emplace(std::move(*compiledProgram));
         compilationStatus = mlir::success();

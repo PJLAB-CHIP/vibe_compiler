@@ -702,6 +702,21 @@ header同时提供entry span、aggregate PMU和event stream。三个launch互不
 替代实际counter observation。没有合格跨tile clock mapping时，每个tile独立展示六条entry-local engine lane，不做跨tile
 对齐。
 
+### 8.2 Direct-DTE/Compute 结构资格
+
+Q40的qualification是whole-variant selection上的compiler-private过滤，不是新的producer、cost model或public driver mode。
+它先要求complete-rank actual tuple逐rank具有typed fixed-slot identity，再从已经完成memory planning与Direct-DTE binding的
+accepted Instr重算V3 same-block `issue -> FP16/BF16 CT/NE -> matching exact wait`。token唯一消费、顺序、
+operand-specific MemoryEffect和planned static byte range必须全部Known；send-source read/read允许，send-source write及
+receive-destination read/write冲突，未知alias/range保持fail closed。fixed-slot与window分别从同一actual tuple证明，
+endpoint specialization后不要求issue仍文本嵌套在原rotating loop中。
+
+结构witness只增加final-IR计数，不估计cycle或time，也不改变normal-production ranking。digest-bound qualification
+companion可以发布每rank计数及DTE/wait/root inventory，但不能复制schedule或成为selection输入。matched硬件对照不能使用
+transport/ABI不同的reserved spill baseline；内部资格入口从同一个fully accepted tuple把窗口内CT/NE按原顺序移到exact wait
+之后，再重跑Direct-DTE binding、whole-card resource、accepted-rank和target gate，并要求binding不变、witness计数变为
+Known zero。不得通过提前wait构造对照，因为这会改变all-rank receive-ready/send/wait dependency graph。
+
 ## 9. All-Rank Coordination 和 Atomicity
 
 all-rank coordination保留现有 compiler-level owner，不放入function pass，也不建立跨rank shadow program。每个rank candidate

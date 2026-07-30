@@ -473,6 +473,44 @@ module {
   }
 })mlir";
 
+constexpr llvm::StringLiteral kInterveningBufferReadSendRank = R"mlir(
+module {
+  func.func @main() {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+    %token = wafer.instr.dte_send %buffer
+        {peer = 1 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 9, phase = collective_permute, round = 2, slice = 0>}
+        : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.elementwise <neg> %buffer into %dest
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+       into memref<4xf32, #wafer.memory<spm, tensor>>
+    wafer.instr.dte_wait %token : !async.token
+    return
+  }
+})mlir";
+
+constexpr llvm::StringLiteral kInterveningBufferReadRecvRank = R"mlir(
+module {
+  func.func @main() {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+    %token = wafer.instr.dte_recv %buffer
+        {peer = 0 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 9, phase = collective_permute, round = 2, slice = 0>}
+        : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.elementwise <neg> %buffer into %dest
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+       into memref<4xf32, #wafer.memory<spm, tensor>>
+    wafer.instr.dte_wait %token : !async.token
+    return
+  }
+})mlir";
+
 TEST_F(DirectDTETransportTest, MatchesCompleteDomainAndAttachesTypedBinding) {
   auto sendModule = parse(kSendRank);
   auto recvModule = parse(kRecvRank);
@@ -1034,6 +1072,34 @@ TEST_F(DirectDTETransportTest, InterveningIssueBufferAccessFailsClosed) {
   auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
   EXPECT_TRUE(mlir::failed(contract));
   sendModule->walk([](wafer::InstrDTESendOp operation) {
+    EXPECT_FALSE(operation.getBinding());
+  });
+}
+
+TEST_F(DirectDTETransportTest, InterveningSendSourceReadIsAccepted) {
+  auto sendModule = parse(kInterveningBufferReadSendRank);
+  auto recvModule = parse(kRecvRank);
+  ASSERT_TRUE(sendModule);
+  ASSERT_TRUE(recvModule);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*sendModule, *recvModule};
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  ASSERT_TRUE(mlir::succeeded(contract));
+  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+}
+
+TEST_F(DirectDTETransportTest, InterveningReceiveDestinationReadFailsClosed) {
+  auto sendModule = parse(kSendRank);
+  auto recvModule = parse(kInterveningBufferReadRecvRank);
+  ASSERT_TRUE(sendModule);
+  ASSERT_TRUE(recvModule);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*sendModule, *recvModule};
+  mlir::ScopedDiagnosticHandler suppress(
+      context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  EXPECT_TRUE(mlir::failed(contract));
+  recvModule->walk([](wafer::InstrDTERecvOp operation) {
     EXPECT_FALSE(operation.getBinding());
   });
 }

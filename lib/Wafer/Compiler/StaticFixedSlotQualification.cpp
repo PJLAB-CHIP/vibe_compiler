@@ -5,6 +5,7 @@
 #include "AcceptedCallClosure.h"
 #include "CompilationInternal.h"
 
+#include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/IR/WaferInterfaces.h"
 #include "Wafer/Runtime/PackageManifest.h"
@@ -109,6 +110,7 @@ struct RankSummary {
   std::vector<DTEWaitSummary> dteWaits;
   std::vector<ParticipantJoinSummary> participantJoins;
   std::array<int64_t, 3> completionCounts = {};
+  uint64_t directDTEComputeOverlapWindowCount = 0;
 };
 
 struct StaticFixedSlotIRSummary {
@@ -835,7 +837,7 @@ verifyStaticFixedSlotIRWitness(const AcceptedCallClosure &closure) {
 }
 
 static llvm::Expected<RankSummary>
-deriveRankSummary(const RankExecutable &rank) {
+deriveRankSummary(const RankExecutable &rank, TargetProfileId targetProfile) {
   RankSummary summary;
   summary.logicalRank = rank.getLogicalRank();
 
@@ -1001,6 +1003,14 @@ deriveRankSummary(const RankExecutable &rank) {
   }
   if (summary.engineWorkerIssues.empty())
     return invalid("fixed-slot qualification has no typed engine issues");
+
+  analysis::InstructionProgramCost cost =
+      analysis::analyzeInstructionProgramCost(
+          rank.getModule(),
+          analysis::getTargetScheduleCostPolicy(targetProfile));
+  if (cost.directDTEComputeOverlapWindowCount.isKnown())
+    summary.directDTEComputeOverlapWindowCount =
+        cost.directDTEComputeOverlapWindowCount.value;
   return summary;
 }
 
@@ -1009,6 +1019,8 @@ static void writeRankSummary(llvm::json::OStream &json,
   json.object([&] {
     json.attribute("logical_rank", rank.logicalRank);
     json.attribute("accepted_instr_sha256", rank.acceptedInstrDigest);
+    json.attribute("direct_dte_compute_overlap_window_count",
+                   rank.directDTEComputeOverlapWindowCount);
     json.attributeArray("spm_alloc_roots", [&] {
       for (const SPMRootSummary &root : rank.spmRoots)
         json.object([&] {
@@ -1098,7 +1110,8 @@ static void writeRankSummary(llvm::json::OStream &json,
 
 static std::string serializeAttestation(llvm::StringRef manifestDigest,
                                         const ExecutableBundle &bundle,
-                                        llvm::ArrayRef<RankSummary> ranks) {
+                                        llvm::ArrayRef<RankSummary> ranks,
+                                        bool directDTEComputeOverlap) {
   std::string storage;
   llvm::raw_string_ostream stream(storage);
   {
@@ -1106,7 +1119,9 @@ static std::string serializeAttestation(llvm::StringRef manifestDigest,
     json.object([&] {
       json.attribute("schema", kAttestationSchema);
       json.attribute("schema_version", kSchemaVersion);
-      json.attribute("selection_kind", "static-fixed-slot");
+      json.attribute("selection_kind", directDTEComputeOverlap
+                                           ? "direct-dte-compute-overlap"
+                                           : "static-fixed-slot");
       json.attribute("manifest_sha256", manifestDigest);
       json.attribute("accepted_instr_digest_basis",
                      "final-accepted-instr-module-text-v1");
@@ -1172,7 +1187,8 @@ bool hasStaticFixedSlotQualificationEvidence(const RankExecutable &rank) {
 }
 
 llvm::Error verifyStaticFixedSlotCompanionEvidence(const RankExecutable &rank) {
-  llvm::Expected<RankSummary> summary = deriveRankSummary(rank);
+  llvm::Expected<RankSummary> summary =
+      deriveRankSummary(rank, TargetProfileId::waferTx81SingleCardKernelV3());
   if (!summary)
     return summary.takeError();
   return llvm::Error::success();
@@ -1180,7 +1196,8 @@ llvm::Error verifyStaticFixedSlotCompanionEvidence(const RankExecutable &rank) {
 
 mlir::LogicalResult stageStaticFixedSlotQualificationCompanion(
     llvm::StringRef companionRoot, llvm::StringRef packageRoot,
-    const ExecutableBundle &bundle, llvm::raw_ostream &diagnostics) {
+    const ExecutableBundle &bundle, bool requireDirectDTEComputeOverlap,
+    llvm::raw_ostream &diagnostics) {
   const auto &rankExecutables = bundle.getRankExecutables();
   if (rankExecutables.size() !=
       static_cast<size_t>(bundle.getExecutionConfig().getRankCount())) {
@@ -1191,15 +1208,25 @@ mlir::LogicalResult stageStaticFixedSlotQualificationCompanion(
 
   std::vector<RankSummary> ranks;
   ranks.reserve(rankExecutables.size());
+  const TargetProfileId targetProfile =
+      bundle.getExecutionConfig().getTargetProfileId();
   for (auto [expectedRank, rank] : llvm::enumerate(rankExecutables)) {
     if (rank.getLogicalRank() != static_cast<int64_t>(expectedRank)) {
       reject(diagnostics,
              "fixed-slot qualification rank domain is not canonical");
       return mlir::failure();
     }
-    llvm::Expected<RankSummary> summary = deriveRankSummary(rank);
+    llvm::Expected<RankSummary> summary =
+        deriveRankSummary(rank, targetProfile);
     if (!summary) {
       reject(diagnostics, llvm::toString(summary.takeError()));
+      return mlir::failure();
+    }
+    if (requireDirectDTEComputeOverlap &&
+        summary->directDTEComputeOverlapWindowCount == 0) {
+      reject(diagnostics,
+             "Direct-DTE compute-overlap qualification rank has no explicit "
+             "issue/compute/exact-wait window");
       return mlir::failure();
     }
     ranks.push_back(std::move(*summary));
@@ -1214,8 +1241,8 @@ mlir::LogicalResult stageStaticFixedSlotQualificationCompanion(
   if (createDirectory(companionRoot, diagnostics))
     return mlir::failure();
 
-  const std::string attestation =
-      serializeAttestation(*manifestDigest, bundle, ranks);
+  const std::string attestation = serializeAttestation(
+      *manifestDigest, bundle, ranks, requireDirectDTEComputeOverlap);
   llvm::SmallString<256> attestationPath(companionRoot);
   llvm::sys::path::append(attestationPath, "attestation.json");
   if (mlir::failed(
