@@ -1180,3 +1180,16 @@
 - board-ready入口先生成两份完整package，检查companion/manifest/target structure与FP16 exact payload，再分别运行
   fresh no-card。真实板端只在显式armed且身份参数完整时按A/B、B/A单进程串行执行；no-card、host elapsed和scheduler
   hash都不能签发hardware overlap或profitability。
+
+## Source-backed 技术汇报构建
+
+- 编译器技术汇报先按production stage建立source map，把representation、analysis、transformation、gate、
+  artifact和测试锚点对应起来，再写页面。公开pass注册表只能作为附录索引，不能代替实际driver中的
+  transaction顺序。
+- IR页面从当前代码、FileCheck或本轮focused运行截取与论点直接相关的8--18行，保留决定语义的op、type、
+  SSA、range、layout、token和ABI字段；长dump拆页或进入附录，不为排版删除关键合同。
+- 算法、ownership、matching和artifact transaction使用与其语义匹配的DAG、地址几何、frontier或时间线。
+  生成式位图可以辅助复杂机制图，但精确IR、数字、标签和状态由可编辑PPT对象承载，不能用整页位图代替正文。
+- 同一份页面规格生成PPTX、嵌入Notes、PDF、逐页PNG和contact sheet。交付前同时检查slide/notes数量、
+  PPT对象边界、PDF页数、预览分辨率、图片链接、可见文字密度和source map覆盖；100% contact sheet检查后，
+  对IR、表格和复杂图页再做原尺寸抽查。
