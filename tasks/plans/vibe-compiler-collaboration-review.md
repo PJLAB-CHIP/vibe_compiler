@@ -1,16 +1,19 @@
-# Vibe Compiler 完整技术汇报实施计划
+# Vibe Compiler 专家技术汇报逐页重做计划
 
-本计划是 Q43 `compiler-collaboration-review-materials` 的唯一实施计划。汇报面向 compiler、runtime 和
-hardware 工程师，按真实 production pipeline 解释 Vibe Compiler 从 PyTorch/XLA exporter 到
-StableHLO、rank-local structured IR、physical-dataflow selection、Instr、Target LLVM、RISC-V ELF、
-verified package 和 board runtime 的完整链路，同时总结共同开发方法、硬件校准和工程经验。
+本计划是 Q43 `compiler-collaboration-review-materials` 的唯一实施计划。听众是 compiler、runtime 和
+hardware 工程师，汇报沿真实 production pipeline 解释 Vibe Compiler 从 PyTorch/XLA exporter 到
+StableHLO、rank-local structured IR、physical-dataflow search、Instr、Target LLVM、RISC-V ELF、
+verified package 和 board runtime 的完整链路，并用真实 case 总结硬件校准与共同开发方法。
 
-旧 37 页材料和六页样稿只作为历史过程，不再约束最终内容、页数或版式。视觉和语言基线继续复用
-`docs/presentations/2026-07-31-vibe-compiler-collaboration-review/presentation-design-research.md`，
-不重复开展同一轮外部 slides 调研。
+此前提交的 151 页批量生成版本未达到使用要求，不能通过补字、换图或调整模板修复，也不再作为完成证据。
+它暴露出的根本问题是：页面由统一生成器先行，技术分析、真实 IR、case 和专用图形随后被压缩成装饰。
+本轮只复用已经核对过的代码事实、focused host IR、硬件行为文档和
+`presentation-design-research.md` 的调研结论；旧页面布局、旧六张 Image2 图和旧 PPT/PDF 全部作废。
+旧图禁止直接复用、裁切复用、改色复用或作为新图底稿，每个页面都从本页技术分析和独立 prompt 重新绘制。
 
-正文按 133 页组织，附录 18 页。页数是制作基线，不是压缩目标：复杂 IR、算法图或实验图在正常投影下
-不可读时拆页，不裁切主图，也不把代码缩成装饰。
+正文仍以 133 页、附录 18 页作为完整覆盖基线，但页数不是目标。某个机制在正常投影下不能同时容纳主图、
+IR 和 case 时可以拆页；相邻页面能够自然合并且不会损失推导时也可以合并。任何情况下都不能用空页、
+目录页或通用框图维持页码。
 
 ## Pipeline Contract
 
@@ -18,374 +21,402 @@ verified package 和 board runtime 的完整链路，同时总结共同开发方
 Pipeline position:
 - Upstream artifact / IR:
   当前 production PyTorch/XLA StableHLO program、ExecutionConfig、Shardy/XLA SPMD、
-  rank-local structured tensor IR、独立 physical-dataflow candidates、selected Tile/Instr、
-  ExecutableBundle、TargetLLVMModuleBundle、TargetArtifactBundle、PackageBundle，以及
-  Q37 当前 profile 硬件行为、Q38-Q41 优化与资格状态、现有代码和测试中的真实 IR。
+  rank-local structured tensor IR、independent physical-dataflow candidates、selected Tile/Instr、
+  ExecutableBundle、TargetLLVMModuleBundle、TargetArtifactBundle、PackageBundle，以及当前
+  target-profile 硬件行为、Q38-Q41 优化状态、现有代码、测试和本轮 focused host 输出。
 - Current stage responsibility:
-  逐层解释 production compiler 的 representation、analysis、transformation、selection、lowering、
-  artifact 和 verification；完整覆盖 mandatory pass、18 个 typed optimization axis、候选搜索、
-  memory/completion/communication、target ABI、LLVM/ELF/package、硬件校准及共同开发方法。
-  每个 transformation 以当前代码、现有测试或本轮 focused host 执行产生的 fresh IR 为依据；
-  analysis、gate 和 artifact transaction 使用与其真实语义相符的算法图，不伪造 before/after IR。
+  逐页解释 representation、analysis、transformation、candidate selection、lowering、artifact 和
+  verification 的因果关系。每个 transformation 读取当前实现与测试，必要时实际运行 focused pipeline；
+  每个 analysis 用与其算法相符的 DAG、地址几何、搜索空间、时间线或 frontier 解释。
 - Output artifact / IR:
-  可编辑 PPTX、PDF、逐页 PNG、contact sheet、嵌入 PowerPoint Notes 的逐页讲稿、完整 source map、
-  figure specification/Image2 prompt、图源和更新后的读者向硬件行为文档。
-  本任务不修改 compiler IR、runtime ABI、package schema 或硬件 capability。
+  全新可编辑 PPTX、PDF、逐页 PNG、contact sheet、嵌入 PowerPoint Notes 的讲稿、逐页 source map、
+  page dossier、Image2 figure specification/prompt、正式图源和更新后的硬件行为导读。
+  本任务不修改 compiler IR、runtime ABI、package schema 或 target capability。
 - Downstream consumer:
-  周五内部技术分享及后续 compiler/runtime/hardware 工程评审；硬件行为文档供 compiler 开发者日常查阅。
+  周五内部专家技术分享；后续 compiler/runtime/hardware 工程评审。
 - User-level driver / named pipeline:
-  人工打开 PPTX/PDF 进行汇报；取材时可运行当前 focused MLIR pipeline、host unit/lit、no-card 或
-  已有 test case 以获得 fresh before/after IR 和结构数据，但不建立第二条 production 编译入口。
+  人工打开 PPTX/PDF 演讲。取材使用当前 production driver、focused MLIR pipeline、host unit/lit、
+  no-card 或已有 case；不建立第二条 compiler pipeline。
 - Explicit non-goals:
-  不把 presentation 写成新的 compiler 架构事实源；不从 pass 名、文件名或 case 名恢复语义；
-  不回放历史板端 raw 输出，不为制作材料重复已完成硬件实验；不生成虚假芯片内部结构、bank、route、
-  controller、cycle 或当前硬件行为文档不支持的性能结论；不把 debug pipeline 画成 production driver。
+  不把 presentation 写成新的架构事实源；不回放历史板端 raw；不为材料重复已完成板端实验；
+  不画未经事实支持的 chip block、NoC route、bank、controller、cycle 或性能结论；
+  不把 debug pass pipeline 讲成 production orchestration。
 - Completion gate:
-  正文和附录全部生成并可渲染；PPT Notes 实际嵌入；每页主视觉、IR、数据和说明围绕同一技术问题；
-  所有 pass/analysis/artifact 和 18 个优化轴在 source map 中有当前代码或测试锚点；真实 IR 保留
-  本页讨论的 op、type、SSA、range、token 或 ABI 重点；PDF/PNG 无裁切、遮挡、低分辨率和不可读小字；
-  技术数字、状态和范围与当前设计、代码和 tasks/progress.md 一致；硬件导读同步代表 findings。
+  每个技术页单独通过内容、图形、IR、case、语言和投影验收；全部 production stage、analysis/pass、
+  18 个 optimization axis、Target LLVM/ELF/package、代表硬件 finding 与共同开发经验均有可讲页面；
+  Notes 实际嵌入；PPTX/PDF/PNG 无裁切、遮挡、低分辨率或不可读小字；数字、状态和范围与当前事实一致。
 ```
 
-## 汇报总目标
+## 1. 汇报的因果主线
 
-整场按下面的理解顺序推进：
+整场不是 pass 清单，也不是审计报告，而是沿一个程序逐层回答六个问题：
 
 ```text
-PyTorch 模型如何进入 compiler
-  -> 每层 IR 为何存在、表示发生了什么变化
-  -> analysis 和独立候选 IR 如何形成候选
-  -> rank-local 与 whole-card gate 如何选择 winner
-  -> winner 如何 lower 为 LLVM IR、RISC-V ELF 和 package
-  -> 硬件 microbench 如何改变 legality、planning、completion 和 cost
-  -> 人与 AI 如何共同完成设计、实现、验证和经验沉淀
+PyTorch 模型怎样成为可重放的 compiler input？
+  → global tensor semantics 怎样变成 rank-local structured program？
+  → optimizer 怎样从独立 IR clone 中生成并验证候选？
+  → Tile/Instr 怎样显式化地址、memory、communication 和 completion？
+  → accepted whole variant 怎样成为 LLVM IR、RISC-V ELF 和 package？
+  → hardware microbench 怎样改变 legality、range、completion、cost 与 ABI？
 ```
 
-三条 case 贯穿全场：
+三条 case 贯穿多层 IR：
 
-1. K-sharded / NoC-resident GEMM；
-2. Strided / direct-mapped transfer；
-3. Fixed-slot + worker placement + Direct-DTE overlap。
+1. K-sharded / NoC-resident GEMM：解释 SPMD、partial reduction、whole-rank candidate、NoC residency 和
+   package/board correctness；
+2. Strided / direct-mapped transfer：解释 IndexRelation、descriptor、DDR envelope、SPM footprint、
+   result-checker 修正和 physical span；
+3. Fixed-slot + worker + Direct-DTE：解释 dependency DAG、slot lifetime、completion、worker placement、
+   target lowering 和 Q40 的当前状态。
 
-## 取材和技术准确性规则
+## 2. 单页制作合同
 
-### Pass、analysis 与 production stage
+制作单位是单页，不是 deck。每页在进入 PPT 前必须先建立 page dossier，包含：
 
-1. 不把公开注册的 Wafer pass 列表等同于 production pipeline。source-to-package 主线由
-   `wafer-compile -> runCompilationTransaction` 的 C++ transaction 编排。
-2. 同时覆盖：
-   - XLA/HLO/Shardy pass pipeline；
-   - StableHLO/MLIR conversion、canonicalization 和 bufferization；
-   - Wafer registered pass；
-   - candidate-local PatternRewriter 和 conversion；
-   - recomputable analysis、rank/whole-variant gate 和 Pareto selection；
-   - target ABI、LLVM translation、device link、ELF/package readback 与 publication。
-3. 每个 transformation 优先读取当前实现和对应 test。已有 FileCheck before/after 时直接使用；
-   只有结构断言时画 representation change 并明确它是根据 current winner/test assertion 重构，
-   不把示意代码当作真实 printer output。
-4. 需要补齐具体变化时，可以运行 focused `wafer-opt`、当前 unit/lit 或 production no-card case，保存
-   本轮 fresh 输出。运行前先确认测试入口、feature 和当前 build；不为 presentation 重复板端实验。
-5. analysis、acceptance、artifact ownership 和 filesystem transaction 不伪造 before/after IR，分别使用
-   index geometry、dependency DAG、frontier、matching graph、artifact DAG 或 transaction timeline。
+- **叙事位置**：上一页留下的问题、本页解决的问题、下一页为什么自然出现；
+- **技术标题与 takeaway**：标题使用简短技术名词短语；一句可验证的技术判断另作 takeaway；
+- **实现取材**：当前代码、设计文档、测试及需要运行的 focused command；
+- **真实锚点**：before/after IR、算法数据结构、case 参数、表格、trace 或实验数字；
+- **主图 specification**：primary object、panel、节点、边、方向、数量、颜色语义、禁止推断项；
+- **页面说明**：紧贴图、IR、公式和数据的分析文字，不把说明集中成三张卡片；
+- **讲述顺序**：听众先看哪里、沿什么路径理解、最后得到什么工程结论；
+- **适用范围**：自然写进图注或结论，不能做成固定的“审计边界”栏目。
 
-### IR 展示
+page dossier 是后台制作工具。最终页面不出现“证据等级、检查项、输入/变换/输出/失败条件”等重复模板。
 
-1. 一页只保留 8--18 行直接支撑论点的 IR；长 IR 拆页或放附录。
-2. 必须保留与本页机制有关的真实信息：
-   - op 名、SSA use-def、type/dtype/shape；
-   - indexing map、slice/stride、memory space/layout；
-   - token/event/wait、participant 或 completion；
-   - ABI slot、runtime call 和关键 integer geometry。
-3. 只高亮 2--4 个位置，并让图中的 buffer、slot、rank、message 与 IR 使用相同名称。
-4. 不为了排版删掉决定语义的 type、range、token、rank group 或 attribute；若空间不足则拆页。
-5. case 参数与通用合同分开说明，避免把 `4096³`、16 rank、3 slots 或某条 route 写成固定架构。
+本节和后面的逐页表格只负责锁定叙事和施工范围，不能作为页面正文直接使用。每一行在施工时必须扩展为
+一份完整 dossier，至少包含代码阅读记录、fresh IR 或结构化算法推导、case 数据、主图 prompt、
+图中对象与精确标注、可见正文初稿、Notes、source footer 和逐项验收结果。通常一页会有一张多 panel
+主图、8--20 行真实 IR、公式/数据表/trace 中至少一种，以及围绕图中对象展开的数段分析；实际构成由
+技术对象决定，不用固定字数或 panel 数机械填充。
 
-### 画图
+## 3. 每页的技术分析流程
 
-1. Image2 用于复杂技术构图，不生成整张 slide。精确 IR、数字、字段、表格和坐标轴由可编辑 PPT 对象承担。
-2. 每张正式技术图先完成 specification：节点、边、rank、buffer、memory space、数量、方向、状态、
-   必须出现的标签、禁止推断的结构和页面预留比例。
-3. 图的最低信息密度参考
-   `docs/images/noc-resident-k-sharded-gemm-pipeline.png`：显式展示 representation、数据流、buffer、
-   message/token、before/after 和关键数量。
-4. 每张图只做一次正式生成。只有事实错误、关键结构缺失、严重不可读或裁切时重做；不为内部分享反复
-   迭代颜色和装饰。
-5. 不统一套用 4x4 网格、三卡片、KPI strip 或大留白。pipeline、IR、地址、timeline、dependency、
-   search、artifact 和实验分别使用适合它们的视觉语法。
+1. 阅读 production 入口和当前 stage 的实现，不从 pass 名、文件名或 case 名恢复语义。
+2. 读取对应 unit/FileCheck/integration case；已有 before/after 时直接提取。
+3. 需要补齐时运行 focused `wafer-opt`、host test 或 no-card，保存本轮 fresh 输出；不运行板端 case。
+4. 从真实 IR 中保留决定本页结论的 op、SSA、type、shape、layout、range、token、event 或 ABI 字段。
+5. 根据代码还原算法：例如 scope DAG、Presburger relation、lifetime interval、packing、message matching、
+   Pareto dominance；analysis 不伪造成 before/after IR。
+6. 用一个具体 case 推导结论，再说明哪些参数属于 case、哪些属于稳定 IR/interface/verifier 合同。
+7. 完成主图和页面后，重新对照代码、测试和 source map；任何技术关系错误都必须在装配前修正。
 
-### 文字与 speaker notes
+## 4. Image2 逐页主图流程
 
-1. 标题使用自然的技术问题或判断，例如：
-   - `Candidate 只有完整 lower 后才有资格比较`
-   - `Queue depth 不是 software-pipeline window`
-   - `Logical result 与 physical write span 必须分别建模`
-2. 正文使用具体对象、动作、参数和结果；避免审计模板、抽象口号和连续的“不是 A 而是 B”句式。
-3. 页面可见内容负责机制、IR、数字和局部说明；Notes 负责看图顺序、技术解释、前后过渡、状态和范围。
-4. Notes 直接嵌入 PPT。转场页约 10--20 秒，普通机制页约 25--40 秒，核心 case 约 60--90 秒。
-5. 典型页面包含一个主技术对象、一个 IR/表格/数据锚点、贴近对象的说明和必要图注；不按固定字数或
-   固定 panel 数机械填充。
+- 每个技术页有一张为该页单独设计、重新生成的高密度主图。相邻页可以 progressive reveal，但必须输出
+  本页独立、新增事实明确的版本；不能用同一背景反复裁切。旧六张图不允许进入任何正式页面。
+- Image2 prompt 在技术分析之后编写，至少写清：use case、primary object、panel 数量、真实对象和数量、
+  箭头关系、时间/地址方向、必须显示的 case 参数、语义色、页面预留区域和禁止出现的虚构结构。
+- Image2 负责复杂机制、空间关系和视觉层次；真实 IR、精确数字、公式、表格、坐标轴和易错标签由 PPT
+  可编辑对象排版。两部分在构图时预先协同，不能事后用文本框盖住图片。
+- 图的最低信息密度参考现有 NoC-resident GEMM 图，但不复用其 topology 作为通用模板。pipeline、
+  search、IR lowering、address、timeline、dependency、artifact 和 hardware probe 使用不同视觉语法。
+- prompt 审核后进行一次正式生成。只有技术错误、关键结构缺失、严重不可读或裁切才定向重画；
+  不能接受首张图中的错误，也不为内部分享反复修改纯装饰细节。
+- 每张正式图保存到新版本资产目录并记录 prompt、source 和使用页。正式页数与新图资产必须逐页对应，
+  最终 PPT 中实际嵌入关系必须与资产台账一致。
 
-## 正文逐页 storyboard
+## 5. 页面构成与语言
 
-### A. 开场与项目定位（1--5）
+- 主图通常占页面 50%--70%，但比例由内容决定。图旁必须有真实 IR、代码、数据或公式之一；
+  纯章节过渡页也使用完整技术路线图，不做大留白。
+- 一页围绕一个主问题，但可以有多个相互解释的 panel。图、IR、数字和分析必须使用相同对象名，并以
+  箭头、编号或颜色建立局部对应。
+- 标题只标识本页技术对象，例如 `Complete-lowering optimization gate`；判断和结论写在标题下的
+  takeaway、图中标注和分析文字中。正文使用具体对象、动作、参数和结果，不写“全栈闭环、多维协同、
+  真实证据、讲解边界”等抽象模板语。
+- 标题使用简短技术短语，优先为对象、机制、算法或 case 名；不写完整主谓宾陈述句。页面判断放在标题
+  下的一句 takeaway 和图中。拒绝 `X，而不是 Y`、`X 不只是 Y`、`我们完成了 X`、`从 X 到 Y 的闭环`
+  等对比式或宣传式标题。示例：`Source-to-package transaction`、`Complete-rank candidate selection`、
+  `Strided DMA address geometry`、`SPM lifetime reuse`、`Direct DTE lifecycle`。
+- 语言风格复用 MLSys、MICRO 和 LLVM 技术报告的调研结论：问题驱动、术语直接、真实表示和 case
+  同页、因果清楚。source 只放页脚，文件路径和任务号不进入正文。
+- Notes 负责看图顺序、口头解释和转场，不重复页面，也不能承担页面缺失的核心内容。
 
-| 页 | 标题 | 可见内容与主视觉 |
-| ---: | --- | --- |
-| 1 | Vibe Compiler：从 PyTorch 模型到 Wafer 可执行程序 | 封面；高密度编译链背景包含 PyTorch graph、StableHLO、rank-local IR、NoC、LLVM、ELF 和 package，不画虚假芯片内部结构。 |
-| 2 | 我们最终做成了一条完整的 production compiler pipeline | 成果摘要与 artifact 链：模型入口、联合优化、完整 rank domain、Target LLVM、ELF/package、board runtime；状态用克制标记。 |
-| 3 | 难点不在支持几个算子，而在跨层保存正确语义 | 同一 GEMM 在 global tensor、rank-local tensor、physical dataflow、Instr 和 LLVM ABI 五层中的表示变化。 |
-| 4 | 编译器同时面对数学、分布式、存储、通信和完成语义 | 五层纵向剖面，标出 indexing、sharding、layout、lifetime 和 DTE completion 的语义边界。 |
-| 5 | 本次汇报沿着真实编译链展开 | 完整 pipeline 作为章节路线，标出 architecture、optimization、hardware calibration 和 collaboration。 |
+## 6. 单页完成门槛
 
-### B. 总体架构（6--10）
+任何一页只要有一项不满足，就不得进入 section review：
 
-| 页 | 标题 | 可见内容与主视觉 |
-| ---: | --- | --- |
-| 6 | `wafer-compile` 编排一次完整 transaction，而不是一串独立 pass | PyTorch/XLA exporter 到 package 的 15 个 station，显示唯一 production 入口、staging 和 atomic commit。 |
-| 7 | IR 逐层降低，artifact 逐步获得所有权和可交付性 | StableHLO、Linalg/Tensor、TileRegion、Instr、LLVM dialect、LLVM IR 的 ladder；并列四类 bundle。 |
-| 8 | Production 与 focused/debug pipeline 共享实现，但不共享所有权 | 主线与 `wafer-opt`、三个 focused pipeline、frontend verifier 的关系；debug 入口不承担 program directory 和 publication。 |
-| 9 | 候选结果只在四个阶段提交 | 只读源程序、独立候选 IR、完整 all-rank 组合和发布产物的提交边界。 |
-| 10 | 三个 case 将贯穿不同 IR 层 | GEMM、strided transfer、fixed-slot 三条路径叠在总 pipeline 上，建立后续视觉索引。 |
+1. 不读 Notes，专家能从页面判断本页问题、机制和结论。
+2. 主图是本轮为该页重新生成的专用技术图，包含实际状态、表示、地址、依赖或数据变化；旧六张图零复用。
+3. 至少有一处可核对的真实 IR、代码、公式、case 或实验数据。
+4. 图、IR 与文字局部对应；不存在可删除而不影响论点的装饰框和空白卡片。
+5. case 的 shape、dtype、rank、bytes、单位和比较对象准确；没有把 case 参数写成通用规则。
+6. 页面与上一页相比有明确新增事实，并自然引出下一页。
+7. 100% 和投影预览下，最小 IR、图注、箭头和数字可读。
+8. 标题和正文符合技术报告语言，不像检查表、产品宣传或 AI 摘要。
 
-### C. PyTorch、exporter 与 frontend（11--18）
+## 7. 正文逐页制作档案
 
-| 页 | 标题 | 可见内容与主视觉 |
-| ---: | --- | --- |
-| 11 | PyTorch eager、expected result 与 exporter 各自承担不同责任 | 同一 `nn.Module` 分为 CPU expected 和 PyTorch/XLA export，两条路径在完整输出比较处汇合。 |
-| 12 | Sharding 在 exporter 侧形成，但不会提前变成物理 tile | column/row mark、global tensor 分片和导出 sharding attr；物理 endpoint 尚未出现。 |
-| 13 | Compiler 输入是 program directory，不只是 `forward.mlir` | `forward.mlir`、meta、data、constants、parameter shards 的目录树、责任范围和 consumer。 |
-| 14 | Function signature、metadata 和 payload 必须描述同一程序 | IR type、metadata signature、NPY shape/dtype 三方对应；展示两个典型拒绝。 |
-| 15 | Frontend admission 在进入优化器前关闭不完整输入 | static rank、dtype、single entry、graph break、eager fallback、path、endianness 的 verification flow。 |
-| 16 | `CompilationRequest` 固化 source、rank domain 和 target profile | typed request、rank-count 1/16、TargetProfileId 和 launch kind；名字不参与 lowering。 |
-| 17 | 编译先复制 source snapshot，失败不污染输入或已有输出 | source、staging、tensor-program、package、atomic rename 的 filesystem transaction。 |
-| 18 | ExecutionConfig 在 IR 中物化为 topology 和 execution mesh | 真实 topology/mesh IR 与 rank=1/16 endpoint 映射。 |
+下面每行规定本页必须完成的论证、可见技术内容、Image2 主图和取材。实际制作时每页再扩展为独立
+page dossier；表格内容不是最终页面栏目。
+
+### A. 开场：成果和问题（1--5）
+
+| 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
+|---:|---|---|---|---|
+| 1 | Vibe Compiler：PyTorch 到 Wafer executable | 封面即展示模型、global/rank-local IR、candidate dataflow、Instr、LLVM、ELF/package 的表示变化；副标题说明共同开发与硬件校准。 | 16:9 横向 hero，七个 representation 不是同形框；让同一 GEMM 数据对象逐层变形，右端形成 package/runtime，不画虚假芯片内部。 | `tasks/01-architecture.md`、production source map；正常投影可辨认关键 IR 名称。 |
+| 2 | Production pipeline completion surface | 同页给出 PyTorch/XLA 入口、16-rank complete program、18 个优化轴、Target LLVM、RV64 ELF、verified package 和 board runtime；数字贴在对应 artifact。 | 沿 source→package 的 artifact river，途中展开 ExecutionConfig、ExecutableBundle、TargetArtifactBundle 和 PackageBundle；下方用 Q38/Q39 done、Q40/Q41 board-ready 的克制状态线。 | `CompilationOrchestration.cpp`、`TargetArtifact.h`、`tasks/progress.md`；不能用“支持若干算子”代替成果。 |
+| 3 | GEMM 的五层 IR 表示 | 以 GEMM 为例并列 StableHLO `dot_general`、`linalg.matmul`、Tile/Instr、oriented GEMM runtime call、ELF/package slot；标出 shape、sharding、layout、completion、ABI 逐层新增。 | 五层剖面图，数据对象在每层保持同一颜色；真实 IR 片段嵌在对应层，箭头只标本层新增事实。 | dot lowering、GEMM Instr→LLVM tests；每层至少保留一个真实字段。 |
+| 4 | Cross-layer semantic invariants | 同一 candidate 中展示 indexing map、rank slice、SPM/DDR range、DTE message identity 和 completion token 的相互约束；用一个缺失 completion 导致 slot 不可复用的反例收束。 | 中央为 candidate IR，五类语义以不同视觉语法连接到同一 buffer/message；右侧红色反例显示缺一项后 downstream gate 失败。 | architecture、physical-dataflow、Direct DTE docs；颜色一页只表达一种语义。 |
+| 5 | Three running cases | 用 GEMM、strided transfer、fixed-slot/DTE 三条彩色路径叠在 production pipeline 上，标出每次放大的章节和最终硬件结论。 | 全场路线图；三条 case 路径在 representation ladder 上交叉，不做普通 agenda。 | 本计划和三个 case source map；后续每章沿同一颜色继续。 |
+
+### B. Production architecture（6--10）
+
+| 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
+|---:|---|---|---|---|
+| 6 | Source-to-package transaction | 展开 source snapshot、XLA helper、structured lowering、optimizer、Target LLVM、ELF/package、readback 和 atomic publish；失败分支只清理 staging，不污染 source/旧输出。 | 横向 transaction timeline，上层 IR/artifact、下层 filesystem staging/commit 两条泳道；失败点回滚到 staging。 | `CompilationOrchestration.cpp`、`TargetPackagePublication.cpp`；显示真实目录和 commit cut。 |
+| 7 | IR ladder 与 artifact ownership | 每层放 3--6 行真实 IR：StableHLO、Linalg/Tensor、TileRegion、Instr、LLVM dialect、LLVM IR；旁边列上游 artifact、持有者和下游 consumer。 | representation ladder 与四类 move-only bundle 的 ownership DAG 交织；不是同形 stage 方框。 | `Compilation.h`、`TargetArtifact.h`、`Package.h`；IR 与 artifact cut 一一对应。 |
+| 8 | Production 与 focused pipelines | 对照 `wafer-compile`、`wafer-opt` focused lowering、frontend verifier、no-card；用同一 dot case说明 replay 能看到 IR，但没有 program directory、all-rank selection 和 atomic package。 | 主线粗线贯穿全图；debug/replay 从具体 stage 分叉再返回观察结果，不能越过 publication cut。 | `Pipelines.cpp`、tool tests；正文自然说明用途，不做“审计对照表”。 |
+| 9 | Four commit boundaries | 展示 source clone、task-local candidate clone、complete correspondence tuple、published package；一个 rank 的局部 winner 因 peer mismatch 被整体丢弃。 | 四个 commit cut 的 progressive diagram；中间大量 disposable clones，只有绿色路径穿过 all-rank gate。 | `CandidateCommit.cpp`、`WholeVariantCoordinator.cpp`、publication code；反例必须具体。 |
+| 10 | Case-to-IR mapping | 同页追踪 GEMM 的 sharding/partial、strided 的 address/descriptor、fixed-slot 的 lifetime/completion；指出它们分别在哪层首次可表达。 | 三条 case river 穿过 IR ladder，在首次物化的字段处放大实际片段。 | 三个 source map；不能提前在高层画 physical route/offset。 |
+
+### C. PyTorch exporter 与 frontend admission（11--18）
+
+| 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
+|---:|---|---|---|---|
+| 11 | Reference、capture 与 compiler input | 同一 `nn.Module` 和输入分别生成 CPU expected、PyTorch/XLA StableHLO、program directory；最后只有运行输出与 expected 汇合。 | 三路展开图；左路显示 tensor result，中央显示 graph capture/sharding，右路显示 compiler artifacts，末端在 result comparison 汇合。 | `wafer_pytorch_xla_capture.py`、tool tests；可见真实模型代码和输出 shape。 |
+| 12 | Exporter sharding annotations | 展示 column/row/data sharding API、导出 attr、logical mesh axis；对同一 tensor 标出 global shape 与 shard intent，明确尚无 endpoint/offset。 | 逻辑 tensor 被 mesh axis 切分的示意，旁边嵌真实 exporter 代码和 StableHLO attr；不画 4×4 physical route。 | exporter fixture、SPMD tests；图中文字与真实 attr 对应。 |
+| 13 | Program directory snapshot | 展开 `forward.mlir`、meta、data、constants、parameter shards；用一个参数从 signature 到 NPY 的连线说明目录成员不是附件。 | 目录 tree 与同一参数的 provenance thread；每个文件显示关键字段/片段，而不是文件图标。 | `Program.cpp`、`ProgramMetadata.cpp`、export tests；路径、dtype、shape真实。 |
+| 14 | Signature–metadata–payload consistency | 用一个 FP16 参数和一个输出建立 IR type、metadata role/shape、NPY header/bytes 的三方对应；并排展示 dtype mismatch 和 missing payload 的拒绝路径。 | 中央三角一致性图，边上是可读真实片段；红色断边对应两个具体错误。 | metadata/payload verifier tests；错误必须是当前实现会拒绝的情形。 |
+| 15 | Frontend admission | 从 graph break/eager fallback、single entry、static rank/dtype、dialect、endianness 到 metadata/payload；用一个真实 rejected fixture贯穿 decision path。 | 让一个输入程序沿 decision tree 前进；失败 case停在具体分支，成功路径进入 typed request。 | frontend verifier code/tests；页面要能解释为什么早拒绝。 |
+| 16 | `CompilationRequest` 与 `ExecutionConfig` | 展示 typed request 的 source dir、ExecutionConfig、rank count、profile、launch kind；同页说明名字只用于诊断，typed fields 驱动 lowering。 | request object exploded view，字段分别连到 topology、optimizer、target和runtime consumer；旁边是真实 C++ 定义片段。 | `Compilation.h`、`wafer-compile.cpp`；字段与消费者连线准确。 |
+| 17 | Staging 与 atomic publication | 展示 source→staging/source→helper output→tensor-program→package→rename；中途 parse failure、link failure 各在 staging 结束。 | filesystem transaction 时间线，真实目录名、fsync/readback/rename，失败分支保留 source 和旧 package。 | orchestration/publication tests；不能画成普通“save”图标。 |
+| 18 | Topology 与 execution mesh | 展示 rank=1 与 rank=16 的真实 topology/mesh IR，physical tile id 与 logical rank relation；说明 placement 尚未发生。 | 左为 typed ExecutionConfig，中央为真实 IR，右为 1-rank/16-rank endpoint mapping；逻辑/物理用不同编码。 | topology/mesh materialization tests；不把 16 rank 等同于某种模型 sharding。 |
 
 ### D. Shardy/XLA SPMD（19--26）
 
-| 页 | 标题 | 可见内容与主视觉 |
-| ---: | --- | --- |
-| 19 | SPMD partitioning 改变程序边界，而不只是 tensor shape | global function 到 rank-local function 的 inputs、parameters、outputs 和 collective 变化。 |
-| 20 | StableHLO 先进入 XLA HLO，sharding 仍保持逻辑含义 | StableHLO→HLO bridge、frontend sharding canonicalization 和 HLO module config。 |
-| 21 | `ShardyXLA` 与 `SpmdPrepare` 传播并整理 sharding | seed、replicated default、parameter/output constraint 的 propagation graph。 |
-| 22 | `SpmdPartitioner` 生成 rank-local compute 与必要 collective | global matmul 变为 local operands、local result 和 all-reduce，旁边列 HLO verifier。 |
-| 23 | K-sharded GEMM 将 global K 分成 16 个连续 shard | 一维 K 轴、每 rank local matmul、partial result、logical all-reduce；不用 4x4 网格表示 K 切分。 |
-| 24 | Parameter shards 与 distributed boundary 共同描述 global-to-local 关系 | global/local shape、offsets/sizes/strides、replicated/partitioned 与 all-and-only coverage。 |
-| 25 | Partitioned HLO 重新进入 StableHLO，但不保留 Shardy 中间状态 | HLO→MHLO→StableHLO、post-SPMD marker、parameter sharding metadata 和 rank-local function。 |
-| 26 | Helper 输出仍需重新 parse、verify 和 readback | marker、零 SDY、metadata、payload、mesh relation 和 directory integrity 的 readback flow。 |
+| 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
+|---:|---|---|---|---|
+| 19 | Rank-local SPMD program | 以一个 global matmul 展示 global inputs/parameters/output 如何变为 rank-local signature、parameter shards、distributed boundary 和 collective。 | global program 在中央切开为 local program+metadata+payload 三条同步变化；嵌真实 shape 表。 | XLA SPMD program/boundary code；不能只画 tensor 被切块。 |
+| 20 | StableHLO–HLO bridge | 展示 StableHLO→HLO bridge、canonicalized sharding、HLO module config 四个关键字段；明确没有伪造 textual HLO dump。 | bridge cutaway：左侧真实 StableHLO attr，中间 HLO config/data structure，右侧 verifier；结构图而非不存在的 HLO IR。 | `XlaSpmdPartitioning.cpp`；字段名来自代码。 |
+| 21 | `ShardyXLA` propagation | 从 exporter seed 出发，展示 replicated default、parameter constraint、output constraint 如何沿 dataflow 传播；前后各有 HLO verifier。 | sharding propagation graph；节点形状对应 tensors/ops，颜色追踪 mesh axis，边旁放真实 policy。 | Shardy/XLA pipeline code、debug propagation test；生产与 debug 路径分清。 |
+| 22 | `SpmdPartitioner` signature rewrite | 展示 global signature 和 local signature before/after；同一 matmul 的 contracting/output dim 决定 local operand与 all-reduce。 | 左右两个 program boundary，中间是 partition geometry；真实 shape、rank count和 collective 放在对应边。 | SPMD E2E test、partitioner code；不从 pass 名猜通信序列。 |
+| 23 | K-sharded GEMM partitioning | 使用真实小型 E2E shape或正式 4096 case，画 global K axis、每 rank K interval、local partial 和 logical all-reduce；旁边放 StableHLO/Linalg 片段。 | 一维 K 轴切分而非 4×4格；下方 rank-local compute/partial flow，明确 local K 和 bytes。 | GEMM SPMD tests、NoC case source；case数字必须统一。 |
+| 24 | Distributed boundary 与 parameter shards | 同一参数展示 global/local shape、offset/size/stride、replica/partition id 和实际 NPY shard；all-and-only coverage 用区间证明。 | 上方 global tensor切片，下方 typed boundary table与NPY payload；每个 rank颜色一致。 | boundary/payload code与E2E test；文件名不承担语义。 |
+| 25 | Post-SPMD StableHLO reconstruction | 展示 HLO→MHLO→StableHLO、flattened signature、post-SPMD marker、parameter sharding metadata；说明输出是一份 local program加typed rank mapping。 | 转换链的 representation morph，嵌每层真实可得字段；右侧为重建后的 program directory。 | `hloModuleToStablehlo`、helper tests；不能画成16份 textual module。 |
+| 26 | Helper output readback | 用一个 metadata/IR divergence case说明为什么 exit code不够；沿 required files、post-SPMD、no SDY、topology restore、payload verification后才进入structured lowering。 | helper output包进入compiler readback的因果图；每个 gate由具体错误触发，不做审计清单。 | orchestration/readback tests；结论是重新建立typed contract。 |
 
 ### E. StableHLO 到 Structured Tensor IR（27--33）
 
-| 页 | 标题 | 可见内容与主视觉 |
-| ---: | --- | --- |
-| 27 | Structured Tensor IR 保留数学语义，为 tiling 和 dataflow 打开接口 | Func/Linalg/Tensor/SCF/Arith/Math/LinalgExt 集合；列出此层尚未拥有的物理事实。 |
-| 28 | Logical collective 先进入 typed tensor op，而不是直接变成 DTE | 真实 all-reduce before/after IR，高亮 DPS tie、rank group 和 combiner region。 |
-| 29 | `dot_general` 归一化后，iterator 和 DPS output 成为显式结构 | 真实 `dot_general`→`tensor.empty + linalg.fill + linalg.matmul`，标出 contracting dims 和 init。 |
-| 30 | Official conversion 覆盖语义 family，而不是模型名 | pointwise、broadcast、reshape、transpose、reduce、matmul、constant 的表示表。 |
-| 31 | Static residual cleanup 只折叠能够完整证明的 rank helper | partition-id/mask/view constant chain 的折叠与 dynamic index 保留。 |
-| 32 | Normalize 与 canonicalize 多次交替以关闭 residual semantics | 真实 pass sequence 和每轮职责；不拆成重复页面。 |
-| 33 | 下游 analysis 直接读取 indexing、effect、control 和 interface | Linalg producer-consumer graph，标出 TilingInterface、DPS、MemoryEffects、ValueBounds 和 SSA。 |
+| 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
+|---:|---|---|---|---|
+| 27 | Structured Tensor IR | 用一段真实 module展示 func/tensor/linalg/arith/math/scf/cf和logical collective；在同图标出尚未出现的 tile、layout、SPM/DDR offset、instruction。 | IR cutaway：中心真实代码，周围连接 TilingInterface、DPS、MemoryEffects、ValueBounds；物理事实灰显在下一层。 | stage verifier、structured tool tests；不是 dialect 名单页。 |
+| 28 | Logical collective normalization | 展示 StableHLO all-reduce before与 `wafer.linalg_ext.collective` after，保留 rank group、channel、DPS init和combiner region。 | before/after IR之间用数据结构图解释operand/init/result/reducer；右侧明确尚无peer/packet。 | collective normalization code/test；真实IR不少于关键region。 |
+| 29 | `dot_general` → `linalg.matmul` | 使用 fresh `dot_general→tensor.empty+linalg.fill+linalg.matmul` 输出，颜色对应lhs/rhs/init/result；说明为什么后续tile analysis可读取。 | 左侧维度关系图，右侧真实before/after IR，箭头对应contracting/output dims。 | focused host run和dot test；完整保留shape/dtype/use-def。 |
+| 30 | StableHLO legalization responsibilities | 用pointwise/broadcast/reduce/matmul各一小段真实IR说明official conversion，旁边放Wafer collective handoff和stage verifier；自然解释团队实现范围。 | 一个family map连接到两条责任路径：upstream legalization和Wafer-specific handoff；每格有实际op片段。 | coverage tests、legalization wrapper；不能宣称自研全部lowering。 |
+| 31 | Static residual folding | 展示 partition-id/rank table、extract_slice/reshape/linalg.generic chain被折叠，dynamic index保留；给出fixpoint迭代原因。 | value-propagation DAG before/after；绿色constant path消失，动态边保持。 | `ConstantTensorFolding.cpp`和cleanup test；不是通用partial evaluator。 |
+| 32 | Normalize–canonicalize fixpoint | 用一个case逐轮展示 `normalize→official legalize→normalize→canonicalize→normalize→canonicalize` 后IR如何缩短；不只列pipeline。 | 同一IR的三阶段progressive morph，每轮高亮新暴露的cast/helper/constant。 | `Pipelines.cpp`和fresh dumps；没有变化的case不声称每轮都改写。 |
+| 33 | Structured artifact handoff | 展示内存module写入tensor-program、重新parse、stage legality/readback；右侧列下游直接读取的 indexing、DPS、effect、control接口。 | artifact handoff图：左为persisted module，中央readback，右为scheduling graph；真实IR字段贯穿。 | orchestration/stage verifier；结尾自然引出candidate search。 |
 
-### F. Analysis 与候选搜索（34--44）
+### F. Candidate analysis 与 bounded search（34--44）
 
-| 页 | 标题 | 可见内容与主视觉 |
-| ---: | --- | --- |
-| 34 | 一个 structured program 形成有限但多维的候选空间 | source variants × scope × recipes × rank siblings × all-rank variants。 |
-| 35 | Source variant 数量有明确上界 | baseline、singleton、canonical pairs、all-applicable，最多 16 个 source variants。 |
-| 36 | Scope discovery 决定哪些 op 进入同一个 scheduling task | shared producer、unsupported cut、collective boundary 下四种 policy 的分区差异。 |
-| 37 | 每个 task 在独立 clone 上试验，commit 采用 consumer-first 顺序 | standalone task clone、candidate selection 和 reverse commit。 |
-| 38 | `IndexRelation` 从 indexing map 和 slice 关系重算 tile 对应 | matmul result tile 反推 lhs/rhs，结合 Affine/Presburger/ValueBounds。 |
-| 39 | Transfer realizability 判断两端范围和 descriptor 能否精确覆盖 | contiguous、strided、mapped 的 relation、layout、coverage 和 rejection。 |
-| 40 | Target implementation 通过 interface 暴露选择 | reciprocal/division、GEMM orientation 等 typed candidates、legality 和 cost。 |
-| 41 | Candidate 只有完整 lower 后才有资格比较 | TileRegion→Instr→临时 SPM/DDR→verifier→completion→cost，中途失败直接淘汰。 |
-| 42 | Cost 从 fully lowered candidate 的 compute、movement、NoC 和 synchronization 重算 | logical ops、DDR/SPM/NoC bytes、instructions、events、joins；每个 metric 独立保留 Known/Unknown/Unsupported/Overflow。 |
-| 43 | Rank frontier 保留 baseline，并为不同机制保留有限带宽 | general、fixed-slot、worker bands、dominance 和 stable ordinal。 |
-| 44 | 搜索规模本身也需要编译器工程优化 | rank-invariant reuse、bounded parallelism、bytecode、selective import、early Pareto 和 wall/RSS。 |
+| 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
+|---:|---|---|---|---|
+| 34 | Independent candidate IR | 从 structured module bytecode 出发，展示 source clone、scope task、rank recipe、accepted-rank sibling、complete tuple 和 whole-variant winner；每层说明为何需要独立 IR。 | 候选谱系图：左侧 expression DAG，中部 tile/dataflow，右侧 rank executable 与 all-rank topology；形态随层次改变。 | `ExecutableBundle.cpp::buildExecutableBundleImpl`、source map；入口必须是 production orchestration。 |
+| 35 | Bounded source variants | 真实列出 baseline、enabled singleton、canonical pair、all-applicable joint state，最多16；用一个4-axis启用case画实际生成序列与stable ordinal。 | expression DAG 的 bounded branching tree，未生成组合灰显并注明预算原因；下方是真实variant count。 | `buildBoundedSourceVariants`及tests；不能把上限相乘成总空间。 |
+| 36 | Structured scheduling scopes | 用shared producer、two consumers、unsupported cut和collective boundary形成四种scope policy；展示scope改变后DDR/SPM edge为何不同。 | 同一use-def DAG progressive分区；每种policy只改变cut，节点位置保持，便于比较。 | `StructuredSchedulingScope.cpp/Test`；不是按op名字分组。 |
+| 37 | Task-local candidate commit | 真实展示task clone、candidate evaluation、reverse/consumer-first commit；一个producer candidate因下游use不兼容而丢弃。 | 原module与三个task clone并列，commit箭头按consumer→producer；失败clone不回写。 | `CandidateSelection.cpp`、`CandidateCommit.cpp` tests；体现failure atomic。 |
+| 38 | `IndexRelation` tile derivation | 以matmul result tile反推lhs/rhs slice，展示Affine/Presburger/ValueBounds求解；旁边放真实indexing map和subview IR。 | 结果tile、lhs/rhs坐标平面和关系式三联图；箭头与SSA value同名。 | `IndexRelation.cpp/Test`；physical offset仍由layout/planner决定。 |
+| 39 | Transfer realizability | 对比 contiguous、strided、mapped和unsupported dynamic relation；给出range set、layout map、descriptor层数与具体拒绝点。 | 四个地址几何小场景汇入realizability decision；不是黑箱绿/红框。 | `TransferRealizability.cpp`、static range tests；unknown保持拒绝。 |
+| 40 | Interface-driven implementation candidates | 用同一structured op分叉到divide/reciprocal和GEMM orientation候选；每条分支展示typed parameters、lowered Instr和target capability。 | interface dispatch图，左为共同数学语义，右为不同执行结构；旁边嵌真实interface/C++片段。 | interface models、candidate selection tests；不是字符串枚举。 |
+| 41 | Complete-lowering acceptance | 按 `materialize→Tile verify→Instr→temporary SPM/DDR→verifier→cost` 展示数量递减；明确temporary offset不写回parent。 | 候选解剖台而非简单漏斗：每道门显示IR形态变化和真实失败原因，baseline独立贯穿。 | `evaluateCompleteCandidate`、selection tests；采用当前case的真实计数时注明case。 |
+| 42 | State-aware schedule cost | 展示DDR/SPM/NoC bytes、compute ops、messages、joins、high-water；每个metric有Known/Unknown/Unsupported/Overflow，比较时不把Unknown当0。 | 并行坐标+状态化metric表；同一candidate的IR节点连到对应cost来源。 | `ScheduleCostAnalysis.cpp`及unit tests；不画单一总分仪表。 |
+| 43 | Bounded rank frontier | 解释general/fixed-slot/worker bands、dominance、stable ordinal和273上限；用一个candidate被同band支配但baseline仍保留的case。 | 多泳道frontier时间轴，候选按band进入/淘汰；不是排行榜。 | `RankCandidateFrontier.h/Test`；上限和band来自代码。 |
+| 44 | Search scalability | 展示rank-invariant generation class、bytecode clone、bounded executor、attempt plan、selective import；放Q41 host case的wall/RSS/attempt counts。 | 搜索执行火焰/资源图：哪些工作复用、哪些并行、哪些延后import；数字贴在阶段旁。 | compiler-search plan、host evidence；wall/RSS不外推为固定性能。 |
 
-### G. Source-expression 与 rank-recipe 优化（45--60）
+### G. 18 个 optimization axes（45--60）
 
-| 页 | 标题 | 可见内容与主视觉 |
-| ---: | --- | --- |
-| 45 | 18 个 optimization axis 分布在四个阶段 | 6 source-expression、6 rank recipe、5 accepted-rank sibling、1 all-rank sibling 的总矩阵。 |
-| 46 | Consumer-local recomputation 用计算换取存储和传输 | shared pure producer clone 到两个 consumers 的 before/after use-def DAG。 |
-| 47 | LICM 只提升 loop-invariant 且可安全推测的 op | loop 前后 IR、dominance、loop-carried value 和 effect gate。 |
-| 48 | Reassociation 改变表达式树，但不能破坏 dtype 语义 | `(a+b)+c→a+(b+c)`，integer modular 与 floating tolerance admission。 |
-| 49 | Reduction tree balancing 缩短依赖链并保留全部 contribution | 左深树与 balanced tree 的 depth、add count 和 rounding policy。 |
-| 50 | 当前 distribution 优化采用 contraction 形式 | `a*b-a*c→a*(b-c)` 的真实 rewrite 与 operation-count 变化。 |
-| 51 | Factorization 将两次 multiply 收敛为一次 | `a*b+a*c→a*(b+c)` DAG 与 BF16 candidate 的 structural result。 |
-| 52 | Algebra rewrite 的 correctness 取决于 dtype 和数值合同 | modular integer、no-wrap、f16/bf16/f32 tolerance 与 special value。 |
-| 53 | Implementation selection 比较同一数学语义的不同 target 实现 | interface-produced candidates、参数、legality、cost 和 baseline。 |
-| 54 | Reciprocal 与 division 形成完整 production A/B case | source、candidate、lowered instruction、ELF/package 结构和 Q41 board-ready 状态。 |
-| 55 | Tile search 根据 capacity 和 pressure 收紧候选 | initial tile、top-pressure dimension、capacity-directed refine 和 working-set bytes。 |
-| 56 | Partial reduction 同时安排 result tile 和 reduction traversal | K-tiled GEMM accumulator、partial result、merge 和 final publication。 |
-| 57 | Scope composition 在 fusion、shared cut 与 conservative boundary 间选择 | 四种 scope policy 对同一 graph 的 DDR/SPM edge 差异。 |
-| 58 | Collective algorithm selection 发生在完整 rank recipe 中 | logical collective 到 Direct、Ring、ordered Tree 的候选分支。 |
-| 59 | Direct、Ring 和 Tree 的差异体现在实际消息 DAG | peer、round、slice、local reduction 和 message count；不做未经测量的性能排名。 |
-| 60 | Direct-mapped boundary transfer 消除不必要的 Tensor staging | identity relation、mapped descriptor、baseline materialize 与 optimized route。 |
+| 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
+|---:|---|---|---|---|
+| 45 | 18 optimization axes | 明确6个source-expression、6个rank-recipe、5个accepted-rank、1个all-rank axis；并列≤16 source、≤12 recipes、SPM 1/2/3、NoC seeds≤8等独立预算。 | 从expression DAG→tile plan→rank timeline→multi-rank dataflow的候选谱系；四段使用不同视觉语法。 | `OptimizationConfig.h`和source map；不是18个顺序pass。 |
+| 46 | Consumer-local recomputation | 展示pure producer被两个consumer共享的before IR，以及只为一个consumer clone后的after IR；标注op count、fanout和可删除transfer。 | before/after use-def DAG，clone节点与consumer同色；external-visible use作为红色反例。 | `CandidateRewrites.cpp/Test`；真实linalg/SSA片段可读。 |
+| 47 | Loop-invariant code motion | `%sum=arith.addi %a,%b`移出loop，依赖iv/iter_arg或有effect的store保持；展示dominance和speculation gate。 | loop代码与dependency overlay；只有合法op沿箭头移出，store留在原位。 | `HoistsOnlySpeculatableLoopInvariantWork`；不能概括成“循环外提所有常量”。 |
+| 48 | Algebraic reassociation | 展示 `(a+b)+c→a+(b+c)` 的真实IR、两棵表达式树和critical path；并列F16/BF16正例与poison-changing integer拒绝。 | expression tree morph，节点和IR行编号对应；数值gate直接贴在边上。 | algebra tests与numeric plan；结论不宣称bit-exact浮点结合律。 |
+| 49 | Reduction tree balancing | `(((a+b)+c)+d)→(a+b)+(c+d)`，给出depth 3→2、add count不变、所有leaf contribution保持；额外use反例不重写。 | 四leaf tree前后对照，路径长度和贡献颜色清楚。 | balancing implementation/tests；不与collective reduction混淆。 |
+| 50 | Distributive contraction | 展示 `a*b-a*c→a*(b-c)`，mul 2→1、sub位置变化和dtype legality；标题/图不能画成反向展开。 | before/after arithmetic DAG，公共因子路径高亮；旁边是真实IR。 | `contractDistributiveExpressions` tests；typed operand必须一致。 |
+| 51 | Common-factor extraction | 展示 `a*b+a*c→a*(b+c)`、op count和use关系；BF16正例及no-wrap integer拒绝。 | arithmetic DAG与局部cost表，同一颜色追踪factor。 | factorization tests；不能只给公式不讲IR use。 |
+| 52 | Numeric legality of algebraic rewrites | 将modular integer、no-wrap/poison、F16/BF16 tolerance、NaN/Inf/signed-zero策略放到具体rewrite旁；用两个accepted和两个rejected case。 | dtype×rewrite decision surface，真实表达式沿不同路径进入accept/reject；不是抽象风险矩阵。 | numeric algebra plan/tests；明确当前实现范围。 |
+| 53 | Target implementation selection | 用reciprocal/divide和oriented GEMM两组case展示interface候选、Instr结构、target symbol与capability；baseline始终保留。 | 两个forked implementation micro-pipelines，每条包含IR→Instr→call，不是标签卡片。 | interface models、candidate tests。 |
+| 54 | Reciprocal/division package A/B | 展示同一source在production/none配置下的IR、runtime call inventory、ELF/package digest差异及CPU expected一致；Q41只标board-ready。 | A/B双轨从source到package，差异点用连线标出；末端没有虚构性能柱状图。 | reserved-baseline E2E、Q41 plan；不声称板端winner。 |
+| 55 | Capacity-directed tile refinement | 从initial tile计算operand/result bytes，选择top-pressure dimension并refine；用一个容量超限→合法tile case展示queue过程。 | 2D/3D tile几何、capacity bar和work queue联动；每轮显示真实bytes。 | `CandidateSelection.cpp/Test`；不是exhaustive autotuning。 |
+| 56 | Partial reduction scheduling | 以K-tiled GEMM展示accumulator、partial result、K traversal和final merge；真实IR标出init/iter_args/reduction dim。 | K轴切片、accumulator lifetime和merge tree组合图。 | candidate tests、GEMM IR；case参数不固定为架构规则。 |
+| 57 | Scope composition alternatives | 同一producer-consumer graph展示root-only、shared-peer、cut-terminal、conservative四种task composition及DDR/SPM edge差异。 | progressive reveal复用同一DAG；每页版本只高亮本页比较结果。 | scope tests；与第36页区别是本页比较优化axis的候选效果。 |
+| 58 | Collective algorithm alternatives | 对AllGather/AllReduce/ReduceScatter列Direct/Ring/Tree/Auto支持矩阵，再放一个4-rank all-reduce的round/peer/message差异。 | 上为精确matrix，下为三种logical message DAG；不画物理route。 | communication alternatives tests、collective lowering tests。 |
+| 59 | Direct-mapped boundary transfer | 使用2×3 Tensor↔Cx case，显示四段6B映射 `(0→0,6→8)` 等，before含staging、after直接RDMA/WDMA。 | logical matrix、Cx slots、四条segment transfer和before/after路径同页。 | mapped DMA focused IR；offset全部来自test。 |
+| 60 | Concurrent working-set multiplicity | 同一recipe产生1/2/3份同时live buffer，计算working-set bytes和capacity；展示multiplicity=3因SPM gate失败的case。 | 三组live-range+capacity ruler；候选hint和最终offset用不同层次表示。 | rank recipe/frontier tests；不能写成固定三缓冲。 |
 
-### H. Tile、Instr、accepted-rank 优化与 memory（61--78）
+### H. TileRegion、Instr、memory 与 accepted-rank siblings（61--78）
 
-| 页 | 标题 | 可见内容与主视觉 |
-| ---: | --- | --- |
-| 61 | Concurrent working-set selection 用更多 SPM 换取更大 pipeline window | semantic recipe 不变、2x/3x multiplicity 改变 tile capacity 和 lifetime。 |
-| 62 | Tensor program 被重写为一次完整 `wafer.tile.region` traversal | conversion 前后 IR、boundary materialization、task inputs/results 和 body emission。 |
-| 63 | TileRegion 同时表达 traversal、compute、movement 和 collective | loops、views、tile load/store、compute、event 和 yield 的内部结构。 |
-| 64 | Physical realization 发生在同一个 candidate clone 中 | memory space/layout、allocation roots、views、physical versions、resident/spill。 |
-| 65 | Strided view 可以直接变成精确 transfer geometry | 真实 subview 与 RDMA descriptor，标出 offset、inner bytes、stride 和 iteration。 |
-| 66 | TileRegion lowering 将抽象 task 变成 `wafer.instr.*` | 真实 RDMA/fill/elementwise/WDMA/NCC join before/after IR。 |
-| 67 | Collective lowering 展开为显式 send、recv、local work 和 wait | ring all-reduce round 的真实 IR 与 16-rank slice flow。 |
-| 68 | Completion normalization 保留必要 join，删除可避免 drain | token DAG、participant mask、latest legal completion 和 minimum joins。 |
-| 69 | Full-buffer transfer elision 删除可证明等价的完整搬运 | range/layout/view/completion 满足时的 before/after movement graph。 |
-| 70 | Full-buffer residency 把 DDR spill/reload 变成共享 SPM SSA handoff | producer→DDR→consumer 与 resident path，标出 lifetime 延长。 |
-| 71 | Ready-order scheduling 根据依赖 DAG 优先发射已就绪 movement | SSA、RAW/WAR/WAW、worker、token DAG 与 movement-first 顺序。 |
-| 72 | Fixed-slot buffering 把串行 loop 改成真实 multi-buffer recurrence | 变换前 loop 与 slot-index/loop-carried state 的结构变化。 |
-| 73 | Prologue、steady state 和 epilogue 分别承担不同工作 | RDMA、compute、WDMA 在 slot0/1/2 的 wavefront timeline。 |
-| 74 | Slot 复用取决于 matching completion，而不是 iteration 结束 | lifetime interval、slot rotation 和 earliest legal reuse。 |
-| 75 | Worker placement 从 dependency component 推导 worker0/1/2 分配 | component→worker lanes→participant join，并标出 normal-production 状态。 |
-| 76 | One-Shot Bufferization 将 function boundary 与 tensor result 变成 typed memref | tensor/memref before/after、DDR Tensor default 和 64B alignment。 |
-| 77 | SPM planner 用 lifetime packing 形成最终 offset | 真实 allocation before/after 与 lifetime strip，展示 offset reuse。 |
-| 78 | Rank finalization 重新 canonicalize、规划 SPM 并使排序所需 metric 进入 Known | canonicalize→bufferize→canonicalize→SPM→canonicalize；whole facts 必须为空。 |
+| 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
+|---:|---|---|---|---|
+| 61 | Structured task → TileRegion | 用matmul/load/store case展示result tile如何决定operand slices、tile loop和logical movement；旁边放Tensor→TileRegion真实IR。 | tensor iteration space折叠为tile任务图，slice关系与SSA同名。 | TensorProgram→TileRegion tests；尚不出现physical offset。 |
+| 62 | Buffer roots 与 physical placement | 展示DPS/tensor use如何成为memref root、alias和function boundary；列64B buffer alignment与后续256B planner alignment的区别。 | tensor SSA→buffer root/alias forest→memory-space typed memrefs；真实before/after IR嵌入。 | bufferization options/tests；不能混淆两类alignment。 |
+| 63 | TileRegion → Instr | 4×8 FP16 case：tile.load/fill/elementwise/store→RDMA/fill/NCC elementwise/WDMA/join，`4×8×2=64B`。 | Tensor task、TileRegion和Instr三段连续机制图；engine lanes和completion清楚。 | `convert-tile-region-to-instr.mlir::load_compute_store` fresh IR。 |
+| 64 | DMA descriptor geometry | 拆解`byte_count`、`inner_bytes`、iterations、strides、src/dst offsets；用连续与二维stride各代入一次。 | descriptor字段环绕地址几何，数值从memref/subview逐步推导。 | movement lowering与descriptor tests；不把envelope当traffic。 |
+| 65 | Strided DMA：12B traffic / 22B envelope | 展示offset10 elements、两段 `[20,26)`/`[36,42)`、row stride16B和compact SPM；IR保留subview layout与descriptor。 | DDR 4×8 matrix→byte ruler→descriptor iterator→compact SPM四panel高密度图。 | strided focused IR、IndexRelation；全部数字一致。 |
+| 66 | Tensor↔Cx segment mapping | 显示RDMA `(0→0,6→8)` 与WDMA `(0→0,8→6)`，每段6B；解释为什么可删除staging。 | Tensor与Cx physical slots并排，四条方向明确的segment；精确offset由PPT叠加。 | mapped DMA test/fresh run。 |
+| 67 | Ring all-reduce message DAG | 用round0真实IR展示accumulator init、DTE recv/send、local add和message identity；peer/bytes/round/slice可读。 | 4-rank logical ring+放大单rank DAG；不画硬件route。 | collective focused IR。 |
+| 68 | NCC / DTE completion domains | 在同一all-reduce IR中连接NCC issue、DTE token、wait和buffer last use；说明ready/fixed/worker改写后为何重建minimum joins。 | NCC/DTE双泳道加buffer lifetime；join和wait使用不同形状/颜色。 | completion tests、ready-order tests。 |
+| 69 | Full-buffer transfer elision | before为producer→copy/transfer→consumer，after consumer直接读root；并列partial/permutation/layout/loop四类拒绝。 | use-def+physical-map双层before/after，拒绝case贴在具体relation。 | redundant transfer tests。 |
+| 70 | Full-buffer residency | 展示producer output→WDMA→DDR→RDMA→consumer与resident handoff对照；external output和completion gap保留spill。 | 两条路径的address/lifetime图；删除的DDR cut灰显。 | FullBufferHandoff tests。 |
+| 71 | Ready-order scheduling | 同一dependency DAG展示baseline与movement-forward/compute-in-DTE-window两个linearization；RAW/WAR/WAW/fence/wait edge固定不可越过。 | DAG上叠两条时间轴，合法移动箭头与hazard边同页。 | ReadyOrder tests；不宣称cycle scheduling。 |
+| 72 | Fixed-slot IR transformation | 真实serial loop before和slot alloc/iter_args/yield after；解释stage DAG、live span→slot count、clone roots。 | source loop、dependency DAG、slot derivation、transformed IR四panel；图中slot与IR同名。 | FixedSlotPipeline code/tests；不是加slot attr。 |
+| 73 | Fixed-slot execution timeline | 用trip=5、slots=3展示iteration0--4在RDMA/compute/WDMA lanes中的轮转，标last reader和next overwrite。 | 高密度wavefront timeline，顶部iteration/slot，底部buffer lifetime与completion。 | fixed-slot production tests；不把stage位置当cycle。 |
+| 74 | Fixed-slot legality | 将dynamic trip、nested loop、unknown alias、placed input、DTE issue无exact wait映射到第72页算法的具体失败点。 | 同一DAG的五个反例，不做横排检查卡；红边指出哪条证明断裂。 | negative tests；失败candidate原子丢弃。 |
+| 75 | Disjoint worker placement | 三个独立fill component映射worker0/1/2，重叠subview保持同component；terminal `ncc_join[0,1,2]`。 | dependency graph分量→三条worker lane→participant join；真实worker attrs嵌入。 | WorkerPlacement tests；不是round-robin。 |
+| 76 | Completion-aware lifetime | branch-exclusive、loop-carried和DTE source三个case并列；展示文本last use与真实completion last use差异。 | CFG×time联合图，buffer root颜色贯穿alias和token。 | LifetimeAnalysis、SPM dataflow tests。 |
+| 77 | SPM lifetime packing | 真实offset `65536/65792/65536`，第三个alloc在matching completion后复用第一个；展示alignment和high-water。 | address×time packing图，interval interference与SPM ruler同步。 | `plan-spm-memory.mlir` fresh output；不是声明顺序累加。 |
+| 78 | Whole-variant DDR planning | 对照candidate评估中的temporary DDR与whole-variant formal DDR；用D/B/C/A packing展示completion-aware部分复用。 | 左为disposable candidate虚线地址，右为one-rank private DDR address×lifetime；中间commit cut。 | DDR planner/tests；不推导bank/channel。 |
 
-### I. Whole-variant、NoC 与 ExecutableBundle（79--89）
+### I. Complete-rank choice 与 NoC-resident dataflow（79--89）
 
-| 页 | 标题 | 可见内容与主视觉 |
-| ---: | --- | --- |
-| 79 | 逐 rank 独立选优无法保证整卡程序可联合执行 | 局部最优但 message/DDR/ABI 不匹配的反例。 |
-| 80 | Rank correspondence 将相同 recipe 组成完整 tuple | stable ordinal、artifact kind、buffering plan、worker plan 的 key。 |
-| 81 | NoC-resident candidate 只在完整 rank tuple 上生成 | source-rank load、peer receive、send/wait、local consumer 和删除的 DDR cut。 |
-| 82 | `4096³` K-sharded GEMM 是 NoC-resident production vertical | M=N=K=4096、16 ranks、local K=256、2MiB inputs/rank、32MiB output、6/6 exact。 |
-| 83 | Intermediate 与 partial-reduction residency 需要 slice-precise provenance | initial partial、ring forwarding、local reduction 和 final publisher。 |
-| 84 | DDR planning 在完整 whole variant 上统一分配和复用 | completion-aware lifetime 与 private DDR range reuse。 |
-| 85 | Direct DTE binding 必须在全 rank 消息匹配后落入 IR | communication/phase/round/slice/source/destination/bytes 的 matching graph。 |
-| 86 | Target scheduling capability 决定 placement/window 是否进入 selection | fixed-slot、worker、DTE-overlap query 与 profile decision。 |
-| 87 | Runtime launch、resource 和 accepted-call closure 是连续 gate | status、workspace、entry、resource slots、terminal budget 和 target-call closure。 |
-| 88 | Pareto 使用完整 cost vector，而不是单一 estimated cycle | DDR、NoC、compute、joins、SPM high-water frontier 与 baseline side rail。 |
-| 89 | Composed choice 将 storage、order、NoC、worker 和 DTE overlap 放入同一次选择 | 全部 late gate 后原子形成 ExecutableBundle；Q40 标为 board-ready。 |
+| 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
+|---:|---|---|---|---|
+| 79 | Complete-rank candidate selection | 构造message id、DDR binding或ABI不匹配的局部winner反例；说明为什么必须按完整rank domain选tuple。 | 16条rank frontier各自选绿点，但peer边在中央断裂；换成次优key后完整闭合。 | WholeVariantCoordinator tests。 |
+| 80 | Rank correspondence keys | 展示stable ordinal、artifact kind、buffering plan、worker plan构成key；只有all-and-only canonical ranks齐全才进入尝试。 | 多rank key matching图，缺rank/duplicate/不一致分别落到具体失败。 | coordinator/frontier code。 |
+| 81 | NoC-resident candidate synthesis | 依次materialize partial、output publication、intermediate、remaining boundary load；任一rank relation失败丢整组。 | seed tuple→all-rank clone→message materialization→SPM/resource gate→atomic append；每步显示IR形态。 | `NoCResidentDataflow.cpp/Tests`。 |
+| 82 | `4096³` K-sharded NoC-resident GEMM | 显示global M/N/K、16 ranks、local K=256、每rank 2MiB+2MiB input、32MiB full output、baseline/winner各3次共6/6 exact。 | 高密度global GEMM→rank partials→logical peer reduction→package/board结果图；保留boundary I/O。 | Q39 plan/board summary；不声称speedup或physical route。 |
+| 83 | Slice-precise residency | 展示source rank load、peer receive-forward、local reduce、final publisher和required output coverage；一个slice overlap反例拒绝整tuple。 | slice map、message DAG和buffer lifetime三层对齐。 | NoCIntermediate/PartialReduction tests。 |
+| 84 | Whole-variant DDR acceptance | 16rank private arenas汇总whole-card资源，展示one-rank D/B/C/A packing和all-rank capacity check的区别。 | rank-private packing小图围绕whole-card resource envelope；不画共享地址池。 | DDR coordinator tests。 |
+| 85 | Direct DTE message binding | 展示communication/phase/round/slice/src/dst/bytes的send/recv matching、receiver-first prepare和exact wait；IR保留typed token。 | 双边message graph+receiver/sender泳道+token lifecycle。 | DirectDTETransport tests、focused lowering。 |
+| 86 | Target scheduling capability | 对同一candidate查询profile capability，展示v1/v2/v3或当前typed支持差异及拒绝原因；不是运行时探卡。 | candidate structure与versioned profile contract的compatibility graph。 | TargetSchedulingCapability code/tests。 |
+| 87 | Launch and resource acceptance | 用真实case展示status/workspace/entry、resource slots、terminal budget、target-call allowlist；每个失败改变什么artifact。 | tuple沿launch→resource→target rail前进，IR/manifest字段贴在对应门。 | launch/resource/target tests；避免审计式勾选。 |
+| 88 | Multi-objective Pareto selection | 用4个survivor的DDR/NoC/compute/joins/SPM向量、reserved baseline和frontier≤16；解释target policy如何选winner。 | 平行坐标+reserved baseline side rail+selected whole tuple。 | cost/coordinator tests；单位和状态可读。 |
+| 89 | ExecutableBundle handoff | 展开16个accepted rank modules、ExecutionConfig、launch、bindings、transport；明确不含rejected candidates、临时offset和private score；Q40保持board-ready。 | Pareto winner收束为ExecutableBundle exploded view并自然连到Target LLVM。 | `Compilation.h`、ExecutableBundle tests、Q40 status。 |
 
-### J. Target LLVM、ELF 与 package（90--101）
+### J. Target LLVM、RISC-V ELF 与 package（90--101）
 
-| 页 | 标题 | 可见内容与主视觉 |
-| ---: | --- | --- |
-| 90 | ExecutableBundle 之后，主线转向可交付 artifact | ExecutableBundle→TargetLLVMModuleBundle→TargetArtifactBundle→PackageBundle 与 model 分支。 |
-| 91 | ABI preparation 将 program resources 排成固定 slot 顺序 | input、parameter、constant、output、workspace、DTE status、profile record 的 slot 表。 |
-| 92 | Instr→LLVM 是一次 full conversion | flatten、resolve DTE、call graph、SCF→CF、strip metadata、memref/token 和 target calls。 |
-| 93 | GEMM instruction 最终变成带完整 geometry 的 runtime call | 真实 `wafer.instr.gemm` 与 `@wafer_tx81_gemm_oriented_v2` 参数连线。 |
-| 94 | Direct DTE lowering 保留 begin、prepare、issue、wait、finish | LLVM call sequence、status address 和 exact wait。 |
-| 95 | Target LLVM module 在离开 MLIR 前完成 ABI 与 metadata readback | RISC-V triple、entry、rank、profile、slot schema 和 LLVM verifier。 |
-| 96 | 同一 TargetLLVMModuleBundle 服务 device link 与 TargetCall/SystemC | ownership DAG；没有第二次 lowering。 |
-| 97 | 多 rank module 根据 launch kind 形成 aggregate entry 或 rank wrapper | rank-scope symbol、pointer table、prepare/main dispatcher 和 rank interface。 |
-| 98 | LLVM IR 经 clang 生成 RISC-V object，同时编译 Wafer CRT | LLVM IR、`-O2` object、c908/lp64d CRT 和 target libraries。 |
-| 99 | Device link 只允许明确的 loader ABI undefined symbol | link inputs、allowlist、gc-sections 和 shared ELF。 |
-| 100 | ELF readback 验证 format、entry、profile 和 digest | ELF64/RISC-V header、exports、module format、digest、rank-interface mapping。 |
-| 101 | Package 将 tensor-program、ELF module 和 manifest 原子发布 | package tree、canonical manifest、fsync/readback/atomic rename 与三类 consumer。 |
+| 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
+|---:|---|---|---|---|
+| 90 | Target artifact pipeline | 展示ExecutableBundle→TargetLLVMModuleBundle→TargetArtifactBundle→PackageBundle；同一lowered module分支服务device link和TargetCall/SystemC，不重复lower。 | 四类bundle的ownership DAG，中心module只出现一次；每条consumer边标实际artifact。 | `TargetArtifact.h`、architecture doc；不能把文件名当对象。 |
+| 91 | Kernel ABI slot layout | 用一个entry展示input/parameter/constant/output/workspace/status的ordinal、role、dtype、layout、shape、bytes、alignment；真实function signature与manifest slot对应。 | function boundary展开成slot conveyor，右侧真实ABI表和pointer order；相同resource颜色贯穿。 | `TargetABIPreparation.cpp`、ABI tests。 |
+| 92 | Instr-to-LLVM conversion | 从address、descriptor、format、worker、token五条线展示Instr字段如何物化为LLVM constants/calls/control flow；conversion后无Wafer op。 | Instr IR、conversion patterns、LLVM dialect三层semantic wiring；不是op名称列表。 | `lower-instr-to-target-llvm.mlir`与conversion code。 |
+| 93 | Oriented GEMM call mapping | before为`wafer.instr.gemm`，after为`@wafer_tx81_gemm_oriented_v2`；连出3个SPM offset、m/k/n、batch、format和orientation。 | 中央runtime call，左侧Instr fields、右侧LLVM constants逐参数连线；真实IR可读。 | oriented GEMM focused test；v1负例自然放在capability处。 |
+| 94 | Direct DTE LLVM lifecycle | 展示receiver-first四泳道：begin、recv prepare、remote address select、send prepare/issue、two waits、finish/status；token use与status slot都可见。 | host/rank0/peer/runtime四泳道时序与LLVM call片段局部对应。 | Direct DTE focused run；不把结构witness说成已测overlap。 |
+| 95 | Target LLVM module readback | 展示RISC-V triple、fixed entry、rank/profile、slot schema、LLVM verifier；一个triple/entry mismatch case被拒。 | LLVM module cutaway：header、function、metadata、slot mapping围绕同一module。 | `TargetLLVMTranslation.cpp`及tests。 |
+| 96 | Target LLVM module consumers | 同一owned all-rank modules分别进入device link、TargetCall decoder/SystemC；显示为什么single-lowering保证一致。 | Y形ownership graph，module digest贯穿两支；模型支路不重新生成IR。 | `TargetCompilationProduct`、model tests。 |
+| 97 | 16-rank aggregate dispatcher | 展示pid switch、rank-major table、prepare/main、16 rank interfaces和aggregate entry；区分logical rank与physical initialization。 | 16个rank body围绕dispatcher，放大switch/table真实LLVM片段；不等同于4×4 sharding。 | `TargetKernelAggregate.cpp` tests。 |
+| 98 | RV64 object emission and final link | 按clang object、Xuantie CRT object、Xuantie linker三条toolchain lane展示triple、march/abi、link flags和输出。 | 工具链剖面图，真实command fragment、object symbols与final ELF对应。 | device-link tests/build code；标题不写“LLVM直接生成ELF”。 |
+| 99 | Loader ABI symbol closure | 以一个合法runtime symbol和一个意外undefined展示allowlist gate；解释217 target-call/CRT surface是closed descriptors而非217条芯片指令。 | symbol graph：MLIR call→object undef→CRT/loader resolution；红色漏出symbol触发失败。 | linker/CRT surface tests。 |
+| 100 | ELF structural validation | 展示ELF64/RISC-V header、dynamic/symbol table、entry export、module digest、rank mapping；一个“文件存在但entry错误”反例。 | ELF anatomy放大图，真实readelf字段与typed readback对象连线。 | `TargetModuleReadback.cpp` tests。 |
+| 101 | Package transaction | 展示ExecutableBundle与TargetArtifactBundle typed join、package tree、canonical manifest、staging/fsync/readback/rename、no-card plan；runtime consumer从manifest绑定slot。 | package transaction图：上为typed join，下为filesystem commit，右为no-card/board launch分叉。 | package/wafer-run tests；no-card明确不执行ELF。 |
 
-### K. 硬件校准（102--115）
+### K. Hardware calibration：microbench如何改变compiler（102--115）
 
-| 页 | 标题 | 可见内容与主视觉 |
-| ---: | --- | --- |
-| 102 | Hardware calibration 的目标是回答 compiler question | assumption→minimal probe→board observation→target profile→pass decision。 |
-| 103 | 提交、队列、engine、DTE、cache 和 host publication 是不同域 | 增强版 hardware behavior map。 |
-| 104 | Queue depth 不是 software-pipeline window | D=6/4、D+1=7/5、30/30 saturation；区分可完成与同时 resident。 |
-| 105 | Cross-engine overlap 在持续 workload 上存在 | repeated FU-union excess，保留 payload、worker 和 repeat。 |
-| 106 | 4KiB case 的收益来自 drain-elision，而不是 engine overlap | FU excess=0 与 plan 降低 490--890 cycles。 |
-| 107 | Strided descriptor 在 DDR 端稀疏、在 SPM 端连续 | 1D/2D/3D descriptor、26/32/44 mismatch 与修正后 39/39。 |
-| 108 | Logical result 与 physical write span 必须分别建模 | Reduce 128B→256B、CT tail 260B→512B。 |
-| 109 | Cache visibility 由 producer/consumer crossing 决定 | 58/58 四方向矩阵与 publication 操作。 |
-| 110 | Worker wait 证明 participant 完成，不自动定义排他范围 | routing、18/18 targeted wait、12/12 subset、14/14 placement/progress。 |
-| 111 | Direct DTE 需要独立 token 和 terminal lifecycle | 16-rank receiver-first 四泳道正例。 |
-| 112 | DTE 协议错误可能污染 execution context | modes 7/8/9/12 可恢复，mode13 timeout；pre-submit rejection。 |
-| 113 | Relative DDR offset 不能解释为 bank、controller 或 hop | 2688 exact、40GiB sparse windows 和 allocation/tile 反转。 |
-| 114 | 字段可编码不代表数学语义成立 | NE ReLU option 仍有 3828 个负值；ArgMin 正域正确、负域错误。 |
-| 115 | Hardware findings 最终改变这些 compiler decisions | fixed-slot、ready-order、ranges、cache publication、worker joins、DTE、capability、verifier。 |
+| 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
+|---:|---|---|---|---|
+| 102 | Calibration-to-compiler workflow | 用queue、strided、DTE三个例子展示assumption→minimal probe→observation→profile-scoped decision→IR/pass change；不从microbench直接写架构规则。 | 三条真实case并行的闭环图，probe、数据和compiler consumer逐项对应。 | calibration/behavior docs；不是抽象方法论页。 |
+| 103 | Completion and visibility domains | 画一个transfer/compute/result生命周期，标submit return、NCC join、DTE wait/finish、cache publication、entry return和host readback；说明不能互相替代。 | 多层时序/visibility map，buffer状态沿时间推进；不画芯片内部。 | current behavior doc、completion code。 |
+| 104 | Queue submission bounds | 展示RDMA D=6/D+1=7、CT D=4/D+1=5、30/30 saturation matrix；同时画缺失的instant occupancy/full signal为何使resident window未知。 | microbench issue/completion timeline与结果矩阵；已观测和未知用不同视觉。 | engine pipeline catalog；不能写D+1同时resident。 |
+| 105 | Cross-engine overlap samples | 使用16KiB/64KiB matched serial/window FU-union样本，保留engine/worker/repeat；64KiB `[7740,7471,6981]` 等精确点由图表呈现。 | Image2负责两组workload与engine lane构图，真实散点/区间/中位数由PPT叠加；横向只在同组比较。 | behavior doc/overlap data；不跨payload排名。 |
+| 106 | 4KiB drain-elision | 同页对照FU excess=0和plan减少490--890 cycles；用timeline显示serial每步drain、window只延后一次drain。 | 两条matched timeline，上方engine active不重叠，下方completion/drain次数不同；数字贴在差异处。 | calibration doc；避免把总周期下降误写为并发。 |
+| 107 | Strided descriptor address geometry | 1D/2D/3D descriptor、12B traffic/22B envelope/12B footprint、旧26/32/44 mismatch与修正后39/39；debug链从cache假设转到result-checker layout。 | 地址几何、wrong expected、debug causal chain、39-case matrix四panel；精确数字可读。 | current behavior + descriptor tests；图不归因cache。 |
+| 108 | Physical write span | Reduce 128B logical→256B physical write、CT tail 260B→512B；展示相邻guard若只按logical分配会被覆盖。 | logical tensor、physical write footprint、guard buffer的byte ruler；两种opcode case并列。 | instruction-family calibration；不能概括成固定256B。 |
+| 109 | Cache publication crossings | 四种crossing：host H2D→Kcore、Kcore→NCC RDMA、NCC WDMA→Kcore、NCC WDMA→host；58/58与对应clean/invalidate/fence/readback。 | producer/consumer domain graph，publication动作放在crossing边上；pure NCC链作为无操作对照。 | cache behavior doc；不写全局coherent属性。 |
+| 110 | Worker participant completion | 展示same-worker 24 cases/72 samples、targeted wait18/18、proper-subset12/12和placement/progress14/14；mask外worker自然排空使exclusion未知。 | 三worker lane、participant mask与观察点；included完成和outside状态分开。 | worker catalog；不能删除未证明dependency。 |
+| 111 | Direct DTE terminal lifecycle | 16-rank receiver-first正例中展示recv prepare、send prepare/issue、exact wait、finish、status和cleanup；IR/LLVM call与probe timeline对齐。 | rank/peer/runtime四泳道，message/token/status贯穿；真实case数字贴在端点。 | DTE behavior + lowering test。 |
+| 112 | DTE timeout quarantine | modes1--6成功、7/8/9/12返回预期错误、mode13 timeout/poison；用state machine说明为何首个timeout后停止批次，不自动retry/reset。 | 协议状态机+case矩阵+quarantine path；不做安全告警风格。 | DTE evidence tests/behavior doc。 |
+| 113 | DDR offset coverage | 显示16 ranks×14 offsets×2 allocations=2688 exact，40GiB sparse windows；actual base与relative offset/guard对应，同时列bank/controller/hop未观测。 | base×offset散点/窗口图与guarded transfer示意；未知微架构区域留空而非虚构。 | DDR probe contracts。 |
+| 114 | Numerical qualification of encoded options | NE ReLU 8192 outputs中3828 negatives且与bare一致；ArgMin正域通过、负域失败；将wrapper option、packet completion与numeric support分开。 | encodable→executed→semantic result的三层图，两个具体反例用真实输出统计。 | instruction calibration/behavior doc。 |
+| 115 | Compiler impact of hardware findings | 把前述finding逐项连回fixed-slot window、descriptor/range planner、cache publication、worker joins、DTE pre-submit、target profile；每条用实际IR/pass对象而非抽象owner。 | compiler pipeline回写图：hardware findings从下方连接到具体IR/gate，颜色保持前页语义。 | behavior doc和consumer code；作为硬件章节收束并引向协作方法。 |
 
-### L. 共同开发方法（116--125）
+### L. 共同开发：用真实case解释方法（116--125）
 
-| 页 | 标题 | 可见内容与主视觉 |
-| ---: | --- | --- |
-| 116 | 项目在多轮 vertical closure 中收敛 | frontend、SPMD、physical dataflow、target/package、hardware、optimizations 时间线。 |
-| 117 | 每项工作先确定 pipeline contract，再讨论实现 | 一个实际任务的 upstream/stage/output/consumer 图。 |
-| 118 | 任务按 IR 和 artifact boundary 拆分 | task queue、design contract、analysis/transformation/artifact transaction 与 tests 的映射。 |
-| 119 | 设计、代码、测试和文档必须保持同一语义 | Direct DTE 或 SPM 的 IR→verifier→lowering→test→doc traceability。 |
-| 120 | Case 贯穿 pipeline，但不能反向定义架构 | 特殊 GEMM 路径与通用 IndexRelation/collective/independent candidate IR 的对照。 |
-| 121 | 人负责架构判断和硬件语义，AI 负责展开、实现和一致性检查 | 问题定义、代码定位、方案、实现、验证、复盘的真实协作流。 |
-| 122 | 长周期开发需要维护统一上下文 | progress、设计文档、docs、memory、代码和 tests 的事实优先级。 |
-| 123 | Host、no-card、target model 和 board 回答不同问题 | 分层验证图。 |
-| 124 | 最有效的协作发生在假设被具体 case 推翻时 | strided descriptor 与 queue depth 的 assumption→observation→correction→compiler change。 |
-| 125 | 共同开发的结果也是一套可持续演进的方法 | IR boundary、independent candidate IR、legality/memory/completion/ABI gates、atomic artifact、profile-scoped behavior、board-ready workflow。 |
+| 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
+|---:|---|---|---|---|
+| 116 | Vertical closure timeline | 用frontend/SPMD、physical dataflow、target/package、hardware、optimizer五轮实际artifact和测试节点构成时间线；每轮显示新增的稳定边界。 | artifact随时间生长的timeline，不用里程碑圆点；每轮放真实IR/package缩略。 | progress/design docs；不写个人功劳叙事。 |
+| 117 | Pipeline contract case: Direct DTE | 选Direct DTE任务，展示upstream Instr、current binding、Target LLVM output、runtime consumer、non-goal和completion gate如何决定代码拆分。 | 一条具体Direct DTE contract flow，真实IR/call/test贯穿；字段自然分布，不呈现模板清单。 | Direct DTE design/code/tests。 |
+| 118 | IR/artifact task decomposition | 用SPM planner或NoC dataflow展示analysis、transformation、artifact transaction和test分别承担什么；错误的side table方案作为被否定路径。 | 同一buffer事实在IR/analysis/planner/artifact中的生命周期；shadow side-table红色分叉。 | architecture rules和具体实现。 |
+| 119 | DTE lifecycle traceability | 从`wafer.instr.dte_*`、verifier、LLVM calls、transport test、behavior doc建立可追踪链；展示一次字段修改需要同步哪些层。 | IR→verifier→lowering→test→doc的具体trace，节点内有真实片段。 | Direct DTE source map。 |
+| 120 | Case-driven IR generalization | 将4096³ GEMM的具体K=256/16-rank与通用IndexRelation、collective op、rank correspondence合同分层；另一个shape沿同一接口通过。 | case参数作为外层实例，内部是通用IR/interface；用第二case证明不是专用matcher。 | NoC/GEMM code/tests。 |
+| 121 | Human–AI collaboration: strided debugging | 用strided mismatch真实过程：人提出布局语义和硬件问题，AI定位checker/IR/test、生成候选解释，双方用fresh 39/39收敛；不画抽象人机循环。 | observed26/32/44→hypotheses→code diff/IR→39/39的工作流；每一步标实际产物。 | strided debug records/memory。 |
+| 122 | Long-horizon context management | 以一个设计冲突展示progress、编号设计、docs、memory、code/tests的优先关系及如何更新；旧结论被current code/test替换。 | 同一事实沿五类载体流动的versioned thread；冲突点用实际例子。 | AGENTS、tasks、memory。 |
+| 123 | Four-layer validation stack | 用同一Direct DTE/reciprocal case从IR verifier、package/no-card、TargetCall/SystemC到board correctness/performance；标每层能签发的结论。 | 一个artifact穿过四层验证，输出分别是structure/numeric/package/hardware结果；不是勾选表。 | verification contract、Q40/Q41。 |
+| 124 | Assumption correction cases | 并列strided“cache假设→checker布局”和queue“depth→resident window未知”，展示observation怎样改变compiler contract。 | 两条debug causal chain，错误假设被数据替换，末端连接到range/planner决策。 | calibration/bugs/memory。 |
+| 125 | Vertical closure workflow | 以source→IR→candidate→target→package→test的最小闭环总结；用fixed-slot展示每个环节的实际产物和下一轮扩展点。 | fixed-slot vertical closure环形但内部是具体artifact/IR/test，不用抽象能力词。 | Q38 plan与repo workflow。 |
 
 ### M. 经验、限制与下一步（126--133）
 
-| 页 | 标题 | 可见内容与主视觉 |
-| ---: | --- | --- |
-| 126 | 跨阶段需要保留的事实必须进入显式 IR | DTE token、physical layout、SPM/DDR offset 与 side table 对照。 |
-| 127 | Analysis 应可重算，选择结果必须 materialize | IndexRelation/lifetime/cost 与 selected implementation/layout。 |
-| 128 | 优化只有在完整 lowering 后才有意义 | source 看似更优、但被 SPM/DDR/ABI gate 淘汰的 candidate。 |
-| 129 | 不同验证层不能相互代替 | no-card、SystemC、board correctness、PMU/timing 四层。 |
-| 130 | Unknown 和 Excluded 也是工程结论 | queue resident、DDR bank、ArgMin、NE option、DTE timing。 |
-| 131 | 当前完成面与剩余工作必须分开 | Q32/Q32.N/Q38/Q39 done；Q40/Q41 board-ready；worker promotion 等后续。 |
-| 132 | 下一阶段围绕 production qualification 和 cost calibration 展开 | composed choice board、search scalability、worker promotion、hardware rate replacement。 |
-| 133 | 从模型语义到硬件行为，编译器已有一条可验证主线 | 收束页，重新点亮完整 pipeline。 |
+| 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
+|---:|---|---|---|---|
+| 126 | Explicit cross-stage IR | 以DTE token、physical layout、SPM/DDR offset、worker attr为正例，对比side table/name matching在clone/lowering后失效。 | IR use-def主线与shadow metadata断裂对照；真实IR片段。 | architecture rules和实现。 |
+| 127 | Recomputable analysis and materialized choice | 用IndexRelation/lifetime/cost从current IR重算，selected implementation/layout写回；展示clone改变后旧analysis失效。 | candidate clone前后analysis cache失效与fresh recompute图。 | analysis/selection code。 |
+| 128 | Complete-lowering optimization gate | 一个source看似更少op的candidate因SPM/DDR/ABI失败，另一个结构稍复杂却可package；展示真实IR/cost/gate。 | 双candidate路径，局部优劣与最终acceptance反转。 | candidate tests、Q41 case。 |
+| 129 | Qualification scope separation | 同一package在no-card、SystemC、board exact、PMU/timing中得到不同结论；用DTE overlap说明structure witness≠speedup。 | artifact沿验证层推进，结论逐层扩展；明确缺失层。 | verification contract。 |
+| 130 | Target capability states | queue resident unknown、DDR bank unknown、ArgMin negative excluded、DTE mode13 quarantined等放到compiler decision旁。 | capability surface而非风险矩阵；每个状态连接具体accept/reject/fallback。 | behavior doc。 |
+| 131 | Current completion surface | Q32/Q38/Q39完成，Q40/Q41 board-ready，worker promotion等later；每项用已形成artifact和仍缺case表示。 | pipeline status map，已完成段实体化、待板端段保持虚线；不做项目管理看板。 | `tasks/progress.md`。 |
+| 132 | Next-stage qualification | composed choice板测、search scalability板测、worker promotion、matched rate replacement分别连接当前compiler对象和所需实验。 | current frontier向四条后续technical question分叉，每条标明确输入/输出artifact。 | Q40/Q41/later tasks。 |
+| 133 | End-to-end compiler path | 收束时重新走一遍PyTorch→SPMD→structured→candidate→Instr→LLVM→ELF/package→board，将三条case的最终结论放回对应stage。 | 第5页路线图的完成版progressive reveal；每层出现本次已讲过的真实对象，不加新口号。 | 全部source maps；作为问答背景页仍保持可读。 |
 
-## 附录 storyboard（A1--A18）
+## 8. 附录逐页制作档案（A1--A18）
 
-1. 全部公开 Wafer pass 注册表；
-2. production 与 debug/focused pipeline 对照；
-3. StableHLO normalization 完整 pass sequence；
-4. 各 IR stage 的合法 dialect/op 集；
-5. 18 个 optimization axis 配置与状态；
-6. source variant 上界；
-7. rank frontier 上界；
-8. whole-variant attempt plan；
-9. schedule-cost metric schema；
-10. SPM packing 算法；
-11. DDR completion-aware lifetime；
-12. collective algorithm 支持矩阵；
-13. Target ABI slot schema；
-14. package manifest schema；
-15. hardware supported/board-observed/unknown/excluded 矩阵；
-16. full-card barrier、DTE source-gather 等补充 finding；
-17. test/qualification 状态矩阵；
-18. 术语表和源码索引。
+附录不是低密度备份。每页仍有专用信息图、真实表或 IR，并服务专家问答。
 
-## 实施步骤与 checkpoint
+| 页 | 标题与用途 | 高密度内容和主图 | 取材与验收 |
+|---:|---|---|---|
+| A1 | Pass registry and production mapping | 全部registered pass按IR层分组，旁边画production call site、debug-only和test-only关系；精确表格由PPT对象承担。 | Passes.td、Pipelines.cpp；不把registry当production顺序。 |
+| A2 | Production/focused/debug pipelines | 展开每条named pipeline的真实pass sequence、输入/输出IR和用户入口；Image2提供多轨流程结构。 | pipeline builders/tests。 |
+| A3 | StableHLO normalization IR sequence | 同一case在normalize/legalize/canonicalize各轮的完整关键IR和变化标记。 | fresh host dumps。 |
+| A4 | IR layer legality | representation ladder+精确dialect table+stage verifier；每层标下游直接读取的interface。 | CompilationStages/verifiers。 |
+| A5 | Optimization axis configuration | 18轴全表、production/none/enable/disable语义与四层候选谱系图。 | OptimizationConfig tests。 |
+| A6 | Source variant bound | baseline/singleton/pair/all joint的具体枚举树与≤16证明。 | source variant code/tests。 |
+| A7 | Rank frontier bounds | general/fixed/worker bands、273上限、dominance例子和reserved baseline。 | frontier code/tests。 |
+| A8 | Whole-variant attempt plan | correspondence keys、attempt ordering、NoC seed fairness、selective import和complete tuple数量。 | coordinator code/tests。 |
+| A9 | Schedule-cost metric schema | 全部metric、单位、Known/Unknown/Unsupported/Overflow、dominance规则和一个candidate实例。 | cost analysis/tests。 |
+| A10 | SPM packing算法细节 | CFG lifetime、interference、alignment、first-fit/placement、loop/backedge与实际offset case。 | PlanSPM/Lifetime tests。 |
+| A11 | DDR completion-aware lifetime | D/B/C/A packing、DTE issue-to-wait lifetime、private arena和whole-card capacity。 | PlanDDR tests。 |
+| A12 | Collective算法与message schema | collective×algorithm支持矩阵、communication/phase/round/slice/peer/bytes字段和round示例。 | communication tests。 |
+| A13 | Target ABI slots | role/ordinal/resource index/dtype/layout/shape/bytes/alignment全表，连到LLVM signature和manifest。 | ABI preparation/tests。 |
+| A14 | Package manifest and runtime binding | canonical manifest字段、ELF/resource digest、entry/slots、no-card plan和runtime consumer关系。 | package schema/tests。 |
+| A15 | Hardware capability matrix | supported/board-observed/unknown/excluded按opcode/behavior列出，并给每类一个compiler decision。 | behavior/calibration docs。 |
+| A16 | Additional hardware findings | full-card barrier、DTE source gather、cache/worker补充case与当前结论；使用数据图而非bullet。 | probe catalogs。 |
+| A17 | Qualification matrix | host/lit/no-card/model/board按case组织，显示执行范围、dtype和当前状态；Q40/Q41不升级。 | progress/verification docs。 |
+| A18 | Glossary and source index | IR/artifact/analysis/pass/target术语图谱，页码和source map交叉索引；作为问答导航。 | 全部source maps。 |
 
-### 1. Source map 与 pass inventory
+## 9. 实施顺序
 
-- 逐层建立 production stage、pass、analysis、rewrite、gate、artifact 和 test 的单一 source map。
-- 每个条目记录当前实现入口与责任、input/output representation、是否 production、是否有真实 before/after、
-  可运行的 focused command、页面和状态。
-- 先覆盖所有 133 页，再开始批量生成图，避免后期发现主线缺项。
+### 9.1 逐页取材
 
-### 2. 文案、IR 与数据
+- 按章节从前到后制作最终页面，不再先生成整套空骨架。
+- 每页创建 page dossier，完成代码/测试阅读和必要 focused run；主 agent 审核技术结论后才进入绘图。
+- 多 agent 只并行处理独立页面的代码取材、figure specification和技术复核；不能让一个 agent 批量生成
+  整章文案或用同一 prompt 改标题。
 
-- 每页先写标题、3--6 句可见说明和 notes，再选择图。
-- 从现有 FileCheck/unit/integration 提取 IR；需要时运行 focused host pipeline 产生 fresh dump。
-- 真实板端数字只使用当前硬件行为文档和 current status，不回放历史 raw。
-- 所有数字保留 dtype、shape、rank、payload、比较对象和单位。
+### 9.2 逐页绘图与装配
 
-### 3. Figure specification 与 Image2
+- 每个 page dossier转成一份独立Image2 prompt；正式图保存为带页码和语义名的资产。
+- Image2输出先做技术检查，再与真实IR、数据、公式和说明共同排版。页面使用独立坐标和构图，
+  不再调用通用 `figure-left/figure-right/cards/table` 内容生成器。
+- 脚本只允许承担：统一16:9 master、字体/颜色token、图片插入、Notes关系、source footer、PDF/PNG导出和
+  结构检查。标题、正文、图形选择、IR截取和布局由每页显式定义。
 
-- 将图分为 frontend/SPMD、candidate/optimization、Tile/Instr/target、hardware 四组并行制作。
-- 每张 figure specification 先由内容 reviewer 核对，再正式生成一次。
-- 复杂图保留可编辑文字层，生成图不承担小字号技术文本的准确性。
+### 9.3 单页与章节验收
 
-### 4. PPT 组装与 Notes
+- 单页：使用第6节八项门槛；在100%预览和投影缩放下检查。
+- 章节：检查因果链、术语一致、progressive reveal和case参数；删除重复页，补齐断裂的推导。
+- 全局：建立 pass/analysis/18 axes/artifact/hardware finding→page coverage matrix；反向检查每页都有
+  source、专用图、真实锚点和可见结论。
 
-- 使用统一 16:9 master、字体、语义色和页脚 source。
-- 不复用旧六页 sample 的页面布局；可复用已证明正确且质量足够的单个技术图。
-- 每页嵌入 Notes，并在 notes 中说明正常讲法、可快速略过的部分和下一页过渡。
+### 9.4 最终验证
 
-### 5. 验证
+- 技术：逐页对照source map；复核pass顺序、IR、shape/dtype/rank/bytes、case状态和不可外推内容。
+- 图形：检查正式图片数量、PPT实际嵌入关系、技术对象与prompt一致性；旧图和未使用图不得计数。
+- 文件：检查PPTX slide/notes/media关系、PDF页数、PNG数量和分辨率、contact sheet、图片链接和source footer。
+- 视觉：100% contact sheet检查；IR、表格、算法图和hardware数据页逐张原尺寸检查。
+- 运行：复用已经完成的11/11 focused host/lit作为当前取材基线；新增或改变的IR取材命令重新fresh运行。
+  不运行板端case，不回放历史raw。
 
-- 内容：逐页对照 source map；核对 pass 顺序、IR、数字、状态和 case/合同区分。
-- 结构：检查 PPTX slide/notes/media 关系、PDF 页数、全部预览和来源链接。
-- 视觉：100% 页面和 contact sheet 两级检查；不允许裁切、遮挡、图中错误、低分辨率和不可读小字。
-- 运行：对 presentation 取材新增的 focused command 做 fresh host 记录；材料生成脚本和文件自检必须通过。
-- 范围：不运行板端 case；不以历史板端 raw 为输入。
+## 10. 完成与提交
 
-### 6. 文档与仓库收尾
+只有全套新页面逐页通过内容与视觉门槛、旧批量版本退出交付、PPT Notes实际嵌入、所有输出成功渲染，
+Q43才可以重新标记`done`。收尾时同步：
 
-- 更新 `docs/tx81-current-profile-hardware-behavior.md`，以代表 findings、最小 case、compiler impact 和图重排，
-  不建立第二份硬件总文档。
-- 更新 Q43 状态和 presentation source map。
-- 判断本轮是否产生稳定 presentation/取材经验；有则写入 `memory/general_dev.md`，没有则不强行沉淀。
-- 生成 PPTX/PDF/preview，运行结构与视觉自检，提交相关改动。
+- `tasks/progress.md`；
+- 本计划和逐页source map/page dossier；
+- `docs/tx81-current-profile-hardware-behavior.md`中与最终页面引用相关的图；
+- `memory/general_dev.md`中稳定的presentation制作经验；
+- PPTX、PDF、逐页PNG和contact sheet。
+
+提交继续使用 `Codex <codex@openai.com>`，并附
+`Co-authored-by: hehesnail <shashen008he@gmail.com>`。
