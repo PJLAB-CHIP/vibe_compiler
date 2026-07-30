@@ -1,8 +1,8 @@
 # Vibe Compiler 高密度技术汇报重做计划
 
 本任务重做面向compiler、runtime和hardware工程师的Vibe Compiler技术汇报。旧版演示材料不作为当前
-交付；当前先制作覆盖三个代表主题的五页样稿，用来收敛信息密度、图的专业程度以及IR、数据和结论的
-组合方式。页数服从完整语义panel和可读性，不为固定页数裁切图。五页通过人工评审后，才扩展完整汇报
+交付；当前先制作覆盖三个代表主题的六页样稿，用来收敛信息密度、图的专业程度以及IR、数据和结论的
+组合方式。页数服从完整语义panel和可读性，不为固定页数裁切图。六页通过人工评审后，才扩展完整汇报
 和读者向硬件行为文档。
 
 ## Pipeline Contract
@@ -13,15 +13,15 @@ Pipeline position:
   当前编号设计文档、production source-to-package pipeline、final Instr、typed package/runtime合同、
   Q37当前profile硬件校准结论、Q38 fixed-slot software pipeline完成证据及当前实现和测试中的真实IR。
 - Current stage responsibility:
-  将已有架构、IR、artifact和板端findings整理成五页高密度技术样稿；用真实case解释pipeline责任、
-  descriptor两端footprint和fixed-slot多引擎执行关系。production pipeline和fixed-slot分别拆成两页，
+  将已有架构、IR、artifact和板端findings整理成六页高密度技术样稿；用真实case解释pipeline责任、
+  descriptor两端footprint和fixed-slot多引擎执行关系。三个代表主题分别拆成两页，
   保证每个语义panel完整呈现。生成式图像只负责技术构图，精确IR、字段、数字、证据等级和结论由
   可编辑PPT对象叠加。
 - Output artifact / IR:
-  五页可编辑PPTX、五页PDF、逐页PNG和contact sheet、PPT备注、figure specification、生成prompt和
+  六页可编辑PPTX、六页PDF、逐页PNG和contact sheet、PPT备注、figure specification、生成prompt和
   资料来源表；不产生或修改program IR、target artifact、package schema或runtime状态。
 - Downstream consumer:
-  汇报材料评审者；五页通过后作为完整技术汇报的版式、密度和图形系统基线。
+  汇报材料评审者；六页通过后作为完整技术汇报的版式、密度和图形系统基线。
 - User-level driver / named pipeline:
   人工打开PPTX/PDF进行评审；production source-to-bundle named pipeline保持不变。
 - Explicit non-goals:
@@ -29,12 +29,12 @@ Pipeline position:
   不读取或回放历史板端raw输出，不重新执行板端case，不声明未被当前owner支持的硬件结构、cycle、
   bank、route或性能收益，不修改compiler/runtime/test合同。
 - Completion gate:
-  五页PPTX可编辑且可渲染，PDF确认为5页，逐页PNG无裁切、溢出或不可读小字；每页至少包含一个
+  六页PPTX可编辑且可渲染，PDF确认为6页，逐页PNG无裁切、溢出或不可读小字；每页至少包含一个
   结论式标题、一个多panel主技术图、一段真实IR或实验数据、三项以上对象级标注、明确的compiler影响
   和资料/证据边界。技术数字和IR可追溯，生成图不承担技术证明；交付用户进行视觉与密度评审。
 ```
 
-## 五页样稿（三个代表主题）
+## 六页样稿（三个代表主题）
 
 ### 1. Production artifact flow
 
@@ -50,22 +50,26 @@ Pipeline position:
 - 嵌入真实IR截取，展示resident SPM的SSA交接。
 - 完整展示parser、all-rank、model、package readback、no-card和board的单调证据链。
 
-### 3. Strided descriptor
+### 3. Strided descriptor address geometry
 
 - 展示DDR endpoint的strided/scatter envelope、SPM endpoint的compact footprint、descriptor字段、
   transfer range、guard和dependency range。
+- 用真实Instr IR算出`[20,26) ∪ [36,42)` DDR reads、22B envelope和12B compact SPM footprint。
+
+### 4. Strided oracle failure / corrected contract
+
 - 展示旧oracle如何按DDR offset错误读取SPM，以及三个standalone case的26/32/44 mismatch。
 - 展示修正后3个standalone与36个dependency case由fresh输出39/39通过。
 - 明确compiler影响：lowering分别构造DDR strided range和SPM compact range，dependency analysis与
   allocation/guard使用各自真实physical span；不外推cache、bank、controller或未测stride。
 
-### 4. Fixed-slot candidate / stage overlap
+### 5. Fixed-slot candidate / stage overlap
 
 - 展示RDMA load、CT/NE compute、WDMA store在prologue/steady/epilogue中的重叠关系。
 - 展示三slot轮换和代表性candidate IR，说明slot root来自live span推导。
 - 明确stage-order时间线不是cycle-accurate测量。
 
-### 5. Fixed-slot legality / verification
+### 6. Fixed-slot legality / verification
 
 - 完整展示issue-time exact range、producer/consumer completion和reuse cut。
 - 展示same-worker hazard、illegal early reuse、legal last-consumer cut和capacity fallback。
@@ -90,20 +94,20 @@ Pipeline position:
 
 - 结构：检查PPTX slide/notes/media关系、PDF页数、预览文件和来源链接。
 - 内容：核对26/32/44、39/39、artifact顺序、IR语法和fixed-slot证据边界到当前owner。
-- 视觉：渲染五页和contact sheet，检查完整panel边界、裁切、溢出、字号、对比度、图像分辨率、
+- 视觉：渲染六页和contact sheet，检查完整panel边界、裁切、溢出、字号、对比度、图像分辨率、
   对齐和页面密度。
 - 仓库：只运行材料生成和文件自检，不运行compiler构建、no-card或板端case。
 
 ## 当前样稿交付
 
-- `vibe-compiler-technical-samples.pptx`和同名PDF均为5页；PPT内含5份逐页备注，备注按看图顺序、
+- `vibe-compiler-technical-samples.pptx`和同名PDF均为6页；PPT内含6份逐页备注，备注按看图顺序、
   case、结论、证据边界和转场组织。
-- 五页逐页PNG与contact sheet已经按160 DPI渲染并人工检查；production pipeline和fixed-slot各拆成
-  两页，完整panel、标题、IR、时间线、数字、证据边界和source不再通过跨panel裁剪压缩。
+- 六页逐页PNG与contact sheet已经按160 DPI渲染并人工检查；三个代表主题各拆成两页，完整panel、
+  标题、IR、地址推导、case matrix、时间线、数字、证据边界和source不再通过跨panel裁剪压缩。
 - 三张Image2 master figure及完整figure specification/prompt已进入`assets/master-figures/`和
   `figure-specifications.md`；精确标签仍由可编辑PPT对象拥有。
-- fresh结构自检确认PPTX压缩关系完整、PDF为5页；每页均含直接写入PPT Notes区的演讲备注。
-- 旧37页PPT/PDF、旧版preview和装饰性generated/charts资产已删除；Q43保持`doing`，等待五页样稿
+- fresh结构自检确认PPTX压缩关系完整、PDF为6页；每页均含直接写入PPT Notes区的演讲备注。
+- 旧37页PPT/PDF、旧版preview和装饰性generated/charts资产已删除；Q43保持`doing`，等待六页样稿
   的人工视觉与密度评审后再扩展完整汇报。
 - 本轮只制作材料，没有运行compiler、no-card或板端case；没有产生新的稳定compiler开发经验，
   因此无需修改`memory/`。
