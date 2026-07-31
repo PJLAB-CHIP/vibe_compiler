@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-30
+更新时间：2026-07-31
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -23,7 +23,7 @@ pipeline contract、实验结论、测试数字、失败修复过程和历史复
 Q32 + Q6.B -> Q9 profiler foundation                         [done]
 Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [done]
 Q38 -> Q39 NoC-resident tile dataflow                        [done]
-Q43 Vibe Compiler collaboration review materials             [doing]
+Q43 Vibe Compiler collaboration review materials             [done]
 Q42 test gate scope reduction                                [done]
 Q42 + Q32.C -> Q41 compiler search scalability               [board-ready]
 Q42 + Q39 -> Q40 composed search and DTE overlap             [board-ready]
@@ -34,7 +34,7 @@ Q42 + Q39 -> Q40 composed search and DTE overlap             [board-ready]
 | Q9 | `production-artifact-profiler` | `done` | Q32、Q6.B、configured board | 未插桩Primary TX stream launch-to-completion设备包络、分离的host diagnostics、Trace来源的五类NCC per-tile engine active ns/work-volume摘要、独立Direct-DTE cycles/raw activity、Count/Trace、逐次保留真实动态调用与rdcycle的16-tile timeline、exclusive语义成本与非加和Trace-only成本、final Instr静态work与硬件峰值下界对照、exact output、三文件专业UI和profile全树`0777`均闭合；不构造card-wide纯engine elapsed，静态cost不回灌ranking。Ranking feedback保留为后续独立门禁。 | 06、14-16；`tasks/archive/board-profiler.md` |
 | Q38 | `multi-engine-software-pipelining` | `done` | Q32、Q6.B、Q37 | complete-rank actual clone、真实fixed-slot multi-buffer、prologue/steady/epilogue、waitfinish normal form、V3 typed worker与Direct-DTE prepare/issue/exact wait-release、issue-time exact range hazard、package/no-card、TargetCall/SystemC、profiler和digest-bound qualification companion均闭合；worker0 rotating SPM FP16/BF16 RDMA+CT+WDMA普通production winner已经fresh板端exact correctness与matched资格。NoC-resident dataflow归Q39；全局choice组合与更广Direct-DTE/compute overlap归Q40。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
 | Q39 | `noc-resident-tile-dataflow` | `done` | Q38非板端Direct-DTE/fixed-slot合同闭合；Q38板端资格作为独立external gate | complete-rank NoC-resident candidate、静态profitability、package/no-card闭合；K-sharded `4096³`同源baseline/winner板端6/6 exact，winner profile保持16-rank exact并生成有效报告。高wait与未闭合overlap转交Q40，编译搜索耗时转交Q41。 | 02-13、16-17；`tasks/plans/noc-resident-tile-dataflow.md` |
-| Q43 | `compiler-collaboration-review-materials` | `doing` | Q9、Q37-Q39完成证据 | 旧151页批量生成版本及旧六张Image2图未达到专家技术汇报要求，已退出完成面且禁止复用。按逐页制作合同重做：封面、正文、过渡页、总结页和附录每页都先完成技术问题、因果结论、代码/测试取材、真实IR或case以及本页独立生成的GPT Image2高密度主图，再单页组装与验收；禁止用脚本SVG、程序绘图、PPT形状或模板框图替代主图，不得用统一模板、Notes或审计式清单替代页面内容。完整覆盖PyTorch/XLA到LLVM IR、RISC-V ELF/package、全部production analysis/pass/18个优化轴、硬件校准及共同开发经验；不重跑板端case，Q40/Q41仍保持`board-ready`。 | 01、06、16；`tasks/plans/vibe-compiler-collaboration-review.md` |
+| Q43 | `compiler-collaboration-review-materials` | `done` | Q9、Q37-Q39完成证据 | 151页专家技术汇报已逐页闭合：PyTorch/XLA到StableHLO/SPMD、structured IR、production analysis/pass与18个优化轴、Tile/Instr、Target LLVM、RV64 ELF/package、硬件校准和共同开发经验均有source-backed主图、原生IR/数据/分析及嵌入Notes；151张独立Image2图与PPT media一一对应，PPTX/PDF/逐页PNG/contact sheet均完成最终渲染和结构检查。未重跑板端case，Q40/Q41仍保持`board-ready`。 | 01、06、16；`tasks/plans/vibe-compiler-collaboration-review.md` |
 | Q42 | `test-load-reduction` | `done` | 无 | 默认lit/unit/CTest和owner integration均只判直接合同；历史catalog、campaign、model-scale与重复package执行已退出默认入口，保留的source-to-package/no-card seam通过。 | 16；`tasks/plans/test-gate-scope-reduction.md` |
 | Q40 | `composed-choice-search-and-dte-overlap` | `board-ready` | Q39、Q42完成 | bounded whole-variant组合、V3 same-block Direct-DTE issue→FP16/BF16 CT/NE→exact wait结构witness、同tuple serialized baseline、16-rank replicated FP16 elementwise完整双package及fresh no-card已闭合；两包保持同source/cluster launch/transport ABI/binding/call inventory并以scheduler顺序区分。真实板端exact-output和matched A/B尚未执行，不得标`done`。 | 06、08-13、16；`tasks/plans/composed-choice-search-and-dte-overlap.md` |
 | Q41 | `compiler-search-scalability` | `board-ready` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 搜索资源与typed optimization configuration均已闭合：18个稳定语义轴支持production/none preset及逐项enable/disable，配置贯穿同一source-to-package pipeline；none唯一保留fully gated baseline，reciprocal单轴四路A/B证明最终ELF结构差异及组合等价，M-sharded K=1024 ordinary/profile production package逐字节一致且fresh no-card通过。搜索仍保持rank-invariant canonical sharding、显式资源上界和wall/RSS观测。真实板端exact-output及winner profile尚未执行，不得标`done`。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |

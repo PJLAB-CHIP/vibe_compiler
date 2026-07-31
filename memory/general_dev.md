@@ -1189,7 +1189,15 @@
 - IR页面从当前代码、FileCheck或本轮focused运行截取与论点直接相关的8--18行，保留决定语义的op、type、
   SSA、range、layout、token和ABI字段；长dump拆页或进入附录，不为排版删除关键合同。
 - 算法、ownership、matching和artifact transaction使用与其语义匹配的DAG、地址几何、frontier或时间线。
-  生成式位图可以辅助复杂机制图，但精确IR、数字、标签和状态由可编辑PPT对象承载，不能用整页位图代替正文。
+  生成式位图可以辅助复杂机制图，但必须先从source冻结精确IR、数字、字段、状态和关系；机制、因果、失败和
+  边界直接以中文写入最终位图，精确token同时在页面原生IR/表格中保留。不能依赖事后PPT覆盖去修正主图语义，
+  也不能用整页位图代替正文。
+- 如果Image2主图为后续overlay预留空白，装配验收必须直接检查最终PPT/PDF中overlay是否真的出现；页面规格里
+  只有`figure_overlay_labels`字段不算已渲染。没有可靠坐标化overlay时，应在正式位图中直接写入经source核对的
+  中文机制说明，并由页面旁的原生IR/表格保留可复制的精确token，不能把空白callout交付给听众。
+- 生成式技术图中的每个op、field、type、状态、数值、边、完成关系和artifact分支都要逐项回查代码、测试或
+  当前设计合同；Image2自动补出的寄存器、ABI slot、伪指令、硬件拓扑、候选数和性能曲线一律删除。特别检查
+  completion domain、aggregate/PerRank publication和case覆盖边界，避免把相邻case的数字或token混到同一图。
 - 同一份页面规格生成PPTX、嵌入Notes、PDF、逐页PNG和contact sheet。交付前同时检查slide/notes数量、
   PPT对象边界、PDF页数、预览分辨率、图片链接、可见文字密度和source map覆盖；100% contact sheet检查后，
   对IR、表格和复杂图页再做原尺寸抽查。
