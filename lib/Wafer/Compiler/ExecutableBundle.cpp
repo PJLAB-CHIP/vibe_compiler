@@ -20,6 +20,7 @@
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/Parallel.h"
+#include "llvm/Support/Threading.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <memory>
@@ -134,12 +135,9 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     // state. Member destruction is reverse declaration order.
     std::unique_ptr<mlir::MLIRContext> context;
     std::vector<wafer::ScheduledRankCandidate> candidates;
+    std::vector<detail::FinalizedRankCandidate> finalizedCandidates;
     std::string diagnostics;
-  };
-  struct RankLoweringResult {
-    int64_t logicalRank;
-    std::unique_ptr<mlir::MLIRContext> context;
-    std::vector<detail::FinalizedRankCandidate> candidates;
+    bool finalizationSucceeded = false;
   };
 
   std::string tensorModuleData;
@@ -154,7 +152,13 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
       wafer::isTensorProgramSchedulingRankInvariant(tensorModule);
   const int64_t rankGenerationClassCount =
       rankInvariant ? 1 : executionConfig.getRankCount();
-  const uint32_t requestShardCount = rankInvariant ? rankRequestShardLimit : 1;
+  const unsigned heavyweightThreadCount =
+      llvm::heavyweight_hardware_concurrency().compute_thread_count();
+  const uint32_t requestShardCount = std::min<uint32_t>(
+      rankRequestShardLimit,
+      std::max<uint32_t>(1,
+                         heavyweightThreadCount /
+                             static_cast<uint32_t>(rankGenerationClassCount)));
   std::vector<RankSearchShardResult> searchShardResults;
   searchShardResults.reserve(static_cast<size_t>(rankGenerationClassCount) *
                              requestShardCount);
@@ -255,79 +259,133 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     return fail("test-only injected failure after logical rank " +
                 std::to_string(*failAfterLogicalRank));
 
-  std::vector<RankLoweringResult> loweringResults;
-  loweringResults.reserve(rankGenerationClassCount);
-  for (int64_t generationClass = 0; generationClass < rankGenerationClassCount;
+  // Reapply the one canonical rank-frontier admission policy across request
+  // shards before finalization. The selected candidates stay in their
+  // disjoint shard contexts, so expensive bufferization and SPM replanning can
+  // use the same request-shard parallelism as search without changing which
+  // frontier members are admitted.
+  struct CandidateLocation {
+    size_t shardIndex;
+    size_t candidateIndex;
+  };
+  std::vector<std::vector<bool>> admittedMasks;
+  admittedMasks.reserve(searchShardResults.size());
+  for (const RankSearchShardResult &result : searchShardResults)
+    admittedMasks.emplace_back(result.candidates.size(), false);
+  for (size_t generationClass = 0;
+       generationClass < static_cast<size_t>(rankGenerationClassCount);
        ++generationClass) {
-    mlir::DialectRegistry registry;
-    detail::registerCompilationDialects(registry);
-    auto generationContext = std::make_unique<mlir::MLIRContext>(registry);
-    generationContext->disableMultithreading();
-    generationContext->loadAllAvailableDialects();
-
-    std::vector<wafer::ScheduledRankCandidate *> shardCandidates;
-    for (RankSearchShardResult &shard : searchShardResults)
-      if (shard.generationClass == static_cast<uint32_t>(generationClass))
-        for (wafer::ScheduledRankCandidate &candidate : shard.candidates)
-          shardCandidates.push_back(&candidate);
-    llvm::stable_sort(shardCandidates, [](const auto *lhs, const auto *rhs) {
-      return lhs->frontierOrderOrdinal < rhs->frontierOrderOrdinal;
-    });
-
+    std::vector<CandidateLocation> locations;
+    for (auto [shardIndex, shard] : llvm::enumerate(searchShardResults))
+      if (shard.generationClass == generationClass)
+        for (size_t candidateIndex = 0;
+             candidateIndex < shard.candidates.size(); ++candidateIndex)
+          locations.push_back({shardIndex, candidateIndex});
+    llvm::stable_sort(
+        locations, [&](CandidateLocation lhs, CandidateLocation rhs) {
+          return searchShardResults[lhs.shardIndex]
+                     .candidates[lhs.candidateIndex]
+                     .frontierOrderOrdinal < searchShardResults[rhs.shardIndex]
+                                                 .candidates[rhs.candidateIndex]
+                                                 .frontierOrderOrdinal;
+        });
     wafer::RankFrontierAdmissionState admission;
-    std::vector<wafer::ScheduledRankCandidate> merged;
-    merged.reserve(wafer::kMaximumScheduledRankFrontierSize);
-    for (wafer::ScheduledRankCandidate *candidate : shardCandidates) {
-      if (!candidate->reservedBaseline &&
-          !admission.tryAdmit(candidate->bufferingKind,
-                              candidate->workerPlacementKind))
+    unsigned baselineCount = 0;
+    for (CandidateLocation location : locations) {
+      const wafer::ScheduledRankCandidate &candidate =
+          searchShardResults[location.shardIndex]
+              .candidates[location.candidateIndex];
+      baselineCount += candidate.reservedBaseline;
+      if (!candidate.reservedBaseline &&
+          !admission.tryAdmit(candidate.bufferingKind,
+                              candidate.workerPlacementKind))
         continue;
-      std::string moduleData;
-      llvm::raw_string_ostream moduleStream(moduleData);
-      if (mlir::failed(mlir::writeBytecodeToFile(
-              candidate->module.get().getOperation(), moduleStream)))
-        return fail("failed to encode a rank scheduling search-shard "
-                    "candidate");
-      moduleStream.flush();
-      mlir::OwningOpRef<mlir::ModuleOp> imported =
-          mlir::parseSourceString<mlir::ModuleOp>(moduleData,
-                                                  generationContext.get());
-      if (!imported)
-        return fail("failed to import a rank scheduling search-shard "
-                    "candidate");
-      merged.emplace_back(
-          std::move(imported), candidate->stableOrdinal,
-          candidate->artifactKind, candidate->reservedBaseline,
-          candidate->bufferingKind, candidate->bufferingPlanOrdinal,
-          candidate->workerPlacementKind, candidate->workerPlacementPlanOrdinal,
-          candidate->frontierOrderOrdinal);
+      admittedMasks[location.shardIndex][location.candidateIndex] = true;
     }
+    if (baselineCount != 1)
+      return fail("rank scheduling search did not produce exactly one "
+                  "reserved baseline for generation class " +
+                  std::to_string(generationClass));
+  }
+  for (auto [shardIndex, result] : llvm::enumerate(searchShardResults)) {
+    std::vector<wafer::ScheduledRankCandidate> admitted;
+    admitted.reserve(result.candidates.size());
+    for (auto [candidateIndex, candidate] : llvm::enumerate(result.candidates))
+      if (admittedMasks[shardIndex][candidateIndex])
+        admitted.push_back(std::move(candidate));
+    result.candidates = std::move(admitted);
+  }
 
+  llvm::parallelFor(0, searchShardResults.size(), [&](size_t shardIndex) {
+    RankSearchShardResult &result = searchShardResults[shardIndex];
+    wafer::support::ScopedCompileTimingActivation timingActivation(
+        timingSession);
+    std::string timingDetail;
+    llvm::raw_string_ostream timingDetailStream(timingDetail);
+    timingDetailStream << "generation-class=" << result.generationClass
+                       << ",request-shard=" << result.requestShardIndex;
+    wafer::support::ScopedCompileTimingSpan finalizationTiming(
+        "search", "rank-candidate-generation", "rank-frontier-finalization",
+        timingDetailStream.str());
+    mlir::ScopedDiagnosticHandler diagnosticHandler(
+        result.context.get(), [&](mlir::Diagnostic &diagnostic) {
+          llvm::raw_string_ostream os(result.diagnostics);
+          diagnostic.print(os);
+          os << "\n";
+          return mlir::success();
+        });
     mlir::FailureOr<std::vector<detail::FinalizedRankCandidate>> finalized =
         detail::finalizeScheduledRankCandidateFrontier(
-            std::move(merged), executionConfig.getTargetProfileId());
+            std::move(result.candidates), executionConfig.getTargetProfileId(),
+            /*requireReservedBaseline=*/false);
     if (mlir::failed(finalized))
-      return fail("rank scheduling finalization failed for logical rank " +
-                  std::to_string(generationClass));
-    loweringResults.push_back(
-        {generationClass, std::move(generationContext), std::move(*finalized)});
-  }
+      return;
+    result.finalizedCandidates = std::move(*finalized);
+    result.finalizationSucceeded = true;
+  });
+
+  struct FinalizedCandidateLocation {
+    RankSearchShardResult *shard;
+    size_t candidateIndex;
+  };
+  std::vector<std::vector<FinalizedCandidateLocation>>
+      finalizedGenerationCandidates(
+          static_cast<size_t>(rankGenerationClassCount));
   for (RankSearchShardResult &result : searchShardResults) {
-    result.candidates.clear();
-    result.context.reset();
+    if (!result.finalizationSucceeded) {
+      diagnostics << result.diagnostics;
+      return fail("rank scheduling finalization failed for logical rank " +
+                  std::to_string(result.logicalRank) + " request shard " +
+                  std::to_string(result.requestShardIndex));
+    }
+    for (size_t candidateIndex = 0;
+         candidateIndex < result.finalizedCandidates.size(); ++candidateIndex)
+      finalizedGenerationCandidates[result.generationClass].push_back(
+          {&result, candidateIndex});
+  }
+  uint64_t generatedCandidateCount = 0;
+  for (auto [generationClass, locations] :
+       llvm::enumerate(finalizedGenerationCandidates)) {
+    llvm::stable_sort(locations, [](FinalizedCandidateLocation lhs,
+                                    FinalizedCandidateLocation rhs) {
+      return lhs.shard->finalizedCandidates[lhs.candidateIndex]
+                 .frontierOrderOrdinal <
+             rhs.shard->finalizedCandidates[rhs.candidateIndex]
+                 .frontierOrderOrdinal;
+    });
+    unsigned baselineCount = 0;
+    for (FinalizedCandidateLocation location : locations)
+      baselineCount +=
+          location.shard->finalizedCandidates[location.candidateIndex]
+              .reservedBaseline;
+    if (locations.empty() || baselineCount != 1)
+      return fail("rank lowering failed for logical rank " +
+                  std::to_string(generationClass));
+    generatedCandidateCount += locations.size();
   }
   const int64_t rankGenerationWallMs =
       detail::elapsedCompileMilliseconds(rankGenerationStart);
   rankGenerationTiming.reset();
-
-  uint64_t generatedCandidateCount = 0;
-  for (RankLoweringResult &result : loweringResults) {
-    const int64_t logicalRank = result.logicalRank;
-    if (result.candidates.empty())
-      return fail("rank lowering failed for logical rank " +
-                  std::to_string(logicalRank));
-    generatedCandidateCount += result.candidates.size();
-  }
 
   // Compute the exact bounded context-transfer plan from cheap metadata while
   // every finalized module still belongs to its worker context. Only modules
@@ -339,16 +397,20 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
           "stage", "tensor-program-to-executable", "frontier-transfer");
   std::vector<detail::RankVariantMetadataFrontier> generatedMetadata;
-  generatedMetadata.reserve(loweringResults.size());
-  for (const RankLoweringResult &result : loweringResults) {
+  generatedMetadata.reserve(finalizedGenerationCandidates.size());
+  for (const std::vector<FinalizedCandidateLocation> &locations :
+       finalizedGenerationCandidates) {
     detail::RankVariantMetadataFrontier metadata;
-    metadata.reserve(result.candidates.size());
-    for (const detail::FinalizedRankCandidate &candidate : result.candidates)
+    metadata.reserve(locations.size());
+    for (FinalizedCandidateLocation location : locations) {
+      const detail::FinalizedRankCandidate &candidate =
+          location.shard->finalizedCandidates[location.candidateIndex];
       metadata.push_back({candidate.stableOrdinal, candidate.artifactKind,
                           candidate.reservedBaseline, candidate.bufferingKind,
                           candidate.bufferingPlanOrdinal,
                           candidate.workerPlacementKind,
                           candidate.workerPlacementPlanOrdinal});
+    }
     generatedMetadata.push_back(std::move(metadata));
   }
   uint64_t frontierCandidateSlotCount = 0;
@@ -366,9 +428,10 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
                                            executionConfig.getRankCount());
 
   std::vector<std::vector<bool>> requiredByGeneration;
-  requiredByGeneration.reserve(loweringResults.size());
-  for (const RankLoweringResult &result : loweringResults)
-    requiredByGeneration.emplace_back(result.candidates.size(), false);
+  requiredByGeneration.reserve(finalizedGenerationCandidates.size());
+  for (const std::vector<FinalizedCandidateLocation> &locations :
+       finalizedGenerationCandidates)
+    requiredByGeneration.emplace_back(locations.size(), false);
   for (size_t rankIndex = 0;
        rankIndex < importPlan.requiredModuleIndices.size(); ++rankIndex) {
     const size_t generationClass = rankInvariant ? 0 : rankIndex;
@@ -385,13 +448,15 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
   uint64_t uniqueEncodedModuleCount = 0;
   std::vector<detail::SerializedRankVariantFrontier>
       serializedGenerationFrontiers;
-  serializedGenerationFrontiers.reserve(loweringResults.size());
-  for (auto [generationClass, result] : llvm::enumerate(loweringResults)) {
+  serializedGenerationFrontiers.reserve(finalizedGenerationCandidates.size());
+  for (auto [generationClass, locations] :
+       llvm::enumerate(finalizedGenerationCandidates)) {
     const std::vector<bool> &required = requiredByGeneration[generationClass];
     detail::SerializedRankVariantFrontier serializedFrontier;
-    serializedFrontier.reserve(result.candidates.size());
-    for (auto [candidateIndex, candidate] :
-         llvm::enumerate(result.candidates)) {
+    serializedFrontier.reserve(locations.size());
+    for (auto [candidateIndex, location] : llvm::enumerate(locations)) {
+      detail::FinalizedRankCandidate &candidate =
+          location.shard->finalizedCandidates[location.candidateIndex];
       detail::SerializedRankVariantCandidate serialized;
       serialized.stableOrdinal = candidate.stableOrdinal;
       serialized.artifactKind = candidate.artifactKind;
@@ -416,7 +481,10 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
       serializedFrontier.push_back(std::move(serialized));
     }
     serializedGenerationFrontiers.push_back(std::move(serializedFrontier));
+  }
+  for (RankSearchShardResult &result : searchShardResults) {
     result.candidates.clear();
+    result.finalizedCandidates.clear();
     result.context.reset();
   }
 

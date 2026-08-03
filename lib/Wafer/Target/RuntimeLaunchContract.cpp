@@ -32,10 +32,12 @@ llvm::Expected<RuntimeLaunchContract> RuntimeLaunchContract::createKernel(
                       entryABI == KernelEntryABI::RankLocalPointerBlockV1 &&
                       hasPhases(phases, {RuntimeLaunchPhaseRole::Main})) ||
                      (form == KernelLaunchForm::Grid &&
-                      entryABI == KernelEntryABI::RankMajorPointerTableV1 &&
+                      (entryABI == KernelEntryABI::RankMajorPointerTableV1 ||
+                       entryABI == KernelEntryABI::RankRowPointerTableV1) &&
                       hasPhases(phases, {RuntimeLaunchPhaseRole::Main})) ||
                      (form == KernelLaunchForm::Cluster &&
-                      entryABI == KernelEntryABI::RankMajorPointerTableV1 &&
+                      (entryABI == KernelEntryABI::RankMajorPointerTableV1 ||
+                       entryABI == KernelEntryABI::RankRowPointerTableV1) &&
                       hasPhases(phases, {RuntimeLaunchPhaseRole::Prepare,
                                          RuntimeLaunchPhaseRole::Main}));
   if (!valid)
@@ -145,6 +147,8 @@ llvm::StringRef stringifyKernelEntryABI(KernelEntryABI entryABI) {
     return "rank-local-pointer-block-v1";
   case KernelEntryABI::RankMajorPointerTableV1:
     return "rank-major-pointer-table-v1";
+  case KernelEntryABI::RankRowPointerTableV1:
+    return "rank-row-pointer-table-v1";
   }
   llvm_unreachable("unknown kernel entry ABI");
 }
@@ -155,6 +159,8 @@ parseKernelEntryABI(llvm::StringRef canonicalSpelling) {
     return KernelEntryABI::RankLocalPointerBlockV1;
   if (canonicalSpelling == "rank-major-pointer-table-v1")
     return KernelEntryABI::RankMajorPointerTableV1;
+  if (canonicalSpelling == "rank-row-pointer-table-v1")
+    return KernelEntryABI::RankRowPointerTableV1;
   return invalidValue<KernelEntryABI>("kernel entry ABI", canonicalSpelling);
 }
 

@@ -93,13 +93,26 @@ llvm::Error validateRuntimeLaunchContractDomain(
     const uint64_t packetBytes = kernel->form == KernelLaunchForm::Cluster
                                      ? kTx81ClusterKernelArgumentBytesMax
                                      : kTx81KernelArgumentBytesMax;
-    if (first.getKernelABISlots().size() >
-        packetBytes / sizeof(uint64_t) /
-            static_cast<uint64_t>(config.getRankCount()))
+    if (kernel->entryABI == KernelEntryABI::RankMajorPointerTableV1) {
+      if (first.getKernelABISlots().size() >
+          packetBytes / sizeof(uint64_t) /
+              static_cast<uint64_t>(config.getRankCount()))
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "multi-tile rank-major argument table exceeds the qualified V5.6 "
+            "packet limit");
+    } else if (kernel->entryABI == KernelEntryABI::RankRowPointerTableV1) {
+      if (static_cast<uint64_t>(config.getRankCount()) >
+          packetBytes / sizeof(uint64_t))
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "multi-tile rank-row pointer table exceeds the qualified V5.6 "
+            "packet limit");
+    } else {
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "multi-tile rank-major argument table exceeds the qualified V5.6 "
-          "packet limit");
+          "multi-tile kernel launch has an incompatible entry ABI");
+    }
     const size_t transportStatusSlots = llvm::count_if(
         first.getKernelABISlots(), [](const KernelABISlot &slot) {
           return slot.role == KernelABISlotRole::TransportStatus;

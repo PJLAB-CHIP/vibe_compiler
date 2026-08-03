@@ -83,6 +83,7 @@ RuntimeEnvironment makeTxProviderEnvironment() {
   environment.supportedKernelEntryABIs = {
       KernelEntryABI::RankLocalPointerBlockV1,
       KernelEntryABI::RankMajorPointerTableV1,
+      KernelEntryABI::RankRowPointerTableV1,
   };
   environment.supportedModelEntryABIs = {
       ModelEntryABI::Tx81ModelBootParamV1,
@@ -562,10 +563,10 @@ public:
     return llvm::Error::success();
   }
 
-  llvm::Error
-  submitKernelPhase(KernelLaunchForm form, RuntimeLaunchPhaseRole phaseRole,
-                    llvm::ArrayRef<BoardRankLaunch> launches,
-                    BoardDeviceTimingPolicy timingPolicy) override {
+  llvm::Error submitKernelPhase(KernelLaunchForm form,
+                                RuntimeLaunchPhaseRole phaseRole,
+                                llvm::ArrayRef<BoardRankLaunch> launches,
+                                BoardDeviceTimingPolicy timingPolicy) override {
     if (llvm::Error error = requireUsable("kernel phase submission"))
       return error;
     const bool perRank = form == KernelLaunchForm::PerRank;
@@ -672,8 +673,7 @@ public:
               "txStreamCreate(kernel) returned a null stream");
         activeStreams.push_back(stream);
       }
-      if (llvm::Error error =
-              initializeDeviceTiming(timingPolicy, "kernel"))
+      if (llvm::Error error = initializeDeviceTiming(timingPolicy, "kernel"))
         return error;
       submissionKind = SubmissionKind::Kernel;
       activeKernelForm = form;
@@ -744,10 +744,9 @@ public:
     return llvm::Error::success();
   }
 
-  llvm::Error
-  submitModel(BoardGraphHandle graph,
-              llvm::ArrayRef<BoardModelTensorLaunch> tensors,
-              BoardDeviceTimingPolicy timingPolicy) override {
+  llvm::Error submitModel(BoardGraphHandle graph,
+                          llvm::ArrayRef<BoardModelTensorLaunch> tensors,
+                          BoardDeviceTimingPolicy timingPolicy) override {
     if (llvm::Error error = requireUsable("model submission"))
       return error;
     if (!api.launchModel)
@@ -886,8 +885,7 @@ public:
     const auto waitBegin = std::chrono::steady_clock::now();
     std::vector<std::chrono::steady_clock::time_point> lastObservations(
         activeStreams.size(), waitBegin);
-    std::optional<std::chrono::steady_clock::time_point>
-        lastTimingObservation;
+    std::optional<std::chrono::steady_clock::time_point> lastTimingObservation;
     uint64_t maximumPollGapNanoseconds = 0;
     auto recordObservation =
         [&](size_t streamIndex,
@@ -952,9 +950,8 @@ public:
                   observationTime - *lastTimingObservation)
                   .count();
           if (observedGap > 0)
-            maximumPollGapNanoseconds =
-                std::max(maximumPollGapNanoseconds,
-                         static_cast<uint64_t>(observedGap));
+            maximumPollGapNanoseconds = std::max(
+                maximumPollGapNanoseconds, static_cast<uint64_t>(observedGap));
         }
         lastTimingObservation = observationTime;
         if (status == TX_SUCCESS) {
@@ -1092,8 +1089,8 @@ private:
           "TX stream-event timing is missing event handles");
 
     float elapsedMilliseconds = 0.0f;
-    txError_t status = api.eventElapsedTime(
-        &elapsedMilliseconds, timingStartEvent, timingEndEvent);
+    txError_t status = api.eventElapsedTime(&elapsedMilliseconds,
+                                            timingStartEvent, timingEndEvent);
     if (status != TX_SUCCESS)
       return txError("txEventElapsedTime", status);
     if (!std::isfinite(elapsedMilliseconds) || elapsedMilliseconds < 0.0f)
@@ -1110,8 +1107,7 @@ private:
     if (roundedNanoseconds >= uint64UpperExclusive)
       return poisonContractViolation(
           "txEventElapsedTime duration overflows nanoseconds");
-    return std::optional<uint64_t>{
-        static_cast<uint64_t>(roundedNanoseconds)};
+    return std::optional<uint64_t>{static_cast<uint64_t>(roundedNanoseconds)};
   }
 
   llvm::Error destroyDeviceTiming() {

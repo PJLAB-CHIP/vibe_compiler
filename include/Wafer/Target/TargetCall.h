@@ -363,6 +363,13 @@ getTargetCallDescriptor(InstrElementwiseKind kind,
                         TargetProfileId targetProfile);
 const TargetCallDescriptor &
 getTargetCallDescriptor(InstrReduceKind kind, TargetProfileId targetProfile);
+
+/// Returns whether the selected target profile has a closed
+/// opcode/kind/format qualification row for one native CT reduction.  Generic
+/// CT format encoding support alone is not sufficient to emit a reduce call.
+bool isTargetReduceFormatTupleAvailable(TargetProfileId targetProfile,
+                                        InstrReduceKind kind,
+                                        LogicalFormat format);
 const TargetCallDescriptor &
 getTargetCallDescriptor(InstrConvertKind kind, TargetProfileId targetProfile);
 const TargetCallDescriptor &

@@ -7,6 +7,7 @@
 #include "MemoryPlanning/StaticMemoryPacking.h"
 
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -1208,6 +1209,10 @@ static mlir::LogicalResult planScopeDDRMemory(
     mlir::Operation *scope, int64_t defaultAlignment, int64_t capacityBytes,
     int64_t largestContiguousBytes, int64_t bandwidthLimitBytes,
     llvm::SmallVectorImpl<PendingDDRPlacement> &pendingPlacements) {
+  wafer::support::ScopedCompileTimingSpan totalTiming(
+      "transformation-phase", "planScopeDDRMemory", "total");
+  auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "planScopeDDRMemory", "StructuredTimeline::build");
   memory_planning::TimelineFailure timelineFailure;
   mlir::FailureOr<memory_planning::StructuredTimeline> timeline =
       memory_planning::StructuredTimeline::build(scope, &timelineFailure);
@@ -1231,11 +1236,15 @@ static mlir::LogicalResult planScopeDDRMemory(
   }
 
   llvm::SmallVector<memory_planning::LifetimeDemand, 8> demands;
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "planScopeDDRMemory", "collectDDRDemands");
   if (mlir::failed(
           collectDDRDemands(scope, defaultAlignment, *timeline, demands)))
     return mlir::failure();
 
   memory_planning::LocalCompletionTracker localCompletion;
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "planScopeDDRMemory", "lifetime-dataflow");
   memory_planning::LifetimeDataflow dataflow(
       *timeline, demands,
       [](mlir::Type type) { return isWaferDDRMemRefType(type); },
@@ -1247,16 +1256,22 @@ static mlir::LogicalResult planScopeDDRMemory(
   DDRDemandSummary summary;
   PlannedDDROffsets plannedOffsets;
   llvm::SmallVector<PendingDDRPlacement, 8> scopePlacements;
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "planScopeDDRMemory", "planManagedDDROffsets");
   if (mlir::failed(planManagedDDROffsets(
           scope, demands, capacityBytes, largestContiguousBytes,
           summary.plannedHighWaterBytes, plannedOffsets, scopePlacements)))
     return mlir::failure();
 
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "planScopeDDRMemory", "collectDDRDescriptorDemands");
   if (mlir::failed(collectDDRDescriptorDemands(scope, defaultAlignment,
                                                plannedOffsets, *timeline,
                                                dataflow, summary)))
     return mlir::failure();
 
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "planScopeDDRMemory", "verifyResourceLimits");
   if (mlir::failed(verifyResourceLimits(scope, summary, capacityBytes,
                                         largestContiguousBytes,
                                         bandwidthLimitBytes)))
@@ -1333,6 +1348,8 @@ mlir::LogicalResult planDDRMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t ddrCapacityBytes,
                                         int64_t ddrLargestContiguousBytes,
                                         int64_t ddrBandwidthLimitBytes) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "transformation", "planDDRMemoryModule", "total");
   if (ddrCapacityBytes < 0 || ddrLargestContiguousBytes < 0 ||
       ddrBandwidthLimitBytes < 0 || ddrAlignmentBytes <= 0)
     return moduleOp->emitError()

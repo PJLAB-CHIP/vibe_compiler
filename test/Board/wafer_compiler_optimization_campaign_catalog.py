@@ -875,7 +875,7 @@ PRODUCTION_OWNER_BY_AXIS = {
     ),
     "transfer-route-storage-realization": _anchor(
         "lib/Wafer/Conversion/WaferTileRegionToInstr/MovementSupport.cpp",
-        "createGatherScatterSegments",
+        "getRelationMovementDescriptors",
     ),
     "fixed-cx-ncx-gemm-absorption": _anchor(
         "lib/Wafer/Conversion/WaferTensorProgramToTileRegion/NamedComputeLowering.cpp",

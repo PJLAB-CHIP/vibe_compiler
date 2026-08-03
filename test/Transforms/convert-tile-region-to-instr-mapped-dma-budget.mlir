@@ -1,6 +1,6 @@
-// RUN: not wafer-opt --wafer-convert-tile-region-to-instr %s 2>&1 | FileCheck %s
+// RUN: wafer-opt --wafer-convert-tile-region-to-instr %s | FileCheck %s
 
-func.func @reject_large_identity_tensor_to_cx_mapping(
+func.func @pack_large_identity_tensor_to_cx_mapping(
     %input: memref<1024x4096xf16, #wafer.memory<ddr, tensor>>) {
   %region = wafer.tile.region(%input
       : memref<1024x4096xf16, #wafer.memory<ddr, tensor>>)
@@ -17,4 +17,9 @@ func.func @reject_large_identity_tensor_to_cx_mapping(
   return
 }
 
-// CHECK: static_terminal_budget_exceeded: tile.load mapped DMA command count exceeds 4096
+// CHECK-LABEL: func.func @pack_large_identity_tensor_to_cx_mapping
+// CHECK-COUNT-1: wafer.instr.rdma
+// CHECK-SAME: byte_count = 8388608 : i64
+// CHECK-SAME: inner_bytes = 128 : i64
+// CHECK-SAME: src_iterations = array<i64: 1024, 64, 1>
+// CHECK-SAME: src_strides = array<i64: 8192, 128, 0>

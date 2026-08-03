@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -62,8 +63,7 @@ static bool canReorderCompletionDomains(mlir::Operation *lhs,
   NCCCompletionContract rhsContract = getNCCCompletionContract(rhs);
   if (lhsContract.behavior ==
           LocalInstructionCompletion::SynchronousWriteback ||
-      rhsContract.behavior ==
-          LocalInstructionCompletion::SynchronousWriteback)
+      rhsContract.behavior == LocalInstructionCompletion::SynchronousWriteback)
     return false;
 
   auto joinAllowsIssue = [](const NCCCompletionContract &join,
@@ -85,9 +85,9 @@ static bool canReorderCompletionDomains(mlir::Operation *lhs,
          joinAllowsIssue(rhsContract, lhsContract);
 }
 
-static void collectBufferAccesses(
-    mlir::Operation *operation,
-    llvm::SmallVectorImpl<BufferAccess> &accesses) {
+static void
+collectBufferAccesses(mlir::Operation *operation,
+                      llvm::SmallVectorImpl<BufferAccess> &accesses) {
   auto recordAccess = [&](mlir::Value value, bool write) {
     value = getAccessBase(value);
     auto found = llvm::find_if(accesses, [&](const BufferAccess &access) {
@@ -202,8 +202,7 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
   llvm::DenseMap<mlir::Value, llvm::SmallVector<unsigned, 4>> readers;
   std::array<llvm::SmallVector<unsigned, 4>, kNCCWorkerCount>
       pendingWorkerIssues;
-  std::array<std::optional<unsigned>, kNCCWorkerCount>
-      lastWorkerCompletions;
+  std::array<std::optional<unsigned>, kNCCWorkerCount> lastWorkerCompletions;
   std::optional<unsigned> lastFailClosedCompletion;
   std::optional<unsigned> pendingDTESenderIssue;
   std::optional<unsigned> lastDTESenderCompletion;
@@ -229,15 +228,13 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
       bool completesPendingSender =
           pendingDTESenderIssue &&
           llvm::any_of(wait.getTokens(), [&](mlir::Value token) {
-            return token.getDefiningOp() ==
-                   operations[*pendingDTESenderIssue];
+            return token.getDefiningOp() == operations[*pendingDTESenderIssue];
           });
       if (completesPendingSender) {
         addEdge(*pendingDTESenderIssue, index);
         pendingDTESenderIssue.reset();
         lastDTESenderCompletion = index;
-      } else if (!pendingDTESenderIssue &&
-                 waitMayReleaseDTESender(operation)) {
+      } else if (!pendingDTESenderIssue && waitMayReleaseDTESender(operation)) {
         lastDTESenderCompletion = index;
       }
     }
@@ -255,8 +252,7 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
 
     bool isCompletion =
         contract.behavior == LocalInstructionCompletion::ParticipantJoin ||
-        contract.behavior ==
-            LocalInstructionCompletion::SynchronousWriteback;
+        contract.behavior == LocalInstructionCompletion::SynchronousWriteback;
     if (isCompletion) {
       if (contract.participantMask == 0 ||
           (contract.participantMask & ~kAllNCCWorkersMask) != 0)
@@ -270,8 +266,7 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
         lastWorkerCompletions[worker] = index;
       }
     }
-    if (contract.behavior ==
-        LocalInstructionCompletion::SynchronousWriteback) {
+    if (contract.behavior == LocalInstructionCompletion::SynchronousWriteback) {
       for (unsigned predecessor = 0; predecessor < index; ++predecessor)
         addEdge(predecessor, index);
       lastFailClosedCompletion = index;
@@ -339,8 +334,8 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
   return moved;
 }
 
-static bool isMutatingEffect(
-    const mlir::MemoryEffects::EffectInstance &effect) {
+static bool
+isMutatingEffect(const mlir::MemoryEffects::EffectInstance &effect) {
   return !llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
 }
 
@@ -356,9 +351,8 @@ static bool areKnownDistinctValues(mlir::Value lhs, mlir::Value rhs) {
          rhs.getDefiningOp<mlir::memref::AllocOp>();
 }
 
-static bool effectsMayConflict(
-    const mlir::MemoryEffects::EffectInstance &lhs,
-    const mlir::MemoryEffects::EffectInstance &rhs) {
+static bool effectsMayConflict(const mlir::MemoryEffects::EffectInstance &lhs,
+                               const mlir::MemoryEffects::EffectInstance &rhs) {
   if (!isMutatingEffect(lhs) && !isMutatingEffect(rhs))
     return false;
   if (lhs.getResource() != rhs.getResource())
@@ -455,6 +449,9 @@ static unsigned scheduleWindow(llvm::ArrayRef<mlir::Operation *> operations) {
 }
 
 static unsigned scheduleBlock(mlir::Block &block) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "optimization-phase", "scheduleIndependentInstructionsByReadyOrder",
+      "schedule-block");
   unsigned moved = 0;
   llvm::SmallVector<llvm::SmallVector<mlir::Operation *, 16>, 4> windows(1);
   for (mlir::Operation &operation : block) {
@@ -501,6 +498,9 @@ static unsigned scheduleRegion(mlir::Region &region) {
 } // namespace
 
 unsigned scheduleIndependentInstructionsByReadyOrder(mlir::Operation *scope) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "optimization", "ready-order-scheduling",
+      "scheduleIndependentInstructionsByReadyOrder");
   if (!scope)
     return 0;
   unsigned moved = 0;

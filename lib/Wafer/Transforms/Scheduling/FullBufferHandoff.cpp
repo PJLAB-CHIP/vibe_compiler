@@ -3,6 +3,7 @@
 #include "Scheduling/ScheduleTensorProgramInternal.h"
 
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -181,27 +182,97 @@ getStaticViewRelation(mlir::Operation *operation, mlir::Value source) {
           "operation has no supported static view relation"};
 }
 
+/// Prove the common complete-view forms directly from the op contract.  This
+/// is stronger and cheaper than constructing a Presburger image: reshape and
+/// cast preserve every element, while a same-rank subview is complete exactly
+/// when every static offset is zero, every stride is one, and every size is
+/// the corresponding source extent.  The caller has already established
+/// equivalent static Tensor storage and element type.
+static bool provesCanonicalCompleteStaticView(mlir::Operation *operation,
+                                              mlir::Value source) {
+  if (auto collapse = mlir::dyn_cast<mlir::memref::CollapseShapeOp>(operation))
+    return collapse.getSrc() == source;
+  if (auto expand = mlir::dyn_cast<mlir::memref::ExpandShapeOp>(operation))
+    return expand.getSrc() == source && expand.getOutputShape().empty();
+  if (auto cast = mlir::dyn_cast<mlir::memref::CastOp>(operation))
+    return cast.getSource() == source;
+
+  auto subview = mlir::dyn_cast<mlir::memref::SubViewOp>(operation);
+  auto sourceType = mlir::dyn_cast<mlir::MemRefType>(source.getType());
+  auto resultType =
+      operation && operation->getNumResults() == 1
+          ? mlir::dyn_cast<mlir::MemRefType>(operation->getResult(0).getType())
+          : mlir::MemRefType{};
+  if (!subview || subview.getSource() != source || !sourceType || !resultType ||
+      sourceType.getRank() != resultType.getRank())
+    return false;
+
+  llvm::ArrayRef<int64_t> offsets = subview.getStaticOffsets();
+  llvm::ArrayRef<int64_t> sizes = subview.getStaticSizes();
+  llvm::ArrayRef<int64_t> strides = subview.getStaticStrides();
+  llvm::ArrayRef<int64_t> sourceShape = sourceType.getShape();
+  if (offsets.size() != sourceShape.size() ||
+      sizes.size() != sourceShape.size() ||
+      strides.size() != sourceShape.size())
+    return false;
+  return llvm::all_of(llvm::seq<size_t>(0, sourceShape.size()),
+                      [&](size_t index) {
+                        return offsets[index] == 0 && strides[index] == 1 &&
+                               sizes[index] == sourceShape[index];
+                      });
+}
+
 static bool provesCompleteStaticView(mlir::Operation *operation,
                                      mlir::Value source) {
+  wafer::support::ScopedCompileTimingSpan proofTiming(
+      "analysis", "provesCompleteStaticView", "total");
   if (!operation || operation->getNumResults() != 1 ||
       !hasEquivalentStaticStorage(source.getType(),
                                   operation->getResult(0).getType()))
     return false;
+  {
+    wafer::support::ScopedCompileTimingSpan structuralTiming(
+        "analysis-phase", "provesCompleteStaticView",
+        "provesCanonicalCompleteStaticView");
+    if (provesCanonicalCompleteStaticView(operation, source))
+      return true;
+  }
   auto sourceType = mlir::cast<mlir::MemRefType>(source.getType());
   auto resultType =
       mlir::cast<mlir::MemRefType>(operation->getResult(0).getType());
-  analysis::IndexRelationResult relation =
-      getStaticViewRelation(operation, source);
-  analysis::IndexSetResult destinationDomain =
-      analysis::IndexRelation::staticDomain(resultType.getShape());
-  analysis::IndexSetResult sourceDomain =
-      analysis::IndexRelation::staticDomain(sourceType.getShape());
+  analysis::IndexRelationResult relation;
+  analysis::IndexSetResult destinationDomain;
+  analysis::IndexSetResult sourceDomain;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "analysis-phase", "provesCompleteStaticView",
+        "relation-and-domain-construction");
+    relation = getStaticViewRelation(operation, source);
+    destinationDomain =
+        analysis::IndexRelation::staticDomain(resultType.getShape());
+    sourceDomain = analysis::IndexRelation::staticDomain(sourceType.getShape());
+  }
   if (!relation.isExact() || !destinationDomain.isExact() ||
-      !sourceDomain.isExact() || !relation.get()->isBijective().isProvenTrue())
+      !sourceDomain.isExact())
     return false;
-  analysis::IndexSetResult image =
-      relation.get()->image(*destinationDomain.set);
-  return image.isExact() && image.set->isEqual(*sourceDomain.set);
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "analysis-phase", "provesCompleteStaticView",
+        "IndexRelation::isBijective");
+    if (!relation.get()->isBijective().isProvenTrue())
+      return false;
+  }
+  analysis::IndexSetResult image;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "analysis-phase", "provesCompleteStaticView", "IndexRelation::image");
+    image = relation.get()->image(*destinationDomain.set);
+  }
+  if (!image.isExact())
+    return false;
+  wafer::support::ScopedCompileTimingSpan equalityTiming(
+      "analysis-phase", "provesCompleteStaticView", "PresburgerSet::isEqual");
+  return image.set->isEqual(*sourceDomain.set);
 }
 
 static bool isStaticExternalView(mlir::Operation *operation,
@@ -440,6 +511,8 @@ static TileRegionOp appendResidentResult(TileRegionOp producer,
 }
 
 static bool tryPromoteResult(TileRegionOp producer, unsigned resultIndex) {
+  wafer::support::ScopedCompileTimingSpan totalTiming(
+      "optimization-phase", "tryPromoteResult", "total");
   if (producer.getBody().empty() || resultIndex >= producer.getNumResults())
     return false;
   auto oldResultType = mlir::dyn_cast<mlir::MemRefType>(
@@ -507,87 +580,112 @@ static bool tryPromoteResult(TileRegionOp producer, unsigned resultIndex) {
   llvm::SmallVector<mlir::Operation *, 2> producerDestinationViews;
   llvm::DenseSet<mlir::Value> activeProducerDestination;
   bool sawProducerWDMA = false;
-  if (!collectProducerDestination(outputArgument, producerWDMA, yield,
-                                  resultIndex, producerDestinationViews,
-                                  activeProducerDestination, sawProducerWDMA) ||
-      !sawProducerWDMA)
-    return false;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "analysis-phase", "tryPromoteResult", "collectProducerDestination");
+    if (!collectProducerDestination(outputArgument, producerWDMA, yield,
+                                    resultIndex, producerDestinationViews,
+                                    activeProducerDestination,
+                                    sawProducerWDMA) ||
+        !sawProducerWDMA)
+      return false;
+  }
 
   llvm::SmallVector<ExternalConsumerPath, 4> paths;
   llvm::SmallPtrSet<mlir::Operation *, 4> externalViewSet;
   llvm::DenseSet<mlir::Value> activeExternal;
-  if (!collectExternalConsumers(producer.getResult(resultIndex), {}, paths,
-                                externalViewSet, activeExternal) ||
-      paths.empty())
-    return false;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "analysis-phase", "tryPromoteResult", "collectExternalConsumers");
+    if (!collectExternalConsumers(producer.getResult(resultIndex), {}, paths,
+                                  externalViewSet, activeExternal) ||
+        paths.empty())
+      return false;
+  }
 
   llvm::SmallVector<ConsumerRewrite, 4> rewrites;
   llvm::DenseSet<std::pair<mlir::Operation *, unsigned>> seenOperands;
-  for (ExternalConsumerPath &path : paths) {
-    if (!seenOperands.insert({path.consumer.getOperation(), path.operandIndex})
-             .second ||
-        path.consumer.getBody().empty() ||
-        path.operandIndex >= path.consumer.getInputs().size() ||
-        path.consumer.getInputs()[path.operandIndex] != path.terminalValue)
-      continue;
-    mlir::BlockArgument argument =
-        path.consumer.getBody().front().getArgument(path.operandIndex);
-    std::optional<int64_t> terminalBytes = getPhysicalBytes(argument.getType());
-    if (!terminalBytes || *terminalBytes != *resultBytes)
-      continue;
-    ConsumerRewrite rewrite{path, argument};
-    llvm::DenseSet<mlir::Value> activeConsumer;
-    if (!collectConsumerRDMAs(argument, *resultBytes, {}, rewrite.rdmas,
-                              rewrite.localViews, activeConsumer) ||
-        rewrite.rdmas.empty())
-      continue;
-    rewrites.push_back(std::move(rewrite));
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "analysis-phase", "tryPromoteResult", "collectConsumerRDMAs");
+    for (ExternalConsumerPath &path : paths) {
+      if (!seenOperands
+               .insert({path.consumer.getOperation(), path.operandIndex})
+               .second ||
+          path.consumer.getBody().empty() ||
+          path.operandIndex >= path.consumer.getInputs().size() ||
+          path.consumer.getInputs()[path.operandIndex] != path.terminalValue)
+        continue;
+      mlir::BlockArgument argument =
+          path.consumer.getBody().front().getArgument(path.operandIndex);
+      std::optional<int64_t> terminalBytes =
+          getPhysicalBytes(argument.getType());
+      if (!terminalBytes || *terminalBytes != *resultBytes)
+        continue;
+      ConsumerRewrite rewrite{path, argument};
+      llvm::DenseSet<mlir::Value> activeConsumer;
+      if (!collectConsumerRDMAs(argument, *resultBytes, {}, rewrite.rdmas,
+                                rewrite.localViews, activeConsumer) ||
+          rewrite.rdmas.empty())
+        continue;
+      rewrites.push_back(std::move(rewrite));
+    }
   }
   if (rewrites.empty())
     return false;
 
   bool promotesEveryConsumer = rewrites.size() == paths.size();
   mlir::Value producerResult;
-  if (promotesEveryConsumer) {
-    auto result = mlir::cast<mlir::OpResult>(producer.getResult(resultIndex));
-    result.setType(residentType);
-    yield->setOperand(resultIndex, producerWDMA.getSource());
-    producerWDMA.erase();
-    eraseDeadViews(producerDestinationViews);
-    producerResult = result;
-  } else {
-    producer = appendResidentResult(producer, yield, producerWDMA.getSource());
-    producerResult = producer.getResults().back();
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "transformation-phase", "tryPromoteResult", "rewrite-producer");
+    if (promotesEveryConsumer) {
+      auto result = mlir::cast<mlir::OpResult>(producer.getResult(resultIndex));
+      result.setType(residentType);
+      yield->setOperand(resultIndex, producerWDMA.getSource());
+      producerWDMA.erase();
+      eraseDeadViews(producerDestinationViews);
+      producerResult = result;
+    } else {
+      producer =
+          appendResidentResult(producer, yield, producerWDMA.getSource());
+      producerResult = producer.getResults().back();
+    }
   }
 
   llvm::SmallVector<mlir::Operation *, 8> localViews;
-  for (ConsumerRewrite &rewrite : rewrites) {
-    rewrite.path.consumer->setOperand(rewrite.path.operandIndex,
-                                      producerResult);
-    rewrite.blockArgument.setType(residentType);
-    mlir::Value terminalSPM =
-        cloneViewPathIntoRegion(rewrite.path, rewrite.blockArgument);
-    for (ConsumerRDMARewrite &rdmaRewrite : rewrite.rdmas) {
-      InstrRDMAOp rdma = rdmaRewrite.rdma;
-      mlir::OpBuilder viewBuilder(rewrite.blockArgument.getContext());
-      if (mlir::Operation *definition = terminalSPM.getDefiningOp())
-        viewBuilder.setInsertionPointAfter(definition);
-      else
-        viewBuilder.setInsertionPointToStart(rewrite.blockArgument.getOwner());
-      mlir::Value localSource =
-          cloneStaticViewPath(viewBuilder, rdmaRewrite.views, terminalSPM);
-      mlir::OpBuilder builder(rdma);
-      builder.create<InstrGatherScatterOp>(
-          rdma.getLoc(), localSource, rdma.getDest(), rdma.getByteCountAttr(),
-          rdma.getInnerBytesAttr(), mlir::IntegerAttr{}, mlir::IntegerAttr{},
-          rdma.getSrcStridesAttr(), rdma.getSrcIterationsAttr(),
-          rdma.getSrcStridesAttr(), rdma.getSrcIterationsAttr(),
-          rdma.getWorkerAttr());
-      rdma.erase();
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "transformation-phase", "tryPromoteResult", "rewrite-consumers");
+    for (ConsumerRewrite &rewrite : rewrites) {
+      rewrite.path.consumer->setOperand(rewrite.path.operandIndex,
+                                        producerResult);
+      rewrite.blockArgument.setType(residentType);
+      mlir::Value terminalSPM =
+          cloneViewPathIntoRegion(rewrite.path, rewrite.blockArgument);
+      for (ConsumerRDMARewrite &rdmaRewrite : rewrite.rdmas) {
+        InstrRDMAOp rdma = rdmaRewrite.rdma;
+        mlir::OpBuilder viewBuilder(rewrite.blockArgument.getContext());
+        if (mlir::Operation *definition = terminalSPM.getDefiningOp())
+          viewBuilder.setInsertionPointAfter(definition);
+        else
+          viewBuilder.setInsertionPointToStart(
+              rewrite.blockArgument.getOwner());
+        mlir::Value localSource =
+            cloneStaticViewPath(viewBuilder, rdmaRewrite.views, terminalSPM);
+        mlir::OpBuilder builder(rdma);
+        builder.create<InstrGatherScatterOp>(
+            rdma.getLoc(), localSource, rdma.getDest(), rdma.getByteCountAttr(),
+            rdma.getInnerBytesAttr(), mlir::IntegerAttr{}, mlir::IntegerAttr{},
+            rdma.getSrcStridesAttr(), rdma.getSrcIterationsAttr(),
+            rdma.getSrcStridesAttr(), rdma.getSrcIterationsAttr(),
+            rdma.getWorkerAttr());
+        rdma.erase();
+      }
+      localViews.append(rewrite.localViews.begin(), rewrite.localViews.end());
     }
-    localViews.append(rewrite.localViews.begin(), rewrite.localViews.end());
+    eraseDeadViews(localViews);
   }
-  eraseDeadViews(localViews);
 
   if (promotesEveryConsumer) {
     llvm::SmallVector<mlir::Operation *, 8> externalViews(
@@ -608,17 +706,27 @@ static bool tryPromoteResult(TileRegionOp producer, unsigned resultIndex) {
 } // namespace
 
 unsigned promoteFullBufferHandoffs(mlir::ModuleOp module) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "optimization", "full-buffer-residency", "promoteFullBufferHandoffs");
   llvm::SmallVector<std::pair<TileRegionOp, unsigned>, 8> candidates;
-  module.walk([&](TileRegionOp region) {
-    for (unsigned index = 0; index < region.getNumResults(); ++index)
-      candidates.push_back({region, index});
-  });
+  {
+    wafer::support::ScopedCompileTimingSpan collectTiming(
+        "analysis-phase", "promoteFullBufferHandoffs", "collect-candidates");
+    module.walk([&](TileRegionOp region) {
+      for (unsigned index = 0; index < region.getNumResults(); ++index)
+        candidates.push_back({region, index});
+    });
+  }
 
   unsigned promoted = 0;
-  for (auto [region, index] : candidates)
-    if (region->getBlock() && index < region.getNumResults() &&
-        tryPromoteResult(region, index))
-      ++promoted;
+  {
+    wafer::support::ScopedCompileTimingSpan rewriteTiming(
+        "optimization-phase", "promoteFullBufferHandoffs", "tryPromoteResult");
+    for (auto [region, index] : candidates)
+      if (region->getBlock() && index < region.getNumResults() &&
+          tryPromoteResult(region, index))
+        ++promoted;
+  }
   return promoted;
 }
 

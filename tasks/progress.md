@@ -25,9 +25,10 @@ Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [done]
 Q38 -> Q39 NoC-resident tile dataflow                        [done]
 Q43 Vibe Compiler collaboration review materials             [done]
 Q42 test gate scope reduction                                [done]
-Q42 + Q32.C -> Q41 compiler search scalability               [doing]
+Q42 + Q32.C -> Q41 compiler search scalability               [board-ready]
 Q42 + Q39 -> Q40 composed search and DTE overlap             [board-ready]
-Q15 + Q18 + Q35 -> Q44 PyTorch source board verticals        [later]
+Q15 + Q18 + Q35 -> Q44 PyTorch source board verticals        [board-ready]
+Q45 compiler terminology and naming                           [later]
 ```
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
@@ -38,8 +39,8 @@ Q15 + Q18 + Q35 -> Q44 PyTorch source board verticals        [later]
 | Q43 | `compiler-collaboration-review-materials` | `done` | Q9、Q37-Q39完成证据 | 151页专家技术汇报已逐页闭合：PyTorch/XLA到StableHLO/SPMD、structured IR、production analysis/pass与18个优化轴、Tile/Instr、Target LLVM、RV64 ELF/package、硬件校准和共同开发经验均有source-backed主图、原生IR/数据/分析及嵌入Notes；151张独立Image2图与PPT media一一对应，PPTX/PDF/逐页PNG/contact sheet均完成最终渲染和结构检查。未重跑板端case，Q40/Q41仍保持`board-ready`。 | 01、06、16；`tasks/plans/vibe-compiler-collaboration-review.md` |
 | Q42 | `test-load-reduction` | `done` | 无 | 默认lit/unit/CTest和owner integration均只判直接合同；历史catalog、campaign、model-scale与重复package执行已退出默认入口，保留的source-to-package/no-card seam通过。 | 16；`tasks/plans/test-gate-scope-reduction.md` |
 | Q40 | `composed-choice-search-and-dte-overlap` | `board-ready` | Q39、Q42完成 | bounded whole-variant组合、V3 same-block Direct-DTE issue→FP16/BF16 CT/NE→exact wait结构witness、同tuple serialized baseline、16-rank replicated FP16 elementwise完整双package及fresh no-card已闭合；两包保持同source/cluster launch/transport ABI/binding/call inventory并以scheduler顺序区分。真实板端exact-output和matched A/B尚未执行，不得标`done`。 | 06、08-13、16；`tasks/plans/composed-choice-search-and-dte-overlap.md` |
-| Q41 | `compiler-search-scalability` | `doing` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 搜索资源与typed optimization configuration均已闭合；当前增加默认关闭的stage/pipeline/pass/analysis/candidate-evaluation详细计时、active长耗时诊断和汇总表，并以实际Llama-2 7B block定位编译瓶颈后再确定剪枝边界。计时不得进入IR/package/selection，剪枝不得按shape/op/name恢复语义。原M-sharded K=1024 package/no-card证据不失效；详细计时与模型case完成新鲜验证后恢复`board-ready`，真实板端exact-output及winner profile尚未执行，不得标`done`。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
-| Q44 | `pytorch-source-board-verticals` | `later` | Q15、Q18、Q35；Q41通用transpose lowering热点修复 | 集中的PyTorch source case、固定seed随机输入、case-owned dtype、同module/op eager参考结果、output-only capture及原dtype/shape `torch.testing`比较已经闭合；GEMM和`4096³` K-sharded GEMM/AllReduce均由真实PyTorch/XLA exporter完成package与fresh no-card。实际Llama-2 7B Megatron TP16已完成eager、export和post-SPMD结构检查，但production compile由transpose mapped-segment逐element枚举主导，尚无完整package/no-card；先由Q41修复该通用热点，再推进三个case到共同board-ready。instruction、ABI、layout、DMA、PMU及target raw-bit calibration继续由各自协议拥有。 | 02、16；`tasks/plans/pytorch-source-board-verticals.md` |
+| Q41 | `compiler-search-scalability` | `board-ready` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 默认关闭的stage/pipeline/pass/analysis/candidate详细计时、active诊断、Markdown汇总、sharded低扰动聚合、symbolic movement descriptor及request-sharded finalization均已闭合；实际Llama-2 7B TP16 production compile为493.374秒，完整schema-v6 package与fresh no-card通过。当前真实热点已收敛到SPM planning、candidate commit、full-buffer proof和NoC tuple materialization，后续剪枝仍不得按shape/op/name恢复语义。真实板端exact-output及winner profile尚未执行，不得标`done`。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
+| Q44 | `pytorch-source-board-verticals` | `board-ready` | Q15、Q18、Q35；Q41通用movement lowering与compile scalability | 集中的PyTorch source case、固定seed随机输入、case-owned dtype、同module/op eager参考结果、output-only capture及原dtype/shape `torch.testing`比较已经闭合；rank-one GEMM、`4096³` K-sharded GEMM/AllReduce和实际Llama-2 7B Megatron TP16均由真实PyTorch/XLA exporter完成production package与fresh no-card。Llama package为16-rank cluster prepare/main、每rank 18 slots及typed rank-row pointer ABI。三个case真实板端完整capture/eager comparison尚未执行，不得标`done`。 | 02、15-16；`tasks/plans/pytorch-source-board-verticals.md` |
 
 ## Later / External Gates
 
@@ -53,6 +54,7 @@ Q15 + Q18 + Q35 -> Q44 PyTorch source board verticals        [later]
 | Q22.K | `target-model-packet-provenance` | `later` | Q22、owner-approved vendor package或公开规范 | 建立可引用的CRT/packet/MMIO provenance；缺失不阻塞functional CModel。 | 14、16、17 |
 | Q22.P | `target-model-timing-calibration` | `later` | Q32、Q22.C、validated PMU/timing environment | 校准LT/AT；没有RTL/vendor cycle证据不声明cycle accuracy。 | 16、17 |
 | Q32.T | `compiler-transform-control` | `later` | Q32、明确的external control-plane consumer | 复用现有rewrite/conversion；Transform IR不保存frontier、不替代all-rank coordinator。 | 01、05-08、10、16、18 |
+| Q45 | `compiler-terminology-and-naming` | `later` | Q41完成或暂停、明确独立迁移窗口 | 审计当前source、IR、analysis、transformation、conversion、diagnostic和设计文档中的长期命名；重点清理将执行范围、实现过程和临时产物混成概念的`rank-artifact-*`、`all-rank-*-synthesis`、`*-handoff`等命名。每个改名先确定pipeline contract与对应IR / analysis / transformation责任，不只换字符串，不改写archive历史。完成门禁是当前代码、文档、CLI/diagnostic与测试使用同一稳定术语，且名称能直接对应可验证的compiler对象。 | 01、18 |
 | Q38.W | `multi-worker-production-promotion` | `later` | V3 typed ABI、actual clone和host/model资格已闭合，且出现需要隔离等待域并可能受益的独立命令链 | 以configured-board matched correctness/performance证明非零worker相对worker0流水的明确收益后才允许normal production promotion；不得为使用worker1/2而拆分已能在worker0并行的流水。 | 08、11、14-17 |
 | Q3.6 | `crt-writeback-scalar` | `later` | 明确Count predicate及wrapper/target/model evidence | 独立闭合typed instruction、effect/completion、ABI/CRT、model和必要package readback。 | 11、14-17 |
 

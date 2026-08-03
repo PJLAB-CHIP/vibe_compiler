@@ -285,15 +285,15 @@ std::string getStandaloneTaskModuleText(mlir::func::FuncOp task);
 
 mlir::func::FuncOp findSingleSelectionTask(mlir::ModuleOp module);
 
-mlir::FailureOr<llvm::SmallVector<int64_t, 2>> getStaticRootReductionRanges(
-    mlir::func::FuncOp task,
-    CandidateTileTraversalKind traversalKind =
-        CandidateTileTraversalKind::ResultDriven);
+mlir::FailureOr<llvm::SmallVector<int64_t, 2>>
+getStaticRootReductionRanges(mlir::func::FuncOp task,
+                             CandidateTileTraversalKind traversalKind =
+                                 CandidateTileTraversalKind::ResultDriven);
 
-std::optional<std::string> getReductionSplitLegalityFailure(
-    mlir::func::FuncOp task,
-    CandidateTileTraversalKind traversalKind =
-        CandidateTileTraversalKind::ResultDriven);
+std::optional<std::string>
+getReductionSplitLegalityFailure(mlir::func::FuncOp task,
+                                 CandidateTileTraversalKind traversalKind =
+                                     CandidateTileTraversalKind::ResultDriven);
 
 bool failsCheapSPMBound(mlir::func::FuncOp task, const CandidateSpec &candidate,
                         int64_t spmBase, int64_t spmLimit);
@@ -325,10 +325,9 @@ estimateTargetSPMRequiredLiveBytes(mlir::func::FuncOp task,
                                    const CandidateSpec &candidate,
                                    int64_t spmAlignment);
 
-std::optional<std::string>
-getCheapTargetGeometryFailure(mlir::func::FuncOp task,
-                              const CandidateSpec &candidate,
-                              llvm::ArrayRef<int64_t> reductionRanges);
+std::optional<std::string> getCheapTargetGeometryFailure(
+    mlir::func::FuncOp task, const CandidateSpec &candidate,
+    llvm::ArrayRef<int64_t> reductionRanges, TargetProfileId targetProfile);
 
 TileSizeOptions buildTileSizeOptions(llvm::ArrayRef<int64_t> traversalShape,
                                      llvm::ArrayRef<int64_t> reductionRanges,

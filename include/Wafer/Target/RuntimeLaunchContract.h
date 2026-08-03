@@ -35,6 +35,7 @@ enum class KernelLaunchForm : uint8_t { PerRank, Grid, Cluster };
 enum class KernelEntryABI : uint8_t {
   RankLocalPointerBlockV1,
   RankMajorPointerTableV1,
+  RankRowPointerTableV1,
 };
 
 enum class ModelEntryABI : uint8_t { Tx81ModelBootParamV1 };

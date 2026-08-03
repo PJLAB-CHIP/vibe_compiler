@@ -74,7 +74,7 @@ populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
                                   const TileRegionToInstrOptions &options,
                                   std::string *failureReason) {
   populateMovementLoweringPatterns(patterns, failureReason);
-  populateComputeLoweringPatterns(patterns, failureReason);
+  populateComputeLoweringPatterns(patterns, options, failureReason);
   populateViewReshapeLoweringPattern(patterns, failureReason);
   populateFillLoweringPattern(patterns);
   populatePeerLoweringPatterns(patterns, failureReason);
@@ -682,6 +682,8 @@ wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
 mlir::LogicalResult wafer::tile_region_to_instr::convertTileRegionToInstrModule(
     mlir::ModuleOp module, const TileRegionToInstrOptions &options,
     std::string *failureReason) {
+  wafer::support::ScopedCompileTimingSpan conversionTiming(
+      "conversion", "tile-region-to-instr", "module-conversion");
   if (failureReason)
     failureReason->clear();
 
@@ -744,6 +746,7 @@ mlir::LogicalResult wafer::tile_region_to_instr::convertTileRegionToInstrModule(
   }
 
   if (!conversionSucceeded) {
+    conversionTiming.markFailed();
     if (!failureReason || failureReason->empty())
       setFailureReason(failureReason,
                        "tile-region to instruction conversion failed");
@@ -754,5 +757,8 @@ mlir::LogicalResult wafer::tile_region_to_instr::convertTileRegionToInstrModule(
         "lowering-phase", "tile-region-to-instr", "dead-private-fill-erasure");
     eraseDeadPrivateFills(module);
   }
-  return wafer::normalizeMinimumNCCJoins(module);
+  mlir::LogicalResult result = wafer::normalizeMinimumNCCJoins(module);
+  if (mlir::failed(result))
+    conversionTiming.markFailed();
+  return result;
 }

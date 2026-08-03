@@ -22,10 +22,33 @@ struct TransferRealizabilityLimits {
 /// side state is retained.
 class TransferRealizability {
 public:
+  /// Prove two exact mappings from one rectangular iteration domain to the
+  /// source and destination logical tensors.  This is the general movement
+  /// form used by descriptor lowering: destination mapping must be injective
+  /// (each physical result element is written once), while source mapping may
+  /// be non-injective for broadcast.  The proof is symbolic and does not
+  /// enumerate the iteration domain.
+  static mlir::LogicalResult proveMappedTransfer(
+      mlir::MemRefType sourceType, mlir::MemRefType destType,
+      llvm::ArrayRef<int64_t> iterationShape,
+      const IndexRelation &iterationToSource,
+      const IndexRelation &iterationToDest);
+
   static mlir::LogicalResult
   proveMetadataView(mlir::MemRefType sourceType, mlir::MemRefType destType,
                     const IndexRelation &relation, bool destinationMayWrite,
                     const TransferRealizabilityLimits &limits = {});
+
+  /// Prove the canonical row-major logical reshape between two static views.
+  /// Unlike the general relation entry point, this preserves the construction
+  /// guarantee instead of rebuilding and comparing equivalent Presburger
+  /// relations.  Non-compact physical maps still use the bounded exact
+  /// element-span proof and fail closed when the enumeration budget is
+  /// exceeded.
+  static mlir::LogicalResult proveStaticReshapeMetadataView(
+      mlir::MemRefType sourceType, mlir::MemRefType destType,
+      bool destinationMayWrite,
+      const TransferRealizabilityLimits &limits = {});
 
   static mlir::LogicalResult
   proveCompactDma(mlir::MemRefType sourceType, mlir::MemRefType destType,

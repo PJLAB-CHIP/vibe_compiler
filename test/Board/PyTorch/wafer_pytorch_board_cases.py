@@ -193,6 +193,11 @@ def _hf_megatron_transformer_block(
 
     config = dict(capture.load_hf_transformer_config(HF_LLAMA2_7B_CONFIG))
     config["torch_dtype"] = dtype_name
+    # The closed board profile has FP16 reduction/elementwise evidence but no
+    # F32 reduction tuple. Keep the precision choice in the PyTorch source
+    # contract so eager expected and exported StableHLO use the same dtype;
+    # the general HF emitter still defaults to the standard F32 accumulation.
+    config["wafer_accumulation_dtype"] = dtype_name
     batch_size = 1
     sequence_length = HF_LLAMA2_7B_SEQUENCE_LENGTH
     hidden_size = int(config["hidden_size"])

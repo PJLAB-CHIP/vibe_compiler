@@ -29,6 +29,9 @@ using wafer::tensor_program_scheduling::getYieldedRootLinalgOps;
 using wafer::tensor_program_scheduling::SelectedCandidate;
 using wafer::tensor_program_scheduling::SelectionConfig;
 
+constexpr wafer::TargetProfileId kTargetProfile =
+    wafer::TargetProfileId::waferTx81SingleCardKernelV1();
+
 class CandidateSearchExecutionTest : public ::testing::Test {
 protected:
   CandidateSearchExecutionTest() {
@@ -580,7 +583,7 @@ module {
       getCheapTargetGeometryFailure(wrapped,
                                     CandidateSpec{/*tileSizes=*/{65536, 1},
                                                   /*reductionSplitSizes=*/{}},
-                                    /*reductionRanges=*/{}));
+                                    /*reductionRanges=*/{}, kTargetProfile));
 }
 
 TEST(CandidateSelectionTest,
@@ -679,14 +682,17 @@ module {
   CandidateSpec fullTraversal{/*tileSizes=*/{458752},
                               /*reductionSplitSizes=*/{}};
   EXPECT_FALSE(getCheapTargetGeometryFailure(task, fullTraversal,
-                                             /*reductionRanges=*/{1}));
+                                             /*reductionRanges=*/{1},
+                                             kTargetProfile));
   EXPECT_TRUE(getCheapTargetGeometryFailure(task, fullTraversal,
-                                            /*reductionRanges=*/{2}));
+                                            /*reductionRanges=*/{2},
+                                            kTargetProfile));
 
   CandidateSpec narrowTraversalWideReduction{/*tileSizes=*/{57344},
                                              /*reductionSplitSizes=*/{65536}};
   EXPECT_TRUE(getCheapTargetGeometryFailure(task, narrowTraversalWideReduction,
-                                            /*reductionRanges=*/{65536}));
+                                            /*reductionRanges=*/{65536},
+                                            kTargetProfile));
 }
 
 TEST_F(InterfaceTraversalCandidateSelectionTest,
@@ -942,7 +948,7 @@ module {
 }
 
 TEST(CandidateSelectionTest,
-     RejectsOversizedF16PartialReductionBeforeTargetMaterialization) {
+     AdmitsQualifiedF16NativePartialReductionBeforeMaterialization) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                   mlir::linalg::LinalgDialect, mlir::tensor::TensorDialect,
@@ -972,15 +978,13 @@ module {
   CandidateSpec candidate{/*tileSizes=*/{2, 2},
                           /*reductionSplitSizes=*/{1024}};
   candidate.traversalKind = wafer::CandidateTileTraversalKind::PartialReduction;
-  std::optional<std::string> oversized =
-      getCheapTargetGeometryFailure(function, candidate, {1024});
-  ASSERT_TRUE(oversized);
-  EXPECT_NE(oversized->find("static_terminal_budget_exceeded"),
-            std::string::npos)
-      << *oversized;
+  std::optional<std::string> oversized = getCheapTargetGeometryFailure(
+      function, candidate, {1024}, kTargetProfile);
+  EXPECT_FALSE(oversized);
 
   candidate.reductionSplitSizes = {512};
-  EXPECT_FALSE(getCheapTargetGeometryFailure(function, candidate, {1024}));
+  EXPECT_FALSE(getCheapTargetGeometryFailure(function, candidate, {1024},
+                                             kTargetProfile));
 }
 
 TEST(CandidateSelectionTest,

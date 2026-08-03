@@ -207,6 +207,64 @@ func.func @nested_control_flow(
 // CHECK: wafer.instr.gather_scatter
 // CHECK: scf.yield
 
+func.func @cx_copy_excludes_fp32_channel_padding(
+    %src: memref<2x97xf32, #wafer.memory<ddr, tensor>>) {
+  %region = wafer.tile.region(%src
+      : memref<2x97xf32, #wafer.memory<ddr, tensor>>)
+      -> (memref<2x97xf32, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<2x97xf32, #wafer.memory<ddr, tensor>>):
+    %loaded = memref.alloc()
+        : memref<2x97xf32, #wafer.memory<spm, cx>>
+    wafer.tile.load %arg0 into %loaded
+        : memref<2x97xf32, #wafer.memory<ddr, tensor>>
+      into memref<2x97xf32, #wafer.memory<spm, cx>>
+    %copy = wafer.tile.copy %loaded
+        : memref<2x97xf32, #wafer.memory<spm, cx>>
+       -> memref<2x97xf32, #wafer.memory<spm, cx>>
+    wafer.tile.yield %arg0
+        : memref<2x97xf32, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @cx_copy_excludes_fp32_channel_padding
+// CHECK: wafer.instr.gather_scatter
+// CHECK-SAME: byte_count = 512 : i64
+// CHECK-SAME: inner_bytes = 512 : i64
+// CHECK: wafer.instr.gather_scatter
+// CHECK-SAME: byte_count = 264 : i64
+// CHECK-SAME: inner_bytes = 132 : i64
+// CHECK-NOT: wafer.instr.gather_scatter
+
+func.func @ncx_copy_excludes_fp16_channel_and_batch_padding(
+    %src: memref<2x128x97xf16, #wafer.memory<ddr, tensor>>) {
+  %region = wafer.tile.region(%src
+      : memref<2x128x97xf16, #wafer.memory<ddr, tensor>>)
+      -> (memref<2x128x97xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<2x128x97xf16, #wafer.memory<ddr, tensor>>):
+    %loaded = memref.alloc()
+        : memref<2x128x97xf16, #wafer.memory<spm, ncx>>
+    wafer.tile.load %arg0 into %loaded
+        : memref<2x128x97xf16, #wafer.memory<ddr, tensor>>
+      into memref<2x128x97xf16, #wafer.memory<spm, ncx>>
+    %copy = wafer.tile.copy %loaded
+        : memref<2x128x97xf16, #wafer.memory<spm, ncx>>
+       -> memref<2x128x97xf16, #wafer.memory<spm, ncx>>
+    wafer.tile.yield %arg0
+        : memref<2x128x97xf16, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @ncx_copy_excludes_fp16_channel_and_batch_padding
+// CHECK: wafer.instr.gather_scatter
+// CHECK-SAME: byte_count = 32768 : i64
+// CHECK-SAME: inner_bytes = 16384 : i64
+// CHECK: wafer.instr.gather_scatter
+// CHECK-SAME: byte_count = 16896 : i64
+// CHECK-SAME: inner_bytes = 66 : i64
+// CHECK-NOT: wafer.instr.gather_scatter
+
 func.func @nested_loop(
     %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
     %output: memref<4x8xf16, #wafer.memory<ddr, tensor>>) {
@@ -351,12 +409,12 @@ func.func @movement_cx_ncx_block_major_offsets(%zero: f16) {
 // CHECK: %[[NCX_SLICE:.+]] = memref.alloc() : memref<1x2x128xf16, #wafer.memory<spm, ncx>>
 // CHECK: wafer.instr.gather_scatter %[[NCX_SOURCE]] to %[[NCX_SLICE]]
 // CHECK-SAME: byte_count = 512 : i64
-// CHECK-SAME: dst_iterations = array<i64: 2, 2, 1>
-// CHECK-SAME: dst_strides = array<i64: 256, 128, 0>
-// CHECK-SAME: inner_bytes = 128 : i64
-// CHECK-SAME: src_iterations = array<i64: 2, 2, 1>
+// CHECK-SAME: dst_iterations = array<i64: 1, 1, 1>
+// CHECK-SAME: dst_strides = array<i64: 0, 0, 0>
+// CHECK-SAME: inner_bytes = 512 : i64
+// CHECK-SAME: src_iterations = array<i64: 1, 1, 1>
 // CHECK-SAME: src_offset = 512 : i64
-// CHECK-SAME: src_strides = array<i64: 256, 128, 0>
+// CHECK-SAME: src_strides = array<i64: 0, 0, 0>
 // CHECK-NOT: wafer.instr.gather_scatter %[[NCX_SOURCE]] to %[[NCX_SLICE]]
 
 func.func @reshape_view(
@@ -419,10 +477,10 @@ func.func @reshape_then_materialize_cx_uses_reshaped_logical_order(%zero: f16) {
 // CHECK: wafer.instr.gather_scatter %[[RESHAPED]] to %[[CX]]
 // CHECK-SAME: byte_count = 512 : i64
 // CHECK-SAME: dst_iterations = array<i64: 2, 2, 1>
-// CHECK-SAME: dst_strides = array<i64: 256, 128, 0>
+// CHECK-SAME: dst_strides = array<i64: 128, 256, 0>
 // CHECK-SAME: inner_bytes = 128 : i64
 // CHECK-SAME: src_iterations = array<i64: 2, 2, 1>
-// CHECK-SAME: src_strides = array<i64: 128, 256, 0>
+// CHECK-SAME: src_strides = array<i64: 256, 128, 0>
 // CHECK-NOT: wafer.instr.gather_scatter %[[RESHAPED]] to %[[CX]]
 
 func.func @reshape_cx_tail_only_metadata_view(%zero: f16) {

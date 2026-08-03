@@ -960,16 +960,16 @@ peer edge、message、local work和completion。
 | --- | --- |
 | `wafer.tile.load` | Q32.R后consume destination-style source/dest；current capability只处理compact Tensor。Q32.V mapped extension从两端typed views/encoding、TargetProfileId和08 exact transfer proof导出direct cover，并发射显式`src_offset`/`dst_offset`的RDMA；若consumer要求known padding，先fill完整destination再发valid segments；staged alternative必须已显式物化为Tensor+GS payload IR |
 | `wafer.tile.store` | consume destination-style source/dest；current capability从compact Tensor发射WDMA。Q32.V mapped extension从两端typed views/encoding、TargetProfileId和08 exact transfer proof导出direct cover，并发射显式`src_offset`/`dst_offset`的WDMA；staged alternative必须已显式物化在payload IR，source lifetime由typed worker ordered-pending及其真实external/terminal cut闭合，不能因WDMA本身插join |
-| `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; compare source/result logical element to physical byte mapping through the unified physical layout calculator; coalesce adjacent byte segments, pack regular segments into up to three stride/iteration levels, and emit one or more `wafer.instr.gather_scatter`; do not require source/result physical byte counts to match; structured failure only when static logical movement cannot be represented by V0 descriptors |
+| `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; derive exact full-block/tail physical pieces from the unified physical encoding facts, directly form up to three stride/iteration levels, and emit one or more `wafer.instr.gather_scatter`; do not require source/result physical byte counts to match and do not copy padding; structured failure only when static logical movement cannot be represented by V0 descriptors |
 | `wafer.tile.fill` | current v1只对Tensor logical-valid domain生成无domain attr的`wafer.instr.fill`；padding/physical-footprint初始化已由Q32.V增加typed Instr/TargetCall字段并闭合count/raw-value纵向 |
 | `wafer.tile.gemm` | ensure/create selected aligned SPM physical versions；current v1只在normal/normal relation成立时生成无orientation字段的`wafer.instr.gemm`。若operand/result已是合法Cx/NCx，直接消费该encoding且不插入packing字段；本lowering不判断历史上是否删除过layout/GS，tasks/06 Q32.S/G集成证据从winner readback证明absorption。Q32.V把tile-level typed orientation无损写入versioned Instr op；不能从shape或op名恢复flag |
 | `wafer.tile.elementwise` | materialize every input indexing map into explicit movement/same-shape operands; strip even identity maps; ensure/create destination; map non-select kind and emit map-free `wafer.instr.elementwise`; semantic select lowers to false-copy `gather_scatter` + `bit2fp` + `mask_move`; reject if a map is unrepresentable |
 | `wafer.tile.reduce` | verify init operand/attr mutual exclusion/type; fill result-shaped accumulator; enumerate reduction tuples in canonical lexicographic order; materialize each non-reduced slice to result shape and map an exact combiner to map-free elementwise ping-pong accumulators with explicit completion; move final accumulator to destination; reject dynamic-init/combiner/budget cases not representable by the typed baseline; do not emit native reduce without a compiler-owned full-domain equivalence proof |
 | `wafer.tile.copy` | ensure / create destination SPM memref; emit one gather_scatter; replace result with dest memref |
-| `wafer.tile.extract_slice` | create destination SPM memref; enumerate the static slice result logical domain, map each result index through offsets/sizes/strides back to the source logical index, compute physical byte offsets with the unified Wafer layout calculator, coalesce adjacent byte segments, pack regular segments into up to three stride/iteration levels, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
-| `wafer.tile.insert_slice` | create destination SPM memref; first copy the original destination payload into the result via logical-to-physical segments, then enumerate source logical indices and overlay them into the statically described destination slice via packed `wafer.instr.gather_scatter` descriptors; replace result with the new memref |
-| `wafer.tile.broadcast` | create destination SPM memref; enumerate the static result domain, map source dims through `dimensions`, compute source/result physical byte offsets, coalesce adjacent segments, pack regular segments into up to three stride/iteration levels, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
-| `wafer.tile.transpose` | create destination SPM memref; enumerate the static result domain, invert `permutation` to source logical indices, compute source/result physical byte offsets, coalesce adjacent segments, pack regular segments into up to three stride/iteration levels, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
+| `wafer.tile.extract_slice` | create destination SPM memref; compose the static offsets/sizes/strides relation with both physical encodings, split only at layout/field/descriptor boundaries, directly emit up to three loop levels per exact `wafer.instr.gather_scatter`, and replace result with dest memref |
+| `wafer.tile.insert_slice` | create destination SPM memref; first construct an exact valid-domain copy of the original destination, then compose the static insertion relation and overlay the source with symbolic loop descriptors; replace result with the new memref |
+| `wafer.tile.broadcast` | create destination SPM memref; compose `dimensions` with source/result physical encodings, preserve zero source strides for repeated reads, directly materialize exact loop descriptors, and replace result with dest memref |
+| `wafer.tile.transpose` | create destination SPM memref; compose the inverse permutation with source/result physical encodings and directly materialize exact multi-loop descriptors; split only at Cx/NCx full/tail, field-width or three-level boundaries, and replace result with dest memref |
 | `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits packed `wafer.instr.gather_scatter` descriptors only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 | `wafer.tile.all_gather` | requires matching `tensor/ntensor` SPM layouts and infers the unique gather axis from compact local/gather buffer shapes. `ring` copies the local chunk into the local gather slot, inserts a participant join only before the first DTE observation of its NCC producer, then forwards one slot per round around the topology-derived rank order; it has no round/backedge/final structural join. `direct` uses the deterministic cyclic order of semantic group indices to send the local slot to every other logical rank while receiving each peer chunk into its result slot；it does not invoke topology Ring search. |
@@ -989,21 +989,22 @@ R3.2d.4 已覆盖 static movement descriptor splitting / packing：
   op 语义恢复 source/result logical index relation，再计算两端 physical byte offset；不能用 generic
   memref load/store/copy 或名字匹配绕过 movement 语义。
 - V0 当前只 materialize 静态、byte-addressable、可按 buffer-local offset 表示的 descriptor 序列。
-  lowering 先 coalesce 相邻 byte 段，再贪心识别可由三层 source/dest stride/iteration 同时描述的
-  规则 segment block；不能被单个 descriptor 表达的剩余段继续拆成后续 `wafer.instr.gather_scatter`。
-  dynamic shape、bit-packed element、超过三层或 helper 无法证明真实 physical offset 的情况仍
-  structured failure。
+  lowering在logical relation与encoding piece上符号执行，从内向外直接合并最多三层
+  source/dest stride × iteration；只在full/C0/folded tail、NCx per-N padding、directional DMA连续性、
+  target field和三层上限边界拆成后续command。dynamic shape、bit-packed element或无法证明的relation
+  structured failure，不回退到production per-element segment enumeration。
 
 R3.2d.5 static movement plan的host构造复杂度不属于IR协议，但必须保持可扩展且与统一physical mapping等价：
 
-- 静态logical domain按canonical lexicographic次序遍历；实现可以用一次校验后的odometer增量维护multi-index，不能要求
-  每个element重新用除法/取模从linear index反线性化。source/result index relation和segment顺序不变。
-- lowering复用tasks/08拥有的`WaferStaticPhysicalOffsetCalculator`，在构造时缓存从memref type和
-  `computeWaferPhysicalTensorInfo`派生的shape stride、Cx/NCx full/tail block常量，用于同一conversion内的hot loop；
-  `computeWaferPhysicalElementByteOffset`仍是规范physical mapping，focused differential必须覆盖Tensor/NTensor、Cx/NCx、
-  C0 tail和越界拒绝。缓存只是可重算analysis，不进入IR、attr、package或全局side table。
-- per-element index scratch由当前lowering invocation拥有并复用；不能让buffer名、地址或workload shape成为fast-path语义。
-  任一overflow、dynamic/invalid shape或无法证明的layout继续structured failure，不允许为了性能跳过range/verifier检查。
+- 实现消费显式static index relation，把iteration domain分解为full block、retained/folded tail和NCx batch
+  pieces；直接形成各维的base/stride/iteration并从内向外合并。host work只能与rank、piece数、
+  descriptor level和最终command count成比例，不能与logical element count成比例。
+- lowering复用tasks/08拥有的`computeWaferPhysicalTensorInfo`与physical encoding interface；
+  `computeWaferPhysicalElementByteOffset`仍是规范point mapping，但只在focused differential tests中作为独立慢oracle，
+  不作为production planner的按element迭代器。tests必须覆盖Tensor/NTensor、Cx/NCx、各dtype CBlock、
+  full/C0/folded tail、NCx per-N padding和越界拒绝。
+- 不能让buffer名、地址或workload shape成为fast-path语义。任一overflow、dynamic/invalid shape或无法证明的
+  relation/layout继续structured failure，不允许为了性能跳过range、coverage、command budget或verifier检查。
 - 性能优化完成证明必须比较优化前后packed source/dest descriptor和最终target command，而不仅是wall time；7B scale gate还要
   保持all-rank package、transaction/SystemC delta、numeric counters和完整PyTorch differential。
 

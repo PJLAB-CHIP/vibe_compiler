@@ -448,8 +448,12 @@ Pipeline position:
 
 当前production compiler为需要预初始化logical tile与Direct DTE状态的kernel选择cluster prepare/main contract；该
 kernel invocation plan持有唯一`ModuleId`、typed `prepare`/`main` exports和
-16个rank-major slot rows；不从16个per-rank plan的顺序或symbol spelling拼phase。provider读取、hash、load
-该module各一次，保持同一module handle、argument table和custom stream：先提交`prepare`，以host query
+16个typed slot rows；不从16个per-rank plan的顺序或symbol spelling拼phase。每rank slot数能放入qualified
+command packet时使用`rank-major-pointer-table-v1`，packet直接承载rank-major resource pointer；否则使用
+`rank-row-pointer-table-v1`，runtime为每个rank分配一段device pointer row，按manifest slot order上传resource
+device address，aggregate packet只承载16个row pointer。row storage是invocation-local runtime ownership，不是
+manifest resource、workspace或新的binding；device aggregate用pid选择row后再按typed slot ordinal读取。
+provider读取、hash、load该module各一次，保持同一module handle、argument table和custom stream：先提交`prepare`，以host query
 观测其共同terminal，再提交`main`，两段共用一个absolute deadline。prepare先由当前full-16 C-INS pid执行
 `init_tile_id(pid, 4)`，建立Direct DTE跨tile SPM helper消费的逻辑tile和row-length状态，再初始化ready slots；
 不创建需要回滚的FSM/DTE handle；因此prepare query error或timeout的唯一安全结果是sticky quarantine。
@@ -463,7 +467,8 @@ main terminal后，runtime先逐rank读回64-byte internal transport status stor
 ### 8.2 Q6.B TX Board RuntimeProvider Contract
 
 Q6.B在configured TX board上实现第三层`RuntimeProvider`。schema-v6 package只显式拥有kernel/model launch kind；
-kernel pointer block、rank-major pointer table及可选prepare/main由typed program结构验证，model BootParam由provider机械构造。provider只接受同一
+kernel pointer block、rank-major pointer table、rank-row pointer table及可选prepare/main由typed program结构验证，
+model BootParam由provider机械构造。provider只接受同一
 typed verifier重新加载的fresh package、显式device
 identity和按`ResourceId`绑定的host buffers；文件名、resource name、参数顺序和测试case不能恢复binding语义。kernel entry slot
 顺序由manifest中的typed `PackageABISlotBinding`唯一拥有，provider机械构造dense 64-bit device-address参数块；model entry则从
@@ -524,7 +529,9 @@ ResourceId指向同一output path均在provider effect前拒绝。
 kernel command geometry或transport phase误写成新的runtime launch种类：
 
 - kernel rank-one用一个普通`txLaunchKernel(grid=(1,1,1))` command；完整16-rank kernel统一发布一个aggregate
-  module/function和rank-major argument table，并以`txLaunchKernel(grid=(16,1,1), block=(1,1,1))`执行。
+  module/function。窄slot domain使用packet内rank-major pointer table；较宽slot domain使用packet内16个rank-row
+  pointer，runtime device rows继续保存完整typed slot table。两种ABI均以
+  `txLaunchKernel(grid=(16,1,1), block=(1,1,1))`执行。
   Kcore为每次调用设置block pid，device entry用`__get_pid(0)`选择对应rank body和argument row。transport需要runtime
   prepare时，同一个kernel invocation增加先于main terminal的prepare phase；TX provider可在内部用
   `txLaunchClusterKernel`承载这两个kernel commands，但它不产生第三种launch kind。`~expected`预填使任一未写或部分写

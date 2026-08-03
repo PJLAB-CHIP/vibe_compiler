@@ -16,6 +16,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -54,6 +55,7 @@ public:
     friend class CompileTimingSession;
     uint64_t id = 0;
     uint64_t threadId = 0;
+    size_t shardIndex = 0;
     Clock::time_point wallStart;
     uint64_t cpuStartNs = 0;
     std::string kind;
@@ -76,19 +78,19 @@ public:
     Token token;
     token.id = nextId.fetch_add(1, std::memory_order_relaxed);
     token.threadId = llvm::get_threadid();
+    token.shardIndex = token.threadId % kTimingShardCount;
     token.wallStart = Clock::now();
     token.cpuStartNs = readThreadCpuNanoseconds();
     token.kind = kind.str();
     token.pipeline = pipeline.str();
     token.name = name.str();
     token.detail = detail.str();
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      active.emplace(token.id,
-                     ActiveRecord{token.id, token.threadId, token.wallStart,
-                                  token.kind, token.pipeline, token.name,
-                                  token.detail});
-    }
+    TimingShard &shard = timingShards[token.shardIndex];
+    std::lock_guard<std::mutex> lock(shard.mutex);
+    shard.active.emplace(token.id,
+                         ActiveRecord{token.id, token.threadId, token.wallStart,
+                                      token.kind, token.pipeline, token.name,
+                                      token.detail});
     return token;
   }
 
@@ -100,16 +102,16 @@ public:
     const uint64_t wallUs = elapsedMicroseconds(token.wallStart, wallEnd);
     const uint64_t cpuUs =
         cpuEndNs >= token.cpuStartNs ? (cpuEndNs - token.cpuStartNs) / 1000 : 0;
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      active.erase(token.id);
-      Summary &summary = summaries[{token.kind, token.pipeline, token.name}];
-      ++summary.calls;
-      summary.wallUs += wallUs;
-      summary.cpuUs += cpuUs;
-      summary.maxWallUs = std::max(summary.maxWallUs, wallUs);
-      summary.failures += failed;
-    }
+    TimingShard &shard = timingShards[token.shardIndex];
+    std::lock_guard<std::mutex> lock(shard.mutex);
+    shard.active.erase(token.id);
+    Summary &summary =
+        shard.summaries[{token.kind, token.pipeline, token.name}];
+    ++summary.calls;
+    summary.wallUs += wallUs;
+    summary.cpuUs += cpuUs;
+    summary.maxWallUs = std::max(summary.maxWallUs, wallUs);
+    summary.failures += failed;
     token.id = 0;
   }
 
@@ -122,13 +124,13 @@ public:
       return;
     stopMonitor();
 
-    std::vector<std::pair<SummaryKey, Summary>> rows;
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      rows.reserve(summaries.size());
-      for (const auto &entry : summaries)
-        rows.push_back(entry);
+    std::map<SummaryKey, Summary> combined;
+    for (TimingShard &shard : timingShards) {
+      std::lock_guard<std::mutex> lock(shard.mutex);
+      mergeSummaries(combined, shard.summaries);
     }
+    std::vector<std::pair<SummaryKey, Summary>> rows(combined.begin(),
+                                                     combined.end());
     llvm::stable_sort(rows, [](const auto &lhs, const auto &rhs) {
       if (lhs.second.wallUs != rhs.second.wallUs)
         return lhs.second.wallUs > rhs.second.wallUs;
@@ -196,6 +198,28 @@ private:
     uint64_t failures = 0;
   };
 
+  struct TimingShard {
+    std::mutex mutex;
+    std::map<uint64_t, ActiveRecord> active;
+    std::map<SummaryKey, Summary> summaries;
+  };
+
+  static constexpr size_t kTimingShardCount = 256;
+
+  static void mergeSummary(Summary &destination, const Summary &source) {
+    destination.calls += source.calls;
+    destination.wallUs += source.wallUs;
+    destination.cpuUs += source.cpuUs;
+    destination.maxWallUs = std::max(destination.maxWallUs, source.maxWallUs);
+    destination.failures += source.failures;
+  }
+
+  static void mergeSummaries(std::map<SummaryKey, Summary> &destination,
+                             const std::map<SummaryKey, Summary> &source) {
+    for (const auto &[key, summary] : source)
+      mergeSummary(destination[key], summary);
+  }
+
   static uint64_t elapsedMicroseconds(Clock::time_point start,
                                       Clock::time_point end) {
     const auto elapsed =
@@ -240,13 +264,13 @@ private:
 
       const Clock::time_point now = Clock::now();
       std::vector<std::pair<uint64_t, ActiveRecord>> snapshot;
-      std::vector<std::pair<SummaryKey, Summary>> progressRows;
+      std::map<SummaryKey, Summary> progress;
       size_t activeCount = 0;
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        activeCount = active.size();
-        std::map<uint64_t, ActiveRecord> leafByThread;
-        for (const auto &[id, record] : active) {
+      std::map<uint64_t, ActiveRecord> leafByThread;
+      for (TimingShard &shard : timingShards) {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        activeCount += shard.active.size();
+        for (const auto &[id, record] : shard.active) {
           auto found = leafByThread.find(record.threadId);
           if (found == leafByThread.end() ||
               record.wallStart > found->second.wallStart ||
@@ -254,14 +278,14 @@ private:
                record.id > found->second.id))
             leafByThread.insert_or_assign(record.threadId, record);
         }
-        snapshot.reserve(leafByThread.size());
-        for (const auto &[threadId, record] : leafByThread)
-          snapshot.emplace_back(elapsedMicroseconds(record.wallStart, now),
-                                record);
-        progressRows.reserve(summaries.size());
-        for (const auto &entry : summaries)
-          progressRows.push_back(entry);
+        mergeSummaries(progress, shard.summaries);
       }
+      snapshot.reserve(leafByThread.size());
+      for (const auto &[threadId, record] : leafByThread)
+        snapshot.emplace_back(elapsedMicroseconds(record.wallStart, now),
+                              record);
+      std::vector<std::pair<SummaryKey, Summary>> progressRows(progress.begin(),
+                                                               progress.end());
       llvm::stable_sort(snapshot, [](const auto &lhs, const auto &rhs) {
         if (lhs.first != rhs.first)
           return lhs.first > rhs.first;
@@ -322,9 +346,7 @@ private:
   const Clock::time_point sessionStart;
   std::atomic<uint64_t> nextId{1};
   std::atomic<bool> finished{false};
-  std::mutex mutex;
-  std::map<uint64_t, ActiveRecord> active;
-  std::map<SummaryKey, Summary> summaries;
+  std::array<TimingShard, kTimingShardCount> timingShards;
   std::mutex outputMutex;
   std::mutex monitorMutex;
   std::condition_variable monitorWake;

@@ -3,6 +3,7 @@
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Analysis/Presburger/IntegerRelation.h"
 #include "llvm/ADT/DynamicAPInt.h"
@@ -84,6 +85,32 @@ static mlir::LogicalResult verifyExactCoveredRelation(
   return mlir::success();
 }
 
+static mlir::LogicalResult verifyExactMappedEndpoint(
+    mlir::MemRefType endpointType, llvm::ArrayRef<int64_t> iterationShape,
+    const IndexRelation &relation, bool requireInjective) {
+  if (relation.getStatus() != IndexRelationStatus::Exact ||
+      relation.getDestinationRank() != iterationShape.size() ||
+      relation.getSourceRank() !=
+          static_cast<unsigned>(endpointType.getRank()) ||
+      !endpointType.hasStaticShape() ||
+      !relation.isFunctional().isProvenTrue() ||
+      (requireInjective && !relation.isInjective().isProvenTrue()))
+    return mlir::failure();
+
+  IndexSetResult iterationDomain =
+      IndexRelation::staticDomain(iterationShape);
+  IndexSetResult endpointDomain =
+      IndexRelation::staticDomain(endpointType.getShape());
+  if (!iterationDomain.isExact() || !endpointDomain.isExact())
+    return mlir::failure();
+  PresburgerSet relationDomain =
+      relation.getPresburgerRelation().getDomainSet();
+  PresburgerSet relationRange = relation.getPresburgerRelation().getRangeSet();
+  return mlir::success(
+      relationDomain.isEqual(*iterationDomain.set) &&
+      relationRange.isSubsetOf(*endpointDomain.set));
+}
+
 static bool isCanonicalLinearRelation(mlir::MemRefType sourceType,
                                       mlir::MemRefType destType,
                                       const IndexRelation &relation) {
@@ -121,6 +148,59 @@ verifyByteAddressablePhysicalMaps(mlir::MemRefType sourceType,
       return mlir::failure();
   }
   return mlir::success();
+}
+
+static mlir::LogicalResult verifyMetadataViewTypeCompatibility(
+    mlir::MemRefType sourceType, mlir::MemRefType destType) {
+  MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
+  MemoryAttr destMemory = getWaferMemoryAttr(destType);
+  llvm::SmallVector<int64_t, 4> sourceStrides;
+  llvm::SmallVector<int64_t, 4> destStrides;
+  int64_t sourceOffset = 0;
+  int64_t destOffset = 0;
+  if (!sourceMemory || !destMemory ||
+      sourceMemory.getSpace() != destMemory.getSpace() ||
+      sourceType.getElementType() != destType.getElementType() ||
+      mlir::failed(
+          mlir::getStridesAndOffset(sourceType, sourceStrides, sourceOffset)) ||
+      mlir::failed(
+          mlir::getStridesAndOffset(destType, destStrides, destOffset)) ||
+      mlir::ShapedType::isDynamic(sourceOffset) ||
+      mlir::ShapedType::isDynamic(destOffset) || sourceOffset != destOffset)
+    return mlir::failure();
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyEqualPhysicalFootprints(
+    mlir::MemRefType sourceType, mlir::MemRefType destType) {
+  WaferPhysicalEncodingAttrInterface sourceEncoding = getEncoding(sourceType);
+  WaferPhysicalEncodingAttrInterface destEncoding = getEncoding(destType);
+  if (!sourceEncoding || !destEncoding)
+    return mlir::failure();
+  mlir::FailureOr<int64_t> sourceBytes =
+      sourceEncoding.getPhysicalFootprintBytes(sourceType);
+  mlir::FailureOr<int64_t> destBytes =
+      destEncoding.getPhysicalFootprintBytes(destType);
+  return mlir::success(mlir::succeeded(sourceBytes) &&
+                       mlir::succeeded(destBytes) &&
+                       *sourceBytes == *destBytes);
+}
+
+static mlir::FailureOr<WaferPhysicalElementSpan> getPhysicalElementSpan(
+    mlir::MemRefType type, llvm::ArrayRef<int64_t> indices,
+    WaferPhysicalEncodingAttrInterface encoding,
+    const std::optional<WaferStaticPhysicalOffsetCalculator> &calculator) {
+  if (!calculator)
+    return encoding.getPhysicalElementSpan(type, indices);
+  int64_t bitOffset = 0;
+  int64_t bitLength = 0;
+  if (llvm::MulOverflow(calculator->getByteOffsetForValidIndices(indices),
+                        int64_t{8}, bitOffset) ||
+      llvm::MulOverflow(calculator->getInfo().elementBytes, int64_t{8},
+                        bitLength) ||
+      bitLength <= 0)
+    return mlir::failure();
+  return WaferPhysicalElementSpan{bitOffset, bitLength};
 }
 
 static bool isCompactCanonicalPhysicalMap(mlir::MemRefType type) {
@@ -171,6 +251,10 @@ forEachMappedElement(mlir::MemRefType sourceType, mlir::MemRefType destType,
   WaferPhysicalEncodingAttrInterface destEncoding = getEncoding(destType);
   if (!sourceEncoding || !destEncoding)
     return mlir::failure();
+  std::optional<WaferStaticPhysicalOffsetCalculator> sourceCalculator =
+      WaferStaticPhysicalOffsetCalculator::create(sourceType);
+  std::optional<WaferStaticPhysicalOffsetCalculator> destCalculator =
+      WaferStaticPhysicalOffsetCalculator::create(destType);
 
   bool usesCanonicalLinearOrder =
       isCanonicalLinearRelation(sourceType, destType, relation);
@@ -193,9 +277,57 @@ forEachMappedElement(mlir::MemRefType sourceType, mlir::MemRefType destType,
       source = std::move(*mapped);
     }
     mlir::FailureOr<WaferPhysicalElementSpan> sourceSpan =
-        sourceEncoding.getPhysicalElementSpan(sourceType, source);
-    mlir::FailureOr<WaferPhysicalElementSpan> destSpan =
-        destEncoding.getPhysicalElementSpan(destType, destination);
+        getPhysicalElementSpan(sourceType, source, sourceEncoding,
+                               sourceCalculator);
+    mlir::FailureOr<WaferPhysicalElementSpan> destSpan = getPhysicalElementSpan(
+        destType, destination, destEncoding, destCalculator);
+    if (mlir::failed(sourceSpan) || mlir::failed(destSpan) ||
+        mlir::failed(callback(*sourceSpan, *destSpan)))
+      return mlir::failure();
+
+    for (int64_t dim = destType.getRank() - 1; dim >= 0; --dim) {
+      if (++destination[dim] < destType.getDimSize(dim))
+        break;
+      destination[dim] = 0;
+    }
+  }
+  return mlir::success();
+}
+
+template <typename Callback>
+static mlir::LogicalResult forEachStaticReshapeElement(
+    mlir::MemRefType sourceType, mlir::MemRefType destType,
+    const TransferRealizabilityLimits &limits, Callback &&callback) {
+  std::optional<int64_t> sourceElements =
+      getStaticElementCount(sourceType.getShape());
+  std::optional<int64_t> destElements =
+      getStaticElementCount(destType.getShape());
+  if (!sourceElements || !destElements || *sourceElements != *destElements ||
+      *destElements < 0 || *destElements > limits.maxEnumeratedElements)
+    return mlir::failure();
+
+  WaferPhysicalEncodingAttrInterface sourceEncoding = getEncoding(sourceType);
+  WaferPhysicalEncodingAttrInterface destEncoding = getEncoding(destType);
+  if (!sourceEncoding || !destEncoding)
+    return mlir::failure();
+  std::optional<WaferStaticPhysicalOffsetCalculator> sourceCalculator =
+      WaferStaticPhysicalOffsetCalculator::create(sourceType);
+  std::optional<WaferStaticPhysicalOffsetCalculator> destCalculator =
+      WaferStaticPhysicalOffsetCalculator::create(destType);
+
+  llvm::SmallVector<int64_t, 4> source(sourceType.getRank(), 0);
+  llvm::SmallVector<int64_t, 4> destination(destType.getRank(), 0);
+  for (int64_t linear = 0; linear < *destElements; ++linear) {
+    int64_t remaining = linear;
+    for (int64_t dim = sourceType.getRank() - 1; dim >= 0; --dim) {
+      source[dim] = remaining % sourceType.getDimSize(dim);
+      remaining /= sourceType.getDimSize(dim);
+    }
+    mlir::FailureOr<WaferPhysicalElementSpan> sourceSpan =
+        getPhysicalElementSpan(sourceType, source, sourceEncoding,
+                               sourceCalculator);
+    mlir::FailureOr<WaferPhysicalElementSpan> destSpan = getPhysicalElementSpan(
+        destType, destination, destEncoding, destCalculator);
     if (mlir::failed(sourceSpan) || mlir::failed(destSpan) ||
         mlir::failed(callback(*sourceSpan, *destSpan)))
       return mlir::failure();
@@ -231,35 +363,41 @@ static mlir::LogicalResult proveByteAddressableElementTransfer(
 
 } // namespace
 
+mlir::LogicalResult TransferRealizability::proveMappedTransfer(
+    mlir::MemRefType sourceType, mlir::MemRefType destType,
+    llvm::ArrayRef<int64_t> iterationShape,
+    const IndexRelation &iterationToSource,
+    const IndexRelation &iterationToDest) {
+  if (sourceType.getElementType() != destType.getElementType() ||
+      mlir::failed(verifyExactMappedEndpoint(
+          sourceType, iterationShape, iterationToSource,
+          /*requireInjective=*/false)) ||
+      mlir::failed(verifyExactMappedEndpoint(
+          destType, iterationShape, iterationToDest,
+          /*requireInjective=*/true)))
+    return mlir::failure();
+  return verifyByteAddressablePhysicalMaps(sourceType, destType);
+}
+
 mlir::LogicalResult TransferRealizability::proveMetadataView(
     mlir::MemRefType sourceType, mlir::MemRefType destType,
     const IndexRelation &relation, bool destinationMayWrite,
     const TransferRealizabilityLimits &limits) {
-  MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
-  MemoryAttr destMemory = getWaferMemoryAttr(destType);
-  llvm::SmallVector<int64_t, 4> sourceStrides;
-  llvm::SmallVector<int64_t, 4> destStrides;
-  int64_t sourceOffset = 0;
-  int64_t destOffset = 0;
-  if (!sourceMemory || !destMemory ||
-      sourceMemory.getSpace() != destMemory.getSpace() ||
-      sourceType.getElementType() != destType.getElementType() ||
-      mlir::failed(
-          mlir::getStridesAndOffset(sourceType, sourceStrides, sourceOffset)) ||
-      mlir::failed(
-          mlir::getStridesAndOffset(destType, destStrides, destOffset)) ||
-      mlir::ShapedType::isDynamic(sourceOffset) ||
-      mlir::ShapedType::isDynamic(destOffset) || sourceOffset != destOffset ||
-      mlir::failed(verifyExactCoveredRelation(sourceType, destType, relation,
-                                              destinationMayWrite)))
+  wafer::support::ScopedCompileTimingSpan totalTiming(
+      "analysis", "proveMetadataView", "total");
+  if (mlir::failed(
+          verifyMetadataViewTypeCompatibility(sourceType, destType)))
     return mlir::failure();
 
-  mlir::FailureOr<int64_t> sourceBytes =
-      getEncoding(sourceType).getPhysicalFootprintBytes(sourceType);
-  mlir::FailureOr<int64_t> destBytes =
-      getEncoding(destType).getPhysicalFootprintBytes(destType);
-  if (mlir::failed(sourceBytes) || mlir::failed(destBytes) ||
-      *sourceBytes != *destBytes)
+  {
+    wafer::support::ScopedCompileTimingSpan relationTiming(
+        "analysis-phase", "proveMetadataView", "exact-covered-relation");
+    if (mlir::failed(verifyExactCoveredRelation(
+            sourceType, destType, relation, destinationMayWrite)))
+      return mlir::failure();
+  }
+
+  if (mlir::failed(verifyEqualPhysicalFootprints(sourceType, destType)))
     return mlir::failure();
 
   if (isCanonicalLinearRelation(sourceType, destType, relation) &&
@@ -269,6 +407,44 @@ mlir::LogicalResult TransferRealizability::proveMetadataView(
 
   return forEachMappedElement(
       sourceType, destType, relation, limits,
+      [](WaferPhysicalElementSpan source, WaferPhysicalElementSpan dest) {
+        return mlir::success(source == dest);
+      });
+}
+
+mlir::LogicalResult TransferRealizability::proveStaticReshapeMetadataView(
+    mlir::MemRefType sourceType, mlir::MemRefType destType,
+    bool destinationMayWrite, const TransferRealizabilityLimits &limits) {
+  wafer::support::ScopedCompileTimingSpan totalTiming(
+      "analysis", "proveStaticReshapeMetadataView", "total");
+  if (mlir::failed(
+          verifyMetadataViewTypeCompatibility(sourceType, destType)))
+    return mlir::failure();
+
+  std::optional<int64_t> sourceElements =
+      getStaticElementCount(sourceType.getShape());
+  std::optional<int64_t> destElements =
+      getStaticElementCount(destType.getShape());
+  if (!sourceElements || !destElements ||
+      *sourceElements != *destElements ||
+      mlir::failed(verifyEqualPhysicalFootprints(sourceType, destType)))
+    return mlir::failure();
+
+  if (sourceType == destType)
+    return mlir::success();
+
+  // A canonical row-major reshape of equal finite element domains is a
+  // bijection, so destinationMayWrite requires no additional relation query.
+  (void)destinationMayWrite;
+  if (isCompactCanonicalPhysicalMap(sourceType) &&
+      isCompactCanonicalPhysicalMap(destType))
+    return mlir::success();
+
+  wafer::support::ScopedCompileTimingSpan elementTiming(
+      "analysis-phase", "proveStaticReshapeMetadataView",
+      "bounded-physical-element-proof");
+  return forEachStaticReshapeElement(
+      sourceType, destType, limits,
       [](WaferPhysicalElementSpan source, WaferPhysicalElementSpan dest) {
         return mlir::success(source == dest);
       });

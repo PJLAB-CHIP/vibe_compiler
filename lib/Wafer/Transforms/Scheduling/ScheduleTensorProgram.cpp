@@ -755,8 +755,12 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   wafer::support::ScopedCompileTimingSpan evaluationTiming(
       "search", "rank-candidate-search", "rank-variant-evaluation");
   evaluation.label = getPolicyLabel(policy);
-  evaluation.module = mlir::cast<mlir::ModuleOp>(sourceModule->clone());
-  outlineRankDenseTensorConstants(*evaluation.module);
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "evaluateRankVariantImpl", "clone-and-outline");
+    evaluation.module = mlir::cast<mlir::ModuleOp>(sourceModule->clone());
+    outlineRankDenseTensorConstants(*evaluation.module);
+  }
 
   llvm::SmallVector<structured_scheduler::StructuredSchedulingScope, 8> scopes;
   {
@@ -775,8 +779,12 @@ static mlir::LogicalResult evaluateRankVariantImpl(
                            "tensor-program scheduling requires an explicit "
                            "non-negative logical-rank");
 
-  mlir::FailureOr<std::string> signature =
-      getPartitionSignature(*evaluation.module, scopes);
+  mlir::FailureOr<std::string> signature;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "analysis", "evaluateRankVariantImpl", "getPartitionSignature");
+    signature = getPartitionSignature(*evaluation.module, scopes);
+  }
   if (mlir::failed(signature))
     return failRankVariant(evaluation, "scope-signature",
                            "scope contains an operation outside the rank");
@@ -844,9 +852,13 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   }
   candidateSelectionTiming.reset();
 
-  if (mlir::failed(checkRankTerminalBudget(
-          *evaluation.module, evaluation.selectedCandidates, evaluation)))
-    return mlir::failure();
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "analysis", "evaluateRankVariantImpl", "checkRankTerminalBudget");
+    if (mlir::failed(checkRankTerminalBudget(
+            *evaluation.module, evaluation.selectedCandidates, evaluation)))
+      return mlir::failure();
+  }
 
   // Consumer-first commit keeps source SSA boundaries valid when two task
   // scopes are separated by an unsupported fusion boundary.
@@ -901,29 +913,61 @@ static mlir::LogicalResult evaluateRankVariantImpl(
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
           "search-phase", "rank-variant-evaluation",
           "rank-artifact-derivation");
-  mlir::OwningOpRef<mlir::ModuleOp> spillModule =
-      mlir::cast<mlir::ModuleOp>((*evaluation.module)->clone());
+  mlir::OwningOpRef<mlir::ModuleOp> spillModule;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "rank-artifact-derivation", "spill-parent-clone");
+    spillModule = mlir::cast<mlir::ModuleOp>((*evaluation.module)->clone());
+  }
   const bool useTransferElision =
       enableTransferElision && config.optimizations.isEnabled(
                                    OptimizationKind::FullBufferTransferElision);
-  if (useTransferElision)
+  if (useTransferElision) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "rank-artifact-derivation", "spill-transfer-elision");
     elideRedundantFullBufferTransfers(*spillModule);
-  bool spillNormalized =
-      mlir::succeeded(normalizeMinimumNCCJoins(*spillModule));
-  mlir::OwningOpRef<mlir::ModuleOp> residentGeneration =
-      mlir::cast<mlir::ModuleOp>((*evaluation.module)->clone());
-  unsigned promotedHandoffs =
-      config.optimizations.isEnabled(OptimizationKind::FullBufferResidency)
-          ? promoteFullBufferHandoffs(*residentGeneration)
-          : 0;
-  if (useTransferElision)
+  }
+  bool spillNormalized = false;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "rank-artifact-derivation",
+        "spill-completion-normalization");
+    spillNormalized = mlir::succeeded(normalizeMinimumNCCJoins(*spillModule));
+  }
+  mlir::OwningOpRef<mlir::ModuleOp> residentGeneration;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "rank-artifact-derivation", "resident-parent-clone");
+    residentGeneration =
+        mlir::cast<mlir::ModuleOp>((*evaluation.module)->clone());
+  }
+  unsigned promotedHandoffs = 0;
+  if (config.optimizations.isEnabled(OptimizationKind::FullBufferResidency)) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "rank-artifact-derivation",
+        "resident-handoff-promotion");
+    promotedHandoffs = promoteFullBufferHandoffs(*residentGeneration);
+  }
+  if (useTransferElision) {
+    wafer::support::ScopedCompileTimingSpan timing("search-phase",
+                                                   "rank-artifact-derivation",
+                                                   "resident-transfer-elision");
     elideRedundantFullBufferTransfers(*residentGeneration);
-  bool residentGenerationNormalized =
-      promotedHandoffs != 0 &&
-      mlir::succeeded(normalizeMinimumNCCJoins(*residentGeneration));
+  }
+  bool residentGenerationNormalized = false;
+  if (promotedHandoffs != 0) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "rank-artifact-derivation",
+        "resident-completion-normalization");
+    residentGenerationNormalized =
+        mlir::succeeded(normalizeMinimumNCCJoins(*residentGeneration));
+  }
   mlir::OwningOpRef<mlir::ModuleOp> residentModule;
-  if (residentGenerationNormalized)
+  if (residentGenerationNormalized) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "rank-artifact-derivation", "resident-artifact-clone");
     residentModule = mlir::cast<mlir::ModuleOp>((*residentGeneration)->clone());
+  }
 
   // Ready-order variants are actual independently owned instruction modules.
   // The rewrite changes operation order in SSA while preserving value hazards
@@ -932,6 +976,9 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   mlir::OwningOpRef<mlir::ModuleOp> spillReadyModule;
   if (spillNormalized &&
       config.optimizations.isEnabled(OptimizationKind::ReadyOrderScheduling)) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "rank-artifact-derivation",
+        "spill-ready-order-derivation");
     mlir::OwningOpRef<mlir::ModuleOp> candidate =
         mlir::cast<mlir::ModuleOp>((*spillModule)->clone());
     if (scheduleIndependentInstructionsByReadyOrder(
@@ -942,6 +989,9 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   mlir::OwningOpRef<mlir::ModuleOp> residentReadyModule;
   if (residentGenerationNormalized &&
       config.optimizations.isEnabled(OptimizationKind::ReadyOrderScheduling)) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "rank-artifact-derivation",
+        "resident-ready-order-derivation");
     mlir::OwningOpRef<mlir::ModuleOp> candidate =
         mlir::cast<mlir::ModuleOp>((*residentGeneration)->clone());
     if (scheduleIndependentInstructionsByReadyOrder(
@@ -957,24 +1007,27 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   std::vector<RankArtifactAlternative> pipelineAlternatives;
   const bool useStaticFixedSlot = config.optimizations.isEnabled(
       OptimizationKind::StaticFixedSlotBuffering);
-  if (useStaticFixedSlot && spillNormalized)
-    appendStaticFixedSlotNeighbors(*spillModule,
-                                   /*promotedHandoffs=*/0,
-                                   /*readyReordered=*/false,
-                                   config.targetProfile, pipelineAlternatives);
-  if (useStaticFixedSlot && spillReadyModule)
-    appendStaticFixedSlotNeighbors(*spillReadyModule,
-                                   /*promotedHandoffs=*/0,
-                                   /*readyReordered=*/true,
-                                   config.targetProfile, pipelineAlternatives);
-  if (useStaticFixedSlot && residentModule)
-    appendStaticFixedSlotNeighbors(*residentModule, promotedHandoffs,
-                                   /*readyReordered=*/false,
-                                   config.targetProfile, pipelineAlternatives);
-  if (useStaticFixedSlot && residentReadyModule)
-    appendStaticFixedSlotNeighbors(*residentReadyModule, promotedHandoffs,
-                                   /*readyReordered=*/true,
-                                   config.targetProfile, pipelineAlternatives);
+  if (useStaticFixedSlot) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "rank-artifact-derivation",
+        "fixed-slot-neighbor-derivation");
+    if (spillNormalized)
+      appendStaticFixedSlotNeighbors(
+          *spillModule, /*promotedHandoffs=*/0,
+          /*readyReordered=*/false, config.targetProfile, pipelineAlternatives);
+    if (spillReadyModule)
+      appendStaticFixedSlotNeighbors(
+          *spillReadyModule, /*promotedHandoffs=*/0,
+          /*readyReordered=*/true, config.targetProfile, pipelineAlternatives);
+    if (residentModule)
+      appendStaticFixedSlotNeighbors(
+          *residentModule, promotedHandoffs,
+          /*readyReordered=*/false, config.targetProfile, pipelineAlternatives);
+    if (residentReadyModule)
+      appendStaticFixedSlotNeighbors(
+          *residentReadyModule, promotedHandoffs,
+          /*readyReordered=*/true, config.targetProfile, pipelineAlternatives);
+  }
 
   // Worker placement is an independent derivation dimension. Generate one
   // canonical dependency-component assignment from every unplaced
@@ -983,32 +1036,36 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   std::vector<RankArtifactAlternative> workerAlternatives;
   const bool useWorkerPlacement =
       config.optimizations.isEnabled(OptimizationKind::DisjointWorkerPlacement);
-  if (useWorkerPlacement && spillNormalized)
-    appendWorkerPlacementNeighbor(
-        *spillModule, /*promotedHandoffs=*/0, /*readyReordered=*/false,
-        RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
-        config.targetProfile, workerAlternatives);
-  if (useWorkerPlacement && spillReadyModule)
-    appendWorkerPlacementNeighbor(
-        *spillReadyModule, /*promotedHandoffs=*/0, /*readyReordered=*/true,
-        RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
-        config.targetProfile, workerAlternatives);
-  if (useWorkerPlacement && residentModule)
-    appendWorkerPlacementNeighbor(
-        *residentModule, promotedHandoffs, /*readyReordered=*/false,
-        RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
-        config.targetProfile, workerAlternatives);
-  if (useWorkerPlacement && residentReadyModule)
-    appendWorkerPlacementNeighbor(
-        *residentReadyModule, promotedHandoffs, /*readyReordered=*/true,
-        RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
-        config.targetProfile, workerAlternatives);
-  if (useWorkerPlacement)
+  if (useWorkerPlacement) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "rank-artifact-derivation",
+        "worker-placement-neighbor-derivation");
+    if (spillNormalized)
+      appendWorkerPlacementNeighbor(
+          *spillModule, /*promotedHandoffs=*/0, /*readyReordered=*/false,
+          RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
+          config.targetProfile, workerAlternatives);
+    if (spillReadyModule)
+      appendWorkerPlacementNeighbor(
+          *spillReadyModule, /*promotedHandoffs=*/0, /*readyReordered=*/true,
+          RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
+          config.targetProfile, workerAlternatives);
+    if (residentModule)
+      appendWorkerPlacementNeighbor(
+          *residentModule, promotedHandoffs, /*readyReordered=*/false,
+          RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
+          config.targetProfile, workerAlternatives);
+    if (residentReadyModule)
+      appendWorkerPlacementNeighbor(
+          *residentReadyModule, promotedHandoffs, /*readyReordered=*/true,
+          RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
+          config.targetProfile, workerAlternatives);
     for (const RankArtifactAlternative &pipeline : pipelineAlternatives)
       appendWorkerPlacementNeighbor(
           *pipeline.module, pipeline.promotedHandoffs, pipeline.readyReordered,
           pipeline.bufferingKind, pipeline.bufferingPlanOrdinal,
           config.targetProfile, workerAlternatives);
+  }
   artifactDerivationTiming.reset();
 
   auto artifactFinalizationTiming =
@@ -1120,13 +1177,18 @@ constexpr unsigned boundedSourceVariantLimit = 16;
 struct SourceProducerEntry {
   OptimizationKind optimization;
   SourceProducer producer;
+  llvm::StringLiteral functionName;
 };
 
 static unsigned applySourceProducer(mlir::ModuleOp module,
-                                    SourceProducer producer) {
+                                    const SourceProducerEntry &entry) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "optimization", stringifyOptimizationKind(entry.optimization),
+      entry.functionName);
   unsigned changed = 0;
-  module.walk(
-      [&](mlir::func::FuncOp function) { changed += producer(function); });
+  module.walk([&](mlir::func::FuncOp function) {
+    changed += entry.producer(function);
+  });
   return changed;
 }
 
@@ -1134,18 +1196,23 @@ static void buildBoundedSourceVariants(
     mlir::ModuleOp source, const OptimizationConfig &optimizations,
     llvm::SmallVectorImpl<mlir::OwningOpRef<mlir::ModuleOp>> &owners,
     llvm::SmallVectorImpl<mlir::ModuleOp> &variants) {
+  wafer::support::ScopedCompileTimingSpan totalTiming(
+      "search", "buildBoundedSourceVariants", "total");
   const SourceProducerEntry producers[] = {
       {OptimizationKind::ConsumerLocalRecomputation,
-       materializeConsumerLocalTensorRecomputation},
+       materializeConsumerLocalTensorRecomputation,
+       "materializeConsumerLocalTensorRecomputation"},
       {OptimizationKind::LoopInvariantCodeMotion,
-       hoistStaticLoopInvariantOperations},
+       hoistStaticLoopInvariantOperations,
+       "hoistStaticLoopInvariantOperations"},
       {OptimizationKind::AlgebraicReassociation,
-       reassociateElementwiseExpressions},
+       reassociateElementwiseExpressions, "reassociateElementwiseExpressions"},
       {OptimizationKind::ReductionTreeBalancing,
-       balanceElementwiseReductionTrees},
-      {OptimizationKind::AlgebraicDistribution,
-       contractDistributiveExpressions},
-      {OptimizationKind::AlgebraicFactorization, factorElementwiseExpressions},
+       balanceElementwiseReductionTrees, "balanceElementwiseReductionTrees"},
+      {OptimizationKind::AlgebraicDistribution, contractDistributiveExpressions,
+       "contractDistributiveExpressions"},
+      {OptimizationKind::AlgebraicFactorization, factorElementwiseExpressions,
+       "factorElementwiseExpressions"},
   };
 
   variants.push_back(source);
@@ -1153,15 +1220,24 @@ static void buildBoundedSourceVariants(
                     unsigned minimumAppliedProducers) {
     if (variants.size() >= boundedSourceVariantLimit)
       return;
-    mlir::OwningOpRef<mlir::ModuleOp> candidate =
-        mlir::cast<mlir::ModuleOp>(source->clone());
+    mlir::OwningOpRef<mlir::ModuleOp> candidate;
+    {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "search-phase", "buildBoundedSourceVariants", "clone");
+      candidate = mlir::cast<mlir::ModuleOp>(source->clone());
+    }
     unsigned appliedProducers = 0;
     for (unsigned index : producerIndices)
       appliedProducers +=
-          applySourceProducer(*candidate, producers[index].producer) != 0;
-    if (appliedProducers < minimumAppliedProducers ||
-        mlir::failed(mlir::verify(*candidate)))
+          applySourceProducer(*candidate, producers[index]) != 0;
+    if (appliedProducers < minimumAppliedProducers)
       return;
+    {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "search-phase", "buildBoundedSourceVariants", "verify");
+      if (mlir::failed(mlir::verify(*candidate)))
+        return;
+    }
     owners.push_back(std::move(candidate));
     variants.push_back(*owners.back());
   };
@@ -1201,6 +1277,8 @@ struct RankSearchRecipes {
 
 static RankSearchRecipes buildRankSearchRecipes(mlir::ModuleOp source,
                                                 const SelectionConfig &base) {
+  wafer::support::ScopedCompileTimingSpan totalTiming(
+      "search", "buildRankSearchRecipes", "total");
   const bool useImplementationSelection =
       base.optimizations.isEnabled(OptimizationKind::ImplementationSelection);
   const bool useTileAlternatives =
@@ -1213,30 +1291,43 @@ static RankSearchRecipes buildRankSearchRecipes(mlir::ModuleOp source,
   bool hasReduceScatter = false;
   bool hasAllReduce = false;
   llvm::SmallVector<TargetImplementationKind, 2> implementations;
-  source.walk([&](mlir::Operation *operation) {
-    hasAllGather |=
-        mlir::isa<LinalgExtCollectiveAllGatherOp, CommAllGatherOp>(operation);
-    hasReduceScatter |=
-        mlir::isa<LinalgExtCollectiveReduceScatterOp, CommReduceScatterOp>(
-            operation);
-    hasAllReduce |=
-        mlir::isa<LinalgExtCollectiveAllReduceOp, CommAllReduceOp>(operation);
-    if (auto interface =
-            mlir::dyn_cast<WaferTargetImplementationOpInterface>(operation)) {
-      if (!useImplementationSelection)
-        return;
-      llvm::SmallVector<TargetImplementationCandidate, 2> candidates;
-      interface.collectTargetImplementationCandidates(WaferTargetCapabilities{},
-                                                      candidates);
-      for (const TargetImplementationCandidate &candidate :
-           llvm::drop_begin(candidates))
-        if (!llvm::is_contained(implementations, candidate.kind))
-          implementations.push_back(candidate.kind);
-    }
-  });
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "analysis", "buildRankSearchRecipes", "collect-collective-kinds");
+    source.walk([&](mlir::Operation *operation) {
+      hasAllGather |=
+          mlir::isa<LinalgExtCollectiveAllGatherOp, CommAllGatherOp>(operation);
+      hasReduceScatter |=
+          mlir::isa<LinalgExtCollectiveReduceScatterOp, CommReduceScatterOp>(
+              operation);
+      hasAllReduce |=
+          mlir::isa<LinalgExtCollectiveAllReduceOp, CommAllReduceOp>(operation);
+    });
+  }
+  if (useImplementationSelection) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "optimization",
+        stringifyOptimizationKind(OptimizationKind::ImplementationSelection),
+        "buildRankSearchRecipes");
+    source.walk([&](mlir::Operation *operation) {
+      if (auto interface =
+              mlir::dyn_cast<WaferTargetImplementationOpInterface>(operation)) {
+        llvm::SmallVector<TargetImplementationCandidate, 2> candidates;
+        interface.collectTargetImplementationCandidates(
+            WaferTargetCapabilities{}, candidates);
+        for (const TargetImplementationCandidate &candidate :
+             llvm::drop_begin(candidates))
+          if (!llvm::is_contained(implementations, candidate.kind))
+            implementations.push_back(candidate.kind);
+      }
+    });
+  }
 
   llvm::SmallVector<SelectionConfig, kRankSemanticRecipeLimit> semanticRecipes;
   RankSearchRecipes recipes;
+  auto semanticRecipeTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "search-phase", "buildRankSearchRecipes", "semantic-recipes");
   auto addRecipe = [&](CommunicationAlternative communication,
                        std::optional<TargetImplementationKind> implementation,
                        unsigned taskOrdinal,
@@ -1254,75 +1345,114 @@ static RankSearchRecipes buildRankSearchRecipes(mlir::ModuleOp source,
   };
 
   addRecipe(CommunicationAlternative::Ring, std::nullopt, 0);
-  if (useCollectiveAlternatives && hasAllGather)
-    addRecipe(CommunicationAlternative::DirectAllGather, std::nullopt, 0);
-  if (useCollectiveAlternatives && hasReduceScatter)
-    addRecipe(CommunicationAlternative::RingReduceScatter, std::nullopt, 0);
-  if (useCollectiveAlternatives && hasAllReduce)
-    addRecipe(CommunicationAlternative::TreeAllReduce, std::nullopt, 0);
-  if (useCollectiveAlternatives && hasAllGather && hasAllReduce)
-    addRecipe(CommunicationAlternative::DirectAllGatherTreeAllReduce,
-              std::nullopt, 0);
-  if (useImplementationSelection)
-    for (TargetImplementationKind implementation : implementations)
-      addRecipe(CommunicationAlternative::Ring, implementation, 0);
-  if (useTileAlternatives)
-    addRecipe(CommunicationAlternative::Ring, std::nullopt, 1);
-  if (useDirectMappedBoundary)
-    addRecipe(CommunicationAlternative::Ring, std::nullopt, 0,
-              /*useDirectMappedBoundaryTransfer=*/true);
-  if (useImplementationSelection && useDirectMappedBoundary)
-    for (TargetImplementationKind implementation : implementations)
-      addRecipe(CommunicationAlternative::Ring, implementation, 0,
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "optimization",
+        stringifyOptimizationKind(
+            OptimizationKind::CollectiveAlgorithmSelection),
+        "buildRankSearchRecipes");
+    if (useCollectiveAlternatives && hasAllGather)
+      addRecipe(CommunicationAlternative::DirectAllGather, std::nullopt, 0);
+    if (useCollectiveAlternatives && hasReduceScatter)
+      addRecipe(CommunicationAlternative::RingReduceScatter, std::nullopt, 0);
+    if (useCollectiveAlternatives && hasAllReduce)
+      addRecipe(CommunicationAlternative::TreeAllReduce, std::nullopt, 0);
+    if (useCollectiveAlternatives && hasAllGather && hasAllReduce)
+      addRecipe(CommunicationAlternative::DirectAllGatherTreeAllReduce,
+                std::nullopt, 0);
+  }
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "optimization",
+        stringifyOptimizationKind(OptimizationKind::ImplementationSelection),
+        "buildRankSearchRecipes");
+    if (useImplementationSelection)
+      for (TargetImplementationKind implementation : implementations)
+        addRecipe(CommunicationAlternative::Ring, implementation, 0);
+  }
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "optimization",
+        stringifyOptimizationKind(OptimizationKind::TileSearchAlternatives),
+        "buildRankSearchRecipes");
+    if (useTileAlternatives)
+      addRecipe(CommunicationAlternative::Ring, std::nullopt, 1);
+  }
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "optimization",
+        stringifyOptimizationKind(
+            OptimizationKind::DirectMappedBoundaryTransfer),
+        "buildRankSearchRecipes");
+    if (useDirectMappedBoundary)
+      addRecipe(CommunicationAlternative::Ring, std::nullopt, 0,
                 /*useDirectMappedBoundaryTransfer=*/true);
+    if (useImplementationSelection && useDirectMappedBoundary)
+      for (TargetImplementationKind implementation : implementations)
+        addRecipe(CommunicationAlternative::Ring, implementation, 0,
+                  /*useDirectMappedBoundaryTransfer=*/true);
+  }
 
   // Cross the currently supported non-baseline implementation and task beam
   // with communication parameters while the fixed recipe cap has room.
-  for (TargetImplementationKind implementation : implementations) {
-    if (useCollectiveAlternatives && hasAllGather)
-      addRecipe(CommunicationAlternative::DirectAllGather, implementation, 0);
-    if (useCollectiveAlternatives && hasReduceScatter)
-      addRecipe(CommunicationAlternative::RingReduceScatter, implementation, 0);
-    if (useCollectiveAlternatives && hasAllReduce)
-      addRecipe(CommunicationAlternative::TreeAllReduce, implementation, 0);
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "buildRankSearchRecipes", "cross-product");
+    for (TargetImplementationKind implementation : implementations) {
+      if (useCollectiveAlternatives && hasAllGather)
+        addRecipe(CommunicationAlternative::DirectAllGather, implementation, 0);
+      if (useCollectiveAlternatives && hasReduceScatter)
+        addRecipe(CommunicationAlternative::RingReduceScatter, implementation,
+                  0);
+      if (useCollectiveAlternatives && hasAllReduce)
+        addRecipe(CommunicationAlternative::TreeAllReduce, implementation, 0);
+      if (useCollectiveAlternatives && useDirectMappedBoundary && hasAllGather)
+        addRecipe(CommunicationAlternative::DirectAllGather, implementation, 0,
+                  /*useDirectMappedBoundaryTransfer=*/true);
+      if (useCollectiveAlternatives && useDirectMappedBoundary && hasAllReduce)
+        addRecipe(CommunicationAlternative::TreeAllReduce, implementation, 0,
+                  /*useDirectMappedBoundaryTransfer=*/true);
+    }
+    if (useCollectiveAlternatives && useTileAlternatives && hasAllGather)
+      addRecipe(CommunicationAlternative::DirectAllGather, std::nullopt, 1);
+    if (useCollectiveAlternatives && useTileAlternatives && hasReduceScatter)
+      addRecipe(CommunicationAlternative::RingReduceScatter, std::nullopt, 1);
+    if (useCollectiveAlternatives && useTileAlternatives && hasAllReduce)
+      addRecipe(CommunicationAlternative::TreeAllReduce, std::nullopt, 1);
     if (useCollectiveAlternatives && useDirectMappedBoundary && hasAllGather)
-      addRecipe(CommunicationAlternative::DirectAllGather, implementation, 0,
+      addRecipe(CommunicationAlternative::DirectAllGather, std::nullopt, 0,
                 /*useDirectMappedBoundaryTransfer=*/true);
     if (useCollectiveAlternatives && useDirectMappedBoundary && hasAllReduce)
-      addRecipe(CommunicationAlternative::TreeAllReduce, implementation, 0,
+      addRecipe(CommunicationAlternative::TreeAllReduce, std::nullopt, 0,
                 /*useDirectMappedBoundaryTransfer=*/true);
+    if (useImplementationSelection && useTileAlternatives)
+      for (TargetImplementationKind implementation : implementations)
+        addRecipe(CommunicationAlternative::Ring, implementation, 1);
   }
-  if (useCollectiveAlternatives && useTileAlternatives && hasAllGather)
-    addRecipe(CommunicationAlternative::DirectAllGather, std::nullopt, 1);
-  if (useCollectiveAlternatives && useTileAlternatives && hasReduceScatter)
-    addRecipe(CommunicationAlternative::RingReduceScatter, std::nullopt, 1);
-  if (useCollectiveAlternatives && useTileAlternatives && hasAllReduce)
-    addRecipe(CommunicationAlternative::TreeAllReduce, std::nullopt, 1);
-  if (useCollectiveAlternatives && useDirectMappedBoundary && hasAllGather)
-    addRecipe(CommunicationAlternative::DirectAllGather, std::nullopt, 0,
-              /*useDirectMappedBoundaryTransfer=*/true);
-  if (useCollectiveAlternatives && useDirectMappedBoundary && hasAllReduce)
-    addRecipe(CommunicationAlternative::TreeAllReduce, std::nullopt, 0,
-              /*useDirectMappedBoundaryTransfer=*/true);
-  if (useImplementationSelection && useTileAlternatives)
-    for (TargetImplementationKind implementation : implementations)
-      addRecipe(CommunicationAlternative::Ring, implementation, 1);
+  semanticRecipeTiming.reset();
 
   // Resource-changing optimizations are search dimensions, not late-gate
   // accidents. Preserve the existing semantic-recipe order first, then cross
   // every point with bounded concurrent-residency profiles. A profile only
   // directs tile selection; transformed IR plus the exact SPM planner remain
   // the authority on actual slot lifetimes and placement.
-  for (const SelectionConfig &recipe : semanticRecipes)
-    recipes.resultDriven.push_back(recipe);
-  if (base.optimizations.isEnabled(
-          OptimizationKind::ConcurrentWorkingSetSelection)) {
-    for (unsigned multiplicity = 2; multiplicity <= kRankSPMMultiplicityLimit;
-         ++multiplicity) {
-      for (const SelectionConfig &semantic : semanticRecipes) {
-        SelectionConfig recipe = semantic;
-        recipe.spmWorkingSetMultiplicity = multiplicity;
-        recipes.resultDriven.push_back(std::move(recipe));
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "optimization",
+        stringifyOptimizationKind(
+            OptimizationKind::ConcurrentWorkingSetSelection),
+        "buildRankSearchRecipes");
+    for (const SelectionConfig &recipe : semanticRecipes)
+      recipes.resultDriven.push_back(recipe);
+    if (base.optimizations.isEnabled(
+            OptimizationKind::ConcurrentWorkingSetSelection)) {
+      for (unsigned multiplicity = 2; multiplicity <= kRankSPMMultiplicityLimit;
+           ++multiplicity) {
+        for (const SelectionConfig &semantic : semanticRecipes) {
+          SelectionConfig recipe = semantic;
+          recipe.spmWorkingSetMultiplicity = multiplicity;
+          recipes.resultDriven.push_back(std::move(recipe));
+        }
       }
     }
   }
@@ -1341,17 +1471,21 @@ static RankSearchRecipes buildRankSearchRecipes(mlir::ModuleOp source,
       {CandidateTileTraversalKind::OperandDriven, 1},
       {CandidateTileTraversalKind::PartialReduction, 3},
   };
-  if (useTileAlternatives)
-    for (auto [traversalKind, taskOrdinal] : interfaceSeeds) {
-      SelectionConfig recipe = base;
-      recipe.communicationAlternative = CommunicationAlternative::Ring;
-      recipe.allowAutomaticImplementationAlternatives = false;
-      recipe.forcedImplementationAlternative.reset();
-      recipe.taskAlternativeOrdinal = taskOrdinal;
-      recipe.useDirectMappedBoundaryTransfer = false;
-      recipe.traversalKind = traversalKind;
-      recipes.interfaceDriven.push_back(std::move(recipe));
-    }
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "buildRankSearchRecipes", "interface-recipes");
+    if (useTileAlternatives)
+      for (auto [traversalKind, taskOrdinal] : interfaceSeeds) {
+        SelectionConfig recipe = base;
+        recipe.communicationAlternative = CommunicationAlternative::Ring;
+        recipe.allowAutomaticImplementationAlternatives = false;
+        recipe.forcedImplementationAlternative.reset();
+        recipe.taskAlternativeOrdinal = taskOrdinal;
+        recipe.useDirectMappedBoundaryTransfer = false;
+        recipe.traversalKind = traversalKind;
+        recipes.interfaceDriven.push_back(std::move(recipe));
+      }
+  }
   return recipes;
 }
 
@@ -1450,12 +1584,18 @@ buildScheduledRankCandidateFrontier(
 
   constexpr unsigned conservativePolicyIndex = 3;
   llvm::SmallVector<unsigned, 4> policyIndices;
-  if (frontierConfig.optimizations.isEnabled(
-          OptimizationKind::ScopeComposition))
-    for (unsigned index = 0; index < std::size(policies); ++index)
-      policyIndices.push_back(index);
-  else
-    policyIndices.push_back(conservativePolicyIndex);
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "optimization",
+        stringifyOptimizationKind(OptimizationKind::ScopeComposition),
+        "buildScheduledRankCandidateFrontier");
+    if (frontierConfig.optimizations.isEnabled(
+            OptimizationKind::ScopeComposition))
+      for (unsigned index = 0; index < std::size(policies); ++index)
+        policyIndices.push_back(index);
+    else
+      policyIndices.push_back(conservativePolicyIndex);
+  }
   const unsigned primaryPolicyIndex = policyIndices.front();
   constexpr unsigned optimizedRankEvaluationLimit = 96;
   constexpr unsigned optimizedRankFrontierLimit = 256;

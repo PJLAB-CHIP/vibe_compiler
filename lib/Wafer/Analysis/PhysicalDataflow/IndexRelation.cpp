@@ -165,6 +165,75 @@ bool IndexRelation::contains(llvm::ArrayRef<int64_t> destination,
   return relation.containsPoint(point);
 }
 
+std::optional<AffineMap>
+IndexRelation::getProjectedAffineMap(MLIRContext *context) const {
+  if (!context || status != IndexRelationStatus::Exact ||
+      relation.getNumDisjuncts() != 1)
+    return std::nullopt;
+
+  const IntegerRelation &disjunct = relation.getDisjunct(0);
+  const unsigned destinationRank = getDestinationRank();
+  const unsigned sourceRank = getSourceRank();
+  if (disjunct.getNumSymbolVars() != 0 ||
+      disjunct.getNumLocalVars() != 0)
+    return std::nullopt;
+
+  llvm::SmallVector<AffineExpr, 4> results;
+  results.reserve(sourceRank);
+  for (unsigned source = 0; source < sourceRank; ++source) {
+    std::optional<AffineExpr> projected;
+    const unsigned sourcePosition = destinationRank + source;
+    for (unsigned equality = 0; equality < disjunct.getNumEqualities();
+         ++equality) {
+      llvm::SmallVector<int64_t, 8> coefficients =
+          disjunct.getEquality64(equality);
+      int64_t sourceCoefficient = coefficients[sourcePosition];
+      if (sourceCoefficient == 0)
+        continue;
+
+      bool hasOtherSource = false;
+      for (unsigned other = 0; other < sourceRank; ++other) {
+        if (other != source &&
+            coefficients[destinationRank + other] != 0) {
+          hasOtherSource = true;
+          break;
+        }
+      }
+      if (hasOtherSource)
+        continue;
+
+      // sum(dst_i * a_i) + src * b + constant == 0.
+      // Recover src = -(sum(dst_i * a_i) + constant) / b only when
+      // every coefficient is exactly integral.
+      bool integral = true;
+      for (unsigned destination = 0; destination < destinationRank;
+           ++destination)
+        integral &= coefficients[destination] % sourceCoefficient == 0;
+      const int64_t constant = coefficients.back();
+      integral &= constant % sourceCoefficient == 0;
+      if (!integral)
+        continue;
+
+      AffineExpr expression =
+          getAffineConstantExpr(-constant / sourceCoefficient, context);
+      for (unsigned destination = 0; destination < destinationRank;
+           ++destination) {
+        int64_t multiplier =
+            -coefficients[destination] / sourceCoefficient;
+        if (multiplier != 0)
+          expression = expression +
+                       getAffineDimExpr(destination, context) * multiplier;
+      }
+      projected = expression;
+      break;
+    }
+    if (!projected)
+      return std::nullopt;
+    results.push_back(*projected);
+  }
+  return AffineMap::get(destinationRank, 0, results, context);
+}
+
 IndexRelationResult IndexRelation::identity(llvm::ArrayRef<int64_t> shape,
                                             const IndexRelationLimits &limits) {
   MLIRContext context;

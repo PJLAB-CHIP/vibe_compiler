@@ -22,6 +22,34 @@ class FakeSpmdModule:
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
+    def test_hf_fp16_accumulation_is_explicit_and_dtype_preserving(self) -> None:
+        config = dict(
+            cases.capture.load_hf_transformer_config(
+                cases.HF_LLAMA2_7B_CONFIG
+            )
+        )
+        config.update(
+            hidden_size=16,
+            intermediate_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=4,
+            head_dim=4,
+            torch_dtype="float16",
+            wafer_accumulation_dtype="float16",
+        )
+        module = cases.capture._make_hf_llama_decoder_block_module(
+            torch, config, sequence_length=4
+        ).eval()
+        value = torch.randn(
+            (1, 4, 16),
+            dtype=torch.float16,
+            generator=torch.Generator(device="cpu").manual_seed(7),
+        )
+        with torch.no_grad():
+            result = module(value)
+        self.assertEqual(result.dtype, torch.float16)
+        self.assertTrue(torch.isfinite(result).all())
+
     def test_hf_megatron_parameter_specs_are_explicit_and_complete(self) -> None:
         config = dict(
             cases.capture.load_hf_transformer_config(

@@ -5,6 +5,7 @@
 #include "Wafer/Compiler/GlobalTileRelation.h"
 #include "Wafer/IR/Common/OpVerifierUtils.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -1120,16 +1121,24 @@ unsigned materializeNoCIntermediateHandoffs(
     llvm::MutableArrayRef<mlir::ModuleOp> modules,
     const frontend::FrontendProgramVerificationResult &program,
     int64_t &communicationId, NoCFanoutKind kind) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "transformation", "materializeNoCIntermediateHandoffs", "total");
   if (modules.size() < 2 || communicationId < 0)
     return 0;
   llvm::SmallVector<BoundaryDescriptor, 8> boundaries =
       getBoundaryDescriptors(program);
 
   llvm::SmallVector<llvm::SmallVector<IntermediateSpillCut, 4>, 16> cutsByRank;
+  auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "materializeNoCIntermediateHandoffs",
+      "collectIntermediateSpillCuts");
   cutsByRank.reserve(modules.size());
   for (auto [rank, module] : llvm::enumerate(modules))
     cutsByRank.push_back(
         collectIntermediateSpillCuts(module, static_cast<int64_t>(rank)));
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "materializeNoCIntermediateHandoffs",
+      "buildIntermediateGroups");
   llvm::SmallVector<IntermediateGroup, 4> groups =
       buildIntermediateGroups(cutsByRank, boundaries);
   const uint64_t availableIds =
@@ -1138,6 +1147,9 @@ unsigned materializeNoCIntermediateHandoffs(
   if (groups.empty() || static_cast<uint64_t>(groups.size()) > availableIds)
     return 0;
 
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "transformation-phase", "materializeNoCIntermediateHandoffs",
+      "materializeIntermediateGroup");
   for (const IntermediateGroup &group : groups) {
     materializeIntermediateGroup(group, communicationId, kind);
     communicationId = communicationId == std::numeric_limits<int64_t>::max()
@@ -1151,12 +1163,17 @@ unsigned materializeNoCOutputPublications(
     llvm::MutableArrayRef<mlir::ModuleOp> modules,
     const frontend::FrontendProgramVerificationResult &program,
     int64_t &communicationId, NoCFanoutKind kind) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "transformation", "materializeNoCOutputPublications", "total");
   if (modules.size() < 2 || communicationId < 0 ||
       modules.size() != static_cast<size_t>(program.logicalRankCount) ||
       program.distributedOutputs.empty())
     return 0;
   llvm::SmallVector<BoundaryDescriptor, 8> boundaries =
       getBoundaryDescriptors(program);
+  auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "materializeNoCOutputPublications",
+      "collectRequiredOutputGroups");
   llvm::SmallVector<RequiredOutputGroup, 4> groups =
       collectRequiredOutputGroups(modules, program, boundaries);
   const uint64_t availableIds =
@@ -1165,6 +1182,9 @@ unsigned materializeNoCOutputPublications(
   if (groups.empty() || static_cast<uint64_t>(groups.size()) > availableIds)
     return 0;
 
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "transformation-phase", "materializeNoCOutputPublications",
+      "materializeRequiredOutputGroup");
   for (const RequiredOutputGroup &group : groups) {
     materializeRequiredOutputGroup(group, communicationId, kind);
     communicationId = communicationId == std::numeric_limits<int64_t>::max()

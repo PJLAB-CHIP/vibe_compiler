@@ -2,6 +2,7 @@
 //-----------------===//
 
 #include "Scheduling/ScheduleTensorProgramInternal.h"
+#include "Wafer/Target/TargetCall.h"
 
 namespace wafer::tensor_program_scheduling {
 
@@ -719,7 +720,8 @@ estimateTargetSPMRequiredLiveBytes(mlir::func::FuncOp task,
 
 static std::optional<std::string> getCheapTargetGeometryFailureImpl(
     std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots,
-    const CandidateSpec &candidate, llvm::ArrayRef<int64_t> reductionRanges) {
+    const CandidateSpec &candidate, llvm::ArrayRef<int64_t> reductionRanges,
+    TargetProfileId targetProfile) {
   if (!roots)
     return std::nullopt;
 
@@ -754,17 +756,24 @@ static std::optional<std::string> getCheapTargetGeometryFailureImpl(
       constexpr uint64_t maximumOrderedReductionTuples = (budget - 4) / 4;
       auto resultType =
           mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
-      // The current large terminal reduction is an F32-only target
-      // instruction. Other element types with a larger tuple domain are
-      // rejected by the exact instr-lowering gate after materialization.
-      // Mirror that gate here so refinement reaches a representable split
-      // without first expanding a guaranteed-illegal partial tensor.
-      if (resultType &&
-          !mlir::isa<mlir::Float32Type>(resultType.getElementType()) &&
-          static_cast<uint64_t>(reductionTupleCount) >
-              maximumOrderedReductionTuples)
-        return "static_terminal_budget_exceeded: partial-reduction merge "
-               "minimum terminal operation count exceeds 4096";
+      // Mirror the exact native-reduce target tuple here so refinement reaches
+      // a representable split without first expanding a guaranteed-illegal
+      // partial tensor. Generic CT format support is not enough: this query is
+      // the same opcode/kind/format qualification used by target preflight.
+      if (resultType && static_cast<uint64_t>(reductionTupleCount) >
+                            maximumOrderedReductionTuples) {
+        std::optional<LogicalFormat> format;
+        if (mlir::isa<mlir::Float16Type>(resultType.getElementType()))
+          format = LogicalFormat::F16;
+        else if (mlir::isa<mlir::BFloat16Type>(resultType.getElementType()))
+          format = LogicalFormat::BF16;
+        else if (mlir::isa<mlir::Float32Type>(resultType.getElementType()))
+          format = LogicalFormat::F32;
+        if (!format || !isTargetReduceFormatTupleAvailable(
+                           targetProfile, InstrReduceKind::Sum, *format))
+          return "static_terminal_budget_exceeded: partial-reduction merge "
+                 "minimum terminal operation count exceeds 4096";
+      }
     }
     // GEMM dimensions and a genuine local reduction are encoded through
     // target uint16_t shape fields. A sharded high-level reduction can,
@@ -794,12 +803,12 @@ static std::optional<std::string> getCheapTargetGeometryFailureImpl(
   return std::nullopt;
 }
 
-std::optional<std::string>
-getCheapTargetGeometryFailure(mlir::func::FuncOp task,
-                              const CandidateSpec &candidate,
-                              llvm::ArrayRef<int64_t> reductionRanges) {
+std::optional<std::string> getCheapTargetGeometryFailure(
+    mlir::func::FuncOp task, const CandidateSpec &candidate,
+    llvm::ArrayRef<int64_t> reductionRanges, TargetProfileId targetProfile) {
   return getCheapTargetGeometryFailureImpl(
-      getTraversalComputeRootLinalgOps(task), candidate, reductionRanges);
+      getTraversalComputeRootLinalgOps(task), candidate, reductionRanges,
+      targetProfile);
 }
 
 static void addUnique(llvm::SmallVectorImpl<int64_t> &values, int64_t value,

@@ -160,6 +160,20 @@ createContiguousSPMCopy(mlir::PatternRewriter &rewriter, mlir::Location loc,
                         mlir::Operation *op, mlir::Value source,
                         mlir::Value dest, std::string *failureReason,
                         llvm::StringRef role) {
+  auto sourceType = mlir::dyn_cast<mlir::MemRefType>(source.getType());
+  auto destType = mlir::dyn_cast<mlir::MemRefType>(dest.getType());
+  std::optional<WaferPhysicalTensorInfo> sourceInfo =
+      sourceType ? computeWaferPhysicalTensorInfo(sourceType) : std::nullopt;
+  std::optional<WaferPhysicalTensorInfo> destInfo =
+      destType ? computeWaferPhysicalTensorInfo(destType) : std::nullopt;
+  if (!sourceInfo || !destInfo ||
+      sourceInfo->physicalBytes != sourceInfo->compactBytes ||
+      destInfo->physicalBytes != destInfo->compactBytes)
+    return failPattern(
+        rewriter, op, failureReason,
+        llvm::Twine(role)
+            .concat(" contiguous copy cannot include layout padding")
+            .str());
   mlir::FailureOr<MovementDescriptor> sourceDescriptor =
       getContiguousDescriptor(rewriter, op, source.getType(), failureReason);
   mlir::FailureOr<MovementDescriptor> destDescriptor =
@@ -188,12 +202,38 @@ createLogicalSPMCopy(mlir::PatternRewriter &rewriter, mlir::Location loc,
     return failPattern(
         rewriter, op, failureReason,
         llvm::Twine(role).concat(" requires memref operands").str());
-  mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
-      getStaticLogicalMovementSegments(rewriter, op, sourceType, destType,
-                                       failureReason, role);
-  if (mlir::failed(segments))
+  mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
+      mlir::failure();
+  if (sourceType.getShape() == destType.getShape()) {
+    analysis::IndexRelationResult relation =
+        analysis::IndexRelation::identity(destType.getShape());
+    if (!relation.isExact())
+      return failPattern(
+          rewriter, op, failureReason,
+          llvm::Twine(role).concat(" requires an exact index relation").str());
+    descriptors = getRelationMovementDescriptors(
+        rewriter, op, sourceType, destType, destType.getShape(),
+        *relation.get(), *relation.get(), MovementEngine::GatherScatter,
+        failureReason, role);
+  } else {
+    std::optional<CanonicalReshapeMovementRelations> relations =
+        getCanonicalReshapeMovementRelations(
+            rewriter.getContext(), sourceType.getShape(), destType.getShape());
+    if (!relations)
+      return failPattern(
+          rewriter, op, failureReason,
+          llvm::Twine(role)
+              .concat(" reshape relation has no rectangular affine "
+                      "refinement")
+              .str());
+    descriptors = getRelationMovementDescriptors(
+        rewriter, op, sourceType, destType, relations->iterationShape,
+        relations->iterationToSource, relations->iterationToDest,
+        MovementEngine::GatherScatter, failureReason, role);
+  }
+  if (mlir::failed(descriptors))
     return mlir::failure();
-  createGatherScatterSegments(rewriter, loc, source, dest, *segments);
+  createGatherScatterDescriptors(rewriter, loc, source, dest, *descriptors);
   return mlir::success();
 }
 

@@ -3,8 +3,10 @@
 #ifndef WAFER_LIB_CONVERSION_WAFERTILEREGIONTOINSTR_INTERNAL_H
 #define WAFER_LIB_CONVERSION_WAFERTILEREGIONTOINSTR_INTERNAL_H
 
+#include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Target/TargetProfile.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
@@ -41,6 +43,10 @@ struct TileRegionToInstrOptions {
   AllGatherSchedule allGatherSchedule = AllGatherSchedule::Ring;
   AllReduceSchedule allReduceSchedule = AllReduceSchedule::Auto;
   ReduceScatterSchedule reduceScatterSchedule = ReduceScatterSchedule::Direct;
+  /// When present, target-dependent instruction choices must already match
+  /// the selected closed profile.  The standalone conversion pass leaves this
+  /// empty and checks only target-independent instruction IR legality.
+  std::optional<TargetProfileId> targetProfile;
 };
 
 /// Compiler-private materialization point used only by actual-clone candidate
@@ -58,11 +64,23 @@ struct MovementDescriptor {
   llvm::SmallVector<int64_t, 3> iterations;
 };
 
-struct LogicalMovementSegment {
-  int64_t sourceOffset = 0;
-  int64_t destOffset = 0;
-  int64_t bytes = 0;
+struct MovementDescriptorPair {
+  MovementDescriptor source;
+  MovementDescriptor dest;
 };
+
+enum class MovementEngine { RDMA, WDMA, GatherScatter };
+
+struct CanonicalReshapeMovementRelations {
+  llvm::SmallVector<int64_t, 4> iterationShape;
+  analysis::IndexRelation iterationToSource;
+  analysis::IndexRelation iterationToDest;
+};
+
+std::optional<CanonicalReshapeMovementRelations>
+getCanonicalReshapeMovementRelations(mlir::MLIRContext *context,
+                                     llvm::ArrayRef<int64_t> sourceShape,
+                                     llvm::ArrayRef<int64_t> destShape);
 
 using StaticPhysicalOffsetCalculator =
     wafer::WaferStaticPhysicalOffsetCalculator;
@@ -110,32 +128,29 @@ void createRDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
 void createWDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
                 mlir::Value source, mlir::Value dest,
                 const MovementDescriptor &descriptor);
-void createMappedRDMASegments(mlir::PatternRewriter &rewriter,
-                              mlir::Location loc, mlir::Value source,
-                              mlir::Value dest,
-                              llvm::ArrayRef<LogicalMovementSegment> segments);
-void createMappedWDMASegments(mlir::PatternRewriter &rewriter,
-                              mlir::Location loc, mlir::Value source,
-                              mlir::Value dest,
-                              llvm::ArrayRef<LogicalMovementSegment> segments);
-mlir::LogicalResult
-preflightMappedDMASegments(mlir::PatternRewriter &rewriter, mlir::Operation *op,
-                           llvm::ArrayRef<LogicalMovementSegment> segments,
-                           std::string *failureReason, llvm::StringRef opLabel);
 void createGatherScatter(mlir::PatternRewriter &rewriter, mlir::Location loc,
                          mlir::Value source, mlir::Value dest,
                          const MovementDescriptor &sourceDescriptor,
                          const MovementDescriptor &destDescriptor);
-void createGatherScatterSegments(
+mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
+getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
+                               mlir::Operation *op, mlir::MemRefType sourceType,
+                               mlir::MemRefType destType,
+                               llvm::ArrayRef<int64_t> iterationShape,
+                               const analysis::IndexRelation &iterationToSource,
+                               const analysis::IndexRelation &iterationToDest,
+                               MovementEngine engine,
+                               std::string *failureReason,
+                               llvm::StringRef opLabel);
+void createGatherScatterDescriptors(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
-    mlir::Value dest, llvm::ArrayRef<LogicalMovementSegment> segments,
-    bool mayReorderDisjointSegments = false);
-
-mlir::FailureOr<uint64_t> preflightPackedMovementCommands(
-    mlir::PatternRewriter &rewriter, mlir::Operation *op,
-    llvm::ArrayRef<LogicalMovementSegment> segments, std::string *failureReason,
-    llvm::StringRef opLabel);
-
+    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors);
+void createMappedRDMADescriptors(
+    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
+    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors);
+void createMappedWDMADescriptors(
+    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
+    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors);
 void copyOptionalAttr(mlir::Operation *from, mlir::Operation *to,
                       llvm::StringRef name);
 mlir::IntegerAttr getI64Attr(mlir::PatternRewriter &rewriter, int64_t value);
@@ -157,159 +172,11 @@ delinearizeIndex(mlir::PatternRewriter &rewriter, mlir::Operation *op,
                  llvm::ArrayRef<int64_t> shape, int64_t linearIndex,
                  std::string *failureReason, llvm::StringRef opLabel);
 
-template <typename SourceIndexFn, typename DestIndexFn>
-mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
-getStaticMappedMovementSegments(
-    mlir::PatternRewriter &rewriter, mlir::Operation *op,
-    mlir::MemRefType sourceType, mlir::MemRefType destType,
-    llvm::ArrayRef<int64_t> iterationShape, SourceIndexFn sourceIndexFn,
-    DestIndexFn destIndexFn, std::string *failureReason,
-    llvm::StringRef opLabel) {
-  wafer::support::ScopedCompileTimingSpan timing(
-      "lowering-algorithm", "tile-region-to-instr",
-      "mapped-segment-enumeration", op->getName().getStringRef());
-  std::optional<WaferPhysicalTensorInfo> sourceInfoStorage =
-      computeWaferPhysicalTensorInfo(sourceType);
-  std::optional<WaferPhysicalTensorInfo> destInfoStorage =
-      computeWaferPhysicalTensorInfo(destType);
-  if (!sourceInfoStorage || !destInfoStorage ||
-      sourceInfoStorage->physicalBytes <= 0 ||
-      destInfoStorage->physicalBytes <= 0)
-    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires static positive physical byte sizes")
-            .str());
-  const WaferPhysicalTensorInfo &sourceInfo = *sourceInfoStorage;
-  const WaferPhysicalTensorInfo &destInfo = *destInfoStorage;
-  if (sourceInfo.elementBytes <= 0 ||
-      sourceInfo.elementBytes != destInfo.elementBytes ||
-      sourceInfo.bitPackedElement || destInfo.bitPackedElement)
-    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires byte-addressable elements")
-            .str());
-
-  std::optional<StaticPhysicalOffsetCalculator> sourceOffsets =
-      StaticPhysicalOffsetCalculator::create(sourceType);
-  std::optional<StaticPhysicalOffsetCalculator> destOffsets =
-      StaticPhysicalOffsetCalculator::create(destType);
-  if (!sourceOffsets || !destOffsets)
-    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires static positive physical byte sizes")
-            .str());
-
-  std::optional<int64_t> elementCount =
-      getStaticPositiveElementCount(iterationShape);
-  if (!elementCount)
-    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires static positive iteration shape")
-            .str());
-
-  int64_t elementBytes = sourceInfo.elementBytes;
-  llvm::SmallVector<LogicalMovementSegment> segments;
-  llvm::SmallVector<int64_t, 4> iterationIndices(iterationShape.size(), 0);
-  llvm::SmallVector<int64_t, 4> sourceIndices;
-  llvm::SmallVector<int64_t, 4> destIndices;
-  sourceIndices.reserve(sourceType.getRank());
-  destIndices.reserve(destType.getRank());
-  for (int64_t linearIndex = 0; linearIndex < *elementCount; ++linearIndex) {
-    sourceIndices.clear();
-    destIndices.clear();
-    if (mlir::failed(sourceIndexFn(iterationIndices, sourceIndices)) ||
-        mlir::failed(destIndexFn(iterationIndices, destIndices)))
-      return mlir::failure();
-
-    if (sourceIndices.size() != static_cast<size_t>(sourceType.getRank()) ||
-        destIndices.size() != static_cast<size_t>(destType.getRank()))
-      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel)
-              .concat(" cannot compute physical element offset")
-              .str());
-    int64_t sourceOffset =
-        sourceOffsets->getByteOffsetForValidIndices(sourceIndices);
-    int64_t destOffset = destOffsets->getByteOffsetForValidIndices(destIndices);
-    if (sourceOffset < 0 || destOffset < 0 ||
-        sourceOffset > sourceInfo.physicalBytes - elementBytes ||
-        destOffset > destInfo.physicalBytes - elementBytes)
-      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel)
-              .concat(" segment exceeds static physical byte range")
-              .str());
-
-    bool coalesced = false;
-    if (!segments.empty()) {
-      LogicalMovementSegment &last = segments.back();
-      if (last.sourceOffset + last.bytes == sourceOffset &&
-          last.destOffset + last.bytes == destOffset) {
-        last.bytes += elementBytes;
-        coalesced = true;
-      }
-    }
-    if (!coalesced)
-      segments.push_back({sourceOffset, destOffset, elementBytes});
-
-    // The domain was validated once above.  Maintain its canonical
-    // lexicographic multi-index incrementally instead of re-delinearizing the
-    // linear ordinal (and allocating new index vectors) for every element.
-    if (linearIndex + 1 != *elementCount) {
-      for (int64_t dim = static_cast<int64_t>(iterationShape.size()) - 1;
-           dim >= 0; --dim) {
-        if (++iterationIndices[dim] < iterationShape[dim])
-          break;
-        iterationIndices[dim] = 0;
-      }
-    }
-  }
-
-  return segments;
-}
-
-mlir::FailureOr<llvm::SmallVector<int64_t>> expandRankReducedSliceIndices(
-    mlir::PatternRewriter &rewriter, mlir::Operation *op,
-    llvm::ArrayRef<int64_t> fullShape, llvm::ArrayRef<int64_t> reducedShape,
-    llvm::ArrayRef<int64_t> reducedIndices, std::string *failureReason,
-    llvm::StringRef opLabel);
-mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
-getStaticLogicalMovementSegments(mlir::PatternRewriter &rewriter,
-                                 mlir::Operation *op,
-                                 mlir::MemRefType sourceType,
-                                 mlir::MemRefType destType,
-                                 std::string *failureReason,
-                                 llvm::StringRef opLabel);
 bool requiresGatherScatterMaterialization(InstrDataMoveKind kind);
 mlir::LogicalResult verifyStaticShapeAttrMatchesMemRef(
     mlir::PatternRewriter &rewriter, mlir::Operation *op, mlir::MemRefType type,
     mlir::DenseI64ArrayAttr shapeAttr, llvm::StringRef role,
     std::string *failureReason, llvm::StringRef opLabel);
-mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
-getPermutationDataMoveSegments(mlir::PatternRewriter &rewriter,
-                               InstrTDMADataMoveOp op,
-                               mlir::MemRefType sourceType,
-                               mlir::MemRefType destType,
-                               llvm::ArrayRef<int64_t> permutation,
-                               std::string *failureReason,
-                               llvm::StringRef opLabel);
-mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
-getMirrorDataMoveSegments(mlir::PatternRewriter &rewriter,
-                          InstrTDMADataMoveOp op, mlir::MemRefType sourceType,
-                          mlir::MemRefType destType,
-                          llvm::ArrayRef<int64_t> axes,
-                          std::string *failureReason, llvm::StringRef opLabel);
-mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
-getRotateDataMoveSegments(mlir::PatternRewriter &rewriter,
-                          InstrTDMADataMoveOp op, mlir::MemRefType sourceType,
-                          mlir::MemRefType destType, InstrDataMoveKind kind,
-                          llvm::ArrayRef<int64_t> axes,
-                          std::string *failureReason, llvm::StringRef opLabel);
-
 mlir::FailureOr<InstrElementwiseKindAttr> getAccumulationElementwiseKind(
     mlir::PatternRewriter &rewriter, mlir::Operation *op,
     ComputeReduceKindAttr reduceKind, std::string *failureReason,
@@ -320,6 +187,7 @@ void populateMovementLoweringPatterns(mlir::RewritePatternSet &patterns,
 void populateViewReshapeLoweringPattern(mlir::RewritePatternSet &patterns,
                                         std::string *failureReason);
 void populateComputeLoweringPatterns(mlir::RewritePatternSet &patterns,
+                                     const TileRegionToInstrOptions &options,
                                      std::string *failureReason);
 void populateFillLoweringPattern(mlir::RewritePatternSet &patterns);
 void populateConstantPredicateSelectCanonicalizationPattern(

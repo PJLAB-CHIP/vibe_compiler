@@ -194,6 +194,7 @@ llvm::Error createKernelAggregateExports(llvm::Module &module,
                                          llvm::ArrayRef<std::string> bodyNames,
                                          llvm::StringRef mainSymbol,
                                          uint64_t slotsPerRank,
+                                         KernelEntryABI entryABI,
                                          bool includePrepare) {
   llvm::LLVMContext &context = module.getContext();
   llvm::Type *voidType = llvm::Type::getVoidTy(context);
@@ -233,7 +234,9 @@ llvm::Error createKernelAggregateExports(llvm::Module &module,
     llvm::Function *prepare =
         llvm::Function::Create(wrapperType, llvm::GlobalValue::ExternalLinkage,
                                kKernelPrepareExportSymbol, module);
-    prepare->getArg(0)->setName("rank_major_slots");
+    prepare->getArg(0)->setName(
+        entryABI == KernelEntryABI::RankRowPointerTableV1 ? "rank_row_pointers"
+                                                          : "rank_major_slots");
     llvm::IRBuilder<> prepareBuilder(
         llvm::BasicBlock::Create(context, "entry", prepare));
     llvm::Value *preparePid = prepareBuilder.CreateCall(
@@ -252,7 +255,9 @@ llvm::Error createKernelAggregateExports(llvm::Module &module,
 
   llvm::Function *main = llvm::Function::Create(
       wrapperType, llvm::GlobalValue::ExternalLinkage, mainSymbol, module);
-  main->getArg(0)->setName("rank_major_slots");
+  main->getArg(0)->setName(entryABI == KernelEntryABI::RankRowPointerTableV1
+                               ? "rank_row_pointers"
+                               : "rank_major_slots");
   llvm::BasicBlock *entryBlock =
       llvm::BasicBlock::Create(context, "entry", main);
   llvm::BasicBlock *defaultBlock =
@@ -286,10 +291,22 @@ llvm::Error createKernelAggregateExports(llvm::Module &module,
     builder.SetInsertPoint(rankBlock);
     llvm::SmallVector<llvm::Value *, 16> arguments;
     arguments.reserve(slotsPerRank);
-    const uint64_t rowBase = static_cast<uint64_t>(rank) * slotsPerRank;
+    llvm::Value *row = main->getArg(0);
+    uint64_t rowBase = static_cast<uint64_t>(rank) * slotsPerRank;
+    if (entryABI == KernelEntryABI::RankRowPointerTableV1) {
+      llvm::Value *rowAddress = builder.CreateInBoundsGEP(
+          i64, main->getArg(0), llvm::ConstantInt::get(i64, rank),
+          llvm::formatv("rank.{0}.row.address", rank).str());
+      llvm::LoadInst *rowValue = builder.CreateLoad(
+          i64, rowAddress, llvm::formatv("rank.{0}.row", rank).str());
+      rowValue->setAlignment(llvm::Align(8));
+      row = builder.CreateIntToPtr(rowValue, pointer,
+                                   llvm::formatv("rank.{0}.slots", rank).str());
+      rowBase = 0;
+    }
     for (uint64_t slot = 0; slot < slotsPerRank; ++slot) {
       llvm::Value *address = builder.CreateInBoundsGEP(
-          i64, main->getArg(0), llvm::ConstantInt::get(i64, rowBase + slot),
+          i64, row, llvm::ConstantInt::get(i64, rowBase + slot),
           llvm::formatv("rank.{0}.slot.{1}.address", rank, slot).str());
       llvm::LoadInst *value = builder.CreateLoad(
           i64, address, llvm::formatv("rank.{0}.slot.{1}", rank, slot).str());
@@ -322,7 +339,8 @@ llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
   const KernelRuntimeLaunchContract *kernel =
       targetLLVMModules.getRuntimeLaunchContract().getKernel();
   if (!kernel || kernel->form == KernelLaunchForm::PerRank ||
-      kernel->entryABI != KernelEntryABI::RankMajorPointerTableV1 ||
+      (kernel->entryABI != KernelEntryABI::RankMajorPointerTableV1 &&
+       kernel->entryABI != KernelEntryABI::RankRowPointerTableV1) ||
       config.getRankCount() != kKernelAggregateRankCount ||
       targetLLVMModules.getModules().size() != kKernelAggregateRankCount)
     return llvm::createStringError(
@@ -335,11 +353,14 @@ llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
                                    ? kTx81ClusterKernelArgumentBytesMax
                                    : kTx81KernelArgumentBytesMax;
   if (first.getKernelABISlots().empty() ||
-      first.getKernelABISlots().size() >
-          packetBytes / sizeof(uint64_t) / kKernelAggregateRankCount)
+      (kernel->entryABI == KernelEntryABI::RankMajorPointerTableV1 &&
+       first.getKernelABISlots().size() >
+           packetBytes / sizeof(uint64_t) / kKernelAggregateRankCount) ||
+      (kernel->entryABI == KernelEntryABI::RankRowPointerTableV1 &&
+       kKernelAggregateRankCount > packetBytes / sizeof(uint64_t)))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "kernel rank-major argument table exceeds the qualified V5.6 packet "
+        "kernel aggregate argument packet exceeds the qualified V5.6 packet "
         "limit");
   const size_t transportStatusSlots =
       llvm::count_if(first.getKernelABISlots(), [](const KernelABISlot &slot) {
@@ -404,7 +425,7 @@ llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
       RuntimeLaunchPhaseRole::Prepare);
   if (llvm::Error error = createKernelAggregateExports(
           *aggregate, bodyNames, first.getEntrySymbol(),
-          first.getKernelABISlots().size(), hasPrepare))
+          first.getKernelABISlots().size(), kernel->entryABI, hasPrepare))
     return std::move(error);
   return OwnedTargetLLVMModule{std::move(context), std::move(aggregate)};
 }

@@ -1,9 +1,9 @@
 # Compiler Search Scalability
 
-状态：`doing`。typed optimization configuration、正式CLI、单轴source-to-package A/B及模型规模
-ordinary/profile no-card已闭合；当前扩展invocation-local详细编译计时，并用实际模型case定位长耗时边界后再决定
-剪枝方案。新增配置只约束哪些可选alternative进入candidate domain，不修改Q39 NoC-resident语义或Q40的
-Direct-DTE issue/wait合同。真实板端未运行。
+状态：`board-ready`。typed optimization configuration、正式CLI、单轴source-to-package A/B、默认关闭的
+invocation-local详细编译计时、symbolic movement descriptor、模型规模ordinary/profile no-card及实际
+Llama-2 7B Megatron TP16 production package/no-card均已闭合。新增配置只约束哪些可选alternative进入
+candidate domain，不修改Q39 NoC-resident语义或Q40的Direct-DTE issue/wait合同。真实板端未运行。
 
 ```text
 Pipeline position:
@@ -14,12 +14,15 @@ Pipeline position:
   capture construction，删除不改变candidate domain、winner或artifact的重复工作；同时把当前production
   candidate owner中的可选语义优化机制收敛为typed、可组合的optimization configuration，使同一source、
   target和launch可以选择production全集、全关baseline或任意显式子集；按显式请求观测stage、pipeline、pass、
-  analysis和candidate evaluation子阶段的wall/CPU时间，且长运行或超时时能看到仍在执行的边界。
+  analysis和candidate evaluation子阶段的wall/CPU时间，且长运行或超时时能看到仍在执行的边界；
+  从typed logical relation和physical encoding直接构造RDMA、WDMA和TDMA/GS的多层loop descriptor，
+  使host构造复杂度取决于rank、layout piece和最终command count，而不是logical element count。
 - Output artifact / IR:
   由显式optimization configuration约束candidate domain后产生的accepted whole variant、package/profile
   companion及包含canonical enabled/disabled set的稳定compile-time diagnostics。配置只决定允许生成哪些
   alternative；最终选择仍由actual IR、exact gate和既有static policy完成。详细计时只产生invocation-local
-  diagnostic event与汇总表，不成为IR、artifact、cache key或selection input。
+  diagnostic event与汇总表，不成为IR、artifact、cache key或selection input；movement lowering
+  输出只覆盖logical valid domain的typed instruction descriptor，不输出中间per-element segment列表或padding copy。
 - Downstream consumer:
   target/package/no-card/runtime、Q9 profiler和model-scale compile workflow。
 - User-level driver / named pipeline:
@@ -37,7 +40,10 @@ Pipeline position:
   失败均输出按累计wall time排序的汇总表，长运行时周期输出当前active边界；默认编译不输出详细计时；
   production preset与此前default winner一致；none preset只保留fully gated conservative baseline；每个
   public语义优化名都能独立enable/disable并可组合，unknown/duplicate/conflicting配置在编译前拒绝；至少一个
-  source-to-package A/B证明单轴关闭改变final target结构而source/launch/ABI保持一致。M-sharded K=1024 case在
+  source-to-package A/B证明单轴关闭改变final target结构而source/launch/ABI保持一致；RDMA、WDMA、
+  layout materialization、slice/insert、broadcast、transpose、reshape和transform-like TDMA的大shape回归证明
+  descriptor数量与loop几何一致，Cx/NCx的dtype block、full/C0/folded tail和NCx per-N bank alignment均由
+  统一encoding事实源推导，production路径不再按logical element枚举。M-sharded K=1024 case在
   相同Release环境满足时间门禁、完整package生成且no-card通过时恢复`board-ready`，但不标`done`；真实板端
   exact-output和winner profile有效后完成。
 ```
@@ -98,10 +104,16 @@ correspondence、admission、cost、late legality或selection policy。
 
 - 只有typed collective op能使rank-local scheduling观察`logicalRank`。无collective的verified tensor program
   只生成一个rank-invariant frontier，再按16个canonical rank引用复用；有collective时仍逐rank生成。
-- rank-invariant请求按稳定的`(source, recipe)`组分成16 shard，每个组只进入一个shard，因而partition
-  suppression的作用域不变。shard结果按原始request ordinal稳定归并，并重放原来的三band admission。
+- rank-invariant请求按稳定的`(source, recipe)`组分成16 shard；rank-dependent generation class同样按该组
+  分片，但每class的shard数由host heavyweight thread预算除以generation-class数得到并限制在`[1,16]`。
+  每个组只进入一个shard，因而partition suppression的作用域不变。shard结果按原始request ordinal稳定归并，
+  只重放一次原来的三band admission。
 - 每个shard内部candidate evaluation最多4个worker；rank frontier上界仍为
   `1 reserved + 256 general + 8 fixed-slot + 8 worker-placement = 273`。
+- rank-wide admission完成后，admitted candidate保留在原request-shard context中并行执行function-boundary
+  bufferization、SPM replanning和exact-cost closure；成功结果按原始request ordinal恢复canonical frontier。
+  finalization失败仍按原合同只剪除非baseline candidate，reserved baseline失败仍使完整generation class失败；
+  不在finalization前按cost、shape或case剪枝。
 - whole-variant attempt上界成为可引用常量：
   `1 reserved + 64 Cartesian + 64 coordinated + 8 worker + 8 fixed-slot + 8 generic = 153`。
 - verified tensor program和required candidate用MLIR bytecode跨context传输。先从metadata建立完整attempt plan，
@@ -113,13 +125,27 @@ artifact/buffering/worker tuple以及完整module文本。它证明candidate集�
 
 ### 等价lowering与analysis加速
 
-- standard projected-permutation和trailing ordered-reduction slice在static shape/layout/offset可证明时直接构造
-  最多三层的exact movement descriptor；不满足布局、字段宽度或endpoint一致性时回退原逐element分段。
-- Tensor/NTensor与Cx/NCx的identity movement按channel-block构造exact contiguous runs，不再先枚举全部logical
-  elements。
-- FP16/BF16 partial-reduction的K-split若按现有terminal lowering必然超过4096-op预算，在cheap target gate拒绝；
-  SPM lower bound同时计入partial GEMM multiply点必然同时存活的四个张量。两者只提前执行现有exact gate的
-  必然拒绝，不改变可表示候选。
+- static projected-permutation、identity、broadcast、slice和trailing ordered-reduction slice从显式index relation
+  直接构造exact movement descriptor。维度循环从内到外合并为最多三层 stride × iteration；
+  多余维度、field-width、directional DMA endpoint约束或真实piece边界导致拆分时，先符号计数再在
+  4096 command预算内materialize，超出则在生成Instr op前structured failure。
+- Cx/NCx的逻辑C固定为最后一维。符号planner只从computeWaferPhysicalTensorInfo取dtype决定的
+  CBlock、full-block数、retained/folded C0和256B bank alignment；full域把C分解为 block × lane，
+  tail域单独生成piece，NCx的N batch stride作为真实outer loop。不复制block/tail公式，不把
+  alignedC当logical dense stride。
+- RDMA只把DDR source一侧的loops写入descriptor，并证明SPM destination按同一组iteration连续；
+  WDMA对称地要求SPM source连续，只编码DDR destination loops。GS同时保留两侧loops。
+  directional endpoint不连续时只能在符号piece边界拆command，不得偷偷使用另一侧stride。
+- descriptor byte_count仅覆盖logical valid elements。Cx/NCx full-block invalid lanes、C0对齐lane和per-N/
+  allocation bank padding不得因source/destination layout相同而被copy；需要known padding的consumer必须由显式
+  fill/invalid-lane contract闭合。
+- 生产lowering不从per-element offset数组反向猜测loop。逐元素遍历只保留为focused differential
+  test oracle；符号relation或layout piece无法证明时fail closed，不以大量中间segment作为fallback。
+- 大partial-reduction只有在source init为typed identity、logical dimensions可映射native reduce selector且
+  selected target profile存在closed opcode/kind/format tuple时，才用一条native reduce表达完整规则归约；否则
+  cheap target gate在ordered expansion必然超过4096-op预算时拒绝。target tuple由target preflight和cheap gate
+  共用同一事实源，不能再分别写F16/F32判断。SPM lower bound同时计入partial GEMM multiply点必然同时存活的
+  四个张量。两者只提前执行现有exact gate的必然拒绝，不改变可表示候选。
 - local completion tracker维护pending access摘要。stable root、同worker的ordered issue stream由硬件
   busytable合同一次证明；homogeneous static loop stream只扫描一次。mixed worker、conditional、unknown root/range
   和observer仍走原pairwise/per-issue fail-closed证明。
@@ -142,38 +168,59 @@ invocation，不进入IR、package或selection input。
 - 为避免逐candidate打印扰动被测对象，短事件只在内存中聚合；后台以固定低频率输出仍active且耗时最长的边界。
   同时输出已完成项的累计wall/CPU Top-N。因此被外部timeout终止时，日志仍能同时指出尚未结束的边界和此前
   已完成工作的主要成本，而不必等待正常收尾。
+- 聚合状态按thread-id散列到256个invocation-local shard，monitor和最终报告再按稳定key归并；高频recursive
+  ready-order搜索只在block边界计时，不在每个微小递归调用上争用全局锁。计时实现自身不得把百万级事件串行化；
+  multithread unit固定验证跨shard调用数无损归并。
 - 计时只解释“时间花在哪里”，不授权按shape/op/name跳过工作。任何剪枝必须随后证明它是现有exact gate的廉价
   前置判定，或显式调整typed candidate domain及其测试合同。
 
 ### 实际 Llama-2 7B 定向结果
 
 实际Llama-2 7B单block使用hidden `4096`、intermediate `11008`、32 heads、head dim `128`、batch `1`、
-sequence `16`和Megatron TP16。定向采样使用真实PyTorch/XLA source program及production 16-rank compile，
-只在固定短窗口收集诊断后主动终止；它用于定位，不是完整package或no-card完成证据。
+sequence `16`和Megatron TP16。输入和parameter由固定seed PyTorch random API形成，CPU eager是唯一expected；
+同一PyTorch/XLA source program完成production 16-rank compile、schema-v6 package和fresh no-card。
 
-10秒稳定窗口的并行累计work如下。累计时间包含多个worker，可以大于窗口wall time：
+修正计时器自身锁竞争后，本轮完整transaction结果如下：
 
-| 边界 | 调用次数 | 累计wall | 最大单次wall | 解释 |
-| --- | ---: | ---: | ---: | --- |
-| candidate evaluation | 254 | 147.237 s | 3.649 s | 完整候选评估 |
-| instr lowering | 260 | 142.313 s | 3.642 s | 候选TileRegion到Instr |
-| full conversion | 260 | 142.155 s | 3.642 s | dialect conversion主体 |
-| `wafer.tile.transpose` pattern | 79 | 132.494 s | 3.639 s | full conversion主热点 |
-| mapped segment enumeration | 166 | 126.657 s | 3.258 s | 按logical element计算物理offset |
-| `wafer.tile.broadcast` pattern | 65 | 7.347 s | 0.298 s | 次要mapped movement |
-| descriptor materialization | 266 | 6.715 s | 0.270 s | segment打包后的Instr构造 |
-| descriptor command counting | 266 | 6.676 s | 0.215 s | segment descriptor预计数 |
-| source to tensor program | 1 | 3.385 s | 3.385 s | 不是长编译主因 |
-| SPM offset planning | 256 | 2.103 s | 0.021 s | 不是长编译主因 |
+| production边界 | wall | 关键计数 |
+| --- | ---: | --- |
+| source to tensor program | 3.562 s | 1次真实XLA SPMD partitioning |
+| rank candidate generation | 143.859 s | 16 generation classes、每class 4 shard、1600 request、2720 final candidates |
+| frontier transfer | 4.900 s | 1104 unique bytecode modules、32,977,897 bytes |
+| owner import | 11.551 s | 1104 modules |
+| NoC candidate expansion | 164.223 s | 1360 frontier candidates |
+| whole-variant selection | 160.437 s | 130/153 attempts、67 pre-target accepted、2 fully accepted |
+| target package | 4.541 s | 16 rank、1 aggregate module、prepare/main |
+| compile transaction | 493.374 s | external wall 493.923 s、peak RSS 3,015,048 KiB |
 
-`wafer.tile.transpose`解释约93%的full-conversion累计wall；其内部mapped-segment enumeration又解释绝大多数
-pattern时间。当前通用fallback按结果张量每个logical element生成source/dest物理offset，再coalesce和打包，
-因此实际attention transpose的元素规模会被每个rank的多个candidate重复支付。
+同source先前未完成的production观测到627.589秒才到达target ABI；本轮完整成功transaction相对该诊断wall缩短
+约21.4%。rank request分片前的完整观测为425.861秒，本轮generation为143.859秒，缩短约66.2%；candidate
+stable ordinal、三band admission和最终selection顺序保持原合同。
 
-优化顺序由这个证据约束：先为static shape、byte-addressable element、可验证layout/stride和permutation建立
-exact descriptor fast path，直接构造目标最多三层iteration可表达的movement；证明失败时保留逐element fallback。
-然后再评估以typed IR与candidate spec为key的rank间复用，或在枚举前由现有4096 terminal-op gate推出必然拒绝。
-不得因为当前热点是transpose而按op name跳过，也不得用Llama shape特判改变candidate domain。
+最终表按累计线程CPU识别的是重复工作量，不是串行critical path。主要可继续优化的通用边界为：
+
+| 边界 | 调用次数 | 累计线程CPU | 判断 |
+| --- | ---: | ---: | --- |
+| rank artifact derivation | 880 | 2904.488 s | inclusive候选派生总成本 |
+| SPM planning | 77,777 | 2366.682 s | 当前最大可复用analysis热点 |
+| candidate evaluation | 41,209 | 1773.575 s | 候选重复评估总量 |
+| candidate commit | 880 | 1271.828 s | accepted candidate物化长尾 |
+| TileRegion to Instr | 71,537 | 1260.374 s | 完整conversion总量 |
+| full-buffer elision attempt | 1,292,812 | 861.648 s | 高频eligibility/rewrite proof |
+| DDR planning | 66,496 | 612.335 s | late physical planning重复量 |
+| relation descriptor planning | 210,404 | 295.475 s | 已与logical element count解耦 |
+| `wafer.tile.all_reduce` | 8,640 | 287.547 s | collective lowering热点 |
+| `wafer.tile.transpose` | 30,009 | 46.847 s | 平均1.566 ms，已退出主热点 |
+
+早期10秒采样中transpose平均约1.68秒且占full conversion约93%，根因是逐logical element构造offset segment。
+symbolic IndexRelation/encoding piece planner闭合后，同一实际shape完整编译中的transpose平均降为1.566毫秒；
+production不保留逐元素fallback。下一轮剪枝/复用应优先针对SPM planning、candidate commit、full-buffer
+eligibility和NoC tuple materialization，并先证明analysis key、失效边界或现有exact rejection，不能用Llama shape、
+op name或当前winner固化shortcut。
+
+曾有一轮详细计时得到779.349秒，但该结果包含5,827,470个ready-order微事件争用单一计时mutex，属于observer
+自扰动，不能用于优化前后比较。分片聚合和block粒度计时后，inner row的累计wall/CPU重新接近，以上493.374秒
+才是本轮可引用的完整timed transaction。
 
 ## 无卡结果
 
@@ -200,8 +247,14 @@ production、count capture和trace capture三个完整package均fresh通过`wafe
 guard/status/lifecycle及bounded timeout，显式要求grid launch；它fresh生成ordinary/profile两个production
 package并证明递归bytes完全一致、NE GEMM target structure一致、profile companion完整且两包均通过no-card。
 这避免把rank count错误恢复成cluster/Direct-DTE launch。无卡门禁已闭合，真实板端未执行，Q41保持
-原有`board-ready`证据有效；但本轮因实际Llama compile热点重新进入`doing`，在通用exact descriptor优化、
-对应回归和模型compile复验闭合前不恢复`board-ready`。
+原有`board-ready`证据有效。
+
+实际Llama-2 7B Megatron TP16另以同一Release production配置完成493.374秒transaction和fresh no-card：
+manifest为schema 6、16 rank、cluster prepare/main、一个aggregate ELF；每rank 18个typed slot，选择
+`rank-row-pointer-table-v1`，runtime packet携带16个row pointer而非288个资源pointer。288个resource、完整
+transport status及all-rank invocation preflight均通过，`board_execution: false`。该结果同时恢复Q41
+`board-ready`并使Q44的第三个PyTorch case达到board-ready；真实tensor capture/torch eager comparison仍须在
+configured board执行后才能标`done`。
 
 本轮typed configuration的fresh host证据包括：
 

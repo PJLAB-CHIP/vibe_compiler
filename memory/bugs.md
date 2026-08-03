@@ -2268,8 +2268,37 @@
   其中按每个logical element计算物理offset的mapped-segment enumeration约126.7秒。扩大deadline只会让同一个
   O(元素数) fallback继续跨rank、跨candidate重复运行。
 - 修复模式：先用默认关闭的invocation-local详细计时，分层聚合stage/pipeline/pass/pattern/algorithm的调用次数、
-  wall与线程CPU，并周期输出active leaf和累计Top-N。定位后优先为可证明的static stride/permutation建立exact
-  descriptor fast path，不能证明时保留原fallback；候选剪枝只能提前执行已有exact rejection。
+  wall与线程CPU，并周期输出active leaf和累计Top-N。static movement必须从typed IndexRelation和physical encoding
+  piece直接构造exact多层descriptor；无法证明时structured failure，production不保留按logical element枚举的
+  性能悬崖。rank request按semantic group分片并按原ordinal归并，候选剪枝只能提前执行已有exact rejection。
 - 防复发：实际shape case首次明显超出预算时先做短窗口分层采样，不读取历史中断输出、不重复盲跑完整compile，
   也不把board completion timeout与host compile deadline混用。只有定位结果证明工作量合理且有进展时才重新估算
-  host deadline；不得通过缩小workload或复用partial staging取得`board-ready`。
+  host deadline；不得通过缩小workload或复用partial staging取得`board-ready`。完整同shape复验还必须生成package并
+  通过no-card；本轮transaction为493.374秒，transpose平均1.566毫秒，后续热点转为SPM/DDR planning、candidate
+  commit、full-buffer proof和NoC materialization，不能继续按初始短窗口结论优化。
+
+## 2026-08-03 细粒度计时器不能把被测并行搜索串行化
+
+- 现象：加入详细计时后，同一Llama production compile得到779.349秒，部分并行边界的累计wall远大于线程CPU，
+  看似request分片反而变慢；运行中共记录5,827,470个ready-order递归微事件。
+- 根因：每个begin/end都争用一个session全局mutex，同时active和summary共用同一map。百万级亚毫秒事件把worker
+  completion串行化，monitor也周期争用同一锁；该结果主要测到observer contention，不是compiler关键路径。
+- 修复模式：active/summary按thread id散列到固定数量的invocation-local shard，monitor和最终表按稳定key归并；
+  recursive search只在能够对应compiler责任的block边界计时，不为每次递归或eligibility小步骤单独建span。
+  修复后同source完整transaction为493.374秒，累计wall与CPU重新接近。
+- 防复发：计时聚合单测必须从多线程向同一key写入并验证exact call count；model-scale首次运行要比较transaction
+  wall、线程CPU与事件数，出现wall/CPU异常背离时先审计instrumentation。细粒度不等于每个函数都计时，边界必须
+  能解释且单次成本足以覆盖observer开销。
+
+## 2026-08-03 aggregate kernel参数不能随rank乘slot直接塞进packet
+
+- 现象：实际Llama block每rank需要18个typed resource slot，16-rank direct rank-major table需要288个64-bit
+  pointer，超过TX81 V5.6 qualified command packet；删parameter或合并slot会破坏manifest binding和source语义。
+- 根因：原共享entry ABI把packet当成全部rank resource pointer的唯一存储，容量随`rank_count * slot_count`增长；
+  device entry实际只需要先按pid选择rank，再按slot取address，不要求两级表都内嵌在packet。
+- 修复模式：保留窄domain的direct rank-major ABI，新增typed rank-row ABI。runtime为每rank分配device pointer row，
+  按manifest slot order上传全部resource device address，packet只传16个row pointer；aggregate entry按pid选row。
+  row storage属于invocation生命周期，计入capacity、H2D、failure和cleanup，不进入manifest resource或用户binding。
+- 防复发：manifest/launch verifier分别检查两种ABI的packet bound；target aggregate测试必须读取高ordinal slot，runtime
+  fake provider必须逐row核对device address、allocation/H2D/cleanup和单次aggregate submit。不能从slot名、case或
+  参数内容选择ABI。

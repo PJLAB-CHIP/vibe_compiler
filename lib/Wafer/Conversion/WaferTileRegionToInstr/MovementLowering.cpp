@@ -50,20 +50,16 @@ public:
       return mlir::success();
     }
 
-    if (mlir::failed(analysis::TransferRealizability::proveMappedDma(
-            sourceType, destType, *relation.get())))
-      return failPattern(rewriter, op, failureReason,
-                         "tile.load mapped DMA is not exactly realizable");
-    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
-        getStaticLogicalMovementSegments(rewriter, op, sourceType, destType,
-                                         failureReason, "tile.load");
-    if (mlir::failed(segments) ||
-        mlir::failed(preflightMappedDMASegments(rewriter, op, *segments,
-                                                failureReason, "tile.load")))
+    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
+        getRelationMovementDescriptors(
+            rewriter, op, sourceType, destType, destType.getShape(),
+            *relation.get(), *relation.get(), MovementEngine::RDMA,
+            failureReason, "tile.load");
+    if (mlir::failed(descriptors))
       return mlir::failure();
 
-    createMappedRDMASegments(rewriter, op.getLoc(), op.getSource(),
-                             op.getDest(), *segments);
+    createMappedRDMADescriptors(rewriter, op.getLoc(), op.getSource(),
+                                op.getDest(), *descriptors);
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -100,19 +96,15 @@ public:
       createWDMA(rewriter, op.getLoc(), op.getSource(), op.getDest(),
                  *descriptor);
     } else {
-      if (mlir::failed(analysis::TransferRealizability::proveMappedDma(
-              sourceType, destType, *relation.get())))
-        return failPattern(rewriter, op, failureReason,
-                           "tile.store mapped DMA is not exactly realizable");
-      mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
-          getStaticLogicalMovementSegments(rewriter, op, sourceType, destType,
-                                           failureReason, "tile.store");
-      if (mlir::failed(segments) ||
-          mlir::failed(preflightMappedDMASegments(rewriter, op, *segments,
-                                                  failureReason, "tile.store")))
+      mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
+          getRelationMovementDescriptors(
+              rewriter, op, sourceType, destType, destType.getShape(),
+              *relation.get(), *relation.get(), MovementEngine::WDMA,
+              failureReason, "tile.store");
+      if (mlir::failed(descriptors))
         return mlir::failure();
-      createMappedWDMASegments(rewriter, op.getLoc(), op.getSource(),
-                               op.getDest(), *segments);
+      createMappedWDMADescriptors(rewriter, op.getLoc(), op.getSource(),
+                                  op.getDest(), *descriptors);
     }
 
     rewriter.eraseOp(op);
@@ -145,9 +137,7 @@ public:
 
     analysis::IndexRelationResult relation =
         analysis::IndexRelation::identity(resultType.getShape());
-    if (!relation.isExact() ||
-        mlir::failed(analysis::TransferRealizability::proveGatherScatter(
-            sourceType, resultType, *relation.get())))
+    if (!relation.isExact())
       return failPattern(
           rewriter, op, failureReason,
           "layout materialization gather/scatter is not exactly realizable");
@@ -157,16 +147,16 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
-        getStaticLogicalMovementSegments(rewriter, op, sourceType, resultType,
-                                         failureReason,
-                                         "layout materialize lowering");
-    if (mlir::failed(segments))
+    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
+        getRelationMovementDescriptors(
+            rewriter, op, sourceType, resultType, resultType.getShape(),
+            *relation.get(), *relation.get(), MovementEngine::GatherScatter,
+            failureReason, "layout materialize lowering");
+    if (mlir::failed(descriptors))
       return mlir::failure();
 
-    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(), *dest,
-                                *segments,
-                                /*mayReorderDisjointSegments=*/true);
+    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                   *dest, *descriptors);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -184,18 +174,33 @@ public:
   mlir::LogicalResult
   matchAndRewrite(MoveCopyOp op, mlir::PatternRewriter &rewriter) const final {
     ScopedLoweringPatternTiming timing(op.getOperation());
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
+    auto resultType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    if (!sourceType || !resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.copy lowering requires memref types");
+    analysis::IndexRelationResult relation =
+        analysis::IndexRelation::identity(resultType.getShape());
+    if (!relation.isExact())
+      return failPattern(rewriter, op, failureReason,
+                         "tile.copy identity relation is not exact");
     mlir::FailureOr<mlir::Value> dest = createDestAlloc(
         op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
     if (mlir::failed(dest))
       return mlir::failure();
 
-    mlir::FailureOr<MovementDescriptor> descriptor = getContiguousDescriptor(
-        rewriter, op, op.getSource().getType(), failureReason);
-    if (mlir::failed(descriptor))
+    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
+        getRelationMovementDescriptors(
+            rewriter, op, sourceType, resultType, resultType.getShape(),
+            *relation.get(), *relation.get(), MovementEngine::GatherScatter,
+            failureReason, "tile.copy lowering");
+    if (mlir::failed(descriptors))
       return mlir::failure();
 
-    createGatherScatter(rewriter, op.getLoc(), op.getSource(), *dest,
-                        *descriptor, *descriptor);
+    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                   *dest, *descriptors);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -228,32 +233,44 @@ public:
     llvm::ArrayRef<int64_t> sizes = op.getSizes();
     llvm::ArrayRef<int64_t> strides = op.getStrides();
     llvm::ArrayRef<int64_t> resultShape = resultType.getShape();
+    std::optional<llvm::SmallDenseSet<unsigned>> rankReductionMask =
+        mlir::computeRankReductionMask(sizes, resultShape);
+    if (!rankReductionMask)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.extract_slice cannot map rank reduction");
+    llvm::SmallVector<mlir::AffineExpr, 4> sourceResults;
+    sourceResults.reserve(sourceType.getRank());
+    unsigned reducedDim = 0;
+    for (unsigned fullDim = 0; fullDim < sizes.size(); ++fullDim) {
+      mlir::AffineExpr expression =
+          mlir::getAffineConstantExpr(offsets[fullDim],
+                                      rewriter.getContext());
+      if (!rankReductionMask->contains(fullDim)) {
+        expression =
+            expression +
+            mlir::getAffineDimExpr(reducedDim++, rewriter.getContext()) *
+                strides[fullDim];
+      }
+      sourceResults.push_back(expression);
+    }
+    analysis::IndexRelationResult sourceRelation =
+        analysis::IndexRelation::fromAffineMap(
+            mlir::AffineMap::get(resultShape.size(), 0, sourceResults,
+                                 rewriter.getContext()),
+            resultShape, sourceType.getShape());
+    analysis::IndexRelationResult destRelation =
+        analysis::IndexRelation::identity(resultShape);
+    if (!sourceRelation.isExact() || !destRelation.isExact())
+      return failPattern(rewriter, op, failureReason,
+                         "tile.extract_slice relation is not exact");
 
-    auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices,
-                             llvm::SmallVectorImpl<int64_t> &sourceIndices) {
-      mlir::FailureOr<llvm::SmallVector<int64_t>> fullSliceIndices =
-          expandRankReducedSliceIndices(rewriter, op, sizes, resultShape,
-                                        resultIndices, failureReason,
-                                        "tile.extract_slice lowering");
-      if (mlir::failed(fullSliceIndices))
-        return mlir::failure();
-      sourceIndices.resize(sizes.size(), 0);
-      for (size_t dim = 0; dim < sizes.size(); ++dim)
-        sourceIndices[dim] =
-            offsets[dim] + (*fullSliceIndices)[dim] * strides[dim];
-      return mlir::success();
-    };
-    auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices,
-                          llvm::SmallVectorImpl<int64_t> &destIndices) {
-      destIndices.assign(resultIndices.begin(), resultIndices.end());
-      return mlir::success();
-    };
-
-    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
-        getStaticMappedMovementSegments(
-            rewriter, op, sourceType, resultType, resultShape, sourceIndexFn,
-            destIndexFn, failureReason, "tile.extract_slice lowering");
-    if (mlir::failed(segments))
+    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
+        getRelationMovementDescriptors(
+            rewriter, op, sourceType, resultType, resultShape,
+            *sourceRelation.get(), *destRelation.get(),
+            MovementEngine::GatherScatter, failureReason,
+            "tile.extract_slice lowering");
+    if (mlir::failed(descriptors))
       return mlir::failure();
 
     mlir::FailureOr<mlir::Value> dest = createDestAlloc(
@@ -261,8 +278,8 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(), *dest,
-                                *segments);
+    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                   *dest, *descriptors);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -292,43 +309,61 @@ public:
       return failPattern(rewriter, op, failureReason,
                          "tile.insert_slice lowering requires memref types");
 
-    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> copySegments =
-        getStaticLogicalMovementSegments(
-            rewriter, op, destType, resultType, failureReason,
+    analysis::IndexRelationResult copyRelation =
+        analysis::IndexRelation::identity(resultType.getShape());
+    if (!copyRelation.isExact())
+      return failPattern(rewriter, op, failureReason,
+                         "tile.insert_slice copy relation is not exact");
+    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
+        copyDescriptors = getRelationMovementDescriptors(
+            rewriter, op, destType, resultType, resultType.getShape(),
+            *copyRelation.get(), *copyRelation.get(),
+            MovementEngine::GatherScatter, failureReason,
             "tile.insert_slice dest copy lowering");
-    if (mlir::failed(copySegments))
+    if (mlir::failed(copyDescriptors))
       return mlir::failure();
 
     llvm::ArrayRef<int64_t> offsets = op.getOffsets();
     llvm::ArrayRef<int64_t> sizes = op.getSizes();
     llvm::ArrayRef<int64_t> strides = op.getStrides();
     llvm::ArrayRef<int64_t> sourceShape = sourceType.getShape();
-
-    auto sourceIndexFn = [](llvm::ArrayRef<int64_t> sourceIndices,
-                            llvm::SmallVectorImpl<int64_t> &result) {
-      result.assign(sourceIndices.begin(), sourceIndices.end());
-      return mlir::success();
-    };
-    auto destIndexFn = [&](llvm::ArrayRef<int64_t> sourceIndices,
-                           llvm::SmallVectorImpl<int64_t> &destIndices) {
-      mlir::FailureOr<llvm::SmallVector<int64_t>> fullSliceIndices =
-          expandRankReducedSliceIndices(rewriter, op, sizes, sourceShape,
-                                        sourceIndices, failureReason,
-                                        "tile.insert_slice lowering");
-      if (mlir::failed(fullSliceIndices))
-        return mlir::failure();
-      destIndices.resize(sizes.size(), 0);
-      for (size_t dim = 0; dim < sizes.size(); ++dim)
-        destIndices[dim] =
-            offsets[dim] + (*fullSliceIndices)[dim] * strides[dim];
-      return mlir::success();
-    };
-
-    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> insertSegments =
-        getStaticMappedMovementSegments(
-            rewriter, op, sourceType, resultType, sourceShape, sourceIndexFn,
-            destIndexFn, failureReason, "tile.insert_slice lowering");
-    if (mlir::failed(insertSegments))
+    std::optional<llvm::SmallDenseSet<unsigned>> rankReductionMask =
+        mlir::computeRankReductionMask(sizes, sourceShape);
+    if (!rankReductionMask)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.insert_slice cannot map rank reduction");
+    llvm::SmallVector<mlir::AffineExpr, 4> destResults;
+    destResults.reserve(resultType.getRank());
+    unsigned reducedDim = 0;
+    for (unsigned fullDim = 0; fullDim < sizes.size(); ++fullDim) {
+      mlir::AffineExpr expression =
+          mlir::getAffineConstantExpr(offsets[fullDim],
+                                      rewriter.getContext());
+      if (!rankReductionMask->contains(fullDim)) {
+        expression =
+            expression +
+            mlir::getAffineDimExpr(reducedDim++, rewriter.getContext()) *
+                strides[fullDim];
+      }
+      destResults.push_back(expression);
+    }
+    analysis::IndexRelationResult sourceRelation =
+        analysis::IndexRelation::identity(sourceShape);
+    analysis::IndexRelationResult destRelation =
+        analysis::IndexRelation::fromAffineMap(
+            mlir::AffineMap::get(sourceShape.size(), 0, destResults,
+                                 rewriter.getContext()),
+            sourceShape, resultType.getShape());
+    if (!sourceRelation.isExact() || !destRelation.isExact())
+      return failPattern(rewriter, op, failureReason,
+                         "tile.insert_slice relation is not exact");
+    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
+        insertDescriptors = getRelationMovementDescriptors(
+            rewriter, op, sourceType, resultType, sourceShape,
+            *sourceRelation.get(), *destRelation.get(),
+            MovementEngine::GatherScatter, failureReason,
+            "tile.insert_slice lowering");
+    if (mlir::failed(insertDescriptors))
       return mlir::failure();
 
     mlir::FailureOr<mlir::Value> result = createDestAlloc(
@@ -336,10 +371,10 @@ public:
     if (mlir::failed(result))
       return mlir::failure();
 
-    createGatherScatterSegments(rewriter, op.getLoc(), op.getDest(), *result,
-                                *copySegments);
-    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(), *result,
-                                *insertSegments);
+    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getDest(),
+                                   *result, *copyDescriptors);
+    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                   *result, *insertDescriptors);
     rewriter.replaceOp(op, *result);
     return mlir::success();
   }
@@ -367,25 +402,40 @@ public:
                          "tile.transpose lowering requires memref types");
 
     llvm::ArrayRef<int64_t> permutation = op.getPermutation();
-    auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices,
-                             llvm::SmallVectorImpl<int64_t> &sourceIndices) {
-      sourceIndices.resize(sourceType.getRank(), 0);
-      for (auto [resultDim, sourceDim] : llvm::enumerate(permutation))
-        sourceIndices[sourceDim] = resultIndices[resultDim];
-      return mlir::success();
-    };
-    auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices,
-                          llvm::SmallVectorImpl<int64_t> &destIndices) {
-      destIndices.assign(resultIndices.begin(), resultIndices.end());
-      return mlir::success();
-    };
+    if (permutation.size() !=
+        static_cast<size_t>(sourceType.getRank()))
+      return failPattern(rewriter, op, failureReason,
+                         "tile.transpose permutation rank mismatch");
+    llvm::SmallVector<mlir::AffineExpr, 4> sourceResults(
+        sourceType.getRank());
+    llvm::SmallVector<bool, 4> seenSourceDims(sourceType.getRank(), false);
+    for (auto [resultDim, sourceDim] : llvm::enumerate(permutation)) {
+      if (sourceDim < 0 || sourceDim >= sourceType.getRank() ||
+          seenSourceDims[sourceDim])
+        return failPattern(rewriter, op, failureReason,
+                           "tile.transpose permutation is invalid");
+      seenSourceDims[sourceDim] = true;
+      sourceResults[sourceDim] =
+          mlir::getAffineDimExpr(resultDim, rewriter.getContext());
+    }
+    analysis::IndexRelationResult sourceRelation =
+        analysis::IndexRelation::fromAffineMap(
+            mlir::AffineMap::get(resultType.getRank(), 0, sourceResults,
+                                 rewriter.getContext()),
+            resultType.getShape(), sourceType.getShape());
+    analysis::IndexRelationResult destRelation =
+        analysis::IndexRelation::identity(resultType.getShape());
+    if (!sourceRelation.isExact() || !destRelation.isExact())
+      return failPattern(rewriter, op, failureReason,
+                         "tile.transpose relation is not exact");
 
-    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
-        getStaticMappedMovementSegments(rewriter, op, sourceType, resultType,
-                                        resultType.getShape(), sourceIndexFn,
-                                        destIndexFn, failureReason,
-                                        "tile.transpose lowering");
-    if (mlir::failed(segments))
+    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
+        getRelationMovementDescriptors(
+            rewriter, op, sourceType, resultType, resultType.getShape(),
+            *sourceRelation.get(), *destRelation.get(),
+            MovementEngine::GatherScatter, failureReason,
+            "tile.transpose lowering");
+    if (mlir::failed(descriptors))
       return mlir::failure();
 
     mlir::FailureOr<mlir::Value> dest = createDestAlloc(
@@ -393,8 +443,8 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(), *dest,
-                                *segments);
+    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                   *dest, *descriptors);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -433,73 +483,174 @@ public:
             failureReason, "tdma_data_move lowering")))
       return mlir::failure();
 
-    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
-        lowerToSegments(op, sourceType, destType, kind, rewriter);
-    if (mlir::failed(segments))
+    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
+        lowerToDescriptors(op, sourceType, destType, kind, rewriter);
+    if (mlir::failed(descriptors))
       return mlir::failure();
 
-    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(),
-                                op.getDest(), *segments);
+    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                   op.getDest(), *descriptors);
     rewriter.eraseOp(op);
     return mlir::success();
   }
 
 private:
-  mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
-  lowerToSegments(InstrTDMADataMoveOp op, mlir::MemRefType sourceType,
-                  mlir::MemRefType destType, InstrDataMoveKind kind,
-                  mlir::PatternRewriter &rewriter) const {
+  mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
+  lowerToDescriptors(InstrTDMADataMoveOp op, mlir::MemRefType sourceType,
+                     mlir::MemRefType destType, InstrDataMoveKind kind,
+                     mlir::PatternRewriter &rewriter) const {
+    llvm::SmallVector<mlir::AffineExpr, 4> sourceResults(
+        sourceType.getRank());
+    auto setPermutation = [&](llvm::ArrayRef<int64_t> permutation) {
+      if (sourceType.getRank() != destType.getRank() ||
+          permutation.size() != static_cast<size_t>(sourceType.getRank()))
+        return false;
+      llvm::SmallVector<bool, 4> seen(sourceType.getRank(), false);
+      for (auto [destDim, sourceDim] : llvm::enumerate(permutation)) {
+        if (sourceDim < 0 || sourceDim >= sourceType.getRank() ||
+            seen[sourceDim])
+          return false;
+        seen[sourceDim] = true;
+        sourceResults[sourceDim] =
+            mlir::getAffineDimExpr(destDim, rewriter.getContext());
+      }
+      return true;
+    };
+
+    llvm::StringRef opLabel = "tdma_data_move lowering";
     switch (kind) {
     case InstrDataMoveKind::Transpose:
       if (!op.getPermutationAttr())
-        return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+        return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
             rewriter, op, failureReason,
             "tdma_data_move transpose lowering requires permutation attr");
-      return getPermutationDataMoveSegments(
-          rewriter, op, sourceType, destType,
-          op.getPermutationAttr().asArrayRef(), failureReason,
-          "tdma_data_move transpose lowering");
+      if (!setPermutation(op.getPermutationAttr().asArrayRef()))
+        return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+            rewriter, op, failureReason,
+            "tdma_data_move transpose lowering requires a valid permutation");
+      opLabel = "tdma_data_move transpose lowering";
+      break;
     case InstrDataMoveKind::Nchw2Nhwc:
-      return getPermutationDataMoveSegments(
-          rewriter, op, sourceType, destType,
-          llvm::ArrayRef<int64_t>(kNchw2NhwcPermutation), failureReason,
-          "tdma_data_move nchw2nhwc lowering");
+      if (!setPermutation(kNchw2NhwcPermutation))
+        return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+            rewriter, op, failureReason,
+            "tdma_data_move nchw2nhwc lowering requires rank four");
+      opLabel = "tdma_data_move nchw2nhwc lowering";
+      break;
     case InstrDataMoveKind::Nhwc2Nchw:
-      return getPermutationDataMoveSegments(
-          rewriter, op, sourceType, destType,
-          llvm::ArrayRef<int64_t>(kNhwc2NchwPermutation), failureReason,
-          "tdma_data_move nhwc2nchw lowering");
+      if (!setPermutation(kNhwc2NchwPermutation))
+        return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+            rewriter, op, failureReason,
+            "tdma_data_move nhwc2nchw lowering requires rank four");
+      opLabel = "tdma_data_move nhwc2nchw lowering";
+      break;
     case InstrDataMoveKind::TensorNom:
-      return getStaticLogicalMovementSegments(
-          rewriter, op, sourceType, destType, failureReason,
-          "tdma_data_move tensor_nom lowering");
+      if (!setPermutation(llvm::to_vector(
+              llvm::seq<int64_t>(0, sourceType.getRank()))))
+        return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+            rewriter, op, failureReason,
+            "tdma_data_move tensor_nom lowering requires equal ranks");
+      opLabel = "tdma_data_move tensor_nom lowering";
+      break;
     case InstrDataMoveKind::Mirror:
       if (!op.getAxesAttr())
-        return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+        return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
             rewriter, op, failureReason,
             "tdma_data_move mirror lowering requires axes attr");
-      return getMirrorDataMoveSegments(
-          rewriter, op, sourceType, destType, op.getAxesAttr().asArrayRef(),
-          failureReason, "tdma_data_move mirror lowering");
+      if (!setPermutation(llvm::to_vector(
+              llvm::seq<int64_t>(0, sourceType.getRank()))))
+        return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+            rewriter, op, failureReason,
+            "tdma_data_move mirror lowering requires equal ranks");
+      for (int64_t axis : op.getAxesAttr().asArrayRef()) {
+        if (axis < 0 || axis >= sourceType.getRank())
+          return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+              rewriter, op, failureReason,
+              "tdma_data_move mirror lowering axis is out of range");
+        sourceResults[axis] =
+            mlir::getAffineConstantExpr(
+                sourceType.getDimSize(axis) - 1, rewriter.getContext()) -
+            mlir::getAffineDimExpr(axis, rewriter.getContext());
+      }
+      opLabel = "tdma_data_move mirror lowering";
+      break;
     case InstrDataMoveKind::Rotate90:
     case InstrDataMoveKind::Rotate180:
     case InstrDataMoveKind::Rotate270:
       if (!op.getAxesAttr())
-        return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+        return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
             rewriter, op, failureReason,
             "tdma_data_move rotate lowering requires axes attr");
-      return getRotateDataMoveSegments(rewriter, op, sourceType, destType, kind,
-                                       op.getAxesAttr().asArrayRef(),
-                                       failureReason,
-                                       "tdma_data_move rotate lowering");
+      if (!setPermutation(llvm::to_vector(
+              llvm::seq<int64_t>(0, sourceType.getRank()))) ||
+          op.getAxesAttr().size() != 2)
+        return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+            rewriter, op, failureReason,
+            "tdma_data_move rotate lowering requires equal ranks and two axes");
+      {
+        int64_t axis0 = op.getAxesAttr().asArrayRef()[0];
+        int64_t axis1 = op.getAxesAttr().asArrayRef()[1];
+        if (axis0 < 0 || axis1 < 0 || axis0 >= sourceType.getRank() ||
+            axis1 >= sourceType.getRank() || axis0 == axis1)
+          return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+              rewriter, op, failureReason,
+              "tdma_data_move rotate lowering axes are invalid");
+        mlir::AffineExpr d0 =
+            mlir::getAffineDimExpr(axis0, rewriter.getContext());
+        mlir::AffineExpr d1 =
+            mlir::getAffineDimExpr(axis1, rewriter.getContext());
+        if (kind == InstrDataMoveKind::Rotate90) {
+          sourceResults[axis0] =
+              mlir::getAffineConstantExpr(
+                  sourceType.getDimSize(axis0) - 1,
+                  rewriter.getContext()) -
+              d1;
+          sourceResults[axis1] = d0;
+        } else if (kind == InstrDataMoveKind::Rotate180) {
+          sourceResults[axis0] =
+              mlir::getAffineConstantExpr(
+                  sourceType.getDimSize(axis0) - 1,
+                  rewriter.getContext()) -
+              d0;
+          sourceResults[axis1] =
+              mlir::getAffineConstantExpr(
+                  sourceType.getDimSize(axis1) - 1,
+                  rewriter.getContext()) -
+              d1;
+        } else {
+          sourceResults[axis0] = d1;
+          sourceResults[axis1] =
+              mlir::getAffineConstantExpr(
+                  sourceType.getDimSize(axis1) - 1,
+                  rewriter.getContext()) -
+              d0;
+        }
+      }
+      opLabel = "tdma_data_move rotate lowering";
+      break;
     case InstrDataMoveKind::Pad:
     case InstrDataMoveKind::Img2Col:
-      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+      return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
           rewriter, op, failureReason,
           "tdma_data_move pad/img2col remains in the production target "
           "surface");
     }
-    llvm_unreachable("unknown instr data move kind");
+
+    analysis::IndexRelationResult sourceRelation =
+        analysis::IndexRelation::fromAffineMap(
+            mlir::AffineMap::get(destType.getRank(), 0, sourceResults,
+                                 rewriter.getContext()),
+            destType.getShape(), sourceType.getShape());
+    analysis::IndexRelationResult destRelation =
+        analysis::IndexRelation::identity(destType.getShape());
+    if (!sourceRelation.isExact() || !destRelation.isExact())
+      return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel).concat(" relation is not exact").str());
+    return getRelationMovementDescriptors(
+        rewriter, op, sourceType, destType, destType.getShape(),
+        *sourceRelation.get(), *destRelation.get(),
+        MovementEngine::GatherScatter, failureReason, opLabel);
   }
 
   std::string *failureReason;
@@ -524,25 +675,39 @@ public:
                          "tile.broadcast lowering requires memref types");
 
     llvm::ArrayRef<int64_t> dimensions = op.getDimensions();
-    auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices,
-                             llvm::SmallVectorImpl<int64_t> &sourceIndices) {
-      sourceIndices.resize(sourceType.getRank(), 0);
-      for (auto [sourceDim, resultDim] : llvm::enumerate(dimensions))
-        sourceIndices[sourceDim] = resultIndices[resultDim];
-      return mlir::success();
-    };
-    auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices,
-                          llvm::SmallVectorImpl<int64_t> &destIndices) {
-      destIndices.assign(resultIndices.begin(), resultIndices.end());
-      return mlir::success();
-    };
-
-    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
-        getStaticMappedMovementSegments(rewriter, op, sourceType, resultType,
-                                        resultType.getShape(), sourceIndexFn,
-                                        destIndexFn, failureReason,
-                                        "tile.broadcast lowering");
-    if (mlir::failed(segments))
+    if (dimensions.size() !=
+        static_cast<size_t>(sourceType.getRank()))
+      return failPattern(rewriter, op, failureReason,
+                         "tile.broadcast dimension rank mismatch");
+    llvm::SmallVector<mlir::AffineExpr, 4> sourceResults;
+    sourceResults.reserve(sourceType.getRank());
+    llvm::SmallVector<bool, 4> usedResultDims(resultType.getRank(), false);
+    for (int64_t resultDim : dimensions) {
+      if (resultDim < 0 || resultDim >= resultType.getRank() ||
+          usedResultDims[resultDim])
+        return failPattern(rewriter, op, failureReason,
+                           "tile.broadcast dimensions are invalid");
+      usedResultDims[resultDim] = true;
+      sourceResults.push_back(
+          mlir::getAffineDimExpr(resultDim, rewriter.getContext()));
+    }
+    analysis::IndexRelationResult sourceRelation =
+        analysis::IndexRelation::fromAffineMap(
+            mlir::AffineMap::get(resultType.getRank(), 0, sourceResults,
+                                 rewriter.getContext()),
+            resultType.getShape(), sourceType.getShape());
+    analysis::IndexRelationResult destRelation =
+        analysis::IndexRelation::identity(resultType.getShape());
+    if (!sourceRelation.isExact() || !destRelation.isExact())
+      return failPattern(rewriter, op, failureReason,
+                         "tile.broadcast relation is not exact");
+    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
+        getRelationMovementDescriptors(
+            rewriter, op, sourceType, resultType, resultType.getShape(),
+            *sourceRelation.get(), *destRelation.get(),
+            MovementEngine::GatherScatter, failureReason,
+            "tile.broadcast lowering");
+    if (mlir::failed(descriptors))
       return mlir::failure();
 
     mlir::FailureOr<mlir::Value> dest = createDestAlloc(
@@ -550,8 +715,8 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(), *dest,
-                                *segments);
+    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                   *dest, *descriptors);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -614,16 +779,24 @@ public:
       return mlir::success();
     }
 
-    if (mlir::failed(analysis::TransferRealizability::proveGatherScatter(
-            sourceType, resultType, *relation.get())))
-      return failPattern(rewriter, op, failureReason,
-                         "tile.reshape movement is not exactly realizable");
-
-    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
-        getStaticLogicalMovementSegments(rewriter, op, sourceType, resultType,
-                                         failureReason,
-                                         "tile.reshape lowering");
-    if (mlir::failed(segments))
+    std::optional<CanonicalReshapeMovementRelations> movementRelations =
+        getCanonicalReshapeMovementRelations(
+            rewriter.getContext(), sourceType.getShape(),
+            resultType.getShape());
+    if (!movementRelations)
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.reshape canonical relation cannot be represented by a "
+          "rectangular affine refinement");
+    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
+        getRelationMovementDescriptors(
+            rewriter, op, sourceType, resultType,
+            movementRelations->iterationShape,
+            movementRelations->iterationToSource,
+            movementRelations->iterationToDest,
+            MovementEngine::GatherScatter, failureReason,
+            "tile.reshape lowering");
+    if (mlir::failed(descriptors))
       return mlir::failure();
 
     mlir::FailureOr<mlir::Value> dest = createDestAlloc(
@@ -631,8 +804,8 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(), *dest,
-                                *segments);
+    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                   *dest, *descriptors);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }

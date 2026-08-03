@@ -12,6 +12,7 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/Common/OpVerifierUtils.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetSchedulingCapability.h"
 #include "Wafer/Transforms/Passes.h"
@@ -489,6 +490,11 @@ static unsigned
 materializeTypedBoundaries(llvm::MutableArrayRef<mlir::ModuleOp> modules,
                            llvm::ArrayRef<TypedBoundary> boundaries,
                            int64_t &communicationId, NoCFanoutKind kind) {
+  wafer::support::ScopedCompileTimingSpan totalTiming(
+      "transformation", "materializeTypedBoundaries", "total");
+  auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "materializeTypedBoundaries",
+      "find-and-group-boundary-loads");
   unsigned materialized = 0;
   const int64_t logicalRankCount = static_cast<int64_t>(modules.size());
   for (const TypedBoundary &boundary : boundaries) {
@@ -519,6 +525,9 @@ materializeTypedBoundaries(llvm::MutableArrayRef<mlir::ModuleOp> modules,
       }
     }
 
+    phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+        "transformation-phase", "materializeTypedBoundaries",
+        "materializeBoundaryTileFanout");
     for (auto [groupOrdinal, consumers] : llvm::enumerate(tileGroups)) {
       // A verified partitioned boundary normally contributes one consumer
       // load per unique global shard. That singleton is already the minimum
@@ -1110,6 +1119,10 @@ buildResidentTuples(llvm::ArrayRef<const RankVariantCandidate *> seeds,
                     const ExecutionConfig &executionConfig,
                     size_t &workerPlacedTupleCount, Materializer &&materialize,
                     std::string *failureReason) {
+  wafer::support::ScopedCompileTimingSpan totalTiming(
+      "optimization-phase", "buildResidentTuples", "total");
+  auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "transformation-phase", "buildResidentTuples", "clone");
   if (seeds.empty())
     return mlir::failure();
   ResidentTuple tuple;
@@ -1127,10 +1140,15 @@ buildResidentTuples(llvm::ArrayRef<const RankVariantCandidate *> seeds,
     modules.push_back(*tuple.modules.back());
   }
 
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "transformation-phase", "buildResidentTuples", "materialize-and-order");
   if (materialize(modules) == 0 ||
       !orderPeerReceivePreparationBeforeSends(modules))
     return mlir::failure();
 
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "conversion-phase", "buildResidentTuples",
+      "convertTileRegionToInstrModule-and-verify");
   for (mlir::ModuleOp module : modules) {
     std::string conversionFailure;
     if (mlir::failed(wafer::convertTileRegionToInstrModule(
@@ -1151,6 +1169,9 @@ buildResidentTuples(llvm::ArrayRef<const RankVariantCandidate *> seeds,
   // rewrites rotating endpoint recurrences to physical allocation roots.  The
   // resulting typed worker assignment is then preserved by fixed-slot
   // derivation and independent physical replanning.
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "optimization-phase", "buildResidentTuples",
+      "derive-worker-and-fixed-slot-neighbors");
   std::optional<ResidentTuple> workerPlaced;
   if (tuple.workerPlacementKind == wafer::RankWorkerPlacementKind::Unplaced &&
       workerPlacedTupleCount <
@@ -1172,6 +1193,8 @@ buildResidentTuples(llvm::ArrayRef<const RankVariantCandidate *> seeds,
   }
 
   llvm::SmallVector<ResidentTuple, 8> alternatives;
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "optimization-phase", "buildResidentTuples", "finalize-candidates");
   const bool tupleFinalized =
       tuple.bufferingKind == wafer::RankBufferingKind::StaticFixedSlot
           ? finalizeFixedResidentTuple(tuple, executionConfig)
@@ -1224,6 +1247,9 @@ mlir::LogicalResult appendNoCResidentDataflowCandidates(
     std::vector<RankVariantFrontier> &frontiers,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, std::string *failureReason) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "optimization", "noc-resident-dataflow",
+      "appendNoCResidentDataflowCandidates");
   if (frontiers.size() != static_cast<size_t>(executionConfig.getRankCount()) ||
       frontiers.empty() ||
       program.logicalRankCount != executionConfig.getRankCount())
@@ -1233,83 +1259,100 @@ mlir::LogicalResult appendNoCResidentDataflowCandidates(
   if (executionConfig.getRankCount() <= 1)
     return mlir::success();
 
-  mlir::FailureOr<llvm::SmallVector<ResidentSeed, 8>> seeds =
-      collectResidentSeeds(frontiers, executionConfig.getRankCount(),
-                           failureReason);
+  mlir::FailureOr<llvm::SmallVector<ResidentSeed, 8>> seeds;
+  {
+    wafer::support::ScopedCompileTimingSpan collectTiming(
+        "analysis-phase", "appendNoCResidentDataflowCandidates",
+        "collectResidentSeeds");
+    seeds = collectResidentSeeds(frontiers, executionConfig.getRankCount(),
+                                 failureReason);
+  }
   if (mlir::failed(seeds))
     return mlir::failure();
 
-  llvm::SmallVector<TypedBoundary, 8> boundaries;
-  for (const frontend::ProgramBoundaryBinding &binding :
-       program.distributedInputs)
-    boundaries.push_back({binding.index, binding.programIndex,
-                          binding.distribution, binding.globalShape,
-                          binding.localShape, binding.rankSlices});
-  for (const frontend::ProgramParameterBinding &binding : program.parameters)
-    boundaries.push_back({binding.argumentIndex, binding.argumentIndex,
-                          binding.distribution, binding.globalShape,
-                          binding.localShape, binding.rankSlices});
   llvm::SmallVector<TypedBoundary, 8> verifiedBoundaries;
-  for (TypedBoundary &boundary : boundaries) {
-    std::string relationFailure;
-    if (mlir::succeeded(verifyTypedBoundaryRelation(
-            boundary, executionConfig.getRankCount(), &relationFailure)))
-      verifiedBoundaries.push_back(std::move(boundary));
+  {
+    wafer::support::ScopedCompileTimingSpan boundaryTiming(
+        "analysis-phase", "appendNoCResidentDataflowCandidates",
+        "verifyTypedBoundaryRelation");
+    llvm::SmallVector<TypedBoundary, 8> boundaries;
+    for (const frontend::ProgramBoundaryBinding &binding :
+         program.distributedInputs)
+      boundaries.push_back({binding.index, binding.programIndex,
+                            binding.distribution, binding.globalShape,
+                            binding.localShape, binding.rankSlices});
+    for (const frontend::ProgramParameterBinding &binding : program.parameters)
+      boundaries.push_back({binding.argumentIndex, binding.argumentIndex,
+                            binding.distribution, binding.globalShape,
+                            binding.localShape, binding.rankSlices});
+    for (TypedBoundary &boundary : boundaries) {
+      std::string relationFailure;
+      if (mlir::succeeded(verifyTypedBoundaryRelation(
+              boundary, executionConfig.getRankCount(), &relationFailure)))
+        verifiedBoundaries.push_back(std::move(boundary));
+    }
   }
 
   llvm::SmallVector<llvm::SmallVector<ResidentTuple, 8>, 16> generations;
   size_t workerPlacedTupleCount = 0;
-  for (const ResidentSeed &seed : *seeds) {
-    auto appendGeneration = [&](auto &&materialize) {
-      std::string localFailure;
-      size_t tentativeWorkerPlacedTupleCount = workerPlacedTupleCount;
-      mlir::FailureOr<llvm::SmallVector<ResidentTuple, 8>> generation =
-          buildResidentTuples(
-              seed.candidates, executionConfig, tentativeWorkerPlacedTupleCount,
-              std::forward<decltype(materialize)>(materialize), &localFailure);
-      if (mlir::succeeded(generation)) {
-        workerPlacedTupleCount = tentativeWorkerPlacedTupleCount;
-        generations.push_back(std::move(*generation));
+  {
+    wafer::support::ScopedCompileTimingSpan generationTiming(
+        "optimization-phase", "appendNoCResidentDataflowCandidates",
+        "buildResidentTuples");
+    for (const ResidentSeed &seed : *seeds) {
+      auto appendGeneration = [&](auto &&materialize) {
+        std::string localFailure;
+        size_t tentativeWorkerPlacedTupleCount = workerPlacedTupleCount;
+        mlir::FailureOr<llvm::SmallVector<ResidentTuple, 8>> generation =
+            buildResidentTuples(
+                seed.candidates, executionConfig,
+                tentativeWorkerPlacedTupleCount,
+                std::forward<decltype(materialize)>(materialize),
+                &localFailure);
+        if (mlir::succeeded(generation)) {
+          workerPlacedTupleCount = tentativeWorkerPlacedTupleCount;
+          generations.push_back(std::move(*generation));
+        }
+      };
+
+      for (NoCFanoutKind kind :
+           {NoCFanoutKind::Direct, NoCFanoutKind::ReceiveForward}) {
+        appendGeneration([&](llvm::MutableArrayRef<mlir::ModuleOp> modules) {
+          int64_t communicationId = findNextCommunicationId(modules);
+          if (communicationId < 0)
+            return 0u;
+
+          // Materializers consume and rewrite only the current all-rank IR.
+          // Run them in dependency order on one discardable clone so a single
+          // bounded generation can accumulate multiple DDR/compute cuts without
+          // a role enum or shadow schedule:
+          //
+          //   existing collective cut -> required output -> intermediate
+          //   producer handoff -> remaining boundary loads.
+          //
+          // Output routing runs before intermediate/boundary rewrites because
+          // produced-value equivalence must be derived from the unmodified
+          // producer SSA/effects. Partial keeps its typed collective identity.
+          unsigned partial = materializeNoCPartialReductions(modules, program);
+          unsigned output = materializeNoCOutputPublications(
+              modules, program, communicationId, kind);
+          unsigned intermediate = materializeNoCIntermediateHandoffs(
+              modules, program, communicationId, kind);
+          unsigned boundary = materializeTypedBoundaries(
+              modules, verifiedBoundaries, communicationId, kind);
+          unsigned fanoutMaterialized = output + intermediate + boundary;
+          // If no fan-out/output role applied, discard this strategy-specific
+          // clone. A single partial-only generation below preserves the
+          // collective cut without creating Direct/Forward duplicates.
+          return fanoutMaterialized == 0 ? 0u : partial + fanoutMaterialized;
+        });
       }
-    };
-
-    for (NoCFanoutKind kind :
-         {NoCFanoutKind::Direct, NoCFanoutKind::ReceiveForward}) {
       appendGeneration([&](llvm::MutableArrayRef<mlir::ModuleOp> modules) {
-        int64_t communicationId = findNextCommunicationId(modules);
-        if (communicationId < 0)
-          return 0u;
-
-        // Materializers consume and rewrite only the current all-rank IR.
-        // Run them in dependency order on one discardable clone so a single
-        // bounded generation can accumulate multiple DDR/compute cuts without
-        // a role enum or shadow schedule:
-        //
-        //   existing collective cut -> required output -> intermediate
-        //   producer handoff -> remaining boundary loads.
-        //
-        // Output routing runs before intermediate/boundary rewrites because
-        // produced-value equivalence must be derived from the unmodified
-        // producer SSA/effects. Partial keeps its typed collective identity.
-        unsigned partial = materializeNoCPartialReductions(modules, program);
-        unsigned output = materializeNoCOutputPublications(
-            modules, program, communicationId, kind);
-        unsigned intermediate = materializeNoCIntermediateHandoffs(
-            modules, program, communicationId, kind);
-        unsigned boundary = materializeTypedBoundaries(
-            modules, verifiedBoundaries, communicationId, kind);
-        unsigned fanoutMaterialized = output + intermediate + boundary;
-        // If no fan-out/output role applied, discard this strategy-specific
-        // clone. A single partial-only generation below preserves the
-        // collective cut without creating Direct/Forward duplicates.
-        return fanoutMaterialized == 0 ? 0u : partial + fanoutMaterialized;
+        // An explicit collective owns its typed communication identity. This
+        // callback only removes the proven partial spill/reload cut.
+        return materializeNoCPartialReductions(modules, program);
       });
     }
-    appendGeneration([&](llvm::MutableArrayRef<mlir::ModuleOp> modules) {
-      // An explicit collective owns its typed communication identity. This
-      // callback only removes the proven partial spill/reload cut.
-      return materializeNoCPartialReductions(modules, program);
-    });
   }
   if (generations.empty())
     return mlir::success();
@@ -1325,28 +1368,38 @@ mlir::LogicalResult appendNoCResidentDataflowCandidates(
   // Validate the complete commit domain before moving even one rank module
   // into a frontier. No construction invariant may turn a later append into a
   // partial all-rank commit.
-  for (const auto &generation : generations)
-    for (const ResidentTuple &tuple : generation)
-      if (tuple.modules.size() != frontiers.size())
-        return fail(failureReason,
-                    "NoC-resident candidate lost its complete rank domain");
+  {
+    wafer::support::ScopedCompileTimingSpan verifyTiming(
+        "analysis-phase", "appendNoCResidentDataflowCandidates",
+        "verify-complete-rank-domain");
+    for (const auto &generation : generations)
+      for (const ResidentTuple &tuple : generation)
+        if (tuple.modules.size() != frontiers.size())
+          return fail(failureReason,
+                      "NoC-resident candidate lost its complete rank domain");
+  }
 
   // One bounded composed strategy is one semantic generation. Its
   // single-buffer and fixed-slot realizations share the stable ordinal while
   // buffering metadata keeps their all-rank correspondence independent.
-  for (auto &generation : generations) {
-    if (stableOrdinal == std::numeric_limits<int64_t>::max())
-      break;
-    for (ResidentTuple &tuple : generation) {
-      for (size_t rank = 0; rank < frontiers.size(); ++rank)
-        frontiers[rank].push_back(
-            {std::move(tuple.modules[rank]), stableOrdinal,
-             wafer::RankArtifactKind::Resident,
-             /*reservedBaseline=*/false, tuple.bufferingKind,
-             tuple.bufferingPlanOrdinal, tuple.workerPlacementKind,
-             tuple.workerPlacementPlanOrdinal});
+  {
+    wafer::support::ScopedCompileTimingSpan commitTiming(
+        "transformation-phase", "appendNoCResidentDataflowCandidates",
+        "append-frontiers");
+    for (auto &generation : generations) {
+      if (stableOrdinal == std::numeric_limits<int64_t>::max())
+        break;
+      for (ResidentTuple &tuple : generation) {
+        for (size_t rank = 0; rank < frontiers.size(); ++rank)
+          frontiers[rank].push_back(
+              {std::move(tuple.modules[rank]), stableOrdinal,
+               wafer::RankArtifactKind::Resident,
+               /*reservedBaseline=*/false, tuple.bufferingKind,
+               tuple.bufferingPlanOrdinal, tuple.workerPlacementKind,
+               tuple.workerPlacementPlanOrdinal});
+      }
+      ++stableOrdinal;
     }
-    ++stableOrdinal;
   }
   return mlir::success();
 }

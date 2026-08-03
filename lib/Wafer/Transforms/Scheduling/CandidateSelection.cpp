@@ -301,8 +301,7 @@ findCapacityDirectedSeed(mlir::func::FuncOp task, const CandidateSpec &initial,
   int64_t capacityBytes = config.spmLimit - config.spmBase;
   if (config.spmWorkingSetMultiplicity == 0)
     return std::nullopt;
-  capacityBytes /=
-      static_cast<int64_t>(config.spmWorkingSetMultiplicity);
+  capacityBytes /= static_cast<int64_t>(config.spmWorkingSetMultiplicity);
   if (capacityBytes <= 0)
     return std::nullopt;
   std::optional<int64_t> initialBytes =
@@ -347,10 +346,9 @@ getSearchSPMHeadroomFailure(mlir::func::FuncOp task,
       config.spmLimit <= config.spmBase)
     return std::nullopt;
   int64_t capacityBytes = config.spmLimit - config.spmBase;
-  capacityBytes /=
-      static_cast<int64_t>(config.spmWorkingSetMultiplicity);
-  std::optional<int64_t> workingSet = estimateSearchSPMWorkingSetBytes(
-      task, candidate, config.spmAlignment);
+  capacityBytes /= static_cast<int64_t>(config.spmWorkingSetMultiplicity);
+  std::optional<int64_t> workingSet =
+      estimateSearchSPMWorkingSetBytes(task, candidate, config.spmAlignment);
   if (!workingSet || *workingSet <= capacityBytes)
     return std::nullopt;
   return "search_spm_headroom: modeled working set exceeds the selected "
@@ -416,8 +414,7 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
   CandidateSpec initial;
   initial.tileSizes.assign(shape->begin(), shape->end());
   initial.traversalKind = config.traversalKind;
-  if (config.traversalKind ==
-          CandidateTileTraversalKind::PartialReduction &&
+  if (config.traversalKind == CandidateTileTraversalKind::PartialReduction &&
       !reductionRanges->empty() && !reductionSplitLegalityFailure)
     initial.reductionSplitSizes.assign(reductionRanges->begin(),
                                        reductionRanges->end());
@@ -512,9 +509,9 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
           "complete-artifact: candidate passed without complete provenance");
       return;
     }
-    if (!check.module && mlir::failed(importAcceptedCandidateModule(
-                             check, *task.getContext(),
-                             config.scheduleCostPolicy))) {
+    if (!check.module &&
+        mlir::failed(importAcceptedCandidateModule(
+            check, *task.getContext(), config.scheduleCostPolicy))) {
       rejectCandidate(check.spec, check.failureReason);
       return;
     }
@@ -575,7 +572,7 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
         CandidateSpec candidate = queue[queueIndex + batchOffset].spec;
         ++visitedCount;
         if (std::optional<std::string> failure = getCheapTargetGeometryFailure(
-                task, candidate, *reductionRanges)) {
+                task, candidate, *reductionRanges, config.targetProfile)) {
           results[batchOffset].spec = candidate;
           results[batchOffset].failureReason = std::move(*failure);
           continue;
@@ -622,8 +619,8 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
 
     CandidateSpec candidate = queue[queueIndex++].spec;
     ++visitedCount;
-    if (std::optional<std::string> failure =
-            getCheapTargetGeometryFailure(task, candidate, *reductionRanges)) {
+    if (std::optional<std::string> failure = getCheapTargetGeometryFailure(
+            task, candidate, *reductionRanges, config.targetProfile)) {
       rejectCandidate(candidate, *failure);
       continue;
     }

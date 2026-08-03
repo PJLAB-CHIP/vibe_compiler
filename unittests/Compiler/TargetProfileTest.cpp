@@ -110,11 +110,13 @@ TEST(RuntimeLaunchContractTest, ComponentsHaveCanonicalClosedSpellings) {
   }
 
   for (auto [spelling, expected] :
-       std::array<std::pair<llvm::StringRef, wafer::KernelEntryABI>, 2>{
+       std::array<std::pair<llvm::StringRef, wafer::KernelEntryABI>, 3>{
            std::pair{"rank-local-pointer-block-v1",
                      wafer::KernelEntryABI::RankLocalPointerBlockV1},
            std::pair{"rank-major-pointer-table-v1",
-                     wafer::KernelEntryABI::RankMajorPointerTableV1}}) {
+                     wafer::KernelEntryABI::RankMajorPointerTableV1},
+           std::pair{"rank-row-pointer-table-v1",
+                     wafer::KernelEntryABI::RankRowPointerTableV1}}) {
     llvm::Expected<wafer::KernelEntryABI> parsed =
         wafer::parseKernelEntryABI(spelling);
     ASSERT_TRUE(static_cast<bool>(parsed));
@@ -185,6 +187,22 @@ TEST(RuntimeLaunchContractTest, FactoriesAdmitOnlySupportedCrossProducts) {
   ASSERT_TRUE(static_cast<bool>(cluster));
   EXPECT_EQ(cluster->getPhases(), llvm::ArrayRef(prepareMain));
 
+  llvm::Expected<wafer::RuntimeLaunchContract> gridRows =
+      wafer::RuntimeLaunchContract::createKernel(
+          wafer::KernelLaunchForm::Grid,
+          wafer::KernelEntryABI::RankRowPointerTableV1, main);
+  ASSERT_TRUE(static_cast<bool>(gridRows));
+  EXPECT_EQ(gridRows->getKernel()->entryABI,
+            wafer::KernelEntryABI::RankRowPointerTableV1);
+
+  llvm::Expected<wafer::RuntimeLaunchContract> clusterRows =
+      wafer::RuntimeLaunchContract::createKernel(
+          wafer::KernelLaunchForm::Cluster,
+          wafer::KernelEntryABI::RankRowPointerTableV1, prepareMain);
+  ASSERT_TRUE(static_cast<bool>(clusterRows));
+  EXPECT_EQ(clusterRows->getKernel()->entryABI,
+            wafer::KernelEntryABI::RankRowPointerTableV1);
+
   llvm::Expected<wafer::RuntimeLaunchContract> model =
       wafer::RuntimeLaunchContract::createModel(
           wafer::ModelEntryABI::Tx81ModelBootParamV1, main);
@@ -200,6 +218,9 @@ TEST(RuntimeLaunchContractTest, FactoriesAdmitOnlySupportedCrossProducts) {
   expectRejected(wafer::RuntimeLaunchContract::createKernel(
       wafer::KernelLaunchForm::PerRank,
       wafer::KernelEntryABI::RankMajorPointerTableV1, main));
+  expectRejected(wafer::RuntimeLaunchContract::createKernel(
+      wafer::KernelLaunchForm::PerRank,
+      wafer::KernelEntryABI::RankRowPointerTableV1, main));
   expectRejected(wafer::RuntimeLaunchContract::createKernel(
       wafer::KernelLaunchForm::Grid,
       wafer::KernelEntryABI::RankLocalPointerBlockV1, main));

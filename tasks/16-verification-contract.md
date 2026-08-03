@@ -1533,6 +1533,9 @@ host完成门禁为真实export、program verifier、production compile、完整
 注入均通过，只能把Q44推进到`board-ready`。configured board按本章共同合同单进程串行执行rank-one、`4096³`
 K-sharded GEMM/AllReduce和HuggingFace Llama-2 7B Megatron TP16 block；
 每项都必须使用本轮fresh package、完整capture和PyTorch eager comparison，未执行、skip或unsupported均不能标`done`。
+实际Llama block每rank有18个typed launch slot，超过packet内rank-major direct table容量，因而package显式使用
+`rank-row-pointer-table-v1`。no-card和runtime unit必须验证packet只携带16个device row pointer、每个row按manifest
+slot order包含全部resource device address；不能通过删parameter、合并slot或从名字恢复binding来适配窄packet。
 
 ### 12.5 16-Tile TSM Profiler Gate
 

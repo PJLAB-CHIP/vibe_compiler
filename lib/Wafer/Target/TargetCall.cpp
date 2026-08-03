@@ -454,6 +454,27 @@ getTargetCallDescriptor(InstrReduceKind kind, TargetProfileId targetProfile) {
   return getDescriptor(kind, targetProfile);
 }
 
+bool isTargetReduceFormatTupleAvailable(TargetProfileId targetProfile,
+                                        InstrReduceKind kind,
+                                        LogicalFormat format) {
+  // ABI-only target-profile revisions inherit the same qualified command
+  // format rows through the format-compatibility identity.  Keep this exact
+  // operation tuple separate from the generic CT x format registry: the
+  // latter proves only that a Data_Format field can be encoded.
+  if (getTargetProfileRecord(targetProfile).formatCompatibilityProfile !=
+      TargetProfileId::waferTx81SingleCardKernelV1())
+    return false;
+  switch (kind) {
+  case InstrReduceKind::Sum:
+  case InstrReduceKind::Max:
+    return format == LogicalFormat::F16;
+  case InstrReduceKind::Min:
+  case InstrReduceKind::Avg:
+    return format == LogicalFormat::BF16;
+  }
+  llvm_unreachable("unknown instruction reduce kind");
+}
+
 const TargetCallDescriptor &
 getTargetCallDescriptor(InstrConvertKind kind, TargetProfileId targetProfile) {
   return getDescriptor(kind, targetProfile);

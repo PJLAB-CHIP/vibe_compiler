@@ -79,6 +79,24 @@ func.func @large_identity_sum_uses_native_reduce(
 // CHECK: return
 // CHECK-NOT: wafer.instr.local_fence
 
+func.func @large_f16_identity_sum_uses_native_reduce(
+    %input: memref<4096x1xf16, #wafer.memory<spm, cx>>)
+    -> memref<1xf16, #wafer.memory<spm, cx>> {
+  %result = wafer.tile.reduce #wafer.reduce_kind<sum> %input
+      {dimensions = array<i64: 0>, init_value = 0.000000e+00 : f16}
+      : (memref<4096x1xf16, #wafer.memory<spm, cx>>)
+     -> memref<1xf16, #wafer.memory<spm, cx>>
+  return %result : memref<1xf16, #wafer.memory<spm, cx>>
+}
+
+// CHECK-LABEL: func.func @large_f16_identity_sum_uses_native_reduce
+// CHECK-NOT: wafer.instr.fill
+// CHECK: wafer.instr.reduce <sum>
+// CHECK-SAME: dim = 1 : i64
+// CHECK-NEXT: wafer.instr.ncc_join [0]
+// CHECK: return
+// CHECK-NOT: wafer.instr.local_fence
+
 func.func @ordered_max(
     %input: memref<2x2xf16, #wafer.memory<spm, cx>>)
     -> memref<2xf16, #wafer.memory<spm, cx>> {

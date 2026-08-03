@@ -42,6 +42,7 @@ llvm::Error injected(llvm::StringRef operation) {
 enum class TestLaunchContractCase {
   PerRank,
   Grid,
+  GridRankRows,
   Cluster,
   Model,
 };
@@ -57,6 +58,10 @@ makeLaunchContract(TestLaunchContractCase launchCase) {
   case TestLaunchContractCase::Grid:
     return llvm::cantFail(RuntimeLaunchContract::createKernel(
         KernelLaunchForm::Grid, KernelEntryABI::RankMajorPointerTableV1,
+        {RuntimeLaunchPhaseRole::Main}));
+  case TestLaunchContractCase::GridRankRows:
+    return llvm::cantFail(RuntimeLaunchContract::createKernel(
+        KernelLaunchForm::Grid, KernelEntryABI::RankRowPointerTableV1,
         {RuntimeLaunchPhaseRole::Main}));
   case TestLaunchContractCase::Cluster:
     return llvm::cantFail(RuntimeLaunchContract::createKernel(
@@ -274,13 +279,27 @@ public:
     submittedKernelPhases.push_back(phaseRole);
     const uintptr_t sharedFunction = launches.front().function.value;
     for (auto [rank, launch] : llvm::enumerate(launches)) {
+      std::vector<uint64_t> decodedArguments;
+      llvm::ArrayRef<uint64_t> arguments = launch.arguments;
+      if (decodeRankRowArguments) {
+        if (launch.arguments.size() != 1)
+          return injected("invalid-rank-row-launch-packet");
+        auto row = find(launch.arguments.front());
+        if (row == allocations.end() || row->bytes.empty() ||
+            row->bytes.size() % sizeof(uint64_t) != 0)
+          return injected("invalid-rank-row-storage");
+        decodedArguments.resize(row->bytes.size() / sizeof(uint64_t));
+        std::memcpy(decodedArguments.data(), row->bytes.data(),
+                    row->bytes.size());
+        arguments = decodedArguments;
+      }
       if (launch.logicalRank != static_cast<int64_t>(rank) ||
-          launch.function.value == 0 || launch.arguments.size() < 2 ||
+          launch.function.value == 0 || arguments.size() < 2 ||
           (form != wafer::KernelLaunchForm::PerRank &&
            launch.function.value != sharedFunction))
         return injected("invalid-canonical-kernel-phase");
-      auto input = find(launch.arguments[0]);
-      auto output = find(launch.arguments[1]);
+      auto input = find(arguments[0]);
+      auto output = find(arguments[1]);
       if (input == allocations.end() || output == allocations.end() ||
           input->bytes.size() != output->bytes.size())
         return injected("invalid-kernel-phase-buffers");
@@ -288,8 +307,8 @@ public:
         continue;
       for (size_t byte = 0; byte < input->bytes.size(); ++byte)
         output->bytes[byte] = input->bytes[byte] ^ static_cast<uint8_t>(rank);
-      auto status = find(launch.arguments.back());
-      if (status != allocations.end() && launch.arguments.size() >= 4 &&
+      auto status = find(arguments.back());
+      if (status != allocations.end() && arguments.size() >= 4 &&
           status->bytes.size() ==
               wafer::runtime::kDirectDTEStatusStorageBytes) {
         const uint32_t terminalStatus =
@@ -305,10 +324,10 @@ public:
     return llvm::Error::success();
   }
 
-  llvm::Error submitModel(
-      wafer::runtime::BoardGraphHandle graph,
-      llvm::ArrayRef<wafer::runtime::BoardModelTensorLaunch> tensors,
-      wafer::runtime::BoardDeviceTimingPolicy timingPolicy) override {
+  llvm::Error
+  submitModel(wafer::runtime::BoardGraphHandle graph,
+              llvm::ArrayRef<wafer::runtime::BoardModelTensorLaunch> tensors,
+              wafer::runtime::BoardDeviceTimingPolicy timingPolicy) override {
     calls.push_back("submit-model");
     observedDeviceTimingPolicies.push_back(timingPolicy);
     if (shouldFail("submit-model"))
@@ -423,6 +442,7 @@ public:
   std::string runtimeLibraryDigest =
       "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
   std::optional<uint32_t> transportStatusOverride;
+  bool decodeRankRowArguments = false;
 
 private:
   static wafer::runtime::RuntimeEnvironment makeProviderEnvironment() {
@@ -436,7 +456,8 @@ private:
                                               wafer::KernelLaunchForm::Cluster};
     environment.supportedKernelEntryABIs = {
         wafer::KernelEntryABI::RankLocalPointerBlockV1,
-        wafer::KernelEntryABI::RankMajorPointerTableV1};
+        wafer::KernelEntryABI::RankMajorPointerTableV1,
+        wafer::KernelEntryABI::RankRowPointerTableV1};
     environment.supportedModelEntryABIs = {
         wafer::ModelEntryABI::Tx81ModelBootParamV1};
     environment.supportsDirectDTE = true;
@@ -594,8 +615,10 @@ protected:
         makeLaunchContract(launchCase), target.moduleFormat);
     manifest.program = ProgramId(0);
     manifest.rankCount = 16;
-    const bool sharedModule = launchCase == TestLaunchContractCase::Grid ||
-                              launchCase == TestLaunchContractCase::Cluster;
+    const bool sharedModule =
+        launchCase == TestLaunchContractCase::Grid ||
+        launchCase == TestLaunchContractCase::GridRankRows ||
+        launchCase == TestLaunchContractCase::Cluster;
     const bool cluster = launchCase == TestLaunchContractCase::Cluster;
     const bool model = launchCase == TestLaunchContractCase::Model;
     const bool directDTE = directDTEOverride.value_or(cluster);
@@ -693,8 +716,10 @@ protected:
       TestLaunchContractCase launchCase = TestLaunchContractCase::PerRank,
       bool withProfiler = false,
       std::optional<bool> directDTEOverride = std::nullopt) const {
-    const bool sharedModule = launchCase == TestLaunchContractCase::Grid ||
-                              launchCase == TestLaunchContractCase::Cluster;
+    const bool sharedModule =
+        launchCase == TestLaunchContractCase::Grid ||
+        launchCase == TestLaunchContractCase::GridRankRows ||
+        launchCase == TestLaunchContractCase::Cluster;
     if (sharedModule) {
       for (int64_t rank = 1; rank < 16; ++rank) {
         std::string rankText = std::to_string(rank);
@@ -948,6 +973,44 @@ TEST_F(BoardRuntimeTest,
                 rankInputByte(resource->logicalRank, byte) ^
                     static_cast<uint8_t>(resource->logicalRank));
   }
+}
+
+TEST_F(BoardRuntimeTest,
+       KernelGridRankRowsOwnDeviceStorageAndSubmitOnePointerPerRank) {
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::GridRankRows);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  const wafer::runtime::PackageManifest &manifest = package->getManifest();
+  FakeBoardDriver driver;
+  driver.decodeRankRowArguments = true;
+  llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
+      wafer::runtime::executeBoardInvocation(
+          *package, root, makeRank16Request(manifest), driver);
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+
+  ASSERT_EQ(driver.submittedLaunches.size(), 16u);
+  ASSERT_EQ(driver.allocatedAddresses.size(), 64u);
+  ASSERT_GE(driver.h2dPayloads.size(), 16u);
+  const size_t firstRowPayload = driver.h2dPayloads.size() - 16;
+  for (size_t rank = 0; rank < 16; ++rank) {
+    const auto &launch = driver.submittedLaunches[rank];
+    ASSERT_EQ(launch.arguments.size(), 1u);
+    EXPECT_EQ(launch.arguments.front(), driver.allocatedAddresses[48 + rank]);
+
+    const std::vector<uint8_t> &payload =
+        driver.h2dPayloads[firstRowPayload + rank];
+    ASSERT_EQ(payload.size(), 3 * sizeof(uint64_t));
+    std::array<uint64_t, 3> row{};
+    std::memcpy(row.data(), payload.data(), payload.size());
+    for (size_t slot = 0; slot < row.size(); ++slot)
+      EXPECT_EQ(row[slot], driver.allocatedAddresses[rank * 3 + slot]);
+  }
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "submit-kernel-phase:grid:main"),
+            1);
+  EXPECT_EQ(result->outputs.size(), 16u);
+  EXPECT_EQ(driver.freedAddresses.size(), driver.allocatedAddresses.size());
 }
 
 TEST_F(BoardRuntimeTest,
@@ -1215,10 +1278,9 @@ TEST_F(BoardRuntimeTest,
   EXPECT_EQ(started->first.completedStages, ordinary->completedStages);
   EXPECT_EQ(started->first.ranks.size(), ordinary->ranks.size());
   EXPECT_EQ(started->first.outputs.size(), ordinary->outputs.size());
-  EXPECT_EQ(
-      std::count(sessionDriver.calls.begin(), sessionDriver.calls.end(),
-                 "get-device-count"),
-      1);
+  EXPECT_EQ(std::count(sessionDriver.calls.begin(), sessionDriver.calls.end(),
+                       "get-device-count"),
+            1);
   EXPECT_EQ(std::count(sessionDriver.calls.begin(), sessionDriver.calls.end(),
                        "select-device"),
             1);
@@ -1227,8 +1289,7 @@ TEST_F(BoardRuntimeTest,
             1);
 }
 
-TEST_F(BoardRuntimeTest,
-       StartSessionAcceptsHighResolutionFirstObservation) {
+TEST_F(BoardRuntimeTest, StartSessionAcceptsHighResolutionFirstObservation) {
   using namespace wafer::runtime;
   llvm::Expected<VerifiedPackageManifest> package =
       verifyRank16(TestLaunchContractCase::Grid);
@@ -1251,8 +1312,7 @@ TEST_F(BoardRuntimeTest,
   EXPECT_EQ(driver.observedCompletionObservationPolicy,
             BoardCompletionObservationPolicy::ProfileHighResolution);
   EXPECT_GT(started->first.launchToCompletionNanoseconds, 0u);
-  EXPECT_GT(
-      started->first.completionObservationResolutionNanoseconds, 0u);
+  EXPECT_GT(started->first.completionObservationResolutionNanoseconds, 0u);
   EXPECT_EQ(
       std::count(driver.calls.begin(), driver.calls.end(), "get-device-count"),
       1);
@@ -1468,8 +1528,8 @@ TEST_F(BoardRuntimeTest,
   ASSERT_EQ(driver.observedDeviceTimingPolicies.size(), 1u);
   EXPECT_EQ(driver.observedDeviceTimingPolicies.front(),
             BoardDeviceTimingPolicy::StreamEvents);
-  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "submit-model"),
-            1);
+  EXPECT_EQ(
+      std::count(driver.calls.begin(), driver.calls.end(), "submit-model"), 1);
 }
 
 TEST_F(BoardRuntimeTest, StreamEventTimingRejectsMissingProviderObservation) {
@@ -1500,13 +1560,12 @@ TEST_F(BoardRuntimeTest, DisabledTimingRejectsUnexpectedProviderObservation) {
 
   FakeBoardDriver driver;
   driver.deviceExecutionNanosecondsByWait = {1};
-  llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root,
-                             makeRank16Request(package->getManifest()), driver);
+  llvm::Expected<BoardRuntimeInvocationResult> result = executeBoardInvocation(
+      *package, root, makeRank16Request(package->getManifest()), driver);
   ASSERT_FALSE(static_cast<bool>(result));
-  EXPECT_NE(llvm::toString(result.takeError())
-                .find("device timing when disabled"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(result.takeError()).find("device timing when disabled"),
+      std::string::npos);
 }
 
 TEST_F(BoardRuntimeTest,
@@ -1740,9 +1799,8 @@ TEST_F(BoardRuntimeTest,
                   wafer::runtime::BoardRuntimeStage::EntryResolve);
       });
   EXPECT_TRUE(sawResolveFailure);
-  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
-                       "resolve-entry"),
-            2);
+  EXPECT_EQ(
+      std::count(driver.calls.begin(), driver.calls.end(), "resolve-entry"), 2);
   EXPECT_EQ(std::find(driver.calls.begin(), driver.calls.end(),
                       "submit-kernel-phase:cluster:prepare"),
             driver.calls.end());

@@ -927,19 +927,11 @@ verifyTargetInstructionFormat(mlir::Operation *op,
             getLogicalFormat(op, typedOp.getInput(), "reduce input");
         if (mlir::failed(format))
           return mlir::failure();
-        bool qualified = false;
-        switch (typedOp.getKind()) {
-        case InstrReduceKind::Sum:
-        case InstrReduceKind::Max:
-          qualified = *format == LogicalFormat::F16;
-          break;
-        case InstrReduceKind::Min:
-        case InstrReduceKind::Avg:
-          qualified = *format == LogicalFormat::BF16;
-          break;
-        }
-        return verifyQualifiedCTTuple(typedOp.getInput(), "reduce input",
-                                      qualified, "reduce");
+        return verifyQualifiedCTTuple(
+            typedOp.getInput(), "reduce input",
+            isTargetReduceFormatTupleAvailable(targetProfile, typedOp.getKind(),
+                                               *format),
+            "reduce");
       })
       .Case<InstrConvertOp>([&](auto typedOp) {
         return verifyTargetConvertRoute(typedOp, targetProfile);

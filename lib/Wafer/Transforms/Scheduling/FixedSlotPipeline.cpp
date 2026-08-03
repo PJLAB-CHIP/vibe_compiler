@@ -4,6 +4,7 @@
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -1722,6 +1723,9 @@ mlir::FailureOr<StaticFixedSlotPipelineCandidate>
 deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
                                        mlir::scf::ForOp sourceLoop,
                                        std::string *failureReason) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "optimization", "static-fixed-slot-buffering",
+      "deriveStaticFixedSlotPipelineCandidate");
   if (failureReason)
     failureReason->clear();
   if (!sourceModule || !sourceLoop ||
@@ -1752,13 +1756,23 @@ deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
     return result;
   }
 
-  if (mlir::failed(buildFixedSlotPipelinePlan(sourceLoop, failureReason)))
-    return mlir::failure();
+  {
+    wafer::support::ScopedCompileTimingSpan planTiming(
+        "analysis-phase", "deriveStaticFixedSlotPipelineCandidate",
+        "buildFixedSlotPipelinePlan(source)");
+    if (mlir::failed(buildFixedSlotPipelinePlan(sourceLoop, failureReason)))
+      return mlir::failure();
+  }
 
   mlir::IRMapping cloneMapping;
-  mlir::Operation *clonedOperation = sourceModule->clone(cloneMapping);
-  mlir::OwningOpRef<mlir::ModuleOp> candidate(
-      mlir::cast<mlir::ModuleOp>(clonedOperation));
+  mlir::OwningOpRef<mlir::ModuleOp> candidate;
+  {
+    wafer::support::ScopedCompileTimingSpan cloneTiming(
+        "transformation-phase", "deriveStaticFixedSlotPipelineCandidate",
+        "clone");
+    mlir::Operation *clonedOperation = sourceModule->clone(cloneMapping);
+    candidate = mlir::cast<mlir::ModuleOp>(clonedOperation);
+  }
   auto clonedLoop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(
       cloneMapping.lookupOrNull(sourceLoop.getOperation()));
   if (!clonedLoop)
@@ -1771,8 +1785,13 @@ deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
   // event stays with its own issue stage; this preserves the normal
   // single-sender ABI and keeps transport acceptance on direct SSA edges.
   splitDirectDTECompletionGroups(clonedLoop);
-  mlir::FailureOr<FixedSlotPipelinePlan> clonedPlan =
-      buildFixedSlotPipelinePlan(clonedLoop, failureReason);
+  mlir::FailureOr<FixedSlotPipelinePlan> clonedPlan;
+  {
+    wafer::support::ScopedCompileTimingSpan planTiming(
+        "analysis-phase", "deriveStaticFixedSlotPipelineCandidate",
+        "buildFixedSlotPipelinePlan(clone)");
+    clonedPlan = buildFixedSlotPipelinePlan(clonedLoop, failureReason);
+  }
   if (mlir::failed(clonedPlan))
     return mlir::failure();
   std::optional<int64_t> clonedUpper =
@@ -1782,31 +1801,55 @@ deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
   if (!clonedUpper || !clonedStep)
     return failCandidate(
         failureReason, "fixed-slot clone lost its admitted static loop bounds");
-  mlir::FailureOr<mlir::scf::ForOp> pipelined =
-      materializeSlotsAndRotation(clonedLoop, *clonedPlan, failureReason);
+  mlir::FailureOr<mlir::scf::ForOp> pipelined;
+  {
+    wafer::support::ScopedCompileTimingSpan materializeTiming(
+        "transformation-phase", "deriveStaticFixedSlotPipelineCandidate",
+        "materializeSlotsAndRotation");
+    pipelined =
+        materializeSlotsAndRotation(clonedLoop, *clonedPlan, failureReason);
+  }
   if (mlir::failed(pipelined))
     return mlir::failure();
-  if (mlir::failed(canonicalizePipelinedKernelUpperBound(
-          *pipelined, *clonedUpper, *clonedStep, clonedPlan->maxStage)))
-    return failCandidate(
-        failureReason,
-        "fixed-slot candidate failed kernel-bound canonicalization");
-  eraseSynthesizedPointerPermutations(*candidate);
+  {
+    wafer::support::ScopedCompileTimingSpan canonicalizeTiming(
+        "transformation-phase", "deriveStaticFixedSlotPipelineCandidate",
+        "canonicalize");
+    if (mlir::failed(canonicalizePipelinedKernelUpperBound(
+            *pipelined, *clonedUpper, *clonedStep, clonedPlan->maxStage)))
+      return failCandidate(
+          failureReason,
+          "fixed-slot candidate failed kernel-bound canonicalization");
+    eraseSynthesizedPointerPermutations(*candidate);
+  }
   bool containsDirectDTE = false;
   candidate->walk([&](mlir::Operation *operation) {
     containsDirectDTE |=
         mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(operation);
   });
-  if (containsDirectDTE)
+  if (containsDirectDTE) {
+    wafer::support::ScopedCompileTimingSpan readyOrderTiming(
+        "optimization-phase", "deriveStaticFixedSlotPipelineCandidate",
+        "scheduleIndependentInstructionsByReadyOrder");
     scheduleIndependentInstructionsByReadyOrder(candidate->getOperation());
-  if (mlir::failed(normalizeMinimumNCCJoins(*candidate)))
-    return failCandidate(
-        failureReason,
-        "fixed-slot candidate failed NCC completion normalization");
-  if (mlir::failed(mlir::verify(*candidate)))
-    return failCandidate(
-        failureReason,
-        "fixed-slot candidate failed verification after materialization");
+  }
+  {
+    wafer::support::ScopedCompileTimingSpan normalizeTiming(
+        "transformation-phase", "deriveStaticFixedSlotPipelineCandidate",
+        "normalizeMinimumNCCJoins");
+    if (mlir::failed(normalizeMinimumNCCJoins(*candidate)))
+      return failCandidate(
+          failureReason,
+          "fixed-slot candidate failed NCC completion normalization");
+  }
+  {
+    wafer::support::ScopedCompileTimingSpan verifyTiming(
+        "analysis-phase", "deriveStaticFixedSlotPipelineCandidate", "verify");
+    if (mlir::failed(mlir::verify(*candidate)))
+      return failCandidate(
+          failureReason,
+          "fixed-slot candidate failed verification after materialization");
+  }
 
   StaticFixedSlotPipelineCandidate result;
   result.module = std::move(candidate);
@@ -1818,6 +1861,8 @@ deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
 mlir::LogicalResult
 specializePeriodicDirectDTESites(llvm::ArrayRef<mlir::ModuleOp> rankModules,
                                  std::string *failureReason) {
+  wafer::support::ScopedCompileTimingSpan totalTiming(
+      "optimization", "specializePeriodicDirectDTESites", "total");
   if (failureReason)
     failureReason->clear();
   if (rankModules.empty())
@@ -1829,23 +1874,36 @@ specializePeriodicDirectDTESites(llvm::ArrayRef<mlir::ModuleOp> rankModules,
   llvm::SmallVector<mlir::ModuleOp, 16> cloneViews;
   ownedClones.reserve(rankModules.size());
   cloneViews.reserve(rankModules.size());
-  for (mlir::ModuleOp module : rankModules) {
-    if (!module)
-      return failSpecialization(
-          failureReason,
-          "periodic Direct-DTE specialization received a null rank module");
-    ownedClones.emplace_back(mlir::cast<mlir::ModuleOp>(module->clone()));
-    cloneViews.push_back(*ownedClones.back());
+  {
+    wafer::support::ScopedCompileTimingSpan cloneTiming(
+        "transformation-phase", "specializePeriodicDirectDTESites", "clone");
+    for (mlir::ModuleOp module : rankModules) {
+      if (!module)
+        return failSpecialization(
+            failureReason,
+            "periodic Direct-DTE specialization received a null rank module");
+      ownedClones.emplace_back(mlir::cast<mlir::ModuleOp>(module->clone()));
+      cloneViews.push_back(*ownedClones.back());
+    }
   }
 
-  if (mlir::failed(specializePeriodicDTEClones(cloneViews, failureReason)))
-    return mlir::failure();
+  {
+    wafer::support::ScopedCompileTimingSpan specializeTiming(
+        "transformation-phase", "specializePeriodicDirectDTESites",
+        "specializePeriodicDTEClones");
+    if (mlir::failed(specializePeriodicDTEClones(cloneViews, failureReason)))
+      return mlir::failure();
+  }
 
-  for (size_t index = 0; index < rankModules.size(); ++index) {
-    mlir::ModuleOp destination = rankModules[index];
-    mlir::ModuleOp source = cloneViews[index];
-    destination->setAttrs(source->getAttrs());
-    destination.getBodyRegion().takeBody(source.getBodyRegion());
+  {
+    wafer::support::ScopedCompileTimingSpan commitTiming(
+        "transformation-phase", "specializePeriodicDirectDTESites", "commit");
+    for (size_t index = 0; index < rankModules.size(); ++index) {
+      mlir::ModuleOp destination = rankModules[index];
+      mlir::ModuleOp source = cloneViews[index];
+      destination->setAttrs(source->getAttrs());
+      destination.getBodyRegion().takeBody(source.getBodyRegion());
+    }
   }
   return mlir::success();
 }

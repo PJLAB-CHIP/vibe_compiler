@@ -143,6 +143,33 @@ TEST_F(ScheduledRankFinalizationTest,
   EXPECT_FALSE(fixedCandidate->reservedBaseline);
 }
 
+TEST_F(ScheduledRankFinalizationTest,
+       FinalizesBaselineFreeRequestShardAndPreservesCanonicalOrder) {
+  mlir::OwningOpRef<mlir::ModuleOp> candidate =
+      candidateWithSPMElements(/*elements=*/128);
+  ASSERT_TRUE(candidate);
+
+  std::vector<wafer::ScheduledRankCandidate> frontier;
+  frontier.emplace_back(
+      std::move(candidate), /*stableOrdinal=*/7, wafer::RankArtifactKind::Spill,
+      /*reservedBaseline=*/false, wafer::RankBufferingKind::Single,
+      /*bufferingPlanOrdinal=*/0, wafer::RankWorkerPlacementKind::Unplaced,
+      /*workerPlacementPlanOrdinal=*/0, /*frontierOrderOrdinal=*/91);
+  auto finalized =
+      wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
+          std::move(frontier), kTargetProfile,
+          /*requireReservedBaseline=*/false);
+  ASSERT_TRUE(mlir::succeeded(finalized));
+  ASSERT_EQ(finalized->size(), 1u);
+  EXPECT_FALSE(finalized->front().reservedBaseline);
+  EXPECT_EQ(finalized->front().frontierOrderOrdinal, 91u);
+
+  auto empty = wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
+      {}, kTargetProfile, /*requireReservedBaseline=*/false);
+  ASSERT_TRUE(mlir::succeeded(empty));
+  EXPECT_TRUE(empty->empty());
+}
+
 TEST_F(ScheduledRankFinalizationTest, FailsOnlyWhenNoAlternativeSurvives) {
   mlir::OwningOpRef<mlir::ModuleOp> overflow =
       candidateWithSPMElements(/*elements=*/2'000'000);

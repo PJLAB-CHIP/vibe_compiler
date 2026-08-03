@@ -62,8 +62,9 @@ getTargetCallDescriptor(SemanticT semantic, wafer::TargetProfileId profile) {
   return wafer::getTargetCallDescriptor(semantic, profile);
 }
 
-static wafer::RuntimeLaunchContract
-makeKernelLaunch(wafer::KernelLaunchForm form) {
+static wafer::RuntimeLaunchContract makeKernelLaunch(
+    wafer::KernelLaunchForm form,
+    std::optional<wafer::KernelEntryABI> sharedEntryABI = std::nullopt) {
   constexpr std::array main{wafer::RuntimeLaunchPhaseRole::Main};
   constexpr std::array prepareMain{wafer::RuntimeLaunchPhaseRole::Prepare,
                                    wafer::RuntimeLaunchPhaseRole::Main};
@@ -73,10 +74,14 @@ makeKernelLaunch(wafer::KernelLaunchForm form) {
         form, wafer::KernelEntryABI::RankLocalPointerBlockV1, main));
   case wafer::KernelLaunchForm::Grid:
     return llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
-        form, wafer::KernelEntryABI::RankMajorPointerTableV1, main));
+        form,
+        sharedEntryABI.value_or(wafer::KernelEntryABI::RankMajorPointerTableV1),
+        main));
   case wafer::KernelLaunchForm::Cluster:
     return llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
-        form, wafer::KernelEntryABI::RankMajorPointerTableV1, prepareMain));
+        form,
+        sharedEntryABI.value_or(wafer::KernelEntryABI::RankMajorPointerTableV1),
+        prepareMain));
   }
   llvm_unreachable("unknown kernel launch form");
 }
@@ -1046,6 +1051,17 @@ TEST(TargetArtifactTest, KernelArgumentPacketLimitIsCheckedBeforeDeviceLink) {
   EXPECT_NE(llvm::toString(std::move(rejectedCluster)).find("packet limit"),
             std::string::npos);
 
+  llvm::Error allowedGridRows = verifySlotCount(
+      makeKernelLaunch(wafer::KernelLaunchForm::Grid,
+                       wafer::KernelEntryABI::RankRowPointerTableV1),
+      18);
+  EXPECT_FALSE(static_cast<bool>(allowedGridRows));
+  llvm::Error allowedClusterRows = verifySlotCount(
+      makeKernelLaunch(wafer::KernelLaunchForm::Cluster,
+                       wafer::KernelEntryABI::RankRowPointerTableV1),
+      18);
+  EXPECT_FALSE(static_cast<bool>(allowedClusterRows));
+
   llvm::Error allowedPerRank =
       verifySlotCount(makeKernelLaunch(wafer::KernelLaunchForm::PerRank), 251);
   EXPECT_FALSE(static_cast<bool>(allowedPerRank));
@@ -1053,6 +1069,35 @@ TEST(TargetArtifactTest, KernelArgumentPacketLimitIsCheckedBeforeDeviceLink) {
       verifySlotCount(makeKernelLaunch(wafer::KernelLaunchForm::PerRank), 252);
   ASSERT_TRUE(static_cast<bool>(rejectedPerRank));
   EXPECT_NE(llvm::toString(std::move(rejectedPerRank)).find("packet limit"),
+            std::string::npos);
+}
+
+TEST(TargetArtifactTest,
+     KernelAggregationLoadsSelectedRankRowBeforeTypedSlotDispatch) {
+  llvm::Expected<wafer::compiler::TargetLLVMModuleBundle> bundle =
+      makeRuntimeLaunchBundle(
+          makeKernelLaunch(wafer::KernelLaunchForm::Grid,
+                           wafer::KernelEntryABI::RankRowPointerTableV1),
+          wafer::compiler::TransportContract::None, std::nullopt, std::nullopt,
+          /*unsupportedModelRole=*/false, /*slotCount=*/18);
+  ASSERT_TRUE(static_cast<bool>(bundle)) << llvm::toString(bundle.takeError());
+
+  llvm::Expected<wafer::compiler::detail::OwnedTargetLLVMModule> aggregate =
+      wafer::compiler::detail::buildKernelAggregateTargetModule(*bundle);
+  ASSERT_TRUE(static_cast<bool>(aggregate))
+      << llvm::toString(aggregate.takeError());
+
+  std::string ir;
+  llvm::raw_string_ostream output(ir);
+  aggregate->module->print(output, nullptr);
+  output.flush();
+  EXPECT_NE(ir.find("getelementptr inbounds i64, ptr %rank_row_pointers, i64 "
+                    "15"),
+            std::string::npos);
+  EXPECT_NE(ir.find("%rank.15.row = load i64"), std::string::npos);
+  EXPECT_NE(ir.find("%rank.15.slots = inttoptr i64 %rank.15.row to ptr"),
+            std::string::npos);
+  EXPECT_NE(ir.find("getelementptr inbounds i64, ptr %rank.15.slots, i64 17"),
             std::string::npos);
 }
 

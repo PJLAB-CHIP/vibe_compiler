@@ -6,6 +6,7 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/IR/WaferInterfaces.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -273,6 +274,12 @@ verifyExactDirectDTECompletion(mlir::ModuleOp module,
 mlir::FailureOr<NCCWorkerPlacementCandidate>
 deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
                                           std::string *failureReason) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "optimization", "disjoint-worker-placement",
+      "deriveDisjointNCCWorkerPlacementCandidate");
+  auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "deriveDisjointNCCWorkerPlacementCandidate",
+      "preflight");
   if (failureReason)
     failureReason->clear();
   if (!sourceModule) {
@@ -320,6 +327,9 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
   }
 
   llvm::SmallVector<mlir::Operation *, 16> issues;
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "deriveDisjointNCCWorkerPlacementCandidate",
+      "collect-issues-and-accesses");
   sourceModule.walk([&](mlir::Operation *operation) {
     if (mlir::isa<WaferNCCIssueOpInterface>(operation))
       issues.push_back(operation);
@@ -355,6 +365,9 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
   // before the merge issue. Treating this graph as one undirected component
   // would erase the useful input-prefetch window at every fan-in.
   llvm::SmallVector<unsigned, 16> issueComponents;
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "deriveDisjointNCCWorkerPlacementCandidate",
+      "build-dependency-lanes");
   issueComponents.reserve(issues.size());
   unsigned componentCount = 0;
   for (auto [index, operation] : llvm::enumerate(issues)) {
@@ -394,6 +407,9 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
     return mlir::failure();
   }
 
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "transformation-phase", "deriveDisjointNCCWorkerPlacementCandidate",
+      "clone-and-assign-workers");
   mlir::OwningOpRef<mlir::ModuleOp> candidate =
       mlir::cast<mlir::ModuleOp>(sourceModule->clone());
   llvm::SmallVector<mlir::Operation *, 16> clonedIssues;
@@ -428,6 +444,9 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
     return mlir::failure();
   }
 
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "deriveDisjointNCCWorkerPlacementCandidate",
+      "normalize-verify-and-analyze-windows");
   if (mlir::failed(normalizeMinimumNCCJoins(*candidate)) ||
       mlir::failed(mlir::verify(*candidate))) {
     fail(failureReason,

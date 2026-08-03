@@ -55,6 +55,15 @@ public:
     return relation;
   }
 
+  /// Recover a standard affine map from the exact Presburger relation when
+  /// every source coordinate is an integral affine expression of the
+  /// destination coordinates.  This is a derived query, not retained side
+  /// state: transformations may use it to lower the same relation without
+  /// rebuilding an operation-specific index language.  Piecewise/quasi-affine
+  /// relations such as a general reshape return std::nullopt.
+  std::optional<mlir::AffineMap>
+  getProjectedAffineMap(mlir::MLIRContext *context) const;
+
   static IndexRelationResult
   identity(llvm::ArrayRef<int64_t> shape,
            const IndexRelationLimits &limits = IndexRelationLimits());

@@ -530,6 +530,12 @@ proof 按以下步骤构造：
 8. 验证 source read 按 `R` 完整；broadcast 可以重复读同一 source point，不能错误要求 source bijection。
 9. 验证 source/destination root-local offsets、allocation ranges、alias/effect 和 completion。
 
+RDMA/WDMA的循环证明还必须保留engine方向性：RDMA只编码DDR source的stride/iteration并证明
+SPM destination在同一组循环下连续，WDMA只编码DDR destination并证明SPM source连续。GS可以
+同时保留两侧stride。一条descriptor能以多层loop表达时不得降级为“一个连续段一条指令”；
+只在连续endpoint、layout piece或target field真实断开时拆command。Cx/NCx的invalid lane、C0对齐lane和
+bank padding不在logical valid cover内，不能因两端encoding相同而被movement descriptor附带copy。
+
 multi-command descriptor 必须携带各自相对 allocation root 的 local byte offset，不能默认每条 command 从
 offset zero 开始。descriptor 顺序由 destination traversal 的结构顺序决定；不用自定义 byte serialization
 承担语义或排序。

@@ -45,6 +45,34 @@ TEST(IndexRelationTest, RepresentsIdentityPermutationAndBroadcastExactly) {
   ASSERT_TRUE(broadcast.isExact());
   EXPECT_TRUE(broadcast.get()->contains({0, 2}, {2}));
   EXPECT_TRUE(broadcast.get()->contains({3, 2}, {2}));
+
+  std::optional<mlir::AffineMap> recovered =
+      permutation.get()->getProjectedAffineMap(&context);
+  ASSERT_TRUE(recovered);
+  EXPECT_EQ(*recovered,
+            mlir::AffineMap::get(2, 0, {d1, d0}, &context));
+}
+
+TEST(IndexRelationTest, ProjectedAffineMapIsDerivedAndFailsClosed) {
+  mlir::MLIRContext context;
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr d1 = mlir::getAffineDimExpr(1, &context);
+  IndexRelationResult slice = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(2, 0, {d0 * 2 + 1, d1 * -1 + 6}, &context),
+      /*destinationShape=*/{3, 7}, /*sourceShape=*/{6, 7});
+  ASSERT_TRUE(slice.isExact());
+  std::optional<mlir::AffineMap> recovered =
+      slice.get()->getProjectedAffineMap(&context);
+  ASSERT_TRUE(recovered);
+  EXPECT_EQ(*recovered,
+            mlir::AffineMap::get(2, 0, {d0 * 2 + 1, d1 * -1 + 6},
+                                 &context));
+
+  IndexRelationResult reshape =
+      IndexRelation::staticReshape(/*destinationShape=*/{6},
+                                   /*sourceShape=*/{2, 3});
+  ASSERT_TRUE(reshape.isExact());
+  EXPECT_FALSE(reshape.get()->getProjectedAffineMap(&context));
 }
 
 TEST(IndexRelationTest, ComposesSliceAndReshapePointwise) {
@@ -248,6 +276,11 @@ TEST(IndexRelationTest, ProvesCurrentViewDmaGatherScatterAndStagedRoutes) {
   EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveGatherScatter(
       makeType({2, 3}, spmTensor), makeType({3, 2}, spmTensor),
       *permutation.get())));
+  IndexRelationResult permutationDest = IndexRelation::identity({3, 2});
+  ASSERT_TRUE(permutationDest.isExact());
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveMappedTransfer(
+      makeType({2, 3}, spmTensor), makeType({3, 2}, spmTensor), {3, 2},
+      *permutation.get(), *permutationDest.get())));
   EXPECT_TRUE(mlir::failed(TransferRealizability::proveMetadataView(
       makeType({2, 3}, spmTensor), makeType({3, 2}, spmTensor),
       *permutation.get(), /*destinationMayWrite=*/true)));
@@ -259,6 +292,11 @@ TEST(IndexRelationTest, ProvesCurrentViewDmaGatherScatterAndStagedRoutes) {
   IndexRelationResult broadcast = IndexRelation::fromAffineMap(
       mlir::AffineMap::get(2, 0, {d1}, &context), {4, 3}, {3});
   ASSERT_TRUE(broadcast.isExact());
+  IndexRelationResult broadcastDest = IndexRelation::identity({4, 3});
+  ASSERT_TRUE(broadcastDest.isExact());
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveMappedTransfer(
+      makeType({3}, spmTensor), makeType({4, 3}, spmTensor), {4, 3},
+      *broadcast.get(), *broadcastDest.get())));
   EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveGatherScatter(
       makeType({3}, spmTensor), makeType({4, 3}, spmTensor),
       *broadcast.get())));

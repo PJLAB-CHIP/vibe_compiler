@@ -53,7 +53,8 @@ constexpr size_t kReportedAttemptLimit = 8;
 
 static llvm::Expected<RuntimeLaunchContract> formAcceptedRuntimeLaunchContract(
     const ExecutionConfig &executionConfig,
-    llvm::ArrayRef<mlir::ModuleOp> acceptedRankModules) {
+    llvm::ArrayRef<mlir::ModuleOp> acceptedRankModules,
+    uint64_t programSlotCount) {
   constexpr std::array main{RuntimeLaunchPhaseRole::Main};
   constexpr std::array prepareMain{RuntimeLaunchPhaseRole::Prepare,
                                    RuntimeLaunchPhaseRole::Main};
@@ -81,12 +82,29 @@ static llvm::Expected<RuntimeLaunchContract> formAcceptedRuntimeLaunchContract(
         KernelLaunchForm::PerRank, KernelEntryABI::RankLocalPointerBlockV1,
         main);
   }
+  const KernelLaunchForm form = requiresRuntimePrepare
+                                    ? KernelLaunchForm::Cluster
+                                    : KernelLaunchForm::Grid;
+  const uint64_t packetBytes = requiresRuntimePrepare
+                                   ? kTx81ClusterKernelArgumentBytesMax
+                                   : kTx81KernelArgumentBytesMax;
+  const uint64_t directSlotsPerRank =
+      packetBytes / sizeof(uint64_t) /
+      static_cast<uint64_t>(executionConfig.getRankCount());
+  // Keep ordinary and profile compilation on the same entry ABI. Target ABI
+  // preparation can append one default-DDR workspace, one profile record and,
+  // for cluster launches, one transport-status slot after program-boundary
+  // bindings have been fixed.
+  const uint64_t possibleCompilerSlots =
+      2 + static_cast<uint64_t>(requiresRuntimePrepare);
+  const KernelEntryABI entryABI =
+      programSlotCount > directSlotsPerRank ||
+              possibleCompilerSlots > directSlotsPerRank - programSlotCount
+          ? KernelEntryABI::RankRowPointerTableV1
+          : KernelEntryABI::RankMajorPointerTableV1;
   if (requiresRuntimePrepare)
-    return RuntimeLaunchContract::createKernel(
-        KernelLaunchForm::Cluster, KernelEntryABI::RankMajorPointerTableV1,
-        prepareMain);
-  return RuntimeLaunchContract::createKernel(
-      KernelLaunchForm::Grid, KernelEntryABI::RankMajorPointerTableV1, main);
+    return RuntimeLaunchContract::createKernel(form, entryABI, prepareMain);
+  return RuntimeLaunchContract::createKernel(form, entryABI, main);
 }
 
 static std::set<DTEProtocolPhase>
@@ -1102,13 +1120,6 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
     failureGate = "direct-dte";
     return mlir::failure();
   }
-  llvm::Expected<RuntimeLaunchContract> runtimeLaunchContract =
-      formAcceptedRuntimeLaunchContract(executionConfig, moduleViews);
-  if (!runtimeLaunchContract) {
-    llvm::consumeError(runtimeLaunchContract.takeError());
-    failureGate = "runtime-launch-contract";
-    return mlir::failure();
-  }
   mlir::FailureOr<analysis::WholeCardInstructionProgramCost> resourceCost =
       acceptWholeVariantResources(moduleViews, executionConfig);
   if (mlir::failed(resourceCost)) {
@@ -1142,6 +1153,26 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
     ranks.push_back(ExecutableBundleBuilder::makeRank(
         static_cast<int64_t>(rank), std::move(modules[rank]), entrySymbol,
         std::move(*bindings), *transport));
+  }
+
+  if (ranks.empty()) {
+    failureGate = "runtime-launch-contract";
+    return mlir::failure();
+  }
+  const uint64_t programSlotCount = ranks.front().getProgramBindings().size();
+  if (llvm::any_of(ranks, [&](const RankExecutable &rank) {
+        return rank.getProgramBindings().size() != programSlotCount;
+      })) {
+    failureGate = "runtime-launch-contract";
+    return mlir::failure();
+  }
+  llvm::Expected<RuntimeLaunchContract> runtimeLaunchContract =
+      formAcceptedRuntimeLaunchContract(executionConfig, moduleViews,
+                                        programSlotCount);
+  if (!runtimeLaunchContract) {
+    llvm::consumeError(runtimeLaunchContract.takeError());
+    failureGate = "runtime-launch-contract";
+    return mlir::failure();
   }
 
   PreTargetWholeVariant candidate(std::move(ranks),

@@ -250,9 +250,11 @@ CandidateEvaluation evaluateCompleteCandidate(
     return evaluation;
   }
   tileRegionTiming.reset();
-  return finishCandidateEvaluation(
-      std::move(evaluation), config,
-      getCommunicationOptions(config.communicationAlternative));
+  TileRegionToInstrOptions instructionOptions =
+      getCommunicationOptions(config.communicationAlternative);
+  instructionOptions.targetProfile = config.targetProfile;
+  return finishCandidateEvaluation(std::move(evaluation), config,
+                                   instructionOptions);
 }
 
 static void

@@ -5,6 +5,7 @@
 #include "MemoryPlanning/LifetimeAnalysis.h"
 #include "MemoryPlanning/StaticMemoryPacking.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -356,8 +357,7 @@ private:
         break;
       if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
         if (isStaticallyNonEmpty(loop))
-          if (std::optional<mp::ProgramPoint> loopPoint =
-                  timeline.lookup(loop))
+          if (std::optional<mp::ProgramPoint> loopPoint = timeline.lookup(loop))
             completionPath = loopPoint->path;
         break;
       }
@@ -485,8 +485,7 @@ private:
             });
           });
         };
-        if (!hasSameOrigins(refs, initial) ||
-            !hasSameOrigins(initial, refs))
+        if (!hasSameOrigins(refs, initial) || !hasSameOrigins(initial, refs))
           return forOp.emitError()
                  << "unsupported_async_completion_flow: dynamically optional "
                     "loop may select different DTE completion identities";
@@ -818,6 +817,10 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
              int64_t spmAlignment,
              const llvm::DenseSet<mlir::Operation *> &mayClobberFunctions,
              llvm::SmallVectorImpl<PendingSPMPlacement> &pendingPlacements) {
+  wafer::support::ScopedCompileTimingSpan totalTiming(
+      "transformation-phase", "planFunction(SPM)", "total");
+  auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "planFunction(SPM)", "verify-completion");
   bool hasTileRegion = false;
   funcOp.walk([&](TileRegionOp) { hasTileRegion = true; });
   if (!hasTileRegion)
@@ -832,6 +835,8 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
   if (mlir::failed(completionResult))
     return completionResult;
 
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "planFunction(SPM)", "StructuredTimeline::build");
   mp::TimelineFailure timelineFailure;
   mlir::FailureOr<mp::StructuredTimeline> timeline =
       mp::StructuredTimeline::build(funcOp.getOperation(), &timelineFailure);
@@ -855,11 +860,15 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
   }
 
   llvm::SmallVector<mp::LifetimeDemand, 8> demands;
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "planFunction(SPM)", "initializeSPMDemands");
   if (mlir::failed(initializeSPMDemands(funcOp, spmAlignment, demands)))
     return mlir::failure();
 
   // Preserve the owner-specific DTE completion contract and diagnostic before
   // the shared generic async terminal proof handles other async producers.
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "planFunction(SPM)", "lifetime-dataflow");
   DTECompletionTracker dteCompletion(*timeline);
   if (mlir::failed(dteCompletion.run(funcOp.getOperation())))
     return mlir::failure();
@@ -876,6 +885,8 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
                                             mayClobberFunctions)))
     return mlir::failure();
 
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "planFunction(SPM)", "packStaticMemory");
   mp::PackingResult packing =
       mp::packStaticMemory(demands, mp::ArenaRange{spmBase, spmLimit});
   if (!packing.succeeded()) {
@@ -931,12 +942,17 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
 mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t spmBase, int64_t spmLimit,
                                         int64_t spmAlignment) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "transformation", "planSPMMemoryModule", "total");
   if (spmBase < 0 || spmLimit <= spmBase)
     return moduleOp->emitError()
            << "invalid_spm_range: expected 0 <= spm-base < spm-limit";
   if (spmAlignment <= 0)
     return moduleOp->emitError()
            << "alignment_unsatisfied: spm-alignment must be positive";
+  auto scopeVerificationTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "analysis-phase", "planSPMMemoryModule", "verify-scopes");
   mlir::WalkResult escapedAllocation =
       moduleOp.walk(
           [&](mlir::memref::AllocOp alloc) {
@@ -958,6 +974,7 @@ mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
     return mlir::failure();
   if (mlir::failed(verifySPMAsyncFunctionClosures(moduleOp)))
     return mlir::failure();
+  scopeVerificationTiming.reset();
 
   mlir::LogicalResult result = mlir::success();
   llvm::SmallVector<PendingSPMPlacement, 16> pendingPlacements;

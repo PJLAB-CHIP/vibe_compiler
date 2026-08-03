@@ -466,6 +466,11 @@ TileRegionBodyEmitter::convertBatchMatmul(mlir::linalg::LinalgOp op,
       mlir::dyn_cast<mlir::RankedTensorType>(op->getResult(0).getType());
   if (!resultTensorType)
     return fail("batch matmul result is not a ranked tensor");
+  if (resultTensorType.getRank() != 3)
+    return fail(
+        "target batch matmul requires one explicit leading batch dimension; "
+        "multiple batch dimensions must be flattened before NCx "
+        "materialization");
 
   mlir::FailureOr<BatchedGemmAttrs> attrs = inferBatchMatmulAttrs(op);
   if (mlir::failed(attrs))

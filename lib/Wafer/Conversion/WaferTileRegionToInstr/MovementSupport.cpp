@@ -2,11 +2,13 @@
 
 #include "Internal.h"
 
-#include "llvm/ADT/DenseSet.h"
+#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <string>
@@ -14,11 +16,6 @@
 namespace wafer::tile_region_to_instr {
 
 namespace {
-
-struct PackedMovementDescriptor {
-  MovementDescriptor source;
-  MovementDescriptor dest;
-};
 
 struct DescriptorLoop {
   int64_t strideBytes = 0;
@@ -48,38 +45,7 @@ std::optional<int64_t> checkedMulI64(int64_t lhs, int64_t rhs) {
   return lhs * rhs;
 }
 
-namespace {
-
-std::optional<int64_t> checkedAddI64(int64_t lhs, int64_t rhs) {
-  if (lhs < 0 || rhs < 0)
-    return std::nullopt;
-  if (rhs > std::numeric_limits<int64_t>::max() - lhs)
-    return std::nullopt;
-  return lhs + rhs;
-}
-
-std::optional<int64_t> checkedAddScaledI64(int64_t base, int64_t stride,
-                                           int64_t iteration) {
-  std::optional<int64_t> scaled = checkedMulI64(stride, iteration);
-  if (!scaled)
-    return std::nullopt;
-  return checkedAddI64(base, *scaled);
-}
-
-std::optional<int64_t>
-computeDescriptorPayloadBytes(int64_t innerBytes,
-                              llvm::ArrayRef<int64_t> iterations) {
-  int64_t total = innerBytes;
-  for (int64_t iteration : iterations) {
-    std::optional<int64_t> next = checkedMulI64(total, iteration);
-    if (!next)
-      return std::nullopt;
-    total = *next;
-  }
-  return total;
-}
-
-} // namespace
+namespace {} // namespace
 
 void setFailureReason(std::string *failureReason, llvm::StringRef reason) {
   if (failureReason)
@@ -292,63 +258,6 @@ void createWDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
                                descriptor.strides, descriptor.iterations);
 }
 
-mlir::LogicalResult
-preflightMappedDMASegments(mlir::PatternRewriter &rewriter, mlir::Operation *op,
-                           llvm::ArrayRef<LogicalMovementSegment> segments,
-                           std::string *failureReason,
-                           llvm::StringRef opLabel) {
-  if (segments.empty())
-    return failPattern(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel).concat(" produced no mapped DMA segments").str());
-  if (segments.size() > detail::kStaticTerminalOperationBudget)
-    return failPattern(rewriter, op, failureReason,
-                       llvm::Twine("static_terminal_budget_exceeded: ")
-                           .concat(opLabel)
-                           .concat(" mapped DMA command count exceeds 4096")
-                           .str());
-  for (const LogicalMovementSegment &segment : segments) {
-    if (segment.sourceOffset < 0 || segment.destOffset < 0 ||
-        segment.bytes <= 0 ||
-        static_cast<uint64_t>(segment.bytes) >
-            std::numeric_limits<uint32_t>::max())
-      return failPattern(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel)
-              .concat(" mapped DMA segment is not target-encodable")
-              .str());
-  }
-  return mlir::success();
-}
-
-void createMappedRDMASegments(mlir::PatternRewriter &rewriter,
-                              mlir::Location loc, mlir::Value source,
-                              mlir::Value dest,
-                              llvm::ArrayRef<LogicalMovementSegment> segments) {
-  constexpr int64_t kZeroStrides[] = {0, 0, 0};
-  constexpr int64_t kOneIterations[] = {1, 1, 1};
-  for (const LogicalMovementSegment &segment : segments)
-    rewriter.create<InstrRDMAOp>(
-        loc, source, dest, segment.bytes, segment.bytes,
-        rewriter.getI64IntegerAttr(segment.sourceOffset),
-        rewriter.getI64IntegerAttr(segment.destOffset), kZeroStrides,
-        kOneIterations);
-}
-
-void createMappedWDMASegments(mlir::PatternRewriter &rewriter,
-                              mlir::Location loc, mlir::Value source,
-                              mlir::Value dest,
-                              llvm::ArrayRef<LogicalMovementSegment> segments) {
-  constexpr int64_t kZeroStrides[] = {0, 0, 0};
-  constexpr int64_t kOneIterations[] = {1, 1, 1};
-  for (const LogicalMovementSegment &segment : segments)
-    rewriter.create<InstrWDMAOp>(
-        loc, source, dest, segment.bytes, segment.bytes,
-        rewriter.getI64IntegerAttr(segment.sourceOffset),
-        rewriter.getI64IntegerAttr(segment.destOffset), kZeroStrides,
-        kOneIterations);
-}
-
 void createGatherScatter(mlir::PatternRewriter &rewriter, mlir::Location loc,
                          mlir::Value source, mlir::Value dest,
                          const MovementDescriptor &sourceDescriptor,
@@ -370,244 +279,870 @@ void createGatherScatter(mlir::PatternRewriter &rewriter, mlir::Location loc,
 
 namespace {
 
-int64_t inferPackedIteration(llvm::ArrayRef<LogicalMovementSegment> segments,
-                             size_t start, int64_t blockSize,
-                             llvm::SmallVectorImpl<int64_t> &sourceStrides,
-                             llvm::SmallVectorImpl<int64_t> &destStrides,
-                             llvm::SmallVectorImpl<int64_t> &iterations,
-                             int64_t dim) {
-  if (blockSize <= 0)
-    return 1;
-  size_t nextBlockStart = start + static_cast<size_t>(blockSize);
-  if (nextBlockStart >= segments.size())
-    return 1;
+struct ProjectedCoordinate {
+  // -1 is constant, >=0 is a single projected dimension, and -2 is a
+  // multi-dimension affine coordinate recovered from IndexRelation.
+  int64_t iterationDim = -1;
+  int64_t multiplier = 0;
+  int64_t offset = 0;
+  llvm::SmallVector<int64_t, 4> multipliers;
+};
 
-  const LogicalMovementSegment &base = segments[start];
-  const LogicalMovementSegment &nextBase = segments[nextBlockStart];
-  if (nextBase.bytes != base.bytes ||
-      nextBase.sourceOffset < base.sourceOffset ||
-      nextBase.destOffset < base.destOffset)
-    return 1;
+struct SymbolicAxis {
+  int64_t iterationDim = 0;
+  int64_t step = 0;
+  int64_t count = 1;
+};
 
-  sourceStrides[dim] = nextBase.sourceOffset - base.sourceOffset;
-  destStrides[dim] = nextBase.destOffset - base.destOffset;
+struct DimensionChoice {
+  int64_t base = 0;
+  llvm::SmallVector<SymbolicAxis, 2> axes;
+};
 
-  int64_t inferred = 1;
-  while (true) {
-    int64_t repetition = inferred;
-    std::optional<int64_t> repeatedBlock = checkedMulI64(blockSize, repetition);
-    if (!repeatedBlock)
-      break;
-    size_t blockStart = start + static_cast<size_t>(*repeatedBlock);
-    if (blockStart >= segments.size() ||
-        static_cast<size_t>(blockSize) > segments.size() - blockStart)
-      break;
+struct DescriptorAxis {
+  int64_t sourceStride = 0;
+  int64_t destStride = 0;
+  int64_t count = 1;
+};
 
-    bool matches = true;
-    for (int64_t withinBlock = 0; withinBlock < blockSize; ++withinBlock) {
-      const LogicalMovementSegment &first =
-          segments[start + static_cast<size_t>(withinBlock)];
-      const LogicalMovementSegment &candidate =
-          segments[blockStart + static_cast<size_t>(withinBlock)];
-      std::optional<int64_t> expectedSource = checkedAddScaledI64(
-          first.sourceOffset, sourceStrides[dim], repetition);
-      std::optional<int64_t> expectedDest =
-          checkedAddScaledI64(first.destOffset, destStrides[dim], repetition);
-      if (!expectedSource || !expectedDest || candidate.bytes != first.bytes ||
-          candidate.sourceOffset != *expectedSource ||
-          candidate.destOffset != *expectedDest) {
-        matches = false;
-        break;
-      }
-    }
-    if (!matches)
-      break;
-    iterations[dim] = inferred + 1;
-    ++inferred;
-  }
-  if (inferred == 1) {
-    sourceStrides[dim] = 0;
-    destStrides[dim] = 0;
-  }
-  return inferred;
+struct DirectChannelDecomposition {
+  bool requested = false;
+  bool blockedByGeneralMap = false;
+  int64_t block = 0;
+};
+
+bool isBlockedLayout(MemLayout layout) {
+  return layout == MemLayout::Cx || layout == MemLayout::NCx;
 }
 
-PackedMovementDescriptor
-packMovementDescriptor(llvm::ArrayRef<LogicalMovementSegment> segments,
-                       size_t start) {
-  const LogicalMovementSegment &base = segments[start];
-  llvm::SmallVector<int64_t, 3> sourceStrides({0, 0, 0});
-  llvm::SmallVector<int64_t, 3> destStrides({0, 0, 0});
-  llvm::SmallVector<int64_t, 3> iterations({1, 1, 1});
+std::optional<int64_t> checkedSignedAdd(int64_t lhs, int64_t rhs) {
+  __int128 value = static_cast<__int128>(lhs) + rhs;
+  if (value < std::numeric_limits<int64_t>::min() ||
+      value > std::numeric_limits<int64_t>::max())
+    return std::nullopt;
+  return static_cast<int64_t>(value);
+}
 
-  inferPackedIteration(segments, start, /*blockSize=*/1, sourceStrides,
-                       destStrides, iterations, /*dim=*/0);
-  std::optional<int64_t> dim1Block = computeDescriptorPayloadBytes(
-      /*innerBytes=*/1, llvm::ArrayRef<int64_t>(iterations).take_front(1));
-  if (dim1Block)
-    inferPackedIteration(segments, start, *dim1Block, sourceStrides,
-                         destStrides, iterations, /*dim=*/1);
-  std::optional<int64_t> dim2Block = computeDescriptorPayloadBytes(
-      /*innerBytes=*/1, llvm::ArrayRef<int64_t>(iterations).take_front(2));
-  if (dim2Block)
-    inferPackedIteration(segments, start, *dim2Block, sourceStrides,
-                         destStrides, iterations, /*dim=*/2);
+std::optional<int64_t> checkedSignedMul(int64_t lhs, int64_t rhs) {
+  __int128 value = static_cast<__int128>(lhs) * rhs;
+  if (value < std::numeric_limits<int64_t>::min() ||
+      value > std::numeric_limits<int64_t>::max())
+    return std::nullopt;
+  return static_cast<int64_t>(value);
+}
 
-  std::optional<int64_t> byteCount =
-      computeDescriptorPayloadBytes(base.bytes, iterations);
-  if (!byteCount) {
-    sourceStrides.assign({0, 0, 0});
-    destStrides.assign({0, 0, 0});
-    iterations.assign({1, 1, 1});
-    byteCount = base.bytes;
+std::optional<llvm::SmallVector<ProjectedCoordinate, 4>>
+getProjectedCoordinates(const analysis::IndexRelation &relation,
+                        mlir::MLIRContext *context,
+                        llvm::ArrayRef<int64_t> iterationShape,
+                        mlir::MemRefType endpointType) {
+  std::optional<mlir::AffineMap> map = relation.getProjectedAffineMap(context);
+  if (!map || map->getNumDims() != iterationShape.size() ||
+      map->getNumResults() != static_cast<unsigned>(endpointType.getRank()) ||
+      map->getNumSymbols() != 0)
+    return std::nullopt;
+
+  llvm::SmallVector<int64_t, 4> zero(iterationShape.size(), 0);
+  llvm::SmallVector<int64_t, 4> offsets = map->compose(zero);
+  llvm::SmallVector<ProjectedCoordinate, 4> coordinates;
+  coordinates.reserve(offsets.size());
+  for (auto [result, offset] : llvm::enumerate(offsets)) {
+    ProjectedCoordinate coordinate;
+    coordinate.offset = offset;
+    coordinate.multipliers.resize(iterationShape.size(), 0);
+    unsigned nonzeroMultipliers = 0;
+    for (unsigned dim = 0; dim < iterationShape.size(); ++dim) {
+      llvm::SmallVector<int64_t, 4> unit(zero);
+      unit[dim] = 1;
+      llvm::SmallVector<int64_t, 4> value = map->compose(unit);
+      std::optional<int64_t> multiplier =
+          checkedSignedAdd(value[result], -offset);
+      if (!multiplier)
+        return std::nullopt;
+      if (*multiplier == 0)
+        continue;
+      coordinate.multipliers[dim] = *multiplier;
+      ++nonzeroMultipliers;
+      if (nonzeroMultipliers == 1) {
+        coordinate.iterationDim = dim;
+        coordinate.multiplier = *multiplier;
+      } else {
+        coordinate.iterationDim = -2;
+        coordinate.multiplier = 0;
+      }
+    }
+
+    int64_t minimum = coordinate.offset;
+    int64_t maximum = coordinate.offset;
+    for (auto [dim, multiplier] : llvm::enumerate(coordinate.multipliers)) {
+      int64_t iterationSize = iterationShape[dim];
+      if (iterationSize <= 0)
+        return std::nullopt;
+      std::optional<int64_t> delta =
+          checkedSignedMul(multiplier, iterationSize - 1);
+      if (!delta)
+        return std::nullopt;
+      std::optional<int64_t> nextMinimum =
+          checkedSignedAdd(minimum, std::min<int64_t>(0, *delta));
+      std::optional<int64_t> nextMaximum =
+          checkedSignedAdd(maximum, std::max<int64_t>(0, *delta));
+      if (!nextMinimum || !nextMaximum)
+        return std::nullopt;
+      minimum = *nextMinimum;
+      maximum = *nextMaximum;
+    }
+    int64_t endpointSize = endpointType.getDimSize(result);
+    if (endpointSize <= 0 || minimum < 0 || maximum >= endpointSize)
+      return std::nullopt;
+    coordinates.push_back(coordinate);
   }
 
-  MovementDescriptor sourceDescriptor;
-  sourceDescriptor.byteCount = *byteCount;
-  sourceDescriptor.innerBytes = base.bytes;
-  sourceDescriptor.byteOffset = base.sourceOffset;
-  sourceDescriptor.strides = sourceStrides;
-  sourceDescriptor.iterations = iterations;
+  MemoryAttr memory = getWaferMemoryAttr(endpointType);
+  if (memory && isBlockedLayout(memory.getLayout())) {
+    llvm::SmallVector<int64_t, 4> owner(iterationShape.size(), -1);
+    for (auto [coordinateIndex, coordinate] : llvm::enumerate(coordinates)) {
+      for (auto [dim, multiplier] : llvm::enumerate(coordinate.multipliers)) {
+        if (multiplier == 0)
+          continue;
+        if (owner[dim] >= 0)
+          return std::nullopt;
+        owner[dim] = coordinateIndex;
+      }
+    }
+  }
+  return coordinates;
+}
 
-  MovementDescriptor destDescriptor;
-  destDescriptor.byteCount = *byteCount;
-  destDescriptor.innerBytes = base.bytes;
-  destDescriptor.byteOffset = base.destOffset;
-  destDescriptor.strides = destStrides;
-  destDescriptor.iterations = iterations;
+std::optional<llvm::SmallVector<int64_t, 4>>
+evaluateProjectedCoordinates(llvm::ArrayRef<ProjectedCoordinate> coordinates,
+                             llvm::ArrayRef<int64_t> iteration) {
+  llvm::SmallVector<int64_t, 4> result;
+  result.reserve(coordinates.size());
+  for (const ProjectedCoordinate &coordinate : coordinates) {
+    if (coordinate.multipliers.size() != iteration.size())
+      return std::nullopt;
+    int64_t value = coordinate.offset;
+    for (auto [index, multiplier] : llvm::enumerate(coordinate.multipliers)) {
+      std::optional<int64_t> scaled =
+          checkedSignedMul(multiplier, iteration[index]);
+      std::optional<int64_t> next =
+          scaled ? checkedSignedAdd(value, *scaled) : std::nullopt;
+      if (!next)
+        return std::nullopt;
+      value = *next;
+    }
+    result.push_back(value);
+  }
+  return result;
+}
 
-  return {sourceDescriptor, destDescriptor};
+bool isCanonicalBlockedChannelDecomposition(
+    const ProjectedCoordinate &coordinate,
+    llvm::ArrayRef<int64_t> iterationShape, int64_t logicalChannels,
+    int64_t channelBlock) {
+  if (coordinate.offset != 0 || logicalChannels <= 0 || channelBlock <= 0 ||
+      logicalChannels % channelBlock != 0)
+    return false;
+  llvm::SmallVector<std::pair<int64_t, int64_t>, 4> factors;
+  for (auto [dim, multiplier] : llvm::enumerate(coordinate.multipliers)) {
+    if (multiplier == 0)
+      continue;
+    if (multiplier < 0 || iterationShape[dim] <= 0)
+      return false;
+    factors.push_back({multiplier, iterationShape[dim]});
+  }
+  llvm::sort(factors);
+  int64_t expectedMultiplier = 1;
+  bool hasBlockBoundary = false;
+  for (auto [multiplier, extent] : factors) {
+    if (multiplier != expectedMultiplier)
+      return false;
+    std::optional<int64_t> next = checkedSignedMul(expectedMultiplier, extent);
+    if (!next)
+      return false;
+    expectedMultiplier = *next;
+    hasBlockBoundary |= expectedMultiplier == channelBlock;
+  }
+  return hasBlockBoundary && expectedMultiplier == logicalChannels;
+}
+
+bool appendBlockedCategoryBoundaries(
+    const ProjectedCoordinate &coordinate, int64_t iterationSize,
+    const WaferPhysicalTensorInfo &info, int64_t logicalChannels,
+    llvm::SmallVectorImpl<int64_t> &boundaries) {
+  if (coordinate.iterationDim < 0 || coordinate.multiplier == 0)
+    return true;
+  std::optional<int64_t> fullChannels =
+      checkedSignedMul(info.cxBlocks, info.cBlock);
+  if (!fullChannels || info.cBlock <= 0)
+    return false;
+
+  int64_t cursor = 0;
+  while (cursor < iterationSize) {
+    std::optional<int64_t> scaled =
+        checkedSignedMul(coordinate.multiplier, cursor);
+    std::optional<int64_t> channel =
+        scaled ? checkedSignedAdd(coordinate.offset, *scaled) : std::nullopt;
+    if (!channel || *channel < 0 || *channel >= logicalChannels)
+      return false;
+
+    int64_t categoryLow = 0;
+    int64_t categoryHigh = logicalChannels - 1;
+    if (*channel < *fullChannels) {
+      categoryLow = (*channel / info.cBlock) * info.cBlock;
+      categoryHigh =
+          std::min(logicalChannels - 1, categoryLow + info.cBlock - 1);
+    } else {
+      categoryLow = *fullChannels;
+    }
+
+    int64_t last = cursor;
+    if (coordinate.multiplier > 0) {
+      last = std::min(iterationSize - 1, (categoryHigh - coordinate.offset) /
+                                             coordinate.multiplier);
+    } else {
+      int64_t magnitude = -coordinate.multiplier;
+      last = std::min(iterationSize - 1,
+                      cursor + (*channel - categoryLow) / magnitude);
+    }
+    if (last < cursor)
+      return false;
+    boundaries.push_back(cursor);
+    boundaries.push_back(last + 1);
+    cursor = last + 1;
+  }
+  return true;
+}
+
+bool descriptorFieldFits(int64_t value) {
+  return value >= 0 &&
+         static_cast<uint64_t>(value) <= std::numeric_limits<uint32_t>::max();
 }
 
 } // namespace
 
-void createGatherScatterSegments(
-    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
-    mlir::Value dest, llvm::ArrayRef<LogicalMovementSegment> segments,
-    bool mayReorderDisjointSegments) {
-  auto countCommands = [](llvm::ArrayRef<LogicalMovementSegment> ordered) {
-    uint64_t count = 0;
-    for (size_t index = 0; index < ordered.size();) {
-      PackedMovementDescriptor packed = packMovementDescriptor(ordered, index);
-      std::optional<int64_t> descriptorSegments = computeDescriptorPayloadBytes(
-          /*innerBytes=*/1, packed.source.iterations);
-      if (!descriptorSegments || *descriptorSegments <= 0)
-        descriptorSegments = 1;
-      index += static_cast<size_t>(*descriptorSegments);
-      ++count;
+std::optional<CanonicalReshapeMovementRelations>
+getCanonicalReshapeMovementRelations(mlir::MLIRContext *context,
+                                     llvm::ArrayRef<int64_t> sourceShape,
+                                     llvm::ArrayRef<int64_t> destShape) {
+  if (!context)
+    return std::nullopt;
+
+  auto getPrefixProducts = [](llvm::ArrayRef<int64_t> shape)
+      -> std::optional<llvm::SmallVector<int64_t, 4>> {
+    llvm::SmallVector<int64_t, 4> prefixes{1};
+    int64_t product = 1;
+    for (int64_t extent : shape) {
+      if (extent <= 0)
+        return std::nullopt;
+      std::optional<int64_t> next = checkedMulI64(product, extent);
+      if (!next)
+        return std::nullopt;
+      product = *next;
+      prefixes.push_back(product);
     }
-    return count;
+    return prefixes;
+  };
+  std::optional<llvm::SmallVector<int64_t, 4>> sourcePrefixes =
+      getPrefixProducts(sourceShape);
+  std::optional<llvm::SmallVector<int64_t, 4>> destPrefixes =
+      getPrefixProducts(destShape);
+  if (!sourcePrefixes || !destPrefixes ||
+      sourcePrefixes->back() != destPrefixes->back())
+    return std::nullopt;
+
+  llvm::SmallVector<int64_t, 8> boundaries(sourcePrefixes->begin(),
+                                           sourcePrefixes->end());
+  boundaries.append(destPrefixes->begin(), destPrefixes->end());
+  llvm::sort(boundaries);
+  boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                   boundaries.end());
+  llvm::SmallVector<int64_t, 4> iterationShape;
+  iterationShape.reserve(boundaries.size() - 1);
+  for (size_t index = 1; index < boundaries.size(); ++index) {
+    if (boundaries[index - 1] <= 0 ||
+        boundaries[index] % boundaries[index - 1] != 0)
+      return std::nullopt;
+    iterationShape.push_back(boundaries[index] / boundaries[index - 1]);
+  }
+
+  auto buildMap =
+      [&](llvm::ArrayRef<int64_t> shape,
+          llvm::ArrayRef<int64_t> prefixes) -> std::optional<mlir::AffineMap> {
+    llvm::SmallVector<mlir::AffineExpr, 4> results;
+    results.reserve(shape.size());
+    for (size_t logicalDim = 0; logicalDim < shape.size(); ++logicalDim) {
+      if (shape[logicalDim] == 1) {
+        results.push_back(mlir::getAffineConstantExpr(0, context));
+        continue;
+      }
+      auto beginIt = llvm::find(boundaries, prefixes[logicalDim]);
+      auto endIt = llvm::find(boundaries, prefixes[logicalDim + 1]);
+      if (beginIt == boundaries.end() || endIt == boundaries.end() ||
+          beginIt >= endIt)
+        return std::nullopt;
+      size_t begin = std::distance(boundaries.begin(), beginIt);
+      size_t end = std::distance(boundaries.begin(), endIt);
+      mlir::AffineExpr expression = mlir::getAffineConstantExpr(0, context);
+      for (size_t axis = begin; axis < end; ++axis)
+        expression = expression * iterationShape[axis] +
+                     mlir::getAffineDimExpr(axis, context);
+      results.push_back(expression);
+    }
+    return mlir::AffineMap::get(iterationShape.size(), 0, results, context);
   };
 
-  llvm::SmallVector<LogicalMovementSegment> sourceOrdered;
-  llvm::SmallVector<LogicalMovementSegment> destOrdered;
-  llvm::ArrayRef<LogicalMovementSegment> selected = segments;
-  uint64_t selectedCount = 0;
-  {
-    wafer::support::ScopedCompileTimingSpan timing(
-        "lowering-algorithm", "tile-region-to-instr",
-        "descriptor-command-counting");
-    selectedCount = countCommands(selected);
-  }
-  if (mayReorderDisjointSegments && segments.size() > 1) {
-    wafer::support::ScopedCompileTimingSpan timing(
-        "lowering-algorithm", "tile-region-to-instr",
-        "descriptor-order-selection");
-    sourceOrdered.assign(segments.begin(), segments.end());
-    llvm::sort(sourceOrdered, [](const LogicalMovementSegment &lhs,
-                                 const LogicalMovementSegment &rhs) {
-      if (lhs.sourceOffset != rhs.sourceOffset)
-        return lhs.sourceOffset < rhs.sourceOffset;
-      if (lhs.destOffset != rhs.destOffset)
-        return lhs.destOffset < rhs.destOffset;
-      return lhs.bytes < rhs.bytes;
-    });
-    uint64_t sourceCount = countCommands(sourceOrdered);
-    if (sourceCount < selectedCount) {
-      selected = sourceOrdered;
-      selectedCount = sourceCount;
-    }
-
-    destOrdered.assign(segments.begin(), segments.end());
-    llvm::sort(destOrdered, [](const LogicalMovementSegment &lhs,
-                               const LogicalMovementSegment &rhs) {
-      if (lhs.destOffset != rhs.destOffset)
-        return lhs.destOffset < rhs.destOffset;
-      if (lhs.sourceOffset != rhs.sourceOffset)
-        return lhs.sourceOffset < rhs.sourceOffset;
-      return lhs.bytes < rhs.bytes;
-    });
-    uint64_t destCount = countCommands(destOrdered);
-    if (destCount < selectedCount)
-      selected = destOrdered;
-  }
-
-  {
-    wafer::support::ScopedCompileTimingSpan timing(
-        "lowering-algorithm", "tile-region-to-instr",
-        "descriptor-materialization");
-    for (size_t index = 0; index < selected.size();) {
-      PackedMovementDescriptor packed = packMovementDescriptor(selected, index);
-      createGatherScatter(rewriter, loc, source, dest, packed.source,
-                          packed.dest);
-
-      std::optional<int64_t> descriptorSegments = computeDescriptorPayloadBytes(
-          /*innerBytes=*/1, packed.source.iterations);
-      if (!descriptorSegments || *descriptorSegments <= 0)
-        descriptorSegments = 1;
-      index += static_cast<size_t>(*descriptorSegments);
-    }
-  }
+  std::optional<mlir::AffineMap> sourceMap =
+      buildMap(sourceShape, *sourcePrefixes);
+  std::optional<mlir::AffineMap> destMap = buildMap(destShape, *destPrefixes);
+  if (!sourceMap || !destMap)
+    return std::nullopt;
+  analysis::IndexRelationResult sourceRelation =
+      analysis::IndexRelation::fromAffineMap(*sourceMap, iterationShape,
+                                             sourceShape);
+  analysis::IndexRelationResult destRelation =
+      analysis::IndexRelation::fromAffineMap(*destMap, iterationShape,
+                                             destShape);
+  if (!sourceRelation.isExact() || !destRelation.isExact())
+    return std::nullopt;
+  return CanonicalReshapeMovementRelations{std::move(iterationShape),
+                                           std::move(*sourceRelation.relation),
+                                           std::move(*destRelation.relation)};
 }
 
-mlir::FailureOr<uint64_t> preflightPackedMovementCommands(
-    mlir::PatternRewriter &rewriter, mlir::Operation *op,
-    llvm::ArrayRef<LogicalMovementSegment> segments, std::string *failureReason,
-    llvm::StringRef opLabel) {
-  if (segments.empty())
-    return failFailureOr<uint64_t>(
+mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
+getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
+                               mlir::Operation *op, mlir::MemRefType sourceType,
+                               mlir::MemRefType destType,
+                               llvm::ArrayRef<int64_t> iterationShape,
+                               const analysis::IndexRelation &iterationToSource,
+                               const analysis::IndexRelation &iterationToDest,
+                               MovementEngine engine,
+                               std::string *failureReason,
+                               llvm::StringRef opLabel) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "lowering-algorithm", "tile-region-to-instr",
+      "relation-descriptor-planning", op->getName().getStringRef());
+  auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "lowering-algorithm-phase", "getRelationMovementDescriptors",
+      "validate-engine-and-layout", op->getName().getStringRef());
+  MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
+  MemoryAttr destMemory = getWaferMemoryAttr(destType);
+  bool acceptedEngine = sourceMemory && destMemory &&
+                        ((engine == MovementEngine::RDMA &&
+                          sourceMemory.getSpace() == MemorySpace::DDR &&
+                          destMemory.getSpace() == MemorySpace::SPM) ||
+                         (engine == MovementEngine::WDMA &&
+                          sourceMemory.getSpace() == MemorySpace::SPM &&
+                          destMemory.getSpace() == MemorySpace::DDR) ||
+                         (engine == MovementEngine::GatherScatter &&
+                          sourceMemory.getSpace() == MemorySpace::SPM &&
+                          destMemory.getSpace() == MemorySpace::SPM));
+  if (!acceptedEngine)
+    return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
         rewriter, op, failureReason,
-        llvm::Twine(opLabel).concat(" produced no movement segments").str());
+        llvm::Twine(opLabel).concat(" has an invalid movement engine").str());
 
-  auto fitsTargetField = [](int64_t value) {
-    return value >= 0 &&
-           static_cast<uint64_t>(value) <= std::numeric_limits<uint32_t>::max();
-  };
-  auto descriptorFitsTarget = [&](const MovementDescriptor &descriptor) {
-    if (descriptor.byteCount <= 0 || descriptor.innerBytes <= 0 ||
-        !fitsTargetField(descriptor.byteCount) ||
-        !fitsTargetField(descriptor.innerBytes) ||
-        !fitsTargetField(descriptor.byteOffset))
-      return false;
-    return llvm::all_of(descriptor.strides, fitsTargetField) &&
-           llvm::all_of(descriptor.iterations, [&](int64_t iteration) {
-             return iteration > 0 && fitsTargetField(iteration);
-           });
-  };
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "lowering-algorithm-phase", "getRelationMovementDescriptors",
+      "computeWaferPhysicalTensorInfo", op->getName().getStringRef());
+  std::optional<WaferPhysicalTensorInfo> sourceInfoStorage =
+      computeWaferPhysicalTensorInfo(sourceType);
+  std::optional<WaferPhysicalTensorInfo> destInfoStorage =
+      computeWaferPhysicalTensorInfo(destType);
+  if (!sourceInfoStorage || !destInfoStorage ||
+      sourceInfoStorage->physicalBytes <= 0 ||
+      destInfoStorage->physicalBytes <= 0 ||
+      sourceInfoStorage->elementBytes <= 0 ||
+      sourceInfoStorage->elementBytes != destInfoStorage->elementBytes ||
+      sourceInfoStorage->bitPackedElement || destInfoStorage->bitPackedElement)
+    return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" requires byte-addressable elements in static physical "
+                    "layouts")
+            .str());
+  const WaferPhysicalTensorInfo &sourceInfo = *sourceInfoStorage;
+  const WaferPhysicalTensorInfo &destInfo = *destInfoStorage;
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "lowering-algorithm-phase", "getRelationMovementDescriptors",
+      "TransferRealizability::proveMappedTransfer",
+      op->getName().getStringRef());
+  if (mlir::failed(analysis::TransferRealizability::proveMappedTransfer(
+          sourceType, destType, iterationShape, iterationToSource,
+          iterationToDest)))
+    return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" index relation is not an exact mapped transfer")
+            .str());
 
-  uint64_t commandCount = 0;
-  for (size_t index = 0; index < segments.size();) {
-    PackedMovementDescriptor packed = packMovementDescriptor(segments, index);
-    if (!descriptorFitsTarget(packed.source) ||
-        !descriptorFitsTarget(packed.dest))
-      return failFailureOr<uint64_t>(
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "lowering-algorithm-phase", "getRelationMovementDescriptors",
+      "getProjectedCoordinates", op->getName().getStringRef());
+  std::optional<int64_t> elementCount =
+      getStaticPositiveElementCount(iterationShape);
+  std::optional<llvm::SmallVector<ProjectedCoordinate, 4>> sourceMap =
+      getProjectedCoordinates(iterationToSource, rewriter.getContext(),
+                              iterationShape, sourceType);
+  std::optional<llvm::SmallVector<ProjectedCoordinate, 4>> destMap =
+      getProjectedCoordinates(iterationToDest, rewriter.getContext(),
+                              iterationShape, destType);
+  if (!elementCount || !sourceMap || !destMap)
+    return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" requires a static projected-affine IndexRelation")
+            .str());
+
+  std::optional<StaticPhysicalOffsetCalculator> sourceOffsets =
+      StaticPhysicalOffsetCalculator::create(sourceType);
+  std::optional<StaticPhysicalOffsetCalculator> destOffsets =
+      StaticPhysicalOffsetCalculator::create(destType);
+  if (!sourceOffsets || !destOffsets)
+    return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" cannot construct static physical offset calculators")
+            .str());
+
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "lowering-algorithm-phase", "getRelationMovementDescriptors",
+      "partition-symbolic-domain", op->getName().getStringRef());
+  llvm::SmallVector<llvm::SmallVector<int64_t, 8>, 4> boundaries(
+      iterationShape.size());
+  llvm::SmallVector<DirectChannelDecomposition, 4> decompositions(
+      iterationShape.size());
+  for (auto [dim, size] : llvm::enumerate(iterationShape)) {
+    if (size <= 0)
+      return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
           rewriter, op, failureReason,
           llvm::Twine(opLabel)
-              .concat(" descriptor exceeds uint32 target fields")
+              .concat(" requires a static positive iteration domain")
               .str());
-
-    std::optional<int64_t> descriptorSegments = computeDescriptorPayloadBytes(
-        /*innerBytes=*/1, packed.source.iterations);
-    if (!descriptorSegments || *descriptorSegments <= 0)
-      descriptorSegments = 1;
-    index += static_cast<size_t>(*descriptorSegments);
-    if (commandCount == std::numeric_limits<uint64_t>::max())
-      return failFailureOr<uint64_t>(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel).concat(" command count overflows").str());
-    ++commandCount;
+    boundaries[dim].push_back(0);
+    boundaries[dim].push_back(size);
   }
-  return commandCount;
+
+  auto collectBlockedConstraint =
+      [&](mlir::MemRefType type, const WaferPhysicalTensorInfo &info,
+          llvm::ArrayRef<ProjectedCoordinate> map) -> bool {
+    if (!isBlockedLayout(info.layout))
+      return true;
+    if (type.getRank() <= 0 || info.cBlock <= 0)
+      return false;
+    const ProjectedCoordinate &channel = map.back();
+    if (channel.iterationDim == -1)
+      return true;
+    if (channel.iterationDim == -2)
+      return isCanonicalBlockedChannelDecomposition(
+          channel, iterationShape, type.getShape().back(), info.cBlock);
+    int64_t iterationDim = channel.iterationDim;
+    if (!appendBlockedCategoryBoundaries(channel, iterationShape[iterationDim],
+                                         info, type.getShape().back(),
+                                         boundaries[iterationDim]))
+      return false;
+    bool direct = channel.multiplier == 1 && channel.offset == 0 &&
+                  iterationShape[iterationDim] == type.getShape().back();
+    DirectChannelDecomposition &decomposition = decompositions[iterationDim];
+    if (!direct) {
+      decomposition.blockedByGeneralMap = true;
+      return true;
+    }
+    if (decomposition.requested && decomposition.block != info.cBlock)
+      return false;
+    decomposition.requested = true;
+    decomposition.block = info.cBlock;
+    return true;
+  };
+  if (!collectBlockedConstraint(sourceType, sourceInfo, *sourceMap) ||
+      !collectBlockedConstraint(destType, destInfo, *destMap))
+    return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" cannot partition blocked-layout channel pieces")
+            .str());
+
+  llvm::SmallVector<llvm::SmallVector<DimensionChoice, 4>, 4> choices(
+      iterationShape.size());
+  for (int64_t dim = 0; dim < static_cast<int64_t>(iterationShape.size());
+       ++dim) {
+    int64_t size = iterationShape[dim];
+    const DirectChannelDecomposition &decomposition = decompositions[dim];
+    if (decomposition.requested && !decomposition.blockedByGeneralMap) {
+      int64_t fullBlocks = size / decomposition.block;
+      int64_t remainder = size % decomposition.block;
+      if (fullBlocks > 0) {
+        DimensionChoice full;
+        full.axes.push_back({dim, 1, decomposition.block});
+        full.axes.push_back({dim, decomposition.block, fullBlocks});
+        choices[dim].push_back(std::move(full));
+      }
+      if (remainder > 0) {
+        DimensionChoice tail;
+        tail.base = fullBlocks * decomposition.block;
+        tail.axes.push_back({dim, 1, remainder});
+        choices[dim].push_back(std::move(tail));
+      }
+      continue;
+    }
+
+    llvm::sort(boundaries[dim]);
+    boundaries[dim].erase(
+        std::unique(boundaries[dim].begin(), boundaries[dim].end()),
+        boundaries[dim].end());
+    for (size_t index = 1; index < boundaries[dim].size(); ++index) {
+      int64_t begin = boundaries[dim][index - 1];
+      int64_t end = boundaries[dim][index];
+      if (begin >= end)
+        continue;
+      DimensionChoice choice;
+      choice.base = begin;
+      choice.axes.push_back({dim, 1, end - begin});
+      choices[dim].push_back(std::move(choice));
+    }
+    if (choices[dim].empty())
+      return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel)
+              .concat(" produced an empty symbolic domain partition")
+              .str());
+  }
+
+  llvm::SmallVector<MovementDescriptorPair> descriptors;
+  int64_t coveredBytes = 0;
+  const int64_t elementBytes = sourceInfo.elementBytes;
+  llvm::SmallVector<int64_t, 4> iterationBase(iterationShape.size(), 0);
+  llvm::SmallVector<SymbolicAxis, 8> symbolicAxes;
+
+  auto getPhysicalOffset =
+      [&](const StaticPhysicalOffsetCalculator &calculator,
+          llvm::ArrayRef<ProjectedCoordinate> map,
+          llvm::ArrayRef<int64_t> iteration) -> std::optional<int64_t> {
+    std::optional<llvm::SmallVector<int64_t, 4>> logical =
+        evaluateProjectedCoordinates(map, iteration);
+    return logical ? calculator.getByteOffset(*logical) : std::nullopt;
+  };
+
+  std::function<mlir::LogicalResult(int64_t, int64_t,
+                                    llvm::SmallVector<DescriptorAxis, 8>)>
+      materializeDescriptor;
+  materializeDescriptor =
+      [&](int64_t sourceBase, int64_t destBase,
+          llvm::SmallVector<DescriptorAxis, 8> axes) -> mlir::LogicalResult {
+    for (DescriptorAxis &axis : axes) {
+      if (axis.sourceStride < 0 && axis.destStride < 0) {
+        std::optional<int64_t> sourceAdjustment =
+            checkedSignedMul(axis.sourceStride, axis.count - 1);
+        std::optional<int64_t> destAdjustment =
+            checkedSignedMul(axis.destStride, axis.count - 1);
+        std::optional<int64_t> adjustedSource =
+            sourceAdjustment ? checkedSignedAdd(sourceBase, *sourceAdjustment)
+                             : std::nullopt;
+        std::optional<int64_t> adjustedDest =
+            destAdjustment ? checkedSignedAdd(destBase, *destAdjustment)
+                           : std::nullopt;
+        if (!adjustedSource || !adjustedDest)
+          return mlir::failure();
+        sourceBase = *adjustedSource;
+        destBase = *adjustedDest;
+        axis.sourceStride = -axis.sourceStride;
+        axis.destStride = -axis.destStride;
+      }
+    }
+
+    // Target descriptor fields are unsigned.  A loop whose two endpoints
+    // advance in opposite directions cannot be represented as one loop, so
+    // split that symbolic axis without discovering it element by element.
+    for (size_t index = 0; index < axes.size(); ++index) {
+      DescriptorAxis axis = axes[index];
+      if (axis.count <= 1 || (axis.sourceStride >= 0 && axis.destStride >= 0))
+        continue;
+      llvm::SmallVector<DescriptorAxis, 8> remaining = axes;
+      remaining.erase(remaining.begin() + index);
+      for (int64_t iteration = 0; iteration < axis.count; ++iteration) {
+        if (descriptors.size() >= detail::kStaticTerminalOperationBudget)
+          return mlir::failure();
+        std::optional<int64_t> sourceAdjustment =
+            checkedSignedMul(axis.sourceStride, iteration);
+        std::optional<int64_t> destAdjustment =
+            checkedSignedMul(axis.destStride, iteration);
+        std::optional<int64_t> nextSource =
+            sourceAdjustment ? checkedSignedAdd(sourceBase, *sourceAdjustment)
+                             : std::nullopt;
+        std::optional<int64_t> nextDest =
+            destAdjustment ? checkedSignedAdd(destBase, *destAdjustment)
+                           : std::nullopt;
+        if (!nextSource || !nextDest ||
+            mlir::failed(
+                materializeDescriptor(*nextSource, *nextDest, remaining)))
+          return mlir::failure();
+      }
+      return mlir::success();
+    }
+
+    for (size_t index = 0; index < axes.size();) {
+      if (axes[index].count <= 1) {
+        axes.erase(axes.begin() + index);
+        continue;
+      }
+      ++index;
+    }
+
+    auto sequentialEndpointStride = [&](const DescriptorAxis &axis) {
+      if (engine == MovementEngine::RDMA)
+        return axis.destStride;
+      if (engine == MovementEngine::WDMA)
+        return axis.sourceStride;
+      return axis.destStride;
+    };
+    llvm::sort(axes, [&](const DescriptorAxis &lhs, const DescriptorAxis &rhs) {
+      int64_t lhsPrimary = sequentialEndpointStride(lhs);
+      int64_t rhsPrimary = sequentialEndpointStride(rhs);
+      if (lhsPrimary != rhsPrimary)
+        return lhsPrimary < rhsPrimary;
+      if (lhs.sourceStride != rhs.sourceStride)
+        return lhs.sourceStride < rhs.sourceStride;
+      return lhs.destStride < rhs.destStride;
+    });
+
+    if (engine != MovementEngine::GatherScatter) {
+      int64_t expectedStride = elementBytes;
+      for (size_t index = 0; index < axes.size(); ++index) {
+        if (sequentialEndpointStride(axes[index]) != expectedStride) {
+          DescriptorAxis split = axes[index];
+          llvm::SmallVector<DescriptorAxis, 8> remaining = axes;
+          remaining.erase(remaining.begin() + index);
+          for (int64_t iteration = 0; iteration < split.count; ++iteration) {
+            if (descriptors.size() >= detail::kStaticTerminalOperationBudget)
+              return mlir::failure();
+            std::optional<int64_t> sourceAdjustment =
+                checkedSignedMul(split.sourceStride, iteration);
+            std::optional<int64_t> destAdjustment =
+                checkedSignedMul(split.destStride, iteration);
+            std::optional<int64_t> nextSource =
+                sourceAdjustment
+                    ? checkedSignedAdd(sourceBase, *sourceAdjustment)
+                    : std::nullopt;
+            std::optional<int64_t> nextDest =
+                destAdjustment ? checkedSignedAdd(destBase, *destAdjustment)
+                               : std::nullopt;
+            if (!nextSource || !nextDest ||
+                mlir::failed(
+                    materializeDescriptor(*nextSource, *nextDest, remaining)))
+              return mlir::failure();
+          }
+          return mlir::success();
+        }
+        std::optional<int64_t> nextExpected =
+            checkedMulI64(expectedStride, axes[index].count);
+        if (!nextExpected)
+          return mlir::failure();
+        expectedStride = *nextExpected;
+      }
+    }
+
+    int64_t innerBytes = elementBytes;
+    for (size_t index = 0; index < axes.size();) {
+      DescriptorAxis axis = axes[index];
+      if (axis.sourceStride == innerBytes && axis.destStride == innerBytes) {
+        std::optional<int64_t> nextInner =
+            checkedMulI64(innerBytes, axis.count);
+        if (!nextInner)
+          return mlir::failure();
+        innerBytes = *nextInner;
+        axes.erase(axes.begin() + index);
+        continue;
+      }
+      ++index;
+    }
+
+    for (size_t index = 0; index + 1 < axes.size();) {
+      DescriptorAxis &inner = axes[index];
+      DescriptorAxis &outer = axes[index + 1];
+      std::optional<int64_t> nextSource =
+          checkedSignedMul(inner.sourceStride, inner.count);
+      std::optional<int64_t> nextDest =
+          checkedSignedMul(inner.destStride, inner.count);
+      std::optional<int64_t> mergedCount =
+          checkedMulI64(inner.count, outer.count);
+      if (nextSource && nextDest && mergedCount &&
+          outer.sourceStride == *nextSource && outer.destStride == *nextDest) {
+        inner.count = *mergedCount;
+        axes.erase(axes.begin() + index + 1);
+        continue;
+      }
+      ++index;
+    }
+
+    if (axes.size() > 3) {
+      size_t splitIndex = 0;
+      for (size_t index = 1; index < axes.size(); ++index)
+        if (axes[index].count < axes[splitIndex].count)
+          splitIndex = index;
+      DescriptorAxis split = axes[splitIndex];
+      axes.erase(axes.begin() + splitIndex);
+      for (int64_t iteration = 0; iteration < split.count; ++iteration) {
+        if (descriptors.size() >= detail::kStaticTerminalOperationBudget)
+          return mlir::failure();
+        std::optional<int64_t> sourceAdjustment =
+            checkedSignedMul(split.sourceStride, iteration);
+        std::optional<int64_t> destAdjustment =
+            checkedSignedMul(split.destStride, iteration);
+        std::optional<int64_t> nextSource =
+            sourceAdjustment ? checkedSignedAdd(sourceBase, *sourceAdjustment)
+                             : std::nullopt;
+        std::optional<int64_t> nextDest =
+            destAdjustment ? checkedSignedAdd(destBase, *destAdjustment)
+                           : std::nullopt;
+        if (!nextSource || !nextDest ||
+            mlir::failed(materializeDescriptor(*nextSource, *nextDest, axes)))
+          return mlir::failure();
+      }
+      return mlir::success();
+    }
+
+    llvm::SmallVector<int64_t, 3> sourceStrides({0, 0, 0});
+    llvm::SmallVector<int64_t, 3> destStrides({0, 0, 0});
+    llvm::SmallVector<int64_t, 3> iterations({1, 1, 1});
+    int64_t byteCount = innerBytes;
+    for (auto [index, axis] : llvm::enumerate(axes)) {
+      sourceStrides[index] = axis.sourceStride;
+      destStrides[index] = axis.destStride;
+      iterations[index] = axis.count;
+      std::optional<int64_t> nextByteCount =
+          checkedMulI64(byteCount, axis.count);
+      if (!nextByteCount)
+        return mlir::failure();
+      byteCount = *nextByteCount;
+    }
+    if (!descriptorFieldFits(sourceBase) || !descriptorFieldFits(destBase) ||
+        !descriptorFieldFits(innerBytes) || !descriptorFieldFits(byteCount) ||
+        !llvm::all_of(sourceStrides, descriptorFieldFits) ||
+        !llvm::all_of(destStrides, descriptorFieldFits) ||
+        !llvm::all_of(iterations,
+                      [](int64_t value) {
+                        return value > 0 && descriptorFieldFits(value);
+                      }) ||
+        sourceBase > sourceInfo.physicalBytes - elementBytes ||
+        destBase > destInfo.physicalBytes - elementBytes)
+      return mlir::failure();
+
+    descriptors.push_back(
+        {{byteCount, innerBytes, sourceBase, sourceStrides, iterations},
+         {byteCount, innerBytes, destBase, destStrides, iterations}});
+    std::optional<int64_t> nextCovered =
+        checkedSignedAdd(coveredBytes, byteCount);
+    if (!nextCovered)
+      return mlir::failure();
+    coveredBytes = *nextCovered;
+    return mlir::success();
+  };
+
+  std::function<mlir::LogicalResult(int64_t)> visitChoices;
+  visitChoices = [&](int64_t dim) -> mlir::LogicalResult {
+    if (dim == static_cast<int64_t>(choices.size())) {
+      std::optional<int64_t> sourceBase =
+          getPhysicalOffset(*sourceOffsets, *sourceMap, iterationBase);
+      std::optional<int64_t> destBase =
+          getPhysicalOffset(*destOffsets, *destMap, iterationBase);
+      if (!sourceBase || !destBase)
+        return mlir::failure();
+      llvm::SmallVector<DescriptorAxis, 8> descriptorAxes;
+      descriptorAxes.reserve(symbolicAxes.size());
+      for (const SymbolicAxis &axis : symbolicAxes) {
+        if (axis.count <= 1)
+          continue;
+        llvm::SmallVector<int64_t, 4> nextIteration(iterationBase);
+        std::optional<int64_t> nextCoordinate =
+            checkedSignedAdd(nextIteration[axis.iterationDim], axis.step);
+        if (!nextCoordinate)
+          return mlir::failure();
+        nextIteration[axis.iterationDim] = *nextCoordinate;
+        std::optional<int64_t> nextSource =
+            getPhysicalOffset(*sourceOffsets, *sourceMap, nextIteration);
+        std::optional<int64_t> nextDest =
+            getPhysicalOffset(*destOffsets, *destMap, nextIteration);
+        if (!nextSource || !nextDest)
+          return mlir::failure();
+        descriptorAxes.push_back(
+            {*nextSource - *sourceBase, *nextDest - *destBase, axis.count});
+      }
+      return materializeDescriptor(*sourceBase, *destBase,
+                                   std::move(descriptorAxes));
+    }
+
+    for (const DimensionChoice &choice : choices[dim]) {
+      iterationBase[dim] = choice.base;
+      size_t oldAxisCount = symbolicAxes.size();
+      symbolicAxes.append(choice.axes.begin(), choice.axes.end());
+      if (mlir::failed(visitChoices(dim + 1)))
+        return mlir::failure();
+      symbolicAxes.resize(oldAxisCount);
+    }
+    return mlir::success();
+  };
+
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "lowering-algorithm-phase", "getRelationMovementDescriptors",
+      "materialize-descriptors", op->getName().getStringRef());
+  if (mlir::failed(visitChoices(0)))
+    return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+        rewriter, op, failureReason,
+        llvm::Twine("static_terminal_budget_exceeded: ")
+            .concat(opLabel)
+            .concat(" IndexRelation descriptor plan is not target-encodable "
+                    "within 4096 commands")
+            .str());
+
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "lowering-algorithm-phase", "getRelationMovementDescriptors",
+      "verify-coverage", op->getName().getStringRef());
+  std::optional<int64_t> expectedBytes =
+      checkedMulI64(*elementCount, elementBytes);
+  if (!expectedBytes || descriptors.empty() || coveredBytes != *expectedBytes)
+    return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" IndexRelation descriptor coverage is not exact: ")
+            .concat(llvm::Twine(coveredBytes))
+            .concat(" covered bytes versus ")
+            .concat(expectedBytes ? llvm::Twine(*expectedBytes)
+                                  : llvm::Twine("overflow"))
+            .str());
+  return descriptors;
+}
+
+void createGatherScatterDescriptors(
+    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
+    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors) {
+  for (const MovementDescriptorPair &descriptor : descriptors)
+    createGatherScatter(rewriter, loc, source, dest, descriptor.source,
+                        descriptor.dest);
+}
+
+void createMappedRDMADescriptors(
+    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
+    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors) {
+  for (const MovementDescriptorPair &descriptor : descriptors)
+    rewriter.create<InstrRDMAOp>(
+        loc, source, dest, descriptor.source.byteCount,
+        descriptor.source.innerBytes,
+        rewriter.getI64IntegerAttr(descriptor.source.byteOffset),
+        rewriter.getI64IntegerAttr(descriptor.dest.byteOffset),
+        descriptor.source.strides, descriptor.source.iterations);
+}
+
+void createMappedWDMADescriptors(
+    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
+    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors) {
+  for (const MovementDescriptorPair &descriptor : descriptors)
+    rewriter.create<InstrWDMAOp>(
+        loc, source, dest, descriptor.dest.byteCount,
+        descriptor.dest.innerBytes,
+        rewriter.getI64IntegerAttr(descriptor.source.byteOffset),
+        rewriter.getI64IntegerAttr(descriptor.dest.byteOffset),
+        descriptor.dest.strides, descriptor.dest.iterations);
 }
 
 void copyOptionalAttr(mlir::Operation *from, mlir::Operation *to,
@@ -698,248 +1233,6 @@ delinearizeIndex(mlir::PatternRewriter &rewriter, mlir::Operation *op,
   return indices;
 }
 
-mlir::FailureOr<llvm::SmallVector<int64_t>> expandRankReducedSliceIndices(
-    mlir::PatternRewriter &rewriter, mlir::Operation *op,
-    llvm::ArrayRef<int64_t> fullShape, llvm::ArrayRef<int64_t> reducedShape,
-    llvm::ArrayRef<int64_t> reducedIndices, std::string *failureReason,
-    llvm::StringRef opLabel) {
-  std::optional<llvm::SmallDenseSet<unsigned>> rankReductionMask =
-      mlir::computeRankReductionMask(fullShape, reducedShape);
-  if (!rankReductionMask)
-    return failFailureOr<llvm::SmallVector<int64_t>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel).concat(" cannot map rank-reduced slice").str());
-  if (reducedShape.size() != reducedIndices.size())
-    return failFailureOr<llvm::SmallVector<int64_t>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel).concat(" has mismatched reduced indices").str());
-
-  llvm::SmallVector<int64_t> fullIndices(fullShape.size(), 0);
-  size_t reducedDim = 0;
-  for (unsigned fullDim = 0; fullDim < fullShape.size(); ++fullDim) {
-    if (rankReductionMask->contains(fullDim)) {
-      fullIndices[fullDim] = 0;
-      continue;
-    }
-    if (reducedDim >= reducedIndices.size())
-      return failFailureOr<llvm::SmallVector<int64_t>>(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel).concat(" has incomplete slice index").str());
-    fullIndices[fullDim] = reducedIndices[reducedDim++];
-  }
-  if (reducedDim != reducedIndices.size())
-    return failFailureOr<llvm::SmallVector<int64_t>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel).concat(" has unused reduced slice index").str());
-  return fullIndices;
-}
-
-mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
-getStaticLogicalMovementSegments(mlir::PatternRewriter &rewriter,
-                                 mlir::Operation *op,
-                                 mlir::MemRefType sourceType,
-                                 mlir::MemRefType destType,
-                                 std::string *failureReason,
-                                 llvm::StringRef opLabel) {
-  std::optional<WaferPhysicalTensorInfo> sourceInfoStorage =
-      computeWaferPhysicalTensorInfo(sourceType);
-  std::optional<WaferPhysicalTensorInfo> destInfoStorage =
-      computeWaferPhysicalTensorInfo(destType);
-  if (!sourceInfoStorage || !destInfoStorage)
-    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires static positive byte sizes")
-            .str());
-  const WaferPhysicalTensorInfo &sourceInfo = *sourceInfoStorage;
-  const WaferPhysicalTensorInfo &destInfo = *destInfoStorage;
-  if (sourceInfo.compactBytes <= 0 || destInfo.compactBytes <= 0 ||
-      sourceInfo.physicalBytes <= 0 || destInfo.physicalBytes <= 0)
-    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires static positive byte sizes")
-            .str());
-  if (sourceInfo.compactBytes != destInfo.compactBytes)
-    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires equal static compact byte counts")
-            .str());
-  if (sourceInfo.elementBytes <= 0 ||
-      sourceInfo.elementBytes != destInfo.elementBytes ||
-      sourceInfo.bitPackedElement || destInfo.bitPackedElement ||
-      sourceInfo.compactBytes % sourceInfo.elementBytes != 0)
-    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires byte-addressable elements")
-            .str());
-
-  // Equal physical geometry can be copied as one segment, including layout
-  // padding.  A reshape between compact Tensor/NTensor layouts also preserves
-  // physical linear order and therefore needs no per-element enumeration.
-  if (sourceInfo.layout == destInfo.layout &&
-      sourceType.getShape() == destType.getShape() &&
-      sourceType.getElementType() == destType.getElementType() &&
-      sourceInfo.physicalBytes == destInfo.physicalBytes)
-    return llvm::SmallVector<LogicalMovementSegment>{
-        {0, 0, sourceInfo.physicalBytes}};
-  if (isStandardViewCompatibleLayout(sourceInfo.layout) &&
-      isStandardViewCompatibleLayout(destInfo.layout) &&
-      sourceInfo.physicalBytes == sourceInfo.compactBytes &&
-      destInfo.physicalBytes == destInfo.compactBytes)
-    return llvm::SmallVector<LogicalMovementSegment>{
-        {0, 0, sourceInfo.compactBytes}};
-
-  std::optional<StaticPhysicalOffsetCalculator> sourceOffsets =
-      StaticPhysicalOffsetCalculator::create(sourceType);
-  std::optional<StaticPhysicalOffsetCalculator> destOffsets =
-      StaticPhysicalOffsetCalculator::create(destType);
-  if (!sourceOffsets || !destOffsets)
-    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires static positive byte sizes")
-            .str());
-
-  int64_t elementBytes = sourceInfo.elementBytes;
-  int64_t elementCount = sourceInfo.compactBytes / elementBytes;
-
-  // An identity transfer between a standard Tensor/NTensor layout and a
-  // channel-blocked Cx/NCx layout is piecewise contiguous by construction:
-  // for each logical outer coordinate, every channel block is one maximal
-  // run in both buffers. Build those exact runs directly instead of visiting
-  // every logical element. Large replicated GEMM operands otherwise spend
-  // minutes rediscovering tens of thousands of channel-block segments from
-  // millions of individual offsets before the fixed command-budget gate can
-  // reject or pack them.
-  const bool sourceBlocked =
-      sourceInfo.layout == MemLayout::Cx || sourceInfo.layout == MemLayout::NCx;
-  const bool destBlocked =
-      destInfo.layout == MemLayout::Cx || destInfo.layout == MemLayout::NCx;
-  if (sourceType.getShape() == destType.getShape() &&
-      sourceType.getElementType() == destType.getElementType() &&
-      sourceBlocked != destBlocked && sourceType.getRank() > 0) {
-    const WaferPhysicalTensorInfo &blockedInfo =
-        sourceBlocked ? sourceInfo : destInfo;
-    llvm::ArrayRef<int64_t> shape = sourceType.getShape();
-    const int64_t channels = shape.back();
-    if (blockedInfo.cBlock > 0 && channels > 0 &&
-        elementCount % channels == 0) {
-      llvm::SmallVector<int64_t, 4> indices(shape.size(), 0);
-      llvm::SmallVector<LogicalMovementSegment> blockedSegments;
-      const int64_t outerCount = elementCount / channels;
-      bool exactPiecewiseRuns = true;
-      for (int64_t outer = 0; outer < outerCount && exactPiecewiseRuns;
-           ++outer) {
-        for (int64_t channel = 0; channel < channels;
-             channel += blockedInfo.cBlock) {
-          const int64_t runElements =
-              std::min(blockedInfo.cBlock, channels - channel);
-          indices.back() = channel;
-          const int64_t sourceOffset =
-              sourceOffsets->getByteOffsetForValidIndices(indices);
-          const int64_t destOffset =
-              destOffsets->getByteOffsetForValidIndices(indices);
-          const int64_t runBytes = runElements * elementBytes;
-          if (sourceOffset < 0 || destOffset < 0 ||
-              sourceOffset > sourceInfo.physicalBytes - runBytes ||
-              destOffset > destInfo.physicalBytes - runBytes) {
-            exactPiecewiseRuns = false;
-            break;
-          }
-          if (runElements > 1) {
-            indices.back() = channel + runElements - 1;
-            exactPiecewiseRuns &=
-                sourceOffsets->getByteOffsetForValidIndices(indices) ==
-                    sourceOffset + runBytes - elementBytes &&
-                destOffsets->getByteOffsetForValidIndices(indices) ==
-                    destOffset + runBytes - elementBytes;
-            indices.back() = channel;
-            if (!exactPiecewiseRuns)
-              break;
-          }
-
-          if (!blockedSegments.empty()) {
-            LogicalMovementSegment &last = blockedSegments.back();
-            if (last.sourceOffset + last.bytes == sourceOffset &&
-                last.destOffset + last.bytes == destOffset) {
-              last.bytes += runBytes;
-              continue;
-            }
-          }
-          blockedSegments.push_back({sourceOffset, destOffset, runBytes});
-        }
-
-        if (outer + 1 != outerCount) {
-          for (int64_t dim = static_cast<int64_t>(shape.size()) - 2; dim >= 0;
-               --dim) {
-            if (++indices[dim] < shape[dim])
-              break;
-            indices[dim] = 0;
-          }
-          indices.back() = 0;
-        }
-      }
-      if (exactPiecewiseRuns)
-        return blockedSegments;
-    }
-  }
-
-  // Reshape preserves canonical logical linear order, not per-dimension index
-  // equality.  Traverse the source and destination canonical shapes with two
-  // incremental odometers, then ask the physical layout helper where the same
-  // logical element lives in each buffer.
-  llvm::ArrayRef<int64_t> sourceShape = sourceType.getShape();
-  llvm::ArrayRef<int64_t> destShape = destType.getShape();
-  llvm::SmallVector<int64_t, 4> sourceIndices(sourceShape.size(), 0);
-  llvm::SmallVector<int64_t, 4> destIndices(destShape.size(), 0);
-  llvm::SmallVector<LogicalMovementSegment> segments;
-  for (int64_t linearIndex = 0; linearIndex < elementCount; ++linearIndex) {
-    int64_t sourceOffset =
-        sourceOffsets->getByteOffsetForValidIndices(sourceIndices);
-    int64_t destOffset = destOffsets->getByteOffsetForValidIndices(destIndices);
-    if (sourceOffset < 0 || destOffset < 0 ||
-        sourceOffset > sourceInfo.physicalBytes - elementBytes ||
-        destOffset > destInfo.physicalBytes - elementBytes)
-      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel)
-              .concat(" segment exceeds static physical byte range")
-              .str());
-
-    bool coalesced = false;
-    if (!segments.empty()) {
-      LogicalMovementSegment &last = segments.back();
-      if (last.sourceOffset + last.bytes == sourceOffset &&
-          last.destOffset + last.bytes == destOffset) {
-        last.bytes += elementBytes;
-        coalesced = true;
-      }
-    }
-    if (!coalesced)
-      segments.push_back({sourceOffset, destOffset, elementBytes});
-
-    if (linearIndex + 1 != elementCount) {
-      for (int64_t dim = static_cast<int64_t>(sourceShape.size()) - 1; dim >= 0;
-           --dim) {
-        if (++sourceIndices[dim] < sourceShape[dim])
-          break;
-        sourceIndices[dim] = 0;
-      }
-      for (int64_t dim = static_cast<int64_t>(destShape.size()) - 1; dim >= 0;
-           --dim) {
-        if (++destIndices[dim] < destShape[dim])
-          break;
-        destIndices[dim] = 0;
-      }
-    }
-  }
-
-  return segments;
-}
-
 bool requiresGatherScatterMaterialization(InstrDataMoveKind kind) {
   switch (kind) {
   case InstrDataMoveKind::Mirror:
@@ -984,177 +1277,6 @@ mlir::LogicalResult verifyStaticShapeAttrMatchesMemRef(
                              .str());
   }
   return mlir::success();
-}
-
-mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
-getPermutationDataMoveSegments(mlir::PatternRewriter &rewriter,
-                               InstrTDMADataMoveOp op,
-                               mlir::MemRefType sourceType,
-                               mlir::MemRefType destType,
-                               llvm::ArrayRef<int64_t> permutation,
-                               std::string *failureReason,
-                               llvm::StringRef opLabel) {
-  if (sourceType.getRank() != destType.getRank() ||
-      sourceType.getRank() != static_cast<int64_t>(permutation.size()))
-    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires rank-compatible operands")
-            .str());
-  for (auto [destDim, sourceDim] : llvm::enumerate(permutation)) {
-    int64_t sourceSize = sourceType.getDimSize(sourceDim);
-    int64_t destSize = destType.getDimSize(destDim);
-    if (sourceSize == mlir::ShapedType::kDynamic ||
-        destSize == mlir::ShapedType::kDynamic || sourceSize != destSize)
-      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel)
-              .concat(" requires permutation-compatible static shapes")
-              .str());
-  }
-
-  auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> destIndices,
-                           llvm::SmallVectorImpl<int64_t> &sourceIndices) {
-    sourceIndices.resize(sourceType.getRank(), 0);
-    for (auto [destDim, sourceDim] : llvm::enumerate(permutation))
-      sourceIndices[sourceDim] = destIndices[destDim];
-    return mlir::success();
-  };
-  auto destIndexFn = [](llvm::ArrayRef<int64_t> destIndices,
-                        llvm::SmallVectorImpl<int64_t> &result) {
-    result.assign(destIndices.begin(), destIndices.end());
-    return mlir::success();
-  };
-
-  return getStaticMappedMovementSegments(rewriter, op, sourceType, destType,
-                                         destType.getShape(), sourceIndexFn,
-                                         destIndexFn, failureReason, opLabel);
-}
-
-mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
-getMirrorDataMoveSegments(mlir::PatternRewriter &rewriter,
-                          InstrTDMADataMoveOp op, mlir::MemRefType sourceType,
-                          mlir::MemRefType destType,
-                          llvm::ArrayRef<int64_t> axes,
-                          std::string *failureReason, llvm::StringRef opLabel) {
-  if (sourceType.getRank() != destType.getRank())
-    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires rank-compatible operands")
-            .str());
-  for (int64_t dim = 0; dim < sourceType.getRank(); ++dim) {
-    int64_t sourceSize = sourceType.getDimSize(dim);
-    int64_t destSize = destType.getDimSize(dim);
-    if (sourceSize == mlir::ShapedType::kDynamic ||
-        destSize == mlir::ShapedType::kDynamic || sourceSize != destSize)
-      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel)
-              .concat(" requires equal static source/dest shapes")
-              .str());
-  }
-
-  llvm::SmallDenseSet<int64_t, 4> mirroredAxes;
-  mirroredAxes.insert(axes.begin(), axes.end());
-  auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> destIndices,
-                           llvm::SmallVectorImpl<int64_t> &sourceIndices) {
-    sourceIndices.assign(destIndices.begin(), destIndices.end());
-    for (int64_t axis : mirroredAxes)
-      sourceIndices[axis] = sourceType.getDimSize(axis) - 1 - destIndices[axis];
-    return mlir::success();
-  };
-  auto destIndexFn = [](llvm::ArrayRef<int64_t> destIndices,
-                        llvm::SmallVectorImpl<int64_t> &result) {
-    result.assign(destIndices.begin(), destIndices.end());
-    return mlir::success();
-  };
-
-  return getStaticMappedMovementSegments(rewriter, op, sourceType, destType,
-                                         destType.getShape(), sourceIndexFn,
-                                         destIndexFn, failureReason, opLabel);
-}
-
-mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
-getRotateDataMoveSegments(mlir::PatternRewriter &rewriter,
-                          InstrTDMADataMoveOp op, mlir::MemRefType sourceType,
-                          mlir::MemRefType destType, InstrDataMoveKind kind,
-                          llvm::ArrayRef<int64_t> axes,
-                          std::string *failureReason, llvm::StringRef opLabel) {
-  if (sourceType.getRank() != destType.getRank() || axes.size() != 2)
-    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires rank-compatible operands")
-            .str());
-  int64_t axis0 = axes[0];
-  int64_t axis1 = axes[1];
-  for (int64_t dim = 0; dim < sourceType.getRank(); ++dim) {
-    int64_t sourceSize = sourceType.getDimSize(dim);
-    int64_t destSize = destType.getDimSize(dim);
-    if (sourceSize == mlir::ShapedType::kDynamic ||
-        destSize == mlir::ShapedType::kDynamic)
-      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel).concat(" requires static shapes").str());
-    if (dim != axis0 && dim != axis1 && sourceSize != destSize)
-      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel)
-              .concat(" requires non-rotated dimensions to match")
-              .str());
-  }
-
-  int64_t sourceAxis0Size = sourceType.getDimSize(axis0);
-  int64_t sourceAxis1Size = sourceType.getDimSize(axis1);
-  int64_t destAxis0Size = destType.getDimSize(axis0);
-  int64_t destAxis1Size = destType.getDimSize(axis1);
-  if (kind == InstrDataMoveKind::Rotate180) {
-    if (sourceAxis0Size != destAxis0Size || sourceAxis1Size != destAxis1Size)
-      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel)
-              .concat(" requires equal rotated-axis shapes")
-              .str());
-  } else if (sourceAxis0Size != destAxis1Size ||
-             sourceAxis1Size != destAxis0Size) {
-    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires swapped rotated-axis shapes")
-            .str());
-  }
-
-  auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> destIndices,
-                           llvm::SmallVectorImpl<int64_t> &sourceIndices) {
-    sourceIndices.assign(destIndices.begin(), destIndices.end());
-    switch (kind) {
-    case InstrDataMoveKind::Rotate90:
-      sourceIndices[axis0] = sourceAxis0Size - 1 - destIndices[axis1];
-      sourceIndices[axis1] = destIndices[axis0];
-      break;
-    case InstrDataMoveKind::Rotate180:
-      sourceIndices[axis0] = sourceAxis0Size - 1 - destIndices[axis0];
-      sourceIndices[axis1] = sourceAxis1Size - 1 - destIndices[axis1];
-      break;
-    case InstrDataMoveKind::Rotate270:
-      sourceIndices[axis0] = destIndices[axis1];
-      sourceIndices[axis1] = sourceAxis1Size - 1 - destIndices[axis0];
-      break;
-    default:
-      llvm_unreachable("expected rotate data_move kind");
-    }
-    return mlir::success();
-  };
-  auto destIndexFn = [](llvm::ArrayRef<int64_t> destIndices,
-                        llvm::SmallVectorImpl<int64_t> &result) {
-    result.assign(destIndices.begin(), destIndices.end());
-    return mlir::success();
-  };
-
-  return getStaticMappedMovementSegments(rewriter, op, sourceType, destType,
-                                         destType.getShape(), sourceIndexFn,
-                                         destIndexFn, failureReason, opLabel);
 }
 
 } // namespace wafer::tile_region_to_instr

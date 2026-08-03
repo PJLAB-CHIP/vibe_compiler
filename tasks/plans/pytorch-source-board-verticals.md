@@ -1,8 +1,8 @@
 # PyTorch Source Board Verticals 实施计划
 
-状态：Q44 `later`，等待Q41修复已定位的通用编译热点。rank-one和`4096³` K-sharded GEMM/AllReduce已闭合
-package与fresh no-card；新增的实际Llama-2 7B Megatron TP16 case已完成eager、export和post-SPMD结构检查，
-但production compile的transpose segment枚举热点尚未修复，未生成完整package、不得标`board-ready`。本计划
+状态：Q44 `board-ready`。rank-one、`4096³` K-sharded GEMM/AllReduce和实际Llama-2 7B Megatron TP16
+均已闭合真实PyTorch eager/export、production package与fresh no-card；Llama case的通用symbolic movement lowering、
+16-rank row-pointer launch ABI及完整production compile也已通过。真实板端tensor capture尚未执行，不得标`done`。本计划
 只拆解PyTorch source到board tensor correctness纵向；状态以`tasks/progress.md`为准，frontend和board长期合同
 分别由02、16拥有。
 
@@ -64,6 +64,10 @@ Pipeline position:
 - 正常configured-board实例使用已有FP16 HuggingFace config，属于板测默认dtype的case参数；公共raw读写和比较
   仍不固定dtype。Llama case复用Q28已冻结的`atol=0.004, rtol=0.002`全张量比较policy，不能转换actual或
   参考结果dtype。
+- fresh production compile transaction为`493.374 s`，peak RSS为`3,015,048 KiB`；发布schema-v6、16-rank
+  cluster prepare/main package和一个aggregate ELF。每rank 18个typed launch slot，manifest选择
+  `rank-row-pointer-table-v1`，runtime packet只携带16个device row pointer；完整288-resource no-card preflight通过。
+  这些只证明board-ready artifact/runtime闭合，不代签真实board output与PyTorch eager比较。
 
 ## 实施顺序
 

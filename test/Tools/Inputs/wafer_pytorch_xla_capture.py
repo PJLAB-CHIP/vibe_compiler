@@ -977,6 +977,18 @@ def _make_hf_llama_decoder_block_module(
             "Llama decoder block test emitter supports torch_dtype float16 "
             f"or float32, got {storage_dtype_name!r}"
         )
+    accumulation_dtype_name = str(
+        config.get("wafer_accumulation_dtype", "float32")
+    )
+    if accumulation_dtype_name in {"float16", "torch.float16"}:
+        accumulation_dtype = torch_module.float16
+    elif accumulation_dtype_name in {"float32", "torch.float32"}:
+        accumulation_dtype = torch_module.float32
+    else:
+        raise RuntimeError(
+            "Llama decoder block test emitter supports accumulation dtype "
+            f"float16 or float32, got {accumulation_dtype_name!r}"
+        )
 
     if sequence_length <= 0:
         raise RuntimeError("--sequence-length must be positive")
@@ -993,9 +1005,11 @@ def _make_hf_llama_decoder_block_module(
 
         def forward(self, x):
             input_dtype = x.dtype
-            x_f32 = x.to(torch_module.float32)
-            variance = x_f32.pow(2).mean(-1, keepdim=True)
-            normalized = x_f32 * torch_module.rsqrt(variance + rms_norm_eps)
+            accumulated = x.to(accumulation_dtype)
+            variance = accumulated.pow(2).mean(-1, keepdim=True)
+            normalized = accumulated * torch_module.rsqrt(
+                variance + rms_norm_eps
+            )
             return normalized.to(input_dtype) * self.weight
 
     class WaferLinearNoBias(torch_module.nn.Module):
@@ -1126,7 +1140,18 @@ def _make_hf_llama_decoder_block_module(
         def _rotate_half(self, x):
             first_half = x[..., : head_dim // 2]
             second_half = x[..., head_dim // 2 :]
-            return torch_module.cat((-second_half, first_half), dim=-1)
+            # Express the RoPE sign change as source-level multiplication.
+            # The TX81 native Neg command canonicalizes signed zero, whereas
+            # its floating multiply route is admitted with source semantics.
+            # Keeping this choice in the PyTorch module makes eager reference
+            # evaluation and exported StableHLO agree on the operation rather
+            # than weakening numeric legality during target lowering.
+            negative_second_half = torch_module.mul(
+                second_half, torch_module.full_like(second_half, -1)
+            )
+            return torch_module.cat(
+                (negative_second_half, first_half), dim=-1
+            )
 
         def _apply_rope(self, query, key):
             seq = query.shape[-2]
@@ -1137,6 +1162,22 @@ def _make_hf_llama_decoder_block_module(
             query = (query * cos) + (self._rotate_half(query) * sin)
             key = (key * cos) + (self._rotate_half(key) * sin)
             return query, key
+
+        def _silu(self, x):
+            # StableHLO logistic is defined as the explicit IEEE operation
+            # sequence 1 / (1 + exp(-x)).  Spell the same PyTorch source
+            # sequence with multiplication by -1 so the target-qualified
+            # arithmetic route remains visible after StableHLO legalization;
+            # a fused logistic would otherwise reintroduce an unqualified
+            # native Neg command in that expansion.
+            one = torch_module.ones_like(x)
+            negative = torch_module.mul(
+                x, torch_module.full_like(x, -1)
+            )
+            logistic = torch_module.div(
+                one, torch_module.add(one, torch_module.exp(negative))
+            )
+            return torch_module.mul(x, logistic)
 
         def forward(self, hidden_states):
             residual = hidden_states
@@ -1153,7 +1194,7 @@ def _make_hf_llama_decoder_block_module(
                 attn_scores.dtype
             )
             attn_weights = torch_module.softmax(
-                attn_scores, dim=-1, dtype=torch_module.float32
+                attn_scores, dim=-1, dtype=accumulation_dtype
             ).to(attn_scores.dtype)
             attn_output = torch_module.matmul(attn_weights, value)
             batch, _, seq, _ = attn_output.shape
@@ -1169,7 +1210,7 @@ def _make_hf_llama_decoder_block_module(
             gated = self._mark_activation_tp(self.gate_proj(normed_states))
             up = self._mark_activation_tp(self.up_proj(normed_states))
             mlp_output = self._mark_activation_tp(
-                torch_module.nn.functional.silu(gated) * up
+                self._silu(gated) * up
             )
             return residual + self.down_proj(mlp_output)
 

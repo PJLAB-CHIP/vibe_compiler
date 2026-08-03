@@ -20,6 +20,27 @@ func.func @instr_tdma_transpose_materializes(
 // CHECK-SAME: byte_count = 12 : i64
 // CHECK-NOT: wafer.instr.tdma_data_move
 
+func.func @instr_tdma_large_transpose_uses_loop_stride(
+    %src: memref<1x1x4096x4096xf16, #wafer.memory<spm, tensor>>,
+    %dst: memref<1x1x4096x4096xf16, #wafer.memory<spm, tensor>>) {
+  wafer.instr.tdma_data_move #wafer.instr_data_move_kind<transpose> %src into %dst
+      {source_shape = array<i64: 1, 1, 4096, 4096>,
+       dest_shape = array<i64: 1, 1, 4096, 4096>,
+       permutation = array<i64: 0, 1, 3, 2>}
+      : memref<1x1x4096x4096xf16, #wafer.memory<spm, tensor>>
+     to memref<1x1x4096x4096xf16, #wafer.memory<spm, tensor>>
+  return
+}
+
+// CHECK-LABEL: func.func @instr_tdma_large_transpose_uses_loop_stride
+// CHECK-COUNT-1: wafer.instr.gather_scatter
+// CHECK-SAME: byte_count = 33554432 : i64
+// CHECK-SAME: dst_iterations = array<i64: 4096, 4096, 1>
+// CHECK-SAME: dst_strides = array<i64: 2, 8192, 0>
+// CHECK-SAME: inner_bytes = 2 : i64
+// CHECK-SAME: src_iterations = array<i64: 4096, 4096, 1>
+// CHECK-SAME: src_strides = array<i64: 8192, 2, 0>
+
 func.func @instr_tdma_nchw2nhwc_materializes(
     %src: memref<1x2x3x4xf16, #wafer.memory<spm, tensor>>,
     %dst: memref<1x3x4x2xf16, #wafer.memory<spm, tensor>>) {

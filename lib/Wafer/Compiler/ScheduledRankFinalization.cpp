@@ -78,18 +78,21 @@ getExactCostClosureFailure(const analysis::InstructionProgramCost &cost) {
 mlir::FailureOr<std::vector<FinalizedRankCandidate>>
 finalizeScheduledRankCandidateFrontier(
     std::vector<wafer::ScheduledRankCandidate> frontier,
-    TargetProfileId targetProfile) {
-  if (frontier.empty())
-    return mlir::failure();
+    TargetProfileId targetProfile, bool requireReservedBaseline) {
+  if (frontier.empty()) {
+    if (requireReservedBaseline)
+      return mlir::failure();
+    return std::vector<FinalizedRankCandidate>{};
+  }
   unsigned baselineCount = llvm::count_if(
       frontier, [](const wafer::ScheduledRankCandidate &candidate) {
         return candidate.reservedBaseline;
       });
-  if (baselineCount != 1) {
+  if ((requireReservedBaseline && baselineCount != 1) || baselineCount > 1) {
     frontier.front().module->emitError()
-        << "rank_frontier_baseline_contract: expected exactly one reserved "
-           "baseline but found "
-        << baselineCount;
+        << "rank_frontier_baseline_contract: expected "
+        << (requireReservedBaseline ? "exactly one" : "at most one")
+        << " reserved baseline but found " << baselineCount;
     return mlir::failure();
   }
 
@@ -137,10 +140,11 @@ finalizeScheduledRankCandidateFrontier(
         std::move(candidate.module), candidate.stableOrdinal,
         candidate.artifactKind, candidate.reservedBaseline,
         candidate.bufferingKind, candidate.bufferingPlanOrdinal,
-        candidate.workerPlacementKind, candidate.workerPlacementPlanOrdinal);
+        candidate.workerPlacementKind, candidate.workerPlacementPlanOrdinal,
+        candidate.frontierOrderOrdinal);
   }
 
-  if (finalized.empty())
+  if (finalized.empty() && requireReservedBaseline)
     return mlir::failure();
   return finalized;
 }

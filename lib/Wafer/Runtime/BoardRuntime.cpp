@@ -198,6 +198,12 @@ struct LiveAllocation {
   BoardDeviceMemory memory;
 };
 
+struct LiveRankArgumentRow {
+  int64_t logicalRank = -1;
+  EntryId entry;
+  BoardDeviceMemory memory;
+};
+
 struct VerifiedModuleSnapshot {
   const PackageModuleRecord *module = nullptr;
   int64_t diagnosticRank = -1;
@@ -483,6 +489,18 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                           "aggregate board allocation byte count overflows");
       allocationBytes += resource.bytes;
     }
+  if (kernelLaunch &&
+      kernelLaunch->entryABI == KernelEntryABI::RankRowPointerTableV1) {
+    for (const RuntimeSessionPlan &rank : capacityPlan->ranks) {
+      const uint64_t rowBytes =
+          static_cast<uint64_t>(rank.launchOrder.size()) * sizeof(uint64_t);
+      if (rowBytes > std::numeric_limits<uint64_t>::max() - allocationBytes)
+        return boardError(BoardRuntimeStage::Preflight, rank.logicalRank,
+                          rank.entry,
+                          "aggregate rank-row pointer storage overflows");
+      allocationBytes += rowBytes;
+    }
+  }
   for (const VerifiedModuleSnapshot &snapshot : moduleSnapshots) {
     uint64_t moduleBytes = snapshot.bytes.size();
     if (moduleBytes > std::numeric_limits<uint64_t>::max() - allocationBytes)
@@ -506,6 +524,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   result.completedStages.push_back(BoardRuntimeStage::DeviceSelection);
 
   std::vector<LiveAllocation> allocations;
+  std::vector<LiveRankArgumentRow> rankArgumentRows;
   std::vector<LiveModule> liveModules;
   std::optional<BoardGraphHandle> liveGraph;
   bool submissionLive = false;
@@ -553,6 +572,19 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       }
       liveGraph.reset();
     }
+    for (LiveRankArgumentRow &row : llvm::reverse(rankArgumentRows)) {
+      if (llvm::Error error = driver.free(row.memory)) {
+        BoardRuntimeContextState state = observeProviderState();
+        llvm::Error wrapped =
+            wrapDriverError(BoardRuntimeStage::Cleanup, row.logicalRank,
+                            row.entry, std::move(error), state);
+        if (state == BoardRuntimeContextState::Poisoned)
+          return llvm::joinErrors(std::move(cleanupError), std::move(wrapped));
+        cleanupError =
+            llvm::joinErrors(std::move(cleanupError), std::move(wrapped));
+      }
+    }
+    rankArgumentRows.clear();
     for (LiveAllocation &allocation : llvm::reverse(allocations)) {
       if (llvm::Error error = driver.free(allocation.memory)) {
         BoardRuntimeContextState state = observeProviderState();
@@ -592,6 +624,20 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       allocations.push_back({resource, rank.entry, *memory});
       memoryByResource[resource->id.getValue()] = *memory;
     }
+  if (kernelLaunch &&
+      kernelLaunch->entryABI == KernelEntryABI::RankRowPointerTableV1) {
+    rankArgumentRows.reserve(capacityPlan->ranks.size());
+    for (const RuntimeSessionPlan &rank : capacityPlan->ranks) {
+      const uint64_t rowBytes =
+          static_cast<uint64_t>(rank.launchOrder.size()) * sizeof(uint64_t);
+      llvm::Expected<BoardDeviceMemory> memory =
+          driver.allocate(rowBytes, alignof(uint64_t));
+      if (!memory)
+        return fail(BoardRuntimeStage::ResourceAllocation, rank.logicalRank,
+                    rank.entry, memory.takeError());
+      rankArgumentRows.push_back({rank.logicalRank, rank.entry, *memory});
+    }
+  }
   result.completedStages.push_back(BoardRuntimeStage::ResourceAllocation);
 
   for (const LiveAllocation &allocation : allocations) {
@@ -624,6 +670,30 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       return fail(BoardRuntimeStage::HostToDevice,
                   allocation.resource->logicalRank, allocation.entry,
                   std::move(error));
+  }
+  if (!rankArgumentRows.empty()) {
+    if (rankArgumentRows.size() != capacityPlan->ranks.size())
+      return fail(BoardRuntimeStage::HostToDevice, -1, noEntry,
+                  detail::invalid("rank-row allocation domain is incomplete"));
+    for (auto [rankIndex, rank] : llvm::enumerate(capacityPlan->ranks)) {
+      std::vector<uint64_t> row;
+      row.reserve(rank.launchOrder.size());
+      for (ResourceId resource : rank.launchOrder) {
+        auto memory = memoryByResource.find(resource.getValue());
+        if (memory == memoryByResource.end())
+          return fail(
+              BoardRuntimeStage::HostToDevice, rank.logicalRank, rank.entry,
+              detail::invalid("rank-row slot has no device allocation"));
+        row.push_back(static_cast<uint64_t>(memory->second.value));
+      }
+      llvm::ArrayRef<uint8_t> rowBytes(
+          reinterpret_cast<const uint8_t *>(row.data()),
+          row.size() * sizeof(uint64_t));
+      if (llvm::Error error = driver.copyHostToDevice(
+              rankArgumentRows[rankIndex].memory, rowBytes))
+        return fail(BoardRuntimeStage::HostToDevice, rank.logicalRank,
+                    rank.entry, std::move(error));
+    }
   }
   result.completedStages.push_back(BoardRuntimeStage::HostToDevice);
 
@@ -673,10 +743,20 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
 
   std::vector<BoardRankLaunch> baseLaunches;
   baseLaunches.reserve(capacityPlan->ranks.size());
-  for (const RuntimeSessionPlan &rank : capacityPlan->ranks) {
+  for (auto [rankIndex, rank] : llvm::enumerate(capacityPlan->ranks)) {
     BoardRankLaunch launch;
     launch.logicalRank = rank.logicalRank;
     launch.entry = rank.entry;
+    if (kernelLaunch &&
+        kernelLaunch->entryABI == KernelEntryABI::RankRowPointerTableV1) {
+      if (rankIndex >= rankArgumentRows.size())
+        return fail(BoardRuntimeStage::Launch, rank.logicalRank, rank.entry,
+                    detail::invalid("rank-row launch storage is missing"));
+      launch.arguments.push_back(
+          static_cast<uint64_t>(rankArgumentRows[rankIndex].memory.value));
+      baseLaunches.push_back(std::move(launch));
+      continue;
+    }
     launch.arguments.reserve(rank.launchOrder.size());
     for (ResourceId resource : rank.launchOrder) {
       auto memory = memoryByResource.find(resource.getValue());
@@ -730,16 +810,13 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     if (!requested)
       return llvm::Error::success();
     if (*observation.deviceExecutionNanoseconds >
-        std::numeric_limits<uint64_t>::max() -
-            *deviceExecutionNanoseconds)
+        std::numeric_limits<uint64_t>::max() - *deviceExecutionNanoseconds)
       return detail::invalid("aggregate device execution time overflows");
-    *deviceExecutionNanoseconds +=
-        *observation.deviceExecutionNanoseconds;
+    *deviceExecutionNanoseconds += *observation.deviceExecutionNanoseconds;
     return llvm::Error::success();
   };
   if (kernelLaunch) {
-    std::vector<llvm::DenseMap<uint64_t, BoardFunctionHandle>>
-        functionsByPhase;
+    std::vector<llvm::DenseMap<uint64_t, BoardFunctionHandle>> functionsByPhase;
     functionsByPhase.reserve(launchPhases.size());
     for (auto [phaseIndex, phaseRole] : llvm::enumerate(launchPhases)) {
       llvm::DenseMap<uint64_t, BoardFunctionHandle> functionsByModule;
@@ -854,8 +931,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                   observation.takeError());
     maximumPollGapNanoseconds = observation->maximumPollGapNanoseconds;
     if (llvm::Error error = accumulateDeviceTiming(*observation))
-      return fail(BoardRuntimeStage::Completion, -1, noEntry,
-                  std::move(error));
+      return fail(BoardRuntimeStage::Completion, -1, noEntry, std::move(error));
   } else {
     return fail(BoardRuntimeStage::Launch, -1, noEntry,
                 detail::invalid("package has an unknown runtime launch kind"));
@@ -1049,9 +1125,8 @@ executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,
                                  /*qualifiedSessionUsable=*/nullptr);
   if (!result)
     return result.takeError();
-  QualifiedBoardRuntimeSession session(driver, deviceId, rankCount,
-                                       std::move(qualification),
-                                       result->device);
+  QualifiedBoardRuntimeSession session(
+      driver, deviceId, rankCount, std::move(qualification), result->device);
   return std::pair(std::move(*result), std::move(session));
 }
 

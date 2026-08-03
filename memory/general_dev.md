@@ -1230,7 +1230,14 @@
   transaction wall；判断关键路径还要结合active leaf和外层stage wall。
 - 每10秒会输出各线程仍active的最内层边界，以及已完成项累计work的Top-N。长case应先用固定短窗口采样确认
   `stage -> search/pass -> lowering pattern -> algorithm`热点，再决定是否需要完整compile；外部timeout前无需等待
-  最终表格即可保留可解释证据。
+  最终表格即可保留可解释证据。短窗口只解释当时执行的phase；优化后必须用同一真实shape跑完整transaction，
+  结合外层stage wall重新排序热点，不能把旧phase的局部Top-N继续当成全程结论。
+- timing owner按thread散列聚合并最终稳定归并；新增span优先放在stage、candidate、block或可独立行动的analysis
+  边界，不给高频递归、逐元素或每次微小eligibility调用加span。首次model-scale诊断同时观察事件数、transaction
+  wall及累计线程CPU；累计wall异常大而CPU很小时，先检查observer锁竞争，不能据此判断并行优化退化。
+- 日志可直接按`compile-stats stage=`提取串行关键路径，按Markdown table的`cumulative CPU ms`提取并行总work。
+  前者用于回答用户等待多久，后者用于选择复用、缓存或剪枝位置；inclusive父子行不能相加。
 - 优化必须沿计时证据继续下钻，并保持typed legality：能由static stride/permutation直接构造exact descriptor时
-  使用解析fast path，不能证明时回退；剪枝只能提前执行已有exact rejection或显式修改typed candidate domain。
+  使用symbolic relation/encoding piece planner，不能证明时structured failure；剪枝只能提前执行已有exact rejection
+  或显式修改typed candidate domain。
   不通过延长timeout、缩小真实workload或按shape/op/name matcher掩盖算法复杂度。

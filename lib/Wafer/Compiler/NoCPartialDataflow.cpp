@@ -6,6 +6,7 @@
 #include "Wafer/Compiler/GlobalTileRelation.h"
 #include "Wafer/IR/Common/OpVerifierUtils.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -1649,6 +1650,11 @@ static void applyCut(CutProtocolProof &proof) {
 unsigned materializeNoCPartialReductions(
     llvm::MutableArrayRef<mlir::ModuleOp> modules,
     const frontend::FrontendProgramVerificationResult &program) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "transformation", "materializeNoCPartialReductions", "total");
+  auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "materializeNoCPartialReductions",
+      "collectPartialSpillCuts");
   if (modules.size() < 2 ||
       modules.size() != static_cast<size_t>(program.logicalRankCount) ||
       program.distributedOutputs.empty())
@@ -1678,6 +1684,9 @@ unsigned materializeNoCPartialReductions(
       commonProtocols = std::move(intersection);
     }
   }
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "analysis-phase", "materializeNoCPartialReductions",
+      "prove-and-verify-protocol");
   for (const ReductionProtocolKey &protocol : commonProtocols) {
     ProvenanceArena arena;
     llvm::SmallVector<CutProtocolProof, 16> proofs;
@@ -1709,6 +1718,8 @@ unsigned materializeNoCPartialReductions(
     // All proof and complete-domain checks precede the first mutation.  The
     // caller can therefore discard later-gate failures without exposing a
     // partially rewritten rank tuple.
+    phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+        "transformation-phase", "materializeNoCPartialReductions", "applyCut");
     for (CutProtocolProof &proof : proofs)
       applyCut(proof);
     return static_cast<unsigned>(proofs.size());

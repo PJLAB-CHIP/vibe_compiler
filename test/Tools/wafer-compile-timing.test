@@ -2,17 +2,18 @@
 
 # RUN: rm -rf %t.input %t.default %t.timed %t.default.log %t.timed.log
 # RUN: mkdir -p %t.input/functions
-# RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%one = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    %%0 = stablehlo.divide %%one, %%arg0 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.input/functions/forward.mlir
-# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
+# RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<4x8xf32>) -> tensor<8x4xf32> {\n    %%0 = "stablehlo.transpose"(%%arg0) {permutation = array<i64: 1, 0>} : (tensor<4x8xf32>) -> tensor<8x4xf32>\n    return %%0 : tensor<8x4xf32>\n  }\n}\n' > %t.input/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[4,8],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[8,4],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
 
 # Detailed timing is opt-in. The ordinary production transaction remains free
 # of detailed events and tables.
 # RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.default --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --optimization-preset=none 2>&1 | tee %t.default.log
 # RUN: not grep -q 'compile-timing-' %t.default.log
 
-# One source-to-package invocation exposes stable stage/pipeline/pass/search
-# rows. Numeric timings are deliberately not golden values.
-# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.timed --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --optimization-preset=none --compile-timing 2>&1 | tee %t.timed.log | FileCheck %s --check-prefix=TIMING
+# One source-to-package invocation exposes orchestration, every configured
+# optimization axis, MLIR passes/analyses, conversions/patterns, and internal
+# algorithm phases. Numeric timings are deliberately not golden values.
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.timed --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --optimization-preset=production --compile-timing 2>&1 | tee %t.timed.log | FileCheck %s --check-prefix=TIMING
 # RUN: test -s %t.timed/modules/module_00000.so
 
 # TIMING: wafer-compile: compile-timing-summary-begin
@@ -25,6 +26,34 @@
 # TIMING-DAG: wafer-compile: | search-phase | candidate-evaluation | ddr-offset-planning |
 # TIMING-DAG: wafer-compile: | lowering-phase | tile-region-to-instr | full-conversion |
 # TIMING-DAG: wafer-compile: | lowering-pattern | tile-region-to-instr | wafer.tile.load |
+# TIMING-DAG: wafer-compile: | conversion | convertTensorProgramToTileRegionModuleInPlace | total |
+# TIMING-DAG: wafer-compile: | conversion | tile-region-to-instr | module-conversion |
+# TIMING-DAG: wafer-compile: | optimization | consumer-local-recomputation | materializeConsumerLocalTensorRecomputation |
+# TIMING-DAG: wafer-compile: | optimization | loop-invariant-code-motion | hoistStaticLoopInvariantOperations |
+# TIMING-DAG: wafer-compile: | optimization | algebraic-reassociation | reassociateElementwiseExpressions |
+# TIMING-DAG: wafer-compile: | optimization | reduction-tree-balancing | balanceElementwiseReductionTrees |
+# TIMING-DAG: wafer-compile: | optimization | algebraic-distribution | contractDistributiveExpressions |
+# TIMING-DAG: wafer-compile: | optimization | algebraic-factorization | factorElementwiseExpressions |
+# TIMING-DAG: wafer-compile: | optimization | implementation-selection | buildRankSearchRecipes |
+# TIMING-DAG: wafer-compile: | optimization | tile-search-alternatives | buildRankSearchRecipes |
+# TIMING-DAG: wafer-compile: | optimization | scope-composition | buildScheduledRankCandidateFrontier |
+# TIMING-DAG: wafer-compile: | optimization | collective-algorithm-selection | buildRankSearchRecipes |
+# TIMING-DAG: wafer-compile: | optimization | direct-mapped-boundary-transfer | buildRankSearchRecipes |
+# TIMING-DAG: wafer-compile: | optimization | concurrent-working-set-selection | buildRankSearchRecipes |
+# TIMING-DAG: wafer-compile: | optimization | full-buffer-transfer-elision | elideRedundantFullBufferTransfers |
+# TIMING-DAG: wafer-compile: | optimization | full-buffer-residency | promoteFullBufferHandoffs |
+# TIMING-DAG: wafer-compile: | optimization | ready-order-scheduling | scheduleIndependentInstructionsByReadyOrder |
+# TIMING-DAG: wafer-compile: | optimization | static-fixed-slot-buffering | deriveStaticFixedSlotPipelineCandidate |
+# TIMING-DAG: wafer-compile: | optimization | disjoint-worker-placement | deriveDisjointNCCWorkerPlacementCandidate |
+# TIMING-DAG: wafer-compile: | optimization | noc-resident-dataflow | appendNoCResidentDataflowCandidates |
+# TIMING-DAG: wafer-compile: | transformation | planSPMMemoryModule | total |
+# TIMING-DAG: wafer-compile: | transformation | planDDRMemoryModule | total |
+# TIMING-DAG: wafer-compile: | analysis | provesCompleteStaticView | total |
+# TIMING-DAG: wafer-compile: | analysis-phase | provesCompleteStaticView | provesCanonicalCompleteStaticView |
+# TIMING-DAG: wafer-compile: | analysis-phase | planFunction(SPM) | StructuredTimeline::build |
+# TIMING-DAG: wafer-compile: | conversion-phase | rewriteTensorProgramInPlace | TileRegionBodyEmitter::emit |
+# TIMING-DAG: wafer-compile: | lowering-algorithm-phase | getRelationMovementDescriptors | TransferRealizability::proveMappedTransfer |
+# TIMING-DAG: wafer-compile: | external-pipeline | source-to-tensor-program | xla-spmd-partitioning |
 # TIMING-DAG: wafer-compile: | pass | stablehlo-to-linalg |
 # TIMING-DAG: wafer-compile: | pass | scheduled-rank-finalization |
 # TIMING-DAG: wafer-compile: | pass | instr-to-target-llvm |

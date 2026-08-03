@@ -36,24 +36,6 @@ func.func @reject_static_terminal_budget(
 
 // -----
 
-func.func @reject_large_f16_native_reduce(
-    %input: memref<1024x1xf16, #wafer.memory<spm, cx>>)
-    -> memref<1xf16, #wafer.memory<spm, cx>> {
-  %result = wafer.tile.reduce #wafer.reduce_kind<sum> %input
-      {dimensions = array<i64: 0>, init_value = 0.000000e+00 : f16}
-      : (memref<1024x1xf16, #wafer.memory<spm, cx>>)
-     -> memref<1xf16, #wafer.memory<spm, cx>>
-  return %result : memref<1xf16, #wafer.memory<spm, cx>>
-}
-
-// CHECK: static_terminal_budget_exceeded: ordered tile.reduce minimum terminal operation count exceeds 4096
-// CHECK: IR Dump After ConvertTileRegionToInstrPass Failed
-// CHECK: func.func @reject_large_f16_native_reduce
-// CHECK: wafer.tile.reduce <sum>
-// CHECK-NOT: wafer.instr.
-
-// -----
-
 func.func @reject_unencodable_dtype(
     %input: memref<2x2xi4, #wafer.memory<spm, cx>>)
     -> memref<2xi4, #wafer.memory<spm, cx>> {

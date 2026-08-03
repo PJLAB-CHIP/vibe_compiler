@@ -13,8 +13,10 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -233,11 +235,41 @@ TEST(CompilationTest, DetailedTimingAggregatesInvocationLocalSpans) {
     wafer::support::ScopedCompileTimingActivation activation(session);
     wafer::support::ScopedCompileTimingSpan span("stage", "test-pipeline",
                                                  "test-item", "request=7");
+    span.markFailed();
   }
+  std::thread worker([session] {
+    wafer::support::ScopedCompileTimingActivation activation(session);
+    wafer::support::ScopedCompileTimingSpan span("analysis", "test-worker",
+                                                 "parallel-item");
+  });
+  worker.join();
+  std::vector<std::thread> workers;
+  workers.reserve(16);
+  for (size_t workerIndex = 0; workerIndex < 16; ++workerIndex) {
+    workers.emplace_back([session] {
+      wafer::support::ScopedCompileTimingActivation activation(session);
+      for (size_t iteration = 0; iteration < 64; ++iteration) {
+        wafer::support::ScopedCompileTimingSpan span("analysis", "test-worker",
+                                                     "sharded-parallel-item");
+      }
+    });
+  }
+  for (std::thread &parallelWorker : workers)
+    parallelWorker.join();
   session->finishAndPrintSummary();
   EXPECT_NE(output.find("compile-timing-summary-begin"), std::string::npos);
-  EXPECT_NE(output.find("| stage | test-pipeline | test-item | 1 |"),
+  size_t failedRow = output.find("| stage | test-pipeline | test-item | 1 |");
+  ASSERT_NE(failedRow, std::string::npos);
+  size_t failedRowEnd = output.find('\n', failedRow);
+  ASSERT_NE(failedRowEnd, std::string::npos);
+  llvm::StringRef failedRowText(output.data() + failedRow,
+                                failedRowEnd - failedRow);
+  EXPECT_TRUE(failedRowText.ends_with("| 1 |"));
+  EXPECT_NE(output.find("| analysis | test-worker | parallel-item | 1 |"),
             std::string::npos);
+  EXPECT_NE(
+      output.find("| analysis | test-worker | sharded-parallel-item | 1024 |"),
+      std::string::npos);
   EXPECT_NE(output.find("compile-timing-summary-end transaction_wall_ms="),
             std::string::npos);
 }

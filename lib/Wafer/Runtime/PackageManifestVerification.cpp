@@ -197,10 +197,19 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
     const uint64_t argumentBytesMax = cluster
                                           ? kTx81ClusterKernelArgumentBytesMax
                                           : kTx81KernelArgumentBytesMax;
-    if (first.slots.size() > argumentBytesMax / sizeof(uint64_t) / 16)
-      return invalid(
-          "shared rank-major argument table exceeds the qualified V5.6 "
-          "packet limit");
+    if (kernel->entryABI == KernelEntryABI::RankMajorPointerTableV1) {
+      if (first.slots.size() > argumentBytesMax / sizeof(uint64_t) / 16)
+        return invalid(
+            "shared rank-major argument table exceeds the qualified V5.6 "
+            "packet limit");
+    } else if (kernel->entryABI == KernelEntryABI::RankRowPointerTableV1) {
+      if (16 > argumentBytesMax / sizeof(uint64_t))
+        return invalid(
+            "shared rank-row pointer table exceeds the qualified V5.6 "
+            "packet limit");
+    } else {
+      return invalid("shared kernel launch has an incompatible entry ABI");
+    }
   }
   const PackageModuleExportRecord *firstMain =
       detail::findModuleExport(*firstModule, PackageModuleExportRole::Main);
