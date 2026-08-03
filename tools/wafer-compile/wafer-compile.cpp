@@ -266,12 +266,16 @@ int main(int argc, char **argv) {
       parseOptimizationConfig(options);
   if (!optimizationConfig)
     return 1;
+  const auto timingMode =
+      options.compileTiming ? wafer::compiler::CompilationTimingMode::Detailed
+                            : wafer::compiler::CompilationTimingMode::Disabled;
   wafer::compiler::CompilationOptions compilationOptions =
-      wafer::compiler::CompilationOptions::standard(*optimizationConfig);
+      wafer::compiler::CompilationOptions::standard(*optimizationConfig,
+                                                    timingMode);
   if (options.profile) {
     llvm::Expected<wafer::compiler::CompilationOptions> profileOptions =
-        wafer::compiler::CompilationOptions::profile(*executionConfig,
-                                                     *optimizationConfig);
+        wafer::compiler::CompilationOptions::profile(
+            *executionConfig, *optimizationConfig, timingMode);
     if (!profileOptions) {
       llvm::errs() << "wafer-compile: "
                    << llvm::toString(profileOptions.takeError()) << "\n";

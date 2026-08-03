@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Framework-owned GEMM and GEMM-to-AllReduce board source cases."""
+"""Framework-owned GEMM and HuggingFace Transformer board source cases."""
 
 from __future__ import annotations
 
+import copy
 import dataclasses
+import json
 import pathlib
 import shutil
 import sys
 from collections.abc import Callable
 
 import torch
+
+import wafer_pytorch_board_common as common
 
 
 TOOLS_INPUTS = pathlib.Path(__file__).resolve().parents[2] / "Tools" / "Inputs"
@@ -20,6 +24,12 @@ import wafer_pytorch_xla_capture as capture  # noqa: E402
 
 
 RANK_COUNT = 16
+LARGE_GEMM_EXTENT = 4096
+HF_LLAMA2_7B_CONFIG = (
+    TOOLS_INPUTS / "hf" / "llama-2-7b-block-config.json"
+)
+HF_LLAMA2_7B_SEQUENCE_LENGTH = 16
+HF_LLAMA2_7B_COMPARISON = common.ComparisonPolicy(rtol=0.002, atol=0.004)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -31,6 +41,8 @@ class PyTorchBoardCase:
     expected_outputs: tuple[torch.Tensor, ...]
     export_program: Callable[[pathlib.Path], None]
     required_structured_ir: tuple[str, ...]
+    expected_all_reduce_count: int
+    comparison_policy: common.ComparisonPolicy
 
 
 class Gemm(torch.nn.Module):
@@ -107,19 +119,20 @@ def _rank_one_gemm(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
         required_structured_ir=(
             "linalg.matmul",
         ),
+        expected_all_reduce_count=0,
+        comparison_policy=common.PYTORCH_DEFAULT,
     )
 
 
 def _k_sharded_gemm_all_reduce(
     dtype: torch.dtype, seed: int
 ) -> PyTorchBoardCase:
-    size = 32
+    size = LARGE_GEMM_EXTENT
     generator = torch.Generator(device="cpu").manual_seed(seed)
     input_tensor = _random_tensor(
         (size, size), dtype=dtype, generator=generator
     )
     weight = _random_tensor((size, size), dtype=dtype, generator=generator)
-    bias = _random_tensor((size,), dtype=dtype, generator=generator)
 
     class KShardedGemm(torch.nn.Module):
         def __init__(self) -> None:
@@ -127,12 +140,10 @@ def _k_sharded_gemm_all_reduce(
             self.weight = torch.nn.Parameter(
                 weight.clone(), requires_grad=False
             )
-            self.bias = torch.nn.Parameter(
-                bias.clone(), requires_grad=False
-            )
+            self.bias = None
 
         def forward(self, value: torch.Tensor) -> torch.Tensor:
-            return torch.matmul(value, self.weight) + self.bias
+            return torch.matmul(value, self.weight)
 
     def module_factory() -> torch.nn.Module:
         return KShardedGemm()
@@ -161,6 +172,112 @@ def _k_sharded_gemm_all_reduce(
             "linalg.matmul",
             "wafer.linalg_ext.collective.all_reduce",
         ),
+        expected_all_reduce_count=1,
+        comparison_policy=common.PYTORCH_DEFAULT,
+    )
+
+
+def _hf_megatron_transformer_block(
+    dtype: torch.dtype, seed: int
+) -> PyTorchBoardCase:
+    dtype_names = {
+        torch.float16: "float16",
+        torch.float32: "float32",
+    }
+    try:
+        dtype_name = dtype_names[dtype]
+    except KeyError as error:
+        raise RuntimeError(
+            "HuggingFace Llama board case supports float16 or float32"
+        ) from error
+
+    config = dict(capture.load_hf_transformer_config(HF_LLAMA2_7B_CONFIG))
+    config["torch_dtype"] = dtype_name
+    batch_size = 1
+    sequence_length = HF_LLAMA2_7B_SEQUENCE_LENGTH
+    hidden_size = int(config["hidden_size"])
+    intermediate_size = int(config["intermediate_size"])
+    num_attention_heads = int(config["num_attention_heads"])
+    if (
+        num_attention_heads % RANK_COUNT != 0
+        or hidden_size % RANK_COUNT != 0
+        or intermediate_size % RANK_COUNT != 0
+    ):
+        raise RuntimeError(
+            "HuggingFace Megatron heads/hidden/intermediate dimensions must "
+            "divide the TP16 mesh"
+        )
+
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    input_tensor = _random_tensor(
+        (batch_size, sequence_length, hidden_size),
+        dtype=dtype,
+        generator=generator,
+    )
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed + 1)
+        module = capture._make_hf_llama_decoder_block_module(
+            torch,
+            config,
+            sequence_length,
+        )
+    module.eval()
+    parameter_generator = torch.Generator(device="cpu").manual_seed(seed + 1)
+    with torch.no_grad():
+        for parameter, sharding_spec in module.wafer_parameter_sharding_specs():
+            values = _random_tensor(
+                tuple(parameter.shape),
+                dtype=dtype,
+                generator=parameter_generator,
+            )
+            if sharding_spec == capture.HF_MEGATRON_REPLICATED_VECTOR_SPEC:
+                values = 1.0 + (values * 0.02)
+            else:
+                values = values * float(config["initializer_range"])
+            parameter.copy_(values)
+            parameter.requires_grad_(False)
+            if parameter.dtype != dtype:
+                raise RuntimeError(
+                    "HuggingFace Megatron parameter dtype differs from the case"
+                )
+    with torch.no_grad():
+        expected = module(input_tensor)
+    if (
+        not torch.isfinite(input_tensor).all()
+        or not torch.isfinite(expected).all()
+    ):
+        raise RuntimeError(
+            "HuggingFace Megatron random input/reference must be finite"
+        )
+
+    def export_program(output: pathlib.Path) -> None:
+        resolved_config = output.parent / "hf-megatron-tp16-config.json"
+        resolved_config.write_text(
+            json.dumps(config, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        capture.emit_hf_megatron_transformer_block_program(
+            output,
+            config_path=resolved_config,
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            reference_module_factory=lambda: copy.deepcopy(module),
+            example_input_tensor=input_tensor,
+        )
+
+    return PyTorchBoardCase(
+        name="hf-megatron-transformer-block",
+        rank_count=RANK_COUNT,
+        dtype=dtype,
+        inputs=(input_tensor,),
+        expected_outputs=(expected,),
+        export_program=export_program,
+        required_structured_ir=(
+            "linalg.matmul",
+            "wafer.linalg_ext.collective.all_reduce",
+        ),
+        expected_all_reduce_count=2,
+        comparison_policy=HF_LLAMA2_7B_COMPARISON,
     )
 
 
@@ -169,6 +286,7 @@ CASE_FACTORIES: dict[
 ] = {
     "rank-one-gemm": _rank_one_gemm,
     "k-sharded-gemm-all-reduce": _k_sharded_gemm_all_reduce,
+    "hf-megatron-transformer-block": _hf_megatron_transformer_block,
 }
 
 

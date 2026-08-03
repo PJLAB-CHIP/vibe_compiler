@@ -209,6 +209,14 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
     LABELS "runtime;no-card;pytorch;reference;fault-injection"
     TIMEOUT 30
   )
+  add_test(NAME wafer-pytorch-board-cases-python
+    COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_pytorch_board_cases_test.py
+  )
+  set_tests_properties(wafer-pytorch-board-cases-python PROPERTIES
+    LABELS "runtime;no-card;pytorch;source;huggingface;megatron"
+    TIMEOUT 30
+  )
 endif()
 
 if(WAFER_ENABLE_IMPORTER_DEPS AND
@@ -364,8 +372,26 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     )
     set_tests_properties(
       wafer-runtime-pytorch-k-sharded-gemm-all-reduce-no-card PROPERTIES
-      LABELS "runtime;no-card;heavy;pytorch;source;all-rank;gemm;all-reduce;direct-dte"
-      TIMEOUT 1800
+      LABELS "runtime;no-card;heavy;pytorch;source;large;all-rank;gemm;all-reduce;direct-dte"
+      TIMEOUT 3600
+    )
+    add_test(NAME wafer-runtime-pytorch-hf-megatron-transformer-block-no-card
+      COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case hf-megatron-transformer-block
+        --dtype float16
+        --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-hf-megatron-transformer-block-no-card
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-pytorch-hf-megatron-transformer-block-no-card PROPERTIES
+      LABELS
+        "runtime;no-card;heavy;pytorch;source;large;huggingface;llama2-7b;transformer;megatron;all-rank;all-reduce;direct-dte"
+      TIMEOUT 9000
     )
   endif()
   if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
@@ -2580,10 +2606,38 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       set_tests_properties(
         wafer-board-pytorch-k-sharded-gemm-all-reduce PROPERTIES
         LABELS
-          "board;hardware;heavy;pytorch;source;cluster;all-rank;gemm;all-reduce;direct-dte"
+          "board;hardware;heavy;pytorch;source;large;cluster;all-rank;gemm;all-reduce;direct-dte"
         RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
         SKIP_RETURN_CODE 77
-        TIMEOUT 1800
+        TIMEOUT 3600
+      )
+      add_test(NAME wafer-board-pytorch-hf-megatron-transformer-block
+        COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+          --case hf-megatron-transformer-block
+          --dtype float16
+          --seed 20260803
+          --wafer-compile $<TARGET_FILE:wafer-compile>
+          --wafer-run $<TARGET_FILE:wafer-run>
+          --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}/board-pytorch-hf-megatron-transformer-block
+          --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+          --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+          --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+          --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+          --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+          --expected-runtime-library-sha256
+            ${_wafer_expected_tx_runtime_library_sha256}
+          --completion-timeout-ms 120000
+          --repeat 1
+      )
+      set_tests_properties(
+        wafer-board-pytorch-hf-megatron-transformer-block PROPERTIES
+        LABELS
+          "board;hardware;heavy;pytorch;source;large;huggingface;llama2-7b;transformer;megatron;cluster;all-rank;all-reduce;direct-dte"
+        RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 9000
       )
     endif()
   else()

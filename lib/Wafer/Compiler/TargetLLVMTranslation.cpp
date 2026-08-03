@@ -2,6 +2,8 @@
 
 #include "TargetArtifactInternal.h"
 
+#include "Wafer/Support/CompileTiming.h"
+
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/TargetConversion.h"
@@ -363,6 +365,7 @@ mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared) {
   request.transportPreparedBeforeEntry = prepared.transportPreparedBeforeEntry;
   request.profileRecordArgumentIndex = prepared.profileRecordArgumentIndex;
   mlir::PassManager manager(prepared.module->getContext());
+  wafer::support::attachCompileTiming(manager, "instr-to-target-llvm");
   manager.addPass(createLowerInstrToTargetLLVMPass(request));
   return manager.run(*prepared.module);
 }

@@ -3,6 +3,7 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 
 #include "Internal.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -51,13 +52,12 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.addDynamicallyLegalOp<InstrTDMADataMoveOp>([](InstrTDMADataMoveOp op) {
     return !requiresGatherScatterMaterialization(op.getKindAttr().getValue());
   });
-  target.addIllegalOp<StorageLoadOp, StorageStoreOp, LayoutMaterializeOp,
-                      ComputeFillOp, ComputeConvertOp, ComputeGemmOp,
-                      ComputeElementwiseOp, ComputeReduceOp, MoveCopyOp,
-                      MoveExtractSliceOp, MoveInsertSliceOp, MoveTransposeOp,
-                      MoveBroadcastOp, ViewReshapeOp, CommPeerSendOp,
-                      CommPeerRecvOp, CommAllGatherOp, CommReduceScatterOp,
-                      CommAllReduceOp>();
+  target.addIllegalOp<
+      StorageLoadOp, StorageStoreOp, LayoutMaterializeOp, ComputeFillOp,
+      ComputeConvertOp, ComputeGemmOp, ComputeElementwiseOp, ComputeReduceOp,
+      MoveCopyOp, MoveExtractSliceOp, MoveInsertSliceOp, MoveTransposeOp,
+      MoveBroadcastOp, ViewReshapeOp, CommPeerSendOp, CommPeerRecvOp,
+      CommAllGatherOp, CommReduceScatterOp, CommAllReduceOp>();
   target.addDynamicallyLegalOp<mlir::async::AwaitOp>(
       [](mlir::async::AwaitOp op) {
         mlir::Value operand = op.getOperand();
@@ -641,7 +641,13 @@ struct ConvertTileRegionToInstrPass
 mlir::LogicalResult wafer::normalizeMinimumNCCJoins(mlir::ModuleOp module) {
   if (!module)
     return mlir::failure();
-  return NCCJoinPlacement().run(module);
+  wafer::support::ScopedCompileTimingSpan timing(
+      "lowering-phase", "tile-region-to-instr",
+      "minimum-ncc-join-normalization");
+  mlir::LogicalResult result = NCCJoinPlacement().run(module);
+  if (mlir::failed(result))
+    timing.markFailed();
+  return result;
 }
 
 wafer::detail::StaticTerminalOperationBudgetStatus
@@ -681,11 +687,18 @@ mlir::LogicalResult wafer::tile_region_to_instr::convertTileRegionToInstrModule(
 
   mlir::MLIRContext *context = module.getContext();
   llvm::SmallVector<mlir::Operation *, 4> selectCandidates;
-  module.walk([&](ComputeElementwiseOp op) {
-    if (op.getKind() == ComputeElementwiseKind::Select)
-      selectCandidates.push_back(op);
-  });
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "lowering-phase", "tile-region-to-instr", "select-discovery");
+    module.walk([&](ComputeElementwiseOp op) {
+      if (op.getKind() == ComputeElementwiseKind::Select)
+        selectCandidates.push_back(op);
+    });
+  }
   if (!selectCandidates.empty()) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "lowering-phase", "tile-region-to-instr",
+        "constant-select-canonicalization");
     mlir::RewritePatternSet canonicalizationPatterns(context);
     populateConstantPredicateSelectCanonicalizationPattern(
         canonicalizationPatterns);
@@ -695,6 +708,7 @@ mlir::LogicalResult wafer::tile_region_to_instr::convertTileRegionToInstrModule(
     config.strictMode = mlir::GreedyRewriteStrictness::ExistingOps;
     if (mlir::failed(mlir::applyOpPatternsAndFold(selectCandidates,
                                                   frozenPatterns, config))) {
+      timing.markFailed();
       setFailureReason(
           failureReason,
           "tile constant-predicate select canonicalization failed");
@@ -703,17 +717,30 @@ mlir::LogicalResult wafer::tile_region_to_instr::convertTileRegionToInstrModule(
   }
 
   mlir::ConversionTarget target(*context);
-  configureTileRegionToInstrTarget(target);
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "lowering-phase", "tile-region-to-instr",
+        "conversion-target-configuration");
+    configureTileRegionToInstrTarget(target);
+  }
 
   mlir::RewritePatternSet patterns(context);
-  populateTileRegionToInstrPatterns(patterns, options, failureReason);
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "lowering-phase", "tile-region-to-instr", "pattern-population");
+    populateTileRegionToInstrPatterns(patterns, options, failureReason);
+  }
 
   bool conversionSucceeded = false;
   {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "lowering-phase", "tile-region-to-instr", "full-conversion");
     mlir::ScopedDiagnosticHandler handler(
         context, [](mlir::Diagnostic &) { return mlir::success(); });
     conversionSucceeded = mlir::succeeded(
         mlir::applyFullConversion(module, target, std::move(patterns)));
+    if (!conversionSucceeded)
+      timing.markFailed();
   }
 
   if (!conversionSucceeded) {
@@ -722,6 +749,10 @@ mlir::LogicalResult wafer::tile_region_to_instr::convertTileRegionToInstrModule(
                        "tile-region to instruction conversion failed");
     return mlir::failure();
   }
-  eraseDeadPrivateFills(module);
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "lowering-phase", "tile-region-to-instr", "dead-private-fill-erasure");
+    eraseDeadPrivateFills(module);
+  }
   return wafer::normalizeMinimumNCCJoins(module);
 }

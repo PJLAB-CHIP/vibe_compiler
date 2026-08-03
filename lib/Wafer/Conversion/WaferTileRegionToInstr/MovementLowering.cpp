@@ -27,6 +27,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(StorageLoadOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     auto sourceType = mlir::cast<mlir::MemRefType>(op.getSource().getType());
     auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
     analysis::IndexRelationResult relation =
@@ -80,6 +81,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(StorageStoreOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     auto sourceType = mlir::cast<mlir::MemRefType>(op.getSource().getType());
     auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
     analysis::IndexRelationResult relation =
@@ -132,6 +134,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(LayoutMaterializeOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     auto sourceType =
         mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
     auto resultType =
@@ -180,6 +183,7 @@ public:
 
   mlir::LogicalResult
   matchAndRewrite(MoveCopyOp op, mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     mlir::FailureOr<mlir::Value> dest = createDestAlloc(
         op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
     if (mlir::failed(dest))
@@ -211,6 +215,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(MoveExtractSliceOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     auto sourceType =
         mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
     auto resultType =
@@ -277,6 +282,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(MoveInsertSliceOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     auto sourceType =
         mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
     auto destType = mlir::dyn_cast<mlir::MemRefType>(op.getDest().getType());
@@ -351,6 +357,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(MoveTransposeOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     auto sourceType =
         mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
     auto resultType =
@@ -407,6 +414,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(InstrTDMADataMoveOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     InstrDataMoveKind kind = op.getKindAttr().getValue();
     if (!requiresGatherScatterMaterialization(kind))
       return mlir::failure();
@@ -506,6 +514,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(MoveBroadcastOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     auto sourceType =
         mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
     auto resultType =
@@ -559,6 +568,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(ViewReshapeOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     if (op.getSource().getType() == op.getResult().getType()) {
       rewriter.replaceOp(op, op.getSource());
       return mlir::success();

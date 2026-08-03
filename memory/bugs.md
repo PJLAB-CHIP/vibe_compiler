@@ -2257,3 +2257,19 @@
 - 防复发：profile必须匹配所测ABI/capability，正例必须通过真实SPM/transport/target gate；不能为保住旧case放宽
   capability或capacity。一个owner纵向替代另一个时，同批删除旧CMake、driver、payload/oracle和重复unit，并fresh运行
   catalog contract。
+
+## 2026-08-03 长编译不能先用扩大deadline掩盖
+
+- 现象：实际shape的Llama-2 7B单block完成PyTorch eager、真实export和约3.4秒的source-to-tensor-program后，
+  production compile在30/60分钟deadline内都未发布package。仅看到CPU持续忙时曾误判为模型规模自然需要更长
+  deadline，无法回答时间花在哪个边界。
+- 根因：详细计时表明长耗时不是source导入、SPM/DDR planning或package I/O，而是candidate search反复执行
+  TileRegion到Instr full conversion。10秒窗口中`wafer.tile.transpose`累计约132.5秒，占full conversion约93%；
+  其中按每个logical element计算物理offset的mapped-segment enumeration约126.7秒。扩大deadline只会让同一个
+  O(元素数) fallback继续跨rank、跨candidate重复运行。
+- 修复模式：先用默认关闭的invocation-local详细计时，分层聚合stage/pipeline/pass/pattern/algorithm的调用次数、
+  wall与线程CPU，并周期输出active leaf和累计Top-N。定位后优先为可证明的static stride/permutation建立exact
+  descriptor fast path，不能证明时保留原fallback；候选剪枝只能提前执行已有exact rejection。
+- 防复发：实际shape case首次明显超出预算时先做短窗口分层采样，不读取历史中断输出、不重复盲跑完整compile，
+  也不把board completion timeout与host compile deadline混用。只有定位结果证明工作量合理且有进展时才重新估算
+  host deadline；不得通过缩小workload或复用partial staging取得`board-ready`。

@@ -23,6 +23,7 @@ TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
 LAUNCH_KIND = "kernel"
 DIRECT_DTE_STATUS_ABI = "wafer-direct-dte-status-v2"
 PROCESS_TIMEOUT_MARGIN_SECONDS = 60
+COMPILE_TIMEOUT_SECONDS = 1800
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wafer-compile", type=pathlib.Path, required=True)
     parser.add_argument("--wafer-run", type=pathlib.Path, required=True)
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
+    parser.add_argument("--compile-timing", action="store_true")
     parser.add_argument("--no-card", action="store_true")
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--expected-runtime-version", type=int)
@@ -105,9 +107,7 @@ def validate_structured_program(
     all_reduce_count = structured_ir.count(
         "wafer.linalg_ext.collective.all_reduce"
     )
-    expected_all_reduce_count = (
-        1 if case.name == "k-sharded-gemm-all-reduce" else 0
-    )
+    expected_all_reduce_count = case.expected_all_reduce_count
     if all_reduce_count != expected_all_reduce_count:
         raise RuntimeError(
             f"PyTorch case {case.name} expected {expected_all_reduce_count} "
@@ -360,6 +360,7 @@ def verify_board(
         common.assert_raw_capture_matches(
             capture,
             expected,
+            policy=case.comparison_policy,
             context=f"{case.name} {capture.name}",
         )
 
@@ -368,7 +369,7 @@ def main() -> int:
     args = parse_args()
     if args.repeat < 1 or args.completion_timeout_ms < 1:
         raise RuntimeError("repeat and completion timeout must be positive")
-    if args.case == "k-sharded-gemm-all-reduce":
+    if args.case != "rank-one-gemm":
         os.environ.setdefault("CPU_NUM_DEVICES", str(board_cases.RANK_COUNT))
         os.environ.setdefault("PJRT_DEVICE", "CPU")
     if not args.no_card and os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
@@ -391,19 +392,24 @@ def main() -> int:
         raise RuntimeError("PyTorch case exceeds the qualified tile count")
     source, package = prepare_work_dir(args.work_dir)
     case.export_program(source)
+    compile_command = [
+        str(args.wafer_compile),
+        "--input-program-dir",
+        str(source),
+        "--output-program-dir",
+        str(package),
+        f"--execution-ranks={case.rank_count}",
+        f"--target-profile={TARGET_PROFILE}",
+        f"--launch-kind={LAUNCH_KIND}",
+    ]
+    if args.compile_timing:
+        compile_command.append("--compile-timing")
     compile_result = run(
-        [
-            str(args.wafer_compile),
-            "--input-program-dir",
-            str(source),
-            "--output-program-dir",
-            str(package),
-            f"--execution-ranks={case.rank_count}",
-            f"--target-profile={TARGET_PROFILE}",
-            f"--launch-kind={LAUNCH_KIND}",
-        ],
-        timeout_seconds=1800,
+        compile_command,
+        timeout_seconds=COMPILE_TIMEOUT_SECONDS,
     )
+    if args.compile_timing:
+        print(compile_result.stderr, end="", file=sys.stderr)
     if f"published verified package with execution-ranks={case.rank_count}" not in compile_result.stdout:
         raise RuntimeError("wafer-compile did not publish the PyTorch package")
     validate_structured_program(package, case)

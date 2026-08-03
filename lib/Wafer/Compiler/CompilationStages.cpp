@@ -6,6 +6,7 @@
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitAll.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
 
@@ -366,6 +367,7 @@ materializeOrVerifyExactExecutionConfig(mlir::ModuleOp module,
 
   if (topologies.empty()) {
     mlir::PassManager manager(module.getContext());
+    wafer::support::attachCompileTiming(manager, "execution-config");
     manager.addPass(wafer::createMaterializeTargetTopologyPass());
     if (mlir::failed(manager.run(module)))
       return mlir::failure();
@@ -380,6 +382,7 @@ materializeOrVerifyExactExecutionConfig(mlir::ModuleOp module,
       options.endpoints = "0,0,0,0";
     }
     mlir::PassManager manager(module.getContext());
+    wafer::support::attachCompileTiming(manager, "execution-config");
     manager.addPass(wafer::createMaterializeExecutionMeshPass(options));
     if (mlir::failed(manager.run(module)))
       return mlir::failure();
@@ -426,6 +429,7 @@ void registerCompilationDialects(mlir::DialectRegistry &registry) {
 bool runPassPipeline(mlir::ModuleOp module,
                      void (*builder)(mlir::OpPassManager &)) {
   mlir::PassManager manager(module.getContext());
+  wafer::support::attachCompileTiming(manager, "stablehlo-to-linalg");
   builder(manager);
   return mlir::failed(manager.run(module));
 }

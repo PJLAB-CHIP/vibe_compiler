@@ -1,0 +1,32 @@
+# REQUIRES: stablehlo, shardy, xla-spmd-helper
+
+# RUN: rm -rf %t.input %t.default %t.timed %t.default.log %t.timed.log
+# RUN: mkdir -p %t.input/functions
+# RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%one = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    %%0 = stablehlo.divide %%one, %%arg0 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.input/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
+
+# Detailed timing is opt-in. The ordinary production transaction remains free
+# of detailed events and tables.
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.default --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --optimization-preset=none 2>&1 | tee %t.default.log
+# RUN: not grep -q 'compile-timing-' %t.default.log
+
+# One source-to-package invocation exposes stable stage/pipeline/pass/search
+# rows. Numeric timings are deliberately not golden values.
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.timed --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --optimization-preset=none --compile-timing 2>&1 | tee %t.timed.log | FileCheck %s --check-prefix=TIMING
+# RUN: test -s %t.timed/modules/module_00000.so
+
+# TIMING: wafer-compile: compile-timing-summary-begin
+# TIMING: wafer-compile: | kind | pipeline | item | calls | cumulative wall ms | cumulative CPU ms | average wall ms | max wall ms | failures |
+# TIMING-DAG: wafer-compile: | stage | source-to-package | source-to-tensor-program | 1 |
+# TIMING-DAG: wafer-compile: | stage | tensor-program-to-executable | rank-candidate-generation | 1 |
+# TIMING-DAG: wafer-compile: | search | rank-candidate-generation | rank-request-shard |
+# TIMING-DAG: wafer-compile: | search-phase | candidate-evaluation | instr-lowering |
+# TIMING-DAG: wafer-compile: | search-phase | candidate-evaluation | spm-offset-planning |
+# TIMING-DAG: wafer-compile: | search-phase | candidate-evaluation | ddr-offset-planning |
+# TIMING-DAG: wafer-compile: | lowering-phase | tile-region-to-instr | full-conversion |
+# TIMING-DAG: wafer-compile: | lowering-pattern | tile-region-to-instr | wafer.tile.load |
+# TIMING-DAG: wafer-compile: | pass | stablehlo-to-linalg |
+# TIMING-DAG: wafer-compile: | pass | scheduled-rank-finalization |
+# TIMING-DAG: wafer-compile: | pass | instr-to-target-llvm |
+# TIMING: wafer-compile: compile-timing-summary-end transaction_wall_ms={{[0-9]+\.[0-9][0-9][0-9]}}
+# TIMING: wafer-compile: published verified package with execution-ranks=1:

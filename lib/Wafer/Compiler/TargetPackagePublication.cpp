@@ -13,6 +13,7 @@
 #include "Wafer/Compiler/Package.h"
 #include "Wafer/Runtime/PackageManifest.h"
 #include "Wafer/Runtime/ProfileCompanion.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/TargetCall.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -104,7 +105,12 @@ static mlir::LogicalResult stageExecutablePackage(
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle,
     ProfileCaptureKind profileCapture = ProfileCaptureKind::None) {
   const CompileClock::time_point totalStart = CompileClock::now();
+  wafer::support::ScopedCompileTimingSpan targetPackageTiming(
+      "stage", "executable-to-package", "target-package");
   const CompileClock::time_point targetIRStart = CompileClock::now();
+  auto targetIRTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "stage", "executable-to-package", "target-ir-lowering");
   llvm::Expected<TargetLLVMModuleBundle> targetLLVMModules =
       compileExecutableBundleToTargetLLVMModulesImpl(
           executableBundle, diagnostics, failAfterTargetLogicalRank,
@@ -114,7 +120,11 @@ static mlir::LogicalResult stageExecutablePackage(
     return mlir::failure();
   }
   const int64_t targetIRWallMs = elapsedCompileMilliseconds(targetIRStart);
+  targetIRTiming.reset();
   const CompileClock::time_point targetArtifactStart = CompileClock::now();
+  auto targetArtifactTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "stage", "executable-to-package", "target-artifact");
   llvm::Expected<TargetArtifactBundle> targetArtifacts =
       compileTargetLLVMModuleBundleToTargetArtifactsImpl(
           *targetLLVMModules, stagedTargetArtifacts, targetToolchain,
@@ -125,7 +135,11 @@ static mlir::LogicalResult stageExecutablePackage(
   }
   const int64_t targetArtifactWallMs =
       elapsedCompileMilliseconds(targetArtifactStart);
+  targetArtifactTiming.reset();
   const CompileClock::time_point packageStart = CompileClock::now();
+  auto packageTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "stage", "executable-to-package", "package-assembly");
   llvm::Expected<PackageBundle> package = assemblePackageBundleImpl(
       tensorProgramDirectory, executableBundle, *targetArtifacts, stagedPackage,
       diagnostics, failAfterPackageLogicalRank);
@@ -134,6 +148,7 @@ static mlir::LogicalResult stageExecutablePackage(
     return mlir::failure();
   }
   const int64_t packageWallMs = elapsedCompileMilliseconds(packageStart);
+  packageTiming.reset();
   diagnostics << "wafer-compile: compile-stats stage=target-ir-lowering"
               << " wall_ms=" << targetIRWallMs
               << " peak_rss_kib=" << getCompilePeakRSSKiB()
@@ -640,6 +655,8 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<ExecutableBundle> &executableBundle,
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle) {
   const CompileClock::time_point totalStart = CompileClock::now();
+  wafer::support::ScopedCompileTimingSpan productTiming(
+      "stage", "target-product", "ordinary-product");
   llvm::Expected<ExecutableBundle> compiledExecutableBundle =
       compileTensorProgramToExecutableBundleImpl(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
@@ -690,6 +707,8 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<ExecutableBundle> &executableBundle,
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle) {
   const CompileClock::time_point totalStart = CompileClock::now();
+  wafer::support::ScopedCompileTimingSpan productTiming(
+      "stage", "target-product", "profile-product");
   llvm::Expected<ExecutableBundle> compiled =
       compileTensorProgramToExecutableBundleImpl(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,

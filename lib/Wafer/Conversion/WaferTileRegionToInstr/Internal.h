@@ -4,6 +4,7 @@
 #define WAFER_LIB_CONVERSION_WAFERTILEREGIONTOINSTR_INTERNAL_H
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
@@ -19,6 +20,19 @@
 
 namespace wafer::tile_region_to_instr {
 
+/// Attributes detailed conversion time to the typed source operation being
+/// rewritten. This stays invocation-local and is a no-op unless the owning
+/// compiler request explicitly enabled detailed timing.
+class ScopedLoweringPatternTiming {
+public:
+  explicit ScopedLoweringPatternTiming(mlir::Operation *operation)
+      : timing("lowering-pattern", "tile-region-to-instr",
+               operation->getName().getStringRef()) {}
+
+private:
+  wafer::support::ScopedCompileTimingSpan timing;
+};
+
 enum class AllGatherSchedule { Ring, Direct };
 enum class AllReduceSchedule { Auto, Ring, Tree };
 enum class ReduceScatterSchedule { Direct, Ring };
@@ -31,9 +45,10 @@ struct TileRegionToInstrOptions {
 
 /// Compiler-private materialization point used only by actual-clone candidate
 /// generation. The installed conversion API always lowers the baseline form.
-mlir::LogicalResult convertTileRegionToInstrModule(
-    mlir::ModuleOp module, const TileRegionToInstrOptions &options,
-    std::string *failureReason = nullptr);
+mlir::LogicalResult
+convertTileRegionToInstrModule(mlir::ModuleOp module,
+                               const TileRegionToInstrOptions &options,
+                               std::string *failureReason = nullptr);
 
 struct MovementDescriptor {
   int64_t byteCount = 0;
@@ -150,6 +165,9 @@ getStaticMappedMovementSegments(
     llvm::ArrayRef<int64_t> iterationShape, SourceIndexFn sourceIndexFn,
     DestIndexFn destIndexFn, std::string *failureReason,
     llvm::StringRef opLabel) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "lowering-algorithm", "tile-region-to-instr",
+      "mapped-segment-enumeration", op->getName().getStringRef());
   std::optional<WaferPhysicalTensorInfo> sourceInfoStorage =
       computeWaferPhysicalTensorInfo(sourceType);
   std::optional<WaferPhysicalTensorInfo> destInfoStorage =

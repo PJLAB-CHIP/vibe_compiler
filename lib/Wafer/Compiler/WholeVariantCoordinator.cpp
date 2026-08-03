@@ -2,6 +2,8 @@
 
 #include "WholeVariantCoordinator.h"
 
+#include "Wafer/Support/CompileTiming.h"
+
 #include "AcceptedCallClosure.h"
 #include "DirectDTETransport.h"
 #include "ExecutableBundleInternal.h"
@@ -1187,7 +1189,12 @@ static mlir::FailureOr<AcceptedWholeVariant> runTargetGate(
   const bool transportPreparedBeforeEntry =
       llvm::is_contained(candidate.runtimeLaunchContract.getPhases(),
                          RuntimeLaunchPhaseRole::Prepare);
-  for (RankExecutable &rank : candidate.ranks) {
+  for (auto [rankIndex, rank] : llvm::enumerate(candidate.ranks)) {
+    std::string timingDetail =
+        (llvm::Twine("logical-rank=") + llvm::Twine(rankIndex)).str();
+    wafer::support::ScopedCompileTimingSpan rankTiming(
+        "selection-phase", "whole-variant-selection", "target-rank-gate",
+        timingDetail);
     if (statistics)
       ++statistics->targetRankGateInvocations;
     mlir::FailureOr<PreparedTargetRank> prepared =
@@ -1766,6 +1773,8 @@ selectAcceptedWholeVariants(
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     WholeVariantSelectionMode selectionMode, bool retainReservedBaseline,
     WholeVariantSelectionStatistics *statistics) {
+  wafer::support::ScopedCompileTimingSpan selectionTiming(
+      "stage", "whole-variant-selection", "bounded-variant-selection");
   if (program.logicalRankCount != executionConfig.getRankCount()) {
     diagnostics << "wafer-compile: typed program rank domain does not match "
                    "whole-variant ExecutionConfig\n";
@@ -1784,8 +1793,13 @@ selectAcceptedWholeVariants(
                           candidate.workerPlacementPlanOrdinal});
     frontierMetadata.push_back(std::move(metadata));
   }
-  WholeVariantAttemptPlan attemptPlan = buildWholeVariantAttemptPlan(
-      frontierMetadata, executionConfig.getRankCount());
+  WholeVariantAttemptPlan attemptPlan;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "selection-phase", "whole-variant-selection", "attempt-plan-build");
+    attemptPlan = buildWholeVariantAttemptPlan(frontierMetadata,
+                                               executionConfig.getRankCount());
+  }
   if (statistics) {
     statistics->frontierCandidateCount = 0;
     for (const RankVariantFrontier &frontier : frontiers)
@@ -1856,6 +1870,13 @@ selectAcceptedWholeVariants(
     std::string capturedDiagnostics;
     std::string failureGate = "unknown";
     mlir::FailureOr<PreTargetWholeVariant> result = mlir::failure();
+    std::string timingDetail;
+    llvm::raw_string_ostream timingDetailStream(timingDetail);
+    timingDetailStream << "candidates=";
+    llvm::interleaveComma(candidateIndices, timingDetailStream);
+    wafer::support::ScopedCompileTimingSpan timing(
+        "selection-phase", "whole-variant-selection", "pre-target-attempt",
+        timingDetailStream.str());
     {
       mlir::ScopedDiagnosticHandler handler(
           context, [&](mlir::Diagnostic &diagnostic) {
@@ -1881,6 +1902,13 @@ selectAcceptedWholeVariants(
     std::string capturedDiagnostics;
     std::string failureGate = "unknown";
     mlir::FailureOr<AcceptedWholeVariant> result = mlir::failure();
+    std::string timingDetail;
+    llvm::raw_string_ostream timingDetailStream(timingDetail);
+    timingDetailStream << "candidates=";
+    llvm::interleaveComma(candidateIndices, timingDetailStream);
+    wafer::support::ScopedCompileTimingSpan timing(
+        "selection-phase", "whole-variant-selection", "target-gate",
+        timingDetailStream.str());
     {
       mlir::ScopedDiagnosticHandler handler(
           context, [&](mlir::Diagnostic &diagnostic) {

@@ -25,9 +25,9 @@ Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [done]
 Q38 -> Q39 NoC-resident tile dataflow                        [done]
 Q43 Vibe Compiler collaboration review materials             [done]
 Q42 test gate scope reduction                                [done]
-Q42 + Q32.C -> Q41 compiler search scalability               [board-ready]
+Q42 + Q32.C -> Q41 compiler search scalability               [doing]
 Q42 + Q39 -> Q40 composed search and DTE overlap             [board-ready]
-Q15 + Q18 + Q35 -> Q44 PyTorch source board verticals        [board-ready]
+Q15 + Q18 + Q35 -> Q44 PyTorch source board verticals        [later]
 ```
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
@@ -38,8 +38,8 @@ Q15 + Q18 + Q35 -> Q44 PyTorch source board verticals        [board-ready]
 | Q43 | `compiler-collaboration-review-materials` | `done` | Q9、Q37-Q39完成证据 | 151页专家技术汇报已逐页闭合：PyTorch/XLA到StableHLO/SPMD、structured IR、production analysis/pass与18个优化轴、Tile/Instr、Target LLVM、RV64 ELF/package、硬件校准和共同开发经验均有source-backed主图、原生IR/数据/分析及嵌入Notes；151张独立Image2图与PPT media一一对应，PPTX/PDF/逐页PNG/contact sheet均完成最终渲染和结构检查。未重跑板端case，Q40/Q41仍保持`board-ready`。 | 01、06、16；`tasks/plans/vibe-compiler-collaboration-review.md` |
 | Q42 | `test-load-reduction` | `done` | 无 | 默认lit/unit/CTest和owner integration均只判直接合同；历史catalog、campaign、model-scale与重复package执行已退出默认入口，保留的source-to-package/no-card seam通过。 | 16；`tasks/plans/test-gate-scope-reduction.md` |
 | Q40 | `composed-choice-search-and-dte-overlap` | `board-ready` | Q39、Q42完成 | bounded whole-variant组合、V3 same-block Direct-DTE issue→FP16/BF16 CT/NE→exact wait结构witness、同tuple serialized baseline、16-rank replicated FP16 elementwise完整双package及fresh no-card已闭合；两包保持同source/cluster launch/transport ABI/binding/call inventory并以scheduler顺序区分。真实板端exact-output和matched A/B尚未执行，不得标`done`。 | 06、08-13、16；`tasks/plans/composed-choice-search-and-dte-overlap.md` |
-| Q41 | `compiler-search-scalability` | `board-ready` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 搜索资源与typed optimization configuration均已闭合：18个稳定语义轴支持production/none preset及逐项enable/disable，配置贯穿同一source-to-package pipeline；none唯一保留fully gated baseline，reciprocal单轴四路A/B证明最终ELF结构差异及组合等价，M-sharded K=1024 ordinary/profile production package逐字节一致且fresh no-card通过。搜索仍保持rank-invariant canonical sharding、显式资源上界和wall/RSS观测。真实板端exact-output及winner profile尚未执行，不得标`done`。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
-| Q44 | `pytorch-source-board-verticals` | `board-ready` | Q15、Q18、Q35 | 集中的PyTorch source case、固定seed随机输入、case-owned dtype、同module/op eager参考结果、output-only capture及原dtype/shape `torch.testing`比较已经闭合；GEMM和K-sharded GEMM/AllReduce均由真实PyTorch/XLA exporter进入production pipeline并完成完整package与fresh no-card，Q40/Q41及optimization campaign的高层tensor结果复用同一Torch seam。instruction、ABI、layout、DMA、PMU及target raw-bit calibration继续由各自协议拥有。rank-one与16-rank真实板端完整输出尚未执行，不能标`done`。 | 02、16；`tasks/plans/pytorch-source-board-verticals.md` |
+| Q41 | `compiler-search-scalability` | `doing` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 搜索资源与typed optimization configuration均已闭合；当前增加默认关闭的stage/pipeline/pass/analysis/candidate-evaluation详细计时、active长耗时诊断和汇总表，并以实际Llama-2 7B block定位编译瓶颈后再确定剪枝边界。计时不得进入IR/package/selection，剪枝不得按shape/op/name恢复语义。原M-sharded K=1024 package/no-card证据不失效；详细计时与模型case完成新鲜验证后恢复`board-ready`，真实板端exact-output及winner profile尚未执行，不得标`done`。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
+| Q44 | `pytorch-source-board-verticals` | `later` | Q15、Q18、Q35；Q41通用transpose lowering热点修复 | 集中的PyTorch source case、固定seed随机输入、case-owned dtype、同module/op eager参考结果、output-only capture及原dtype/shape `torch.testing`比较已经闭合；GEMM和`4096³` K-sharded GEMM/AllReduce均由真实PyTorch/XLA exporter完成package与fresh no-card。实际Llama-2 7B Megatron TP16已完成eager、export和post-SPMD结构检查，但production compile由transpose mapped-segment逐element枚举主导，尚无完整package/no-card；先由Q41修复该通用热点，再推进三个case到共同board-ready。instruction、ABI、layout、DMA、PMU及target raw-bit calibration继续由各自协议拥有。 | 02、16；`tasks/plans/pytorch-source-board-verticals.md` |
 
 ## Later / External Gates
 

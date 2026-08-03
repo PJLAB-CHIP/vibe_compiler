@@ -1,8 +1,9 @@
 # Compiler Search Scalability
 
-状态：`board-ready`。typed optimization configuration、正式CLI、单轴source-to-package A/B及模型规模
-ordinary/profile no-card已闭合；新增配置只约束哪些可选alternative进入candidate domain，不修改Q39
-NoC-resident语义或Q40的Direct-DTE issue/wait合同。真实板端未运行。
+状态：`doing`。typed optimization configuration、正式CLI、单轴source-to-package A/B及模型规模
+ordinary/profile no-card已闭合；当前扩展invocation-local详细编译计时，并用实际模型case定位长耗时边界后再决定
+剪枝方案。新增配置只约束哪些可选alternative进入candidate domain，不修改Q39 NoC-resident语义或Q40的
+Direct-DTE issue/wait合同。真实板端未运行。
 
 ```text
 Pipeline position:
@@ -12,17 +13,19 @@ Pipeline position:
   量化并优化candidate generation、attempt planning、analysis、late gate、clone/import/lowering和profile
   capture construction，删除不改变candidate domain、winner或artifact的重复工作；同时把当前production
   candidate owner中的可选语义优化机制收敛为typed、可组合的optimization configuration，使同一source、
-  target和launch可以选择production全集、全关baseline或任意显式子集。
+  target和launch可以选择production全集、全关baseline或任意显式子集；按显式请求观测stage、pipeline、pass、
+  analysis和candidate evaluation子阶段的wall/CPU时间，且长运行或超时时能看到仍在执行的边界。
 - Output artifact / IR:
   由显式optimization configuration约束candidate domain后产生的accepted whole variant、package/profile
   companion及包含canonical enabled/disabled set的稳定compile-time diagnostics。配置只决定允许生成哪些
-  alternative；最终选择仍由actual IR、exact gate和既有static policy完成。
+  alternative；最终选择仍由actual IR、exact gate和既有static policy完成。详细计时只产生invocation-local
+  diagnostic event与汇总表，不成为IR、artifact、cache key或selection input。
 - Downstream consumer:
   target/package/no-card/runtime、Q9 profiler和model-scale compile workflow。
 - User-level driver / named pipeline:
   wafer-compile source-to-package production pipeline；`--optimization-preset`、
   `--enable-optimization`和`--disable-optimization`共同构造typed configuration，`--profile`只请求同一
-  configuration winner的profile product。
+  configuration winner的profile product；`--compile-timing`只打开详细计时诊断，默认关闭。
 - Explicit non-goals:
   不把pass、测试case或catalog evidence key做成长期option；不允许关闭canonicalization、verifier、
   SPM/DDR placement、completion normalization、Direct-DTE acceptance、whole-card resource、target ABI或
@@ -30,6 +33,8 @@ Pipeline position:
   Q40 choice/wait合同。
 - Completion gate:
   per-stage wall、peak RSS、candidate/attempt/late-gate/clone/lowering/capture计数完整；search work有显式上界；
+  `--compile-timing`覆盖production named pipeline中的stage/pass/analysis及candidate evaluation子阶段，成功或
+  失败均输出按累计wall time排序的汇总表，长运行时周期输出当前active边界；默认编译不输出详细计时；
   production preset与此前default winner一致；none preset只保留fully gated conservative baseline；每个
   public语义优化名都能独立enable/disable并可组合，unknown/duplicate/conflicting配置在编译前拒绝；至少一个
   source-to-package A/B证明单轴关闭改变final target结构而source/launch/ABI保持一致。M-sharded K=1024 case在
@@ -127,6 +132,49 @@ publication和transaction的wall time与process peak RSS，并报告generation c
 target gate、rank lowering、clone上界、encoded/imported module及capture计数。统计仅存在于本次compiler
 invocation，不进入IR、package或selection input。
 
+详细计时在上述低开销稳定统计之上按需启用：
+
+- `--compile-timing`默认关闭；打开后记录`stage -> pipeline -> pass/analysis`和candidate search内部的
+  source-variant、recipe、scope selection、tile-region lowering、instr lowering、SPM/DDR planning、verifier与
+  cost analysis边界。索引只写入本次diagnostic detail，用于关联一次search request，不恢复或改变IR语义。
+- 每个完成项记录调用次数、累计wall/线程CPU、平均wall、最大wall和失败次数；最终按累计wall降序输出Markdown
+  表格。并行worker的累计wall是work量，允许超过transaction wall，不能把它当成串行关键路径。
+- 为避免逐candidate打印扰动被测对象，短事件只在内存中聚合；后台以固定低频率输出仍active且耗时最长的边界。
+  同时输出已完成项的累计wall/CPU Top-N。因此被外部timeout终止时，日志仍能同时指出尚未结束的边界和此前
+  已完成工作的主要成本，而不必等待正常收尾。
+- 计时只解释“时间花在哪里”，不授权按shape/op/name跳过工作。任何剪枝必须随后证明它是现有exact gate的廉价
+  前置判定，或显式调整typed candidate domain及其测试合同。
+
+### 实际 Llama-2 7B 定向结果
+
+实际Llama-2 7B单block使用hidden `4096`、intermediate `11008`、32 heads、head dim `128`、batch `1`、
+sequence `16`和Megatron TP16。定向采样使用真实PyTorch/XLA source program及production 16-rank compile，
+只在固定短窗口收集诊断后主动终止；它用于定位，不是完整package或no-card完成证据。
+
+10秒稳定窗口的并行累计work如下。累计时间包含多个worker，可以大于窗口wall time：
+
+| 边界 | 调用次数 | 累计wall | 最大单次wall | 解释 |
+| --- | ---: | ---: | ---: | --- |
+| candidate evaluation | 254 | 147.237 s | 3.649 s | 完整候选评估 |
+| instr lowering | 260 | 142.313 s | 3.642 s | 候选TileRegion到Instr |
+| full conversion | 260 | 142.155 s | 3.642 s | dialect conversion主体 |
+| `wafer.tile.transpose` pattern | 79 | 132.494 s | 3.639 s | full conversion主热点 |
+| mapped segment enumeration | 166 | 126.657 s | 3.258 s | 按logical element计算物理offset |
+| `wafer.tile.broadcast` pattern | 65 | 7.347 s | 0.298 s | 次要mapped movement |
+| descriptor materialization | 266 | 6.715 s | 0.270 s | segment打包后的Instr构造 |
+| descriptor command counting | 266 | 6.676 s | 0.215 s | segment descriptor预计数 |
+| source to tensor program | 1 | 3.385 s | 3.385 s | 不是长编译主因 |
+| SPM offset planning | 256 | 2.103 s | 0.021 s | 不是长编译主因 |
+
+`wafer.tile.transpose`解释约93%的full-conversion累计wall；其内部mapped-segment enumeration又解释绝大多数
+pattern时间。当前通用fallback按结果张量每个logical element生成source/dest物理offset，再coalesce和打包，
+因此实际attention transpose的元素规模会被每个rank的多个candidate重复支付。
+
+优化顺序由这个证据约束：先为static shape、byte-addressable element、可验证layout/stride和permutation建立
+exact descriptor fast path，直接构造目标最多三层iteration可表达的movement；证明失败时保留逐element fallback。
+然后再评估以typed IR与candidate spec为key的rank间复用，或在枚举前由现有4096 terminal-op gate推出必然拒绝。
+不得因为当前热点是transpose而按op name跳过，也不得用Llama shape特判改变candidate domain。
+
 ## 无卡结果
 
 同一Release构建的门禁为profile transaction不超过90秒、peak RSS不超过512 MiB；相对首次可完成的观测值保留
@@ -152,7 +200,8 @@ production、count capture和trace capture三个完整package均fresh通过`wafe
 guard/status/lifecycle及bounded timeout，显式要求grid launch；它fresh生成ordinary/profile两个production
 package并证明递归bytes完全一致、NE GEMM target structure一致、profile companion完整且两包均通过no-card。
 这避免把rank count错误恢复成cluster/Direct-DTE launch。无卡门禁已闭合，真实板端未执行，Q41保持
-`board-ready`而不是`done`。
+原有`board-ready`证据有效；但本轮因实际Llama compile热点重新进入`doing`，在通用exact descriptor优化、
+对应回归和模型compile复验闭合前不恢复`board-ready`。
 
 本轮typed configuration的fresh host证据包括：
 

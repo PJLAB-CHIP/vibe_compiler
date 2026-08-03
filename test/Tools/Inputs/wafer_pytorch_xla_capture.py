@@ -35,27 +35,6 @@ HF_MEGATRON_REPLICATED_VECTOR_SPEC = (None,)
 HF_MEGATRON_ACTIVATION_TP_SPEC = (None, None, "tensor")
 HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC = ("tensor", None)
 HF_MEGATRON_ROW_PARALLEL_WEIGHT_SPEC = (None, "tensor")
-HF_LLAMA_COLUMN_PARALLEL_WEIGHT_NAMES = frozenset(
-    {
-        "q_proj.weight",
-        "k_proj.weight",
-        "v_proj.weight",
-        "gate_proj.weight",
-        "up_proj.weight",
-    }
-)
-HF_LLAMA_ROW_PARALLEL_WEIGHT_NAMES = frozenset(
-    {
-        "o_proj.weight",
-        "down_proj.weight",
-    }
-)
-HF_LLAMA_REPLICATED_VECTOR_NAMES = frozenset(
-    {
-        "input_layernorm.weight",
-        "post_attention_layernorm.weight",
-    }
-)
 LLAMA_SCALE_PAYLOAD_ALGORITHM = (
     "wafer-exact-f16-splitmix64-counter-byte-scaled-v3"
 )
@@ -769,7 +748,9 @@ def apply_strategy_marks(
 ) -> None:
     spmd_module.mark_sharding(input_tensor, mesh, strategy.input_spec)
     spmd_module.mark_sharding(reference_module.weight, mesh, strategy.weight_spec)
-    spmd_module.mark_sharding(reference_module.bias, mesh, strategy.bias_spec)
+    bias = getattr(reference_module, "bias", None)
+    if bias is not None:
+        spmd_module.mark_sharding(bias, mesh, strategy.bias_spec)
 
 
 def create_hf_megatron_mesh(spmd_module: Any) -> Any:
@@ -788,17 +769,26 @@ def apply_hf_megatron_sharding_marks(
     reference_module: Any,
 ) -> None:
     spmd_module.mark_sharding(input_tensor, mesh, HF_MEGATRON_INPUT_SPEC)
-    for name, parameter in _named_parameters(reference_module):
-        if name in HF_LLAMA_REPLICATED_VECTOR_NAMES:
-            spec = HF_MEGATRON_REPLICATED_VECTOR_SPEC
-        elif name in HF_LLAMA_COLUMN_PARALLEL_WEIGHT_NAMES:
-            spec = HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC
-        elif name in HF_LLAMA_ROW_PARALLEL_WEIGHT_NAMES:
-            spec = HF_MEGATRON_ROW_PARALLEL_WEIGHT_SPEC
-        else:
-            raise RuntimeError(
-                f"unsupported HF Megatron transformer parameter '{name}'"
-            )
+    get_specs = getattr(
+        reference_module, "wafer_parameter_sharding_specs", None
+    )
+    if not callable(get_specs):
+        raise RuntimeError(
+            "HF Megatron transformer module must explicitly declare "
+            "parameter sharding specs"
+        )
+    parameter_specs = tuple(get_specs())
+    parameters = tuple(reference_module.parameters())
+    if (
+        len(parameter_specs) != len(parameters)
+        or {id(parameter) for parameter, _ in parameter_specs}
+        != {id(parameter) for parameter in parameters}
+    ):
+        raise RuntimeError(
+            "HF Megatron parameter sharding specs must cover every parameter "
+            "exactly once"
+        )
+    for parameter, spec in parameter_specs:
         spmd_module.mark_sharding(parameter, mesh, spec)
 
 
@@ -998,6 +988,9 @@ def _make_hf_llama_decoder_block_module(
                 torch_module.empty(hidden_size, dtype=storage_dtype)
             )
 
+        def wafer_parameter_sharding_specs(self):
+            return ((self.weight, HF_MEGATRON_REPLICATED_VECTOR_SPEC),)
+
         def forward(self, x):
             input_dtype = x.dtype
             x_f32 = x.to(torch_module.float32)
@@ -1006,13 +999,22 @@ def _make_hf_llama_decoder_block_module(
             return normalized.to(input_dtype) * self.weight
 
     class WaferLinearNoBias(torch_module.nn.Module):
-        def __init__(self, out_features: int, in_features: int):
+        def __init__(
+            self,
+            out_features: int,
+            in_features: int,
+            weight_sharding_spec: tuple[Any, ...],
+        ):
             super().__init__()
             self.weight = torch_module.nn.Parameter(
                 torch_module.empty(
                     out_features, in_features, dtype=storage_dtype
                 )
             )
+            self.weight_sharding_spec = weight_sharding_spec
+
+        def wafer_parameter_sharding_specs(self):
+            return ((self.weight, self.weight_sharding_spec),)
 
         def forward(self, x):
             return x @ self.weight.transpose(0, 1)
@@ -1040,13 +1042,41 @@ def _make_hf_llama_decoder_block_module(
             self._wafer_spmd_mesh = None
             self.input_layernorm = WaferLlamaRMSNorm()
             self.post_attention_layernorm = WaferLlamaRMSNorm()
-            self.q_proj = WaferLinearNoBias(hidden_size, hidden_size)
-            self.k_proj = WaferLinearNoBias(hidden_size, hidden_size)
-            self.v_proj = WaferLinearNoBias(hidden_size, hidden_size)
-            self.o_proj = WaferLinearNoBias(hidden_size, hidden_size)
-            self.gate_proj = WaferLinearNoBias(intermediate_size, hidden_size)
-            self.up_proj = WaferLinearNoBias(intermediate_size, hidden_size)
-            self.down_proj = WaferLinearNoBias(hidden_size, intermediate_size)
+            self.q_proj = WaferLinearNoBias(
+                hidden_size,
+                hidden_size,
+                HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
+            )
+            self.k_proj = WaferLinearNoBias(
+                hidden_size,
+                hidden_size,
+                HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
+            )
+            self.v_proj = WaferLinearNoBias(
+                hidden_size,
+                hidden_size,
+                HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
+            )
+            self.o_proj = WaferLinearNoBias(
+                hidden_size,
+                hidden_size,
+                HF_MEGATRON_ROW_PARALLEL_WEIGHT_SPEC,
+            )
+            self.gate_proj = WaferLinearNoBias(
+                intermediate_size,
+                hidden_size,
+                HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
+            )
+            self.up_proj = WaferLinearNoBias(
+                intermediate_size,
+                hidden_size,
+                HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
+            )
+            self.down_proj = WaferLinearNoBias(
+                hidden_size,
+                intermediate_size,
+                HF_MEGATRON_ROW_PARALLEL_WEIGHT_SPEC,
+            )
             cos_cached, sin_cached = build_rope_cache()
             self.register_buffer("cos_cached", cos_cached, persistent=False)
             self.register_buffer("sin_cached", sin_cached, persistent=False)
@@ -1068,6 +1098,16 @@ def _make_hf_llama_decoder_block_module(
         def set_activation_sharding(self, spmd_module, mesh):
             self._wafer_spmd_module = spmd_module
             self._wafer_spmd_mesh = mesh
+
+        def wafer_parameter_sharding_specs(self):
+            specs = []
+            for child in self.children():
+                get_specs = getattr(
+                    child, "wafer_parameter_sharding_specs", None
+                )
+                if callable(get_specs):
+                    specs.extend(get_specs())
+            return tuple(specs)
 
         def _mark_activation_tp(self, tensor):
             if self._wafer_spmd_module is not None:
@@ -1467,7 +1507,7 @@ def _build_workload_case_payload(
         )
 
     # These checks precede both canonical digest construction and every NPY /
-    # StableHLO artifact write. In particular, an all-NaN eager oracle must
+    # StableHLO artifact write. In particular, an all-NaN eager reference must
     # never become a fixed digest that can compare equal to itself later.
     _verify_workload_payload_finite(
         numpy_module,
@@ -2427,6 +2467,8 @@ def emit_hf_megatron_transformer_block_program(
     xla_model_module: Any | None = None,
     spmd_module: Any | None = None,
     xlac_module: Any | None = None,
+    reference_module_factory: Callable[[], Any] | None = None,
+    example_input_tensor: Any | None = None,
     parameter_arrays: dict[str, Any] | None = None,
     input_array: Any | None = None,
     expected_cpu_output: Any | None = None,
@@ -2466,13 +2508,26 @@ def emit_hf_megatron_transformer_block_program(
             "torch_xla"
         )
 
-    torch_module.manual_seed(0)
-    reference_module = _make_hf_llama_decoder_block_module(
-        torch_module,
-        config,
-        sequence_length,
-        parameter_arrays=parameter_arrays,
-    )
+    if reference_module_factory is not None and parameter_arrays is not None:
+        raise RuntimeError(
+            "HF Megatron exporter accepts either a Torch module factory or "
+            "transport parameter arrays, not both"
+        )
+    if example_input_tensor is not None and input_array is not None:
+        raise RuntimeError(
+            "HF Megatron exporter accepts either a Torch example input or a "
+            "transport input array, not both"
+        )
+    if reference_module_factory is None:
+        torch_module.manual_seed(0)
+        reference_module = _make_hf_llama_decoder_block_module(
+            torch_module,
+            config,
+            sequence_length,
+            parameter_arrays=parameter_arrays,
+        )
+    else:
+        reference_module = reference_module_factory()
     reference_module.eval()
     state_dict = _state_dict_numpy(torch_module, reference_module)
 
@@ -2496,12 +2551,26 @@ def emit_hf_megatron_transformer_block_program(
 
     device = xla_model_module.xla_device()
     reference_module = _move_to_device(reference_module, device)
-    if input_array is None:
-        input_dtype = next(reference_module.parameters()).dtype
+    input_dtype = next(reference_module.parameters()).dtype
+    input_shape = (
+        batch_size,
+        sequence_length,
+        int(config["hidden_size"]),
+    )
+    if example_input_tensor is not None:
+        if (
+            tuple(example_input_tensor.shape) != input_shape
+            or example_input_tensor.dtype != input_dtype
+        ):
+            raise RuntimeError(
+                "HF Megatron example input must match the module: "
+                f"input={tuple(example_input_tensor.shape)}/"
+                f"{example_input_tensor.dtype} module={input_shape}/{input_dtype}"
+            )
+        input_tensor = example_input_tensor.detach().clone()
+    elif input_array is None:
         input_tensor = torch_module.empty(
-            batch_size,
-            sequence_length,
-            int(config["hidden_size"]),
+            *input_shape,
             dtype=input_dtype,
         )
     else:

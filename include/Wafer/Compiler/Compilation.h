@@ -27,6 +27,10 @@ namespace wafer::compiler {
 
 class TargetToolchain;
 
+/// Invocation-local diagnostic policy. Detailed timing never changes source
+/// semantics, candidate admission, selection, or published artifacts.
+enum class CompilationTimingMode { Disabled, Detailed };
+
 /// Validated execution facts for the current single-card compiler boundary.
 /// There is deliberately no default configuration: callers must choose the
 /// one-rank or complete 16-rank domain explicitly.
@@ -96,9 +100,11 @@ private:
 /// remains outside CompilationRequest and the compiler IR.
 class CompilationOptions {
 public:
-  static CompilationOptions standard(
-      OptimizationConfig optimizations = OptimizationConfig::production()) {
-    return CompilationOptions(/*profileCompanion=*/false, optimizations);
+  static CompilationOptions
+  standard(OptimizationConfig optimizations = OptimizationConfig::production(),
+           CompilationTimingMode timing = CompilationTimingMode::Disabled) {
+    return CompilationOptions(/*profileCompanion=*/false, optimizations,
+                              timing);
   }
 
   /// Requests a final-artifact profile companion. The ordinary package is
@@ -106,18 +112,25 @@ public:
   /// that same accepted 16-rank artifact.
   static llvm::Expected<CompilationOptions>
   profile(const ExecutionConfig &executionConfig,
-          OptimizationConfig optimizations = OptimizationConfig::production());
+          OptimizationConfig optimizations = OptimizationConfig::production(),
+          CompilationTimingMode timing = CompilationTimingMode::Disabled);
 
   bool shouldProduceProfileCompanion() const { return profileCompanion; }
   OptimizationConfig getOptimizationConfig() const { return optimizations; }
+  bool shouldReportDetailedTiming() const {
+    return timing == CompilationTimingMode::Detailed;
+  }
 
 private:
   explicit CompilationOptions(bool profileCompanion,
-                              OptimizationConfig optimizations)
-      : profileCompanion(profileCompanion), optimizations(optimizations) {}
+                              OptimizationConfig optimizations,
+                              CompilationTimingMode timing)
+      : profileCompanion(profileCompanion), optimizations(optimizations),
+        timing(timing) {}
 
   bool profileCompanion;
   OptimizationConfig optimizations;
+  CompilationTimingMode timing;
 };
 
 enum class ProgramResourceRole { UserInput, Parameter, Constant, Output };

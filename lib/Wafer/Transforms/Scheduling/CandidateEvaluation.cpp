@@ -2,6 +2,7 @@
 //-----------------===//
 
 #include "Scheduling/ScheduleTensorProgramInternal.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
@@ -64,55 +65,76 @@ finishCandidateEvaluation(CandidateEvaluation evaluation,
   std::string failureReason;
   mlir::LogicalResult result = mlir::success();
   failureReason.clear();
-  std::string diagnostics = takeDiagnostics(
-      context,
-      [&]() {
-        return tile_region_to_instr::convertTileRegionToInstrModule(
-            *evaluation.module, options, &failureReason);
-      },
-      result);
+  std::string diagnostics;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "candidate-evaluation", "instr-lowering");
+    diagnostics = takeDiagnostics(
+        context,
+        [&]() {
+          return tile_region_to_instr::convertTileRegionToInstrModule(
+              *evaluation.module, options, &failureReason);
+        },
+        result);
+  }
   if (mlir::failed(result)) {
     evaluation.failureReason =
         joinInstructionFailure("instr-lowering", failureReason, diagnostics);
     return evaluation;
   }
 
-  diagnostics = takeDiagnostics(
-      context,
-      [&]() {
-        return planSPMMemoryModule(*evaluation.module, config.spmBase,
-                                   config.spmLimit, config.spmAlignment);
-      },
-      result);
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "candidate-evaluation", "spm-offset-planning");
+    diagnostics = takeDiagnostics(
+        context,
+        [&]() {
+          return planSPMMemoryModule(*evaluation.module, config.spmBase,
+                                     config.spmLimit, config.spmAlignment);
+        },
+        result);
+  }
   if (mlir::failed(result)) {
     evaluation.failureReason = joinFailure("spm-offsets", "", diagnostics);
     return evaluation;
   }
 
-  diagnostics = takeDiagnostics(
-      context,
-      [&]() {
-        return planDDRMemoryModule(*evaluation.module, config.ddrAlignmentBytes,
-                                   config.ddrCapacityBytes,
-                                   config.ddrLargestContiguousBytes,
-                                   config.ddrBandwidthLimitBytes);
-      },
-      result);
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "candidate-evaluation", "ddr-offset-planning");
+    diagnostics = takeDiagnostics(
+        context,
+        [&]() {
+          return planDDRMemoryModule(
+              *evaluation.module, config.ddrAlignmentBytes,
+              config.ddrCapacityBytes, config.ddrLargestContiguousBytes,
+              config.ddrBandwidthLimitBytes);
+        },
+        result);
+  }
   if (mlir::failed(result)) {
     evaluation.failureReason = joinFailure("ddr-offsets", "", diagnostics);
     return evaluation;
   }
 
-  diagnostics = takeDiagnostics(
-      context, [&]() { return mlir::verify(*evaluation.module); }, result);
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "candidate-evaluation", "final-verifier");
+    diagnostics = takeDiagnostics(
+        context, [&]() { return mlir::verify(*evaluation.module); }, result);
+  }
   if (mlir::failed(result)) {
     evaluation.failureReason =
         joinInstructionFailure("verifier", "", diagnostics);
     return evaluation;
   }
 
-  evaluation.stats =
-      estimateStats(*evaluation.module, config.scheduleCostPolicy);
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "candidate-evaluation", "cost-analysis");
+    evaluation.stats =
+        estimateStats(*evaluation.module, config.scheduleCostPolicy);
+  }
   return evaluation;
 }
 
@@ -144,8 +166,7 @@ getCommunicationOptions(CommunicationAlternative alternative) {
 static bool
 canUseFullTraversalFallback(const CandidateSpec &candidate,
                             llvm::ArrayRef<int64_t> traversalShape) {
-  return candidate.traversalKind ==
-             CandidateTileTraversalKind::ResultDriven &&
+  return candidate.traversalKind == CandidateTileTraversalKind::ResultDriven &&
          candidate.reductionSplitSizes.empty() &&
          candidate.tileSizes.size() == traversalShape.size() &&
          std::equal(candidate.tileSizes.begin(), candidate.tileSizes.end(),
@@ -166,6 +187,9 @@ CandidateEvaluation evaluateCompleteCandidate(
   // it would silently collapse this distinct route back to Tensor staging.
   const bool preferFullTraversal =
       config.useDirectMappedBoundaryTransfer && canUseFullTraversal;
+  auto tileRegionTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "search-phase", "candidate-evaluation", "tile-region-lowering");
   std::string diagnostics;
   if (preferFullTraversal) {
     diagnostics = takeDiagnostics(
@@ -186,8 +210,7 @@ CandidateEvaluation evaluateCompleteCandidate(
               task, candidate.tileSizes, candidate.reductionSplitSizes,
               evaluation.module, &failureReason, config.logicalRank,
               candidate.selectedImplementationAlternative,
-              config.useDirectMappedBoundaryTransfer,
-              candidate.traversalKind);
+              config.useDirectMappedBoundaryTransfer, candidate.traversalKind);
         },
         result);
     evaluation.artifactSource = CandidateArtifactSource::CompleteTraversalAPI;
@@ -215,8 +238,7 @@ CandidateEvaluation evaluateCompleteCandidate(
               task, candidate.tileSizes, candidate.reductionSplitSizes,
               evaluation.module, &failureReason, config.logicalRank,
               candidate.selectedImplementationAlternative,
-              config.useDirectMappedBoundaryTransfer,
-              candidate.traversalKind);
+              config.useDirectMappedBoundaryTransfer, candidate.traversalKind);
         },
         result);
     if (mlir::succeeded(result))
@@ -227,6 +249,7 @@ CandidateEvaluation evaluateCompleteCandidate(
         joinFailure("complete-tile-region", failureReason, diagnostics);
     return evaluation;
   }
+  tileRegionTiming.reset();
   return finishCandidateEvaluation(
       std::move(evaluation), config,
       getCommunicationOptions(config.communicationAlternative));
@@ -381,7 +404,8 @@ private:
              const CandidateSpec &candidate, const SelectionConfig &config)
         : standaloneTaskModuleText(std::move(standaloneTaskModuleText)),
           traversalShape(traversalShape.begin(), traversalShape.end()),
-          candidate(candidate), config(config) {
+          candidate(candidate), config(config),
+          timingSession(wafer::support::getActiveCompileTimingSession()) {
       this->config.evaluationExecutor = nullptr;
     }
 
@@ -389,6 +413,7 @@ private:
     llvm::SmallVector<int64_t, 4> traversalShape;
     CandidateSpec candidate;
     SelectionConfig config;
+    std::shared_ptr<wafer::support::CompileTimingSession> timingSession;
     std::promise<CandidateCheckResult> promise;
   };
 
@@ -422,6 +447,16 @@ private:
         queue.pop_front();
       }
       queueSpaceAvailable.notify_one();
+      wafer::support::ScopedCompileTimingActivation timingActivation(
+          item->timingSession);
+      std::string timingDetail;
+      llvm::raw_string_ostream timingDetailStream(timingDetail);
+      timingDetailStream << "tile-rank=" << item->candidate.tileSizes.size()
+                         << ",reduction-rank="
+                         << item->candidate.reductionSplitSizes.size();
+      wafer::support::ScopedCompileTimingSpan candidateTiming(
+          "search", "rank-candidate-search", "candidate-evaluation",
+          timingDetailStream.str());
 
       if (!context) {
         mlir::DialectRegistry registry;
@@ -434,6 +469,8 @@ private:
 
       if (!hasParsedTask ||
           parsedTaskModuleText != *item->standaloneTaskModuleText) {
+        wafer::support::ScopedCompileTimingSpan parseTiming(
+            "search-phase", "candidate-evaluation", "task-parse");
         parsedTaskModuleText = *item->standaloneTaskModuleText;
         hasParsedTask = true;
         parseFailure.clear();
@@ -536,11 +573,9 @@ evaluateCandidateOnStandaloneTaskText(llvm::StringRef standaloneTaskModuleText,
                                AcceptedModuleTransfer::SerializeForOwnerImport);
 }
 
-mlir::LogicalResult
-importAcceptedCandidateModule(CandidateCheckResult &result,
-                              mlir::MLIRContext &ownerContext,
-                              const analysis::TargetScheduleCostPolicy
-                                  &scheduleCostPolicy) {
+mlir::LogicalResult importAcceptedCandidateModule(
+    CandidateCheckResult &result, mlir::MLIRContext &ownerContext,
+    const analysis::TargetScheduleCostPolicy &scheduleCostPolicy) {
   if (!result.failureReason.empty())
     return mlir::failure();
   if (result.acceptedModuleText.empty()) {

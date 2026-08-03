@@ -9,6 +9,7 @@
 #include "WholeVariantAttemptPlan.h"
 #include "WholeVariantCoordinator.h"
 
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 
 #include "mlir/Bytecode/BytecodeWriter.h"
@@ -113,6 +114,8 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     detail::WholeVariantSelectionMode selectionMode) {
   const detail::CompileClock::time_point totalStart =
       detail::CompileClock::now();
+  wafer::support::ScopedCompileTimingSpan executableBundleTiming(
+      "stage", "tensor-program-to-executable", "executable-bundle");
   constexpr int64_t candidateEvaluationWorkerLimit = 4;
   constexpr uint32_t rankRequestShardLimit = 16;
   auto fail = [&](llvm::StringRef message) -> llvm::Error {
@@ -171,10 +174,25 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
   // global admission policy before rank finalization.
   const detail::CompileClock::time_point rankGenerationStart =
       detail::CompileClock::now();
+  auto rankGenerationTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "stage", "tensor-program-to-executable", "rank-candidate-generation");
+  std::shared_ptr<wafer::support::CompileTimingSession> timingSession =
+      wafer::support::getActiveCompileTimingSession();
   llvm::parallelFor(0, searchShardResults.size(), [&](size_t index) {
+    wafer::support::ScopedCompileTimingActivation timingActivation(
+        timingSession);
     RankSearchShardResult &result = searchShardResults[index];
     const detail::CompileClock::time_point shardStart =
         detail::CompileClock::now();
+    std::string timingDetail;
+    llvm::raw_string_ostream timingDetailStream(timingDetail);
+    timingDetailStream << "logical-rank=" << result.logicalRank
+                       << ",generation-class=" << result.generationClass
+                       << ",request-shard=" << result.requestShardIndex;
+    wafer::support::ScopedCompileTimingSpan shardTiming(
+        "search", "rank-candidate-generation", "rank-request-shard",
+        timingDetailStream.str());
     mlir::DialectRegistry registry;
     detail::registerCompilationDialects(registry);
     auto rankContext = std::make_unique<mlir::MLIRContext>(registry);
@@ -300,6 +318,7 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
   }
   const int64_t rankGenerationWallMs =
       detail::elapsedCompileMilliseconds(rankGenerationStart);
+  rankGenerationTiming.reset();
 
   uint64_t generatedCandidateCount = 0;
   for (RankLoweringResult &result : loweringResults) {
@@ -316,6 +335,9 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
   // metadata remain available to the owner import audit.
   const detail::CompileClock::time_point transferStart =
       detail::CompileClock::now();
+  auto transferTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "stage", "tensor-program-to-executable", "frontier-transfer");
   std::vector<detail::RankVariantMetadataFrontier> generatedMetadata;
   generatedMetadata.reserve(loweringResults.size());
   for (const RankLoweringResult &result : loweringResults) {
@@ -409,6 +431,7 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
   }
   const int64_t transferWallMs =
       detail::elapsedCompileMilliseconds(transferStart);
+  transferTiming.reset();
 
   // Reproduce the coordinator's original bounded attempt sequence from cheap
   // metadata before parsing any finalized module into the bundle-owner
@@ -417,6 +440,8 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
   // reserved baseline) materialize their module.
   const detail::CompileClock::time_point importStart =
       detail::CompileClock::now();
+  auto importTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "stage", "tensor-program-to-executable", "owner-import");
   llvm::Expected<std::vector<detail::RankVariantFrontier>> imported =
       detail::importRankVariantFrontiersIntoOwnerContext(
           *context, serializedFrontiers, executionConfig.getRankCount());
@@ -424,6 +449,7 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     return fail(llvm::toString(imported.takeError()));
   std::vector<detail::RankVariantFrontier> frontiers = std::move(*imported);
   const int64_t importWallMs = detail::elapsedCompileMilliseconds(importStart);
+  importTiming.reset();
 
   // The import boundary preserves metadata-only slots long enough to audit
   // the exact bounded context-transfer plan and diagnose a required parse
@@ -435,6 +461,9 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
 
   const detail::CompileClock::time_point dataflowStart =
       detail::CompileClock::now();
+  auto dataflowTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "stage", "tensor-program-to-executable", "noc-candidate-expansion");
   std::string dataflowFailure;
   if (optimizations.isEnabled(OptimizationKind::NoCResidentDataflow) &&
       mlir::failed(detail::appendNoCResidentDataflowCandidates(
@@ -443,9 +472,13 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
                 dataflowFailure);
   const int64_t dataflowWallMs =
       detail::elapsedCompileMilliseconds(dataflowStart);
+  dataflowTiming.reset();
 
   const detail::CompileClock::time_point selectionStart =
       detail::CompileClock::now();
+  auto selectionTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "stage", "tensor-program-to-executable", "whole-variant-selection");
   detail::WholeVariantSelectionStatistics selectionStatistics;
   mlir::FailureOr<detail::AcceptedWholeVariant> accepted =
       detail::selectAcceptedWholeVariant(frontiers, program, executionConfig,
@@ -455,6 +488,7 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     return fail("whole-variant coordination failed");
   const int64_t selectionWallMs =
       detail::elapsedCompileMilliseconds(selectionStart);
+  selectionTiming.reset();
 
   diagnostics << "wafer-compile: compile-stats stage=rank-candidate-generation"
               << " wall_ms=" << rankGenerationWallMs

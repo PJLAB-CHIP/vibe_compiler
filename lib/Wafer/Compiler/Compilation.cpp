@@ -307,13 +307,14 @@ CompilationRequest::create(llvm::StringRef sourceProgramDirectory,
 
 llvm::Expected<CompilationOptions>
 CompilationOptions::profile(const ExecutionConfig &executionConfig,
-                            OptimizationConfig optimizations) {
+                            OptimizationConfig optimizations,
+                            CompilationTimingMode timing) {
   if (executionConfig.getRankCount() != 16 ||
       executionConfig.getRuntimeLaunchKind() != RuntimeLaunchKind::Kernel)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "profile compilation requires a 16-rank kernel launch");
-  return CompilationOptions(/*profileCompanion=*/true, optimizations);
+  return CompilationOptions(/*profileCompanion=*/true, optimizations, timing);
 }
 
 llvm::Expected<ExecutableBundle>

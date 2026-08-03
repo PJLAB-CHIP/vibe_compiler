@@ -4,6 +4,7 @@
 # RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=not-an-integer --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=INVALID-RANKS
 # RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=18446744073709551616 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=OVERFLOW-RANKS
 # RUN: not wafer-compile --input-program-dir %t.input --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE-INPUT
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --compile-timing --compile-timing 2>&1 | FileCheck %s --check-prefix=DUPLICATE-TIMING
 # RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE-OUTPUT
 # RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE-RANKS
 # RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --profile --profile 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PROFILE-PRODUCT
@@ -48,6 +49,7 @@
 # INVALID-RANKS: wafer-compile: invalid --execution-ranks value: not-an-integer
 # OVERFLOW-RANKS: wafer-compile: invalid --execution-ranks value: 18446744073709551616
 # DUPLICATE-INPUT: wafer-compile: duplicate option: --input-program-dir
+# DUPLICATE-TIMING: wafer-compile: duplicate option: --compile-timing
 # DUPLICATE-OUTPUT: wafer-compile: duplicate option: --output-program-dir
 # DUPLICATE-RANKS: wafer-compile: duplicate option: --execution-ranks
 # DUPLICATE-PROFILE-PRODUCT: wafer-compile: duplicate option: --profile

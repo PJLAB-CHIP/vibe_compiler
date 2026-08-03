@@ -24,6 +24,7 @@ void printHelp() {
                   "[--optimization-preset <production|none>] "
                   "[--enable-optimization <semantic-name>]... "
                   "[--disable-optimization <semantic-name>]... "
+                  "[--compile-timing] "
                   "[--profile] "
                   "[--target-model "
                   "--model-input <index>=<npy> "
@@ -163,6 +164,14 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       }
       options.targetModel = true;
+      continue;
+    }
+    if (arg == "--compile-timing") {
+      if (options.compileTiming) {
+        llvm::errs() << "wafer-compile: duplicate option: --compile-timing\n";
+        return false;
+      }
+      options.compileTiming = true;
       continue;
     }
     if (arg == "--profile") {

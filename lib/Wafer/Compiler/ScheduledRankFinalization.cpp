@@ -2,6 +2,8 @@
 
 #include "ScheduledRankFinalization.h"
 
+#include "Wafer/Support/CompileTiming.h"
+
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Pipelines/Pipelines.h"
@@ -104,6 +106,7 @@ finalizeScheduledRankCandidateFrontier(
       continue;
     }
     mlir::PassManager manager(candidate.module->getContext());
+    wafer::support::attachCompileTiming(manager, "scheduled-rank-finalization");
     wafer::buildFinalizeScheduledRankCandidatePipeline(manager);
     if (mlir::failed(manager.run(*candidate.module))) {
       if (candidate.reservedBaseline)
@@ -130,12 +133,11 @@ finalizeScheduledRankCandidateFrontier(
         return mlir::failure();
       continue;
     }
-    finalized.emplace_back(std::move(candidate.module), candidate.stableOrdinal,
-                           candidate.artifactKind, candidate.reservedBaseline,
-                           candidate.bufferingKind,
-                           candidate.bufferingPlanOrdinal,
-                           candidate.workerPlacementKind,
-                           candidate.workerPlacementPlanOrdinal);
+    finalized.emplace_back(
+        std::move(candidate.module), candidate.stableOrdinal,
+        candidate.artifactKind, candidate.reservedBaseline,
+        candidate.bufferingKind, candidate.bufferingPlanOrdinal,
+        candidate.workerPlacementKind, candidate.workerPlacementPlanOrdinal);
   }
 
   if (finalized.empty())

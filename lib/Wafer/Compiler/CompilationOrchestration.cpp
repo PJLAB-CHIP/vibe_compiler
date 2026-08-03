@@ -4,6 +4,7 @@
 #include "CompilationStatistics.h"
 
 #include "Wafer/Pipelines/Pipelines.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
@@ -16,6 +17,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -99,6 +101,19 @@ mlir::LogicalResult runCompilationTransaction(
   return mlir::failure();
 #else
   const CompileClock::time_point transactionStart = CompileClock::now();
+  std::shared_ptr<wafer::support::CompileTimingSession> timingSession;
+  if (options.shouldReportDetailedTiming())
+    timingSession =
+        std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
+  wafer::support::ScopedCompileTimingActivation timingActivation(timingSession);
+  auto timingReport = llvm::make_scope_exit([&] {
+    if (timingSession)
+      timingSession->finishAndPrintSummary();
+  });
+  wafer::support::ScopedCompileTimingSpan transactionTiming(
+      "stage", "source-to-package", "compile-transaction");
+  auto sourceTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "stage", "source-to-package", "source-to-tensor-program");
   if (outputProgramDirectory.empty()) {
     reject(diagnostics, "output program directory must not be empty");
     return mlir::failure();
@@ -365,11 +380,15 @@ mlir::LogicalResult runCompilationTransaction(
                                                   tensorProgram, diagnostics)))
     return mlir::failure();
 
+  sourceTiming.reset();
   diagnostics << "wafer-compile: compile-stats stage=source-to-tensor-program"
               << " wall_ms=" << elapsedCompileMilliseconds(transactionStart)
               << " peak_rss_kib=" << getCompilePeakRSSKiB() << "\n";
 
   const CompileClock::time_point targetProductStart = CompileClock::now();
+  auto targetProductTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "stage", "source-to-package", "target-product");
   std::optional<ExecutableBundle> executableBundle;
   std::optional<TargetLLVMModuleBundle> targetLLVMModules;
   if (options.shouldProduceProfileCompanion()) {
@@ -388,6 +407,7 @@ mlir::LogicalResult runCompilationTransaction(
                  executableBundle, targetLLVMModules))) {
     return mlir::failure();
   }
+  targetProductTiming.reset();
   diagnostics << "wafer-compile: compile-stats stage=target-product"
               << " wall_ms=" << elapsedCompileMilliseconds(targetProductStart)
               << " peak_rss_kib=" << getCompilePeakRSSKiB() << " profile="
@@ -395,6 +415,9 @@ mlir::LogicalResult runCompilationTransaction(
               << "\n";
 
   const CompileClock::time_point publicationStart = CompileClock::now();
+  auto publicationTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "stage", "source-to-package", "publication");
   llvm::SmallString<256> stagedPackage(transactionRoot);
   llvm::sys::path::append(stagedPackage, "package");
   if (producesStaticFixedSlotQualificationCompanion(selectionMode)) {
@@ -419,6 +442,7 @@ mlir::LogicalResult runCompilationTransaction(
     retainedExecutableBundle->emplace(std::move(*executableBundle));
   if (retainedTargetLLVMModuleBundle)
     retainedTargetLLVMModuleBundle->emplace(std::move(*targetLLVMModules));
+  publicationTiming.reset();
   diagnostics << "wafer-compile: compile-stats stage=publication"
               << " wall_ms=" << elapsedCompileMilliseconds(publicationStart)
               << " peak_rss_kib=" << getCompilePeakRSSKiB() << "\n";

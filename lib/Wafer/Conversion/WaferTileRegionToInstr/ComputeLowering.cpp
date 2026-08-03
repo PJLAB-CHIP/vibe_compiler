@@ -315,6 +315,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(ComputeFillOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     rewriter.replaceOpWithNewOp<InstrFillOp>(op, op.getDest(), op.getValue(),
                                              op.getFillDomainAttr());
     return mlir::success();
@@ -344,6 +345,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(ComputeConvertOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     auto sourceType =
         mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
     auto resultType =
@@ -403,6 +405,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(ComputeElementwiseOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     if (op.getKind() != ComputeElementwiseKind::Select ||
         op.getInputs().size() != 3)
       return mlir::failure();
@@ -489,6 +492,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(ComputeElementwiseOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     if (op.getKind() == ComputeElementwiseKind::Select) {
       if (op.getInputs().size() != 3)
         return failPattern(
@@ -703,6 +707,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(ComputeReduceOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     auto inputType = mlir::dyn_cast<mlir::MemRefType>(op.getInput().getType());
     auto resultType =
         mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
@@ -1045,6 +1050,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(ComputeGemmOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     mlir::FailureOr<mlir::Value> dest = createDestAlloc(
         op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
     if (mlir::failed(dest))

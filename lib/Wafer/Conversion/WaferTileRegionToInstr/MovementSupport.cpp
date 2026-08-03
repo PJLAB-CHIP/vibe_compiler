@@ -502,8 +502,17 @@ void createGatherScatterSegments(
   llvm::SmallVector<LogicalMovementSegment> sourceOrdered;
   llvm::SmallVector<LogicalMovementSegment> destOrdered;
   llvm::ArrayRef<LogicalMovementSegment> selected = segments;
-  uint64_t selectedCount = countCommands(selected);
+  uint64_t selectedCount = 0;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "lowering-algorithm", "tile-region-to-instr",
+        "descriptor-command-counting");
+    selectedCount = countCommands(selected);
+  }
   if (mayReorderDisjointSegments && segments.size() > 1) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "lowering-algorithm", "tile-region-to-instr",
+        "descriptor-order-selection");
     sourceOrdered.assign(segments.begin(), segments.end());
     llvm::sort(sourceOrdered, [](const LogicalMovementSegment &lhs,
                                  const LogicalMovementSegment &rhs) {
@@ -533,16 +542,21 @@ void createGatherScatterSegments(
       selected = destOrdered;
   }
 
-  for (size_t index = 0; index < selected.size();) {
-    PackedMovementDescriptor packed = packMovementDescriptor(selected, index);
-    createGatherScatter(rewriter, loc, source, dest, packed.source,
-                        packed.dest);
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "lowering-algorithm", "tile-region-to-instr",
+        "descriptor-materialization");
+    for (size_t index = 0; index < selected.size();) {
+      PackedMovementDescriptor packed = packMovementDescriptor(selected, index);
+      createGatherScatter(rewriter, loc, source, dest, packed.source,
+                          packed.dest);
 
-    std::optional<int64_t> descriptorSegments = computeDescriptorPayloadBytes(
-        /*innerBytes=*/1, packed.source.iterations);
-    if (!descriptorSegments || *descriptorSegments <= 0)
-      descriptorSegments = 1;
-    index += static_cast<size_t>(*descriptorSegments);
+      std::optional<int64_t> descriptorSegments = computeDescriptorPayloadBytes(
+          /*innerBytes=*/1, packed.source.iterations);
+      if (!descriptorSegments || *descriptorSegments <= 0)
+        descriptorSegments = 1;
+      index += static_cast<size_t>(*descriptorSegments);
+    }
   }
 }
 

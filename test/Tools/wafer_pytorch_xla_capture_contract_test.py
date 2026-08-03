@@ -257,22 +257,66 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             ],
         )
 
-    def test_hf_megatron_marks_llama_decoder_block_weights(self):
+    def test_sharding_strategy_accepts_bias_free_gemm(self):
+        fake_spmd = FakeSpmd()
+        strategy = self.tool.get_sharding_strategy("row")
+        mesh = self.tool.create_spmd_mesh(fake_spmd, strategy)
+        module = types.SimpleNamespace(weight=object(), bias=None)
+        input_tensor = object()
+
+        self.tool.apply_strategy_marks(
+            spmd_module=fake_spmd,
+            strategy=strategy,
+            mesh=mesh,
+            input_tensor=input_tensor,
+            reference_module=module,
+        )
+
+        self.assertEqual(
+            fake_spmd.mark_calls,
+            [
+                (input_tensor, mesh, (None, "tp")),
+                (module.weight, mesh, ("tp", None)),
+            ],
+        )
+
+    def test_hf_megatron_marks_explicit_llama_parameter_specs(self):
         fake_spmd = FakeSpmd()
         mesh = fake_spmd.Mesh(list(range(16)), (16,), ("tensor",))
-        parameters = {
-            "input_layernorm.weight": object(),
-            "post_attention_layernorm.weight": object(),
-            "q_proj.weight": object(),
-            "k_proj.weight": object(),
-            "v_proj.weight": object(),
-            "o_proj.weight": object(),
-            "gate_proj.weight": object(),
-            "up_proj.weight": object(),
-            "down_proj.weight": object(),
-        }
+        input_norm = object()
+        post_attention_norm = object()
+        q_projection = object()
+        k_projection = object()
+        v_projection = object()
+        o_projection = object()
+        gate_projection = object()
+        up_projection = object()
+        down_projection = object()
+        parameters = (
+            input_norm,
+            post_attention_norm,
+            q_projection,
+            k_projection,
+            v_projection,
+            o_projection,
+            gate_projection,
+            up_projection,
+            down_projection,
+        )
+        parameter_specs = (
+            (input_norm, (None,)),
+            (post_attention_norm, (None,)),
+            (q_projection, ("tensor", None)),
+            (k_projection, ("tensor", None)),
+            (v_projection, ("tensor", None)),
+            (o_projection, (None, "tensor")),
+            (gate_projection, ("tensor", None)),
+            (up_projection, ("tensor", None)),
+            (down_projection, (None, "tensor")),
+        )
         module = types.SimpleNamespace(
-            named_parameters=lambda: parameters.items()
+            parameters=lambda: iter(parameters),
+            wafer_parameter_sharding_specs=lambda: parameter_specs,
         )
         input_tensor = object()
 
@@ -287,15 +331,15 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             fake_spmd.mark_calls,
             [
                 (input_tensor, mesh, (None, None, None)),
-                (parameters["input_layernorm.weight"], mesh, (None,)),
-                (parameters["post_attention_layernorm.weight"], mesh, (None,)),
-                (parameters["q_proj.weight"], mesh, ("tensor", None)),
-                (parameters["k_proj.weight"], mesh, ("tensor", None)),
-                (parameters["v_proj.weight"], mesh, ("tensor", None)),
-                (parameters["o_proj.weight"], mesh, (None, "tensor")),
-                (parameters["gate_proj.weight"], mesh, ("tensor", None)),
-                (parameters["up_proj.weight"], mesh, ("tensor", None)),
-                (parameters["down_proj.weight"], mesh, (None, "tensor")),
+                (input_norm, mesh, (None,)),
+                (post_attention_norm, mesh, (None,)),
+                (q_projection, mesh, ("tensor", None)),
+                (k_projection, mesh, ("tensor", None)),
+                (v_projection, mesh, ("tensor", None)),
+                (o_projection, mesh, (None, "tensor")),
+                (gate_projection, mesh, ("tensor", None)),
+                (up_projection, mesh, ("tensor", None)),
+                (down_projection, mesh, (None, "tensor")),
             ],
         )
 

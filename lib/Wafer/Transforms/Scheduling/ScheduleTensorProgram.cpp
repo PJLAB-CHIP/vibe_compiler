@@ -2,6 +2,7 @@
 
 #include "Scheduling/ScheduleTensorProgramInternal.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 #include "Wafer/Transforms/SoftwarePipelining.h"
@@ -751,14 +752,20 @@ static mlir::LogicalResult evaluateRankVariantImpl(
     const structured_scheduler::ScopeDiscoveryPolicy &policy,
     llvm::StringSet<> &seenPartitions, bool enableTransferElision,
     RankVariantEvaluation &evaluation) {
+  wafer::support::ScopedCompileTimingSpan evaluationTiming(
+      "search", "rank-candidate-search", "rank-variant-evaluation");
   evaluation.label = getPolicyLabel(policy);
   evaluation.module = mlir::cast<mlir::ModuleOp>(sourceModule->clone());
   outlineRankDenseTensorConstants(*evaluation.module);
 
   llvm::SmallVector<structured_scheduler::StructuredSchedulingScope, 8> scopes;
-  if (mlir::failed(structured_scheduler::discoverStructuredSchedulingScopes(
-          *evaluation.module, scopes, policy)))
-    return failRankVariant(evaluation, "scope-discovery");
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "rank-variant-evaluation", "scope-discovery");
+    if (mlir::failed(structured_scheduler::discoverStructuredSchedulingScopes(
+            *evaluation.module, scopes, policy)))
+      return failRankVariant(evaluation, "scope-discovery");
+  }
   if (scopes.empty()) {
     evaluation.noScopes = true;
     return mlir::success();
@@ -786,6 +793,9 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   taskModules.reserve(scopes.size());
   evaluation.selectedCandidates.reserve(scopes.size());
   llvm::DenseMap<mlir::Operation *, unsigned> taskOrdinals;
+  auto candidateSelectionTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "search-phase", "rank-variant-evaluation", "candidate-selection");
   for (const auto &scope : scopes) {
     mlir::OwningOpRef<mlir::ModuleOp> taskModule =
         structured_scheduler::cloneScopeToStandaloneModule(scope);
@@ -832,6 +842,7 @@ static mlir::LogicalResult evaluateRankVariantImpl(
       return failRankVariant(evaluation, "candidate-selection");
     evaluation.selectedCandidates.push_back(std::move(*selected));
   }
+  candidateSelectionTiming.reset();
 
   if (mlir::failed(checkRankTerminalBudget(
           *evaluation.module, evaluation.selectedCandidates, evaluation)))
@@ -839,6 +850,9 @@ static mlir::LogicalResult evaluateRankVariantImpl(
 
   // Consumer-first commit keeps source SSA boundaries valid when two task
   // scopes are separated by an unsupported fusion boundary.
+  auto candidateCommitTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "search-phase", "rank-variant-evaluation", "candidate-commit");
   for (SelectedCandidate &selected :
        llvm::reverse(evaluation.selectedCandidates)) {
     if (mlir::failed(commitSelectedTaskCandidate(selected, config)))
@@ -848,12 +862,15 @@ static mlir::LogicalResult evaluateRankVariantImpl(
       return failRankVariant(evaluation, "candidate-commit", *failure);
   }
   foldCommittedBufferizationRoundTrips(*evaluation.module);
+  candidateCommitTiming.reset();
 
   // Normalize the committed rank once before deriving either final artifact.
   // In particular, static one-trip traversal recurrences and full subviews
   // must be folded here: otherwise equivalent full-buffer edges would be
   // accepted or rejected based on incidental candidate-emission wrappers.
   mlir::PassManager canonicalization(evaluation.module->getContext());
+  wafer::support::attachCompileTiming(canonicalization,
+                                      "rank-candidate-commit");
   canonicalization.addPass(mlir::createCanonicalizerPass());
   if (mlir::failed(canonicalization.run(*evaluation.module)))
     return failRankVariant(evaluation, "committed-canonicalization");
@@ -880,6 +897,10 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   // single reserved conservative evaluation disables optional transfer
   // elision, preserving a fully gated fallback if an optimized sibling is
   // rejected by a later rank or whole-variant gate.
+  auto artifactDerivationTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "search-phase", "rank-variant-evaluation",
+          "rank-artifact-derivation");
   mlir::OwningOpRef<mlir::ModuleOp> spillModule =
       mlir::cast<mlir::ModuleOp>((*evaluation.module)->clone());
   const bool useTransferElision =
@@ -988,7 +1009,12 @@ static mlir::LogicalResult evaluateRankVariantImpl(
           *pipeline.module, pipeline.promotedHandoffs, pipeline.readyReordered,
           pipeline.bufferingKind, pipeline.bufferingPlanOrdinal,
           config.targetProfile, workerAlternatives);
+  artifactDerivationTiming.reset();
 
+  auto artifactFinalizationTiming =
+      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+          "search-phase", "rank-variant-evaluation",
+          "rank-artifact-finalization");
   std::optional<std::string> spillFailure =
       spillNormalized
           ? finalizeRankArtifact(*spillModule, config)
@@ -1044,6 +1070,7 @@ static mlir::LogicalResult evaluateRankVariantImpl(
       continue;
     evaluation.alternatives.push_back(std::move(worker));
   }
+  artifactFinalizationTiming.reset();
 
   evaluation.module = nullptr;
   evaluation.accepted = true;
@@ -1363,6 +1390,8 @@ mlir::FailureOr<std::vector<ScheduledRankCandidate>>
 buildScheduledRankCandidateFrontier(
     mlir::ModuleOp sourceModule,
     const TensorProgramSchedulingConfig &frontierConfig) {
+  wafer::support::ScopedCompileTimingSpan frontierTiming(
+      "search", "rank-candidate-generation", "scheduled-rank-frontier");
   if (!sourceModule) {
     return mlir::failure();
   }
@@ -1436,10 +1465,14 @@ buildScheduledRankCandidateFrontier(
 
   llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> sourceOwners;
   llvm::SmallVector<mlir::ModuleOp, 16> generationSources;
-  buildBoundedSourceVariants(sourceModule, frontierConfig.optimizations,
-                             sourceOwners, generationSources);
-  RankSearchRecipes searchRecipes =
-      buildRankSearchRecipes(sourceModule, config);
+  RankSearchRecipes searchRecipes;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "rank-candidate-generation", "search-domain-build");
+    buildBoundedSourceVariants(sourceModule, frontierConfig.optimizations,
+                               sourceOwners, generationSources);
+    searchRecipes = buildRankSearchRecipes(sourceModule, config);
+  }
   llvm::ArrayRef<SelectionConfig> recipes = searchRecipes.resultDriven;
   llvm::ArrayRef<SelectionConfig> interfaceRecipes =
       searchRecipes.interfaceDriven;
@@ -1482,6 +1515,9 @@ buildScheduledRankCandidateFrontier(
   // cap. It must exist before producer/recipe work can add frontier members.
   if (frontierConfig.requestShardIndex == 0) {
     llvm::StringSet<> reservedSeenPartitions;
+    wafer::support::ScopedCompileTimingSpan reservedTiming(
+        "search", "rank-candidate-generation", "reserved-rank-evaluation",
+        "source=0,recipe=0,policy=conservative");
     RankVariantEvaluation reserved = evaluateRankVariant(
         generationSources.front(), recipes.front(),
         policies[conservativePolicyIndex], reservedSeenPartitions,
@@ -1596,6 +1632,15 @@ buildScheduledRankCandidateFrontier(
     llvm::StringSet<> &seen =
         seenPartitions[request.sourceIndex * recipes.size() +
                        request.recipeIndex];
+    std::string timingDetail;
+    llvm::raw_string_ostream timingDetailStream(timingDetail);
+    timingDetailStream << "phase=result,source=" << request.sourceIndex
+                       << ",recipe=" << request.recipeIndex
+                       << ",policy=" << request.policyIndex
+                       << ",shard=" << frontierConfig.requestShardIndex;
+    wafer::support::ScopedCompileTimingSpan requestTiming(
+        "search", "rank-candidate-generation", "rank-evaluation-request",
+        timingDetailStream.str());
     RankVariantEvaluation evaluation = evaluateRankVariant(
         generationSources[request.sourceIndex], recipes[request.recipeIndex],
         policies[request.policyIndex], seen);
@@ -1655,6 +1700,15 @@ buildScheduledRankCandidateFrontier(
     llvm::StringSet<> &seen =
         interfaceSeenPartitions[request.sourceIndex * interfaceRecipes.size() +
                                 request.recipeIndex];
+    std::string timingDetail;
+    llvm::raw_string_ostream timingDetailStream(timingDetail);
+    timingDetailStream << "phase=interface,source=" << request.sourceIndex
+                       << ",recipe=" << request.recipeIndex
+                       << ",policy=" << request.policyIndex
+                       << ",shard=" << frontierConfig.requestShardIndex;
+    wafer::support::ScopedCompileTimingSpan requestTiming(
+        "search", "rank-candidate-generation", "rank-evaluation-request",
+        timingDetailStream.str());
     RankVariantEvaluation evaluation =
         evaluateRankVariant(generationSources[request.sourceIndex],
                             interfaceRecipes[request.recipeIndex],

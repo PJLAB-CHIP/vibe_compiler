@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contract tests for the PyTorch board tensor codec/comparator."""
+"""Contract tests for PyTorch board tensor read/write and comparison."""
 
 from __future__ import annotations
 

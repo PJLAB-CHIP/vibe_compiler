@@ -1207,8 +1207,30 @@
 - 普通PyTorch source case用固定seed的`torch.rand`/`torch.randn`构造输入，并用同一module/op和同一组tensor在
   CPU eager直接形成参考结果。周期pattern、one-hot、整数公式或手写等价计算只用于失败后的定向debug，不能
   进入常规完成证据。
-- case dtype由输入tensor声明；公共raw codec和comparator按manifest与tensor自身dtype/shape处理，不写死FP16，
+- case dtype由输入tensor声明；公共raw tensor读写和comparator按manifest与tensor自身dtype/shape处理，不写死FP16，
   也不把actual或参考结果换算到其它精度。configured-board实例可按板测默认规则选择FP16/BF16，但这只是case参数。
 - `wafer-run`只接收输入resource和output capture，不接收PyTorch参考结果做provider raw comparison。capture完成后
   由Python按原shape/dtype解码为`torch.Tensor`，再用`torch.testing.assert_close`完整比较所有声明output；raw
   文件只承担传输，不能成为第二份数值参考。
+- Megatron TP source case的parameter角色应由module结构显式提供sharding spec，并按parameter identity校验all-and-only
+  覆盖；不要通过parameter name推断column-parallel、row-parallel或replicated语义。完整Transformer block至少核对
+  Q/K/V与Gate/Up的column-parallel、O与Down的row-parallel，以及每个row-parallel projection自然形成的AllReduce。
+- 板端source case应复用对应qualification workload的实际shape；Q39 distributed GEMM是16-rank `4096³`、local
+  K=`256`，Llama block使用已有Llama-2 7B config而不是为缩短编译另造tiny config。缩小shape只适合结构单元测试，
+  不能取得该board case的`board-ready`身份。
+- PyTorch板端case只有在真实source export、post-SPMD结构检查、production compile、完整package/manifest/bindings、
+  board runner注册和fresh no-card全部闭合后才能标`board-ready`；真实设备未执行时仍不能标`done`。
+
+## 编译耗时分层定位
+
+- production compile需要深入定位时显式给`wafer-compile`增加`--compile-timing`；默认不加，避免日常编译承担
+  详细instrumentation。该选项只产生本次invocation diagnostic，不进入IR、package、cache key或selection。
+- 正常结束会输出Markdown表格，列为`kind / pipeline / item / calls / cumulative wall / cumulative CPU /
+  average wall / max wall / failures`并按累计wall降序排列。并行worker的累计wall/CPU描述总work，允许超过
+  transaction wall；判断关键路径还要结合active leaf和外层stage wall。
+- 每10秒会输出各线程仍active的最内层边界，以及已完成项累计work的Top-N。长case应先用固定短窗口采样确认
+  `stage -> search/pass -> lowering pattern -> algorithm`热点，再决定是否需要完整compile；外部timeout前无需等待
+  最终表格即可保留可解释证据。
+- 优化必须沿计时证据继续下钻，并保持typed legality：能由static stride/permutation直接构造exact descriptor时
+  使用解析fast path，不能证明时回退；剪枝只能提前执行已有exact rejection或显式修改typed candidate domain。
+  不通过延长timeout、缩小真实workload或按shape/op/name matcher掩盖算法复杂度。

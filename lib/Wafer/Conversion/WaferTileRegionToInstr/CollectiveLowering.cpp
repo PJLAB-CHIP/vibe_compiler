@@ -22,12 +22,12 @@ public:
   using mlir::OpRewritePattern<PeerOp>::OpRewritePattern;
 
   mlir::LogicalResult
-  matchAndRewrite(PeerOp op,
-                  mlir::PatternRewriter &rewriter) const final {
+  matchAndRewrite(PeerOp op, mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     auto lowered = rewriter.create<InstrOp>(
-        op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
-        op.getBuffer(), mlir::Value(), op.getPeerAttr(), op.getBytesAttr(),
-        op.getMessageAttr(), DirectDTEBindingAttr());
+        op.getLoc(), rewriter.getType<mlir::async::TokenType>(), op.getBuffer(),
+        mlir::Value(), op.getPeerAttr(), op.getBytesAttr(), op.getMessageAttr(),
+        DirectDTEBindingAttr());
     rewriter.replaceOp(op, lowered.getToken());
     return mlir::success();
   }
@@ -41,6 +41,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(mlir::async::AwaitOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     mlir::Value token = op.getOperand();
     if (!mlir::isa<mlir::async::TokenType>(token.getType()) ||
         (!token.getDefiningOp<CommPeerSendOp>() &&
@@ -337,6 +338,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(CommAllGatherOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     auto localType =
         mlir::dyn_cast<mlir::MemRefType>(op.getLocalChunk().getType());
     auto gatherType =
@@ -411,8 +413,7 @@ public:
             DTEProtocolPhase::AllGatherDirect, distance, recvPeerIndex);
         auto recv = rewriter.create<InstrDTERecvOp>(
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(), recvBuffer,
-            mlir::Value(),
-            rewriter.getI64IntegerAttr(rankGroup[recvPeerIndex]),
+            mlir::Value(), rewriter.getI64IntegerAttr(rankGroup[recvPeerIndex]),
             rewriter.getI64IntegerAttr(bytes), recvMessage,
             DirectDTEBindingAttr());
         auto send = rewriter.create<InstrDTESendOp>(
@@ -479,8 +480,7 @@ public:
           DirectDTEBindingAttr());
       auto send = rewriter.create<InstrDTESendOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(), sendSlot,
-          mlir::Value(),
-          rewriter.getI64IntegerAttr(nextPeer),
+          mlir::Value(), rewriter.getI64IntegerAttr(nextPeer),
           rewriter.getI64IntegerAttr(bytes), sendMessage,
           DirectDTEBindingAttr());
       llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
@@ -513,6 +513,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(CommReduceScatterOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     auto inputType = mlir::dyn_cast<mlir::MemRefType>(op.getInput().getType());
     auto recvType =
         mlir::dyn_cast<mlir::MemRefType>(op.getRecvBuffer().getType());
@@ -675,8 +676,7 @@ public:
             DirectDTEBindingAttr());
         auto send = rewriter.create<InstrDTESendOp>(
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(), sendBuffer,
-            mlir::Value(),
-            rewriter.getI64IntegerAttr(nextPeer),
+            mlir::Value(), rewriter.getI64IntegerAttr(nextPeer),
             rewriter.getI64IntegerAttr(bytes), sendMessage,
             DirectDTEBindingAttr());
         llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
@@ -790,6 +790,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(CommAllReduceOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
     auto inputType = mlir::dyn_cast<mlir::MemRefType>(op.getInput().getType());
     auto recvType =
         mlir::dyn_cast<mlir::MemRefType>(op.getRecvBuffer().getType());
@@ -1060,14 +1061,12 @@ public:
           DTEProtocolPhase::AllReduceRing, step, recvPayloadSlice);
       auto recv = rewriter.create<InstrDTERecvOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *recvChunk,
-          mlir::Value(),
-          rewriter.getI64IntegerAttr(prevPeer),
+          mlir::Value(), rewriter.getI64IntegerAttr(prevPeer),
           rewriter.getI64IntegerAttr(chunking->bytes), recvMessage,
           DirectDTEBindingAttr());
       auto send = rewriter.create<InstrDTESendOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *sendChunk,
-          mlir::Value(),
-          rewriter.getI64IntegerAttr(nextPeer),
+          mlir::Value(), rewriter.getI64IntegerAttr(nextPeer),
           rewriter.getI64IntegerAttr(chunking->bytes), sendMessage,
           DirectDTEBindingAttr());
       llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
@@ -1110,14 +1109,12 @@ public:
           DTEProtocolPhase::AllReduceRing, round, recvPayloadSlice);
       auto recv = rewriter.create<InstrDTERecvOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *recvChunk,
-          mlir::Value(),
-          rewriter.getI64IntegerAttr(prevPeer),
+          mlir::Value(), rewriter.getI64IntegerAttr(prevPeer),
           rewriter.getI64IntegerAttr(chunking->bytes), recvMessage,
           DirectDTEBindingAttr());
       auto send = rewriter.create<InstrDTESendOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *sendChunk,
-          mlir::Value(),
-          rewriter.getI64IntegerAttr(nextPeer),
+          mlir::Value(), rewriter.getI64IntegerAttr(nextPeer),
           rewriter.getI64IntegerAttr(chunking->bytes), sendMessage,
           DirectDTEBindingAttr());
       llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
@@ -1148,8 +1145,8 @@ void wafer::tile_region_to_instr::populatePeerLoweringPatterns(
     mlir::RewritePatternSet &patterns, std::string *failureReason) {
   (void)failureReason;
   patterns.add<PeerLowering<CommPeerSendOp, InstrDTESendOp>,
-               PeerLowering<CommPeerRecvOp, InstrDTERecvOp>,
-               PeerAwaitLowering>(patterns.getContext());
+               PeerLowering<CommPeerRecvOp, InstrDTERecvOp>, PeerAwaitLowering>(
+      patterns.getContext());
 }
 
 void wafer::tile_region_to_instr::populateCollectiveLoweringPatterns(

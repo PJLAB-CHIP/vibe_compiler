@@ -1499,10 +1499,14 @@ package结果做model/board numeric correlation；若被测Q32.V extension consu
 ### 12.4 PyTorch Source-to-Board Tensor Gate
 
 Q44拥有用户可观察tensor结果从framework source到board capture的纵向验证，不修改frontend、compiler、package或
-runtime协议。rank-one GEMM与16-rank contracting-K sharded GEMM的dtype由PyTorch case tensor自身声明；公共case、
-codec与comparator不得写死FP16/BF16。当前configured-board实例仍按板测默认规则优先选择FP16/BF16，但这只是测试参数。前者由
-`torch.export`与PyTorch/XLA StableHLO exporter形成program directory，后者由torch_xla SPMD sharding API表达输入和
-parameter的contracting维分片，并经pinned helper自然产生rank-local GEMM与AllReduce。手写StableHLO/MLIR仍可作为
+runtime协议。rank-one GEMM、16-rank `4096³` contracting-K sharded GEMM与实际shape的HuggingFace Llama-2 7B
+decoder block Megatron TP16
+的dtype由PyTorch case tensor自身声明；公共case、raw tensor读写与comparator不得写死FP16/BF16。当前configured-board实例仍按
+板测默认规则优先选择FP16/BF16，但这只是测试参数。三个case都由`torch.export`与PyTorch/XLA StableHLO exporter形成
+program directory；两个TP16 case再由torch_xla SPMD sharding API表达输入和parameter分片，并经pinned helper自然产生
+rank-local GEMM与AllReduce。Transformer block的Megatron
+TP角色由module显式sharding spec表达：Q/K/V与Gate/Up column-parallel，O与Down row-parallel，LayerNorm vector、
+输入和最终输出replicated；不能从parameter name恢复。手写StableHLO/MLIR仍可作为
 lowering或结构隔离fixture，但不能取得PyTorch source gate身份。
 
 每个source case按以下all-and-only参考结果/capture合同执行：
@@ -1521,12 +1525,13 @@ lowering或结构隔离fixture，但不能取得PyTorch source gate身份。
 - 16-rank输出必须按manifest all-and-only捕获和比较，并保留output非结果预填充、transport status、trusted
   completion、bounded timeout和cleanup。PyTorch参考结果不替代Direct-DTE status、ABI、layout、physical codec、PMU
   或target raw-bit calibration；后者继续由各自协议gate拥有；
-- Q40/Q41及optimization campaign中用户可观察tensor结果复用同一torch codec/comparator。若这些case仍以手写IR
+- Q40/Q41及optimization campaign中用户可观察tensor结果复用同一torch raw tensor读写/comparator。若这些case仍以手写IR
   隔离特定后端结构，必须明确标为backend qualification fixture，不得写成source coverage；它们的结构、package和
   paired lifecycle gate仍独立成立。
 
 host完成门禁为真实export、program verifier、production compile、完整package、fresh no-card与torch comparator故障
-注入均通过，只能把Q44推进到`board-ready`。configured board按本章共同合同单进程串行执行rank-one和16-rank case；
+注入均通过，只能把Q44推进到`board-ready`。configured board按本章共同合同单进程串行执行rank-one、`4096³`
+K-sharded GEMM/AllReduce和HuggingFace Llama-2 7B Megatron TP16 block；
 每项都必须使用本轮fresh package、完整capture和PyTorch eager comparison，未执行、skip或unsupported均不能标`done`。
 
 ### 12.5 16-Tile TSM Profiler Gate

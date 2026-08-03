@@ -28,6 +28,7 @@ struct CommandLineOptions {
   std::optional<std::string> optimizationPreset;
   std::vector<std::string> enabledOptimizations;
   std::vector<std::string> disabledOptimizations;
+  bool compileTiming = false;
   bool profile = false;
   std::vector<std::string> modelInputs;
   std::vector<std::string> modelExpected;

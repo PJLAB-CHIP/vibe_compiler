@@ -3,12 +3,14 @@
 #include "Wafer/Compiler/Compilation.h"
 #include "Wafer/Compiler/Package.h"
 #include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "llvm/Support/Error.h"
 #include "gtest/gtest.h"
 
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <set>
 #include <string>
 #include <type_traits>
@@ -158,11 +160,16 @@ TEST(CompilationTest, ProfileOptionsRequireCompleteSingleCardRankDomain) {
   auto accepted = wafer::compiler::CompilationOptions::profile(*fullCard);
   ASSERT_TRUE(static_cast<bool>(accepted));
   EXPECT_TRUE(accepted->shouldProduceProfileCompanion());
+  EXPECT_FALSE(accepted->shouldReportDetailedTiming());
   wafer::OptimizationConfig none = wafer::OptimizationConfig::none();
   auto acceptedNone =
       wafer::compiler::CompilationOptions::profile(*fullCard, none);
   ASSERT_TRUE(static_cast<bool>(acceptedNone));
   EXPECT_EQ(acceptedNone->getOptimizationConfig(), none);
+  auto acceptedTimed = wafer::compiler::CompilationOptions::profile(
+      *fullCard, none, wafer::compiler::CompilationTimingMode::Detailed);
+  ASSERT_TRUE(static_cast<bool>(acceptedTimed));
+  EXPECT_TRUE(acceptedTimed->shouldReportDetailedTiming());
 
   auto model = wafer::compiler::ExecutionConfig::createForSingleCard(
       16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
@@ -175,6 +182,12 @@ TEST(CompilationTest, ProfileOptionsRequireCompleteSingleCardRankDomain) {
       std::string::npos);
   EXPECT_FALSE(wafer::compiler::CompilationOptions::standard()
                    .shouldProduceProfileCompanion());
+  EXPECT_FALSE(wafer::compiler::CompilationOptions::standard()
+                   .shouldReportDetailedTiming());
+  EXPECT_TRUE(wafer::compiler::CompilationOptions::standard(
+                  wafer::OptimizationConfig::production(),
+                  wafer::compiler::CompilationTimingMode::Detailed)
+                  .shouldReportDetailedTiming());
 }
 
 TEST(CompilationTest, OptimizationKindsHaveStableUniqueRoundTripNames) {
@@ -209,6 +222,24 @@ TEST(CompilationTest, OptimizationConfigSupportsPresetsAndComposition) {
   wafer::compiler::CompilationOptions options =
       wafer::compiler::CompilationOptions::standard(none);
   EXPECT_EQ(options.getOptimizationConfig(), none);
+}
+
+TEST(CompilationTest, DetailedTimingAggregatesInvocationLocalSpans) {
+  std::string output;
+  llvm::raw_string_ostream diagnostics(output);
+  auto session =
+      std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
+  {
+    wafer::support::ScopedCompileTimingActivation activation(session);
+    wafer::support::ScopedCompileTimingSpan span("stage", "test-pipeline",
+                                                 "test-item", "request=7");
+  }
+  session->finishAndPrintSummary();
+  EXPECT_NE(output.find("compile-timing-summary-begin"), std::string::npos);
+  EXPECT_NE(output.find("| stage | test-pipeline | test-item | 1 |"),
+            std::string::npos);
+  EXPECT_NE(output.find("compile-timing-summary-end transaction_wall_ms="),
+            std::string::npos);
 }
 
 } // namespace
