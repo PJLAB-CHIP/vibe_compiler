@@ -368,16 +368,17 @@ EXECUTION_CAPABILITY_ANCHORS = {
     ),
     ExecutableEvidenceCapability.FULL_OUTPUT_EXACT: _anchor(
         PAIRED_CAMPAIGN_DRIVER,
-        'f"{variant}_rank_{rank:02d}_output_{index}."',
+        "else torch_reference.EXACT",
+        "assert_raw_capture_matches",
     ),
     ExecutableEvidenceCapability.FULL_OUTPUT_FLOATING_TOLERANCE: _anchor(
         PAIRED_CAMPAIGN_DRIVER,
-        '"--expected-f16-relaxed"',
-        "signed_zero_equal",
+        "torch_reference.ComparisonPolicy(",
+        "assert_raw_capture_matches",
     ),
     ExecutableEvidenceCapability.COMPLEMENT_PREFILL_CANARY: _anchor(
         "tools/wafer-run/WaferRunBoardIO.cpp",
-        "bytes[index] = static_cast<uint8_t>(~known->second[index])",
+        "std::fill(bytes.begin(), bytes.end(), UINT8_C(0xa5))",
     ),
     ExecutableEvidenceCapability.ALL_RANK_STATUS: _anchor(
         PAIRED_CAMPAIGN_DRIVER,

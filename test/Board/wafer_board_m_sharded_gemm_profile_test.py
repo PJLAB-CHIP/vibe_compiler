@@ -256,6 +256,9 @@ def main() -> int:
         output_ids_by_variant["winner"],
         completion_evidence_by_variant["winner"],
     )
+    campaign.compare_captured_outputs(
+        args.work_dir, CASE, payloads, "winner"
+    )
     device_duration, report = profile_support.verify_profile_report(
         packages["winner"], result.stdout, expected_active_engine="NE"
     )

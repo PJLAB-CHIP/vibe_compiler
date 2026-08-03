@@ -12,9 +12,15 @@ import shutil
 import subprocess
 import sys
 
-import numpy as np
+import torch
 
 import wafer_runtime_launch_contract as runtime_launch
+
+PYTORCH_BOARD_DIR = pathlib.Path(__file__).resolve().parent / "PyTorch"
+if str(PYTORCH_BOARD_DIR) not in sys.path:
+    sys.path.insert(0, str(PYTORCH_BOARD_DIR))
+
+import wafer_pytorch_board_common as torch_reference  # noqa: E402
 
 
 GEMM_CASE_SHAPES = {
@@ -22,10 +28,11 @@ GEMM_CASE_SHAPES = {
     "mn-tiled": (4096, 256, 4096),
 }
 M, K, N = GEMM_CASE_SHAPES["single-tile"]
-F16_BYTES = np.dtype("<f2").itemsize
+F16_BYTES = 2
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
 LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 PROCESS_TIMEOUT_MARGIN_SECONDS = 30
+PYTORCH_SEED = 20260803
 
 
 def configure_gemm_case(name: str) -> None:
@@ -254,36 +261,29 @@ def validate_manifest(package: pathlib.Path) -> tuple[dict[tuple[str, int], int]
 
 def write_payloads(
     work_dir: pathlib.Path, bindings: dict[tuple[str, int], int]
-) -> list[str]:
+) -> tuple[list[str], pathlib.Path, torch.Tensor]:
     raw = work_dir / "raw"
     raw.mkdir()
-    rows = np.arange(M, dtype=np.int32)
-    lhs = np.zeros((M, K), dtype="<f2")
-    lhs[rows, rows % K] = np.float16(1.0)
-    k_indices = np.arange(K, dtype=np.int32)[:, None]
-    n_indices = np.arange(N, dtype=np.int32)[None, :]
-    rhs = (1 + ((k_indices * 17 + n_indices * 3) % 1024) / 8).astype("<f2")
-    expected = rhs[rows % K, :].copy()
-    if (
-        np.count_nonzero(lhs) != M
-        or not np.all(lhs[rows, rows % K] == np.float16(1.0))
-        or expected.shape != (M, N)
-    ):
-        raise RuntimeError("standalone GEMM one-hot CPU oracle is invalid")
+    generator = torch.Generator(device="cpu").manual_seed(PYTORCH_SEED)
+    lhs = torch.randn((M, K), dtype=torch.float16, generator=generator)
+    rhs = torch.randn((K, N), dtype=torch.float16, generator=generator)
+    with torch.no_grad():
+        expected = torch.matmul(lhs, rhs)
 
     paths = {
-        ("user_input", 0): raw / "lhs_identity.f16.raw",
-        ("user_input", 1): raw / "rhs_pattern.f16.raw",
-        ("output", 0): raw / "expected.f16.raw",
+        ("user_input", 0): raw / "lhs_random.f16.raw",
+        ("user_input", 1): raw / "rhs_random.f16.raw",
     }
-    lhs.tofile(paths[("user_input", 0)])
-    rhs.tofile(paths[("user_input", 1)])
-    expected.tofile(paths[("output", 0)])
+    torch_reference.write_tensor_raw(paths[("user_input", 0)], lhs)
+    torch_reference.write_tensor_raw(paths[("user_input", 1)], rhs)
+    capture_path = raw / "output.capture.f16.raw"
     arguments: list[str] = []
-    for key, path in paths.items():
-        option = "--expected" if key[0] == "output" else "--resource"
-        arguments.extend([option, f"{bindings[key]}={path}"])
-    return arguments
+    for key in (("user_input", 0), ("user_input", 1)):
+        arguments.extend(["--resource", f"{bindings[key]}={paths[key]}"])
+    arguments.extend(
+        ["--output", f"{bindings[('output', 0)]}={capture_path}"]
+    )
+    return arguments, capture_path, expected
 
 
 def verify_no_card_evidence(stdout: str) -> None:
@@ -317,11 +317,11 @@ def verify_board_evidence(stdout: str, output_id: int) -> None:
             f"board output omitted standalone GEMM lifecycle evidence: {missing}"
         )
     if not re.search(
-        rf"^output_compare: resource={output_id} bytes={M * N * F16_BYTES} exact=true$",
+        rf"^output_capture: resource={output_id} bytes={M * N * F16_BYTES} path=.+$",
         stdout,
         re.MULTILINE,
     ):
-        raise RuntimeError("board output omitted standalone GEMM exact comparison")
+        raise RuntimeError("board output omitted standalone GEMM capture")
 
 
 def main() -> int:
@@ -379,7 +379,9 @@ def main() -> int:
         print(result.stdout, end="")
         return 0
 
-    resource_arguments = write_payloads(args.work_dir, bindings)
+    resource_arguments, capture_path, expected = write_payloads(
+        args.work_dir, bindings
+    )
     command = [
         str(args.wafer_run),
         "--package-dir",
@@ -412,7 +414,16 @@ def main() -> int:
             ),
         )
         verify_board_evidence(result.stdout, output_id)
-        print(f"standalone_gemm_iteration: {iteration + 1}/{args.repeat} exact=true")
+        torch_reference.assert_raw_capture_matches(
+            capture_path,
+            expected,
+            policy=torch_reference.EXACT,
+            context=f"standalone GEMM iteration {iteration + 1}",
+        )
+        print(
+            f"standalone_gemm_iteration: {iteration + 1}/{args.repeat} "
+            "torch_close=true"
+        )
         print(result.stdout, end="")
     return 0
 

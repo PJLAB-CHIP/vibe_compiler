@@ -198,6 +198,15 @@ variant仍由同一PyTorch eager block产生expected、由同一真实exporter�
 variant seed和原固定seed全部通过后，scale case只把source/model comparator policy收紧为`atol=0.004, rtol=0.002`；该字段
 不进入source/config/payload/program digest，也不把variant提升为corpus admission。
 
+Q44把常用板端tensor纵向的source ownership补齐，但不改变frontend artifact合同。rank-one GEMM和contracting-K
+sharded GEMM必须从`torch.nn.Module`、同一组保留自身dtype的`torch.Tensor`及真实PyTorch/XLA exporter形成program
+directory；后者的AllReduce必须由exporter sharding与pinned SPMD helper自然产生，不能用手写StableHLO/MLIR代签。
+同一组tensor先在PyTorch eager CPU执行形成唯一用户级expected；NumPy不得参与expected生成或最终结果比较。
+exporter因NPY artifact格式使用NumPy作payload序列化属于adapter transport，不取得数值参考结果的ownership。
+普通case以固定seed的PyTorch random API构造输入；周期pattern、one-hot和手写简化公式只用于失败后的定向debug。
+这些case、torch raw codec和capture comparator集中在`test/Board/PyTorch/`，目录布局只是测试实现索引，不进入
+frontend schema、compiler driver或sharding协议。
+
 ## 5. Sharding Handoff
 
 frontend只保存exporter能解释的`mhlo.sharding`等输入事实。没有用户sharding仍是合法StableHLO program；
@@ -233,6 +242,9 @@ per-rank task/dataflow candidates，全rank验证后再构造ExecutableBundle。
 frontend mandatory coverage包括：
 
 - 真实PyTorch/XLA capture → program directory → verifier；
+- Q44 rank-one GEMM及16-rank contracting-K sharded GEMM/AllReduce由真实exporter进入production pipeline；同一
+  PyTorch eager tensor形成expected，runtime按同shape/dtype完整capture回读为`torch.Tensor`且不做精度转换，
+  再经`torch.testing`比较；
 - graph break/eager fallback、metadata length/shape/dtype mismatch；
 - program-directory static boundary；IR-only bounded dynamic及unbounded/invalid bound负例；
 - parameter/constant NPY shape/dtype/order/truncation与unsafe path负例；F16 `<f2`、host-compatible `=f2`、BF16 `|V2`

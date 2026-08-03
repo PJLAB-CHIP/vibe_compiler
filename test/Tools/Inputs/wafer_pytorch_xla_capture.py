@@ -2316,6 +2316,7 @@ def emit_sharded_stablehlo_program(
     spmd_module: Any | None = None,
     xlac_module: Any | None = None,
     reference_module_factory: Callable[[], Any] | None = None,
+    example_input_tensor: Any | None = None,
     size: int = DEFAULT_REFERENCE_MATMUL_SIZE,
 ) -> None:
     strategy = get_sharding_strategy(strategy_name)
@@ -2362,8 +2363,21 @@ def emit_sharded_stablehlo_program(
         if first_parameter is not None
         else torch_module.float32
     )
+    if example_input_tensor is None:
+        example_input_tensor = torch_module.empty(
+            size, size, dtype=input_dtype
+        )
+    elif (
+        tuple(example_input_tensor.shape) != (size, size)
+        or example_input_tensor.dtype != input_dtype
+    ):
+        raise RuntimeError(
+            "sharded StableHLO example input must match the module: "
+            f"input={tuple(example_input_tensor.shape)}/"
+            f"{example_input_tensor.dtype} module={(size, size)}/{input_dtype}"
+        )
     input_tensor = _move_to_device(
-        torch_module.empty(size, size, dtype=input_dtype), device
+        example_input_tensor.detach().clone(), device
     )
 
     mesh = create_spmd_mesh(spmd_module, strategy)

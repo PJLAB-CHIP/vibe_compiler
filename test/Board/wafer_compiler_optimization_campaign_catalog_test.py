@@ -10,7 +10,7 @@ import re
 import sys
 import tempfile
 
-import numpy as np
+import torch
 
 import wafer_board_compiler_optimization_campaign_test as driver
 import wafer_compiler_optimization_campaign_catalog as catalog
@@ -101,7 +101,7 @@ def validate_board_output_parser() -> None:
     rank_one = driver.CASES["reciprocal-implementation"]
     driver.verify_board_output(
         lifecycle
-        + "output_compare: resource=7 bytes=32768 exact=true\n"
+        + "output_capture: resource=7 bytes=32768 path=/tmp/rank-one.raw\n"
         + "terminal_completion: 3 kind=entry_return\n",
         rank_one,
         {7},
@@ -110,8 +110,8 @@ def validate_board_output_parser() -> None:
     try:
         driver.verify_board_output(
             lifecycle
-            + "output_compare: resource=7 bytes=32768 exact=true\n"
-            + "output_compare: resource=7 bytes=32768 exact=true\n"
+            + "output_capture: resource=7 bytes=32768 path=/tmp/a.raw\n"
+            + "output_capture: resource=7 bytes=32768 path=/tmp/b.raw\n"
             + "terminal_completion: 3 kind=entry_return\n",
             rank_one,
             {7},
@@ -125,9 +125,7 @@ def validate_board_output_parser() -> None:
     relaxed = driver.CASES["f16-common-factor"]
     driver.verify_board_output(
         lifecycle
-        + "output_compare: resource=8 bytes=32768 "
-        + "policy=f16-relaxed abs=0.0009765625 rel=0.001 "
-        + "max_ulp=1 signed_zero_equal=true\n"
+        + "output_capture: resource=8 bytes=32768 path=/tmp/relaxed.raw\n"
         + "terminal_completion: 4 kind=entry_return\n",
         relaxed,
         {8},
@@ -136,7 +134,7 @@ def validate_board_output_parser() -> None:
     try:
         driver.verify_board_output(
             lifecycle
-            + "output_compare: resource=8 bytes=32768 exact=true\n"
+            + "output_capture: resource=9 bytes=32768 path=/tmp/wrong.raw\n"
             + "terminal_completion: 4 kind=entry_return\n",
             relaxed,
             {8},
@@ -146,7 +144,7 @@ def validate_board_output_parser() -> None:
         pass
     else:
         raise AssertionError(
-            "relaxed floating board output accepted a raw exact evidence row"
+            "board output accepted a capture for the wrong resource"
         )
 
     collective = driver.CASES["tree-all-reduce"]
@@ -157,7 +155,8 @@ def validate_board_output_parser() -> None:
         + "launch_pattern: cluster-x16\n"
         + "logical_tile_domain: 0..15\n"
         + "".join(
-            f"output_compare: resource={resource} bytes=4096 exact=true\n"
+            f"output_capture: resource={resource} bytes=4096 "
+            f"path=/tmp/rank-{resource}.raw\n"
             for resource in sorted(output_ids)
         )
         + "".join(
@@ -172,7 +171,17 @@ def validate_board_output_parser() -> None:
 
 
 def validate_paired_payload_preflight() -> None:
-    for case in driver.CASES.values():
+    lightweight_cases = {
+        key: case
+        for key, case in driver.CASES.items()
+        if key
+        not in {
+            "long-steady-elementwise-add",
+            "noc-resident-large-gemm",
+            "noc-resident-m-sharded-gemm",
+        }
+    }
+    for case in lightweight_cases.values():
         driver.validate_paired_payloads(case, case.payload_factory())
 
     case = driver.CASES["f16-common-factor"]
@@ -183,15 +192,9 @@ def validate_paired_payload_preflight() -> None:
     a, b, c = payloads.inputs[0]
     baseline = payloads.baseline_outputs[0][0]
     winner = payloads.winner_outputs[0][0]
-    source = ((a * b).astype("<f2") + (a * c).astype("<f2")).astype("<f2")
-    factored = (a * (b + c).astype("<f2")).astype("<f2")
-    assert a[0] == np.float16(0.0)
-    assert b[0] == np.float16(0.0)
-    assert c[0] == np.float16(-1.0)
-    assert np.array_equal(baseline.view("<u2"), source.view("<u2"))
-    assert np.array_equal(winner.view("<u2"), factored.view("<u2"))
-    assert baseline.view("<u2")[0] == 0x0000
-    assert winner.view("<u2")[0] == 0x8000
+    source = (a * b) + (a * c)
+    torch.testing.assert_close(baseline, source, rtol=0, atol=0)
+    torch.testing.assert_close(winner, source, rtol=0, atol=0)
     bindings = {
         variant: {
             (0, "user_input", 0): base,
@@ -206,13 +209,15 @@ def validate_paired_payload_preflight() -> None:
             pathlib.Path(directory), case, bindings, payloads
         )
     for variant in ("baseline", "winner"):
-        assert "--expected-f16-relaxed" in arguments[variant]
+        assert "--output" in arguments[variant]
+        assert "--expected-f16-relaxed" not in arguments[variant]
         assert "--expected" not in arguments[variant]
 
-    mismatching_baseline = [[baseline.copy()]]
-    mismatching_winner = [[winner.copy()]]
+    mismatching_baseline = [[baseline.clone()]]
+    mismatching_winner = [[winner.clone()]]
     mismatching_winner[0][0][2] = (
-        mismatching_baseline[0][0][2] + np.float16(1.0)
+        mismatching_baseline[0][0][2]
+        + torch.tensor(1.0, dtype=torch.float16)
     )
     try:
         driver.validate_paired_payloads(
@@ -231,14 +236,14 @@ def validate_paired_payload_preflight() -> None:
             "paired payload preflight accepted an out-of-policy finite mismatch"
         )
 
-    nonfinite_winner = [[winner.copy()]]
-    nonfinite_winner[0][0][3] = np.float16(np.inf)
+    nonfinite_winner = [[winner.clone()]]
+    nonfinite_winner[0][0][3] = torch.inf
     try:
         driver.validate_paired_payloads(
             case,
             driver.PairedPayloads(
                 payloads.inputs,
-                [[baseline.copy()]],
+                [[baseline.clone()]],
                 nonfinite_winner,
             ),
         )

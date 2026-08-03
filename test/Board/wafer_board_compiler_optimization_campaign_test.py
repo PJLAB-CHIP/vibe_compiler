@@ -9,6 +9,7 @@ import dataclasses
 import enum
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -18,9 +19,15 @@ import sys
 import time
 from collections.abc import Callable
 
-import numpy as np
+import torch
 
 import wafer_runtime_launch_contract as runtime_launch
+
+PYTORCH_BOARD_DIR = pathlib.Path(__file__).resolve().parent / "PyTorch"
+if str(PYTORCH_BOARD_DIR) not in sys.path:
+    sys.path.insert(0, str(PYTORCH_BOARD_DIR))
+
+import wafer_pytorch_board_common as torch_reference  # noqa: E402
 
 
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
@@ -90,9 +97,9 @@ class TargetStructure:
 
 @dataclasses.dataclass(frozen=True)
 class PairedPayloads:
-    inputs: list[list[np.ndarray]]
-    baseline_outputs: list[list[np.ndarray]]
-    winner_outputs: list[list[np.ndarray]]
+    inputs: list[list[torch.Tensor]]
+    baseline_outputs: list[list[torch.Tensor]]
+    winner_outputs: list[list[torch.Tensor]]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -398,108 +405,95 @@ module {{
 """
 
 
-def replicated(payloads: list[np.ndarray]) -> list[list[np.ndarray]]:
+PYTORCH_RANDOM_SEED = 20260803
+
+
+def random_f16(shape: tuple[int, ...], stream: int) -> torch.Tensor:
+    generator = torch.Generator(device="cpu").manual_seed(
+        PYTORCH_RANDOM_SEED + stream
+    )
+    return torch.randn(shape, dtype=torch.float16, generator=generator)
+
+
+def random_unit_f16(shape: tuple[int, ...], stream: int) -> torch.Tensor:
+    generator = torch.Generator(device="cpu").manual_seed(
+        PYTORCH_RANDOM_SEED + stream
+    )
+    return torch.rand(shape, dtype=torch.float16, generator=generator)
+
+
+def replicated(payloads: list[torch.Tensor]) -> list[list[torch.Tensor]]:
     return [payloads]
 
 
 def unchanged_numeric_payloads(
-    inputs: list[list[np.ndarray]], outputs: list[list[np.ndarray]]
+    inputs: list[list[torch.Tensor]], outputs: list[list[torch.Tensor]]
 ) -> PairedPayloads:
     return PairedPayloads(
         inputs,
         outputs,
-        [[array.copy() for array in arrays] for arrays in outputs],
+        [[tensor.clone() for tensor in tensors] for tensors in outputs],
     )
 
 
 def reciprocal_payloads() -> PairedPayloads:
-    exponents = (np.arange(8192, dtype=np.int32) % 17) - 8
-    signs = np.where(np.arange(8192) % 3 == 0, -1.0, 1.0).astype(np.float16)
-    input_ = np.ldexp(signs, exponents).astype("<f2")
-    baseline = np.divide(np.float16(1.0), input_).astype("<f2")
-    winner = np.reciprocal(input_).astype("<f2")
+    generator = torch.Generator(device="cpu").manual_seed(PYTORCH_RANDOM_SEED)
+    input_ = torch.rand(8192, dtype=torch.float16, generator=generator) + 0.5
+    baseline = torch.divide(torch.ones_like(input_), input_)
     return PairedPayloads(
-        replicated([input_]), replicated([baseline]), replicated([winner])
+        replicated([input_]),
+        replicated([baseline]),
+        replicated([baseline.clone()]),
     )
 
 
 def f16_factor_payloads() -> PairedPayloads:
-    indices = np.arange(16384, dtype=np.int32)
-    nonzero_factors = np.array((-4, -3, -2, -1, 1, 2, 3, 4), dtype="<f2")
-    a = nonzero_factors[indices % nonzero_factors.size]
-    b = (1 + ((indices * 7 + 1) % 4)).astype("<f2")
-    c = (1 + ((indices * 11 + 2) % 4)).astype("<f2")
-    # Exercise the only intentional raw-bit difference in this paired oracle:
-    # the source DAG produces +0 while the factored DAG produces -0.
-    a[0] = np.float16(0.0)
-    b[0] = np.float16(0.0)
-    c[0] = np.float16(-1.0)
-    lhs = (a * b).astype("<f2")
-    rhs = (a * c).astype("<f2")
-    baseline = (lhs + rhs).astype("<f2")
-    winner = (a * (b + c).astype("<f2")).astype("<f2")
-    expected_i32 = a.astype(np.int32) * (
-        b.astype(np.int32) + c.astype(np.int32)
-    )
-    if not np.array_equal(baseline.astype(np.int32), expected_i32):
-        raise RuntimeError("f16 factor source expression is not exact")
-    if (
-        np.signbit(baseline[0])
-        or not np.signbit(winner[0])
-        or baseline[0] != winner[0]
-    ):
-        raise RuntimeError("f16 factor signed-zero control is ineffective")
+    a = random_unit_f16((16384,), 10)
+    b = random_unit_f16((16384,), 11)
+    c = random_unit_f16((16384,), 12)
+    baseline = (a * b) + (a * c)
     return PairedPayloads(
         replicated([a, b, c]),
         replicated([baseline]),
-        replicated([winner]),
+        replicated([baseline.clone()]),
     )
 
 
 def resident_fanout_payloads() -> PairedPayloads:
-    input_ = ((np.arange(32768, dtype=np.int32) % 7) - 3).astype("<f2")
-    producer = (input_ * input_).astype("<f2")
-    left = (producer + producer).astype("<f2")
-    right = (producer * producer).astype("<f2")
+    input_ = random_f16((32768,), 20)
+    producer = input_ * input_
+    left = producer + producer
+    right = producer * producer
     return unchanged_numeric_payloads(
         replicated([input_]), replicated([producer, left, right])
     )
 
 
 def recompute_payloads() -> PairedPayloads:
-    indices = np.arange(524288, dtype=np.int32)
-    input_ = ((indices % 7) - 3).astype("<f2")
-    other = (((indices * 5) % 7) - 3).astype("<f2")
-    producer = (input_ * input_).astype("<f2")
-    left = (producer + producer).astype("<f2")
-    middle = (other * other).astype("<f2")
-    right = (producer * producer).astype("<f2")
+    input_ = random_f16((524288,), 30)
+    other = random_f16((524288,), 31)
+    producer = input_ * input_
+    left = producer + producer
+    middle = other * other
+    right = producer * producer
     return unchanged_numeric_payloads(
         replicated([input_, other]), replicated([left, middle, right])
     )
 
 
 def long_steady_add_payloads() -> PairedPayloads:
-    indices = np.arange(8388608, dtype=np.int32)
-    lhs = ((indices % 31) - 15).astype("<f2")
-    rhs = (((indices * 7) % 29) - 14).astype("<f2")
-    result = (lhs + rhs).astype("<f2")
+    lhs = random_f16((8388608,), 40)
+    rhs = random_f16((8388608,), 41)
+    result = lhs + rhs
     return unchanged_numeric_payloads(
         replicated([lhs, rhs]), replicated([result])
     )
 
 
 def ready_order_payloads() -> PairedPayloads:
-    indices = np.arange(8192, dtype=np.int32)
-    a = ((indices % 15) - 7).astype("<f2")
-    b = (((indices * 3) % 11) - 5).astype("<f2")
-    expected = ((a * a + b) + b).astype("<f2")
-    if np.array_equal(expected, b):
-        raise RuntimeError("ready-order expected output does not depend on a")
-    changed_a = (a + np.float16(1.0)).astype("<f2")
-    changed_expected = ((changed_a * changed_a + b) + b).astype("<f2")
-    if np.array_equal(expected, changed_expected):
-        raise RuntimeError("ready-order a-path sensitivity control is ineffective")
+    a = random_f16((8192,), 50)
+    b = random_f16((8192,), 51)
+    expected = (a * a + b) + b
     return unchanged_numeric_payloads(
         replicated([a, b]), replicated([expected])
     )
@@ -508,40 +502,18 @@ def ready_order_payloads() -> PairedPayloads:
 def gemm_payloads(
     m: int, k: int, n: int
 ) -> PairedPayloads:
-    k_lanes = np.arange(k, dtype=np.int32)
-    lhs = np.zeros((m, k), dtype="<f2")
-    lhs[k_lanes % m, k_lanes] = np.float16(1.0)
-    k_indices = np.arange(k, dtype=np.int32)[:, None]
-    n_indices = np.arange(n, dtype=np.int32)[None, :]
-    rhs_i32 = 1 + ((k_indices * 5 + n_indices * 3) % 8)
-    rhs_i32 = np.where((k_indices + n_indices) % 2, -rhs_i32, rhs_i32)
-    rhs = rhs_i32.astype("<f2")
-    expected_i32 = lhs.astype(np.int32) @ rhs_i32.astype(np.int32)
-    expected = expected_i32.astype("<f2")
-    if (
-        not np.all(np.count_nonzero(lhs, axis=0) == 1)
-        or lhs[(k - 1) % m, k - 1] == np.float16(0.0)
-        or not np.all(np.count_nonzero(rhs, axis=1) > 0)
-    ):
-        raise RuntimeError("GEMM payload does not exercise every K lane")
-    if not np.array_equal(expected.astype(np.int32), expected_i32):
-        raise RuntimeError("GEMM expected values are not exact in f16")
+    lhs = random_f16((m, k), 60 + m)
+    rhs = random_f16((k, n), 61 + n)
+    with torch.no_grad():
+        expected = torch.matmul(lhs, rhs)
     return unchanged_numeric_payloads(
         replicated([lhs, rhs]), replicated([expected])
     )
 
 
 def all_reduce_payloads() -> PairedPayloads:
-    lanes = np.arange(4096, dtype=np.int32)
-    inputs = [
-        (((lanes * (rank + 3) + rank * 11) % 9) - 4)
-        .astype("<f2")[None, :]
-        for rank in range(16)
-    ]
-    total = np.zeros(4096, dtype=np.float32)
-    for input_ in inputs:
-        total += input_[0].astype(np.float32)
-    expected = total.astype("<f2")
+    inputs = [random_f16((1, 4096), 100 + rank) for rank in range(16)]
+    expected = torch.stack([input_[0] for input_ in inputs]).sum(dim=0)
     return unchanged_numeric_payloads(
         [[input_] for input_ in inputs],
         [[expected] for _ in range(16)],
@@ -551,24 +523,19 @@ def all_reduce_payloads() -> PairedPayloads:
 def noc_resident_large_gemm_payloads() -> PairedPayloads:
     extent = NOC_RESIDENT_GEMM_EXTENT
     local_k_extent = NOC_RESIDENT_GEMM_LOCAL_K
-    columns = np.arange(extent, dtype=np.int32)
-    expected = np.empty((extent, extent), dtype="<f2")
-    inputs: list[list[np.ndarray]] = []
+    lhs_global = random_f16((extent, extent), 200)
+    rhs_global = random_f16((extent, extent), 201)
+    with torch.no_grad():
+        expected = torch.matmul(lhs_global, rhs_global)
+    inputs: list[list[torch.Tensor]] = []
     for rank in range(NOC_RESIDENT_GEMM_RANKS):
-        lhs = np.zeros((extent, local_k_extent), dtype="<f2")
-        rhs = np.empty((local_k_extent, extent), dtype="<f2")
-        for local_k in range(local_k_extent):
-            global_k = rank * local_k_extent + local_k
-            lhs[global_k, local_k] = np.float16(1.0)
-            row = 1 + ((global_k * 5 + columns * 3) % 8)
-            row = np.where((global_k + columns) % 2, -row, row)
-            rhs[local_k] = row.astype("<f2")
-            expected[global_k] = rhs[local_k]
-        inputs.append([lhs, rhs])
-
-    if not np.array_equal(expected, expected.astype(np.int32).astype("<f2")):
-        raise RuntimeError(
-            "NoC-resident GEMM expected values are not exact integers in f16"
+        begin = rank * local_k_extent
+        end = begin + local_k_extent
+        inputs.append(
+            [
+                lhs_global[:, begin:end].contiguous(),
+                rhs_global[begin:end, :].contiguous(),
+            ]
         )
     outputs = [[expected] for _ in range(NOC_RESIDENT_GEMM_RANKS)]
     return PairedPayloads(inputs, outputs, list(outputs))
@@ -579,21 +546,13 @@ def noc_resident_m_sharded_gemm_payloads() -> PairedPayloads:
     local_m = NOC_RESIDENT_M_SHARDED_GEMM_LOCAL_M
     k = NOC_RESIDENT_M_SHARDED_GEMM_K
     n = NOC_RESIDENT_M_SHARDED_GEMM_N
-    k_indices = np.arange(k, dtype=np.int32)[:, None]
-    columns = np.arange(n, dtype=np.int32)[None, :]
-    rhs_i32 = 1 + ((k_indices * 5 + columns * 3) % 8)
-    rhs_i32 = np.where((k_indices + columns) % 2, -rhs_i32, rhs_i32)
-    rhs = rhs_i32.astype("<f2")
-
-    inputs: list[list[np.ndarray]] = []
-    outputs: list[list[np.ndarray]] = []
-    local_rows = np.arange(local_m, dtype=np.int32)
+    rhs = random_f16((k, n), 300)
+    inputs: list[list[torch.Tensor]] = []
+    outputs: list[list[torch.Tensor]] = []
     for rank in range(ranks):
-        global_rows = rank * local_m + local_rows
-        contributing_k = global_rows % k
-        lhs = np.zeros((local_m, k), dtype="<f2")
-        lhs[local_rows, contributing_k] = np.float16(1.0)
-        expected = rhs[contributing_k].copy()
+        lhs = random_f16((local_m, k), 301 + rank)
+        with torch.no_grad():
+            expected = torch.matmul(lhs, rhs)
         inputs.append([lhs, rhs])
         outputs.append([expected])
 
@@ -1308,7 +1267,7 @@ def validate_paired_packages(
                 resource.get("type")
                 != {"dtype": spec.mlir_dtype, "shape": list(spec.shape)}
                 or resource.get("bytes")
-                != int(np.prod(spec.shape, dtype=np.int64))
+                != math.prod(spec.shape)
                 * spec.element_bytes
                 or resource.get("access")
                 != ("read_only" if role == "user_input" else "write_only")
@@ -1576,13 +1535,16 @@ def module_digests(package: pathlib.Path) -> tuple[str, ...]:
 
 
 def floating_ulp_distance(
-    lhs: np.generic, rhs: np.generic, element_bytes: int
+    lhs: torch.Tensor, rhs: torch.Tensor, element_bytes: int
 ) -> int:
-    if lhs == rhs:
+    if lhs.item() == rhs.item():
         return 0
-    unsigned_dtype = np.dtype("<u2" if element_bytes == 2 else "<u4")
-    lhs_bits = int(np.asarray(lhs).view(unsigned_dtype))
-    rhs_bits = int(np.asarray(rhs).view(unsigned_dtype))
+    lhs_bits = int.from_bytes(
+        torch_reference.tensor_raw_bytes(lhs.reshape(1).clone()), "little"
+    )
+    rhs_bits = int.from_bytes(
+        torch_reference.tensor_raw_bytes(rhs.reshape(1).clone()), "little"
+    )
     sign = 1 << (element_bytes * 8 - 1)
 
     def ordered(bits: int) -> int:
@@ -1592,8 +1554,8 @@ def floating_ulp_distance(
 
 
 def validate_floating_pair(
-    baseline: np.ndarray,
-    winner: np.ndarray,
+    baseline: torch.Tensor,
+    winner: torch.Tensor,
     spec: TensorSpec,
     policy: PairedOutputComparisonPolicy,
     location: tuple[int, str, int],
@@ -1602,58 +1564,67 @@ def validate_floating_pair(
         raise RuntimeError(
             f"floating comparison policy does not support {spec.mlir_dtype}"
         )
-    baseline_flat = np.ascontiguousarray(baseline).reshape(-1)
-    winner_flat = np.ascontiguousarray(winner).reshape(-1)
-    nonfinite = np.flatnonzero(
-        ~np.isfinite(baseline_flat) | ~np.isfinite(winner_flat)
-    )
-    if nonfinite.size:
-        element = int(nonfinite[0])
+    baseline_flat = baseline.contiguous().reshape(-1)
+    winner_flat = winner.contiguous().reshape(-1)
+    nonfinite = torch.nonzero(
+        ~torch.isfinite(baseline_flat) | ~torch.isfinite(winner_flat)
+    ).flatten()
+    if nonfinite.numel():
+        element = int(nonfinite[0].item())
         raise RuntimeError(
-            "baseline/winner floating oracle contains NaN or infinity for "
+            "baseline/winner PyTorch reference contains NaN or infinity for "
             f"{location} at element {element}"
         )
 
-    baseline_wide = baseline_flat.astype(np.float64)
-    winner_wide = winner_flat.astype(np.float64)
-    absolute_error = np.abs(baseline_wide - winner_wide)
-    limit = policy.absolute_tolerance + (
-        policy.relative_tolerance * np.abs(baseline_wide)
-    )
-    accepted = absolute_error <= limit
-    if policy.maximum_ulp is not None:
-        accepted &= np.fromiter(
-            (
-                floating_ulp_distance(lhs, rhs, spec.element_bytes)
-                <= policy.maximum_ulp
-                for lhs, rhs in zip(baseline_flat, winner_flat, strict=True)
+    try:
+        torch_reference.assert_tensor_matches(
+            winner_flat,
+            baseline_flat,
+            policy=torch_reference.ComparisonPolicy(
+                rtol=policy.relative_tolerance,
+                atol=policy.absolute_tolerance,
             ),
-            dtype=np.bool_,
-            count=baseline_flat.size,
+            context=f"baseline/winner PyTorch reference {location}",
         )
-
-    opposite_zero = (
-        (baseline_flat == 0)
-        & (winner_flat == 0)
-        & (np.signbit(baseline_flat) != np.signbit(winner_flat))
-    )
-    if policy.signed_zero_equal:
-        accepted |= opposite_zero
-    else:
-        accepted &= ~opposite_zero
-    mismatching = np.flatnonzero(~accepted)
-    if mismatching.size:
-        element = int(mismatching[0])
-        ulp = floating_ulp_distance(
-            baseline_flat[element], winner_flat[element], spec.element_bytes
-        )
+    except AssertionError as error:
+        mismatching = torch.nonzero(
+            ~torch.isclose(
+                winner_flat,
+                baseline_flat,
+                rtol=policy.relative_tolerance,
+                atol=policy.absolute_tolerance,
+                equal_nan=False,
+            )
+        ).flatten()
+        element = int(mismatching[0].item()) if mismatching.numel() else -1
         raise RuntimeError(
-            "baseline/winner floating oracles exceed the numeric policy for "
-            f"{location} at element {element}: "
-            f"baseline={baseline_flat[element]!r} "
-            f"winner={winner_flat[element]!r} "
-            f"abs={absolute_error[element]!r} ulp={ulp}"
+            f"baseline/winner PyTorch references exceed the numeric policy for "
+            f"{location} at element {element}"
+        ) from error
+
+    for element, (baseline_value, winner_value) in enumerate(
+        zip(baseline_flat, winner_flat, strict=True)
+    ):
+        opposite_zero = (
+            baseline_value.item() == 0
+            and winner_value.item() == 0
+            and bool(torch.signbit(baseline_value))
+            != bool(torch.signbit(winner_value))
         )
+        if opposite_zero and policy.signed_zero_equal:
+            continue
+        ulp = floating_ulp_distance(
+            baseline_value, winner_value, spec.element_bytes
+        )
+        if (opposite_zero and not policy.signed_zero_equal) or (
+            policy.maximum_ulp is not None and ulp > policy.maximum_ulp
+        ):
+            raise RuntimeError(
+                "baseline/winner PyTorch references exceed the raw dtype "
+                f"policy for {location} at element {element}: "
+                f"baseline={baseline_value.item()!r} "
+                f"winner={winner_value.item()!r} ulp={ulp}"
+            )
 
 
 def validate_paired_payloads(
@@ -1674,7 +1645,7 @@ def validate_paired_payloads(
             zip(payloads.inputs[rank], case.inputs, strict=True)
         ):
             if tuple(array.shape) != spec.shape or array.nbytes != (
-                int(np.prod(spec.shape, dtype=np.int64)) * spec.element_bytes
+                math.prod(spec.shape) * spec.element_bytes
             ):
                 raise RuntimeError(
                     f"payload shape/bytes mismatch for "
@@ -1690,7 +1661,7 @@ def validate_paired_payloads(
             zip(baseline, winner, case.outputs, strict=True)
         ):
             expected_bytes = (
-                int(np.prod(spec.shape, dtype=np.int64)) * spec.element_bytes
+                math.prod(spec.shape) * spec.element_bytes
             )
             for variant, array in (
                 ("baseline", baseline_array),
@@ -1714,15 +1685,15 @@ def validate_paired_payloads(
                     location,
                 )
                 continue
-            baseline_elements = np.ascontiguousarray(baseline_array).view(
-                np.uint8
-            )
-            winner_elements = np.ascontiguousarray(winner_array).view(
-                np.uint8
-            )
-            if not np.array_equal(baseline_elements, winner_elements):
-                differing_byte = int(
-                    np.flatnonzero(baseline_elements != winner_elements)[0]
+            baseline_elements = torch_reference.tensor_raw_bytes(baseline_array)
+            winner_elements = torch_reference.tensor_raw_bytes(winner_array)
+            if baseline_elements != winner_elements:
+                differing_byte = next(
+                    index
+                    for index, (lhs, rhs) in enumerate(
+                        zip(baseline_elements, winner_elements, strict=True)
+                    )
+                    if lhs != rhs
                 )
                 element = differing_byte // spec.element_bytes
                 raise RuntimeError(
@@ -1756,7 +1727,7 @@ def write_payloads(
             path = raw / (
                 f"rank_{rank:02d}_user_input_{index}.{spec.mlir_dtype}.raw"
             )
-            path.write_bytes(np.ascontiguousarray(array).tobytes())
+            torch_reference.write_tensor_raw(path, array)
             for variant, bindings in bindings_by_variant.items():
                 arguments_by_variant[variant].extend(
                     [
@@ -1769,29 +1740,55 @@ def write_payloads(
             for index, (array, spec) in enumerate(
                 zip(outputs[rank], case.outputs, strict=True)
             ):
-                path = raw / (
-                    f"{variant}_rank_{rank:02d}_output_{index}."
+                capture_path = raw / (
+                    f"{variant}_rank_{rank:02d}_output_{index}.capture."
                     f"{spec.mlir_dtype}.raw"
                 )
-                path.write_bytes(np.ascontiguousarray(array).tobytes())
-                expected_option = "--expected"
-                if (
-                    case.output_comparison.kind
-                    == PairedOutputComparisonPolicy.Kind.FloatingTolerance
-                ):
-                    if spec.mlir_dtype != "f16":
-                        raise RuntimeError(
-                            "board relaxed output comparison currently "
-                            "supports only f16"
-                        )
-                    expected_option = "--expected-f16-relaxed"
                 arguments_by_variant[variant].extend(
                     [
-                        expected_option,
-                        f"{bindings[(rank, 'output', index)]}={path}",
+                        "--output",
+                        f"{bindings[(rank, 'output', index)]}={capture_path}",
                     ]
                 )
     return arguments_by_variant
+
+
+def compare_captured_outputs(
+    work_dir: pathlib.Path,
+    case: CampaignCase,
+    payloads: PairedPayloads,
+    variant: str,
+) -> None:
+    outputs = {
+        "baseline": payloads.baseline_outputs,
+        "winner": payloads.winner_outputs,
+    }[variant]
+    policy = (
+        torch_reference.ComparisonPolicy(
+            rtol=case.output_comparison.relative_tolerance,
+            atol=case.output_comparison.absolute_tolerance,
+        )
+        if case.output_comparison.kind
+        == PairedOutputComparisonPolicy.Kind.FloatingTolerance
+        else torch_reference.EXACT
+    )
+    for rank, rank_outputs in enumerate(outputs):
+        for index, (expected, spec) in enumerate(
+            zip(rank_outputs, case.outputs, strict=True)
+        ):
+            capture_path = work_dir / "raw" / (
+                f"{variant}_rank_{rank:02d}_output_{index}.capture."
+                f"{spec.mlir_dtype}.raw"
+            )
+            torch_reference.assert_raw_capture_matches(
+                capture_path,
+                expected,
+                policy=policy,
+                context=(
+                    f"compiler optimization {case.key} {variant} "
+                    f"rank {rank} output {index}"
+                ),
+            )
 
 
 def no_card_command(
@@ -1862,56 +1859,20 @@ def verify_board_output(
     }
     if not required.issubset(set(stdout.splitlines())):
         raise RuntimeError("paired board output omitted lifecycle evidence")
-    exact_compare_matches = re.findall(
-        r"^output_compare: resource=(\d+) bytes=\d+ exact=true$",
+    capture_matches = re.findall(
+        r"^output_capture: resource=(\d+) bytes=\d+ path=.+$",
         stdout,
         re.MULTILINE,
     )
-    relaxed_compare_matches = re.findall(
-        r"^output_compare: resource=(\d+) bytes=\d+ "
-        r"policy=f16-relaxed abs=([0-9.eE+-]+) rel=([0-9.eE+-]+) "
-        r"max_ulp=(\d+) signed_zero_equal=true$",
-        stdout,
-        re.MULTILINE,
-    )
+    actual_output_ids = {int(resource) for resource in capture_matches}
     if (
-        case.output_comparison.kind
-        == PairedOutputComparisonPolicy.Kind.FloatingTolerance
-    ):
-        if exact_compare_matches:
-            raise RuntimeError(
-                "floating paired board output used raw exact comparison"
-            )
-        for _, absolute, relative, maximum_ulp in relaxed_compare_matches:
-            if (
-                float(absolute) != case.output_comparison.absolute_tolerance
-                or float(relative)
-                != case.output_comparison.relative_tolerance
-                or int(maximum_ulp) != case.output_comparison.maximum_ulp
-                or not case.output_comparison.signed_zero_equal
-            ):
-                raise RuntimeError(
-                    "paired board output used the wrong floating policy"
-                )
-        compare_matches = [
-            resource
-            for resource, _, _, _ in relaxed_compare_matches
-        ]
-    else:
-        if relaxed_compare_matches:
-            raise RuntimeError(
-                "raw-exact paired board output used relaxed comparison"
-            )
-        compare_matches = exact_compare_matches
-    actual_output_ids = {int(resource) for resource in compare_matches}
-    if (
-        len(compare_matches) != len(output_ids)
+        len(capture_matches) != len(output_ids)
         or actual_output_ids != output_ids
     ):
         raise RuntimeError(
-            "paired board output compare rows differ: "
+            "paired board output capture rows differ: "
             f"expected={output_ids} actual={actual_output_ids} "
-            f"rows={len(compare_matches)}"
+            f"rows={len(capture_matches)}"
         )
     if case.rank_count == 1:
         terminal_matches = re.findall(
@@ -2102,12 +2063,13 @@ def main() -> int:
             output_ids_by_variant[name],
             completion_evidence_by_variant[name],
         )
+        compare_captured_outputs(args.work_dir, case, payloads, name)
         row = {
             "case": case.key,
             "sample": sample,
             "variant": name,
             "host_process_elapsed_ns": elapsed_ns,
-            "exact": True,
+            "torch_reference_matched": True,
         }
         rows.append(row)
         print("compiler_optimization_sample: " + json.dumps(row, sort_keys=True))

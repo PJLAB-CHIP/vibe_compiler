@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-31
+更新时间：2026-08-03
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -27,6 +27,7 @@ Q43 Vibe Compiler collaboration review materials             [done]
 Q42 test gate scope reduction                                [done]
 Q42 + Q32.C -> Q41 compiler search scalability               [board-ready]
 Q42 + Q39 -> Q40 composed search and DTE overlap             [board-ready]
+Q15 + Q18 + Q35 -> Q44 PyTorch source board verticals        [board-ready]
 ```
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
@@ -38,6 +39,7 @@ Q42 + Q39 -> Q40 composed search and DTE overlap             [board-ready]
 | Q42 | `test-load-reduction` | `done` | 无 | 默认lit/unit/CTest和owner integration均只判直接合同；历史catalog、campaign、model-scale与重复package执行已退出默认入口，保留的source-to-package/no-card seam通过。 | 16；`tasks/plans/test-gate-scope-reduction.md` |
 | Q40 | `composed-choice-search-and-dte-overlap` | `board-ready` | Q39、Q42完成 | bounded whole-variant组合、V3 same-block Direct-DTE issue→FP16/BF16 CT/NE→exact wait结构witness、同tuple serialized baseline、16-rank replicated FP16 elementwise完整双package及fresh no-card已闭合；两包保持同source/cluster launch/transport ABI/binding/call inventory并以scheduler顺序区分。真实板端exact-output和matched A/B尚未执行，不得标`done`。 | 06、08-13、16；`tasks/plans/composed-choice-search-and-dte-overlap.md` |
 | Q41 | `compiler-search-scalability` | `board-ready` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 搜索资源与typed optimization configuration均已闭合：18个稳定语义轴支持production/none preset及逐项enable/disable，配置贯穿同一source-to-package pipeline；none唯一保留fully gated baseline，reciprocal单轴四路A/B证明最终ELF结构差异及组合等价，M-sharded K=1024 ordinary/profile production package逐字节一致且fresh no-card通过。搜索仍保持rank-invariant canonical sharding、显式资源上界和wall/RSS观测。真实板端exact-output及winner profile尚未执行，不得标`done`。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
+| Q44 | `pytorch-source-board-verticals` | `board-ready` | Q15、Q18、Q35 | 集中的PyTorch source case、固定seed随机输入、case-owned dtype、同module/op eager参考结果、output-only capture及原dtype/shape `torch.testing`比较已经闭合；GEMM和K-sharded GEMM/AllReduce均由真实PyTorch/XLA exporter进入production pipeline并完成完整package与fresh no-card，Q40/Q41及optimization campaign的高层tensor结果复用同一Torch seam。instruction、ABI、layout、DMA、PMU及target raw-bit calibration继续由各自协议拥有。rank-one与16-rank真实板端完整输出尚未执行，不能标`done`。 | 02、16；`tasks/plans/pytorch-source-board-verticals.md` |
 
 ## Later / External Gates
 

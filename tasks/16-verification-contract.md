@@ -1496,7 +1496,40 @@ fake provider或target model结果都不能替代上述fresh hardware evidence�
 package结果做model/board numeric correlation；若被测Q32.V extension consumer采用capability-bearing package，
 还须消费其required-set结果。两者都不能反向替代Q6.B。
 
-### 12.4 16-Tile TSM Profiler Gate
+### 12.4 PyTorch Source-to-Board Tensor Gate
+
+Q44拥有用户可观察tensor结果从framework source到board capture的纵向验证，不修改frontend、compiler、package或
+runtime协议。rank-one GEMM与16-rank contracting-K sharded GEMM的dtype由PyTorch case tensor自身声明；公共case、
+codec与comparator不得写死FP16/BF16。当前configured-board实例仍按板测默认规则优先选择FP16/BF16，但这只是测试参数。前者由
+`torch.export`与PyTorch/XLA StableHLO exporter形成program directory，后者由torch_xla SPMD sharding API表达输入和
+parameter的contracting维分片，并经pinned helper自然产生rank-local GEMM与AllReduce。手写StableHLO/MLIR仍可作为
+lowering或结构隔离fixture，但不能取得PyTorch source gate身份。
+
+每个source case按以下all-and-only参考结果/capture合同执行：
+
+- payload与parameter由固定seed的PyTorch random API直接构造；同一份tensor先在CPU eager运行，完整result tensor是唯一用户级expected。
+  NumPy不得生成、重算或比较expected；exporter内部用NPY承载parameter只属于program-directory transport；
+- 正常case不得使用周期pattern、one-hot、整数公式或手写简化计算替代framework执行；这些输入只允许在失败后的
+  定向debug case中使用，不能进入正常完成证据；
+- raw输入从contiguous torch storage按manifest dtype/shape/bytes写出。runner只向`wafer-run`提供输入resource和
+  独立output capture，不把PyTorch expected作为provider comparison resource；provider完成后必须把每个声明output
+  的完整raw bytes解码为shape/dtype一致的`torch.Tensor`，不转换expected或actual的dtype，再调用
+  `torch.testing.assert_close(actual, expected)`。只依赖provider raw compare、rank 0、抽样或digest均不满足；
+- 目标数值profile允许容差时只能显式设置`torch.testing` comparison tolerance并保持全张量比较，不能用FP32、FP16或整数
+  中间tensor重新计算expected。shape、
+  dtype、长度或finite policy不匹配在进入数值比较前失败；故障注入必须证明任一非容差内元素变化会被拒绝；
+- 16-rank输出必须按manifest all-and-only捕获和比较，并保留output非结果预填充、transport status、trusted
+  completion、bounded timeout和cleanup。PyTorch参考结果不替代Direct-DTE status、ABI、layout、physical codec、PMU
+  或target raw-bit calibration；后者继续由各自协议gate拥有；
+- Q40/Q41及optimization campaign中用户可观察tensor结果复用同一torch codec/comparator。若这些case仍以手写IR
+  隔离特定后端结构，必须明确标为backend qualification fixture，不得写成source coverage；它们的结构、package和
+  paired lifecycle gate仍独立成立。
+
+host完成门禁为真实export、program verifier、production compile、完整package、fresh no-card与torch comparator故障
+注入均通过，只能把Q44推进到`board-ready`。configured board按本章共同合同单进程串行执行rank-one和16-rank case；
+每项都必须使用本轮fresh package、完整capture和PyTorch eager comparison，未执行、skip或unsupported均不能标`done`。
+
+### 12.5 16-Tile TSM Profiler Gate
 
 本gate验证一个compiler功能，而不是单独的可视化工具。唯一public入口是正常
 `wafer-compile <existing arguments> --profile`；rank-count不是16、与target-model冲突或profile companion无法完整形成时
@@ -1575,7 +1608,7 @@ device time推导queue delay、跨单位互减或跨tile汇总local cycle。
 profiler foundation只发布证据和人工分析；在环境、重复、held-out及适用的counter unit/clear/wrap/workload
 correlation全部闭合并冻结calibrated profile前，不得反馈candidate ranking。
 
-### 12.5 Profile Publication Overhead Follow-Up
+### 12.6 Profile Publication Overhead Follow-Up
 
 Q9的Primary/Count/Trace采集与测量语义已经完成；Q9.R只收口run publication的空间、生成时间和打开成本，不重开
 采集协议。一个4096³、16-rank K-sharded GEMM run暴露了当前实现缺陷：约47,968条timeline event被展开为携带

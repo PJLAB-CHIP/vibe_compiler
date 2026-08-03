@@ -13,9 +13,15 @@ import shutil
 import subprocess
 import sys
 
-import numpy as np
+import torch
 
 import wafer_runtime_launch_contract as runtime_launch
+
+PYTORCH_BOARD_DIR = pathlib.Path(__file__).resolve().parent / "PyTorch"
+if str(PYTORCH_BOARD_DIR) not in sys.path:
+    sys.path.insert(0, str(PYTORCH_BOARD_DIR))
+
+import wafer_pytorch_board_common as torch_reference  # noqa: E402
 
 
 RANK_COUNT = 16
@@ -23,14 +29,13 @@ M = 4096
 K = 4096
 N = 4096
 LOCAL_K = K // RANK_COUNT
-F16_BYTES = np.dtype("<f2").itemsize
+F16_BYTES = 2
 LHS_LOCAL_SHAPE = [M, LOCAL_K]
 RHS_LOCAL_SHAPE = [LOCAL_K, N]
 OUTPUT_SHAPE = [M, N]
 LHS_BYTES = M * LOCAL_K * F16_BYTES
 RHS_BYTES = LOCAL_K * N * F16_BYTES
 OUTPUT_BYTES = M * N * F16_BYTES
-EXPECTED_SHA256 = "f82ced1cea5d133a8f4640a527025333a80cbf2e49e7a529dc9c7c941e20360f"
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
 LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 STATUS_ABI = "wafer-direct-dte-status-v2"
@@ -42,6 +47,7 @@ RANK_GROUP = ", ".join(str(rank) for rank in range(RANK_COUNT))
 LHS_SHARDING = f"{{devices=[1,{RANK_COUNT}]{DEVICES}}}"
 RHS_SHARDING = f"{{devices=[{RANK_COUNT},1]{DEVICES}}}"
 OUTPUT_SHARDING = "{replicated}"
+PYTORCH_SEED = 20260803
 
 MODULE = f"""module {{
   func.func @main(
@@ -401,74 +407,51 @@ def validate_manifest(
     return bindings, output_ids
 
 
-def sha256_file(path: pathlib.Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1 << 20):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def write_payloads(
     work_dir: pathlib.Path,
     bindings: dict[tuple[int, str, int], int],
-) -> tuple[list[str], str]:
+) -> tuple[list[str], str, dict[pathlib.Path, torch.Tensor]]:
     raw = work_dir / "raw"
     raw.mkdir()
 
-    rhs_path = raw / "rhs_all_ranks.f16.raw"
-    rhs = np.memmap(rhs_path, dtype="<f2", mode="w+", shape=tuple(RHS_LOCAL_SHAPE))
-    rhs[:, :] = (1 + np.arange(N, dtype=np.int32) % 19).astype("<f2")
-    rhs.flush()
-    del rhs
-
-    expected_path = raw / "expected_all_ranks.f16.raw"
-    expected = np.memmap(
-        expected_path, dtype="<f2", mode="w+", shape=tuple(OUTPUT_SHAPE)
+    generator = torch.Generator(device="cpu").manual_seed(PYTORCH_SEED)
+    lhs_global = torch.randn(
+        (M, K), dtype=torch.float16, generator=generator
     )
-    column_factor = 1 + np.arange(N, dtype=np.int32) % 19
-    row_block = 64
-    for begin in range(0, M, row_block):
-        end = min(M, begin + row_block)
-        rows = np.arange(begin, end, dtype=np.int32)
-        rank_sum_numerator = 136 + 16 * (rows % 17)
-        block = rank_sum_numerator[:, None] * column_factor[None, :] / 16
-        expected[begin:end, :] = block.astype("<f2")
-    expected.flush()
-    if (
-        float(expected[0, 0]) != 8.5
-        or float(expected[1, 18]) != 180.5
-        or float(expected[M - 1, N - 1]) != 258.5
-    ):
-        raise RuntimeError("frozen full-4096 GEMM expected formula is invalid")
-    del expected
+    rhs_global = torch.randn(
+        (K, N), dtype=torch.float16, generator=generator
+    )
+    with torch.no_grad():
+        expected = torch.matmul(lhs_global, rhs_global)
 
     arguments: list[str] = []
+    captures: dict[pathlib.Path, torch.Tensor] = {}
     for rank in range(RANK_COUNT):
         lhs_path = raw / f"lhs_rank_{rank:05d}.f16.raw"
-        lhs = np.memmap(lhs_path, dtype="<f2", mode="w+", shape=tuple(LHS_LOCAL_SHAPE))
-        lhs[:, :] = (
-            (rank + 1 + np.arange(M, dtype=np.int32)[:, None] % 17) / K
-        ).astype("<f2")
-        lhs.flush()
-        del lhs
+        rhs_path = raw / f"rhs_rank_{rank:05d}.f16.raw"
+        begin = rank * LOCAL_K
+        end = begin + LOCAL_K
+        lhs = lhs_global[:, begin:end].contiguous()
+        rhs = rhs_global[begin:end, :].contiguous()
+        torch_reference.write_tensor_raw(lhs_path, lhs)
+        torch_reference.write_tensor_raw(rhs_path, rhs)
         arguments.extend(
             ["--resource", f"{bindings[(rank, 'user_input', 0)]}={lhs_path}"]
         )
         arguments.extend(
             ["--resource", f"{bindings[(rank, 'user_input', 1)]}={rhs_path}"]
         )
+        capture_path = raw / f"output_rank_{rank:05d}.capture.f16.raw"
         arguments.extend(
-            ["--expected", f"{bindings[(rank, 'output', 0)]}={expected_path}"]
+            ["--output", f"{bindings[(rank, 'output', 0)]}={capture_path}"]
         )
+        captures[capture_path] = expected
 
-    digest = sha256_file(expected_path)
-    if digest != EXPECTED_SHA256:
-        raise RuntimeError(
-            f"full-4096 expected digest changed: {digest} != {EXPECTED_SHA256}"
-        )
+    digest = hashlib.sha256(
+        torch_reference.tensor_raw_bytes(expected)
+    ).hexdigest()
     print(f"expected_sha256: {digest}")
-    return arguments, digest
+    return arguments, digest, captures
 
 
 def verify_no_card_evidence(stdout: str) -> None:
@@ -503,7 +486,7 @@ def verify_board_evidence(stdout: str, output_ids: set[int]) -> None:
     if not required.issubset(set(stdout.splitlines())):
         raise RuntimeError("board output omitted full-4096 lifecycle evidence")
     output_matches = re.findall(
-        rf"^output_compare: resource=(\d+) bytes={OUTPUT_BYTES} exact=true$",
+        rf"^output_capture: resource=(\d+) bytes={OUTPUT_BYTES} path=.+$",
         stdout,
         re.MULTILINE,
     )
@@ -511,7 +494,7 @@ def verify_board_evidence(stdout: str, output_ids: set[int]) -> None:
         len(output_matches) != RANK_COUNT
         or {int(resource) for resource in output_matches} != output_ids
     ):
-        raise RuntimeError("board output omitted a complete replicated exact result")
+        raise RuntimeError("board output omitted a complete replicated capture")
     tile_matches = re.findall(
         r"^board_tile: logical=(\d+) available=true physical_x=\d+ physical_y=\d+$",
         stdout,
@@ -585,7 +568,9 @@ def main() -> int:
         print(result.stdout, end="")
         return 0
 
-    resource_arguments, expected_digest = write_payloads(args.work_dir, bindings)
+    resource_arguments, expected_digest, captures = write_payloads(
+        args.work_dir, bindings
+    )
     command = [
         str(args.wafer_run),
         "--package-dir",
@@ -617,9 +602,19 @@ def main() -> int:
             ),
         )
         verify_board_evidence(result.stdout, output_ids)
+        for capture_path, expected in captures.items():
+            torch_reference.assert_raw_capture_matches(
+                capture_path,
+                expected,
+                policy=torch_reference.EXACT,
+                context=(
+                    f"full-4096 K-sharded GEMM iteration {iteration + 1} "
+                    f"{capture_path.name}"
+                ),
+            )
         print(
             "k_sharded_gemm_iteration: "
-            f"{iteration + 1}/{args.repeat} exact=true "
+            f"{iteration + 1}/{args.repeat} torch_close=true "
             f"expected_sha256={expected_digest}"
         )
         print(result.stdout, end="")

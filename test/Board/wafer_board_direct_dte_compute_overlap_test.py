@@ -12,7 +12,7 @@ import shutil
 import sys
 import time
 
-import numpy as np
+import torch
 
 import wafer_board_compiler_optimization_campaign_test as campaign
 
@@ -53,19 +53,15 @@ module {{
 
 
 def overlap_payloads() -> campaign.PairedPayloads:
-    indices = np.arange(ELEMENT_COUNT, dtype=np.int32)
-    lhs = ((indices % 5) - 2).astype("<f2")
-    rhs = (((indices * 3 + 1) % 5) - 2).astype("<f2")
-    expected_i32 = lhs.astype(np.int32) * 2 + rhs.astype(np.int32) ** 2
-    expected = expected_i32.astype("<f2")
-    if not np.array_equal(expected.astype(np.int32), expected_i32):
-        raise RuntimeError("overlap payload is not exact in f16")
-    inputs = [[lhs.copy(), rhs.copy()] for _ in range(16)]
-    outputs = [[expected.copy()] for _ in range(16)]
+    lhs = campaign.random_f16((ELEMENT_COUNT,), 400)
+    rhs = campaign.random_f16((ELEMENT_COUNT,), 401)
+    expected = (lhs + lhs) + (rhs * rhs)
+    inputs = [[lhs.clone(), rhs.clone()] for _ in range(16)]
+    outputs = [[expected.clone()] for _ in range(16)]
     return campaign.PairedPayloads(
         inputs,
         outputs,
-        [[expected.copy()] for _ in range(16)],
+        [[expected.clone()] for _ in range(16)],
     )
 
 
@@ -407,11 +403,14 @@ def main() -> int:
             output_ids_by_variant[name],
             completion_evidence_by_variant[name],
         )
+        campaign.compare_captured_outputs(
+            args.work_dir, CASE, payloads, name
+        )
         row = {
             "sample": sample,
             "variant": name,
             "host_process_elapsed_ns": elapsed_ns,
-            "exact": True,
+            "torch_reference_matched": True,
         }
         rows.append(row)
         print(

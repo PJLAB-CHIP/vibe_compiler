@@ -199,6 +199,18 @@ set_tests_properties(wafer-physical-tensor-codec-python PROPERTIES
 # directly invocable by their owners, but are intentionally not part of the
 # default CTest graph. Board execution keeps its explicit registrations below.
 
+if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
+  add_test(NAME wafer-pytorch-board-tensor-reference-python
+    COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_pytorch_board_common_test.py
+  )
+  set_tests_properties(
+    wafer-pytorch-board-tensor-reference-python PROPERTIES
+    LABELS "runtime;no-card;pytorch;reference;fault-injection"
+    TIMEOUT 30
+  )
+endif()
+
 if(WAFER_ENABLE_IMPORTER_DEPS AND
    WAFER_ENABLE_SPMD_PARTITIONER_DEPS AND
    WAFER_XLA_SPMD_PARTITIONER_HELPER)
@@ -320,6 +332,42 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
       "runtime;no-card;all-rank;cluster;direct-dte;compute-overlap;paired;heavy"
     TIMEOUT 1800
   )
+  if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
+    add_test(NAME wafer-runtime-pytorch-rank-one-gemm-no-card
+      COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case rank-one-gemm
+        --dtype float16
+        --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-rank-one-gemm-no-card
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-pytorch-rank-one-gemm-no-card PROPERTIES
+      LABELS "runtime;no-card;pytorch;source;gemm"
+      TIMEOUT 600
+    )
+    add_test(NAME wafer-runtime-pytorch-k-sharded-gemm-all-reduce-no-card
+      COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case k-sharded-gemm-all-reduce
+        --dtype float16
+        --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-k-sharded-gemm-all-reduce-no-card
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-pytorch-k-sharded-gemm-all-reduce-no-card PROPERTIES
+      LABELS "runtime;no-card;heavy;pytorch;source;all-rank;gemm;all-reduce;direct-dte"
+      TIMEOUT 1800
+    )
+  endif()
   if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     # These package builders are preflight companions for explicit hardware
     # qualification. They are not part of the ordinary host CTest graph.
@@ -1950,6 +1998,33 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     SKIP_RETURN_CODE 77
     TIMEOUT 600
   )
+  if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
+    add_test(NAME wafer-board-pytorch-rank-one-gemm
+      COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case rank-one-gemm
+        --dtype float16
+        --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/board-pytorch-rank-one-gemm
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 60000
+        --repeat 1
+    )
+    set_tests_properties(wafer-board-pytorch-rank-one-gemm PROPERTIES
+      LABELS "board;hardware;pytorch;source;single-op;gemm"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 600
+    )
+  endif()
   add_test(NAME wafer-board-mn-tiled-gemm
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_single_gemm_test.py
@@ -2481,6 +2556,36 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       SKIP_RETURN_CODE 77
       TIMEOUT 1800
     )
+    if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
+      add_test(NAME wafer-board-pytorch-k-sharded-gemm-all-reduce
+        COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+          --case k-sharded-gemm-all-reduce
+          --dtype float16
+          --seed 20260803
+          --wafer-compile $<TARGET_FILE:wafer-compile>
+          --wafer-run $<TARGET_FILE:wafer-run>
+          --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}/board-pytorch-k-sharded-gemm-all-reduce
+          --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+          --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+          --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+          --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+          --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+          --expected-runtime-library-sha256
+            ${_wafer_expected_tx_runtime_library_sha256}
+          --completion-timeout-ms 60000
+          --repeat 1
+      )
+      set_tests_properties(
+        wafer-board-pytorch-k-sharded-gemm-all-reduce PROPERTIES
+        LABELS
+          "board;hardware;heavy;pytorch;source;cluster;all-rank;gemm;all-reduce;direct-dte"
+        RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 1800
+      )
+    endif()
   else()
     message(STATUS
       "Not registering the all-rank board test: it requires exactly 16 TX tiles")

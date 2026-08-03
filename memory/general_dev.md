@@ -1201,3 +1201,14 @@
 - 同一份页面规格生成PPTX、嵌入Notes、PDF、逐页PNG和contact sheet。交付前同时检查slide/notes数量、
   PPT对象边界、PDF页数、预览分辨率、图片链接、可见文字密度和source map覆盖；100% contact sheet检查后，
   对IR、表格和复杂图页再做原尺寸抽查。
+
+## PyTorch source 板端 tensor 对比
+
+- 普通PyTorch source case用固定seed的`torch.rand`/`torch.randn`构造输入，并用同一module/op和同一组tensor在
+  CPU eager直接形成参考结果。周期pattern、one-hot、整数公式或手写等价计算只用于失败后的定向debug，不能
+  进入常规完成证据。
+- case dtype由输入tensor声明；公共raw codec和comparator按manifest与tensor自身dtype/shape处理，不写死FP16，
+  也不把actual或参考结果换算到其它精度。configured-board实例可按板测默认规则选择FP16/BF16，但这只是case参数。
+- `wafer-run`只接收输入resource和output capture，不接收PyTorch参考结果做provider raw comparison。capture完成后
+  由Python按原shape/dtype解码为`torch.Tensor`，再用`torch.testing.assert_close`完整比较所有声明output；raw
+  文件只承担传输，不能成为第二份数值参考。
