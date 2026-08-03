@@ -125,6 +125,21 @@ artifact/buffering/worker tuple以及完整module文本。它证明candidate集�
 
 ### 等价lowering与analysis加速
 
+- layout hardening不以movement lowering已经正确为完成证明。对candidate、view/alias、SPM/DDR planning、
+  liveness/effect、cost、Instr verifier、target binding和model codec中的全部layout consumer做一次同源性
+  审计；任何影响legality、footprint、range、descriptor或可观察physical bytes的查询必须来自tasks/08定义的
+  composed physical access relation或其encoding-owned typed投影。仅能力准入可以比较layout enum，不能据此
+  手算stride、padding、byte count或物理等价。
+- logical `IndexRelation`保持layout-agnostic；encoding提供logical index到physical bit span的exact piecewise
+  relation/segments，两者在当前IR epoch组合。Tensor/NTensor、Cx/NCx和未来encoding由同一query surface扩展，
+  不增加layout-pair matcher、旁路segment cache或跨rewrite proof。
+- 本轮全consumer审计按职责收敛为四类：logical view/transpose/broadcast/reshape只构造`IndexRelation`；
+  movement与physical equivalence使用`PhysicalAccessRelation`组合两端encoding；footprint、valid/padding和bit span
+  由encoding interface直接投影；所有placement/ABI/qualification的alignment经同一checked-LCM入口组合。
+  collective message bytes和host tensor payload仍是logical compact payload，明确不作为allocation footprint。
+- blocked encoding与generic memref strided view当前没有可验证的单一type组合语义，统一fail closed；调度边界也只把
+  Tensor/NTensor collapse/expand折叠为metadata view。这样非NCx到NTensor、Tensor到Cx及任意其它layout转换都必须
+  由同一logical relation加source/destination独立physical projection证明，不按layout pair写特例。
 - static projected-permutation、identity、broadcast、slice和trailing ordered-reduction slice从显式index relation
   直接构造exact movement descriptor。维度循环从内到外合并为最多三层 stride × iteration；
   多余维度、field-width、directional DMA endpoint约束或真实piece边界导致拆分时，先符号计数再在
@@ -258,6 +273,9 @@ configured board执行后才能标`done`。
 
 本轮typed configuration的fresh host证据包括：
 
+- layout hardening后201个physical relation、encoding、view/alias、memory planning、target/model相关unit与
+  42个layout/mapped movement/SPM/DDR/target lit通过；16-rank M-sharded K=1024 ordinary/profile package再次
+  fresh生成，production bytes一致、grid launch和profile companion闭合，两包均通过no-card；
 - 18个稳定语义名的唯一性、parse/stringify round-trip、`production`/`none`全集和任意typed composition unit；
 - `none` rank frontier只产生唯一conservative spill/single-buffer/unplaced reserved baseline，且canonical
   request-shard merge与未分片frontier仍逐module一致；

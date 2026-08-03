@@ -10,6 +10,7 @@
 #include "gtest/gtest.h"
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <set>
 #include <string>
@@ -259,6 +260,11 @@ TEST(WaferDialectTest, PhysicalEncodingInterfaceOwnsStaticStorageFacts) {
   EXPECT_EQ(*cxEncoding.getMinimumAlignmentBytes(cxType), 256);
   EXPECT_EQ(*cxEncoding.getValidElementCount(cxType), 130);
   EXPECT_EQ(*cxEncoding.getPaddingElementCount(cxType), 126);
+  EXPECT_EQ(*wafer::computeWaferRequiredAlignmentBytes(cxType, {384}), 768);
+  EXPECT_TRUE(
+      mlir::failed(wafer::computeWaferRequiredAlignmentBytes(cxType, {0})));
+  EXPECT_TRUE(mlir::failed(wafer::computeWaferRequiredAlignmentBytes(
+      cxType, {std::numeric_limits<int64_t>::max()})));
   mlir::FailureOr<wafer::WaferPhysicalElementSpan> cxSpan =
       cxEncoding.getPhysicalElementSpan(cxType, {1, 64});
   ASSERT_TRUE(mlir::succeeded(cxSpan));
@@ -281,6 +287,7 @@ TEST(WaferDialectTest, PhysicalEncodingInterfaceOwnsStaticStorageFacts) {
   auto bitpackedType =
       mlir::MemRefType::get({2, 9}, mlir::IntegerType::get(&context, 1),
                             mlir::MemRefLayoutAttrInterface{}, tensorMemory);
+  EXPECT_EQ(*tensorEncoding.getMinimumAlignmentBytes(bitpackedType), 1);
   mlir::FailureOr<wafer::WaferPhysicalElementSpan> bitSpan =
       tensorEncoding.getPhysicalElementSpan(bitpackedType, {1, 8});
   ASSERT_TRUE(mlir::succeeded(bitSpan));
@@ -293,6 +300,45 @@ TEST(WaferDialectTest, PhysicalEncodingInterfaceOwnsStaticStorageFacts) {
   EXPECT_TRUE(
       mlir::failed(tensorEncoding.getPhysicalFootprintBytes(dynamicType)));
   EXPECT_TRUE(mlir::failed(cxEncoding.getPhysicalFootprintBytes(tensorType)));
+}
+
+TEST(WaferDialectTest, BlockedEncodingRejectsConflictingMemrefViews) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+
+  auto cxMemory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                         wafer::MemLayout::Cx);
+  auto cxEncoding =
+      mlir::dyn_cast<wafer::WaferPhysicalEncodingAttrInterface>(cxMemory);
+  ASSERT_TRUE(cxEncoding);
+  mlir::Type f16 = mlir::Float16Type::get(&context);
+  auto strided = mlir::StridedLayoutAttr::get(&context, 3, {211, 2});
+  mlir::MemRefType conflicting =
+      mlir::MemRefType::get({17, 197}, f16, strided, cxMemory);
+  EXPECT_FALSE(wafer::computeWaferPhysicalTensorInfo(conflicting));
+  EXPECT_TRUE(mlir::failed(cxEncoding.getPhysicalFootprintBytes(conflicting)));
+  EXPECT_TRUE(mlir::failed(cxEncoding.getMinimumAlignmentBytes(conflicting)));
+  EXPECT_TRUE(
+      mlir::failed(cxEncoding.getPhysicalElementSpan(conflicting, {3, 64})));
+
+  mlir::MemRefType scalar = mlir::MemRefType::get(
+      {}, f16, mlir::MemRefLayoutAttrInterface{}, cxMemory);
+  EXPECT_FALSE(wafer::computeWaferPhysicalTensorInfo(scalar));
+
+  mlir::MemRefType bitpacked =
+      mlir::MemRefType::get({17, 197}, mlir::IntegerType::get(&context, 1),
+                            mlir::MemRefLayoutAttrInterface{}, cxMemory);
+  EXPECT_FALSE(wafer::computeWaferPhysicalTensorInfo(bitpacked));
+
+  mlir::MemRefType dynamic =
+      mlir::MemRefType::get({mlir::ShapedType::kDynamic, 197}, f16,
+                            mlir::MemRefLayoutAttrInterface{}, cxMemory);
+  std::optional<wafer::WaferPhysicalTensorInfo> dynamicInfo =
+      wafer::computeWaferPhysicalTensorInfo(dynamic);
+  ASSERT_TRUE(dynamicInfo);
+  EXPECT_EQ(dynamicInfo->physicalBytes, -1);
 }
 
 TEST(WaferDialectTest, ComputesCxAndNCxBlockMajorOffsetsForLargeC) {

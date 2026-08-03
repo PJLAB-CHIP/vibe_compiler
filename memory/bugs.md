@@ -2302,3 +2302,19 @@
 - 防复发：manifest/launch verifier分别检查两种ABI的packet bound；target aggregate测试必须读取高ordinal slot，runtime
   fake provider必须逐row核对device address、allocation/H2D/cleanup和单次aggregate submit。不能从slot名、case或
   参数内容选择ABI。
+
+## 2026-08-03 layout正确性不能只检查movement lowering
+
+- 现象：Cx/NCx movement已经按block/tail生成多层descriptor，但SPM/DDR placement、candidate footprint、fixed-slot
+  qualification和target ABI仍分别组合alignment；默认256B policy偶然掩盖了encoding natural alignment缺失。
+  同时，带非identity memref layout的Cx/NCx type会被部分consumer当成blocked base buffer，部分consumer又按memref
+  stride解释，存在同一type两套地址语义。
+- 根因：logical index relation、physical encoding geometry和caller policy requirement没有形成统一组合边界；各pass
+  只处理了自己眼前的bytes/stride/alignment。logical tensor reshape也曾被无条件折叠成blocked memref metadata view，
+  混淆了logical element order和physical alias。
+- 修复模式：`IndexRelation`保持layout-agnostic，在当前IR epoch与endpoint encoding组合成可重算的physical access
+  analysis；footprint/span/padding由encoding拥有，policy与allocation alignment经共享checked LCM投影。Cx/NCx上的
+  rank-0、bitpacked和非identity memref layout统一失败；generic collapse/expand只对compact Tensor/NTensor折叠。
+- 防复发：layout审计必须覆盖candidate、view/alias、SPM/DDR、lifetime/effect、cost、Instr、target和model，而不只看
+  RDMA/WDMA/TDMA。跨Tensor/NTensor/Cx/NCx、dtype block边界、C0和tail用独立慢oracle做differential；普通consumer
+  不得出现第二份Cx/NCx offset/padding公式，也不得用`max(alignment)`代替LCM。

@@ -2,6 +2,7 @@ add_mlir_library(WaferAnalysis
   CollectiveTopologyAnalysis.cpp
   ExecutionTopologyAnalysis.cpp
   PhysicalDataflow/IndexRelation.cpp
+  PhysicalDataflow/PhysicalAccessRelation.cpp
   PhysicalDataflow/TransferRealizability.cpp
   NoCProfitabilityAnalysis.cpp
   ScheduleCost/ExecutionCost.cpp

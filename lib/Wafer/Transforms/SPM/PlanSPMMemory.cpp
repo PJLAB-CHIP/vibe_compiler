@@ -624,7 +624,7 @@ initializeSPMDemands(mlir::func::FuncOp funcOp, int64_t defaultAlignment,
       return;
     }
 
-    int64_t requiredAlignment = defaultAlignment;
+    llvm::SmallVector<int64_t, 2> alignmentRequirements{defaultAlignment};
     if (std::optional<uint64_t> allocAlignment = alloc.getAlignment()) {
       if (*allocAlignment >
           static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
@@ -633,21 +633,22 @@ initializeSPMDemands(mlir::func::FuncOp funcOp, int64_t defaultAlignment,
         result = mlir::failure();
         return;
       }
-      std::optional<int64_t> combined = mp::combineAlignmentRequirements(
-          requiredAlignment, static_cast<int64_t>(*allocAlignment));
-      if (!combined) {
-        alloc.emitError()
-            << "alignment_unsatisfied: combined SPM alignment exceeds int64";
-        result = mlir::failure();
-        return;
-      }
-      requiredAlignment = *combined;
+      alignmentRequirements.push_back(static_cast<int64_t>(*allocAlignment));
+    }
+    mlir::FailureOr<int64_t> requiredAlignment =
+        computeWaferRequiredAlignmentBytes(memrefType, alignmentRequirements);
+    if (mlir::failed(requiredAlignment)) {
+      alloc.emitError()
+          << "alignment_unsatisfied: cannot combine physical encoding, "
+             "target, and allocation SPM alignment";
+      result = mlir::failure();
+      return;
     }
 
     mp::LifetimeDemand demand;
     demand.allocation = alloc;
     demand.sizeBytes = info->physicalBytes;
-    demand.alignmentBytes = requiredAlignment;
+    demand.alignmentBytes = *requiredAlignment;
     demand.stableOrdinal = demands.size();
     demands.push_back(std::move(demand));
   });

@@ -441,24 +441,22 @@ static bool hasSupportedReadOnlyLoopDestination(const AliasSummary &dest,
 static std::optional<int64_t>
 getRequiredAlignment(mlir::MemRefType type,
                      mlir::memref::AllocOp allocation = {}) {
-  auto encoding = mlir::dyn_cast_or_null<WaferPhysicalEncodingAttrInterface>(
-      type.getMemorySpace());
-  if (!encoding)
+  llvm::SmallVector<int64_t, 1> requirements;
+  if (allocation) {
+    std::optional<uint64_t> explicitAlignment = allocation.getAlignment();
+    if (explicitAlignment) {
+      if (*explicitAlignment == 0 ||
+          *explicitAlignment >
+              static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+        return std::nullopt;
+      requirements.push_back(static_cast<int64_t>(*explicitAlignment));
+    }
+  }
+  mlir::FailureOr<int64_t> alignment =
+      computeWaferRequiredAlignmentBytes(type, requirements);
+  if (mlir::failed(alignment))
     return std::nullopt;
-  mlir::FailureOr<int64_t> natural = encoding.getMinimumAlignmentBytes(type);
-  if (mlir::failed(natural) || *natural <= 0)
-    return std::nullopt;
-  int64_t alignment = *natural;
-  if (!allocation)
-    return alignment;
-  std::optional<uint64_t> explicitAlignment = allocation.getAlignment();
-  if (!explicitAlignment)
-    return alignment;
-  if (*explicitAlignment >
-      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-    return std::nullopt;
-  return mp::combineAlignmentRequirements(
-      alignment, static_cast<int64_t>(*explicitAlignment));
+  return *alignment;
 }
 
 static bool hasStaticZeroOffsetNonNegativeStrides(mlir::MemRefType type) {
@@ -800,12 +798,11 @@ unsigned elideRedundantFullBufferTransfers(mlir::ModuleOp module) {
           unavailableTimelines.insert(functionOperation);
           continue;
         }
-        timelineIt =
-            timelines
-                .try_emplace(functionOperation,
-                             std::make_unique<mp::StructuredTimeline>(
-                                 std::move(*timeline)))
-                .first;
+        timelineIt = timelines
+                         .try_emplace(functionOperation,
+                                      std::make_unique<mp::StructuredTimeline>(
+                                          std::move(*timeline)))
+                         .first;
       }
       bool elided = false;
       {

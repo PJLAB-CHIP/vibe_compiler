@@ -436,12 +436,16 @@ getAlignedPhysicalSPMBytes(llvm::ArrayRef<int64_t> shape,
                                     mlir::MemRefLayoutAttrInterface{}, memory);
   std::optional<WaferPhysicalTensorInfo> physical =
       computeWaferPhysicalTensorInfo(type);
+  mlir::FailureOr<int64_t> requiredAlignment =
+      computeWaferRequiredAlignmentBytes(type, {spmAlignment});
   if (!physical || physical->physicalBytes < 0 ||
+      mlir::failed(requiredAlignment) ||
       physical->physicalBytes >
-          std::numeric_limits<int64_t>::max() - (spmAlignment - 1))
+          std::numeric_limits<int64_t>::max() - (*requiredAlignment - 1))
     return std::nullopt;
-  return ((physical->physicalBytes + spmAlignment - 1) / spmAlignment) *
-         spmAlignment;
+  return ((physical->physicalBytes + *requiredAlignment - 1) /
+          *requiredAlignment) *
+         *requiredAlignment;
 }
 
 static bool isDirectTaskArgument(mlir::func::FuncOp task, mlir::Value value) {

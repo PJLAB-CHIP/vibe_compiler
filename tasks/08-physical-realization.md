@@ -239,6 +239,69 @@ AnalysisManager 自动清理，因此首版宁可重算，也不能复用可能�
 
 ## 5. Physical Encoding Attr/Type Interface
 
+### 5.0 Composed Physical Access Relation
+
+`IndexRelation`继续只描述logical index之间的关系；layout不得作为枚举分支、padding常量或目标地址公式
+进入logical relation。统一的跨pass查询由当前IR即时派生一条composed physical access relation：
+
+```text
+iteration --logical IndexRelation--> endpoint logical index
+          --encoding relation------> physical bit span
+```
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  当前epoch中typed source/destination memref、structured/view/movement op派生的exact logical
+  `IndexRelation`，以及两端`WaferPhysicalEncodingAttrInterface`。
+- Current stage responsibility:
+  将logical relation与encoding拥有的logical-index-to-physical-bit-span关系组合，统一回答valid-domain、
+  footprint、alignment、physical range/segment、contiguity、overlap、physical equivalence和descriptor
+  geometry；Cx/NCx的dtype block、C0、folded/retained tail及bank padding只在encoding owner中解释。
+- Output artifact / IR:
+  invocation-local、可失效、可重算的physical access analysis value或query result；transform成功后仍只
+  产生typed view/movement/allocation/instruction IR，不保存relation、segment list或layout plan attr。
+- Downstream consumer:
+  candidate legality/cost、metadata-view与storage-coalescing证明、SPM/DDR footprint/range/lifetime、
+  RDMA/WDMA/GS lowering、instruction verifier、target binding及numeric/model codec。
+- User-level driver / named pipeline:
+  production source-to-bundle pipeline；局部analysis/unit/lit入口只验证同一library API。
+- Explicit non-goals:
+  不让logical `IndexRelation`识别layout enum，不把Cx/NCx伪装成普通affine memref stride，不新增跨pass
+  side table、serialized proof或pair-specific conversion matrix，不用`shape * elementBytes`替代physical
+  footprint。
+- Completion gate:
+  所有会改变legality、allocation bytes/range、movement bytes/stride、cost或target/model观察结果的layout
+  consumer均调用encoding/composed-relation owner；除typed capability admission外不按layout enum恢复物理
+  几何。Tensor/NTensor/Cx/NCx跨dtype、rank、full/tail/padding的慢oracle differential及至少一条
+  source-to-instruction集成链路证明各consumer得到同一physical事实。
+```
+
+这里的“组合”不要求把physical layout永久塞进`IndexRelation`类。底层可以复用同一Presburger relation
+运算表示piecewise logical-to-physical point map；bit length、footprint、alignment和padding domain仍由
+encoding typed result携带。若某个encoding无法在预算内形成精确关系，query返回
+`UnsupportedRepresentation`或`ResourceLimit`，consumer fail closed，不退回手写layout公式。
+
+pass按职责消费不同投影，但事实源相同：memory planning读取footprint/alignment，alias/lifetime读取root-local
+physical range，movement lowering读取ordered segments与stride loops，cost读取logical payload和实际command/
+traffic envelope，target/model读取已验证的physical span。logical payload、physical allocation和transport
+traffic是三个不同量，不能因为都以byte表示就互相替代。
+
+当前实现以`PhysicalAccessRelation`作为上述组合查询的library入口：构造时证明logical relation覆盖完整
+iteration domain、range不越过endpoint logical domain，并按consumer要求证明functional/injective；点查询优先
+执行从relation投影出的AffineMap，canonical reshape再使用线性序关系，其余exact relation才进入Presburger点求值。
+最终地址始终由encoding的physical bit-span接口给出，analysis本身不复制Cx/NCx公式。
+
+encoding/type组合同时承担结构门禁。Cx/NCx只接受rank大于零、非bitpacked、identity memref layout的typed
+buffer；带第二套strided/offset memref view的blocked buffer不能由当前type唯一解释，因此在footprint、alignment、
+span和composed-relation查询处统一失败。需要这种view时必须保留logical `IndexRelation`并显式materialize movement，
+不能让generic memref view悄悄改变blocked地址。Tensor/NTensor上的标准collapse/expand仍可作为metadata view；
+blocked layout上的同类折叠只有经过上述physical equivalence证明后才能消除movement。
+
+natural alignment也是encoding投影的一部分。SPM/DDR planner、candidate estimate、fixed-slot qualification、
+target ABI和storage coalescing通过同一checked-LCM入口组合target policy、allocation attr与encoding alignment；
+不得用`max`，也不得依赖当前default alignment恰好覆盖Cx/NCx的256B要求。
+
 ### 5.1 IR 表达与接口责任
 
 tile-dataflow 继续用 typed memref 表达 logical buffer，例如：

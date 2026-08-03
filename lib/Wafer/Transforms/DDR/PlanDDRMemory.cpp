@@ -93,6 +93,23 @@ static bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
   return true;
 }
 
+static std::optional<int64_t>
+combinePhysicalAlignment(mlir::MemRefType type, int64_t requestedAlignment,
+                         std::optional<uint64_t> explicitAlignment) {
+  llvm::SmallVector<int64_t, 2> requirements{requestedAlignment};
+  if (explicitAlignment) {
+    if (*explicitAlignment >
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+      return std::nullopt;
+    requirements.push_back(static_cast<int64_t>(*explicitAlignment));
+  }
+  mlir::FailureOr<int64_t> combined =
+      computeWaferRequiredAlignmentBytes(type, requirements);
+  if (mlir::failed(combined))
+    return std::nullopt;
+  return *combined;
+}
+
 static mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
   while (true) {
     if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
@@ -699,20 +716,13 @@ static mlir::LogicalResult verifyDDRRoot(mlir::Operation *op, mlir::Value root,
               "has no accepted wafer.ddr.offset";
   int64_t offset = offsetIt->second;
 
-  int64_t requiredAlignment = defaultAlignment;
-  if (std::optional<uint64_t> allocAlignment = alloc.getAlignment()) {
-    if (*allocAlignment >
-        static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return op->emitError()
-             << "ddr_alignment_failure: memref.alloc alignment exceeds int64";
-    std::optional<int64_t> combined =
-        memory_planning::combineAlignmentRequirements(
-            requiredAlignment, static_cast<int64_t>(*allocAlignment));
-    if (!combined)
-      return op->emitError()
-             << "ddr_alignment_failure: combined DDR alignment exceeds int64";
-    requiredAlignment = *combined;
-  }
+  std::optional<int64_t> physicalAlignment = combinePhysicalAlignment(
+      alloc.getType(), defaultAlignment, alloc.getAlignment());
+  if (!physicalAlignment)
+    return op->emitError()
+           << "ddr_alignment_failure: cannot combine target and physical "
+              "encoding DDR alignment";
+  int64_t requiredAlignment = *physicalAlignment;
 
   if (requiredAlignment <= 0 || offset % requiredAlignment != 0)
     return op->emitError()
@@ -1011,20 +1021,13 @@ static mlir::LogicalResult initializeDDRDemand(
               "byte size for "
            << memrefType;
 
-  int64_t requiredAlignment = defaultAlignment;
-  if (std::optional<uint64_t> allocAlignment = alloc.getAlignment()) {
-    if (*allocAlignment >
-        static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return alloc.emitError()
-             << "ddr_alignment_failure: memref.alloc alignment exceeds int64";
-    std::optional<int64_t> combined =
-        memory_planning::combineAlignmentRequirements(
-            requiredAlignment, static_cast<int64_t>(*allocAlignment));
-    if (!combined)
-      return alloc.emitError()
-             << "ddr_alignment_failure: combined DDR alignment exceeds int64";
-    requiredAlignment = *combined;
-  }
+  std::optional<int64_t> physicalAlignment = combinePhysicalAlignment(
+      memrefType, defaultAlignment, alloc.getAlignment());
+  if (!physicalAlignment)
+    return alloc.emitError()
+           << "ddr_alignment_failure: cannot combine target and physical "
+              "encoding DDR alignment";
+  int64_t requiredAlignment = *physicalAlignment;
 
   std::optional<memory_planning::ProgramPoint> allocationPoint =
       timeline.lookup(alloc.getOperation());

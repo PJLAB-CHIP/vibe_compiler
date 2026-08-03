@@ -158,6 +158,15 @@ bool isWaferDDRMemRefType(mlir::Type type);
 MemoryAttr getWaferMemoryAttr(mlir::MemRefType type);
 std::optional<WaferPhysicalTensorInfo>
 computeWaferPhysicalTensorInfo(mlir::MemRefType type);
+
+/// Combine the physical encoding's natural alignment with caller-owned target,
+/// arena, ABI, or allocation requirements using checked least-common-multiple
+/// arithmetic. This is the common alignment projection of the physical
+/// encoding contract; callers must not replace it with max() or divisibility
+/// assumptions.
+mlir::FailureOr<int64_t> computeWaferRequiredAlignmentBytes(
+    mlir::MemRefType type, llvm::ArrayRef<int64_t> additionalRequirements = {});
+
 std::optional<int64_t>
 computeWaferPhysicalElementByteOffset(mlir::MemRefType type,
                                       llvm::ArrayRef<int64_t> logicalIndices);

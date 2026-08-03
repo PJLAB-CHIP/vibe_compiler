@@ -1,8 +1,10 @@
 //===- IndexRelationTest.cpp - MLIR-backed index relation tests ----------===//
 
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
+#include "Wafer/Analysis/PhysicalDataflow/PhysicalAccessRelation.h"
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/InitAll.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Builders.h"
@@ -21,6 +23,7 @@ using wafer::analysis::IndexRelationQueryResult;
 using wafer::analysis::IndexRelationResult;
 using wafer::analysis::IndexRelationStatus;
 using wafer::analysis::IndexSetResult;
+using wafer::analysis::PhysicalAccessRelation;
 using wafer::analysis::TransferRealizability;
 using wafer::analysis::TransferRealizabilityLimits;
 
@@ -49,8 +52,110 @@ TEST(IndexRelationTest, RepresentsIdentityPermutationAndBroadcastExactly) {
   std::optional<mlir::AffineMap> recovered =
       permutation.get()->getProjectedAffineMap(&context);
   ASSERT_TRUE(recovered);
-  EXPECT_EQ(*recovered,
-            mlir::AffineMap::get(2, 0, {d1, d0}, &context));
+  EXPECT_EQ(*recovered, mlir::AffineMap::get(2, 0, {d1, d0}, &context));
+}
+
+TEST(PhysicalAccessRelationTest,
+     ComposesEveryLayoutPairAcrossDtypesBlocksAndTails) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+
+  const llvm::SmallVector<int64_t, 4> shape{2, 17, 197};
+  IndexRelationResult identity = IndexRelation::identity(shape);
+  ASSERT_TRUE(identity.isExact());
+
+  const llvm::SmallVector<mlir::Type, 4> elementTypes{
+      mlir::Float16Type::get(&context), mlir::BFloat16Type::get(&context),
+      mlir::Float32Type::get(&context), mlir::IntegerType::get(&context, 8)};
+  const llvm::SmallVector<wafer::MemLayout, 4> layouts{
+      wafer::MemLayout::Tensor, wafer::MemLayout::NTensor, wafer::MemLayout::Cx,
+      wafer::MemLayout::NCx};
+  const llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 6> points{
+      {0, 0, 0},   {0, 3, 63},  {0, 3, 64},
+      {1, 7, 127}, {1, 7, 128}, {1, 16, 196}};
+
+  for (auto [dtypeIndex, elementType] : llvm::enumerate(elementTypes)) {
+    llvm::SmallVector<mlir::MemRefType, 4> types;
+    for (wafer::MemLayout layout : layouts) {
+      auto memory =
+          wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM, layout);
+      mlir::MemRefType type = mlir::MemRefType::get(
+          shape, elementType, mlir::MemRefLayoutAttrInterface{}, memory);
+      types.push_back(type);
+
+      mlir::FailureOr<PhysicalAccessRelation> access =
+          PhysicalAccessRelation::create(type, shape, *identity.get(),
+                                         /*requireInjective=*/true);
+      ASSERT_TRUE(mlir::succeeded(access));
+      auto encoding =
+          mlir::dyn_cast<wafer::WaferPhysicalEncodingAttrInterface>(memory);
+      ASSERT_TRUE(encoding);
+      EXPECT_EQ(access->getPhysicalFootprintBytes(),
+                *encoding.getPhysicalFootprintBytes(type));
+      EXPECT_EQ(access->getMinimumAlignmentBytes(),
+                *encoding.getMinimumAlignmentBytes(type));
+      for (llvm::ArrayRef<int64_t> point : points) {
+        SCOPED_TRACE(testing::Message()
+                     << "dtype=" << dtypeIndex << " layout="
+                     << static_cast<unsigned>(layout) << " point=" << point[0]
+                     << "," << point[1] << "," << point[2]);
+        mlir::FailureOr<wafer::WaferPhysicalElementSpan> composed =
+            access->getPhysicalElementSpan(point);
+        mlir::FailureOr<wafer::WaferPhysicalElementSpan> direct =
+            encoding.getPhysicalElementSpan(type, point);
+        ASSERT_TRUE(mlir::succeeded(composed));
+        ASSERT_TRUE(mlir::succeeded(direct));
+        EXPECT_EQ(*composed, *direct);
+      }
+    }
+
+    for (mlir::MemRefType source : types)
+      for (mlir::MemRefType dest : types)
+        EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveMappedTransfer(
+            source, dest, shape, *identity.get(), *identity.get())));
+  }
+}
+
+TEST(PhysicalAccessRelationTest,
+     ComposesPermutationAndEnforcesWriterInjectivity) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+  mlir::Type f16 = mlir::Float16Type::get(&context);
+  auto cxMemory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                         wafer::MemLayout::Cx);
+
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr d1 = mlir::getAffineDimExpr(1, &context);
+  IndexRelationResult transpose = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(2, 0, {d1, d0}, &context),
+      /*destinationShape=*/{5, 97}, /*sourceShape=*/{97, 5});
+  ASSERT_TRUE(transpose.isExact());
+  mlir::MemRefType transposedEndpoint = mlir::MemRefType::get(
+      {97, 5}, f16, mlir::MemRefLayoutAttrInterface{}, cxMemory);
+  mlir::FailureOr<PhysicalAccessRelation> transposeAccess =
+      PhysicalAccessRelation::create(transposedEndpoint, {5, 97},
+                                     *transpose.get(),
+                                     /*requireInjective=*/true);
+  ASSERT_TRUE(mlir::succeeded(transposeAccess));
+  EXPECT_EQ(*transposeAccess->getLogicalPoint({3, 64}),
+            (llvm::SmallVector<int64_t, 4>{64, 3}));
+
+  IndexRelationResult broadcast = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(2, 0, {d1}, &context),
+      /*destinationShape=*/{4, 97}, /*sourceShape=*/{97});
+  ASSERT_TRUE(broadcast.isExact());
+  mlir::MemRefType broadcastEndpoint = mlir::MemRefType::get(
+      {97}, f16, mlir::MemRefLayoutAttrInterface{}, cxMemory);
+  EXPECT_TRUE(mlir::succeeded(PhysicalAccessRelation::create(
+      broadcastEndpoint, {4, 97}, *broadcast.get(),
+      /*requireInjective=*/false)));
+  EXPECT_TRUE(mlir::failed(PhysicalAccessRelation::create(
+      broadcastEndpoint, {4, 97}, *broadcast.get(),
+      /*requireInjective=*/true)));
 }
 
 TEST(IndexRelationTest, ProjectedAffineMapIsDerivedAndFailsClosed) {
@@ -65,8 +170,7 @@ TEST(IndexRelationTest, ProjectedAffineMapIsDerivedAndFailsClosed) {
       slice.get()->getProjectedAffineMap(&context);
   ASSERT_TRUE(recovered);
   EXPECT_EQ(*recovered,
-            mlir::AffineMap::get(2, 0, {d0 * 2 + 1, d1 * -1 + 6},
-                                 &context));
+            mlir::AffineMap::get(2, 0, {d0 * 2 + 1, d1 * -1 + 6}, &context));
 
   IndexRelationResult reshape =
       IndexRelation::staticReshape(/*destinationShape=*/{6},

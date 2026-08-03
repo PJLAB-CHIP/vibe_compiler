@@ -523,11 +523,10 @@
   `wafer.instr.gather_scatter`。如果统一 helper 还不能表达真实 `C0` tail/fold 和 bank padding，
   先补 helper，不要在 lowering 里临时重写一份局部 layout 解释。
 - movement descriptor lowering（`extract_slice/insert_slice/broadcast/transpose`）要从 op
-  自身的 logical index relation 出发，枚举静态 iteration domain，再调用同一个
-  `computeWaferPhysicalElementByteOffset` 得到 source/dest byte offset 并 coalesce 相邻段；
-  compact、`Cx`、`NCx` 都走这条路径。coalesce 后要尽量把规则段打包进 TDMA 三层
-  source/dest stride/iteration descriptor，不能退回“每个 coalesced segment 一条 instruction”的长期
-  lowering。`insert_slice` 不是只写 slice：它返回 updated dest buffer，所以 lowering 必须先把旧
+  自身的 logical `IndexRelation` 出发，与两端encoding组合后按affine/reshape/layout piece直接构造
+  TDMA三层source/dest stride/iteration descriptor；逐logical element计算offset只保留为独立慢oracle，
+  production不能用enumeration/coalesce作为fallback。`insert_slice` 不是只写 slice：它返回 updated dest
+  buffer，所以 lowering 必须先把旧
   dest payload copy 到新 result，再把 source slice overlay 到 result。RDMA/WDMA lowering 要消费
   DDR 侧 `memref.subview` / strided memref layout：整块 compact DDR boundary 生成 contiguous
   descriptor，静态 strided tile view 生成三层 byte stride/iteration descriptor；动态 view、负
@@ -1241,3 +1240,17 @@
   使用symbolic relation/encoding piece planner，不能证明时structured failure；剪枝只能提前执行已有exact rejection
   或显式修改typed candidate domain。
   不通过延长timeout、缩小真实workload或按shape/op/name matcher掩盖算法复杂度。
+
+## Layout consumer审计
+
+- 不以搜索`Cx`/`NCx`枚举分支作为完整审计。先列出所有会回答logical mapping、physical span、footprint、range、
+  alignment、traffic bytes或alias的问题，再逐项确认其事实源分别是`IndexRelation`、physical encoding interface或
+  两者的composed access analysis；capability admission可以看layout enum，地址和容量计算不可以。
+- 审计时单独区分logical compact payload、physical allocation footprint和engine traffic envelope。collective/network
+  message及host tensor文件通常是logical payload；SPM/DDR placement和ABI slot是physical footprint；movement cost取
+  已lowered descriptor envelope。三者数值偶然相同不能成为替换依据。
+- blocked layout若同时携带非identity MLIR memref layout，必须由显式组合合同解释；当前没有该合同就调用
+  `computeWaferPhysicalTensorInfo`或physical encoding interface确认失败关闭。generic reshape/subview不能仅凭element
+  count或相同memory space认定为metadata alias。
+- focused回归至少包含Tensor/NTensor/Cx/NCx全pair、F16/BF16/F32/I8、跨CBlock点、C0/tail和per-N padding，另跑
+  independent coordinate oracle、memory alignment lit、mapped movement、target/model codec及source-to-instruction链路。

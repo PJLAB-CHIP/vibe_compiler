@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <optional>
 
 using namespace wafer;
@@ -328,12 +329,18 @@ mlir::FailureOr<int64_t>
 MemoryAttr::getMinimumAlignmentBytes(mlir::MemRefType type) const {
   if (getWaferMemoryAttr(type) != *this)
     return mlir::failure();
+  std::optional<WaferPhysicalTensorInfo> info =
+      computeWaferPhysicalTensorInfo(type);
+  if (!info || info->physicalBytes < 0)
+    return mlir::failure();
+  if (getLayout() == MemLayout::Cx || getLayout() == MemLayout::NCx)
+    return kWaferSPMBankLineBytes;
+  if (info->bitPackedElement)
+    return 1;
   std::optional<int64_t> elementBytes =
       getElementStorageBytes(type.getElementType());
   if (!elementBytes)
     return mlir::failure();
-  if (getLayout() == MemLayout::Cx || getLayout() == MemLayout::NCx)
-    return kWaferSPMBankLineBytes;
   return *elementBytes;
 }
 
@@ -341,8 +348,10 @@ mlir::FailureOr<int64_t>
 MemoryAttr::getValidElementCount(mlir::MemRefType type) const {
   if (getWaferMemoryAttr(type) != *this)
     return mlir::failure();
+  std::optional<WaferPhysicalTensorInfo> info =
+      computeWaferPhysicalTensorInfo(type);
   std::optional<int64_t> elements = getStaticElementCount(type.getShape());
-  if (!elements)
+  if (!info || info->physicalBytes < 0 || !elements)
     return mlir::failure();
   return *elements;
 }
@@ -406,6 +415,17 @@ wafer::computeWaferPhysicalTensorInfo(mlir::MemRefType type) {
   if (auto integerType =
           mlir::dyn_cast<mlir::IntegerType>(type.getElementType()))
     info.bitPackedElement = integerType.getWidth() == 1;
+
+  // Cx/NCx already own a block-major physical map in the memory encoding.
+  // A second non-identity MemRef layout would describe a different view whose
+  // composition is not representable by the current type contract.  Reject it
+  // instead of silently ignoring its strides/offset.  Bitpacked blocked
+  // geometry is likewise intentionally absent from the hardware contract.
+  if ((info.layout == MemLayout::Cx || info.layout == MemLayout::NCx) &&
+      (type.getRank() == 0 || !type.getLayout().isIdentity() ||
+       info.bitPackedElement))
+    return std::nullopt;
+
   if (std::optional<int64_t> elementBytes =
           getElementStorageBytes(type.getElementType()))
     info.elementBytes = *elementBytes;
@@ -432,6 +452,28 @@ wafer::computeWaferPhysicalTensorInfo(mlir::MemRefType type) {
   }
 
   return info;
+}
+
+mlir::FailureOr<int64_t> wafer::computeWaferRequiredAlignmentBytes(
+    mlir::MemRefType type, llvm::ArrayRef<int64_t> additionalRequirements) {
+  auto encoding = mlir::dyn_cast_or_null<WaferPhysicalEncodingAttrInterface>(
+      type.getMemorySpace());
+  if (!encoding)
+    return mlir::failure();
+  mlir::FailureOr<int64_t> natural = encoding.getMinimumAlignmentBytes(type);
+  if (mlir::failed(natural) || *natural <= 0)
+    return mlir::failure();
+
+  int64_t combined = *natural;
+  for (int64_t requirement : additionalRequirements) {
+    if (requirement <= 0)
+      return mlir::failure();
+    int64_t scaled = combined / std::gcd(combined, requirement);
+    if (scaled > std::numeric_limits<int64_t>::max() / requirement)
+      return mlir::failure();
+    combined = scaled * requirement;
+  }
+  return combined;
 }
 
 std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
@@ -775,9 +817,8 @@ mlir::LogicalResult DirectDTEBindingAttr::verify(
              << "direct_dte_binding selector and remote address must be "
                 "non-negative";
     if (table[index + 2] < 0 || table[index + 2] > 3)
-      return emitError()
-             << "direct_dte_binding route receiver FSM id must be "
-                "within [0, 3]";
+      return emitError() << "direct_dte_binding route receiver FSM id must be "
+                            "within [0, 3]";
     if (table[index] != static_cast<int64_t>(index / 3))
       return emitError()
              << "direct_dte_binding route selectors must be contiguous "

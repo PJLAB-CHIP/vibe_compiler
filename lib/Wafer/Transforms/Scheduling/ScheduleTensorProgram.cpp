@@ -18,6 +18,14 @@ using namespace tensor_program_scheduling;
 
 namespace {
 
+static bool isStandardMetadataViewEncoding(mlir::Type type) {
+  auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
+  MemoryAttr memory =
+      memrefType ? getWaferMemoryAttr(memrefType) : MemoryAttr{};
+  return memory && (memory.getLayout() == MemLayout::Tensor ||
+                    memory.getLayout() == MemLayout::NTensor);
+}
+
 static bool isValueOwnedBy(mlir::Value value, mlir::Operation *root) {
   mlir::Operation *owner = value.getDefiningOp();
   if (!owner) {
@@ -120,9 +128,11 @@ static bool isTensorBackedBy(mlir::Value tensor, mlir::Value expectedMemref,
     return finish(proof.emptyAllocations.lookup(empty.getOperation()) ==
                   expectedMemref);
   if (auto collapse = tensor.getDefiningOp<mlir::tensor::CollapseShapeOp>())
-    return finish(isTensorBackedBy(collapse.getSrc(), expectedMemref, proof));
+    return finish(isStandardMetadataViewEncoding(expectedMemref.getType()) &&
+                  isTensorBackedBy(collapse.getSrc(), expectedMemref, proof));
   if (auto expand = tensor.getDefiningOp<mlir::tensor::ExpandShapeOp>())
-    return finish(isTensorBackedBy(expand.getSrc(), expectedMemref, proof));
+    return finish(isStandardMetadataViewEncoding(expectedMemref.getType()) &&
+                  isTensorBackedBy(expand.getSrc(), expectedMemref, proof));
 
   if (auto blockArgument = mlir::dyn_cast<mlir::BlockArgument>(tensor)) {
     mlir::Block *owner = blockArgument.getOwner();
@@ -242,6 +252,8 @@ static mlir::Value resolveCommittedTensorBoundary(
   }
 
   if (auto collapse = tensor.getDefiningOp<mlir::tensor::CollapseShapeOp>()) {
+    if (!isStandardMetadataViewEncoding(memrefType))
+      return {};
     auto sourceTensorType =
         mlir::dyn_cast<mlir::RankedTensorType>(collapse.getSrcType());
     if (!sourceTensorType || !sourceTensorType.hasStaticShape())
@@ -262,6 +274,8 @@ static mlir::Value resolveCommittedTensorBoundary(
         .getResult();
   }
   if (auto expand = tensor.getDefiningOp<mlir::tensor::ExpandShapeOp>()) {
+    if (!isStandardMetadataViewEncoding(memrefType))
+      return {};
     auto sourceTensorType =
         mlir::dyn_cast<mlir::RankedTensorType>(expand.getSrcType());
     if (!sourceTensorType || !sourceTensorType.hasStaticShape())

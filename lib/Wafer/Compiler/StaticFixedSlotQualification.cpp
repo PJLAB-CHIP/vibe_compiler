@@ -51,6 +51,24 @@ constexpr llvm::StringLiteral kActivationSchema =
     "wafer-static-fixed-slot-qualification-activation";
 constexpr int64_t kSchemaVersion = 1;
 
+static bool satisfiesSPMAlignment(mlir::memref::AllocOp allocation,
+                                  int64_t offset,
+                                  const TargetMemoryPolicy &memory) {
+  llvm::SmallVector<int64_t, 2> requirements = {memory.spmAlignment};
+  if (std::optional<uint64_t> explicitAlignment = allocation.getAlignment()) {
+    if (*explicitAlignment == 0 ||
+        *explicitAlignment >
+            static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+      return false;
+    requirements.push_back(static_cast<int64_t>(*explicitAlignment));
+  }
+  mlir::FailureOr<int64_t> required =
+      computeWaferRequiredAlignmentBytes(allocation.getType(), requirements);
+  if (offset < 0 || mlir::failed(required))
+    return false;
+  return offset % *required == 0;
+}
+
 struct SPMRootSummary {
   int64_t ordinal = 0;
   int64_t offset = 0;
@@ -445,9 +463,12 @@ deriveStaticFixedSlotIRSummary(const AcceptedCallClosure &closure) {
       }
       const __int128 end = static_cast<__int128>(acceptedOffset.getOffset()) +
                            static_cast<__int128>(physical->physicalBytes);
-      if (end > std::numeric_limits<int64_t>::max()) {
-        error =
-            invalid("fixed-slot qualification SPM root range overflows int64");
+      const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
+      if (end > std::numeric_limits<int64_t>::max() ||
+          !satisfiesSPMAlignment(allocation, acceptedOffset.getOffset(),
+                                 memory)) {
+        error = invalid("fixed-slot qualification SPM root range or physical "
+                        "alignment is invalid");
         return;
       }
       const int64_t ordinal = static_cast<int64_t>(summary.spmRoots.size());
@@ -466,8 +487,7 @@ deriveStaticFixedSlotIRSummary(const AcceptedCallClosure &closure) {
   llvm::SmallVector<const SPMRootSummary *, 8> orderedRoots;
   orderedRoots.reserve(summary.spmRoots.size());
   for (const SPMRootSummary &root : summary.spmRoots) {
-    if (memory.spmAlignment <= 0 || root.offset < memory.spmBase ||
-        root.end > memory.spmLimit || root.offset % memory.spmAlignment != 0)
+    if (root.offset < memory.spmBase || root.end > memory.spmLimit)
       return invalid(
           "fixed-slot qualification SPM root violates the target arena or "
           "placement alignment");
@@ -731,9 +751,8 @@ verifyStaticFixedSlotIRWitness(const AcceptedCallClosure &closure) {
                            static_cast<__int128>(physical->physicalBytes);
       const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
       if (end > std::numeric_limits<int64_t>::max() ||
-          memory.spmAlignment <= 0 || offset.getOffset() < memory.spmBase ||
-          end > memory.spmLimit ||
-          offset.getOffset() % memory.spmAlignment != 0)
+          offset.getOffset() < memory.spmBase || end > memory.spmLimit ||
+          !satisfiesSPMAlignment(allocation, offset.getOffset(), memory))
         return;
       rootOrdinals[allocation.getOperation()] = nextRootOrdinal;
       rootsByOrdinal[nextRootOrdinal] = allocation;

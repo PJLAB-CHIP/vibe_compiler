@@ -20,7 +20,6 @@
 
 #include <algorithm>
 #include <limits>
-#include <numeric>
 #include <optional>
 
 namespace wafer::compiler::detail {
@@ -42,13 +41,16 @@ bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
   return true;
 }
 
-std::optional<int64_t> combineAlignmentRequirements(int64_t lhs, int64_t rhs) {
-  if (lhs <= 0 || rhs <= 0)
-    return std::nullopt;
-  int64_t scaled = lhs / std::gcd(lhs, rhs);
-  if (scaled > std::numeric_limits<int64_t>::max() / rhs)
-    return std::nullopt;
-  return scaled * rhs;
+mlir::FailureOr<int64_t> getRequiredPhysicalAlignment(
+    mlir::MemRefType type, llvm::ArrayRef<int64_t> requirements,
+    mlir::Operation *anchor, llvm::StringRef failureReason) {
+  mlir::FailureOr<int64_t> combined =
+      computeWaferRequiredAlignmentBytes(type, requirements);
+  if (mlir::failed(combined)) {
+    anchor->emitError() << "target_abi_mismatch: " << failureReason;
+    return mlir::failure();
+  }
+  return *combined;
 }
 
 KernelABISlotRole getKernelRole(ProgramResourceRole role) {
@@ -178,12 +180,19 @@ prepareTargetABI(const RankExecutable &rankExecutable,
                         KernelABISlotRole role) -> mlir::LogicalResult {
     mlir::FailureOr<WaferPhysicalTensorInfo> physical =
         getPhysicalInfo(type, function);
-    if (mlir::failed(physical))
+    auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
+    mlir::FailureOr<int64_t> alignment =
+        memrefType ? getRequiredPhysicalAlignment(
+                         memrefType, {defaultDDRAlignment}, function,
+                         "cannot combine target and physical encoding DDR "
+                         "alignment")
+                   : mlir::FailureOr<int64_t>(mlir::failure());
+    if (mlir::failed(physical) || mlir::failed(alignment))
       return mlir::failure();
     prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()), role,
                               binding.index, binding.name, binding.dtype,
                               physical->layout, binding.localShape,
-                              physical->physicalBytes, defaultDDRAlignment});
+                              physical->physicalBytes, *alignment});
     return mlir::success();
   };
 
@@ -253,17 +262,17 @@ prepareTargetABI(const RankExecutable &rankExecutable,
       return;
     }
     arenaBytes = std::max(arenaBytes, end);
-    if (auto alignment = allocation.getAlignmentAttr()) {
-      std::optional<int64_t> combined =
-          combineAlignmentRequirements(arenaAlignment, alignment.getInt());
-      if (!combined) {
-        arenaValid = allocation.emitError()
-                     << "target_abi_mismatch: combined default DDR arena "
-                        "alignment is invalid or exceeds int64";
-        return;
-      }
-      arenaAlignment = *combined;
+    llvm::SmallVector<int64_t, 2> alignmentRequirements = {arenaAlignment};
+    if (auto alignment = allocation.getAlignmentAttr())
+      alignmentRequirements.push_back(alignment.getInt());
+    mlir::FailureOr<int64_t> physicalAlignment = getRequiredPhysicalAlignment(
+        allocation.getType(), alignmentRequirements, allocation,
+        "combined default DDR arena alignment is invalid or exceeds int64");
+    if (mlir::failed(physicalAlignment)) {
+      arenaValid = mlir::failure();
+      return;
     }
+    arenaAlignment = *physicalAlignment;
   });
   if (mlir::failed(arenaValid))
     return mlir::failure();
