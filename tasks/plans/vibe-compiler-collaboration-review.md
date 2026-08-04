@@ -563,3 +563,56 @@ contact sheet全部生成，投影预览无裁切，页面不把软件可见行�
   H2D/Kcore/RDMA/WDMA/Host crossing、pure NCC和跨cache-line mapping例子。
 - Fresh构建生成11页PPTX、11页PDF、11张PNG和contact sheet；结构检查为`slides=11`、`notes=11`、
   `media=11`，PDF页面为16:9。没有执行板端case，没有改变任何hardware capability或任务状态结论。
+
+## 16. 同步章节案例化重构（2026-08-04）
+
+评审发现首版补充章节虽然在Notes中记录了case，但页面主体仍有两个问题：单Tile图把五类NCC engine在
+三个worker下重复绘制，容易被理解成十五个独立engine；same-worker、cross-worker、Direct DTE、barrier、
+cache与mapping的关键例子又被压缩在右侧小字中，不能在投影环境下独立支撑讲解。本轮重新打开Q43，按以下
+合同重构，不保留11页这个固定页数：
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  当前profile硬件行为文档、校准矩阵、probe source、Instr IR、target lowering与runtime helper语义。
+- Current stage responsibility:
+  将worker/engine/completion/cache/address mapping的真实边界和代表case组织为可投影、可讲解的技术章节。
+- Output artifact / IR:
+  可插入主deck的PPTX/PDF/逐页PNG/Notes及逐页source/prompt记录；不产生compiler program IR。
+- Downstream consumer:
+  周五内部技术汇报及后续硬件行为文档评审。
+- User-level driver / named pipeline:
+  `docs/presentations/2026-08-04-vibe-compiler-sync-memory/build_deck.py`。
+- Explicit non-goals:
+  不猜测芯片内部微架构，不把worker画成engine副本，不重新执行板端case，不修改主deck技术图。
+- Completion gate:
+  每页主视觉与正文都包含本页case；engine只出现为单组五类执行单元；PPTX/PDF/PNG/Notes结构一致，
+  contact sheet和关键页原尺寸复核通过。
+```
+
+硬性页面标准：
+
+- Tile总览只画一个Kcore、一个NCC subsystem、三个worker context和一组CT/NE/RDMA/WDMA/TDMA；worker通过
+  routing/queue/completion lane连接这组执行单元，不复制engine。
+- 机制与case分开占据足够空间。页面可以增加到14页或更多，禁止把三个实验、五条crossing或多段IR塞进
+  2.9英寸窄栏。
+- 精确token、地址、mask、IR、调用序列和结果数字用PPT原生文本排版；Image2负责数据路径、状态变化、时序
+  和地址几何，不让生成图承担必须逐字正确的代码。
+- 至少直接展示：worker0 `RDMA→CT→WDMA`、RAW/WAR/WAW/RAR、worker0→worker2跨worker消费、
+  `join[0,2]→0b101`、Direct DTE message/token、双epoch 16-rank barrier、stale `1→2`、dirty `1→3`、
+  四类publication与pure NCC对照、64B跨line、SPM offset/mapped pointer以及DDR helper三种range。
+- 正文必须解释case为什么需要这个同步/映射、少一步会出现什么具体结果，以及结论能进入哪一层compiler/runtime；
+  不使用抽象口号或仅列API名称。
+
+## 17. 单一主汇报合并与叙事重构（2026-08-04）
+
+同步与内存可见性内容不再作为独立补充PPT交付。它作为正文116–132页插入主汇报，原共同开发与
+qualification章节顺延到133–150页，附录保持A1–A18。最终交付只保留一份168页PPTX/PDF。
+
+可见正文与PowerPoint Notes严格分工：
+
+- 可见正文使用逐页dossier中已核对的技术分析，保留IR变化、算法、case数字、失败条件和适用范围，
+  不从speaker notes截取“先讲、再看、沿图”等演讲指令当页面文案。
+- Notes保留讲述顺序、停顿、展开与转场，并嵌入PPT的演讲者备注区。
+- 合并后按页检查标题、takeaway、图、分析正文、IR/code和Notes是否围绕同一技术问题；不以页数、
+  文本长度或自动脚本通过替代内容质量判断。
