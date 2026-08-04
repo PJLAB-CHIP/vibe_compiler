@@ -4,6 +4,9 @@
 compute/movement IR、instruction legality、effect 与 completion 合同。Q32.R已完成destination-style load及
 current route proof接入；其余实现状态只看tasks/progress.md。
 
+Q46（当前`next`）在本文既有typed op/verifier边界内开放physical-traversal-compatible CT、reduce和compound movement候选；
+layout联合选择仍归06，本文不增加layout demand或访问约束接口。
+
 本文连接 rank-local normalized structured tensor IR、physical-dataflow synthesis 以及完整
 rank instruction program。source op 的数学语义始终由当前 MLIR operation、region、SSA、type、
 attribute 和标准 interface 表达；target implementation 枚举通过 Wafer source OpInterface 完成。
@@ -54,18 +57,17 @@ runtime/package owner 负责。
       verifier-legal rank-local normalized structured tensor IR；source compute root 通过
       LinalgOp、DestinationStyleOpInterface、TilingInterface、MemoryEffectOpInterface、
       region、type、attribute 与 SSA 完整表达。driver 同时提供 immutable
-      WaferTargetCapabilities、native MLIR numeric permissions/semantics和从current IR派生的局部proof。
+      WaferTargetCapabilities、current MLIR numeric semantics和从current IR派生的局部proof。
     - Current stage responsibility:
       对每个实现 WaferTargetImplementationOpInterface 的 source op 调用 interface。
       Wafer-owned source op 直接实现该 interface；Linalg concrete/generic op 由
-      Wafer dialect extension 注册 external model。interface 从当前 op 与传入约束产生
+      Wafer dialect extension 注册 external model。interface 从当前 op 与 immutable target capabilities 产生
       有界的 TargetImplementationCandidate 序列，并为 selected candidate 提供直接
       materialization hook。
     - Output artifact / IR:
-      transformation-local TargetImplementationCandidate 序列。candidate 只含typed
-      implementation kind/parameters及materialization前确实需要的operand/result encoding、
-      tile/geometry和numeric constraints；它不是IR、
-      attribute side channel、package 字段或跨 pass artifact。
+      transformation-local TargetImplementationCandidate 序列。candidate只含closed implementation kind；layout、
+      tile/geometry和numeric facts继续从current IR、materialized typed op及既有verifier派生。它不是IR、attribute side
+      channel、package字段或跨pass artifact。
     - Downstream consumer:
       tasks/06 的 physical-dataflow candidate owner。它选择具体 candidate、tile、
       encoding、storage realization和movement后，tasks/07调用同一source interface的
@@ -177,38 +179,33 @@ resource effect；这些继续由current IR和标准interface拥有。若将来M
 
 ### 3.3 TargetImplementationCandidate
 
-概念字段：
+现有稳定字段保持不变：
 
     TargetImplementationCandidate {
-      implementation_kind
-      typed_parameters
-      operand_constraints[]
-      result_constraints[]
-      tile_geometry_constraints
-      numeric_compatibility
+      kind
     }
 
 约束：
 
-- implementation_kind和typed_parameters使用closed enum或typed attribute，不使用字符串ID。
-- operand/result constraint引用当前op的OpOperand/OpResult ordinal及interface证明的role；ordinal只
-  定位事实，不推断事实。
-- candidate不复制source shape、dtype、indexing map或scalar body；这些始终从当前op读取。
-- encoding constraint只表达当前implementation接受的memory-space/encoding/valid-lane集合，不选择
-  最终physical encoding。
-- current Cx/NCx fixed packing identity只存在于selected memref encoding与target profile派生的physical map；candidate不得复制
+- `kind`使用closed enum，不使用字符串ID；Q46不向candidate增加typed parameters、operand/result
+  constraints、layout requirement或访问约束接口。
+- source shape、dtype、indexing map、scalar body、operand/result role和numeric semantics始终从current op及标准interface读取。
+- existing materializer先在disposable clone物化该kind；Q46再从actual typed op/subgraph的external DPS/indexing/memref ports
+  生成有限Tensor/NTensor/Cx/NCx tuple，使用existing builders重建并运行concrete verifiers、physical-access和lowerability preflight。
+  只有通过的probe ordinal进入invocation-local PBQP，probe clone随即销毁；不得保存兼容性矩阵或把probe结果写回candidate。
+- current Cx/NCx fixed packing identity只由selected memref encoding及其memref type派生的physical map决定；target profile
+  只约束implementation/instruction是否支持该encoding。candidate不得复制
   `vector_width`、packing mode/factor或其它当前target不存在的参数。
-- tile geometry描述合法域和alignment/tail关系，不展开shape×tile×encoding笛卡尔积。
-- accumulator、temporary、engine、instruction family、completion和resource/cost不复制进candidate；
+- tile geometry、alignment/tail、accumulator、temporary、engine、instruction family、completion和resource/cost不复制进candidate；
   materializer把它们写入actual typed op/SSA/effect，随后由下游从完整clone重算。
-- candidate不参与cost ranking；它只按typed implementation kind和parameter tuple提供稳定展开顺序。
+- candidate不参与cost ranking；它只按typed implementation kind提供稳定展开顺序。
   registration、DenseMap iteration、
   pointer和线程完成顺序不得影响结果。
 
 被选中的真实下游事实必须进入wafer.tile.*：
 
 - GEMM orientation、batch、accumulator/psum form；
-- operand/result memref type实际携带已选typed Tensor/Cx/NCx encoding；candidate阶段的encoding constraint不复制进selected op，
+- operand/result memref type实际携带已选typed Tensor/Cx/NCx encoding；Q46 probe/PBQP中的encoding state不复制进selected op，
   fixed packing本身也不成为implementation parameter；
 - elementwise/convert/reduce kind与numeric parameters；
 - valid-lane执行模式；
@@ -287,9 +284,9 @@ wafer.tile.gemm表示tile-local matrix contraction。最小合同：
 - product、accumulator、rounding、FMA/reduction order、overflow和destination conversion若可选择，
   必须由typed字段表达；若target固定，则typed command tuple必须唯一决定numeric semantics。
 
-浮点K split会改变rounding、NaN、infinity和signed-zero行为。source op没有明确reassociation许可时，
-candidate不得拆K；完整K无法满足geometry/capacity时返回no-candidate。整数split也必须先证明source
-modular/overflow语义和target accumulator合同相容。
+浮点K split会改变rounding、NaN、infinity和signed-zero行为；Q32.N已让支持的floating type默认产生候选并沿用
+现有typed数值验证，不要求额外fast-math或reassociation attr。整数split仍必须先证明source modular/overflow语义和
+target accumulator合同相容。
 
 ### 5.3 Elementwise 与 Convert
 
@@ -302,6 +299,10 @@ transcendental。wafer.tile.compute.convert明确表达src/dst dtype及rounding/
 - input/result dtype组合由op verifier和selected implementation共同检查。
 - relation result使用明确i1 logical type；bitpacking只由physical encoding和instruction lowering决定。
 - same-shape和受支持broadcast/permutation关系必须能从indexing maps或typed relation证明。
+- same-order arithmetic、relation、logic、select和compatible convert可直接消费Tensor/NTensor/Cx/NCx；concrete verifier
+  必须证明各operand/result physical traversal在valid domain一致。relation的bitpacked result按相同physical lane顺序写入。
+- pointwise instruction可以覆盖完整physical footprint；padding/tail output允许保持Unknown。convert遇到不同dtype block
+  geometry时只有composed physical access证明兼容才直接执行，否则保留显式materialization。
 - target instruction无法表达的broadcast/permutation必须在instruction legalization前通过explicit
   view/movement变成accepted operand形态；lowering不得丢弃relation。
 - unsupported transcendental、dynamic broadcast或fused mask policy结构化失败，不调用host fallback。
@@ -313,12 +314,13 @@ wafer.tile.reduce只表达tile-local reduction；跨rank reduce-scatter/all-redu
 要求：
 
 - reduction dimensions、combiner、init和result type是明确op语义。
-- source evaluation order或reassociation许可必须可从current source IR证明。
-- selected native reduce只有在target numeric semantics对完整value domain与source合同一致时合法。
-- 无native等价证明时，使用显式ordered composite：init fill、canonical source-order slice
-  materialization、same-shape combine、ping-pong accumulator和final movement。
+- reduction dimensions必须在view motion前后映射正确；支持的浮点reduce默认允许重排并沿用Q32.N现有数值验证。
+- selected native reduce只有在归约维度、combiner与完整value domain映射闭合，且target numeric profile通过既有数值验证时合法；
+  floating leaf order无需与source一致，integer仍须满足exact/modular合同。
+- 无native等价证明时，使用显式composite：init fill、slice materialization、same-shape combine、ping-pong
+  accumulator和final movement；这些步骤继续参加06的layout分配，不结构性强制Tensor。
 - 每个composite step的temporary、effect和completion均显式；不能让CModel读取上游init修复已丢失语义。
-- current reduction split与GEMM K split只在integer-domain exact/modular proof下启用，不能仅因SPM压力自动开放floating路径。
+- floating reduction split沿用已闭合的默认重排与typed tolerance合同；integer仍要求exact/modular proof。
 
 ### 5.5 Movement
 
@@ -334,11 +336,16 @@ load/store的logical coordinate relation固定为identity；slice/permutation/re
 typed view和有限identity pieces。无法形成direct representation时，tasks/08选择并物化显式staged
 movement。load/store不携带隐藏route、descriptor list或未物化relation。
 
-fixed Cx/NCx encoding absorption不是新instruction family。它只适用于现有typed verifier/target contract已接受Cx/NCx的
-compute family，current限GEMM/batched GEMM；CT elementwise等其它family不会自动获得该能力。若06/08已经证明可直接消费现有
-Cx/NCx physical version，本层保持该typed memref operand，并允许另一个actual clone删除Tensor↔Cx/NCx `materialize_layout`、GS或等价
-pack/unpack movement。packing由profile+dtype+encoding+shape/tail唯一推出，不进入`TargetImplementationCandidate::typed_parameters`
-或新Instr attr；instruction lowering只验证compute family确实接受该encoding及其valid-lane contract。
+relation-guided Cx/NCx physical-version absorption不是新instruction family。Q32现有concrete verifier已接受
+GEMM/batched GEMM和native reduce的Cx/NCx形态；Q46在相同verifier边界补齐physical-traversal-compatible CT
+elementwise/relation/logic/select/bitpacked/convert。若06/08已经证明可直接消费现有Cx/NCx physical version，本层保持该typed
+memref operand，并允许另一个actual clone删除Tensor↔Cx/NCx `materialize_layout`、GS或等价
+pack/unpack movement。packing由dtype+encoding+shape/tail唯一推出，不进入`TargetImplementationCandidate`或新Instr attr；
+instruction lowering只验证compute family确实接受该encoding及其valid-lane contract。
+
+lowering-local physical version集合只缓存实际SSA values，encoding直接从memref type读取。consumer按自身typed operand demand
+精确复用版本，不使用Tensor优先的`lookupAny()`作为语义选择；reshape/view对每个已有版本分别尝试metadata proof。多个真实
+materialization方案必须成为不同actual clones，不能在一个候选内无条件创建所有allocation。
 
 当前`StorageLoadOp`已是显式source+destination、无隐式allocation/result的DestinationStyleOpInterface实现。
 materializer先创建SPM allocation/view，再构造load；conversion从source descriptor向该destination发射RDMA并删除load op。
@@ -351,6 +358,10 @@ descriptor cover、range、alignment和root-relative local offset从current IR�
 
 reshape只有在logical element order和physical alias relation均可证明时作为view；否则必须成为真实movement。
 constant tensor source通过ConstantLike、logical slice和load operand表达，不按weight名字识别。
+
+连续或跨pure op传播后形成的reshape/transpose/broadcast/materialize链先组合成一个`IndexRelation`：能作为metadata view时
+不发movement，否则只调用一次现有relation movement realization直接从原source写到最终destination。中间值存在独立use、
+effect/alias不闭合或relation不exact时保持显式边界。
 
 ### 5.6 Algebraic Rewrite Handoff
 
@@ -544,7 +555,7 @@ candidate、selected op verifier、IndexRelation和memory/event gates。
 
 - GEMM/batch GEMM的normal/normal，以及typed纵向闭合后启用的其它orientation。
 - same-shape和明确indexing relation的elementwise、relation、select、convert。
-- ordered local reduce及有完整numeric proof的native reduce。
+- local composite/native reduce；浮点默认允许现有合同下的重排，integer保持exact/modular gate。
 - fill、copy、slice、transpose、broadcast、layout materialization、DDR/SPM load/store。
 - rank-count 1/16 complete-rank instruction programs及现有Direct DTE communication组合。
 
@@ -588,9 +599,8 @@ candidate、selected op verifier、IndexRelation和memory/event gates。
    structured control-flow tests覆盖正负路径。
 8. rank-count 1/16和冻结7B source-to-package-to-SystemC/PyTorch expected gate通过；相关lit/CTest
    实际执行而非unsupported/skipped。
-9. 新实现确实由至少一个真实source选择并产生不同typed IR；本层只保证current GEMM/batched-GEMM fixed Cx/NCx direct
-   consumer和current numeric DAG能
-   合法lower，tasks/06 Q32.S/G与tasks/16集成gate再证明相应winner中前置layout/GS movement消失、显式DAG/order被提交；
+9. Q32现有证据保证GEMM/batched-GEMM Cx/NCx direct consumer和current numeric DAG合法lower；Q46另要求native reduce及
+   physical-traversal-compatible CT形成真实source-selected typed IR，并由Q46独立gate证明winner中前置layout/GS movement消失。
    只实现interface、打印candidate或通过单op fixture不算完成。
 10. 不声称board性能或timing收益；板端与PMU校准属于独立后续gate。
 

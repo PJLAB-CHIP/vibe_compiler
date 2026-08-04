@@ -8,6 +8,10 @@ exchange、跨卡 route和raw non-unicast DTE仍是独立扩展，不能反向�
 intermediate、partial或output tile的NoC-resident peer movement是独立的physical-dataflow来源；它复用本层
 Direct-DTE instruction与acceptance合同，但不伪装成logical collective。
 
+Q46设计允许collective actual clone直接复用已选Tensor/NTensor/Cx/NCx physical version；layout仍由06联合选择，
+本层只从typed buffer、physical access、local reduction和all-rank matching证明通信实现是否合法。该扩展当前为`next`，
+不会反写为Q36现有完成证据。
+
 本文的核心原则只有一条：**通信语义、已展开执行和物理绑定分别由当前层的 typed IR 表达，不在 IR
 外复制另一份计划。**
 
@@ -280,8 +284,8 @@ helper的边界：
 | collective-permute | direct | source-target pairs已经给出唯一logical edges |
 | all-to-all | direct | 当前fixed-size equal split/exchange/concat路径；peer issue按semantic group index的全rank一致cyclic round，不调用有界Ring topology搜索 |
 | all-gather | ring、direct | ring减少每rank直接peer fanout；direct是简单对照路径 |
-| reduce-scatter | direct、ring | all-to-owner按`rank_group`次序累计并保留correctness baseline；ring按chunk沿topology-derived cycle归约，当前只有整数满足其leaf-order gate |
-| all-reduce | ring、tree | ordered tree保持`rank_group`中序并支持浮点；ring会循环置换leaf，当前只有整数满足其numeric gate；两者的local reduction均显式存在，DTE不执行reduction |
+| reduce-scatter | direct、ring | all-to-owner按`rank_group`次序累计并保留correctness baseline；ring按chunk沿topology-derived cycle归约；支持的浮点类型默认允许现有数值合同下的leaf重排 |
+| all-reduce | ring、tree | ordered tree与chunked ring均接受支持的浮点类型并沿用现有数值验证；两者的local reduction均显式存在，DTE不执行reduction |
 
 新增算法时先证明它可由现有typed op/effect/completion表达，再增加一个窄参数类型和rewrite pattern。不能先
 增加抽象登记层或通用节点图。
@@ -391,7 +395,8 @@ logical_payload_slice
 
 ### 4.3 Contiguous transport
 
-Direct DTE只搬运连续byte range。logical slot是strided、blocked或需要layout conversion时，rewrite必须显式创建：
+Direct DTE只搬运连续byte range。完整blocked root的physical footprint以及被existing physical-access proof证明为
+连续的blocked chunk可以直接发送；strided、无法证明连续的blocked subrange或需要layout conversion时，rewrite必须显式创建：
 
 ```text
 logical view
@@ -477,8 +482,11 @@ scatter axis、slot shape和combiner来自logical collective。sum/max/min等loc
 ring把full input划分为`group_size`个logical chunk，按`RingParams.rank_order`执行
 `group_size - 1`轮；每轮只发送当前持有的一个chunk、接收前驱chunk并归约到对应chunk，最终每rank持有其owned
 reduced chunk。只有当每个chunk都能由typed view或显式pack/unpack表示、没有zero-byte message且reduction order
-满足op语义时才生成该候选；当前production IR没有授权floating leaf permutation，因此浮点只保留按
-`rank_group`次序累计的direct baseline。失败只拒绝ring clone，不破坏direct。
+满足op语义时才生成该候选；支持的浮点类型默认允许Q32.N合同下的leaf重排并走现有数值验证。失败只拒绝ring clone，
+不破坏direct。
+
+Q46对Cx/NCx standalone Reduce-Scatter复用同一规则：每个owned chunk都必须是sender/receiver一致、非零、连续、互斥且
+full-cover的exact physical interval；只证明logical axis整分不够。不能闭合时保留compact或显式pack/unpack candidate。
 
 ### 5.4 All-Reduce
 
@@ -505,6 +513,20 @@ interval DP枚举每个连续group-index区间的合法root/左右子树，要�
 
 Tree和Ring都接受支持的floating add/min/max，不要求额外numeric permission；二者区别完全体现在clone里的
 p2p/local-compute body中，不保留algorithm attr。rank group、topology、chunk和completion仍逐项验证。
+
+layout与bytes由当前typed buffer唯一决定，不新增payload enum：
+
+- compact Tensor/NTensor candidate的full-buffer `bytes`是logical compact bytes；
+- 所有参与rank具有完全相同的Cx/NCx type、encoding和完整physical mapping时，Tree candidate的full-buffer `bytes`
+  是physical footprint bytes，可以包含tail/padding；send、recv、staging和local pointwise reduction使用同一physical traversal；
+- padding lane只在各rank相同physical位置之间归约，结果仍是invalid lane，不进入valid logical output，因此不要求padding
+  预先为neutral；任一consumer会混合或观察padding时仍由08的invalid-lane gate拒绝；
+- Ring只有在每个非零chunk都能由existing physical-access relation证明为exact、连续、互斥且完整cover时才生成Cx/NCx
+  candidate；否则保留compact或显式pack/unpack candidate，不新增blocked-subview表示。
+
+上述layout选择必须由现有all-rank coordinator按semantic collective ordinal建立跨rank共享state；domain取各rank
+actual-op probe已接受encoding/mapping states的exact交集，PBQP一次提议并原子物化coordinated actual-clone tuple，不能组合
+per-rank Top-4。任一rank encoding、footprint、chunk cover或message bytes不一致都原子拒绝该whole variant。
 
 ### 5.5 Equal-Split All-to-All
 
@@ -539,7 +561,8 @@ buffer或operand位置恢复predicate。
 
 communication通常是byte-preserving movement，不是semantic layout conversion。
 
-- producer与consumer可共享同一合法physical layout时，DTE直接操作该连续representation；
+- producer与consumer可共享同一合法physical layout时，DTE直接操作该连续representation；full-buffer Cx/NCx使用
+  physical footprint，compact buffer使用logical bytes；
 - 需要layout change时，明确的layout materialization op位于send前或recv后；
 - communication staging、double buffer、recv slot和count/control buffer都是普通typed allocation/value，
   lifetime从SSA use-def、effect、typed worker、token、exact wait和participant join推导；
@@ -693,6 +716,7 @@ logical collective：
 buffer-level collective：
 
 - storage memory space、shape、bytes、rank group、group-local rank、axis/reduction kind一致；
+- full-buffer compact bytes或Cx/NCx physical-footprint bytes与typed encoding一致，参与rank的physical mapping完全相同；
 - 不含physical endpoint、offset、DTE/FSM或算法attr；
 - candidate expansion结束时无残留。
 
@@ -796,6 +820,10 @@ send reduced accumulator to parent -> wait
 root在reduce phase完成后沿reverse tree广播final accumulator。只有仍满足ordered-tree约束的root/edge set才是
 合法参数；更换它们会产生另一份完整clone，不会产生一个等待后续解释的tree描述。
 
+当accumulator为Cx/NCx时，input、staging、accumulator和result使用同一memref encoding，send/recv bytes为完整
+physical footprint而非compact logical bytes。qualification case必须覆盖C block边界与tail，用padding poison、footprint外
+canary和mixed-encoding negative区分完整physical payload与错误compact prefix；这些shape/value只是测试参数，不进入协议。
+
 ### 12.3 Equal-split all-to-all
 
 shape、dtype、split axis、concat axis和rank group来自logical op。每个remote slot在IR中对应一组显式extract、
@@ -840,8 +868,10 @@ chunked reduce-scatter+all-gather，standalone Reduce-Scatter同时保留Direct 
 cost从final sends计算minimum-hop link-byte demand并进入统一selection；All-to-All/Collective-Permute completion
 也已补齐，fresh host/full-feature gate已经闭合；Q36完成状态和证据入口以`tasks/progress.md`为准。
 
-当前明确限制是：exact Ring cycle搜索和ordered-Tree interval DP都只覆盖不超过16 rank；Ring只接受能形成非零、
-连续、等分typed chunk的静态payload，其reduction element type可为integer或支持的floating type。
+当前明确限制是：exact Ring cycle搜索和ordered-Tree interval DP都只覆盖不超过16 rank；pre-Q46 Ring只接受能形成非零、
+连续、等分compact typed chunk的静态payload，Tree也走compact buffer，其reduction element type可为integer或支持的floating type。
+Q46完成后才扩展为physical-access relation证明exact cover的Cx/NCx Ring chunk，以及全部参与rank encoding一致的Cx/NCx
+Tree full-physical-footprint payload；状态与完成证据只看`tasks/progress.md`和Q46独立gate。
 ragged/segmented路径尚未实现；equal-split All-to-All的网络payload已是direct exchange最小量，但
 现有`MoveInsertSlice` lowering仍会为每个slot复制完整累计result，这个local movement问题必须在后续独立任务
 通过可验证的in-place/subview表示消除，不能把它写成collective网络最优。

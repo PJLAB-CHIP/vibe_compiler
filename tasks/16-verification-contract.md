@@ -1,6 +1,7 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-07-29同步Q37 hardware characterization、轻量板端执行合同、production optimizer成对板测合同、
+状态：2026-08-04补充Q46 relation-guided layout movement elimination future gate；2026-07-29同步Q37 hardware
+characterization、轻量板端执行合同、production optimizer成对板测合同、
 Q40 Direct-DTE/compute无卡资格与默认测试减负边界；历史optimizer/collective/calibration资产由对应owner按需调用，
 不再进入默认CTest。
 Q6.B configured-board gate中的rank-one kernel、16-rank kernel、model和kernel内Direct DTE prepared phases已按本文
@@ -50,12 +51,13 @@ Pipeline position:
   Q29随后闭合rank-local tile-dataflow scheduling、complete traversal和TP16 7B compile/package结构gate；Q28再从同一
   production source入口闭合标准7B单block managed-reference SystemC执行及完整PyTorch eager output differential。
   Q32闭合MLIR interface/rewrite驱动的bounded joint candidate evaluation：implementation、tile/relation、encoding/view/route、
-  storage/residency、share-vs-recompute、static loop-invariant hoist、fixed Cx/NCx encoding absorption、各current numeric variant、
+  storage/residency、share-vs-recompute、static loop-invariant hoist、existing Cx/NCx GEMM absorption、各current numeric variant、
   buffering/resource-aware ready-order、direct/ring/tree communication、resource-aware selection和Q32.V typed target纵向中，
   每个choice producer均完成production mutation→exact consumer→common selection→winner/atomic commit，required closure的
   mutation保留在committed winner，并通过baseline、SPM→DDR→post-memory
   transport→ABI/package的all-rank atomic bundle gate；Q32.T仍是没有
-  冻结schema的可选later控制面。later Q3.6只有在Count predicate、typed
+  冻结schema的可选later控制面。Q46是在同一owner上的独立`next`扩展，其relation-guided assignment、PBQP和CT/reduce/
+  collective layout覆盖面只按本文独立Q46 gate验收，不能回写成Q32完成证据。later Q3.6只有在Count predicate、typed
   Instr/TargetCall、独立golden和实际model consumer存在后，才闭合11/14-17 mechanical writeback/ABI/event及numeric合同；
   Q22.C消费Q22、Q32 winner的verified package和Q6.B结果闭合板端numeric correlation；若Q32.V的真实consumer采用
   winner-derived RequiredCapabilitySet，则同一package还须先通过其独立readback gate；
@@ -232,7 +234,7 @@ oriented GEMM ABI。两组证据分开记录，v2不反向改变v1合同。
 - conv/pool/unpool/TDMA/peripheral shape relation；
 - unsupported depthwise/backward conv等未定义shape profile在production target fail closed；
 - int64 overflow、uint32 max+1、Data_Shape uint16 max+1；
-- bitpacked/Cx/NCx physical bytes和view offset限制。
+- bitpacked/Cx/NCx physical bytes和view offset限制；
 - invalid-lane state从current segment/mask/typed execution domain重建；valid-only write后padding unknown、required-neutral
   未初始化、full-physical错误读取、Cx retained-tail和bitpacked tail-bit均有negative。
 
@@ -268,7 +270,7 @@ Q0历史完成结果不覆盖本轮review发现的target profile、engine×forma
   target LLVM bundle消费该proof，不是本gate提前创建的artifact。focused target-conversion tests必须经同一registry
   立即解析typed `TargetConversionRequest`；missing/unknown negative失败，不写module attr、不保留自由字符串、
   不提供default；
-- tasks/14 registry全枚举每个target-profile×engine×logical-format row，和tasks/08 layout profile、target verifier、format
+- tasks/14 registry全枚举每个target-profile×engine×logical-format row，和tasks/08 physical encoding interface、target verifier、format
   encoder及CRT参数逐项conformance；无证据UINT/64-bit/TF32 format-bearing row为negative，现有i64 positive相应修正；
 - elementwise identity/permutation/broadcast都在tile→instruction物化或strip；terminal instruction positive无map且same-shape，
   任一残留`indexing_maps` attr在instruction verifier/full conversion中illegal；target LLVM/CRT与CModel都不能忽略后继续；
@@ -401,25 +403,25 @@ Q29数字保留为历史实现基线，不能替代Q32 fresh gate。
   implementation materialization/absorption、encoding/view/materialization、zero-copy/current DMA/GS/staged及Q32.V route、
   partial-compatible fanout与immutable-input reuse、movement/resident-cut elimination、current static
   buffering/resource-aware ready-order、direct/ring/tree collective expansion、whole-tensor share-vs-recompute、static
-  loop-invariant hoist、fixed Cx/NCx encoding absorption，以及reassociation、显式rank-local reduction tree、algebraic
-  distribution/factorization的integer-domain exact/modular variants各自proof-gated rewrite。每一row至少有一个通用source发生mutation并通过完整downstream gate；
+  loop-invariant hoist、existing Cx/NCx GEMM absorption，以及reassociation、显式rank-local reduction tree、split和
+  supported algebraic variants各自proof-gated rewrite。floating进入既有numeric validation，integer另证exact/modular合法性；
+  每一row至少有一个通用source发生mutation并通过完整downstream gate；
 - 功能采用按三关独立取证：Q32.M要求shared candidate owner在Q32.B production-shaped seam从Q15 source发现机会、修改
   actual clone并形成exact-gate passing candidate；Q32.S要求该producer进入同一rank frontier和whole-variant selection，并至少有一个
   non-workload-specialized source成为winner；Q32.G要求默认`wafer-compile`在无隐藏feature flag、无testing-only callback、无手工
   pass拼装时原子提交该winner。passing但从未进入frontier/winner、只在Q32.B seam或`wafer-opt`调用均不算采用；
 - share-vs-recompute分别覆盖share winner与dependent-region recompute winner，后者增加的logical work和减少的movement/live bytes
-  都从final IR收集；loop hoist覆盖winner中dominant loop-external SSA value及延长lifetime后的placement；fixed Cx/NCx absorption
-  current只覆盖GEMM/batched GEMM，证明其compute/Instr直接消费existing encoding且显式layout/GS movement真实消失；
-  reassociation、显式rank-local reduction tree和algebraic distribution/factorization的integer-domain exact/modular variants逐项覆盖有proof的winner及无proof barrier，
-  不能用单个numeric正例合并验收；
-- fixed Cx/NCx absorption differential由本集成gate构造两份分别通过完整downstream gate的artifact：direct winner与显式
+  都从final IR收集；loop hoist覆盖winner中dominant loop-external SSA value及延长lifetime后的placement；existing Cx/NCx
+  absorption只覆盖GEMM/batched GEMM，证明compute/Instr直接消费existing encoding且显式layout/GS movement真实消失；
+  reassociation、显式rank-local reduction tree、split和supported algebraic variants逐项覆盖floating numeric acceptance/rejection及
+  integer exact/modular winner/no-wrap barrier，不能用单个numeric正例合并验收；
+- existing Cx/NCx GEMM differential由本集成gate构造两份分别通过完整downstream gate的artifact：direct winner与显式
   materialization baseline分别交给tasks/17执行，再比较logical/numeric result及所有consumer-observable defined bytes。两者
   各自的`InvalidLaneState`只需满足同一最终consumer precondition，无需相同；unobservable padding可以不同，只有consumer要求
   padding可观察且defined时才逐byte比较，canary始终不变；
-- floating rank-local algebraic reassociation/reduction-tree rewrite、generic online reduction、non-GEMM FMA contraction及超出current integer-domain exact/modular子集的algebraic
-  distribution/factorization由当前Q32.N gate拥有。
-  在source predicate、显式selected SSA/SCF或fused op、Tile→Instr→TargetCall/必要ABI→SystemC纵向闭合前，production candidate
-  必须不存在；target固定FMA profile或手写`wafer-opt`正例不能替代该纵向；
+- floating rank-local reassociation/reduction-tree和reduce split默认进入Q32.N既有数值验证，不要求source predicate或额外
+  fast-math attr；integer no-wrap barrier继续保留。generic online reduction、non-GEMM FMA contraction及尚未闭合的其它algebraic
+  contraction仍须先完成显式selected SSA/SCF或fused op、Tile→Instr→TargetCall/必要ABI→SystemC纵向；
 - selected tile IR通过MLIR `DialectConversion`和declared legality转换成complete-rank `wafer.instr.*`。
   conversion必须显式物化instruction parameters、descriptor、temporary、async token与wait/fence；成功后没有被标为illegal的
   source/tile op，失败时整份clone丢弃，lowering不得暗中改选implementation、layout或movement；
@@ -570,6 +572,35 @@ Q40无卡门禁必须证明同一个bounded whole-variant tuple同时具有fixed
   timeout运行；timeout或设备异常后停止，不自动retry/reset/power。本host gate不提供硬件overlap、收益或promotion结论。
 
 达到以上条件后状态只能是`board-ready`。真实板端exact output及matched A/B未产生前不得标记`done`。
+
+#### Relation-Guided Layout Movement Elimination Gate
+
+Q46必须从同一个production source和complete-rank actual-clone owner证明layout分配与跨op view消除，不能把若干
+局部FileCheck或PBQP assignment当作accepted artifact：
+
+- relation正例覆盖非连续inverse view、非identity多view合并、reshape/transpose/slice/broadcast/concat跨pure pointwise链；
+  concat逐input piece互斥且full-cover，不能形成跨root metadata alias。per-pair/per-edge alternative和总worklist hard cap、
+  effect、unknown alias、不一致fanin、unsupported control flow和proof budget分别形成保留movement的negative；
+- `TargetImplementationCandidate`与现有op interface签名不变；domain只能来自disposable actual-op probe重建typed op并通过
+  concrete verifier/physical-access/lowerability preflight，不能来自新增compatibility table或access-constraint接口；
+- PBQP projection在相同IR与配置上按stable state vector产生最多四个optimized proposals，另有独立baseline；覆盖32-state/op、
+  1,048,576 solver-work、4096 search-expansion、继承父约束域的component Top-4、deterministic k-best merge、
+  Unknown command cost、materialization failure不回填和fanout最多primary加一个共享secondary。projection/assignment销毁后，
+  verifier、SPM/DDR、cost、package不得读取solver state；
+- CT relation/select/logic/convert/bitpacked交叉Tensor/Cx/NCx、rank 2/rank > 2、C block边界与tail，核对logical result、
+  declared full physical span、padding/tail和allocation外canary；跨dtype block不兼容必须保留一次materialization；
+- reduce view motion/native/split/tree同时验证dimension/result mapping、init、combiner、valid-lane/neutral、effect/completion；
+  floating无需额外fast-math/reassociation attr并走existing numeric-validation rejection，integer modular/overflow/no-wrap规则不变；
+- Tree AllReduce覆盖全rank相同Tensor/Cx/NCx encoding与完整physical-footprint bytes，mixed encoding、compact-prefix、
+  footprint mismatch为negative；AllReduce/ReduceScatter Ring覆盖exact contiguous physical chunk positive及logical可整分但
+  physical relation有hole/overlap的negative。
+  collective-connected component必须由whole-variant coordinator用跨rank共享state一次提议并原子物化，禁止per-rank Top-4 Cartesian；
+- full-buffer resident handoff在descriptor展开前复用producer已有SPM encoding；不兼容consumer保留DDR spill sibling，late
+  transfer cleanup不从descriptor反推逻辑语义；
+- baseline与winner都沿`wafer-compile`完成source-to-package和fresh no-card。无卡通过后只能标`board-ready`；真实板端使用
+  FP16/BF16串行执行matched baseline/winner，output/guard正确、targeted movement bytes/commands下降且性能不劣化后才可标`done`。
+
+production不实现穷举或external solver；这些gate验证的是actual IR及现有final-IR selection，而不是PBQP局部目标最优性。
 
 ### 6.2 Optional Rank-Local Transform Control-Plane Gate
 
@@ -1382,7 +1413,8 @@ StableHLO program directory经`wafer-compile`完整形成schema-v6/status-v2、o
 resource的byte 0得到`expected=0x40, actual=0x46`。执行后只读设备资源回到`9248M / 65536M`、0% utilization、无进程，
 全程未retry/reset/power，因此按本合同归类为clean compiler/runtime numeric mismatch而非provider poison。当前IR还确认
 GEMM使用Cx，而all-reduce的两级lowering均强制Tensor；该layout round-trip必须与GEMM orientation/segment和collective
- accumulation分别隔离，尚不能从首字节差异直接定责。完整命令、payload digest和后续检查点由Q35实施计划记录。
+ accumulation分别隔离，尚不能从首字节差异直接定责。这只是pre-Q46历史artifact事实，不是终态layout合同；
+完整命令、payload digest和后续检查点由Q35实施计划记录。
 
 2026-07-23 Q35 completion evidence：无sharding/communication的rank-one
 `4096x256 x 256x4096 -> 4096x4096` production case先隔离出strided DMA问题。Wafer byte-level descriptor到

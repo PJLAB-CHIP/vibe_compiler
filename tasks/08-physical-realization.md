@@ -4,6 +4,9 @@
 proof和resident纵向，Q32.V已闭合mapped target纵向，Q32.M继续把这些mechanism接入共同candidate owner。
 实现状态只看`tasks/progress.md`。
 
+Q46（当前`next`）复用本文件现有relation、encoding、realizability和invalid-lane owner，实现跨op relation传播与联合
+physical-version选择；它不改变这些接口的事实边界，也不增加target profile参数。
+
 本文不建立独立 layout planner，也不建立 encoding/route 查询层。implementation、tile、physical
 version、residency、spill 和执行顺序的联合选择归 `tasks/06-physical-dataflow-synthesis.md`；accepted
 physical dataflow IR 的合同归 `tasks/07-tile-region.md`。本文只回答：
@@ -237,6 +240,27 @@ rewrite，都会使相关 `IndexRelation`、ValueBounds、alias、range 和 desc
 MLIR pass analysis 只能在没有修改 IR 时标记 preserved。一个大 transformation 内部的本地 cache 不会由
 AnalysisManager 自动清理，因此首版宁可重算，也不能复用可能过期的 relation。
 
+### 4.4 Relation-Guided Coordinate Propagation
+
+跨op view消除不是移动effectful operation，而是在current pure SSA region内为等价坐标系构造actual op candidate：
+
+1. 从每条view edge向producer和consumer双向传播canonical `IndexRelation`，使用stable worklist直到固定点；每个
+   origin/current pair和edge最多接受`IndexRelationLimits.maxDisjuncts`个alternatives，总处理量不超过checked
+   `maxDisjuncts * (values + uses)`；dedup只使用exact `isEquivalentTo`，不使用op名或文本hash；
+2. 对structured pointwise op组合operand/result indexing maps；对GEMM只接受能表达为现有orientation与
+   batch/M/N/K语义的关系；reduce必须同时闭合dimension/result mapping、init、combiner、valid-lane/neutral、
+   effect/completion和既有numeric contract，floating只是不要求保持leaf order；
+3. fanin要求各operand relation能同时满足同一个concrete op candidate；fanout允许各分支选择primary或一个共享
+   secondary physical version；
+4. relation组合为identity时删除相关view，单root非identity但physical access等价时形成metadata view，否则把每个source
+   root的composed relation交给movement realization；concat保持per-input `staticConcatPiece`并证明pieces互斥且full-cover，
+   只能合并为写同一destination的compound movement，不能成为跨root alias；
+5. effect、unknown alias、不可表达的control-flow join、非不变loop-carried relation、checked overflow或任一proof/worklist
+   预算耗尽均停止该component传播并保留baseline。
+
+传播状态只活在一次candidate proposal/materialization调用中。rewrite成功后只保留重索引后的typed op、standard view或
+explicit movement IR；不得保存coordinate-frame attr、VirtualTensor、relation graph或跨pass cache。
+
 ## 5. Physical Encoding Attr/Type Interface
 
 ### 5.0 Composed Physical Access Relation
@@ -306,8 +330,10 @@ footprint兼容，并且source/destination physical-offset relation全域相等�
 loop/field budget分段、合并；它不能另建Cx/NCx地址公式。solver只负责exact legality/equivalence，最少command选择仍属于
 target-aware descriptor synthesis和cost。
 
-encoding/type组合同时承担结构门禁。Cx/NCx只接受rank大于零、非bitpacked、identity memref layout的typed
-buffer；带第二套strided/offset memref view的blocked buffer不能由当前type唯一解释，因此在footprint、alignment、
+encoding/type组合同时承担结构门禁。Cx/NCx只接受rank大于零、identity memref layout且其dtype/packing已由
+current encoding implementation精确定义的typed buffer。pre-Q46 implementation仍拒绝bitpacked Cx/NCx；Q46在同一个
+encoding interface implementation内补齐`i1` block/tail/bit offset后才允许相同physical lane顺序的typed buffer。
+带第二套strided/offset memref view的blocked buffer不能由当前type唯一解释，因此在footprint、alignment、
 span和composed-relation查询处统一失败。需要这种view时必须保留logical `IndexRelation`并显式materialize movement，
 不能让generic memref view悄悄改变blocked地址。Tensor/NTensor上的标准collapse/expand仍可作为metadata view；
 blocked layout上的同类折叠只有经过上述physical equivalence证明后才能消除movement。任意non-affine、data-dependent或
@@ -337,17 +363,19 @@ space 与 encoding，但二者在 API 上必须保持正交：
 interface 至少提供：
 
 ```text
-verifyLogicalType(logicalType, targetProfile)
-getValidAndPaddingDomain(logicalType, targetProfile)
-getPhysicalFootprint(logicalType, targetProfile)
-mapLogicalIndexToBitOffset(logicalType, logicalIndex, targetProfile)
-getAlignment(logicalType, targetProfile)
-getPhysicalSegments(logicalType, logicalDomain, targetProfile)
+getPhysicalFootprintBytes(memrefType)
+getMinimumAlignmentBytes(memrefType)
+getValidElementCount(memrefType)
+getPaddingElementCount(memrefType)
+getPhysicalElementBitWidth(memrefType)
+getPhysicalLayoutPieces(memrefType)
+getPhysicalElementSpan(memrefType, logicalIndices)
 ```
 
 返回值使用 MLIR integer/affine/presburger 和 checked arithmetic；overflow、unsupported dtype 或不能表达的
 dynamic shape 返回 failure。新增 encoding 通过新的 typed attr/type 及其 interface implementation 扩展，不修改
-中央 op-pair matcher。
+中央 op-pair matcher。当前encoding由attr、logical type和shape完整决定；target instruction field/engine限制仍由
+typed instruction contract验证，但不得反向成为上述physical encoding query的新参数。
 
 Q32.R的current static实现以memref shape作为唯一logical valid domain，encoding interface返回valid/padding
 cardinality、physical footprint、natural alignment和逐valid logical index的physical bit segment；
@@ -362,8 +390,8 @@ compact encoding 保持 canonical logical linear order。static subview、collap
 
 ### 5.3 `Cx/NCx` 与非 affine 风险
 
-当前 TX81 的 block geometry 来自 target profile：INT8/UINT8 的 full block 当前为 128，其它当前
-byte-addressable dtype 的 full block 当前为 64；tail fold 和 256B bank padding 同样由 typed profile 解释。
+当前 TX81 encoding implementation按dtype定义block geometry：INT8/UINT8的full block为128，其它当前
+byte-addressable dtype的full block为64；tail fold和256B bank padding同样是该encoding implementation的固定行为。
 
 full block 的概念 physical order 为：
 
@@ -389,7 +417,7 @@ physical encoding 也不表示 semantic transpose。例如 logical `[N, K]` 可�
 
 ### 5.4 BOOL 与低精度 Storage
 
-bitpacked `i1` 的 byte 内顺序、block/tail folding 和 bit offset 必须由 typed encoding/profile 明确。
+bitpacked `i1` 的 byte 内顺序、block/tail folding 和 bit offset 必须由 typed encoding implementation 明确。
 任一项未知时返回 unsupported，不按线性内存猜测。
 
 未来 quant/FP8 storage 必须在 attr/type 中明确 bit width、signedness/format、packing order、block axes、
@@ -444,9 +472,10 @@ Cx/NCx tail、fold 和 padding 会让一些 logical reshape/transpose 在 compac
 compute absorption 也不是 metadata view。它由 selected compute op/interface 证明 operand access relation 能直接
 消费当前 encoding；若成立，IR 中应由 compute operand/type 表达该事实，不能创建假 view。
 
-current fixed Cx/NCx packing是compute absorption的直接应用：packing identity只由`TargetProfileId`、dtype、typed encoding、
-shape/tail和本节唯一physical map决定，不是可编程`vector_width`或packing mode。只有现有typed verifier/target contract已经
-接受Cx/NCx的compute family才能应用，current限GEMM/batched GEMM；CT elementwise等其它family不会自动获得该能力。若该family
+Cx/NCx physical-version absorption是compute absorption的直接应用：packing identity只由dtype、typed encoding、shape/tail和
+本节唯一physical map决定，不是可编程`vector_width`或packing mode。Q32现有concrete verifier已接受GEMM/batched GEMM和
+native reduce的Cx/NCx形态；Q46在相同verifier边界补齐physical traversal兼容的CT
+elementwise/relation/logic/select/bitpacked/convert，不按family强制Tensor。若该implementation
 能直接消费同一Cx/NCx physical version，并且IndexRelation、valid/padding lane、effect和lifetime exact proof成立，另一个clone可以删除前置
 Tensor↔Cx/NCx `materialize_layout`、GS或等价pack/unpack movement。删除后compute operand仍携带原typed encoding，下游从它
 重建geometry；不得把packing复制到implementation parameter、Instr side attr或planner record。
@@ -462,8 +491,11 @@ IndexRelation
 source and destination physical encoding interfaces
 valid/padding domains
 alias and memory effects
-target profile and typed instruction limits
+typed target instruction and descriptor limits
 ```
+
+这里的target profile只约束engine、descriptor和instruction capability；encoding几何查询始终只接收当前typed
+memref，不把profile或`TargetProfileId`转发给`WaferPhysicalEncodingAttrInterface`。
 
 它可以提供几个普通入口：
 
@@ -656,7 +688,7 @@ KnownSplat(value)
 - explicit fill 后覆盖全部 valid points：可产生 `KnownSplat` padding；
 - mask 或 segmented tail：证明 invalid lanes 不会被观察，但不伪造其内容。
 
-compute implementation 必须能从 op/interface 表达自身的 valid-lane policy：
+compute implementation 必须能从typed op、operand/result encoding和concrete verifier表达自身的valid-lane policy：
 
 ```text
 exact logical points only
@@ -664,9 +696,10 @@ segmented full blocks and tail
 full physical extent with proven invariant
 ```
 
-只有 producer effect、state transfer 和所有 consumer access 都闭合时，才能处理完整 physical extent。
-例如 zero 对部分 unary 运算保持，但 `exp(0)` 或加非零 scalar 不保持；reduce、GEMM 和 store 也可能观察
-padding。不能用 op 名白名单推断。
+逐位置instruction在composed physical access证明每个valid input lane只影响对应valid output lane时，可以处理完整
+physical extent；invalid input/output lane允许保持`Unknown`，不要求padding值在运算前后不变。relation产生的bitpacked
+结果和select mask也按相同physical lane顺序解释。reduce、GEMM或其它会混合lane的implementation仍必须证明invalid lane
+不会进入valid result，或在actual clone中显式建立neutral/mask。不能用op名白名单推断。
 
 需要 neutral padding 时，candidate clone 中必须出现 explicit fill、mask、valid-lane mode 或 segmented
 movement。TargetCall/SystemC 只执行最终命令，不能替 compiler 掩盖 invalid-lane 错误。
@@ -675,7 +708,8 @@ movement。TargetCall/SystemC 只执行最终命令，不能替 compiler 掩盖 
 
 每次 strategy 尝试遵循：
 
-1. 用 `IRMapping` clone 当前 rank-local IR；
+1. 用 `IRMapping` clone 当前 rank-local IR；Q46可以消费一个只含stable state ordinal的PBQP proposal，但必须在
+   该clone上重新定位op/value并fresh重证全部relation与route；
 2. 在 clone 上构造 relation、bounds、alias、physical map 和 effect snapshot；
 3. 运行当前 view/transfer proof；
 4. 用 `PatternRewriter` 直接创建 typed allocation/view/movement/temp/event IR；
@@ -685,7 +719,7 @@ movement。TargetCall/SystemC 只执行最终命令，不能替 compiler 掩盖 
 
 frontier 中 candidate 的语义主体就是 clone。允许保存从 clone 派生的 Pareto/cost 摘要以便排序，但 rewrite
 后必须重算，且摘要不能参与 verifier 或 lowering。不得同时保存一份 selected implementation/encoding/route/
-physical-version list。
+physical-version list。PBQP projection和assignment在actual clone进入worklist前销毁，不属于frontier entry。
 
 同一 IR level 的 view、tiling 和 movement creation 使用 rewrite patterns。跨 dialect/type legality 边界的
 source-to-tile 和 tile-to-instruction 使用 `DialectConversion`、`ConversionTarget`、conversion patterns 和
@@ -709,6 +743,9 @@ cleanup 不得 hoist/sink conversion cut、创造current source/destination type
 encoding、改变已经证明相同的logical-to-physical map、改route、插prepack、增加physical version或改变
 spill/buffering/order。允许删除physical-map等价且consumer可直接接受source encoding的冗余destination
 materialization；需要其它encoding或route变化时，必须从另一个isolated clone重新尝试并通过完整gates。
+
+跨多个pure op移动view relation或选择新的conversion cut只由06的joint-assignment producer在独立clone中执行；本节cleanup
+不能通过descriptor archaeology或局部op顺序恢复该全图选择。
 
 ## 13. Failure Contract
 
@@ -752,10 +789,11 @@ accepted physical-realization IR 至少验证：
    writable last-use donation；partial/permutation/broadcast、encoding/padding 不等价、source/destination
    snapshot 分叉、unknown escape、unsupported control flow，以及 DTE issue 到 exact wait 之间的 in-flight
    read/write 负例；
-5. **fixed-encoding absorption tests**：direct Cx/NCx GEMM/batched-GEMM与显式materialize/GS baseline的logical value、numeric
+5. **physical-version absorption tests**：Q32现有direct Cx/NCx GEMM/batched-GEMM证据保持不变；Q46另覆盖native reduce及physical-traversal-compatible CT
+   pointwise/relation/select/convert与显式materialize/GS baseline的logical value、numeric
    result及所有consumer-observable defined physical bytes一致；两条路径分别满足同一consumer precondition，unobservable padding的
    `InvalidLaneState`可以不同。只有共同consumer contract要求padding可观察且defined（例如KnownSplat/full-fill）时才逐byte比较，
-   canary始终不变；tasks/06 Q32.S/G与tasks/16集成证据证明winner final IR中对应movement真实消失；
+   canary始终不变；Q46独立gate证明winner final IR中对应movement真实消失；
 6. **descriptor tests**：one/multi-command RDMA/WDMA、GS、field overflow、alignment、range、broadcast read；
 7. **invalid-lane tests**：unknown、known splat、fill + segmented write、mask、negative consumer observation；
 8. **IR tests**：clone 内 materialization、DialectConversion legality、canonicalization、atomic rejection；
@@ -797,8 +835,8 @@ metadata-view proof 失败。另一个 clone 可以：
 - 有 mask/valid-lane mode时，在 compute op 上显式表达；或
 - clone 先创建 fill，再用 segmented movement 覆盖所有 valid points。
 
-descriptor proof 检查 logical points 恰写一次，padding state 与 compute precondition 一致。具体 block
-大小只是 target-profile 参数，不是协议常量。
+descriptor proof 检查 logical points 恰写一次，padding state 与 compute precondition 一致。具体block大小由typed
+encoding implementation和queried memref dtype/shape/tail唯一决定；target profile只验证instruction capability，不参与查询。
 
 ### 15.4 Reshape Metadata View
 
@@ -817,14 +855,17 @@ whole-rank/whole-variant gates；该later工作不属于Q32或本文当前完成
 本文边界完成至少要求：
 
 - 不存在平行查询/schema/cache identity 或 detached route payload；
+- `WaferPhysicalEncodingAttrInterface`保持只接收queried memref type的现有签名，不增加target profile或`TargetProfileId`；
 - `IndexRelation`明确从当前IR派生并在rewrite后重建，identity/permutation/broadcast/slice/reshape/concat及composition
   被tiling、view、propagation、transfer和reuse真实消费；
 - Cx/NCx/BOOL 等行为只有一个 attr/type-interface 事实源；
-- fixed Cx/NCx absorption由existing encoding/profile唯一解释且current仅适用于GEMM/batched GEMM；本层证明direct consumer的physical/invalid-lane legality，
-  tasks/06 Q32.S/G与tasks/16集成gate再证明至少一个production winner直接消费Cx/NCx并删除显式layout/GS movement；
+- Q32现有Cx/NCx absorption证据只覆盖GEMM/batched GEMM；Q46终态由existing encoding与typed verifier唯一解释，扩展到
+  native reduce和physical-traversal-compatible CT。本层证明direct consumer的physical/invalid-lane legality，Q46独立gate再证明
+  至少一个production winner直接消费Cx/NCx并删除显式layout/GS movement；
   无vector-width/packing side parameter；
 - current zero-copy/compact DMA/GS/staged及Q32.V mapped route alternatives在isolated clones中成为不同typed
   view/movement/temp/event IR，并进入06同一candidate selection；
+- Q46的whole-graph proposal只由本层existing relation/encoding/realizability proof支持，proposal销毁后只有actual clone进入frontier；
 - exact descriptor、invalid-lane、range、lifetime 和 completion 能只从 accepted IR 重建；
 - direct failure 不在 lowering 中隐式 fallback；
 - calculator、relation、descriptor、verifier 和 integrated tests 有本轮真实执行结果；

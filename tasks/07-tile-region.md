@@ -3,6 +3,9 @@
 状态：本文定义 Q32 中 selected tile/dataflow IR 的 MLIR-native 边界。实现状态只看
 `tasks/progress.md`；历史 task-dataflow scheduling 证据只作背景，不是当前合同。
 
+Q46将在同一actual-clone物化边界增加relation-guided physical-version assignment；该扩展当前为`next`，
+不会反写为Q32已完成证据。
+
 source structured op 的数学语义始终存在于当前 operation、region、SSA、type、attribute 和标准
 MLIR interfaces 中。tasks/06 在 transformation 内选择 implementation、tile、physical encoding、
 residency、movement、share-vs-recompute、loop-invariant hoist、current numeric rewrite和ready order 后，本文负责在 isolated candidate clone 中用 `PatternRewriter` 和
@@ -32,8 +35,8 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
   indexing rewrite。
 - 物化share-vs-recompute与static loop-invariant hoist：share保持同一producer/physical version的多use；recompute只克隆
   pure/speculatable producer并形成consumer-local SSA；hoist把真实op移到loop外并让body捕获dominant SSA value。
-- 把integer-domain exact/modular-proof-backed reassociation、显式reduction tree和algebraic distribution/factorization物化为真实op DAG、SCF和
-  loop-carried state；不保存numeric-choice attr。
+- 把floating numeric-validated与integer exact/modular-proof-backed reassociation、显式reduction tree、split和已支持
+  algebraic variant物化为真实op DAG、SCF和loop-carried state；不保存numeric-choice attr。
 - 按 selected tile domain生成 all-and-only traversal、static tail和合法 reduction sequence。
 - 对production capability分类与`TilingInterface`共同证明可切的terminal logical collective，从result tile反向物化
   operand/out tile并融合producer；当前只启用单输入、单输出、shape-preserving `all_reduce`，其每个dynamic loop
@@ -287,7 +290,7 @@ ABI全部通过，coordinator才能提交包含全部logical ranks的结果。ma
 | --- | --- | --- |
 | contraction | iterator types、indexing maps、DPS init、combiner、type和native numeric semantics/permissions | typed GEMM/batch/accumulator chain |
 | pointwise/relation/select/convert | elementwise iterators、scalar region、dtype和valid domain | typed compute或明确composite |
-| ordered reduction | reduction iterators、init、combiner、source order和reassociation许可 | ordered composite或已证明等价的native op |
+| reduction | reduction iterators、init、combiner、axis/result mapping和typed numeric contract | composite或native op；支持的浮点类型默认允许现有数值合同下的重排，integer保持exact/modular gate |
 | share-vs-recompute | SSA use-def、exact dependent region、effect/speculation和cost choice | shared multi-use或consumer-local producer SSA clone |
 | loop-invariant hoist | LoopLike、dominance、invariant operands、effect/completion | loop外真实op和body捕获的dominant SSA value |
 | numeric reassociation/tree/distribution | current integer或floating scalar op family、integer overflow/wrap语义和combiner/dataflow | 显式SSA combiner tree或等价rewritten op DAG；float不要求额外permission，integer no-wrap保持barrier，无隐藏order attr |
@@ -363,9 +366,10 @@ Q32.V已排期闭合并由同一candidate owner消费：
 - physical-footprint fill及其valid/padding/bitpacked domain；
 - baseline以外的typed contraction operand orientation和对应target command form。
 
-fixed Cx/NCx encoding absorption属于current Q32.M而不是Q32.V：只有现有typed verifier/target contract已经接受Cx/NCx的
-compute family才能直接消费相应memref，current限GEMM/batched GEMM。若08的exact physical-map/valid-lane proof允许，前置
-`materialize_layout`/GS movement在本clone中消失；packing identity仍只存在于encoding/profile，不增加vector-width或packing
+relation-guided Cx/NCx physical-version absorption属于physical-version assignment而不是新target capability：Q32现有
+concrete verifier已接受GEMM/batched GEMM和native reduce的Cx/NCx形态；Q46在相同verifier边界补齐hardware-supported、
+physical-traversal-compatible CT relation/select/logic/convert/bitpacked。若08的exact physical-map/valid-lane proof允许，前置
+`materialize_layout`/GS movement在本clone中消失；packing identity仍只存在于encoding，不增加vector-width或packing
 side attr。
 
 下列能力仍是独立later，不纳入当前Q32完成面：
@@ -379,8 +383,7 @@ side attr。
   typed worker sibling从canonical/unplaced current IR原子派生，worker-preserving fixed-slot随后派生；
   NoC×fixed-slot×typed-worker同候选的source/package/model/no-card纵向已经闭合，fresh configured-board
   correctness仍不纳入Q32/Q39非板端证据。
-- Q32.N floating reassociation/tree、generic online reduction、non-GEMM FMA contraction及超出current integer-domain
-  exact/modular子集的algebraic distribution/factorization；
+- generic online reduction、没有typed fused semantics的non-GEMM FMA contraction及尚未闭合的其它algebraic contraction；
 
 只有target instruction、ABI和执行consumer具备typed合同后，才能启用其中一项。每项扩展必须同批增加
 source interface candidate、selected op fields、PatternRewriter/DialectConversion materialization、verifier、
@@ -439,7 +442,7 @@ gate拒绝该clone，clone整体丢弃；materializer不就地换实现。
 9. rank-count 1/16和冻结7B source-to-package-to-SystemC/PyTorch fresh数值纵向实际执行；局部fixture不算完成。
 10. Q32.V mapped DMA、physical fill和oriented GEMM通过typed Tile/Instr/TargetCall/ABI/SystemC纵向后由同一
     materializer消费；其它未实现target能力结构化拒绝。
-11. share/recompute、hoist、fixed Cx/NCx absorption及每个current numeric variant分别有production actual-IR形态和negative；
-    floating reassociation/tree、generic online reduction、non-GEMM FMA及超出current integer-domain exact/modular子集的
-    distribution/factorization在
-    Q32.N前没有producer或伪装attr。
+11. Q32 existing share/recompute、hoist、Cx/NCx GEMM absorption及每个current numeric variant分别有production actual-IR
+    形态和negative；Q46 relation-guided absorption另按独立gate验收。floating reduction reorder/tree与integer exact/modular
+    均复用Q32.N的numeric validation，generic online reduction、non-GEMM FMA及超出current integer-domain子集的
+    distribution/factorization不能靠伪装attr准入。
