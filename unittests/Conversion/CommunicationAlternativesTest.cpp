@@ -593,6 +593,77 @@ module {
 }
 
 TEST_F(CommunicationAlternativesTest,
+       TreeAllReduceCarriesCompleteBlockedPhysicalFootprint) {
+  constexpr llvm::StringLiteral source = R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {topology = @default, axes = ["rank"], shape = array<i64: 4>,
+       policy = "all_available", endpoints = array<i64>}
+  func.func @main(
+      %input: memref<3x65xf16, #wafer.memory<spm, cx>>,
+      %recv: memref<3x65xf16, #wafer.memory<spm, cx>>)
+      -> memref<3x65xf16, #wafer.memory<spm, cx>> {
+    %result = wafer.tile.all_reduce #wafer.reduce_kind<sum> %input using %recv
+        {local_rank = 2 : i64, group_size = 4 : i64,
+         rank_group = array<i64: 0, 1, 2, 3>, bytes = 512 : i64,
+         communication_id = 31 : i64}
+        : (memref<3x65xf16, #wafer.memory<spm, cx>>,
+           memref<3x65xf16, #wafer.memory<spm, cx>>)
+       -> memref<3x65xf16, #wafer.memory<spm, cx>>
+    return %result : memref<3x65xf16, #wafer.memory<spm, cx>>
+  }
+}
+)mlir";
+
+  auto treeModule = parse(source);
+  ASSERT_TRUE(treeModule);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*treeModule)));
+  wafer::tile_region_to_instr::TileRegionToInstrOptions treeOptions;
+  treeOptions.allReduceSchedule =
+      wafer::tile_region_to_instr::AllReduceSchedule::Tree;
+  std::string treeFailure;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::tile_region_to_instr::convertTileRegionToInstrModule(
+          *treeModule, treeOptions, &treeFailure)))
+      << treeFailure;
+  unsigned messages = 0;
+  treeModule->walk([&](wafer::InstrDTESendOp send) {
+    if (send.getMessage().getPhase() ==
+            wafer::DTEProtocolPhase::AllReduceTreeReduce ||
+        send.getMessage().getPhase() ==
+            wafer::DTEProtocolPhase::AllReduceTreeBroadcast) {
+      ++messages;
+      EXPECT_EQ(send.getBytes(), 512);
+      auto type = mlir::cast<mlir::MemRefType>(send.getBuffer().getType());
+      EXPECT_EQ(wafer::getWaferMemoryAttr(type).getLayout(),
+                wafer::MemLayout::Cx);
+    }
+  });
+  EXPECT_GT(messages, 0u);
+  treeModule->walk([&](wafer::InstrElementwiseOp reduction) {
+    auto type = mlir::cast<mlir::MemRefType>(reduction.getDest().getType());
+    EXPECT_EQ(wafer::getWaferMemoryAttr(type).getLayout(),
+              wafer::MemLayout::Cx);
+  });
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*treeModule)));
+
+  auto ringModule = parse(source);
+  ASSERT_TRUE(ringModule);
+  wafer::tile_region_to_instr::TileRegionToInstrOptions ringOptions;
+  ringOptions.allReduceSchedule =
+      wafer::tile_region_to_instr::AllReduceSchedule::Ring;
+  std::string ringFailure;
+  EXPECT_TRUE(
+      mlir::failed(wafer::tile_region_to_instr::convertTileRegionToInstrModule(
+          *ringModule, ringOptions, &ringFailure)));
+  EXPECT_NE(ringFailure.find("evenly divisible contiguous axis"),
+            std::string::npos);
+}
+
+TEST_F(CommunicationAlternativesTest,
        BF16AllReduceAutoSelectsRingWithoutNumericAnnotations) {
   constexpr llvm::StringLiteral source = R"mlir(
 module {

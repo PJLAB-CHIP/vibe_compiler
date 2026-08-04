@@ -106,7 +106,7 @@ InvocationMemoryRegistry makeRegistry(size_t rankCount = 1) {
       InvocationAddressPlan::create(makeInvocation(rankCount), inputs))));
 }
 
-NumericTensorKey makeTensor(LogicalFormat format, NumericTensorLayout layout,
+NumericTensorKey makeTensor(LogicalFormat format, MemLayout layout,
                             std::vector<uint64_t> shape) {
   return llvm::cantFail(
       NumericTensorKey::create(format, layout, std::move(shape)));
@@ -770,8 +770,7 @@ TEST(TargetModelKernelTest, ElementwiseUsesPhysicalCodecAndFormalNumeric) {
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext context;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  NumericTensorKey key =
-      makeTensor(LogicalFormat::F32, NumericTensorLayout::Cx, {4});
+  NumericTensorKey key = makeTensor(LogicalFormat::F32, MemLayout::Cx, {4});
   writeTensor(memory, 0, spm, key,
               {{LogicalFormat::F32, UINT64_C(0x3f800000)},
                {LogicalFormat::F32, UINT64_C(0x40000000)},
@@ -808,9 +807,9 @@ TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {
   FormalNumericExecutionContext context;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   NumericTensorKey input =
-      makeTensor(LogicalFormat::F32, NumericTensorLayout::NCx, {1, 1, 2, 2});
+      makeTensor(LogicalFormat::F32, MemLayout::NCx, {1, 1, 2, 2});
   NumericTensorKey destination =
-      makeTensor(LogicalFormat::F32, NumericTensorLayout::NCx, {1, 1, 2});
+      makeTensor(LogicalFormat::F32, MemLayout::NCx, {1, 1, 2});
   writeTensor(memory, 0, spm, input,
               {{LogicalFormat::F32, UINT64_C(0x3f800000)},
                {LogicalFormat::F32, UINT64_C(0x40000000)},
@@ -841,10 +840,8 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext context;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  NumericTensorKey f32 =
-      makeTensor(LogicalFormat::F32, NumericTensorLayout::Cx, {2});
-  NumericTensorKey f16 =
-      makeTensor(LogicalFormat::F16, NumericTensorLayout::Cx, {2});
+  NumericTensorKey f32 = makeTensor(LogicalFormat::F32, MemLayout::Cx, {2});
+  NumericTensorKey f16 = makeTensor(LogicalFormat::F16, MemLayout::Cx, {2});
   writeTensor(memory, 0, spm, f32,
               {{LogicalFormat::F32, UINT64_C(0x3f800000)},
                {LogicalFormat::F32, UINT64_C(0x40000000)}});
@@ -864,7 +861,7 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
   EXPECT_EQ(converted[1].bits, UINT64_C(0x4000));
 
   NumericTensorKey matrix =
-      makeTensor(LogicalFormat::F16, NumericTensorLayout::Cx, {2, 2});
+      makeTensor(LogicalFormat::F16, MemLayout::Cx, {2, 2});
   writeTensor(memory, 0, spm + UINT64_C(0x3000), matrix,
               {{LogicalFormat::F16, UINT64_C(0x3c00)},
                {LogicalFormat::F16, UINT64_C(0)},
@@ -940,7 +937,7 @@ TEST(TargetModelKernelTest, BatchedGemmUsesImplicitNCxStorageContract) {
   FormalNumericExecutionContext context;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   NumericTensorKey batchMatrices =
-      makeTensor(LogicalFormat::F32, NumericTensorLayout::NCx, {2, 2, 2});
+      makeTensor(LogicalFormat::F32, MemLayout::NCx, {2, 2, 2});
   writeTensor(memory, 0, spm, batchMatrices,
               {{LogicalFormat::F32, UINT64_C(0x3f800000)},
                {LogicalFormat::F32, UINT64_C(0x40000000)},
@@ -984,7 +981,7 @@ TEST(TargetModelKernelTest,
   InvocationMemoryRegistry memory = makeRegistry();
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   NumericTensorKey matrix =
-      makeTensor(LogicalFormat::F32, NumericTensorLayout::Cx, {4, 4});
+      makeTensor(LogicalFormat::F32, MemLayout::Cx, {4, 4});
   std::vector<RawLogicalValue> values(
       16, {LogicalFormat::F32, UINT64_C(0x3f800000)});
   writeTensor(memory, 0, spm, matrix, values);

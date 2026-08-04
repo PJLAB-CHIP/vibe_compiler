@@ -176,8 +176,8 @@ TEST(SystemCTargetModelIntegrationTest,
   std::vector<TargetCallRankArguments> arguments;
   std::vector<TargetModelInputBinding> inputs;
   std::vector<std::vector<RawLogicalValue>> expectedByRank;
-  NumericTensorKey tensorKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F32, NumericTensorLayout::Tensor, {8}));
+  NumericTensorKey tensorKey = llvm::cantFail(
+      NumericTensorKey::create(LogicalFormat::F32, MemLayout::Tensor, {8}));
   for (const TargetLLVMModule &module : bundle->getModules()) {
     const int64_t rank = module.getLogicalRank();
     arguments.push_back({rank, {}});

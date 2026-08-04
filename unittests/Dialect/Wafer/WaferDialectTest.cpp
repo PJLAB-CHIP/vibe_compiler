@@ -337,7 +337,14 @@ TEST(WaferDialectTest, BlockedEncodingRejectsConflictingMemrefViews) {
   mlir::MemRefType bitpacked =
       mlir::MemRefType::get({17, 197}, mlir::IntegerType::get(&context, 1),
                             mlir::MemRefLayoutAttrInterface{}, cxMemory);
-  EXPECT_FALSE(wafer::computeWaferPhysicalTensorInfo(bitpacked));
+  std::optional<wafer::WaferPhysicalTensorInfo> bitpackedInfo =
+      wafer::computeWaferPhysicalTensorInfo(bitpacked);
+  ASSERT_TRUE(bitpackedInfo);
+  EXPECT_TRUE(bitpackedInfo->bitPackedElement);
+  EXPECT_EQ(bitpackedInfo->cBlock, 64);
+  EXPECT_EQ(bitpackedInfo->c0, 8);
+  EXPECT_EQ(bitpackedInfo->physicalBytes, 512);
+  EXPECT_EQ(*cxEncoding.getMinimumAlignmentBytes(bitpacked), 256);
 
   mlir::MemRefType dynamic =
       mlir::MemRefType::get({mlir::ShapedType::kDynamic, 197}, f16,
@@ -802,7 +809,27 @@ TEST(WaferDialectTest, ComputesBitpackedOffsetsWithoutGuessingBitOrder) {
                                          wafer::MemLayout::Cx);
   auto cx = mlir::MemRefType::get({2, 9}, i1, mlir::MemRefLayoutAttrInterface{},
                                   cxMemory);
-  EXPECT_FALSE(wafer::computeWaferPhysicalElementBitOffset(cx, {0, 0}));
+  std::optional<wafer::WaferPhysicalTensorInfo> cxInfo =
+      wafer::computeWaferPhysicalTensorInfo(cx);
+  ASSERT_TRUE(cxInfo);
+  EXPECT_EQ(cxInfo->physicalElements, 2048);
+  EXPECT_EQ(cxInfo->physicalBytes, 256);
+  EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(cx, {0, 0}), 0);
+  EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(cx, {0, 8}), 8);
+  EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(cx, {1, 0}), 16);
+  EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(cx, {1, 8}), 24);
+
+  auto ncxMemory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                          wafer::MemLayout::NCx);
+  auto ncx = mlir::MemRefType::get(
+      {2, 3, 9}, i1, mlir::MemRefLayoutAttrInterface{}, ncxMemory);
+  std::optional<wafer::WaferPhysicalTensorInfo> ncxInfo =
+      wafer::computeWaferPhysicalTensorInfo(ncx);
+  ASSERT_TRUE(ncxInfo);
+  EXPECT_EQ(ncxInfo->batchElements, 2048);
+  EXPECT_EQ(ncxInfo->physicalBytes, 512);
+  EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(ncx, {0, 2, 8}), 40);
+  EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(ncx, {1, 2, 8}), 2088);
 
   auto f16 =
       mlir::MemRefType::get({2, 3}, mlir::Float16Type::get(&context),

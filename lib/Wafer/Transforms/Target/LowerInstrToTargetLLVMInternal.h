@@ -54,6 +54,9 @@ mlir::Value resolveReturnedMemRefRoot(mlir::Value value);
 mlir::FailureOr<int64_t> getStaticElementCount(mlir::Operation *op,
                                                mlir::MemRefType type,
                                                llvm::StringRef role);
+mlir::FailureOr<int64_t> getPhysicalTraversalElementCount(mlir::Operation *op,
+                                                          mlir::MemRefType type,
+                                                          llvm::StringRef role);
 mlir::FailureOr<int64_t> getStaticViewOffsetBytes(mlir::Operation *op,
                                                   mlir::MemRefType viewType,
                                                   llvm::StringRef role);

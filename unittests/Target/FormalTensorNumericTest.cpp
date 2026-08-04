@@ -34,15 +34,15 @@ template <typename T> std::string expectError(llvm::Expected<T> value) {
   return llvm::toString(value.takeError());
 }
 
-NumericTensorKey makeTensor(LogicalFormat format, NumericTensorLayout layout,
+NumericTensorKey makeTensor(LogicalFormat format, MemLayout layout,
                             std::vector<uint64_t> shape) {
   llvm::Expected<NumericTensorKey> key =
       NumericTensorKey::create(format, layout, std::move(shape));
   if (key)
     return std::move(*key);
   ADD_FAILURE() << llvm::toString(key.takeError());
-  return llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F32, NumericTensorLayout::Tensor, {1}));
+  return llvm::cantFail(
+      NumericTensorKey::create(LogicalFormat::F32, MemLayout::Tensor, {1}));
 }
 
 ResolvedNumericCommand resolve(NumericCommandKey key) {
@@ -70,10 +70,9 @@ ResolvedNumericCommand makeConvert(LogicalFormat source,
                                    std::vector<uint64_t> shape) {
   const uint16_t opcode = findConvertOpcode(
       source, destination, TargetConvertParameterKind::RoundingMode);
-  NumericTensorKey sourceKey =
-      makeTensor(source, NumericTensorLayout::Tensor, shape);
+  NumericTensorKey sourceKey = makeTensor(source, MemLayout::Tensor, shape);
   NumericTensorKey destinationKey =
-      makeTensor(destination, NumericTensorLayout::Tensor, std::move(shape));
+      makeTensor(destination, MemLayout::Tensor, std::move(shape));
   return resolve(llvm::cantFail(NumericCommandKey::createCTConvert(
       kTargetProfile, opcode, std::move(sourceKey), std::move(destinationKey),
       NumericConvertParameter::roundingMode(
@@ -85,10 +84,9 @@ ResolvedNumericCommand makePlainConvert(LogicalFormat source,
                                         std::vector<uint64_t> shape) {
   const uint16_t opcode =
       findConvertOpcode(source, destination, TargetConvertParameterKind::None);
-  NumericTensorKey sourceKey =
-      makeTensor(source, NumericTensorLayout::Tensor, shape);
+  NumericTensorKey sourceKey = makeTensor(source, MemLayout::Tensor, shape);
   NumericTensorKey destinationKey =
-      makeTensor(destination, NumericTensorLayout::Tensor, std::move(shape));
+      makeTensor(destination, MemLayout::Tensor, std::move(shape));
   return resolve(llvm::cantFail(NumericCommandKey::createCTConvert(
       kTargetProfile, opcode, std::move(sourceKey), std::move(destinationKey),
       std::nullopt)));
@@ -101,10 +99,10 @@ ResolvedNumericCommand makeElementwise(NumericElementwiseOperation operation,
   const unsigned arity = getNumericElementwiseArity(operation);
   std::vector<NumericTensorKey> inputs;
   for (unsigned index = 0; index < arity; ++index)
-    inputs.push_back(makeTensor(input, NumericTensorLayout::Tensor, shape));
+    inputs.push_back(makeTensor(input, MemLayout::Tensor, shape));
   return resolve(llvm::cantFail(NumericCommandKey::createCTElementwise(
       kTargetProfile, operation, std::move(inputs),
-      makeTensor(destination, NumericTensorLayout::Tensor, std::move(shape)))));
+      makeTensor(destination, MemLayout::Tensor, std::move(shape)))));
 }
 
 ResolvedNumericCommand makeGemm(LogicalFormat format, uint32_t batch,
@@ -113,12 +111,10 @@ ResolvedNumericCommand makeGemm(LogicalFormat format, uint32_t batch,
   std::vector<uint64_t> rhsShape{batch, k, n};
   std::vector<uint64_t> destinationShape{batch, m, n};
   return resolve(llvm::cantFail(NumericCommandKey::createNEGemm(
-      kTargetProfile,
-      makeTensor(format, NumericTensorLayout::NCx, std::move(lhsShape)),
-      makeTensor(format, NumericTensorLayout::NCx, std::move(rhsShape)),
-      makeTensor(format, NumericTensorLayout::NCx, std::move(destinationShape)),
-      m, k, n, batch,
-      llvm::cantFail(getCanonicalNumericGemmAxes(/*rank=*/3)))));
+      kTargetProfile, makeTensor(format, MemLayout::NCx, std::move(lhsShape)),
+      makeTensor(format, MemLayout::NCx, std::move(rhsShape)),
+      makeTensor(format, MemLayout::NCx, std::move(destinationShape)), m, k, n,
+      batch, llvm::cantFail(getCanonicalNumericGemmAxes(/*rank=*/3)))));
 }
 
 ResolvedNumericCommand makeOrientedGemm(LogicalFormat format, uint32_t m,
@@ -132,10 +128,9 @@ ResolvedNumericCommand makeOrientedGemm(LogicalFormat format, uint32_t m,
                                        ? std::vector<uint64_t>{k, n}
                                        : std::vector<uint64_t>{n, k};
   return resolve(llvm::cantFail(NumericCommandKey::createNEGemm(
-      kTargetProfile,
-      makeTensor(format, NumericTensorLayout::Cx, std::move(lhsShape)),
-      makeTensor(format, NumericTensorLayout::Cx, std::move(rhsShape)),
-      makeTensor(format, NumericTensorLayout::Cx, {m, n}), m, k, n,
+      kTargetProfile, makeTensor(format, MemLayout::Cx, std::move(lhsShape)),
+      makeTensor(format, MemLayout::Cx, std::move(rhsShape)),
+      makeTensor(format, MemLayout::Cx, {m, n}), m, k, n,
       /*batchCount=*/1, llvm::cantFail(getCanonicalNumericGemmAxes(/*rank=*/2)),
       lhsOrientation, rhsOrientation)));
 }
@@ -423,9 +418,9 @@ TEST(FormalTensorNumericTest,
   EXPECT_FALSE(context.getAggregateFlags().any());
 
   NumericTensorKey reduceInput =
-      makeTensor(LogicalFormat::F32, NumericTensorLayout::Cx, {2, 2});
+      makeTensor(LogicalFormat::F32, MemLayout::Cx, {2, 2});
   NumericTensorKey reduceDestination =
-      makeTensor(LogicalFormat::F32, NumericTensorLayout::Cx, {2});
+      makeTensor(LogicalFormat::F32, MemLayout::Cx, {2});
   ResolvedNumericCommand reduce =
       resolve(llvm::cantFail(NumericCommandKey::createNativeCTReduce(
           kTargetProfile, NumericReduceOperation::Sum, std::move(reduceInput),

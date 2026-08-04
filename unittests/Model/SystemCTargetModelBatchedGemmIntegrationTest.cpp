@@ -173,11 +173,11 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
   TargetCallRankArguments rankArguments{0, {}};
   std::vector<TargetModelInputBinding> inputs;
   NumericTensorKey lhsKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, NumericTensorLayout::Tensor, {2, 1, 128}));
+      LogicalFormat::F16, MemLayout::Tensor, {2, 1, 128}));
   NumericTensorKey rhsKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, NumericTensorLayout::Tensor, {2, 128, 1}));
+      LogicalFormat::F16, MemLayout::Tensor, {2, 128, 1}));
   NumericTensorKey outputKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, NumericTensorLayout::Tensor, {2, 1, 1}));
+      LogicalFormat::F16, MemLayout::Tensor, {2, 1, 1}));
 
   std::vector<RawLogicalValue> lhs(2 * 128, {LogicalFormat::F16, UINT64_C(0)});
   for (size_t k = 0; k < 128; ++k) {

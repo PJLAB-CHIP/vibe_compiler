@@ -66,9 +66,10 @@ TEST(PhysicalAccessRelationTest,
   IndexRelationResult identity = IndexRelation::identity(shape);
   ASSERT_TRUE(identity.isExact());
 
-  const llvm::SmallVector<mlir::Type, 4> elementTypes{
+  const llvm::SmallVector<mlir::Type, 5> elementTypes{
       mlir::Float16Type::get(&context), mlir::BFloat16Type::get(&context),
-      mlir::Float32Type::get(&context), mlir::IntegerType::get(&context, 8)};
+      mlir::Float32Type::get(&context), mlir::IntegerType::get(&context, 8),
+      mlir::IntegerType::get(&context, 1)};
   const llvm::SmallVector<wafer::MemLayout, 4> layouts{
       wafer::MemLayout::Tensor, wafer::MemLayout::NTensor, wafer::MemLayout::Cx,
       wafer::MemLayout::NCx};
@@ -116,6 +117,70 @@ TEST(PhysicalAccessRelationTest,
         EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveMappedTransfer(
             source, dest, shape, *identity.get(), *identity.get())));
   }
+}
+
+TEST(PhysicalAccessRelationTest,
+     NormalizesDtypeSpecificBitOffsetsToPhysicalTraversal) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+
+  const llvm::SmallVector<int64_t, 3> shape{2, 2, 197};
+  IndexRelationResult identity = IndexRelation::identity(shape);
+  ASSERT_TRUE(identity.isExact());
+  auto makeType = [&](mlir::Type elementType, wafer::MemLayout layout) {
+    return mlir::MemRefType::get(
+        shape, elementType, mlir::MemRefLayoutAttrInterface{},
+        wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM, layout));
+  };
+
+  mlir::MemRefType f16NCx =
+      makeType(mlir::Float16Type::get(&context), wafer::MemLayout::NCx);
+  mlir::MemRefType bf16NCx =
+      makeType(mlir::BFloat16Type::get(&context), wafer::MemLayout::NCx);
+  mlir::MemRefType f32NCx =
+      makeType(mlir::Float32Type::get(&context), wafer::MemLayout::NCx);
+  mlir::MemRefType i1NCx =
+      makeType(mlir::IntegerType::get(&context, 1), wafer::MemLayout::NCx);
+  mlir::MemRefType f16Tensor =
+      makeType(mlir::Float16Type::get(&context), wafer::MemLayout::Tensor);
+  mlir::MemRefType f32Tensor =
+      makeType(mlir::Float32Type::get(&context), wafer::MemLayout::Tensor);
+  mlir::MemRefType i1Tensor =
+      makeType(mlir::IntegerType::get(&context, 1), wafer::MemLayout::Tensor);
+
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::provePhysicalTraversal(
+      f16NCx, bf16NCx, shape, *identity.get(), *identity.get())));
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::provePhysicalTraversal(
+      f16Tensor, f32Tensor, shape, *identity.get(), *identity.get())));
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::provePhysicalTraversal(
+      i1Tensor, f32Tensor, shape, *identity.get(), *identity.get())));
+  EXPECT_TRUE(mlir::failed(TransferRealizability::provePhysicalTraversal(
+      f16NCx, f32NCx, shape, *identity.get(), *identity.get())));
+  EXPECT_TRUE(mlir::failed(TransferRealizability::provePhysicalTraversal(
+      f16NCx, i1NCx, shape, *identity.get(), *identity.get())));
+  EXPECT_TRUE(mlir::failed(TransferRealizability::provePhysicalTraversal(
+      f16Tensor, f16NCx, shape, *identity.get(), *identity.get())));
+
+  const llvm::SmallVector<int64_t, 2> blockShape{2, 65};
+  IndexRelationResult blockIdentity = IndexRelation::identity(blockShape);
+  ASSERT_TRUE(blockIdentity.isExact());
+  auto cxMemory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                         wafer::MemLayout::Cx);
+  mlir::MemRefType f16Cx =
+      mlir::MemRefType::get(blockShape, mlir::Float16Type::get(&context),
+                            mlir::MemRefLayoutAttrInterface{}, cxMemory);
+  mlir::MemRefType i8Cx =
+      mlir::MemRefType::get(blockShape, mlir::IntegerType::get(&context, 8),
+                            mlir::MemRefLayoutAttrInterface{}, cxMemory);
+  mlir::MemRefType i1Cx =
+      mlir::MemRefType::get(blockShape, mlir::IntegerType::get(&context, 1),
+                            mlir::MemRefLayoutAttrInterface{}, cxMemory);
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::provePhysicalTraversal(
+      i1Cx, f16Cx, blockShape, *blockIdentity.get(), *blockIdentity.get())));
+  EXPECT_TRUE(mlir::failed(TransferRealizability::provePhysicalTraversal(
+      f16Cx, i8Cx, blockShape, *blockIdentity.get(), *blockIdentity.get())));
 }
 
 TEST(PhysicalAccessRelationTest,

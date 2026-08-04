@@ -26,7 +26,7 @@ constexpr TargetProfileId kTargetProfile =
 constexpr ModelProfileId kModelProfile =
     ModelProfileId::formalDeterministicV1();
 
-NumericTensorKey makeTensor(LogicalFormat format, NumericTensorLayout layout,
+NumericTensorKey makeTensor(LogicalFormat format, MemLayout layout,
                             std::vector<uint64_t> shape) {
   return llvm::cantFail(
       NumericTensorKey::create(format, layout, std::move(shape)));
@@ -72,8 +72,7 @@ std::unique_ptr<ManagedReferenceTargetModelBackend> makeBackend() {
 
 TEST(ManagedReferenceTargetModelTest,
      FiniteF16ElementwiseMatchesFormalValuesWithoutScalarFallback) {
-  NumericTensorKey key =
-      makeTensor(LogicalFormat::F16, NumericTensorLayout::Tensor, {6});
+  NumericTensorKey key = makeTensor(LogicalFormat::F16, MemLayout::Tensor, {6});
   ResolvedNumericCommand command =
       resolve(llvm::cantFail(NumericCommandKey::createCTElementwise(
           kTargetProfile, NumericElementwiseOperation::Add, {key, key}, key)));
@@ -122,10 +121,8 @@ TEST(ManagedReferenceTargetModelTest,
 TEST(ManagedReferenceTargetModelTest,
      F32ToF16ConvertAndF32SumReduceMatchFormalValues) {
   std::unique_ptr<ManagedReferenceTargetModelBackend> backend = makeBackend();
-  NumericTensorKey f32 =
-      makeTensor(LogicalFormat::F32, NumericTensorLayout::Tensor, {6});
-  NumericTensorKey f16 =
-      makeTensor(LogicalFormat::F16, NumericTensorLayout::Tensor, {6});
+  NumericTensorKey f32 = makeTensor(LogicalFormat::F32, MemLayout::Tensor, {6});
+  NumericTensorKey f16 = makeTensor(LogicalFormat::F16, MemLayout::Tensor, {6});
   const std::vector<RawLogicalValue> convertInput{
       {LogicalFormat::F32, UINT64_C(0x3f800000)},
       {LogicalFormat::F32, UINT64_C(0xc0000000)},
@@ -157,9 +154,9 @@ TEST(ManagedReferenceTargetModelTest,
     EXPECT_EQ(convertedValues[index].bits, formalConvert.values[index].bits);
 
   NumericTensorKey reduceInput =
-      makeTensor(LogicalFormat::F32, NumericTensorLayout::Cx, {2, 2});
+      makeTensor(LogicalFormat::F32, MemLayout::Cx, {2, 2});
   NumericTensorKey reduceOutput =
-      makeTensor(LogicalFormat::F32, NumericTensorLayout::Cx, {2});
+      makeTensor(LogicalFormat::F32, MemLayout::Cx, {2});
   const std::vector<RawLogicalValue> reduceValues{
       {LogicalFormat::F32, UINT64_C(0x3f800000)},
       {LogicalFormat::F32, UINT64_C(0x40000000)},
@@ -192,8 +189,7 @@ TEST(ManagedReferenceTargetModelTest,
 
 TEST(ManagedReferenceTargetModelTest,
      SupportsMaskInfinityButRejectsNaNAndScalarBudget) {
-  NumericTensorKey key =
-      makeTensor(LogicalFormat::F32, NumericTensorLayout::Tensor, {1});
+  NumericTensorKey key = makeTensor(LogicalFormat::F32, MemLayout::Tensor, {1});
   ResolvedNumericCommand command =
       resolve(llvm::cantFail(NumericCommandKey::createCTElementwise(
           kTargetProfile, NumericElementwiseOperation::Exp, {key}, key)));

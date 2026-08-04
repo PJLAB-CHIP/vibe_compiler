@@ -23,15 +23,14 @@ template <typename T> std::string expectError(llvm::Expected<T> value) {
   return llvm::toString(value.takeError());
 }
 
-NumericTensorKey makeTensor(LogicalFormat format, NumericTensorLayout layout,
+NumericTensorKey makeTensor(LogicalFormat format, MemLayout layout,
                             std::vector<uint64_t> shape) {
   return llvm::cantFail(
       NumericTensorKey::create(format, layout, std::move(shape)));
 }
 
 TEST(PhysicalTensorCodecTest, CxRoundTripPreservesTemplatePadding) {
-  NumericTensorKey key =
-      makeTensor(LogicalFormat::F16, NumericTensorLayout::Cx, {2, 3});
+  NumericTensorKey key = makeTensor(LogicalFormat::F16, MemLayout::Cx, {2, 3});
   std::vector<RawLogicalValue> values{
       {LogicalFormat::F16, UINT64_C(0x3c00)},
       {LogicalFormat::F16, UINT64_C(0x4000)},
@@ -70,7 +69,7 @@ TEST(PhysicalTensorCodecTest, CxRoundTripPreservesTemplatePadding) {
 
 TEST(PhysicalTensorCodecTest, BitpackedBoolUsesSharedPhysicalGeometry) {
   NumericTensorKey key =
-      makeTensor(LogicalFormat::Bool, NumericTensorLayout::Tensor, {2, 5});
+      makeTensor(LogicalFormat::Bool, MemLayout::Tensor, {2, 5});
   std::vector<RawLogicalValue> values;
   for (uint64_t index = 0; index < key.getElementCount(); ++index)
     values.push_back({LogicalFormat::Bool, index % 3 == 0});
@@ -87,16 +86,30 @@ TEST(PhysicalTensorCodecTest, BitpackedBoolUsesSharedPhysicalGeometry) {
     EXPECT_EQ((*unpacked)[index].bits, values[index].bits);
   }
 
-  NumericTensorKey unsupported =
-      makeTensor(LogicalFormat::Bool, NumericTensorLayout::Cx, {2, 5});
-  std::string error = expectError(
-      packPhysicalTensorLogicalValues(unsupported, values, UINT8_C(0)));
-  EXPECT_NE(error.find("invalid-layout"), std::string::npos);
+  for (NumericTensorKey blocked :
+       {makeTensor(LogicalFormat::Bool, MemLayout::Cx, {2, 5}),
+        makeTensor(LogicalFormat::Bool, MemLayout::NCx, {1, 2, 5})}) {
+    llvm::Expected<std::vector<uint8_t>> blockedPacked =
+        packPhysicalTensorLogicalValues(blocked, values, UINT8_C(0xa5));
+    ASSERT_TRUE(static_cast<bool>(blockedPacked))
+        << llvm::toString(blockedPacked.takeError());
+    EXPECT_EQ(blockedPacked->size(),
+              llvm::cantFail(getPhysicalTensorStorageBytes(blocked)));
+    llvm::Expected<std::vector<RawLogicalValue>> blockedUnpacked =
+        unpackPhysicalTensorLogicalValues(blocked, *blockedPacked);
+    ASSERT_TRUE(static_cast<bool>(blockedUnpacked))
+        << llvm::toString(blockedUnpacked.takeError());
+    ASSERT_EQ(blockedUnpacked->size(), values.size());
+    for (size_t index = 0; index < values.size(); ++index) {
+      EXPECT_EQ((*blockedUnpacked)[index].format, values[index].format);
+      EXPECT_EQ((*blockedUnpacked)[index].bits, values[index].bits);
+    }
+  }
 }
 
 TEST(PhysicalTensorCodecTest, RejectsSizeCountAndEncodingMismatch) {
   NumericTensorKey key =
-      makeTensor(LogicalFormat::F32, NumericTensorLayout::NCx, {1, 2, 3});
+      makeTensor(LogicalFormat::F32, MemLayout::NCx, {1, 2, 3});
   uint64_t bytes = llvm::cantFail(getPhysicalTensorStorageBytes(key));
   ASSERT_GT(bytes, 0u);
   std::string error = expectError(unpackPhysicalTensorLogicalValues(

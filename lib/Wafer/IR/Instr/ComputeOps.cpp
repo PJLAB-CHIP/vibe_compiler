@@ -51,6 +51,23 @@ verifyStaticElementCountFitsUInt32(mlir::Operation *op, mlir::Type type,
   return mlir::success();
 }
 
+static mlir::LogicalResult
+verifyStaticPhysicalElementCountFitsUInt32(mlir::Operation *op, mlir::Type type,
+                                           llvm::StringRef role) {
+  auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
+  std::optional<WaferPhysicalTensorInfo> info =
+      memrefType ? computeWaferPhysicalTensorInfo(memrefType) : std::nullopt;
+  if (!info || info->physicalElements <= 0)
+    return op->emitOpError()
+           << "target_geometry_mismatch: " << role
+           << " physical traversal count must be static and positive";
+  if (static_cast<uint64_t>(info->physicalElements) >
+      std::numeric_limits<uint32_t>::max())
+    return op->emitOpError() << "target_abi_narrowing: " << role
+                             << " physical traversal count must fit uint32_t";
+  return mlir::success();
+}
+
 static mlir::LogicalResult verifyStaticDataShapeBounds(mlir::Operation *op,
                                                        mlir::Type type,
                                                        llvm::StringRef role) {
@@ -206,9 +223,8 @@ static mlir::LogicalResult verifyAlignedSPMMemRef(mlir::Operation *op,
   return mlir::success();
 }
 
-static mlir::LogicalResult verifyNCxSPMMemRef(mlir::Operation *op,
-                                              mlir::Type type,
-                                              llvm::StringRef role) {
+static mlir::LogicalResult
+verifyNCxSPMMemRef(mlir::Operation *op, mlir::Type type, llvm::StringRef role) {
   if (mlir::failed(verifySPMMemRef(op, type, role)))
     return mlir::failure();
   if (!hasWaferLayout(type, MemLayout::NCx))
@@ -436,6 +452,9 @@ static mlir::LogicalResult verifySimpleInstrElementwiseContract(
       getLogicalTensorType(destType);
   if (!destTensor)
     return op->emitOpError("expects Wafer buffer dest");
+  std::optional<MemLayout> destLayout = getWaferLayout(destType);
+  if (!destLayout)
+    return op->emitOpError("elementwise dest must carry Wafer layout");
 
   unsigned expectedArity = getInstrElementwiseArity(kind);
   if (inputs.size() != expectedArity)
@@ -448,6 +467,9 @@ static mlir::LogicalResult verifySimpleInstrElementwiseContract(
         getLogicalTensorType(input.getType());
     if (!inputTensor)
       return op->emitOpError("expects Wafer buffer operands");
+    if (getWaferLayout(input.getType()) != destLayout)
+      return op->emitOpError(
+          "elementwise operands must use the dest layout family");
     if (!firstInputTensor)
       firstInputTensor = inputTensor;
     if (mlir::failed(verifySameShape(
@@ -771,8 +793,8 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
                 getDest().getType());
   if (mlir::failed(contract))
     return mlir::failure();
-  return verifyStaticElementCountFitsUInt32(getOperation(), getDest().getType(),
-                                            "elementwise dest");
+  return verifyStaticPhysicalElementCountFitsUInt32(
+      getOperation(), getDest().getType(), "elementwise dest");
 }
 
 InstrFamily InstrElementwiseOp::getInstructionFamily() {
@@ -796,11 +818,14 @@ mlir::LogicalResult InstrBit2FpOp::verify() {
     return emitOpError("bit2fp source element type must be i1");
   if (!mlir::isa<mlir::FloatType>(destTensor->getElementType()))
     return emitOpError("bit2fp dest element type must be floating point");
+  if (getWaferLayout(getSource().getType()) !=
+      getWaferLayout(getDest().getType()))
+    return emitOpError("bit2fp source and dest layout families must match");
   if (mlir::failed(verifySameShape(getOperation(), *sourceTensor, *destTensor,
                                    "bit2fp source and dest shapes must match")))
     return mlir::failure();
-  return verifyStaticElementCountFitsUInt32(getOperation(), getDest().getType(),
-                                            "bit2fp dest");
+  return verifyStaticPhysicalElementCountFitsUInt32(
+      getOperation(), getDest().getType(), "bit2fp dest");
 }
 
 InstrFamily InstrBit2FpOp::getInstructionFamily() { return InstrFamily::CT; }
@@ -822,6 +847,11 @@ mlir::LogicalResult InstrMaskMoveOp::verify() {
       getLogicalTensorType(getDest().getType());
   if (!sourceTensor || !maskTensor || !destTensor)
     return emitOpError("mask_move expects ranked Wafer memrefs");
+  std::optional<MemLayout> destLayout = getWaferLayout(getDest().getType());
+  if (!destLayout || getWaferLayout(getSource().getType()) != destLayout ||
+      getWaferLayout(getMask().getType()) != destLayout)
+    return emitOpError(
+        "mask_move source, mask and dest layout families must match");
   if (mlir::failed(verifySameShape(getOperation(), *sourceTensor, *destTensor,
                                    "mask_move source and dest shapes must "
                                    "match")) ||
@@ -838,8 +868,8 @@ mlir::LogicalResult InstrMaskMoveOp::verify() {
         "bit2fp conversion");
   if (!mlir::isa<mlir::FloatType>(maskTensor->getElementType()))
     return emitOpError("mask_move mask element type must be floating point");
-  return verifyStaticElementCountFitsUInt32(getOperation(), getDest().getType(),
-                                            "mask_move dest");
+  return verifyStaticPhysicalElementCountFitsUInt32(
+      getOperation(), getDest().getType(), "mask_move dest");
 }
 
 InstrFamily InstrMaskMoveOp::getInstructionFamily() { return InstrFamily::CT; }
@@ -868,6 +898,9 @@ mlir::LogicalResult InstrConvertOp::verify() {
       mlir::failed(
           verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
+  if (getWaferLayout(getSource().getType()) !=
+      getWaferLayout(getDest().getType()))
+    return emitOpError("convert source and dest layout families must match");
   mlir::Type srcElement = getMemRefElementType(getSource().getType());
   mlir::Type dstElement = getMemRefElementType(getDest().getType());
   auto [expectedSrc, expectedDst] =
@@ -910,7 +943,7 @@ mlir::LogicalResult InstrConvertOp::verify() {
           verifyOptionalUInt32Attr(getOperation(), zeroPoint, "zero_point")) ||
       mlir::failed(verifyOptionalRoundingMode(getOperation(), roundingMode,
                                               "rounding_mode")) ||
-      mlir::failed(verifyStaticElementCountFitsUInt32(
+      mlir::failed(verifyStaticPhysicalElementCountFitsUInt32(
           getOperation(), getDest().getType(), "convert dest")))
     return mlir::failure();
   return mlir::success();
@@ -996,8 +1029,7 @@ mlir::LogicalResult InstrGemmOp::verify() {
                             : mlir::ShapedType::kDynamic,
                         n))
     return emitOpError("m/k/n attrs must match batched GEMM dimensions");
-  if (mlir::failed(
-          verifyGemmBatchBounds(getOperation(), attrs.batchCount)))
+  if (mlir::failed(verifyGemmBatchBounds(getOperation(), attrs.batchCount)))
     return mlir::failure();
   for (size_t index = 0; index < attrs.lhsBatchDims.size(); ++index) {
     int64_t expected = static_cast<int64_t>(index);
@@ -1071,26 +1103,23 @@ mlir::LogicalResult InstrConvOp::verify() {
       mlir::failed(verifyI64Array(getOperation(), getDilationsAttr(),
                                   "dilations", 2, /*positive=*/true)))
     return mlir::failure();
-  if (mlir::failed(
-          verifyDataShapeAttrMatchesBuffer(
-              getOperation(), getInput().getType(), getInputShapeAttr(),
-              "input_shape")) ||
+  if (mlir::failed(verifyDataShapeAttrMatchesBuffer(
+          getOperation(), getInput().getType(), getInputShapeAttr(),
+          "input_shape")) ||
       mlir::failed(
           verifyShapeAttrMatchesBuffer(getOperation(), getWeight().getType(),
                                        getWeightShapeAttr(), "weight_shape")) ||
-      mlir::failed(
-          verifyDataShapeAttrMatchesBuffer(
-              getOperation(), getDest().getType(), getOutputShapeAttr(),
-              "output_shape")) ||
+      mlir::failed(verifyDataShapeAttrMatchesBuffer(
+          getOperation(), getDest().getType(), getOutputShapeAttr(),
+          "output_shape")) ||
       mlir::failed(
           verifyPaddingBounds(getOperation(), getPadsAttr(), "pads")) ||
       mlir::failed(
           verifyPaddingBounds(getOperation(), getUnpadsAttr(), "unpads")) ||
       mlir::failed(verifyKernelStrideBounds(
           getOperation(), getKernelStridesAttr(), "kernel_strides")) ||
-      mlir::failed(
-          verifyDilationBounds(getOperation(), getDilationsAttr(),
-                               "dilations")) ||
+      mlir::failed(verifyDilationBounds(getOperation(), getDilationsAttr(),
+                                        "dilations")) ||
       mlir::failed(verifyConvShapeRelation(
           getOperation(), getKindAttr().getValue(), getInputShapeAttr(),
           getWeightShapeAttr(), getOutputShapeAttr(), getPadsAttr(),
@@ -1106,8 +1135,8 @@ static bool isIndexedPoolKind(InstrPoolKind kind) {
 }
 
 mlir::LogicalResult InstrPoolOp::verify() {
-  if (mlir::failed(verifyNCxSPMMemRef(getOperation(), getInput().getType(),
-                                      "input")) ||
+  if (mlir::failed(
+          verifyNCxSPMMemRef(getOperation(), getInput().getType(), "input")) ||
       mlir::failed(verifyI64Array(getOperation(), getSourceShapeAttr(),
                                   "source_shape", 4, /*positive=*/true)) ||
       mlir::failed(verifyI64Array(getOperation(), getDestShapeAttr(),
@@ -1127,10 +1156,9 @@ mlir::LogicalResult InstrPoolOp::verify() {
 
   std::optional<mlir::RankedTensorType> inputTensor =
       getLogicalTensorType(getInput().getType());
-  if (mlir::failed(
-          verifyDataShapeAttrMatchesBuffer(
-              getOperation(), getInput().getType(), getSourceShapeAttr(),
-              "source_shape")) ||
+  if (mlir::failed(verifyDataShapeAttrMatchesBuffer(
+          getOperation(), getInput().getType(), getSourceShapeAttr(),
+          "source_shape")) ||
       mlir::failed(
           verifyPaddingBounds(getOperation(), getPadsAttr(), "pads")) ||
       mlir::failed(verifyKernelStrideBounds(
@@ -1168,10 +1196,10 @@ mlir::LogicalResult InstrUnpoolOp::verify() {
     return emitOpError(
         "scalar index attr is not supported; use an index memref operand");
 
-  if (mlir::failed(verifyNCxSPMMemRef(getOperation(), getInput().getType(),
-                                      "input")) ||
-      mlir::failed(verifyNCxSPMMemRef(getOperation(), getDest().getType(),
-                                      "dest")) ||
+  if (mlir::failed(
+          verifyNCxSPMMemRef(getOperation(), getInput().getType(), "input")) ||
+      mlir::failed(
+          verifyNCxSPMMemRef(getOperation(), getDest().getType(), "dest")) ||
       mlir::failed(verifyI64Array(getOperation(), getSourceShapeAttr(),
                                   "source_shape", 4, /*positive=*/true)) ||
       mlir::failed(verifyI64Array(getOperation(), getDestShapeAttr(),
@@ -1189,14 +1217,12 @@ mlir::LogicalResult InstrUnpoolOp::verify() {
           getOperation(), *inputTensor, *destTensor,
           "unpool input and dest element types must match")))
     return mlir::failure();
-  if (mlir::failed(
-          verifyDataShapeAttrMatchesBuffer(
-              getOperation(), getInput().getType(), getSourceShapeAttr(),
-              "source_shape")) ||
+  if (mlir::failed(verifyDataShapeAttrMatchesBuffer(
+          getOperation(), getInput().getType(), getSourceShapeAttr(),
+          "source_shape")) ||
       mlir::failed(
-          verifyDataShapeAttrMatchesBuffer(
-              getOperation(), getDest().getType(), getDestShapeAttr(),
-              "dest_shape")) ||
+          verifyDataShapeAttrMatchesBuffer(getOperation(), getDest().getType(),
+                                           getDestShapeAttr(), "dest_shape")) ||
       mlir::failed(verifyKernelStrideBounds(
           getOperation(), getKernelStridesAttr(), "kernel_strides")) ||
       mlir::failed(verifyUnpoolShapeRelation(
@@ -1216,9 +1242,9 @@ mlir::LogicalResult InstrUnpoolOp::verify() {
     auto indexType = mlir::cast<mlir::MemRefType>(index.getType());
     if (!indexType.getElementType().isInteger(16))
       return emitOpError("index element type must be i16");
-    if (mlir::failed(verifyDataShapeAttrMatchesBuffer(
-            getOperation(), indexType, getSourceShapeAttr(),
-            "index source_shape")))
+    if (mlir::failed(verifyDataShapeAttrMatchesBuffer(getOperation(), indexType,
+                                                      getSourceShapeAttr(),
+                                                      "index source_shape")))
       return mlir::failure();
 
     std::optional<WaferPhysicalTensorInfo> indexInfo =
@@ -1234,7 +1260,7 @@ mlir::LogicalResult InstrUnpoolOp::verify() {
 
 InstrFamily InstrUnpoolOp::getInstructionFamily() { return InstrFamily::CT; }
 
-#define WAFER_DEFINE_NCC_ISSUE_WORKER(OP)                                  \
+#define WAFER_DEFINE_NCC_ISSUE_WORKER(OP)                                      \
   NCCWorker OP::getIssueWorker() { return getWorker(); }
 
 WAFER_DEFINE_NCC_ISSUE_WORKER(InstrFillOp)

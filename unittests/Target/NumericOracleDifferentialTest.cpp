@@ -37,10 +37,10 @@ ResolvedNumericCommand resolveConvert(uint16_t opcode,
     parameter = NumericConvertParameter::roundingMode(rounding);
   if (!route)
     llvm::report_fatal_error("test failed to find a convert route");
-  NumericTensorKey source = llvm::cantFail(NumericTensorKey::create(
-      route->source, NumericTensorLayout::Tensor, {1}));
-  NumericTensorKey destination = llvm::cantFail(NumericTensorKey::create(
-      route->destination, NumericTensorLayout::Tensor, {1}));
+  NumericTensorKey source = llvm::cantFail(
+      NumericTensorKey::create(route->source, MemLayout::Tensor, {1}));
+  NumericTensorKey destination = llvm::cantFail(
+      NumericTensorKey::create(route->destination, MemLayout::Tensor, {1}));
   llvm::Expected<NumericCommandKey> key = NumericCommandKey::createCTConvert(
       kTargetProfile, opcode, std::move(source), std::move(destination),
       parameter);

@@ -51,20 +51,6 @@ std::optional<mlir::Type> getElementType(mlir::MLIRContext &context,
   return std::nullopt;
 }
 
-std::optional<MemLayout> getMemLayout(NumericTensorLayout layout) {
-  switch (layout) {
-  case NumericTensorLayout::Tensor:
-    return MemLayout::Tensor;
-  case NumericTensorLayout::NTensor:
-    return MemLayout::NTensor;
-  case NumericTensorLayout::Cx:
-    return MemLayout::Cx;
-  case NumericTensorLayout::NCx:
-    return MemLayout::NCx;
-  }
-  return std::nullopt;
-}
-
 struct OwnedPhysicalLayout {
   mlir::DialectRegistry registry;
   std::unique_ptr<mlir::MLIRContext> context;
@@ -81,8 +67,7 @@ makePhysicalLayout(const NumericTensorKey &key) {
   context->loadDialect<WaferDialect>();
   std::optional<mlir::Type> elementType =
       getElementType(*context, key.getFormat());
-  std::optional<MemLayout> layout = getMemLayout(key.getLayout());
-  if (!elementType || !layout)
+  if (!elementType)
     return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
                       "tensor has an unknown format or layout");
   std::vector<int64_t> shape;
@@ -94,7 +79,8 @@ makePhysicalLayout(const NumericTensorKey &key) {
           "tensor dimension exceeds the physical layout helper domain");
     shape.push_back(static_cast<int64_t>(dimension));
   }
-  MemoryAttr memory = MemoryAttr::get(context.get(), MemorySpace::SPM, *layout);
+  MemoryAttr memory =
+      MemoryAttr::get(context.get(), MemorySpace::SPM, key.getLayout());
   mlir::MemRefType type = mlir::MemRefType::get(
       shape, *elementType, mlir::MemRefLayoutAttrInterface{}, memory);
   std::optional<WaferPhysicalTensorInfo> info =

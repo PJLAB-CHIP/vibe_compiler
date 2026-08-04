@@ -309,10 +309,7 @@ llvm::Error writeSourceSpec(const Options &options) {
       wafer::parseLogicalFormat(options.format);
   if (!format)
     return format.takeError();
-  const wafer::NumericTensorLayout layout =
-      *options.batchCount == 1 ? wafer::NumericTensorLayout::Cx
-                               : wafer::NumericTensorLayout::NCx;
-  const wafer::MemLayout memLayout =
+  const wafer::MemLayout layout =
       *options.batchCount == 1 ? wafer::MemLayout::Cx : wafer::MemLayout::NCx;
   std::vector<int64_t> lhsShape;
   std::vector<int64_t> rhsShape;
@@ -400,7 +397,7 @@ llvm::Error writeSourceSpec(const Options &options) {
         0,
         "tensor",
         wafer::stringifyLogicalFormat(*format).str(),
-        memLayout,
+        layout,
         std::vector<int64_t>(shape.begin(), shape.end()),
         static_cast<int64_t>(physicalBytes),
         64};

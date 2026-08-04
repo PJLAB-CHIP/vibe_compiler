@@ -150,7 +150,9 @@ module {
   llvm::raw_string_ostream diagnostics(diagnosticText);
   return wafer::compiler::detail::buildExecutableBundle(
       context, *tensorProgram, std::move(program), *config, diagnostics,
-      std::nullopt);
+      std::nullopt,
+      wafer::compiler::detail::WholeVariantSelectionMode::
+          QualifyStaticFixedSlot);
 }
 
 size_t countCallsTo(const llvm::Module &module, llvm::StringRef symbol) {
@@ -356,7 +358,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
         RawLogicalValue{LogicalFormat::F16,
                         inputBits[static_cast<size_t>(slot.resourceIndex)]});
     NumericTensorKey key = llvm::cantFail(NumericTensorKey::create(
-        LogicalFormat::F16, NumericTensorLayout::Tensor, {kElementCount}));
+        LogicalFormat::F16, MemLayout::Tensor, {kElementCount}));
     llvm::Expected<std::vector<uint8_t>> bytes =
         packPhysicalTensorLogicalValues(key, values, UINT8_C(0));
     ASSERT_TRUE(static_cast<bool>(bytes)) << llvm::toString(bytes.takeError());
@@ -494,7 +496,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   ASSERT_EQ(result->outputs.size(), 1u);
 
   NumericTensorKey outputKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, NumericTensorLayout::Tensor, {kElementCount}));
+      LogicalFormat::F16, MemLayout::Tensor, {kElementCount}));
   llvm::Expected<std::vector<RawLogicalValue>> output =
       unpackPhysicalTensorLogicalValues(outputKey,
                                         result->outputs.front().bytes);

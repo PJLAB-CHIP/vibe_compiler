@@ -56,6 +56,7 @@ COMPILER_OPTIMIZATION_PAIRED_CASES = (
     "ready-order-movement-first",
     "gemm-aligned-physical-route",
     "gemm-tail-physical-route",
+    "layout-movement-chain",
     "tree-all-reduce",
 )
 COLLECTIVE_CHARACTERIZATION_CASES = (

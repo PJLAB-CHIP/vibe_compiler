@@ -243,7 +243,7 @@ module {
 module {
   %buffer = "builtin.unrealized_conversion_cast"()
       : () -> memref<4294967296xi8, #wafer.memory<spm, tensor>>
-  // expected-error @below {{elementwise dest element count must fit uint32_t}}
+  // expected-error @below {{elementwise dest physical traversal count must fit uint32_t}}
   wafer.instr.elementwise #wafer.instr_elementwise_kind<add> %buffer, %buffer into %buffer
       : memref<4294967296xi8, #wafer.memory<spm, tensor>>,
         memref<4294967296xi8, #wafer.memory<spm, tensor>>
@@ -257,7 +257,7 @@ module {
       : () -> memref<4294967296xi1, #wafer.memory<spm, tensor>>
   %dst = "builtin.unrealized_conversion_cast"()
       : () -> memref<4294967296xf16, #wafer.memory<spm, tensor>>
-  // expected-error @below {{bit2fp dest element count must fit uint32_t}}
+  // expected-error @below {{bit2fp dest physical traversal count must fit uint32_t}}
   wafer.instr.bit2fp %src into %dst
       : memref<4294967296xi1, #wafer.memory<spm, tensor>>
      to memref<4294967296xf16, #wafer.memory<spm, tensor>>
@@ -268,7 +268,7 @@ module {
 module {
   %buffer = "builtin.unrealized_conversion_cast"()
       : () -> memref<4294967296xf16, #wafer.memory<spm, tensor>>
-  // expected-error @below {{mask_move dest element count must fit uint32_t}}
+  // expected-error @below {{mask_move dest physical traversal count must fit uint32_t}}
   wafer.instr.mask_move %buffer, %buffer into %buffer
       : memref<4294967296xf16, #wafer.memory<spm, tensor>>,
         memref<4294967296xf16, #wafer.memory<spm, tensor>>
@@ -296,7 +296,7 @@ module {
       : () -> memref<4294967296xf16, #wafer.memory<spm, tensor>>
   %dst = "builtin.unrealized_conversion_cast"()
       : () -> memref<4294967296xf32, #wafer.memory<spm, tensor>>
-  // expected-error @below {{convert dest element count must fit uint32_t}}
+  // expected-error @below {{convert dest physical traversal count must fit uint32_t}}
   wafer.instr.convert #wafer.instr_convert_kind<fp16_fp32> %src into %dst
       : memref<4294967296xf16, #wafer.memory<spm, tensor>>
      to memref<4294967296xf32, #wafer.memory<spm, tensor>>

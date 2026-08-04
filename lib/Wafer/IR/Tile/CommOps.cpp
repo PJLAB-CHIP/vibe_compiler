@@ -15,17 +15,14 @@ using namespace wafer::detail;
 
 namespace {
 
-static mlir::LogicalResult verifyPeerTile(mlir::Operation *op,
-                                          mlir::Value buffer,
-                                          mlir::IntegerAttr peer,
-                                          mlir::IntegerAttr bytes,
-                                          DTEMessageAttr message,
-                                          mlir::Type tokenType) {
+static mlir::LogicalResult
+verifyPeerTile(mlir::Operation *op, mlir::Value buffer, mlir::IntegerAttr peer,
+               mlir::IntegerAttr bytes, DTEMessageAttr message,
+               mlir::Type tokenType) {
   if (mlir::failed(verifyDTEP2P(op, buffer, peer, bytes, tokenType)))
     return mlir::failure();
   if (message.getPhase() != DTEProtocolPhase::PeerDataflow)
-    return op->emitOpError(
-        "peer tile message phase must be peer_dataflow");
+    return op->emitOpError("peer tile message phase must be peer_dataflow");
   return verifyLogicalRankWithinExecutionMesh(op, peer.getInt(),
                                               "peer tile logical rank");
 }
@@ -164,13 +161,15 @@ static mlir::LogicalResult verifyCommReduceCollective(
   if (bytes <= 0)
     return op->emitOpError(collectiveName) << " byte count must be positive";
 
-  std::optional<int64_t> compactBytes = getCompactTensorByteSize(*inputTensor);
-  if (!compactBytes)
+  auto inputType = mlir::dyn_cast<mlir::MemRefType>(input.getType());
+  std::optional<WaferPhysicalTensorInfo> physicalInfo =
+      inputType ? computeWaferPhysicalTensorInfo(inputType) : std::nullopt;
+  if (!physicalInfo || physicalInfo->physicalBytes <= 0)
     return op->emitOpError(collectiveName)
-           << " compact byte size is not representable";
-  if (*compactBytes != bytes)
+           << " physical byte size is not representable";
+  if (physicalInfo->physicalBytes != bytes)
     return op->emitOpError(collectiveName)
-           << " byte count must match compact byte size";
+           << " byte count must match physical footprint byte size";
 
   return mlir::success();
 }

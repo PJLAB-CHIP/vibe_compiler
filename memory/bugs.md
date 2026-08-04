@@ -2315,10 +2315,35 @@
   混淆了logical element order和physical alias。
 - 修复模式：`IndexRelation`保持layout-agnostic，在当前IR epoch与endpoint encoding组合成可重算的physical access
   analysis；footprint/span/padding由encoding拥有，policy与allocation alignment经共享checked LCM投影。Cx/NCx上的
-  rank-0、bitpacked和非identity memref layout统一失败；generic collapse/expand只对compact Tensor/NTensor折叠。
+  rank-0和nonidentity memref layout统一失败；bitpacked Cx/NCx必须由同一encoding owner提供bit-addressed block/tail map，
+  不能由consumer外推。generic collapse/expand只对compact Tensor/NTensor折叠。
   encoding owner以exact pieces承担valid span不重叠合同，并由独立慢oracle穷举小shape验证；候选热路径只组合relation和
   logical writer injectivity，不为每个candidate重复调用通用solver重证同一encoding注入性，否则4096级blocked relation
   会重新形成明显的solver性能悬崖。
 - 防复发：layout审计必须覆盖candidate、view/alias、SPM/DDR、lifetime/effect、cost、Instr、target和model，而不只看
   RDMA/WDMA/TDMA。跨Tensor/NTensor/Cx/NCx、dtype block边界、C0和tail用独立慢oracle做differential；普通consumer
   不得出现第二份Cx/NCx offset/padding公式，也不得用`max(alignment)`代替LCM。
+
+## 2026-08-04 资格测试不能假设production selector碰巧选择指定实现
+
+- 现象：新增layout候选后，fixed-slot SystemC集成测试失败，但fixed-slot lowering、target和model本身均可独立通过；
+  失败来自测试调用production bundle owner后假设Pareto winner仍是fixed-slot。
+- 根因：qualification目标是验证一个指定实现的完整合同，production selection目标是在当前frontier中选winner；新增任何
+  合法候选都可能改变后者，二者不是同一测试入口。
+- 修复模式：指定实现资格使用现有typed qualification selection mode，例如`QualifyStaticFixedSlot`；production测试才断言
+  正常selector结果。不能为修复资格测试而把production cost或候选顺序调回旧偶然值。
+- 防复发：测试名或oracle声明具体implementation/buffering/collective形态时，入口必须显式固定该typed mode，并仍跑完整
+  actual-clone/target/model gate；只验证winner选择的测试不得反向充当某个非winner实现的功能资格。
+
+## 2026-08-04 dtype-changing traversal要区分valid ordinal与footprint覆盖
+
+- 现象：把CT element count推广为physical traversal后，packed i1 Tensor mask到FP16/F32的`bit2fp`被错误拒绝；若完全删除
+  footprint检查，反向dtype/block变化又可能让CT读取source allocation之外的padding lane。
+- 根因：dtype-changing CT需要两个独立事实：valid logical element映射到相同的normalized physical ordinal，以及source
+  physical element count覆盖destination执行的完整traversal。要求两端footprint完全相等会误拒绝较长packed source；只比
+  relation则忽略padding读越界。
+- 修复模式：`PhysicalAccessRelation`从encoding-owned ordinal relation证明valid mapping相等，并要求
+  `source physical elements >= destination physical elements`。byte offset/span equality仍只用于same-dtype movement/alias，
+  不能替代dtype-changing traversal proof。
+- 防复发：测试同时覆盖packed i1→float正例、同宽blocked正例、source较短反例和dtype-specific CBlock relation反例；
+  target preflight与lowering必须消费同一proof，不能各自按logical count猜测。

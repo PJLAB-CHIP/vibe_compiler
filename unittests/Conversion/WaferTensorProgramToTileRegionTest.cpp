@@ -651,8 +651,7 @@ module {
   EXPECT_GT(countOps<wafer::InstrDTEWaitOp>(*lowered), 0u);
 }
 
-TEST(WaferTensorProgramToTileRegionTest,
-     LowersF16GenericReductionChunks) {
+TEST(WaferTensorProgramToTileRegionTest, LowersF16GenericReductionChunks) {
   mlir::DialectRegistry registry;
   registerConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -746,8 +745,7 @@ module {
   EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(*singleTile), 1u);
 }
 
-TEST(WaferTensorProgramToTileRegionTest,
-     LowersBF16MaximumChunks) {
+TEST(WaferTensorProgramToTileRegionTest, LowersBF16MaximumChunks) {
   mlir::DialectRegistry registry;
   registerConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -933,8 +931,7 @@ module {
         << failureReason;
     ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
     llvm::SmallVector<wafer::InstrGemmOp, 2> instrGemms;
-    lowered->walk(
-        [&](wafer::InstrGemmOp op) { instrGemms.push_back(op); });
+    lowered->walk([&](wafer::InstrGemmOp op) { instrGemms.push_back(op); });
     ASSERT_EQ(instrGemms.size(), 2u);
     EXPECT_EQ(instrGemms[0].getK(), 3);
     EXPECT_EQ(instrGemms[1].getK(), 2);
@@ -1633,8 +1630,8 @@ module {
   ASSERT_TRUE(sentinel);
   mlir::OwningOpRef<mlir::ModuleOp> lowered = std::move(sentinel);
   std::string failureReason;
-  EXPECT_TRUE(mlir::failed(
-      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+  EXPECT_TRUE(
+      mlir::failed(wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
           function, /*candidateTileSizes=*/{2},
           /*candidateReductionTileSizes=*/{4}, lowered, &failureReason,
           /*currentLogicalRank=*/0, /*selectedAlternative=*/std::nullopt,
@@ -1720,8 +1717,7 @@ module {
   lowered->walk([&](wafer::CommAllReduceOp op) { allReduce = op; });
   ASSERT_TRUE(allReduce);
   ASSERT_TRUE(allReduce.getInput().getDefiningOp());
-  EXPECT_TRUE((mlir::isa<wafer::ComputeElementwiseOp,
-                         wafer::ComputeReduceOp>(
+  EXPECT_TRUE((mlir::isa<wafer::ComputeElementwiseOp, wafer::ComputeReduceOp>(
       allReduce.getInput().getDefiningOp())));
 
   ASSERT_TRUE(mlir::succeeded(
@@ -1786,8 +1782,8 @@ module {
   ASSERT_TRUE(sentinel);
   mlir::OwningOpRef<mlir::ModuleOp> lowered = std::move(sentinel);
   std::string failureReason;
-  EXPECT_TRUE(mlir::failed(
-      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+  EXPECT_TRUE(
+      mlir::failed(wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
           function, /*candidateTileSizes=*/{2},
           /*candidateReductionTileSizes=*/{4}, lowered, &failureReason,
           /*currentLogicalRank=*/0, /*selectedAlternative=*/std::nullopt,
@@ -1799,6 +1795,88 @@ module {
   ASSERT_TRUE(lowered);
   EXPECT_TRUE(lowered->lookupSymbol<mlir::func::FuncOp>("sentinel"));
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     LowersBlockedPointwiseAndCompatibleConvertWithoutMaterialization) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @blocked_pointwise(
+      %lhs: memref<3x65xf16, #wafer.memory<spm, cx>>,
+      %rhs: memref<3x65xf16, #wafer.memory<spm, cx>>)
+      -> memref<3x65xf16, #wafer.memory<spm, cx>> {
+    %sum = wafer.tile.elementwise #wafer.elementwise_kind<add> %lhs, %rhs
+        : (memref<3x65xf16, #wafer.memory<spm, cx>>,
+           memref<3x65xf16, #wafer.memory<spm, cx>>)
+       -> memref<3x65xf16, #wafer.memory<spm, cx>>
+    return %sum : memref<3x65xf16, #wafer.memory<spm, cx>>
+  }
+
+  func.func @blocked_convert(
+      %input: memref<2x2x197xf16, #wafer.memory<spm, ncx>>)
+      -> memref<2x2x197xbf16, #wafer.memory<spm, ncx>> {
+    %converted = wafer.tile.compute.convert %input
+        : memref<2x2x197xf16, #wafer.memory<spm, ncx>>
+       to memref<2x2x197xbf16, #wafer.memory<spm, ncx>>
+    return %converted : memref<2x2x197xbf16, #wafer.memory<spm, ncx>>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*module, &failureReason)))
+      << failureReason;
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(*module), 0u);
+  EXPECT_EQ(countOps<wafer::ComputeConvertOp>(*module), 0u);
+  EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*module), 1u);
+  EXPECT_EQ(countOps<wafer::InstrConvertOp>(*module), 1u);
+  EXPECT_EQ(countOps<wafer::LayoutMaterializeOp>(*module), 0u);
+  EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module), 0u);
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     RejectsBlockedConvertWithDtypeSpecificTraversalMismatch) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @blocked_convert(
+      %input: memref<2x2x197xf16, #wafer.memory<spm, ncx>>)
+      -> memref<2x2x197xf32, #wafer.memory<spm, ncx>> {
+    %converted = wafer.tile.compute.convert %input
+        : memref<2x2x197xf16, #wafer.memory<spm, ncx>>
+       to memref<2x2x197xf32, #wafer.memory<spm, ncx>>
+    return %converted : memref<2x2x197xf32, #wafer.memory<spm, ncx>>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  std::string failureReason;
+  EXPECT_TRUE(mlir::failed(
+      wafer::convertTileRegionToInstrModule(*module, &failureReason)));
+  EXPECT_NE(failureReason.find("incompatible physical element traversal"),
+            std::string::npos)
+      << failureReason;
+  EXPECT_EQ(countOps<wafer::ComputeConvertOp>(*module), 1u);
+  EXPECT_EQ(countOps<wafer::InstrConvertOp>(*module), 0u);
 }
 
 } // namespace

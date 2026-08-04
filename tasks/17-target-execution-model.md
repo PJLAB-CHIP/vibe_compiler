@@ -1422,8 +1422,8 @@ base/numeric分别164/164、47/47，lit为250 pass/2个预期feature-inverse uns
 - 所有multi-byte scalar codec使用little-endian。numeric TF32使用32-bit container的bits 31:13作为`s1e8f10`，encode清零
   low 13，numeric decode遇noncanonical low 13非零即拒绝；raw movement仍保留全部bytes。BOOL physical bit
   ordinal只能来自tasks/08 owner helper，byte内LSB0/MSB0必须由显式target encoding或model profile
-  选择；首个LSB0候选只标model-only，不能复用已退役reference私有mapper。Cx/NCx bitpacked block/tail事实尚未
-  固定时必须在codec effect前拒绝；
+  选择；首个LSB0候选只标model-only，不能复用已退役reference私有mapper。Cx/NCx bitpacked block/tail事实由
+  current encoding owner提供；任一shape/layout查询不可用时必须在codec effect前拒绝；
 - rounding mode 0/1/2/3分别为RNE/RTZ/RTP/RTN。23条rounding route逐mode发布，9条plain route固定RNE且禁止额外attr。
   mode 4只保留未发布`wafer-model-seeded-stochastic-v1`候选，在显式seed、PRNG、reset/state及每dynamic element advance
   合同闭合前以`stochastic-state-unproven`拒绝；

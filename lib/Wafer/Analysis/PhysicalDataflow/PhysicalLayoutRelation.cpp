@@ -68,6 +68,10 @@ PhysicalLayoutRelation::create(mlir::MemRefType type,
   if (llvm::MulOverflow(*footprint, int64_t{8}, footprintBits))
     return mlir::failure();
   int64_t offsetDomainSize = 0;
+  int64_t elementDomainSize = 0;
+  if (footprintBits % *elementBits != 0)
+    return mlir::failure();
+  elementDomainSize = footprintBits / *elementBits;
   if (*valid > 0) {
     if (footprintBits < *elementBits ||
         llvm::AddOverflow(footprintBits - *elementBits, int64_t{1},
@@ -77,6 +81,7 @@ PhysicalLayoutRelation::create(mlir::MemRefType type,
   }
 
   std::optional<PresburgerRelation> combined;
+  std::optional<PresburgerRelation> combinedOrdinals;
   llvm::SmallVector<PresburgerSet, 2> pieceDomains;
   bool byteAddressable = *elementBits % 8 == 0;
   for (const WaferPhysicalLayoutPiece &piece : *pieces) {
@@ -85,6 +90,9 @@ PhysicalLayoutRelation::create(mlir::MemRefType type,
             static_cast<unsigned>(type.getRank()) ||
         piece.logicalToPhysicalBitOffset.getNumSymbols() != 0 ||
         piece.logicalToPhysicalBitOffset.getNumResults() != 1)
+      return mlir::failure();
+    mlir::AffineExpr bitOffset = piece.logicalToPhysicalBitOffset.getResult(0);
+    if (!bitOffset.isMultipleOf(*elementBits))
       return mlir::failure();
     byteAddressable &=
         piece.logicalToPhysicalBitOffset.getResult(0).isMultipleOf(8);
@@ -105,10 +113,25 @@ PhysicalLayoutRelation::create(mlir::MemRefType type,
         pieceRelation.get()->intersectDestinationDomain(*pieceDomain, limits);
     if (!restricted.isExact())
       return mlir::failure();
+    mlir::AffineMap ordinalMap = mlir::AffineMap::get(
+        type.getRank(), 0, bitOffset.floorDiv(*elementBits));
+    IndexRelationResult pieceOrdinal = IndexRelation::fromAffineMap(
+        ordinalMap, type.getShape(), {elementDomainSize}, limits);
+    if (!pieceOrdinal.isExact())
+      return mlir::failure();
+    IndexRelationResult restrictedOrdinal =
+        pieceOrdinal.get()->intersectDestinationDomain(*pieceDomain, limits);
+    if (!restrictedOrdinal.isExact())
+      return mlir::failure();
     if (!combined)
       combined = restricted.get()->getPresburgerRelation();
     else
       combined->unionInPlace(restricted.get()->getPresburgerRelation());
+    if (!combinedOrdinals)
+      combinedOrdinals = restrictedOrdinal.get()->getPresburgerRelation();
+    else
+      combinedOrdinals->unionInPlace(
+          restrictedOrdinal.get()->getPresburgerRelation());
   }
 
   if (!combined) {
@@ -118,21 +141,28 @@ PhysicalLayoutRelation::create(mlir::MemRefType type,
     empty.addBound(BoundType::LB, type.getRank(), 0);
     empty.addBound(BoundType::UB, type.getRank(), -1);
     combined = PresburgerRelation(empty);
+    combinedOrdinals = *combined;
   }
-  if (exceedsLimits(*combined, limits))
+  if (!combinedOrdinals || exceedsLimits(*combined, limits) ||
+      exceedsLimits(*combinedOrdinals, limits))
     return mlir::failure();
 
   IndexRelation relation(std::move(*combined), IndexRelationStatus::Exact);
+  IndexRelation ordinalRelation(std::move(*combinedOrdinals),
+                                IndexRelationStatus::Exact);
   IndexSetResult logicalDomain =
       IndexRelation::staticDomain(type.getShape(), limits);
   if (!logicalDomain.isExact() ||
       !relation.getPresburgerRelation().getDomainSet().isEqual(
+          *logicalDomain.set) ||
+      !ordinalRelation.getPresburgerRelation().getDomainSet().isEqual(
           *logicalDomain.set))
     return mlir::failure();
 
-  return PhysicalLayoutRelation(type, std::move(relation), std::move(*pieces),
-                                *elementBits, *footprint, *alignment, *valid,
-                                *padding, byteAddressable);
+  return PhysicalLayoutRelation(type, std::move(relation),
+                                std::move(ordinalRelation), std::move(*pieces),
+                                *elementBits, elementDomainSize, *footprint,
+                                *alignment, *valid, *padding, byteAddressable);
 }
 
 mlir::FailureOr<WaferPhysicalElementSpan>

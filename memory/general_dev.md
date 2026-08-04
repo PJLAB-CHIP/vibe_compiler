@@ -1261,3 +1261,13 @@
   descriptor lowering从同一relation取offset、从piece period取符号分段。
 - focused回归至少包含Tensor/NTensor/Cx/NCx全pair、F16/BF16/F32/I8、跨CBlock点、C0/tail和per-N padding，另跑
   independent coordinate oracle、memory alignment lit、mapped movement、target/model codec及source-to-instruction链路。
+
+## Layout优化的paired package/no-card门禁
+
+- layout优化复用`wafer_board_compiler_optimization_campaign_test.py`的同源paired runner，不另建runner或package schema。
+  baseline用显式关闭优化的同一source，winner只启用所测optimization kind；两边固定seed、dtype、shape、payload和CPU oracle。
+- target结构oracle先比较除layout movement builtin外的完整callsite inventory，再要求winner的movement call count严格下降。
+  这样能区分“真实删除最终搬运”和“换了GEMM/collective/launch导致计数不可比”；scheduler/module digest必须不同。
+- 无卡阶段必须生成两份完整package并逐份fresh no-card，随后把case同时登记到CMake board owner list和
+  `COMPILER_OPTIMIZATION_PAIRED_CASES`硬件batch目录。真实板端未启用时只能签`board-ready`，不能用host oracle、
+  no-card或历史板端输出代签exact output/guard或matched性能。

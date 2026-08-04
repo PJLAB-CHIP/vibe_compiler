@@ -107,7 +107,7 @@ mlir::LogicalResult FunctionLowering::lowerElementwise(InstrElementwiseOp op) {
       materializeAddress(op, op.getDest(), "elementwise dest");
   auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
   mlir::FailureOr<int64_t> elements =
-      getStaticElementCount(op, destType, "elementwise dest");
+      getPhysicalTraversalElementCount(op, destType, "elementwise dest");
   mlir::Value formatValue = isTargetRelationElementwiseKind(op.getKind())
                                 ? op.getInputs().front()
                                 : op.getDest();
@@ -131,7 +131,7 @@ mlir::LogicalResult FunctionLowering::lowerBit2Fp(InstrBit2FpOp op) {
       materializeAddress(op, op.getDest(), "bit2fp dest");
   auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
   mlir::FailureOr<int64_t> elements =
-      getStaticElementCount(op, destType, "bit2fp dest");
+      getPhysicalTraversalElementCount(op, destType, "bit2fp dest");
   mlir::FailureOr<int64_t> fmt =
       getDataFormatCode(op, op.getDest(), "bit2fp dest", targetProfile);
   if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(elements) ||
@@ -157,7 +157,7 @@ mlir::LogicalResult FunctionLowering::lowerMaskMove(InstrMaskMoveOp op) {
       materializeAddress(op, op.getDest(), "mask_move dest");
   auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
   mlir::FailureOr<int64_t> elements =
-      getStaticElementCount(op, destType, "mask_move dest");
+      getPhysicalTraversalElementCount(op, destType, "mask_move dest");
   mlir::FailureOr<int64_t> fmt =
       getDataFormatCode(op, op.getDest(), "mask_move dest", targetProfile);
   if (mlir::failed(source) || mlir::failed(mask) || mlir::failed(dest) ||
@@ -211,7 +211,7 @@ mlir::LogicalResult FunctionLowering::lowerConvert(InstrConvertOp op) {
       materializeAddress(op, op.getDest(), "convert dest");
   auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
   mlir::FailureOr<int64_t> elements =
-      getStaticElementCount(op, destType, "convert dest");
+      getPhysicalTraversalElementCount(op, destType, "convert dest");
   if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(elements))
     return mlir::failure();
   args.push_back(*source);

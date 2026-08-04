@@ -190,17 +190,22 @@ getStaticPhysicalElementCount(llvm::ArrayRef<int64_t> shape,
   if (!computeCxC0(c, cBlock, retainThreshold, cxBlocks, c0, alignedC))
     return std::nullopt;
 
+  std::optional<int64_t> elementBits = getElementBitWidth(elementType);
   std::optional<int64_t> elementBytes = getElementStorageBytes(elementType);
-  if (!elementBytes || *elementBytes <= 0 || 256 % *elementBytes != 0)
+  if (!elementBits || *elementBits <= 0 ||
+      kWaferSPMBankLineBytes > std::numeric_limits<int64_t>::max() / int64_t{8})
     return std::nullopt;
-  int64_t bankAlignElements = 256 / *elementBytes;
+  const int64_t bankLineBits = kWaferSPMBankLineBytes * int64_t{8};
+  if (bankLineBits % *elementBits != 0)
+    return std::nullopt;
+  int64_t bankAlignElements = bankLineBits / *elementBits;
 
   info.cBlock = cBlock;
   info.cxBlocks = cxBlocks;
   info.c0 = c0;
   info.alignedC = alignedC;
   info.tailC = c0;
-  info.elementBytes = *elementBytes;
+  info.elementBytes = elementBytes.value_or(0);
   info.bankAlignElements = bankAlignElements;
 
   int64_t physicalElements = 0;
@@ -449,8 +454,7 @@ MemoryAttr::getPhysicalLayoutPieces(mlir::MemRefType type) const {
   }
 
   if ((getLayout() != MemLayout::Cx && getLayout() != MemLayout::NCx) ||
-      shape.empty() || info.bitPackedElement || info.elementBytes <= 0 ||
-      info.cBlock <= 0 || info.cxBlocks < 0 || info.c0 < 0)
+      shape.empty() || info.cBlock <= 0 || info.cxBlocks < 0 || info.c0 < 0)
     return mlir::failure();
 
   int64_t storageBits = 0;
@@ -459,12 +463,12 @@ MemoryAttr::getPhysicalLayoutPieces(mlir::MemRefType type) const {
       getLayout() == MemLayout::NCx ? info.hwElements : info.outerElements;
   int64_t blockStrideElements = 0;
   int64_t fullBlockElements = 0;
-  if (!checkedMul(info.elementBytes, int64_t{8}, storageBits) ||
-      !checkedMul(info.cxBlocks, info.cBlock, fullC) ||
+  if (!checkedMul(info.cxBlocks, info.cBlock, fullC) ||
       !checkedMul(blockedOuterElements, info.cBlock, blockStrideElements) ||
       !checkedMul(info.cxBlocks, blockStrideElements, fullBlockElements) ||
-      storageBits <= 0 || blockedOuterElements <= 0)
+      blockedOuterElements <= 0)
     return mlir::failure();
+  storageBits = *elementBits;
 
   const unsigned channelDim = shape.size() - 1;
   mlir::AffineExpr channel = mlir::getAffineDimExpr(channelDim, context);
@@ -556,12 +560,11 @@ wafer::computeWaferPhysicalTensorInfo(mlir::MemRefType type) {
 
   // Cx/NCx already own a block-major physical map in the memory encoding.
   // A second non-identity MemRef layout would describe a different view whose
-  // composition is not representable by the current type contract.  Reject it
-  // instead of silently ignoring its strides/offset.  Bitpacked blocked
-  // geometry is likewise intentionally absent from the hardware contract.
+  // composition is not representable by the current type contract. Reject it
+  // instead of silently ignoring its strides/offset. Bitpacked blocked
+  // buffers use the same block/tail ordering with bit-addressed lanes.
   if ((info.layout == MemLayout::Cx || info.layout == MemLayout::NCx) &&
-      (type.getRank() == 0 || !type.getLayout().isIdentity() ||
-       info.bitPackedElement))
+      (type.getRank() == 0 || !type.getLayout().isIdentity()))
     return std::nullopt;
 
   if (std::optional<int64_t> elementBytes =
@@ -720,12 +723,19 @@ std::optional<int64_t> WaferStaticPhysicalOffsetCalculator::getByteOffset(
   return byteOffset;
 }
 
-std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
-    mlir::MemRefType type, const WaferPhysicalTensorInfo &info,
-    llvm::ArrayRef<int64_t> logicalIndices) {
-  if (info.elementBytes <= 0 || info.bitPackedElement)
+namespace {
+
+/// Return the blocked-layout lane ordinal independently of the element storage
+/// width. Byte-addressable and bitpacked consumers scale this one encoding-
+/// owned ordering into bytes or bits respectively.
+static std::optional<int64_t>
+computeBlockedPhysicalElementOffset(mlir::MemRefType type,
+                                    const WaferPhysicalTensorInfo &info,
+                                    llvm::ArrayRef<int64_t> logicalIndices) {
+  if (info.layout != MemLayout::Cx && info.layout != MemLayout::NCx)
     return std::nullopt;
-  if (type.getRank() != static_cast<int64_t>(logicalIndices.size()))
+  if (type.getRank() == 0 ||
+      type.getRank() != static_cast<int64_t>(logicalIndices.size()))
     return std::nullopt;
   for (auto [dim, index] : llvm::zip_equal(type.getShape(), logicalIndices)) {
     if (dim == mlir::ShapedType::kDynamic || dim < 0 || index < 0 ||
@@ -733,31 +743,6 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
       return std::nullopt;
   }
 
-  if (info.layout != MemLayout::Cx && info.layout != MemLayout::NCx) {
-    llvm::SmallVector<int64_t> strides;
-    int64_t offset = 0;
-    if (mlir::failed(mlir::getStridesAndOffset(type, strides, offset)) ||
-        strides.size() != logicalIndices.size())
-      return std::nullopt;
-
-    int64_t linear = 0;
-    for (auto [index, stride] : llvm::zip_equal(logicalIndices, strides)) {
-      if (stride == mlir::ShapedType::kDynamic || stride < 0)
-        return std::nullopt;
-      int64_t scaled = 0;
-      if (!checkedMul(index, stride, scaled) ||
-          !checkedAdd(linear, scaled, linear))
-        return std::nullopt;
-    }
-
-    int64_t byteOffset = 0;
-    if (!checkedMul(linear, info.elementBytes, byteOffset))
-      return std::nullopt;
-    return byteOffset;
-  }
-
-  if (type.getRank() == 0)
-    return std::nullopt;
   int64_t logicalC = logicalIndices.back();
   int64_t fullC = 0;
   if (!checkedMul(info.cxBlocks, info.cBlock, fullC))
@@ -847,9 +832,55 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
         return std::nullopt;
     }
   }
+  if (physicalElementOffset < 0 ||
+      physicalElementOffset >= info.physicalElements)
+    return std::nullopt;
+  return physicalElementOffset;
+}
 
+} // namespace
+
+std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
+    mlir::MemRefType type, const WaferPhysicalTensorInfo &info,
+    llvm::ArrayRef<int64_t> logicalIndices) {
+  if (info.elementBytes <= 0 || info.bitPackedElement)
+    return std::nullopt;
+  if (type.getRank() != static_cast<int64_t>(logicalIndices.size()))
+    return std::nullopt;
+  for (auto [dim, index] : llvm::zip_equal(type.getShape(), logicalIndices)) {
+    if (dim == mlir::ShapedType::kDynamic || dim < 0 || index < 0 ||
+        index >= dim)
+      return std::nullopt;
+  }
+
+  if (info.layout != MemLayout::Cx && info.layout != MemLayout::NCx) {
+    llvm::SmallVector<int64_t> strides;
+    int64_t offset = 0;
+    if (mlir::failed(mlir::getStridesAndOffset(type, strides, offset)) ||
+        strides.size() != logicalIndices.size())
+      return std::nullopt;
+
+    int64_t linear = 0;
+    for (auto [index, stride] : llvm::zip_equal(logicalIndices, strides)) {
+      if (stride == mlir::ShapedType::kDynamic || stride < 0)
+        return std::nullopt;
+      int64_t scaled = 0;
+      if (!checkedMul(index, stride, scaled) ||
+          !checkedAdd(linear, scaled, linear))
+        return std::nullopt;
+    }
+
+    int64_t byteOffset = 0;
+    if (!checkedMul(linear, info.elementBytes, byteOffset))
+      return std::nullopt;
+    return byteOffset;
+  }
+
+  std::optional<int64_t> physicalElementOffset =
+      computeBlockedPhysicalElementOffset(type, info, logicalIndices);
   int64_t byteOffset = 0;
-  if (!checkedMul(physicalElementOffset, info.elementBytes, byteOffset))
+  if (!physicalElementOffset ||
+      !checkedMul(*physicalElementOffset, info.elementBytes, byteOffset))
     return std::nullopt;
   return byteOffset;
 }
@@ -870,11 +901,8 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementBitOffset(
     return bitOffset;
   }
 
-  // There is no source-backed Cx/NCx bitpacked bank/tail geometry. Keep the
-  // abstract bit offset unavailable instead of treating byte-oriented Cx
-  // alignment fields as a BOOL contract.
   if (info->layout == MemLayout::Cx || info->layout == MemLayout::NCx)
-    return std::nullopt;
+    return computeBlockedPhysicalElementOffset(type, *info, logicalIndices);
   if (type.getRank() != static_cast<int64_t>(logicalIndices.size()))
     return std::nullopt;
   for (auto [dim, index] : llvm::zip_equal(type.getShape(), logicalIndices)) {

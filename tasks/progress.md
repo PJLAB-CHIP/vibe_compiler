@@ -28,7 +28,7 @@ Q42 test gate scope reduction                                [done]
 Q42 + Q32.C -> Q41 compiler search scalability               [board-ready]
 Q42 + Q39 -> Q40 composed search and DTE overlap             [board-ready]
 Q15 + Q18 + Q35 -> Q44 PyTorch source board verticals        [board-ready]
-Q32 + Q37 -> Q46 layout movement elimination                 [next]
+Q32 + Q37 -> Q46 layout movement elimination                 [board-ready]
 Q46 complete/paused -> Q47 target ABI retirement             [later]
 Q46 + Q47 -> Q48 semantic superoptimization                  [later]
 Q45 compiler terminology and naming                           [later]
@@ -44,7 +44,7 @@ Q45 compiler terminology and naming                           [later]
 | Q40 | `composed-choice-search-and-dte-overlap` | `board-ready` | Q39、Q42完成 | bounded whole-variant组合、V3 same-block Direct-DTE issue→FP16/BF16 CT/NE→exact wait结构witness、同tuple serialized baseline、16-rank replicated FP16 elementwise完整双package及fresh no-card已闭合；两包保持同source/cluster launch/transport ABI/binding/call inventory并以scheduler顺序区分。真实板端exact-output和matched A/B尚未执行，不得标`done`。 | 06、08-13、16；`tasks/plans/composed-choice-search-and-dte-overlap.md` |
 | Q41 | `compiler-search-scalability` | `board-ready` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 默认关闭的stage/pipeline/pass/analysis/candidate详细计时、active诊断、Markdown汇总、sharded低扰动聚合、symbolic movement descriptor及request-sharded finalization均已闭合；实际Llama-2 7B TP16 production compile为493.374秒，完整schema-v6 package与fresh no-card通过。当前真实热点已收敛到SPM planning、candidate commit、full-buffer proof和NoC tuple materialization，后续剪枝仍不得按shape/op/name恢复语义。真实板端exact-output及winner profile尚未执行，不得标`done`。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
 | Q44 | `pytorch-source-board-verticals` | `board-ready` | Q15、Q18、Q35；Q41通用movement lowering与compile scalability | 集中的PyTorch source case、固定seed随机输入、case-owned dtype、同module/op eager参考结果、output-only capture及原dtype/shape `torch.testing`比较已经闭合；rank-one GEMM、`4096³` K-sharded GEMM/AllReduce和实际Llama-2 7B Megatron TP16均由真实PyTorch/XLA exporter完成production package与fresh no-card。Llama package为16-rank cluster prepare/main、每rank 18 slots及typed rank-row pointer ABI。三个case真实板端完整capture/eager comparison尚未执行，不得标`done`。 | 02、15-16；`tasks/plans/pytorch-source-board-verticals.md` |
-| Q46 | `layout-movement-elimination` | `next` | Q32、Q37；复用Q41已闭合的compiler-side有界搜索与计时基础 | 设计已收敛，待实现relation-guided跨op view消除、Tensor/NTensor/Cx/NCx与compute implementation联合分配、fanout共享physical version、PBQP提案和低搬运代价materialization cut。无卡阶段必须形成FP16/BF16完整package并通过fresh no-card后才可标`board-ready`；真实板端exact output/guard和matched baseline/winner性能通过后才能标`done`。 | 06-08、10-11、13-14、16-17；`tasks/plans/layout-movement-elimination.md` |
+| Q46 | `layout-movement-elimination` | `board-ready` | Q32、Q37；复用Q41已闭合的compiler-side有界搜索与计时基础 | 唯一`MemLayout`事实源、exact unary relation motion与mutation barrier、typed layout PBQP/Top-4、implementation/layout actual recipe联合候选、fanout双版本共享、bitpacked blocked traversal、Tree AllReduce full-footprint及跨rank physical payload gate已闭合；FP16 `GEMM -> square -> GEMM`同源双package/fresh no-card通过，winner保持非layout call inventory并将gather/scatter从7降到4。真实板端exact output/guard和matched baseline/winner性能尚未执行，不得标`done`。 | 06-08、10-11、13-14、16-17；`tasks/plans/layout-movement-elimination.md` |
 
 ## Later / External Gates
 

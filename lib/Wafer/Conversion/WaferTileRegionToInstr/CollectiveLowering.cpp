@@ -192,6 +192,36 @@ createContiguousSPMCopy(mlir::PatternRewriter &rewriter, mlir::Location loc,
   return mlir::success();
 }
 
+static mlir::LogicalResult createPhysicalFootprintSPMCopy(
+    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Operation *op,
+    mlir::Value source, mlir::Value dest, std::string *failureReason,
+    llvm::StringRef role) {
+  auto sourceType = mlir::dyn_cast<mlir::MemRefType>(source.getType());
+  auto destType = mlir::dyn_cast<mlir::MemRefType>(dest.getType());
+  std::optional<WaferPhysicalTensorInfo> sourceInfo =
+      sourceType ? computeWaferPhysicalTensorInfo(sourceType) : std::nullopt;
+  std::optional<WaferPhysicalTensorInfo> destInfo =
+      destType ? computeWaferPhysicalTensorInfo(destType) : std::nullopt;
+  if (!sourceType || sourceType != destType || !sourceInfo || !destInfo ||
+      sourceInfo->bitPackedElement || destInfo->bitPackedElement ||
+      sourceInfo->physicalBytes <= 0 ||
+      sourceInfo->physicalBytes != destInfo->physicalBytes)
+    return failPattern(
+        rewriter, op, failureReason,
+        llvm::Twine(role)
+            .concat(" requires identical byte-addressable physical layouts")
+            .str());
+  mlir::FailureOr<MovementDescriptor> sourceDescriptor =
+      getContiguousDescriptor(rewriter, op, source.getType(), failureReason);
+  mlir::FailureOr<MovementDescriptor> destDescriptor =
+      getContiguousDescriptor(rewriter, op, dest.getType(), failureReason);
+  if (mlir::failed(sourceDescriptor) || mlir::failed(destDescriptor))
+    return mlir::failure();
+  createGatherScatter(rewriter, loc, source, dest, *sourceDescriptor,
+                      *destDescriptor);
+  return mlir::success();
+}
+
 static mlir::LogicalResult
 createLogicalSPMCopy(mlir::PatternRewriter &rewriter, mlir::Location loc,
                      mlir::Operation *op, mlir::Value source, mlir::Value dest,
@@ -845,11 +875,18 @@ public:
                          "types");
 
     MemoryAttr inputMemory = wafer::getWaferMemoryAttr(inputType);
-    if (!inputMemory || inputMemory.getSpace() != MemorySpace::SPM ||
-        inputMemory.getLayout() != MemLayout::Tensor)
+    if (!inputMemory || inputMemory.getSpace() != MemorySpace::SPM)
       return failPattern(rewriter, op, failureReason,
-                         "tile.all_reduce lowering requires tensor SPM "
+                         "tile.all_reduce lowering requires Wafer SPM "
                          "buffers");
+    std::optional<WaferPhysicalTensorInfo> inputPhysical =
+        computeWaferPhysicalTensorInfo(inputType);
+    if (!inputPhysical || inputPhysical->physicalBytes <= 0 ||
+        inputPhysical->bitPackedElement)
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.all_reduce lowering requires a static byte-addressable "
+          "physical footprint");
 
     int64_t groupSize = op.getGroupSizeAttr().getInt();
     int64_t localRank = op.getLocalRankAttr().getInt();
@@ -942,7 +979,7 @@ public:
                                             inputs, *accumulator,
                                             getDefaultNCCWorkerAttr(rewriter));
       } else {
-        if (mlir::failed(createContiguousSPMCopy(
+        if (mlir::failed(createPhysicalFootprintSPMCopy(
                 rewriter, op.getLoc(), op, op.getInput(), *accumulator,
                 failureReason, "tile.all_reduce accumulator init")))
           return mlir::failure();

@@ -93,9 +93,30 @@ mlir::LogicalResult TransferRealizability::proveMappedTransfer(
       sourceAccess->getPhysicalLayoutRelation();
   const PhysicalLayoutRelation &destLayout =
       destAccess->getPhysicalLayoutRelation();
+  // The general mapped-transfer proof is expressed in physical bit offsets
+  // and spans, so bit-packed layouts are just as representable as
+  // byte-addressable layouts. Concrete DMA/GS route proofs retain their
+  // byte-addressability requirements below.
+  return mlir::success(sourceLayout.getElementBitWidth() ==
+                       destLayout.getElementBitWidth());
+}
+
+mlir::LogicalResult TransferRealizability::provePhysicalTraversal(
+    mlir::MemRefType sourceType, mlir::MemRefType destType,
+    llvm::ArrayRef<int64_t> iterationShape,
+    const IndexRelation &iterationToSource,
+    const IndexRelation &iterationToDest) {
+  mlir::FailureOr<PhysicalAccessRelation> sourceAccess =
+      PhysicalAccessRelation::create(sourceType, iterationShape,
+                                     iterationToSource,
+                                     /*requireInjective=*/false);
+  mlir::FailureOr<PhysicalAccessRelation> destAccess =
+      PhysicalAccessRelation::create(destType, iterationShape, iterationToDest,
+                                     /*requireInjective=*/true);
+  if (mlir::failed(sourceAccess) || mlir::failed(destAccess))
+    return mlir::failure();
   return mlir::success(
-      sourceLayout.isByteAddressable() && destLayout.isByteAddressable() &&
-      sourceLayout.getElementBitWidth() == destLayout.getElementBitWidth());
+      sourceAccess->hasSamePhysicalTraversal(*destAccess).isProvenTrue());
 }
 
 mlir::LogicalResult TransferRealizability::proveMetadataView(

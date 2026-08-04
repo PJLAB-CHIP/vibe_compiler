@@ -1,6 +1,7 @@
 //===- ComputeLowering.cpp - Tile-region compute lowering --------------===//
 
 #include "Internal.h"
+#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "Wafer/Target/TargetCall.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -84,6 +85,25 @@ static mlir::FailureOr<InstrElementwiseKindAttr> getInstrElementwiseKindAttr(
     mlir::PatternRewriter &rewriter, mlir::Operation *op,
     ComputeElementwiseKindAttr computeKind, std::string *failureReason);
 
+static mlir::LogicalResult proveIdentityPhysicalTraversal(
+    mlir::PatternRewriter &rewriter, mlir::Operation *op,
+    mlir::MemRefType sourceType, mlir::MemRefType destType,
+    std::string *failureReason, llvm::StringRef subject) {
+  if (sourceType.getShape() != destType.getShape())
+    return failPattern(rewriter, op, failureReason,
+                       (subject + " requires equal logical shapes").str());
+  analysis::IndexRelationResult identity =
+      analysis::IndexRelation::identity(destType.getShape());
+  if (!identity.isExact() ||
+      mlir::failed(analysis::TransferRealizability::provePhysicalTraversal(
+          sourceType, destType, destType.getShape(), *identity.get(),
+          *identity.get())))
+    return failPattern(
+        rewriter, op, failureReason,
+        (subject + " has incompatible physical element traversal").str());
+  return mlir::success();
+}
+
 class FillLowering : public mlir::OpRewritePattern<ComputeFillOp> {
 public:
   using mlir::OpRewritePattern<ComputeFillOp>::OpRewritePattern;
@@ -129,6 +149,10 @@ public:
     if (!sourceType || !resultType)
       return failPattern(rewriter, op, failureReason,
                          "tile.compute.convert requires memref storage");
+    if (mlir::failed(proveIdentityPhysicalTraversal(rewriter, op, sourceType,
+                                                    resultType, failureReason,
+                                                    "tile.compute.convert")))
+      return mlir::failure();
     std::optional<InstrConvertKind> kind = resolveInstrConvertKind(
         sourceType.getElementType(), resultType.getElementType());
     if (!kind)
@@ -328,15 +352,22 @@ public:
     for (auto [index, input] : llvm::enumerate(op.getInputs())) {
       InputMovementPlan plan;
       plan.source = input;
+      auto sourceType = mlir::dyn_cast<mlir::MemRefType>(input.getType());
+      if (!sourceType)
+        return failPattern(rewriter, op, failureReason,
+                           "tile.elementwise requires memref inputs");
       if (!indexingMaps) {
+        if (mlir::failed(proveIdentityPhysicalTraversal(
+                rewriter, op, sourceType, resultType, failureReason,
+                "map-free tile.elementwise")))
+          return mlir::failure();
         movementPlans.push_back(std::move(plan));
         continue;
       }
 
-      auto sourceType = mlir::dyn_cast<mlir::MemRefType>(input.getType());
       auto inputMapAttr =
           mlir::dyn_cast<mlir::AffineMapAttr>(indexingMaps[index]);
-      if (!sourceType || !inputMapAttr)
+      if (!inputMapAttr)
         return failPattern(
             rewriter, op, failureReason,
             "tile.elementwise indexing map materialization requires memref "
@@ -354,8 +385,16 @@ public:
 
       if (inputMap.isIdentity() &&
           sourceType.getShape() == resultType.getShape()) {
-        movementPlans.push_back(std::move(plan));
-        continue;
+        analysis::IndexRelationResult identity =
+            analysis::IndexRelation::identity(resultType.getShape());
+        if (identity.isExact() &&
+            mlir::succeeded(
+                analysis::TransferRealizability::provePhysicalTraversal(
+                    sourceType, resultType, resultType.getShape(),
+                    *identity.get(), *identity.get()))) {
+          movementPlans.push_back(std::move(plan));
+          continue;
+        }
       }
 
       plan.materializedType = mlir::MemRefType::get(
@@ -378,6 +417,10 @@ public:
       if (mlir::failed(descriptors))
         return mlir::failure();
       plan.descriptors = std::move(*descriptors);
+      if (mlir::failed(proveIdentityPhysicalTraversal(
+              rewriter, op, plan.materializedType, resultType, failureReason,
+              "materialized tile.elementwise operand")))
+        return mlir::failure();
       movementPlans.push_back(std::move(plan));
     }
 

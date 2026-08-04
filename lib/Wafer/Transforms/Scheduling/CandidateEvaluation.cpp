@@ -250,6 +250,24 @@ CandidateEvaluation evaluateCompleteCandidate(
     return evaluation;
   }
   tileRegionTiming.reset();
+  if (config.physicalLayoutProposalOrdinal) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "search-phase", "candidate-evaluation", "physical-layout-proposal");
+    failureReason.clear();
+    diagnostics = takeDiagnostics(
+        task.getContext(),
+        [&]() {
+          return applyPhysicalLayoutProposal(
+              *evaluation.module, *config.physicalLayoutProposalOrdinal,
+              /*result=*/nullptr, &failureReason);
+        },
+        result);
+    if (mlir::failed(result)) {
+      evaluation.failureReason =
+          joinFailure("physical-layout-proposal", failureReason, diagnostics);
+      return evaluation;
+    }
+  }
   TileRegionToInstrOptions instructionOptions =
       getCommunicationOptions(config.communicationAlternative);
   instructionOptions.targetProfile = config.targetProfile;

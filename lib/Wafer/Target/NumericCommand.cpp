@@ -71,12 +71,12 @@ constexpr NumericReduceOperation kReduceOperations[] = {
     NumericReduceOperation::Avg,
 };
 
-bool isKnownLayout(NumericTensorLayout layout) {
+bool isKnownLayout(MemLayout layout) {
   switch (layout) {
-  case NumericTensorLayout::Tensor:
-  case NumericTensorLayout::NTensor:
-  case NumericTensorLayout::Cx:
-  case NumericTensorLayout::NCx:
+  case MemLayout::Tensor:
+  case MemLayout::NTensor:
+  case MemLayout::Cx:
+  case MemLayout::NCx:
     return true;
   }
   return false;
@@ -118,9 +118,8 @@ bool isKnownReduceDimension(NativeCTReduceDimension dimension) {
   return false;
 }
 
-bool isAlignedLayout(NumericTensorLayout layout) {
-  return layout == NumericTensorLayout::Cx ||
-         layout == NumericTensorLayout::NCx;
+bool isAlignedLayout(MemLayout layout) {
+  return layout == MemLayout::Cx || layout == MemLayout::NCx;
 }
 
 bool checkedMultiply(uint64_t lhs, uint64_t rhs, uint64_t &result) {
@@ -130,14 +129,14 @@ bool checkedMultiply(uint64_t lhs, uint64_t rhs, uint64_t &result) {
   return true;
 }
 
-std::string makeTensorDigest(LogicalFormat format, NumericTensorLayout layout,
+std::string makeTensorDigest(LogicalFormat format, MemLayout layout,
                              llvm::ArrayRef<uint64_t> shape,
                              uint64_t elementCount) {
   std::string canonical;
   llvm::raw_string_ostream stream(canonical);
   stream << "wafer-numeric-tensor-key-v1\n"
          << "format=" << stringifyLogicalFormat(format) << '\n'
-         << "layout=" << stringifyNumericTensorLayout(layout) << '\n'
+         << "layout=" << stringifyMemLayout(layout) << '\n'
          << "rank=" << shape.size() << '\n';
   for (auto [index, dimension] : llvm::enumerate(shape))
     stream << "dim-" << index << '=' << dimension << '\n';
@@ -307,22 +306,8 @@ getNativeCTReduceLogicalDimensions(NativeCTReduceDimension dimension,
   return getReducedDimensionsImpl(dimension, rank);
 }
 
-llvm::StringRef stringifyNumericTensorLayout(NumericTensorLayout layout) {
-  switch (layout) {
-  case NumericTensorLayout::Tensor:
-    return "tensor";
-  case NumericTensorLayout::NTensor:
-    return "ntensor";
-  case NumericTensorLayout::Cx:
-    return "cx";
-  case NumericTensorLayout::NCx:
-    return "ncx";
-  }
-  llvm_unreachable("numeric tensor layout is not registered");
-}
-
 llvm::Expected<NumericTensorKey>
-NumericTensorKey::create(LogicalFormat format, NumericTensorLayout layout,
+NumericTensorKey::create(LogicalFormat format, MemLayout layout,
                          std::vector<uint64_t> shape) {
   if (!findLogicalFormatDescriptor(format))
     return llvm::createStringError(llvm::errc::invalid_argument,
@@ -910,11 +895,9 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createNativeCTReduce(
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "native CT reduce input rank must be in [1, 4]");
-  NumericTensorLayout expectedInputLayout =
-      rank > 2 ? NumericTensorLayout::NCx : NumericTensorLayout::Cx;
-  NumericTensorLayout expectedDestinationLayout =
-      destination.getShape().size() > 2 ? NumericTensorLayout::NCx
-                                        : NumericTensorLayout::Cx;
+  MemLayout expectedInputLayout = rank > 2 ? MemLayout::NCx : MemLayout::Cx;
+  MemLayout expectedDestinationLayout =
+      destination.getShape().size() > 2 ? MemLayout::NCx : MemLayout::Cx;
   if (input.getLayout() != expectedInputLayout ||
       destination.getLayout() != expectedDestinationLayout)
     return llvm::createStringError(

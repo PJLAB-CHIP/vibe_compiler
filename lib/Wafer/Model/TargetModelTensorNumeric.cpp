@@ -77,9 +77,8 @@ getNumericOperation(InstrReduceKind kind) {
                      "reduce kind has no numeric operation mapping");
 }
 
-NumericTensorLayout getCountLayout(LogicalFormat format) {
-  return format == LogicalFormat::Bool ? NumericTensorLayout::Tensor
-                                       : NumericTensorLayout::Cx;
+MemLayout getCountLayout(LogicalFormat format) {
+  return format == LogicalFormat::Bool ? MemLayout::Tensor : MemLayout::Cx;
 }
 
 llvm::Expected<NumericTensorKey> makeTensor(LogicalFormat format,
@@ -347,9 +346,9 @@ executeElementwise(const compiler::TargetTransaction &transaction,
         makeTensorRead(transaction.logicalRank, *value.rhs, *inputKey));
   return withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{
-              transaction.logicalRank, TargetModelAddressSpace::RankSPM,
-              value.destination, 1, std::move(*packed)}},
+          {TargetModelByteWrite{transaction.logicalRank,
+                                TargetModelAddressSpace::RankSPM,
+                                value.destination, 1, std::move(*packed)}},
           result->flags,
           TargetModelControlAction::None,
           TargetModelNumericBackend::Formal},
@@ -425,9 +424,9 @@ executeConvert(const compiler::TargetTransaction &transaction,
     return packed.takeError();
   return withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{
-              transaction.logicalRank, TargetModelAddressSpace::RankSPM,
-              value.destination, 1, std::move(*packed)}},
+          {TargetModelByteWrite{transaction.logicalRank,
+                                TargetModelAddressSpace::RankSPM,
+                                value.destination, 1, std::move(*packed)}},
           result->flags,
           TargetModelControlAction::None,
           TargetModelNumericBackend::Formal},
@@ -455,11 +454,10 @@ executeReduce(const compiler::TargetTransaction &transaction,
   for (size_t index = 0; index < inputShape.size(); ++index)
     if (!llvm::is_contained(reducedDimensions, index))
       destinationShape.push_back(inputShape[index]);
-  const NumericTensorLayout destinationLayout = destinationShape.size() > 2
-                                                    ? NumericTensorLayout::NCx
-                                                    : NumericTensorLayout::Cx;
+  const MemLayout destinationLayout =
+      destinationShape.size() > 2 ? MemLayout::NCx : MemLayout::Cx;
   llvm::Expected<NumericTensorKey> inputKey = NumericTensorKey::create(
-      value.format, NumericTensorLayout::NCx, std::move(inputShape));
+      value.format, MemLayout::NCx, std::move(inputShape));
   llvm::Expected<NumericTensorKey> destinationKey = NumericTensorKey::create(
       value.format, destinationLayout, std::move(destinationShape));
   if (!inputKey || !destinationKey) {
@@ -509,9 +507,9 @@ executeReduce(const compiler::TargetTransaction &transaction,
     return packed.takeError();
   return withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{
-              transaction.logicalRank, TargetModelAddressSpace::RankSPM,
-              value.destination, 1, std::move(*packed)}},
+          {TargetModelByteWrite{transaction.logicalRank,
+                                TargetModelAddressSpace::RankSPM,
+                                value.destination, 1, std::move(*packed)}},
           result->flags,
           TargetModelControlAction::None,
           TargetModelNumericBackend::Formal},
@@ -526,8 +524,7 @@ executeGemm(const compiler::TargetTransaction &transaction,
   const bool batched = value.batchCount > 1;
   // The target call has no free layout field. Its storage contract is Cx for
   // rank-2 GEMM and NCx (including per-batch bank alignment) for batched GEMM.
-  const NumericTensorLayout layout =
-      batched ? NumericTensorLayout::NCx : NumericTensorLayout::Cx;
+  const MemLayout layout = batched ? MemLayout::NCx : MemLayout::Cx;
   std::vector<uint64_t> lhsShape =
       batched
           ? (value.lhsOrientation == GemmOrientation::Normal
@@ -631,8 +628,7 @@ executeGemm(const compiler::TargetTransaction &transaction,
           TargetModelCommandEffect{
               {TargetModelByteWrite{
                   transaction.logicalRank, TargetModelAddressSpace::RankSPM,
-                  value.destination, 1,
-                  std::move(result.destination.storage)}},
+                  value.destination, 1, std::move(result.destination.storage)}},
               result.flags,
               TargetModelControlAction::None,
               TargetModelNumericBackend::Bulk,
@@ -680,9 +676,9 @@ executeGemm(const compiler::TargetTransaction &transaction,
     return packed.takeError();
   return withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{
-              transaction.logicalRank, TargetModelAddressSpace::RankSPM,
-              value.destination, 1, std::move(*packed)}},
+          {TargetModelByteWrite{transaction.logicalRank,
+                                TargetModelAddressSpace::RankSPM,
+                                value.destination, 1, std::move(*packed)}},
           result->flags,
           TargetModelControlAction::None,
           TargetModelNumericBackend::Formal},

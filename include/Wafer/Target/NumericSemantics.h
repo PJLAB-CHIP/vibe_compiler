@@ -63,27 +63,19 @@ parseModelProfileId(llvm::StringRef canonicalSpelling);
 const ModelProfileRecord &getModelProfileRecord(ModelProfileId id);
 llvm::StringRef stringifyModelProfileId(ModelProfileId id);
 
-/// Stable target-independent marker for the four layouts carried by numeric
-/// command identities. This marker deliberately does not copy physical layout
-/// geometry. Callers must first discharge the layout-materialization
-/// offset and footprint contract; the numeric model consumes that fact as a
-/// precondition.
-enum class NumericTensorLayout : uint8_t { Tensor, NTensor, Cx, NCx };
-
-llvm::StringRef stringifyNumericTensorLayout(NumericTensorLayout layout);
-
-/// Validated logical tensor identity: format, layout marker, complete static
-/// shape, checked element count and a digest covering all four facts.
+/// Validated logical tensor identity: format, the shared Wafer physical layout
+/// family, complete static shape, checked element count and a digest covering
+/// all four facts. The key carries only the MemLayout enum; physical geometry
+/// remains derived by MemoryAttr from dtype and shape.
 class NumericTensorKey {
 public:
   NumericTensorKey() = delete;
 
-  static llvm::Expected<NumericTensorKey> create(LogicalFormat format,
-                                                 NumericTensorLayout layout,
-                                                 std::vector<uint64_t> shape);
+  static llvm::Expected<NumericTensorKey>
+  create(LogicalFormat format, MemLayout layout, std::vector<uint64_t> shape);
 
   LogicalFormat getFormat() const { return format; }
-  NumericTensorLayout getLayout() const { return layout; }
+  MemLayout getLayout() const { return layout; }
   llvm::ArrayRef<uint64_t> getShape() const { return shape; }
   uint64_t getElementCount() const { return elementCount; }
   llvm::StringRef getDigest() const { return tensorDigest; }
@@ -100,14 +92,14 @@ public:
   }
 
 private:
-  NumericTensorKey(LogicalFormat format, NumericTensorLayout layout,
+  NumericTensorKey(LogicalFormat format, MemLayout layout,
                    std::vector<uint64_t> shape, uint64_t elementCount,
                    std::string tensorDigest)
       : format(format), layout(layout), shape(std::move(shape)),
         elementCount(elementCount), tensorDigest(std::move(tensorDigest)) {}
 
   LogicalFormat format;
-  NumericTensorLayout layout;
+  MemLayout layout;
   std::vector<uint64_t> shape;
   uint64_t elementCount;
   std::string tensorDigest;

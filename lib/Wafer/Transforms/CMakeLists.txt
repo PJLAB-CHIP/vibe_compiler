@@ -1,5 +1,6 @@
 add_mlir_library(WaferTransforms
   PhysicalDataflow/CandidateRewrites.cpp
+  PhysicalDataflow/LayoutMovementOptimization.cpp
   PhysicalDataflow/ReadyOrder.cpp
   PhysicalDataflow/StructuredOpInterfaceModels.cpp
   Scheduling/CandidateAnalysis.cpp

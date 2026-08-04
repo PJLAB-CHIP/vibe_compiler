@@ -232,8 +232,8 @@ TEST(SystemCTargetModelOrientedGemmIntegrationTest,
       << diagnostics << llvm::toString(bundle.takeError());
   const TargetLLVMModule &module = bundle->getModules().front();
 
-  NumericTensorKey tensorKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, NumericTensorLayout::Tensor, {2, 2}));
+  NumericTensorKey tensorKey = llvm::cantFail(
+      NumericTensorKey::create(LogicalFormat::F16, MemLayout::Tensor, {2, 2}));
   const std::array<std::vector<RawLogicalValue>, 2> logicalInputs{
       {{{LogicalFormat::F16, UINT64_C(0x3c00)},
         {LogicalFormat::F16, UINT64_C(0x4000)},

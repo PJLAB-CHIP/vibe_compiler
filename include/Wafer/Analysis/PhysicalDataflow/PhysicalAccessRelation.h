@@ -53,11 +53,23 @@ public:
   const IndexRelation &getPhysicalBitOffsetRelation() const {
     return iterationToPhysicalBitOffset;
   }
+  const IndexRelation &getPhysicalElementOrdinalRelation() const {
+    return iterationToPhysicalElementOrdinal;
+  }
 
   /// Prove that two endpoints map the same iteration domain to the same
   /// physical element spans relative to their respective view bases.
   IndexRelationQueryResult
   hasSamePhysicalElementMapping(const PhysicalAccessRelation &other) const;
+
+  /// Prove that two endpoints visit logical elements in the same physical
+  /// element order and that this source covers the destination traversal.
+  /// Unlike exact span equality, this deliberately normalizes each endpoint
+  /// by its own element bit width, so a longer packed-mask source may feed a
+  /// compatible dtype-changing CT route without pretending byte offsets or
+  /// physical tail sizes are equal.
+  IndexRelationQueryResult
+  hasSamePhysicalTraversal(const PhysicalAccessRelation &other) const;
 
 private:
   PhysicalAccessRelation(
@@ -65,6 +77,7 @@ private:
       llvm::SmallVector<int64_t, 4> iterationShape,
       IndexRelation iterationToLogical, PhysicalLayoutRelation physicalLayout,
       IndexRelation iterationToPhysicalBitOffset,
+      IndexRelation iterationToPhysicalElementOrdinal,
       std::optional<WaferStaticPhysicalOffsetCalculator> offsetCalculator,
       mlir::AffineMap projectedAffineMap, bool canonicalLinearOrder,
       int64_t physicalFootprintBytes, int64_t minimumAlignmentBytes,
@@ -73,6 +86,8 @@ private:
         iterationToLogical(std::move(iterationToLogical)),
         physicalLayout(std::move(physicalLayout)),
         iterationToPhysicalBitOffset(std::move(iterationToPhysicalBitOffset)),
+        iterationToPhysicalElementOrdinal(
+            std::move(iterationToPhysicalElementOrdinal)),
         offsetCalculator(std::move(offsetCalculator)),
         projectedAffineMap(projectedAffineMap),
         canonicalLinearOrder(canonicalLinearOrder),
@@ -86,6 +101,7 @@ private:
   IndexRelation iterationToLogical;
   PhysicalLayoutRelation physicalLayout;
   IndexRelation iterationToPhysicalBitOffset;
+  IndexRelation iterationToPhysicalElementOrdinal;
   std::optional<WaferStaticPhysicalOffsetCalculator> offsetCalculator;
   mlir::AffineMap projectedAffineMap;
   bool canonicalLinearOrder = false;

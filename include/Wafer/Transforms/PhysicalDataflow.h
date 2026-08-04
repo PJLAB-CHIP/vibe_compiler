@@ -3,6 +3,11 @@
 #ifndef WAFER_TRANSFORMS_PHYSICALDATAFLOW_H
 #define WAFER_TRANSFORMS_PHYSICALDATAFLOW_H
 
+#include "mlir/Support/LogicalResult.h"
+
+#include <cstdint>
+#include <string>
+
 namespace mlir {
 class DialectRegistry;
 class ModuleOp;
@@ -24,6 +29,24 @@ void registerTargetImplementationExternalModels(
 /// The candidate's ordinary SSA/control-flow/instruction IR remains the sole
 /// semantic input; every derived clone must rerun placement and verification.
 void clearRankCandidatePhysicalFacts(mlir::ModuleOp module);
+
+struct PhysicalLayoutProposalResult {
+  unsigned proposalCount = 0;
+  unsigned appliedProposalOrdinal = 0;
+  uint64_t movementBytesBefore = 0;
+  uint64_t movementBytesAfter = 0;
+  unsigned movementCommandsBefore = 0;
+  unsigned movementCommandsAfter = 0;
+};
+
+/// Build the bounded invocation-local physical-layout PBQP projection from a
+/// fully materialized TileRegion clone, apply one deterministic proposal to
+/// the clone, and destroy the projection before returning. The accepted IR
+/// contains only ordinary typed Wafer ops and MemoryAttr encodings.
+mlir::LogicalResult
+applyPhysicalLayoutProposal(mlir::ModuleOp module, unsigned proposalOrdinal,
+                            PhysicalLayoutProposalResult *result = nullptr,
+                            std::string *failureReason = nullptr);
 
 /// Clone a pure tensor producer at each compatible consumer after its first
 /// use.  The duplicated producer remains ordinary structured IR and is tiled

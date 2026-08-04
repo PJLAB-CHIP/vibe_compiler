@@ -1171,14 +1171,108 @@ module {
           elementwise.getKind() == wafer::InstrElementwiseKind::Recip;
       sawDivision |= elementwise.getKind() == wafer::InstrElementwiseKind::Div;
     });
-    // The reciprocal implementation occupies recipe 1. Recipe 2 requests
-    // the second complete task candidate, and each recipe has four scope
-    // policies in the invocation-local ordinal layout.
-    sawSecondTaskCandidate |= candidate.stableOrdinal == 8;
+    // The reciprocal implementation occupies recipe 1. Four bounded physical
+    // layout recipes occupy recipes 2..5 and four implementation/layout joint
+    // recipes occupy recipes 6..9, so recipe 10 requests the second complete
+    // task candidate. Each recipe has four scope policies in the
+    // invocation-local ordinal layout.
+    sawSecondTaskCandidate |= candidate.stableOrdinal == 40;
   }
   EXPECT_TRUE(sawReciprocal);
   EXPECT_TRUE(sawDivision);
   EXPECT_TRUE(sawSecondTaskCandidate);
+}
+
+TEST(RankCandidateFrontierTest,
+     AdmitsMovementReducedPhysicalLayoutActualClone) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                  wafer::WaferDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  wafer::registerTargetImplementationExternalModels(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(
+      %lhs: tensor<4x64xf16>, %rhs0: tensor<64x64xf16>,
+      %rhs1: tensor<64x64xf16>, %out: tensor<4x64xf16>)
+      -> tensor<4x64xf16> {
+    %zero = arith.constant 0.0 : f16
+    %first_empty = tensor.empty() : tensor<4x64xf16>
+    %first_init = linalg.fill ins(%zero : f16)
+        outs(%first_empty : tensor<4x64xf16>) -> tensor<4x64xf16>
+    %first = linalg.matmul
+        ins(%lhs, %rhs0 : tensor<4x64xf16>, tensor<64x64xf16>)
+        outs(%first_init : tensor<4x64xf16>) -> tensor<4x64xf16>
+    %point_empty = tensor.empty() : tensor<4x64xf16>
+    %point = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1)->(d0, d1)>,
+                         affine_map<(d0, d1)->(d0, d1)>],
+        iterator_types = ["parallel", "parallel"]}
+      ins(%first : tensor<4x64xf16>)
+      outs(%point_empty : tensor<4x64xf16>) {
+    ^bb0(%value: f16, %unused: f16):
+      %one = arith.constant 1.0 : f16
+      %reciprocal = arith.divf %one, %value : f16
+      linalg.yield %reciprocal : f16
+    } -> tensor<4x64xf16>
+    %second_init = linalg.fill ins(%zero : f16)
+        outs(%out : tensor<4x64xf16>) -> tensor<4x64xf16>
+    %second = linalg.matmul
+        ins(%point, %rhs1 : tensor<4x64xf16>, tensor<64x64xf16>)
+        outs(%second_init : tensor<4x64xf16>) -> tensor<4x64xf16>
+    return %second : tensor<4x64xf16>
+  }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(source);
+
+  wafer::TensorProgramSchedulingConfig config;
+  config.logicalRank = 0;
+  config.candidateParallelism = 1;
+  config.targetProfile = kTargetProfile;
+  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  ASSERT_TRUE(mlir::succeeded(frontier));
+
+  std::optional<uint64_t> baselineMovement;
+  std::optional<uint64_t> bestOptimizedMovement;
+  std::optional<uint64_t> bestReciprocalMovement;
+  for (wafer::ScheduledRankCandidate &candidate : *frontier) {
+    wafer::analysis::InstructionProgramCost cost =
+        wafer::analysis::analyzeInstructionProgramCost(
+            *candidate.module,
+            wafer::analysis::getTargetScheduleCostPolicy(kTargetProfile));
+    ASSERT_TRUE(cost.spmMovementBytes.isKnown());
+    if (candidate.reservedBaseline) {
+      baselineMovement = cost.spmMovementBytes.value;
+      continue;
+    }
+    if (!bestOptimizedMovement ||
+        cost.spmMovementBytes.value < *bestOptimizedMovement)
+      bestOptimizedMovement = cost.spmMovementBytes.value;
+    bool hasReciprocal = false;
+    candidate.module->walk([&](wafer::InstrElementwiseOp elementwise) {
+      hasReciprocal |=
+          elementwise.getKind() == wafer::InstrElementwiseKind::Recip;
+    });
+    if (hasReciprocal &&
+        (!bestReciprocalMovement ||
+         cost.spmMovementBytes.value < *bestReciprocalMovement))
+      bestReciprocalMovement = cost.spmMovementBytes.value;
+  }
+  ASSERT_TRUE(baselineMovement);
+  ASSERT_TRUE(bestOptimizedMovement);
+  ASSERT_TRUE(bestReciprocalMovement);
+  EXPECT_LT(*bestOptimizedMovement, *baselineMovement);
+  EXPECT_LT(*bestReciprocalMovement, *baselineMovement);
 }
 
 } // namespace

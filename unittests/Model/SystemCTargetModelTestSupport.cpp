@@ -161,8 +161,8 @@ buildDirectDTEInvocationData(const compiler::TargetLLVMModuleBundle &bundle) {
   DirectDTEInvocationData result;
   result.arguments.reserve(16);
   result.inputBytesByRank.resize(16);
-  NumericTensorKey tensorKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F32, NumericTensorLayout::Tensor, {4}));
+  NumericTensorKey tensorKey = llvm::cantFail(
+      NumericTensorKey::create(LogicalFormat::F32, MemLayout::Tensor, {4}));
   for (const compiler::TargetLLVMModule &module : bundle.getModules()) {
     const int64_t rank = module.getLogicalRank();
     if (rank < 0 || rank >= 16)

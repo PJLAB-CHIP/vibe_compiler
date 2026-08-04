@@ -126,9 +126,9 @@ ResolvedNumericCommand resolve(uint16_t opcode, LogicalFormat sourceFormat,
                                LogicalFormat destinationFormat,
                                NumericRoundingMode mode) {
   NumericTensorKey source = llvm::cantFail(
-      NumericTensorKey::create(sourceFormat, NumericTensorLayout::Tensor, {1}));
-  NumericTensorKey destination = llvm::cantFail(NumericTensorKey::create(
-      destinationFormat, NumericTensorLayout::Tensor, {1}));
+      NumericTensorKey::create(sourceFormat, MemLayout::Tensor, {1}));
+  NumericTensorKey destination = llvm::cantFail(
+      NumericTensorKey::create(destinationFormat, MemLayout::Tensor, {1}));
   llvm::Expected<NumericCommandKey> key = NumericCommandKey::createCTConvert(
       kTargetProfile, opcode, std::move(source), std::move(destination),
       NumericConvertParameter::roundingMode(mode));
@@ -141,8 +141,8 @@ ResolvedNumericCommand resolve(uint16_t opcode, LogicalFormat sourceFormat,
 }
 
 ResolvedNumericCommand resolveMultiply(LogicalFormat format) {
-  NumericTensorKey input = llvm::cantFail(
-      NumericTensorKey::create(format, NumericTensorLayout::Tensor, {1}));
+  NumericTensorKey input =
+      llvm::cantFail(NumericTensorKey::create(format, MemLayout::Tensor, {1}));
   llvm::Expected<NumericCommandKey> key =
       NumericCommandKey::createCTElementwise(kTargetProfile,
                                              NumericElementwiseOperation::Mul,
@@ -155,12 +155,12 @@ ResolvedNumericCommand resolveMultiply(LogicalFormat format) {
 }
 
 ResolvedNumericCommand resolveGemm(LogicalFormat format) {
-  NumericTensorKey lhs = llvm::cantFail(
-      NumericTensorKey::create(format, NumericTensorLayout::Cx, {1, 1}));
-  NumericTensorKey rhs = llvm::cantFail(
-      NumericTensorKey::create(format, NumericTensorLayout::NCx, {1, 1}));
-  NumericTensorKey destination = llvm::cantFail(
-      NumericTensorKey::create(format, NumericTensorLayout::Cx, {1, 1}));
+  NumericTensorKey lhs =
+      llvm::cantFail(NumericTensorKey::create(format, MemLayout::Cx, {1, 1}));
+  NumericTensorKey rhs =
+      llvm::cantFail(NumericTensorKey::create(format, MemLayout::NCx, {1, 1}));
+  NumericTensorKey destination =
+      llvm::cantFail(NumericTensorKey::create(format, MemLayout::Cx, {1, 1}));
   NumericGemmAxes axes = llvm::cantFail(getCanonicalNumericGemmAxes(2));
   NumericCommandKey key = llvm::cantFail(NumericCommandKey::createNEGemm(
       kTargetProfile, std::move(lhs), std::move(rhs), std::move(destination), 1,

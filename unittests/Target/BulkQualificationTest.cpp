@@ -96,8 +96,7 @@ qualify(const BulkExecutionEnvironment &environment, TemporaryDirectory &files,
         LogicalFormat format, uint64_t m, uint64_t k, uint64_t n,
         uint64_t batchCount = 1,
         FormalNumericWorkBudget formalBudget = kSmallFormalBudget) {
-  const NumericTensorLayout layout =
-      batchCount == 1 ? NumericTensorLayout::Cx : NumericTensorLayout::NCx;
+  const MemLayout layout = batchCount == 1 ? MemLayout::Cx : MemLayout::NCx;
   llvm::Expected<BulkQualificationSpec> calibrationSpec =
       BulkQualificationSpec::create(format, m, k, n, batchCount, layout, layout,
                                     layout, /*seed=*/11);
@@ -201,8 +200,8 @@ TEST(BulkQualificationTest,
 }
 
 TEST(BulkQualificationTest, PhysicalCodecPreservesCxTailAndRejectsWrongSize) {
-  llvm::Expected<NumericTensorKey> key = NumericTensorKey::create(
-      LogicalFormat::F16, NumericTensorLayout::Cx, {2, 3});
+  llvm::Expected<NumericTensorKey> key =
+      NumericTensorKey::create(LogicalFormat::F16, MemLayout::Cx, {2, 3});
   ASSERT_TRUE(static_cast<bool>(key))
       << (key ? std::string() : llvm::toString(key.takeError()));
   llvm::Expected<uint64_t> physicalBytes = getBulkTensorPhysicalBytes(*key);
@@ -326,8 +325,8 @@ TEST(BulkQualificationTest,
   BulkExecutionEnvironment environment =
       llvm::cantFail(createManagedBulkExecutionEnvironment());
   BulkQualificationSpec spec = llvm::cantFail(BulkQualificationSpec::create(
-      LogicalFormat::F32, 16, 128, 32, 1, NumericTensorLayout::Cx,
-      NumericTensorLayout::Cx, NumericTensorLayout::Cx, /*seed=*/41));
+      LogicalFormat::F32, 16, 128, 32, 1, MemLayout::Cx, MemLayout::Cx,
+      MemLayout::Cx, /*seed=*/41));
   BulkQualificationCase row = llvm::cantFail(
       materializeBulkQualificationCase(std::move(spec), kBulkBudget));
   llvm::Expected<BulkTensorNumericResult> result =
@@ -360,8 +359,7 @@ TEST(BulkQualificationTest, BatchedNCxRowUsesOneMatmulAndPreservesAdmission) {
       llvm::cantFail(createManagedBulkExecutionEnvironment());
   QualifiedRow qualified = llvm::cantFail(
       qualify(environment, files, LogicalFormat::F32, 3, 4, 5, 2));
-  EXPECT_EQ(qualified.row.getInputs()[0].getKey().getLayout(),
-            NumericTensorLayout::NCx);
+  EXPECT_EQ(qualified.row.getInputs()[0].getKey().getLayout(), MemLayout::NCx);
   llvm::Expected<BulkTensorNumericResult> result =
       executeAdmittedBulkTensorNumeric(
           environment, qualified.admission, qualified.row.getCommand(),
@@ -414,8 +412,8 @@ TEST(BulkQualificationTest,
      SpecAndPublicationSchemasAreClosedCanonicalAndNoReplace) {
   TemporaryDirectory files;
   BulkQualificationSpec spec = llvm::cantFail(BulkQualificationSpec::create(
-      LogicalFormat::F32, 2, 3, 4, 1, NumericTensorLayout::Cx,
-      NumericTensorLayout::Cx, NumericTensorLayout::Cx, 7));
+      LogicalFormat::F32, 2, 3, 4, 1, MemLayout::Cx, MemLayout::Cx,
+      MemLayout::Cx, 7));
   const std::string goodPath = files.getPath("good.json");
   ASSERT_FALSE(static_cast<bool>(writeBulkQualificationSpec(spec, goodPath)));
   llvm::Expected<BulkQualificationSpec> loaded =
@@ -474,8 +472,8 @@ TEST(BulkQualificationTest,
   TemporaryDirectory files;
   BulkQualificationSpec generated =
       llvm::cantFail(BulkQualificationSpec::create(
-          LogicalFormat::F32, 2, 3, 4, 1, NumericTensorLayout::Cx,
-          NumericTensorLayout::Cx, NumericTensorLayout::Cx, 29));
+          LogicalFormat::F32, 2, 3, 4, 1, MemLayout::Cx, MemLayout::Cx,
+          MemLayout::Cx, 29));
   BulkQualificationCase generatedCase = llvm::cantFail(
       materializeBulkQualificationCase(std::move(generated), kBulkBudget));
   std::vector<uint8_t> lhs(generatedCase.getInputs()[0].getStorage().begin(),
@@ -487,9 +485,8 @@ TEST(BulkQualificationTest,
       generatedCase.getDestinationTemplate().getStorage().end());
   BulkQualificationSpec explicitSpec =
       llvm::cantFail(BulkQualificationSpec::createWithPhysicalPayload(
-          LogicalFormat::F32, 2, 3, 4, 1, NumericTensorLayout::Cx,
-          NumericTensorLayout::Cx, NumericTensorLayout::Cx, 31, lhs, rhs,
-          destination));
+          LogicalFormat::F32, 2, 3, 4, 1, MemLayout::Cx, MemLayout::Cx,
+          MemLayout::Cx, 31, lhs, rhs, destination));
   EXPECT_TRUE(explicitSpec.hasExplicitPhysicalPayload());
   const std::string path = files.getPath("explicit-spec.json");
   ASSERT_FALSE(
@@ -507,13 +504,12 @@ TEST(BulkQualificationTest,
       computeBulkTensorStorageDigest(generatedCase.getDestinationTemplate()));
 
   lhs.pop_back();
-  EXPECT_NE(
-      expectError(BulkQualificationSpec::createWithPhysicalPayload(
-                      LogicalFormat::F32, 2, 3, 4, 1, NumericTensorLayout::Cx,
-                      NumericTensorLayout::Cx, NumericTensorLayout::Cx, 31,
-                      std::move(lhs), std::move(rhs), std::move(destination)))
-          .find("byte geometry differs"),
-      std::string::npos);
+  EXPECT_NE(expectError(BulkQualificationSpec::createWithPhysicalPayload(
+                            LogicalFormat::F32, 2, 3, 4, 1, MemLayout::Cx,
+                            MemLayout::Cx, MemLayout::Cx, 31, std::move(lhs),
+                            std::move(rhs), std::move(destination)))
+                .find("byte geometry differs"),
+            std::string::npos);
 }
 
 TEST(BulkQualificationTest, FinalRecordReadbackRejectsEvidenceTampering) {
@@ -593,8 +589,8 @@ TEST(BulkQualificationTest, FreezeRequiresARegisteredDisjointHeldOutSeed) {
   BulkExecutionEnvironment environment =
       llvm::cantFail(createManagedBulkExecutionEnvironment());
   BulkQualificationSpec spec = llvm::cantFail(BulkQualificationSpec::create(
-      LogicalFormat::F32, 2, 3, 4, 1, NumericTensorLayout::Cx,
-      NumericTensorLayout::Cx, NumericTensorLayout::Cx, 17));
+      LogicalFormat::F32, 2, 3, 4, 1, MemLayout::Cx, MemLayout::Cx,
+      MemLayout::Cx, 17));
   const std::string specPath = files.getPath("spec.json");
   const std::string calibrationPath = files.getPath("calibration.json");
   ASSERT_FALSE(static_cast<bool>(writeBulkQualificationSpec(spec, specPath)));

@@ -24,19 +24,17 @@ public:
 
   static llvm::Expected<BulkQualificationSpec>
   create(LogicalFormat format, uint64_t m, uint64_t k, uint64_t n,
-         uint64_t batchCount, NumericTensorLayout lhsLayout,
-         NumericTensorLayout rhsLayout, NumericTensorLayout destinationLayout,
-         uint64_t seed);
+         uint64_t batchCount, MemLayout lhsLayout, MemLayout rhsLayout,
+         MemLayout destinationLayout, uint64_t seed);
 
   /// Creates a held-out row whose exact target-physical payload is supplied
   /// by an offline source adapter. The bytes are embedded in the canonical
   /// spec, so validation never reopens source paths or regenerates payload.
   static llvm::Expected<BulkQualificationSpec> createWithPhysicalPayload(
       LogicalFormat format, uint64_t m, uint64_t k, uint64_t n,
-      uint64_t batchCount, NumericTensorLayout lhsLayout,
-      NumericTensorLayout rhsLayout, NumericTensorLayout destinationLayout,
-      uint64_t seed, std::vector<uint8_t> lhsPhysical,
-      std::vector<uint8_t> rhsPhysical,
+      uint64_t batchCount, MemLayout lhsLayout, MemLayout rhsLayout,
+      MemLayout destinationLayout, uint64_t seed,
+      std::vector<uint8_t> lhsPhysical, std::vector<uint8_t> rhsPhysical,
       std::vector<uint8_t> destinationTemplatePhysical);
 
   LogicalFormat getFormat() const { return format; }
@@ -44,9 +42,9 @@ public:
   uint64_t getK() const { return k; }
   uint64_t getN() const { return n; }
   uint64_t getBatchCount() const { return batchCount; }
-  NumericTensorLayout getLHSLayout() const { return lhsLayout; }
-  NumericTensorLayout getRHSLayout() const { return rhsLayout; }
-  NumericTensorLayout getDestinationLayout() const { return destinationLayout; }
+  MemLayout getLHSLayout() const { return lhsLayout; }
+  MemLayout getRHSLayout() const { return rhsLayout; }
+  MemLayout getDestinationLayout() const { return destinationLayout; }
   uint64_t getSeed() const { return seed; }
   bool hasExplicitPhysicalPayload() const { return explicitPhysicalPayload; }
   llvm::ArrayRef<uint8_t> getLHSPhysicalPayload() const { return lhsPhysical; }
@@ -57,13 +55,14 @@ public:
   llvm::StringRef getDigest() const { return digest; }
 
 private:
-  BulkQualificationSpec(
-      LogicalFormat format, uint64_t m, uint64_t k, uint64_t n,
-      uint64_t batchCount, NumericTensorLayout lhsLayout,
-      NumericTensorLayout rhsLayout, NumericTensorLayout destinationLayout,
-      uint64_t seed, bool explicitPhysicalPayload,
-      std::vector<uint8_t> lhsPhysical, std::vector<uint8_t> rhsPhysical,
-      std::vector<uint8_t> destinationTemplatePhysical, std::string digest)
+  BulkQualificationSpec(LogicalFormat format, uint64_t m, uint64_t k,
+                        uint64_t n, uint64_t batchCount, MemLayout lhsLayout,
+                        MemLayout rhsLayout, MemLayout destinationLayout,
+                        uint64_t seed, bool explicitPhysicalPayload,
+                        std::vector<uint8_t> lhsPhysical,
+                        std::vector<uint8_t> rhsPhysical,
+                        std::vector<uint8_t> destinationTemplatePhysical,
+                        std::string digest)
       : format(format), m(m), k(k), n(n), batchCount(batchCount),
         lhsLayout(lhsLayout), rhsLayout(rhsLayout),
         destinationLayout(destinationLayout), seed(seed),
@@ -78,9 +77,9 @@ private:
   uint64_t k;
   uint64_t n;
   uint64_t batchCount;
-  NumericTensorLayout lhsLayout;
-  NumericTensorLayout rhsLayout;
-  NumericTensorLayout destinationLayout;
+  MemLayout lhsLayout;
+  MemLayout rhsLayout;
+  MemLayout destinationLayout;
   uint64_t seed;
   bool explicitPhysicalPayload;
   std::vector<uint8_t> lhsPhysical;

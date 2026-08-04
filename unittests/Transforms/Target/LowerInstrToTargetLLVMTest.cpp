@@ -532,4 +532,109 @@ module {
   EXPECT_EQ(countOps<wafer::InstrWDMAOp>(*source), 0u);
 }
 
+TEST(LowerInstrToTargetLLVMTest,
+     CountsBlockedCTOverTheCompletePhysicalTraversal) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @main() {
+    %src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<3x65xf16, #wafer.memory<spm, cx>>
+    %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66304>}
+        : memref<3x65xf16, #wafer.memory<spm, cx>>
+    wafer.instr.elementwise #wafer.instr_elementwise_kind<abs> %src into %dst
+        : memref<3x65xf16, #wafer.memory<spm, cx>>
+      into memref<3x65xf16, #wafer.memory<spm, cx>>
+    return
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+
+  wafer::InstrElementwiseOp elementwise;
+  source->walk([&](wafer::InstrElementwiseOp op) { elementwise = op; });
+  ASSERT_TRUE(elementwise);
+  auto destType = mlir::cast<mlir::MemRefType>(elementwise.getDest().getType());
+  mlir::FailureOr<int64_t> elements =
+      wafer::target_llvm_detail::getPhysicalTraversalElementCount(
+          elementwise, destType, "elementwise dest");
+  ASSERT_TRUE(mlir::succeeded(elements));
+  EXPECT_EQ(*elements, 256);
+  EXPECT_NE(*elements, destType.getNumElements());
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     PhysicalPreflightAcceptsCompatibleBlockedConvertTraversal) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @main() {
+    %src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<2x2x197xf16, #wafer.memory<spm, ncx>>
+    %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67584>}
+        : memref<2x2x197xbf16, #wafer.memory<spm, ncx>>
+    wafer.instr.convert #wafer.instr_convert_kind<fp16_bf16> %src into %dst
+        {rounding_mode = 0 : i64}
+        : memref<2x2x197xf16, #wafer.memory<spm, ncx>>
+       to memref<2x2x197xbf16, #wafer.memory<spm, ncx>>
+    return
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  EXPECT_TRUE(mlir::succeeded(wafer::target_llvm_detail::preflightTargetFormats(
+      *source, wafer::TargetProfileId::waferTx81SingleCardKernelV1())));
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     PhysicalPreflightRejectsDtypeSpecificBlockedTraversalMismatch) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @main() {
+    %src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<2x2x197xf16, #wafer.memory<spm, ncx>>
+    %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67584>}
+        : memref<2x2x197xf32, #wafer.memory<spm, ncx>>
+    wafer.instr.convert #wafer.instr_convert_kind<fp16_fp32> %src into %dst
+        : memref<2x2x197xf16, #wafer.memory<spm, ncx>>
+       to memref<2x2x197xf32, #wafer.memory<spm, ncx>>
+    return
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+
+  std::string diagnostics;
+  mlir::ScopedDiagnosticHandler handler(
+      &context, [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream stream(diagnostics);
+        diagnostic.print(stream);
+        return mlir::success();
+      });
+  EXPECT_TRUE(mlir::failed(wafer::target_llvm_detail::preflightTargetFormats(
+      *source, wafer::TargetProfileId::waferTx81SingleCardKernelV1())));
+  EXPECT_NE(diagnostics.find("unsupported_target_physical_traversal: convert"),
+            std::string::npos)
+      << diagnostics;
+}
+
 } // namespace

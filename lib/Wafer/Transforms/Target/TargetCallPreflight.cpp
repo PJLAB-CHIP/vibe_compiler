@@ -2,6 +2,7 @@
 
 #include "MemoryPlanning/StaticIndexRange.h"
 #include "Target/LowerInstrToTargetLLVMInternal.h"
+#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
@@ -145,6 +146,22 @@ mlir::FailureOr<int64_t> getStaticElementCount(mlir::Operation *op,
     elements = next;
   }
   return elements;
+}
+
+mlir::FailureOr<int64_t>
+getPhysicalTraversalElementCount(mlir::Operation *op, mlir::MemRefType type,
+                                 llvm::StringRef role) {
+  std::optional<WaferPhysicalTensorInfo> info =
+      computeWaferPhysicalTensorInfo(type);
+  if (!info || info->physicalElements <= 0)
+    return op->emitError()
+           << "unsupported_target_geometry: " << role
+           << " requires a static positive physical traversal count";
+  if (static_cast<uint64_t>(info->physicalElements) >
+      std::numeric_limits<uint32_t>::max())
+    return op->emitError() << "target_abi_narrowing: " << role
+                           << " physical traversal count must fit uint32_t";
+  return info->physicalElements;
 }
 
 mlir::FailureOr<int64_t> getStaticViewOffsetBytes(mlir::Operation *op,
@@ -833,8 +850,85 @@ verifyTargetConvertRoute(InstrConvertOp op, TargetProfileId targetProfile) {
 }
 
 static mlir::LogicalResult
+verifyTargetPhysicalTraversal(mlir::Operation *op, mlir::Value source,
+                              mlir::Value dest, llvm::StringRef family) {
+  auto sourceType = mlir::dyn_cast<mlir::MemRefType>(source.getType());
+  auto destType = mlir::dyn_cast<mlir::MemRefType>(dest.getType());
+  if (!sourceType || !destType || sourceType.getShape() != destType.getShape())
+    return op->emitError() << "unsupported_target_physical_traversal: "
+                           << family
+                           << " requires equal static logical memref shapes";
+  analysis::IndexRelationResult identity =
+      analysis::IndexRelation::identity(destType.getShape());
+  if (!identity.isExact() ||
+      mlir::failed(analysis::TransferRealizability::provePhysicalTraversal(
+          sourceType, destType, destType.getShape(), *identity.get(),
+          *identity.get())))
+    return op->emitError()
+           << "unsupported_target_physical_traversal: " << family
+           << " source does not cover the compatible destination physical "
+              "element traversal";
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyTargetCTPhysicalTraversal(mlir::Operation *op) {
+  return llvm::TypeSwitch<mlir::Operation *, mlir::LogicalResult>(op)
+      .Case<InstrElementwiseOp>([&](auto typedOp) {
+        for (mlir::Value input : typedOp.getInputs())
+          if (mlir::failed(verifyTargetPhysicalTraversal(
+                  op, input, typedOp.getDest(), "elementwise")))
+            return mlir::failure();
+        auto destType =
+            mlir::cast<mlir::MemRefType>(typedOp.getDest().getType());
+        return mlir::succeeded(getPhysicalTraversalElementCount(
+                   op, destType, "elementwise dest"))
+                   ? mlir::success()
+                   : mlir::failure();
+      })
+      .Case<InstrBit2FpOp>([&](auto typedOp) {
+        if (mlir::failed(verifyTargetPhysicalTraversal(
+                op, typedOp.getSource(), typedOp.getDest(), "bit2fp")))
+          return mlir::failure();
+        auto destType =
+            mlir::cast<mlir::MemRefType>(typedOp.getDest().getType());
+        return mlir::succeeded(getPhysicalTraversalElementCount(op, destType,
+                                                                "bit2fp dest"))
+                   ? mlir::success()
+                   : mlir::failure();
+      })
+      .Case<InstrMaskMoveOp>([&](auto typedOp) {
+        if (mlir::failed(verifyTargetPhysicalTraversal(
+                op, typedOp.getSource(), typedOp.getDest(), "mask_move")) ||
+            mlir::failed(verifyTargetPhysicalTraversal(
+                op, typedOp.getMask(), typedOp.getDest(), "mask_move")))
+          return mlir::failure();
+        auto destType =
+            mlir::cast<mlir::MemRefType>(typedOp.getDest().getType());
+        return mlir::succeeded(getPhysicalTraversalElementCount(
+                   op, destType, "mask_move dest"))
+                   ? mlir::success()
+                   : mlir::failure();
+      })
+      .Case<InstrConvertOp>([&](auto typedOp) {
+        if (mlir::failed(verifyTargetPhysicalTraversal(
+                op, typedOp.getSource(), typedOp.getDest(), "convert")))
+          return mlir::failure();
+        auto destType =
+            mlir::cast<mlir::MemRefType>(typedOp.getDest().getType());
+        return mlir::succeeded(getPhysicalTraversalElementCount(op, destType,
+                                                                "convert dest"))
+                   ? mlir::success()
+                   : mlir::failure();
+      })
+      .Default([](mlir::Operation *) { return mlir::success(); });
+}
+
+static mlir::LogicalResult
 verifyTargetInstructionFormat(mlir::Operation *op,
                               TargetProfileId targetProfile) {
+  if (mlir::failed(verifyTargetCTPhysicalTraversal(op)))
+    return mlir::failure();
   auto verify = [&](mlir::Value value,
                     llvm::StringRef role) -> mlir::LogicalResult {
     return mlir::succeeded(getDataFormatCode(op, value, role, targetProfile))

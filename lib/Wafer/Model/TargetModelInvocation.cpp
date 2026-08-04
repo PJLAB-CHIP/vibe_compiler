@@ -43,20 +43,6 @@ std::optional<LogicalFormat> getLogicalFormat(llvm::StringRef dtype) {
   return *parsed;
 }
 
-NumericTensorLayout getNumericLayout(MemLayout layout) {
-  switch (layout) {
-  case MemLayout::Tensor:
-    return NumericTensorLayout::Tensor;
-  case MemLayout::NTensor:
-    return NumericTensorLayout::NTensor;
-  case MemLayout::Cx:
-    return NumericTensorLayout::Cx;
-  case MemLayout::NCx:
-    return NumericTensorLayout::NCx;
-  }
-  llvm_unreachable("unknown Kernel ABI memory layout");
-}
-
 std::optional<compiler::KernelABISlotRole>
 getKernelRole(compiler::ProgramResourceRole role) {
   switch (role) {
@@ -94,8 +80,8 @@ makeTensorKey(const compiler::KernelABISlot &slot) {
           "Kernel ABI slot has a dynamic or negative dimension");
     shape.push_back(static_cast<uint64_t>(dimension));
   }
-  llvm::Expected<NumericTensorKey> key = NumericTensorKey::create(
-      *format, getNumericLayout(slot.layout), std::move(shape));
+  llvm::Expected<NumericTensorKey> key =
+      NumericTensorKey::create(*format, slot.layout, std::move(shape));
   if (!key)
     return invocationError(TargetModelInvocationErrorCode::InvalidKernelABISlot,
                            llvm::toString(key.takeError()));

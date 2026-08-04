@@ -21,13 +21,13 @@ using wafer::FormalNumericExecutionContext;
 using wafer::FormalNumericResult;
 using wafer::LogicalFormat;
 using wafer::LogicalFormatCategory;
+using wafer::MemLayout;
 using wafer::NumericCommandKey;
 using wafer::NumericConvertParameter;
 using wafer::NumericElementwiseOperation;
 using wafer::NumericRoundingMode;
 using wafer::NumericSemanticsProfile;
 using wafer::NumericTensorKey;
-using wafer::NumericTensorLayout;
 using wafer::RawLogicalValue;
 using wafer::ResolvedNumericCommand;
 using wafer::TargetConvertParameterKind;
@@ -62,9 +62,9 @@ getResolution(uint16_t opcode,
   }
 
   llvm::Expected<NumericTensorKey> source =
-      NumericTensorKey::create(route->source, NumericTensorLayout::Tensor, {1});
-  llvm::Expected<NumericTensorKey> destination = NumericTensorKey::create(
-      route->destination, NumericTensorLayout::Tensor, {1});
+      NumericTensorKey::create(route->source, MemLayout::Tensor, {1});
+  llvm::Expected<NumericTensorKey> destination =
+      NumericTensorKey::create(route->destination, MemLayout::Tensor, {1});
   if (!source || !destination) {
     ADD_FAILURE() << (source ? llvm::toString(destination.takeError())
                              : llvm::toString(source.takeError()));
@@ -90,7 +90,7 @@ getResolution(uint16_t opcode,
   return std::move(*resolution);
 }
 
-NumericTensorKey makeTensor(LogicalFormat format, NumericTensorLayout layout,
+NumericTensorKey makeTensor(LogicalFormat format, MemLayout layout,
                             std::vector<uint64_t> shape) {
   return llvm::cantFail(
       NumericTensorKey::create(format, layout, std::move(shape)));
@@ -103,13 +103,13 @@ getElementwiseResolution(NumericElementwiseOperation operation,
       wafer::isNumericElementwiseRelation(operation) ? LogicalFormat::Bool
                                                      : inputFormat;
   const NumericTensorKey input =
-      makeTensor(inputFormat, NumericTensorLayout::Tensor, {1});
+      makeTensor(inputFormat, MemLayout::Tensor, {1});
   std::vector<NumericTensorKey> inputs(
       wafer::getNumericElementwiseArity(operation), input);
   llvm::Expected<NumericCommandKey> key =
       NumericCommandKey::createCTElementwise(
           kTargetProfile, operation, std::move(inputs),
-          makeTensor(destinationFormat, NumericTensorLayout::Tensor, {1}));
+          makeTensor(destinationFormat, MemLayout::Tensor, {1}));
   if (!key) {
     ADD_FAILURE() << llvm::toString(key.takeError());
     return std::nullopt;
@@ -131,10 +131,9 @@ std::optional<ResolvedNumericCommand> getGemmResolution(LogicalFormat format) {
     return std::nullopt;
   }
   llvm::Expected<NumericCommandKey> key = NumericCommandKey::createNEGemm(
-      kTargetProfile, makeTensor(format, NumericTensorLayout::Cx, {1, 1}),
-      makeTensor(format, NumericTensorLayout::NCx, {1, 1}),
-      makeTensor(format, NumericTensorLayout::Cx, {1, 1}), 1, 1, 1, 1,
-      std::move(*axes));
+      kTargetProfile, makeTensor(format, MemLayout::Cx, {1, 1}),
+      makeTensor(format, MemLayout::NCx, {1, 1}),
+      makeTensor(format, MemLayout::Cx, {1, 1}), 1, 1, 1, 1, std::move(*axes));
   if (!key) {
     ADD_FAILURE() << llvm::toString(key.takeError());
     return std::nullopt;
@@ -659,10 +658,10 @@ TEST(FormalNumericTest, ContextsAreInvocationLocalAndAggregateFlags) {
 }
 
 TEST(FormalNumericTest, RejectsUnsupportedResolutionWithoutChangingContext) {
-  llvm::Expected<NumericTensorKey> source = NumericTensorKey::create(
-      LogicalFormat::I32, NumericTensorLayout::Tensor, {1});
-  llvm::Expected<NumericTensorKey> destination = NumericTensorKey::create(
-      LogicalFormat::F16, NumericTensorLayout::Tensor, {1});
+  llvm::Expected<NumericTensorKey> source =
+      NumericTensorKey::create(LogicalFormat::I32, MemLayout::Tensor, {1});
+  llvm::Expected<NumericTensorKey> destination =
+      NumericTensorKey::create(LogicalFormat::F16, MemLayout::Tensor, {1});
   ASSERT_TRUE(static_cast<bool>(source));
   ASSERT_TRUE(static_cast<bool>(destination));
   llvm::Expected<NumericCommandKey> key = NumericCommandKey::createCTConvert(

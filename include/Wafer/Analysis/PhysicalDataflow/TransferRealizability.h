@@ -20,13 +20,26 @@ public:
   /// source and destination logical tensors.  This is the general movement
   /// form used by descriptor lowering: destination mapping must be injective
   /// (each physical result element is written once), while source mapping may
-  /// be non-injective for broadcast.  The proof is symbolic and does not
-  /// enumerate the iteration domain.
+  /// be non-injective for broadcast. Bit-packed mappings are represented in
+  /// exact physical bit offsets; concrete route proofs separately decide
+  /// whether a byte-addressable engine can consume them. The proof is symbolic
+  /// and does not enumerate the iteration domain.
   static mlir::LogicalResult
   proveMappedTransfer(mlir::MemRefType sourceType, mlir::MemRefType destType,
                       llvm::ArrayRef<int64_t> iterationShape,
                       const IndexRelation &iterationToSource,
                       const IndexRelation &iterationToDest);
+
+  /// Prove that source and destination visit corresponding logical elements
+  /// at the same normalized physical element ordinal and that the source
+  /// footprint covers the complete destination traversal. Element bit widths
+  /// may differ; this is the exact precondition used by dtype-changing CT
+  /// routes.
+  static mlir::LogicalResult
+  provePhysicalTraversal(mlir::MemRefType sourceType, mlir::MemRefType destType,
+                         llvm::ArrayRef<int64_t> iterationShape,
+                         const IndexRelation &iterationToSource,
+                         const IndexRelation &iterationToDest);
 
   static mlir::LogicalResult proveMetadataView(mlir::MemRefType sourceType,
                                                mlir::MemRefType destType,

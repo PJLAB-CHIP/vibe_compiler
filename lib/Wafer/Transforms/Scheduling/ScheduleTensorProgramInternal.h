@@ -179,6 +179,10 @@ struct SelectionConfig {
   /// When present, eligible source ops are evaluated only with this
   /// implementation form; ineligible tasks retain their ordinary baseline.
   std::optional<TargetImplementationKind> forcedImplementationAlternative;
+  /// Selects one of at most four deterministic physical-layout assignments
+  /// rebuilt from the fully materialized TileRegion clone. The ordinal is
+  /// consumed before instruction lowering and never enters accepted IR.
+  std::optional<unsigned> physicalLayoutProposalOrdinal;
   /// When true, exact cross-space identity transfers may load/store directly
   /// between a DDR Tensor boundary and the selected Cx/NCx SPM version.
   /// Otherwise the candidate materializes the conservative Tensor staging

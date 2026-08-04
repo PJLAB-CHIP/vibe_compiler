@@ -43,12 +43,15 @@ mlir::LogicalResult ComputeConvertOp::verify() {
       getLogicalTensorType(getResult().getType());
   if (!sourceTensor || !resultTensor)
     return emitOpError("expects Wafer buffer source and result");
+  std::optional<MemLayout> sourceLayout = getWaferLayout(getSource().getType());
+  std::optional<MemLayout> resultLayout = getWaferLayout(getResult().getType());
   for (mlir::Type type : {getSource().getType(), getResult().getType()}) {
     if (!hasWaferMemorySpace(type, MemorySpace::SPM))
       return emitOpError("convert storage values must use SPM memory space");
-    if (!hasWaferLayout(type, MemLayout::Tensor))
-      return emitOpError("convert storage values must use tensor layout");
   }
+  if (!sourceLayout || !resultLayout || sourceLayout != resultLayout)
+    return emitOpError(
+        "convert source and result must use the same Wafer layout family");
   if (sourceTensor->getShape() != resultTensor->getShape())
     return emitOpError("convert source and result shapes must match");
   mlir::Type sourceElement = sourceTensor->getElementType();

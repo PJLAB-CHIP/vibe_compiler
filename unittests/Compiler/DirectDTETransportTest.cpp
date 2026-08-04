@@ -1141,6 +1141,40 @@ TEST_F(DirectDTETransportTest, ByteMismatchFailsWithoutPublishingBinding) {
   });
 }
 
+TEST_F(DirectDTETransportTest,
+       CollectiveReductionPhysicalLayoutMismatchFailsClosed) {
+  std::string sendSource = kSendRank.str();
+  std::string recvSource = kRecvRank.str();
+  auto replaceAll = [](std::string &text, llvm::StringRef from,
+                       llvm::StringRef to) {
+    size_t position = 0;
+    while ((position = text.find(from.str(), position)) != std::string::npos) {
+      text.replace(position, from.size(), to.str());
+      position += to.size();
+    }
+  };
+  replaceAll(sendSource, "collective_permute", "all_reduce_tree_reduce");
+  replaceAll(recvSource, "collective_permute", "all_reduce_tree_reduce");
+  replaceAll(recvSource, "#wafer.memory<spm, tensor>",
+             "#wafer.memory<spm, cx>");
+  auto sendModule = parse(sendSource);
+  auto recvModule = parse(recvSource);
+  ASSERT_TRUE(sendModule);
+  ASSERT_TRUE(recvModule);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*sendModule, *recvModule};
+  mlir::ScopedDiagnosticHandler suppress(
+      context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  EXPECT_TRUE(mlir::failed(contract));
+  sendModule->walk([](wafer::InstrDTESendOp operation) {
+    EXPECT_FALSE(operation.getBinding());
+  });
+  recvModule->walk([](wafer::InstrDTERecvOp operation) {
+    EXPECT_FALSE(operation.getBinding());
+  });
+}
+
 TEST_F(DirectDTETransportTest, UnplannedSPMRangeFailsClosed) {
   auto sendModule = parse(kSendRank);
   auto recvModule = parse(kRecvRank);

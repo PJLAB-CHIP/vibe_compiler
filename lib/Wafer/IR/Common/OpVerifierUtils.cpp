@@ -507,8 +507,9 @@ mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
 
   if (!hasWaferMemorySpace(resultType, MemorySpace::SPM))
     return op->emitOpError("elementwise result must use SPM memory space");
-  if (!hasWaferLayout(resultType, MemLayout::Tensor))
-    return op->emitOpError("elementwise result must use tensor layout");
+  std::optional<MemLayout> resultLayout = getWaferLayout(resultType);
+  if (!resultLayout)
+    return op->emitOpError("elementwise result must carry Wafer layout");
 
   mlir::ArrayAttr indexingMaps =
       op->getAttrOfType<mlir::ArrayAttr>("indexing_maps");
@@ -538,8 +539,12 @@ mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
       return op->emitOpError("expects Wafer buffer operands");
     if (!hasWaferMemorySpace(input.getType(), MemorySpace::SPM))
       return op->emitOpError("elementwise operands must use SPM memory space");
-    if (!hasWaferLayout(input.getType(), MemLayout::Tensor))
-      return op->emitOpError("elementwise operands must use tensor layout");
+    std::optional<MemLayout> inputLayout = getWaferLayout(input.getType());
+    if (!inputLayout)
+      return op->emitOpError("elementwise operands must carry Wafer layout");
+    if (!indexingMaps && inputLayout != resultLayout)
+      return op->emitOpError(
+          "map-free elementwise operands must use the result layout family");
     if (!firstInputTensor)
       firstInputTensor = inputTensor;
     if (isSelectKind(kind)) {

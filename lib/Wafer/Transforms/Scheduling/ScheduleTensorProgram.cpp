@@ -1345,7 +1345,9 @@ static RankSearchRecipes buildRankSearchRecipes(mlir::ModuleOp source,
   auto addRecipe = [&](CommunicationAlternative communication,
                        std::optional<TargetImplementationKind> implementation,
                        unsigned taskOrdinal,
-                       bool useDirectMappedBoundaryTransfer = false) {
+                       bool useDirectMappedBoundaryTransfer = false,
+                       std::optional<unsigned> physicalLayoutProposalOrdinal =
+                           std::nullopt) {
     if (semanticRecipes.size() >= kRankSemanticRecipeLimit)
       return;
     SelectionConfig recipe = base;
@@ -1354,6 +1356,7 @@ static RankSearchRecipes buildRankSearchRecipes(mlir::ModuleOp source,
     recipe.forcedImplementationAlternative = implementation;
     recipe.taskAlternativeOrdinal = taskOrdinal;
     recipe.useDirectMappedBoundaryTransfer = useDirectMappedBoundaryTransfer;
+    recipe.physicalLayoutProposalOrdinal = physicalLayoutProposalOrdinal;
     recipe.traversalKind = CandidateTileTraversalKind::ResultDriven;
     semanticRecipes.push_back(std::move(recipe));
   };
@@ -1383,6 +1386,24 @@ static RankSearchRecipes buildRankSearchRecipes(mlir::ModuleOp source,
     if (useImplementationSelection)
       for (TargetImplementationKind implementation : implementations)
         addRecipe(CommunicationAlternative::Ring, implementation, 0);
+    if (useImplementationSelection)
+      for (unsigned proposalOrdinal = 0; proposalOrdinal < 4; ++proposalOrdinal)
+        addRecipe(hasAllReduce ? CommunicationAlternative::TreeAllReduce
+                               : CommunicationAlternative::Ring,
+                  std::nullopt, 0,
+                  /*useDirectMappedBoundaryTransfer=*/false, proposalOrdinal);
+    // Materialize the implementation first, then rebuild the invocation-local
+    // layout projection from that actual typed clone. This crosses the two
+    // decisions without copying implementation kinds or port tuples into a
+    // second solver-owned representation.
+    if (useImplementationSelection)
+      for (TargetImplementationKind implementation : implementations)
+        for (unsigned proposalOrdinal = 0; proposalOrdinal < 4;
+             ++proposalOrdinal)
+          addRecipe(hasAllReduce ? CommunicationAlternative::TreeAllReduce
+                                 : CommunicationAlternative::Ring,
+                    implementation, 0,
+                    /*useDirectMappedBoundaryTransfer=*/false, proposalOrdinal);
   }
   {
     wafer::support::ScopedCompileTimingSpan timing(

@@ -331,8 +331,9 @@ loop/field budget分段、合并；它不能另建Cx/NCx地址公式。solver只
 target-aware descriptor synthesis和cost。
 
 encoding/type组合同时承担结构门禁。Cx/NCx只接受rank大于零、identity memref layout且其dtype/packing已由
-current encoding implementation精确定义的typed buffer。pre-Q46 implementation仍拒绝bitpacked Cx/NCx；Q46在同一个
-encoding interface implementation内补齐`i1` block/tail/bit offset后才允许相同physical lane顺序的typed buffer。
+current encoding implementation精确定义的typed buffer。Q46已在同一个encoding interface implementation内补齐
+bitpacked Cx/NCx的`i1` block/tail/bit offset；相同physical lane顺序由composed ordinal relation证明，consumer不再
+维护第二份blocked BOOL mapper。
 带第二套strided/offset memref view的blocked buffer不能由当前type唯一解释，因此在footprint、alignment、
 span和composed-relation查询处统一失败。需要这种view时必须保留logical `IndexRelation`并显式materialize movement，
 不能让generic memref view悄悄改变blocked地址。Tensor/NTensor上的标准collapse/expand仍可作为metadata view；

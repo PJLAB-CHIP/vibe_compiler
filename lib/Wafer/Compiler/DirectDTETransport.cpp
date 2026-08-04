@@ -544,6 +544,32 @@ static MessageBaseKey makeMessageBaseKey(int64_t rank, int64_t peer,
                          message.getRound(), message.getPayloadSlice());
 }
 
+static bool requiresExactReductionPayloadType(DTEProtocolPhase phase) {
+  switch (phase) {
+  case DTEProtocolPhase::ReduceScatterDirect:
+  case DTEProtocolPhase::AllReduceRing:
+  case DTEProtocolPhase::AllReduceTreeReduce:
+  case DTEProtocolPhase::AllReduceTreeBroadcast:
+  case DTEProtocolPhase::ReduceScatterRing:
+    return true;
+  case DTEProtocolPhase::CollectivePermute:
+  case DTEProtocolPhase::AllToAll:
+  case DTEProtocolPhase::AllGatherDirect:
+  case DTEProtocolPhase::AllGatherRing:
+  case DTEProtocolPhase::PeerDataflow:
+    return false;
+  }
+  llvm_unreachable("unknown DTE protocol phase");
+}
+
+static mlir::MemRefType getIssueBufferType(const IssueRecord &issue) {
+  if (auto send = mlir::dyn_cast<InstrDTESendOp>(issue.operation))
+    return mlir::dyn_cast<mlir::MemRefType>(send.getBuffer().getType());
+  if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(issue.operation))
+    return mlir::dyn_cast<mlir::MemRefType>(recv.getBuffer().getType());
+  return {};
+}
+
 static mlir::LogicalResult
 collectIssues(llvm::ArrayRef<mlir::ModuleOp> rankModules,
               llvm::SmallVectorImpl<IssueRecord> &issues) {
@@ -1135,6 +1161,12 @@ static mlir::LogicalResult matchDynamicMessages(
         return recv.operation->emitError(
             "direct_dte_acceptance: dynamically matched send and receive byte "
             "counts differ");
+      DTEProtocolPhase phase = std::get<3>(send.message);
+      if (requiresExactReductionPayloadType(phase) &&
+          getIssueBufferType(send) != getIssueBufferType(recv))
+        return recv.operation->emitError(
+            "direct_dte_acceptance: collective reduction send and receive "
+            "payloads require the same physical memref type");
       __int128 displacement = static_cast<__int128>(recvInstance.range.start) -
                               static_cast<__int128>(sendInstance.range.start);
       if (displacement <

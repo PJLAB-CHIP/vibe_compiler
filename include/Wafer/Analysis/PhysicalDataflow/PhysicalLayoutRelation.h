@@ -33,9 +33,13 @@ public:
   const IndexRelation &getLogicalToPhysicalBitOffset() const {
     return logicalToPhysicalBitOffset;
   }
+  const IndexRelation &getLogicalToPhysicalElementOrdinal() const {
+    return logicalToPhysicalElementOrdinal;
+  }
   llvm::ArrayRef<WaferPhysicalLayoutPiece> getPieces() const { return pieces; }
 
   int64_t getElementBitWidth() const { return elementBitWidth; }
+  int64_t getPhysicalElementCount() const { return physicalElementCount; }
   int64_t getPhysicalFootprintBytes() const { return physicalFootprintBytes; }
   int64_t getMinimumAlignmentBytes() const { return minimumAlignmentBytes; }
   int64_t getValidElementCount() const { return validElementCount; }
@@ -48,15 +52,19 @@ public:
 private:
   PhysicalLayoutRelation(mlir::MemRefType type,
                          IndexRelation logicalToPhysicalBitOffset,
+                         IndexRelation logicalToPhysicalElementOrdinal,
                          llvm::SmallVector<WaferPhysicalLayoutPiece, 2> pieces,
-                         int64_t elementBitWidth,
+                         int64_t elementBitWidth, int64_t physicalElementCount,
                          int64_t physicalFootprintBytes,
                          int64_t minimumAlignmentBytes,
                          int64_t validElementCount, int64_t paddingElementCount,
                          bool byteAddressable)
       : type(type),
         logicalToPhysicalBitOffset(std::move(logicalToPhysicalBitOffset)),
+        logicalToPhysicalElementOrdinal(
+            std::move(logicalToPhysicalElementOrdinal)),
         pieces(std::move(pieces)), elementBitWidth(elementBitWidth),
+        physicalElementCount(physicalElementCount),
         physicalFootprintBytes(physicalFootprintBytes),
         minimumAlignmentBytes(minimumAlignmentBytes),
         validElementCount(validElementCount),
@@ -65,8 +73,10 @@ private:
 
   mlir::MemRefType type;
   IndexRelation logicalToPhysicalBitOffset;
+  IndexRelation logicalToPhysicalElementOrdinal;
   llvm::SmallVector<WaferPhysicalLayoutPiece, 2> pieces;
   int64_t elementBitWidth = 0;
+  int64_t physicalElementCount = 0;
   int64_t physicalFootprintBytes = 0;
   int64_t minimumAlignmentBytes = 0;
   int64_t validElementCount = 0;

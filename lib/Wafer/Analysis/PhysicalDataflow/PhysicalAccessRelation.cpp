@@ -109,12 +109,14 @@ mlir::FailureOr<PhysicalAccessRelation> PhysicalAccessRelation::create(
     return mlir::failure();
   IndexRelationResult physicalBitOffsets = iterationToLogical.compose(
       physicalLayout->getLogicalToPhysicalBitOffset());
+  IndexRelationResult physicalElementOrdinals = iterationToLogical.compose(
+      physicalLayout->getLogicalToPhysicalElementOrdinal());
   // Both component relations are exact functions. The encoding interface owns
   // non-overlap of valid physical element spans, so writer injectivity is
   // already established by the logical relation check above. Re-proving the
   // composed blocked relation with a generic solver here is both redundant and
   // a candidate-hot-path scalability hazard.
-  if (!physicalBitOffsets.isExact())
+  if (!physicalBitOffsets.isExact() || !physicalElementOrdinals.isExact())
     return mlir::failure();
 
   mlir::AffineMap projectedAffineMap =
@@ -138,6 +140,7 @@ mlir::FailureOr<PhysicalAccessRelation> PhysicalAccessRelation::create(
       endpointType, llvm::SmallVector<int64_t, 4>(iterationShape),
       iterationToLogical, std::move(*physicalLayout),
       std::move(*physicalBitOffsets.relation),
+      std::move(*physicalElementOrdinals.relation),
       WaferStaticPhysicalOffsetCalculator::create(endpointType),
       projectedAffineMap, canonicalLinearOrder, footprint, alignment, valid,
       padding);
@@ -221,6 +224,24 @@ IndexRelationQueryResult PhysicalAccessRelation::hasSamePhysicalElementMapping(
     return IndexRelationQueryResult{IndexRelationStatus::Exact, false, {}};
   return iterationToPhysicalBitOffset.isEquivalentTo(
       other.iterationToPhysicalBitOffset);
+}
+
+IndexRelationQueryResult PhysicalAccessRelation::hasSamePhysicalTraversal(
+    const PhysicalAccessRelation &other) const {
+  if (iterationShape != other.iterationShape)
+    return IndexRelationQueryResult{IndexRelationStatus::Invalid, std::nullopt,
+                                    "physical traversals require the same "
+                                    "iteration domain"};
+  // CT traverses the destination footprint. The source may have a longer
+  // physical tail (notably a packed i1 mask), but it must contain every
+  // destination ordinal that the instruction can read. Exact ordinal
+  // equivalence over the valid iteration domain separately proves that the
+  // corresponding logical elements line up.
+  if (physicalLayout.getPhysicalElementCount() <
+      other.physicalLayout.getPhysicalElementCount())
+    return IndexRelationQueryResult{IndexRelationStatus::Exact, false, {}};
+  return iterationToPhysicalElementOrdinal.isEquivalentTo(
+      other.iterationToPhysicalElementOrdinal);
 }
 
 } // namespace wafer::analysis

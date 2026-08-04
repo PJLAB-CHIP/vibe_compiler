@@ -231,6 +231,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     ready-order-movement-first
     gemm-aligned-physical-route
     gemm-tail-physical-route
+    layout-movement-chain
   )
   set(_wafer_compiler_optimization_collective_cases
     tree-all-reduce
@@ -338,6 +339,24 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     wafer-runtime-direct-dte-compute-overlap-no-card PROPERTIES
     LABELS
       "runtime;no-card;all-rank;cluster;direct-dte;compute-overlap;paired;heavy"
+    TIMEOUT 1800
+  )
+  add_test(NAME wafer-runtime-layout-movement-elimination-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_compiler_optimization_campaign_test.py
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-compile-test $<TARGET_FILE:wafer-compile-test>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --tx8-objdump ${_wafer_tx81_objdump}
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-layout-movement-elimination
+      --case layout-movement-chain
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-layout-movement-elimination-no-card PROPERTIES
+    LABELS
+      "runtime;no-card;source;compiler-optimization;paired;layout-movement;fp16;heavy"
     TIMEOUT 1800
   )
   if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
