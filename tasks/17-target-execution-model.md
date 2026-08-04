@@ -1767,3 +1767,22 @@ correlation。当前V1/V2/V3与LocalFence/NCCJoin并存的实现事实保持有�
 
 Q47完成证明是V3 source→package→TargetCall/SystemC/no-card及板端纵向，不重开Q22.C numeric correlation、Q22.E exact
 package provider或Q22.P timing calibration。
+
+## 14. 规划中的 Superoptimizer Model 证据边界
+
+Q48的compiler proof与Q22 execution model是两个consumer，不共享“浮点近似政策”：compiler把F16/BF16/F32/TF32表达
+为数学Real，只证明代数observable等价；本文继续按typed format执行raw/IEEE/reference/model行为，并由既有comparator和
+未来独立Q22.C/board qualification负责数值相关性。TargetModel结果不回灌compiler candidate ranking。
+
+- 为symbolic/concrete differential补齐所有current-admitted deterministic typed transaction的exact functional kernel，至少
+  包括Bit2FP、MaskMove、TDMA Pad/Img2Col，并最终覆盖Conv/Pool/Unpool/ArgExtrema/Bilinear/LUT等closure列出的family。
+- `InstrMaskMoveOp` destination改为Read+Write后，transaction/model必须读取旧destination并在false mask lane保持它；旧的
+  write-only解释和测试同步删除。
+- numeric command/profile/formal evaluator/managed model迁移为直接使用`InstrElementwiseKind`和`InstrReduceKind`，删除
+  重复`NumericElementwiseOperation`/`NumericReduceOperation`及可派生status/evidence字段；同一semantic kind只有一个enum
+  事实源，但本文仍独立拥有concrete numeric implementation和qualification。
+- target typed surface closure从ODS/enums/verifier/transaction variants推导，TargetCall registry只做最终发射closure；model
+  不建立第二份“可合成opcode”表，也不从symbol/ordinal恢复语义。
+
+缺少权威typed lowering/CRT/model语义的deterministic row必须先补证据或保持任务未完成，不能在synthesizer中猜测或静默
+归为unsupported。

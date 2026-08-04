@@ -1390,3 +1390,37 @@ Instr，并产出只可lower到current V3 TargetCall的完整rank instruction pr
 
 本计划不改变entry ABI、DTE status schema或其它与TargetProfile无关的版本化Instr字段，也不引入superoptimizer、
 solver或新的instruction semantics interface。
+
+## 14. 规划中的 Typed Instruction Synthesis 与 Numeric 收口
+
+`semantic-superoptimization`必须在V3-only ABI完成后启动；它只覆盖current V3 target-admitted typed Instr surface，不把
+TargetCall数量、symbol spelling或ABI ordinal称为ISA语义。canonical Instr ODS/op classes与enums只生成universe/closure；
+每个family由既有instruction owner提供唯一私有semantic/constructor adapter，从baseline typed values/attrs、current target
+facts和`IndexRelation`派生有限operand/attribute实例。它不是新OpInterface或registry，也不把builder说成能自动猜参数。
+
+BFS直接构造disposable actual MLIR clone：value binding只来自slice boundary、较早合成result或有界fresh temporary，
+enum attrs exhaustively枚举后由verifier过滤，shape/range/layout与非enum attrs必须从current IR推导。单个replacement最多
+3个target issues，baseline Instr之后最多一次depth-1 local fusion；不会新增instruction sketch IR、手写opcode whitelist
+或semantic interface。
+
+closure test必须遍历全部canonical op/enum和target transaction variant，并将每项唯一分成`exact`、
+`opaque-congruent`、`boundary`或`verifier-rejected`。目标覆盖包括全部current-admitted deterministic elementwise/reduce/
+convert、GEMM/Conv/Pool/Unpool、Fill/Bit2FP/ArgExtrema/Bilinear/LUT、DMA/GatherScatter/MaskMove/TDMA等family；DTE/NCC
+protocol和随机语义保持boundary。示例op只作为witness，不缩小grammar。
+
+现有语义表示同时收口：
+
+- 删除35项`NumericElementwiseOperation`和4项`NumericReduceOperation`，numeric command/profile/formal/model直接复用
+  `InstrElementwiseKind`与`InstrReduceKind`以及同一组arity/relation/logic helpers；
+- 删除能从selector、implementation/reason、semantics variant或固定singleton推导的numeric support/status/evidence/family/
+  backend/destination/comparator字段，不建立另一份numeric semantic enum；
+- target CT elementwise admission移除`SourceExact`及signed-zero专门拒绝，F16/BF16/F32 Neg三行由unproven转supported，
+  该表从85/128变为88/128；formal/model registry当前已有88行，两个计数不得混为同一事实；
+- representation变化分别升级model-policy v1→v2、semantics v4→v5、pattern v2→v3、resolved-command v1→v2，
+  不提供旧internal digest reader。
+
+`InstrMaskMoveOp`的destination effect需修正为Read+Write，以表达false mask保留旧destination；所有其它deterministic
+typed op也必须有complete value/memory/effect/completion adapter或权威rejection，不能以缺adapter缩小“current surface”。
+target等价只比较slice boundary可观察value/final memory、external effect order和completion boundary；internal issue数量、
+worker/queue、scratch traffic和join位置可随fusion变化，并作为actual clone事实交给planner/cost。证明通过的clone仍fresh
+重跑本文verifier以及09/12/13/14的liveness、hazard、completion、resource与全部downstream gates。

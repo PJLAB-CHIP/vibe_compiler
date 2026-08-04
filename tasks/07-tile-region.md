@@ -446,3 +446,18 @@ gate拒绝该clone，clone整体丢弃；materializer不就地换实现。
     形态和negative；Q46 relation-guided absorption另按独立gate验收。floating reduction reorder/tree与integer exact/modular
     均复用Q32.N的numeric validation，generic online reduction、non-GEMM FMA及超出current integer-domain子集的
     distribution/factorization不能靠伪装attr准入。
+
+## 14. 规划中的 Actual Clone Handoff
+
+`semantic-superoptimization`不改变本文selected TileDataflow IR的语义。source operator propagation和target instruction
+synthesis都必须先在isolated module中形成真实、verifier-clean MLIR clone，再进入本文既有的atomic materialization/
+complete traversal；不得把`InstructionSketch`、rewrite rule、solver AST、proof certificate或implementation descriptor
+物化为TileRegion op/attr。
+
+- source clone仍经06选择后，以本文typed task/view/compute/movement/event/SSA合同物化；proof通过不等于selected。
+- target synthesis消费connected verified tile-region slice和baseline tile-to-Instr conversion，只输出disposable actual Instr
+  clone；每个clone重新执行本文coverage、effect/completion及下游memory/ABI gates，失败不修改selected TileRegion。
+- Q46 actual-op probe在Q48中迁移为读取actual typed clones/current IR facts后，旧implementation materializer与
+  selected/forced字段全部删除；本文不接收替代side table或新的候选IR。
+
+示例的reassociation、GEMM/layout fusion或DMA序列只用于证明同一handoff可工作，不形成case-specific materializer。

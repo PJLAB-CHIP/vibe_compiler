@@ -61,6 +61,11 @@ Q47 Target ABI退役计划见`tasks/plans/target-abi-retirement.md`。它在Q46�
 按11、14-17的owner边界把current TX81 target收口为V3-only；它不包含SMT、候选生成或优化器改造，动态状态和
 完成门禁只看`tasks/progress.md`。
 
+Q48语义驱动superoptimizer计划见`tasks/plans/semantic-superoptimization.md`。它必须在Q46、Q47完成后启动，
+复用05-08、10-11、16-18的现有IR、candidate、proof consumer、model和源码ownership合同；目标是自动生成并证明
+actual MLIR clones，同时删除旧implementation抽象和重复numeric表示，不另建语义IR/interface/sidecar。动态状态和
+完成门禁只看`tasks/progress.md`。
+
 Q9 profiler foundation已按`tasks/archive/board-profiler.md`完成：唯一public入口是
 `wafer-compile --profile`；profile transaction只发布一个未插桩Primary production artifact，最后写入的activation把该
 production manifest与companion metadata exact-hash绑定，不另编一个关闭profile的ordinary package做逐字节对照。

@@ -1714,3 +1714,27 @@ Pipeline position:
 
 只把driver默认值改为V3、只验证112这个计数、只过host decoder或只生成no-card package均不算完成。板不可用时保留
 `board-ready`，不得标`done`或自动retry/reset设备。
+
+## 15. 规划中的 Semantic Superoptimization Gate
+
+`semantic-superoptimization`只在Q46和Target ABI退役完成后启动。验证按两个pipeline位置共享同一失败原则：只有
+`preconditions AND observable_difference`为UNSAT的actual clone可进入现有frontier；SAT、unknown、timeout、resource
+exhaustion和任何late gate失败都保留独立baseline且不提交partial mutation。
+
+- solver unit覆盖数学Real、声明位宽BV、Bool、typed UF、partial operation定义域、reduction/contraction、memory alias、
+  boundary-observable effect/completion和IndexRelation桥接。F16/BF16/F32/TF32在compiler proof中按Real处理，不验证
+  bit exact、NaN/Inf、signed zero、ULP或epsilon；Q22/board的数值执行政策保持独立。fusion可改变internal issue/
+  scratch/join trace，但不能削弱boundary happens-before或引入external alias/hazard。
+- source property覆盖generic chain/diamond/fanout、effect/control boundary和不同algebraic witnesses，并证明production没有按
+  op/shape/case matcher；分别命中4-op slice、16-node、depth-6、3-cut、256-expansion和16-clone hard cap后稳定回退
+  baseline。variant只在request sharding前生成/证明一次，16个export/rank shards不得链接或运行Z3。
+- target closure遍历全部canonical Instr enum/op/transaction variant，要求exact/opaque/boundary/rejected唯一；新增值未分类
+  时build/test fail。symbolic adapter须与formal evaluator/TargetModel在有界value/memory states做differential。
+- integration要求所有passing actual clones fresh重跑relation、liveness、physical realization、SPM/DDR、worker、completion、
+  target preflight、cost和whole-variant gates；source→package的rank 1/16 FP16/BF16 artifact与fresh no-card形成`board-ready`。
+- build gate要求production/no-card配置实际链接受管Z3并执行proof tests；feature-off只验证core/显式`none()` link closure，
+  production请求必须pre-mutation fail closed，不能把未运行两个新axis的结果称为production或Q48 evidence。
+- board只做本任务定向、串行、同源baseline/winner A/B，按现有正常数值容差比较output并校验guard/profile/completion/
+  lifecycle；F32只用于明确格式/转换边界。真实板端未通过不得`done`。
+
+只接入Z3、证明单个rewrite、手写少量opcode、通过局部IR dump或model-only differential均不算完成。

@@ -343,3 +343,25 @@ conflict encoding、packing policy或first-fit的第二事实源。
   memory-planned/selected named pipeline均实际执行。named pipeline既覆盖pre-existing root的safe loop正例，
   也覆盖loop body fresh allocation recurrence的结构化失败；generic async正负合同由两侧planner直接消费同一core。
 - feature-off link closure 与 feature-on numeric/bulk/SystemC 测试证明 optional dependency 没有泄漏。
+
+## 规划中的 Solver 与 Synthesizer Ownership
+
+`semantic-superoptimization`新增实现按既有pipeline owner拆分，不形成新的公共层：source propagation归structured/
+physical-dataflow transformation library，query-local proof core归其私有support target，typed instruction grammar/synthesis归
+instruction conversion owner，numeric/model迁移归现有numeric与TargetModel owners。公共IR、artifact、pass pipeline和package
+不出现solver对象。
+
+- production/no-card构建使用受管static Z3 4.16.0，固定release commit与source SHA；禁止ambient system Z3、configure-time
+  网络下载和依赖缺失时静默禁用。pinned LLVM generic SMT API缺少所需Real sort，私有实现直接使用Z3 C/C++ API，不再
+  包装Wafer public solver interface。
+- solver target不得被export/request shard、artifact/package、runtime或TargetModel反向链接；source variants在sharding前
+  生成一次，shards只读取actual MLIR/bytecode。feature-off只构建core/显式`OptimizationConfig::none()` link closure；若
+  driver仍存在，production请求在source mutation前fail closed，不形成少axis的隐式production配置。
+- ODS/op/enums只生成instruction universe与exhaustive dispatch；family-owned私有semantic/constructor adapters及tests由
+  现有instruction owner编译，参数只从baseline/current target facts派生，不另建public interface、手写opcode registry、
+  rule library、sketch graph或proof sidecar。
+- 删除旧target implementation interface/materializer时同步删除external-model registration、CMake source/依赖和镜像测试；
+  不能只停止调用而保留第二事实源。
+
+feature-on fresh build/unit/lit/integration必须实际执行solver与closure测试，feature-off link closure则证明Z3没有泄漏；两类
+结果不能互相代签。

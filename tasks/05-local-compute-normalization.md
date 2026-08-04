@@ -202,3 +202,24 @@ directory orchestration由`wafer-compile`负责，用户不选择该stage或手�
 structured tensor program，才能证明本stage接入主线。Q29拥有candidate/bundle scheduling，Q20/Q21拥有固定
 CPU expected corpus和纵向
 workload completion，不能由本stage测试代替。
+
+## 9. 规划中的 Source Operator Propagation 边界
+
+`semantic-superoptimization`尚未实施；当前normalization仍只负责形成verifier-legal structured tensor IR。未来该任务
+直接消费本文输出的Linalg/Tensor/SCF/Arith/Math、indexing maps、iterator、DPS tie、region和SSA/effect事实，在
+request/export sharding前一次性生成有界actual structured MLIR clones。
+
+- generator把有界connected slice的actual regions内联成query-local typed expression DAG，以boundary SSA/constant为leaf，
+  以actual scalar kinds和显式reduction domain/init/combiner形成统一grammar；在type/domain约束下双向枚举expression DAG、
+  sharing和materialization cuts，再重建actual Linalg region/SSA graph。distribution和factorization由同一枚举产生，不是
+  两套case recipe。
+- region arguments、iterator/indexing maps和DPS ties由boundary binding、existing maps、Presburger与`IndexRelation`
+  composition生成；每个cut立即形成isolated actual MLIR clone，再由canonicalization/verifier剔除重复或非法候选。
+  proof/query-local DAG不进入normalization IR、cache或artifact，不增加numeric policy、semantic attr或候选sidecar。
+- reassociation、reduction-tree、distribution/factorization和contraction propagation只作为该通用算法的witness tests，
+  不是本文normal form的新op集合或长期rule registry。
+- unknown effect、observable state、unsupported region/control flow和dynamic relation形成稳定边界；失败只丢弃optimized
+  clone并保留baseline，不能改变本文的source legality。
+
+本扩展的grammar、proof legality、候选准入、caps、选择与atomic commit仍由06拥有；solver target、CMake和source layering
+由18拥有。

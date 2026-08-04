@@ -30,6 +30,7 @@ Q42 + Q39 -> Q40 composed search and DTE overlap             [board-ready]
 Q15 + Q18 + Q35 -> Q44 PyTorch source board verticals        [board-ready]
 Q32 + Q37 -> Q46 layout movement elimination                 [next]
 Q46 complete/paused -> Q47 target ABI retirement             [later]
+Q46 + Q47 -> Q48 semantic superoptimization                  [later]
 Q45 compiler terminology and naming                           [later]
 ```
 
@@ -59,6 +60,7 @@ Q45 compiler terminology and naming                           [later]
 | Q32.T | `compiler-transform-control` | `later` | Q32、明确的external control-plane consumer | 复用现有rewrite/conversion；Transform IR不保存frontier、不替代all-rank coordinator。 | 01、05-08、10、16、18 |
 | Q45 | `compiler-terminology-and-naming` | `later` | Q41完成或暂停、明确独立迁移窗口 | 审计当前source、IR、analysis、transformation、conversion、diagnostic和设计文档中的长期命名；重点清理将执行范围、实现过程和临时产物混成概念的`rank-artifact-*`、`all-rank-*-synthesis`、`*-handoff`等命名。每个改名先确定pipeline contract与对应IR / analysis / transformation责任，不只换字符串，不改写archive历史。完成门禁是当前代码、文档、CLI/diagnostic与测试使用同一稳定术语，且名称能直接对应可验证的compiler对象。 | 01、18 |
 | Q47 | `target-abi-retirement` | `later` | Q46完成或暂停、明确独立ABI迁移窗口 | 将TX81 current target收口为唯一V3 profile/Kernel Runtime ABI，删除104个legacy ordinary TargetCall、profile availability和LocalFence，形成112项closed registry；schema-v6 package不连带升级，profile companion因ordinal basis变化独立升级。完整V3 source→package→model/no-card达到`board-ready`，fresh板端worker completion及普通/DTE路径通过后才能`done`。不包含SMT或superoptimizer。 | 11、14-17；`tasks/plans/target-abi-retirement.md` |
+| Q48 | `semantic-superoptimization` | `later` | Q46、Q47完成 | 从actual structured MLIR与current V3 typed Instr自动生成有界actual clones，以query-local SMT证明数学value及外部可观察memory/effect/completion等价，继续由现有exact gates、cost/Pareto owner选择；删除旧target implementation interface/materializer、重复numeric enums/status，不新增语义interface、sketch、rule registry或proof sidecar。current target-admitted deterministic typed surface形成exhaustive closure，FP16/BF16完整package/fresh no-card达到`board-ready`，fresh板端同源A/B通过后才能`done`。 | 05-08、10-11、16-18；`tasks/plans/semantic-superoptimization.md` |
 | Q38.W | `multi-worker-production-promotion` | `later` | V3 typed ABI、actual clone和host/model资格已闭合，且出现需要隔离等待域并可能受益的独立命令链 | 以configured-board matched correctness/performance证明非零worker相对worker0流水的明确收益后才允许normal production promotion；不得为使用worker1/2而拆分已能在worker0并行的流水。 | 08、11、14-17 |
 | Q3.6 | `crt-writeback-scalar` | `later` | 明确Count predicate及wrapper/target/model evidence | 独立闭合typed instruction、effect/completion、ABI/CRT、model和必要package readback。 | 11、14-17 |
 
@@ -126,6 +128,7 @@ WCRE/global registry、capability lease、跨model state migration、共享weigh
 
 - Q46实施计划：`tasks/plans/layout-movement-elimination.md`。
 - Q47 Target ABI退役计划：`tasks/plans/target-abi-retirement.md`。
+- Q48语义驱动superoptimizer计划：`tasks/plans/semantic-superoptimization.md`。
 - 当前计划：`tasks/plans/noc-resident-tile-dataflow.md`与
   `tasks/plans/multi-engine-software-pipelining.md`分别记录Q39、Q38的configured-board external gate。
 - Q9完成证据：`tasks/archive/board-profiler.md`。

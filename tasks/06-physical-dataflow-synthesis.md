@@ -974,3 +974,34 @@ Q32完成必须同时满足：
 - MLIR Affine与Presburger：<https://mlir.llvm.org/docs/Dialects/Affine/>
 
 这些机制决定实现形态；外部优化论文只能提供算法启发，不能引入与Wafer typed IR并列的长期协议。
+
+## 16. 规划中的语义驱动 Superoptimization
+
+`semantic-superoptimization`尚未实施。当前18个`OptimizationKind`、source algebraic producers和target
+implementation-selection路径保持current事实；目标任务在Q46、Q47完成后以两个actual-clone producer接入本文既有
+candidate/frontier/atomic-commit owner：
+
+- `algebraic-reassociation`、`reduction-tree-balancing`、`algebraic-distribution`和`algebraic-factorization`
+  合并为`operator-propagation`；`implementation-selection`一对一替换为`instruction-synthesis`，最终15个axis。
+  `OptimizationConfig::production()`、`none()`和逐项开关保留，不增加proof mode、tolerance或第二个selector。
+- source producer从05的actual structured IR生成verifier-clean clones；target producer从11的typed builders生成actual
+  Instr clones。SMT只回答候选是否具有进入frontier的语义资格，不计算cost、不选winner，也不授权跳过liveness、
+  physical realization、SPM/DDR、worker、completion、target preflight或whole-variant exact gate。
+- source generator将connected actual regions转为query-local typed expression DAG，用统一的leaf/apply/reduce grammar和
+  materialization cuts枚举正反向传播，再从boundary binding与IndexRelation composition重建actual MLIR；SMT只验证这些
+  已生成clone。target的ODS/enums只生成universe，family-owned私有constructor adapter从baseline/current target facts枚举
+  有限typed instances；不存在“builder自动猜参数”或另藏opcode recipe表。
+- Q46完成时仍以现有implementation interface的actual-op probe闭合。Q48先将该probe迁移到actual typed clones/current
+  IR facts，再删除selected/forced implementation key/queue状态及旧materializer；不得向旧抽象增加字段或保留fallback。
+- 继续使用本文现有上界：source clone 16、optimized rank evaluation 96、general rank frontier 256、含reserved/fixed-slot/
+  worker siblings的aggregate 273、whole attempts 153及whole Pareto 16。局部target synthesis另限最多3个issues和一次
+  depth-1 fusion；超限或SAT/unknown/timeout只停止optimized clone，baseline继续。
+- source generator内部固定为最多4-op connected slice、16个非leaf expression nodes、application/reduction depth 6、
+  3个materialization cuts和每source program 256次unique DAG/cut/binding expansions；这些私有hard caps与最终16个
+  source clones同时生效，不新增public budget，也不能把invalid/SAT候选排除在work计数之外。
+- source variants只在request sharding前证明一次；Q41的16个export/rank shards只消费actual MLIR，不创建solver context。
+  passing clone仍由本文的static cost/Pareto政策选择，TargetModel/board结果不反馈compile-time ranking。
+- Q48 production/no-card构建必须启用managed Z3。feature-off只资格化core/显式`none()` link closure，production请求在任何
+  source mutation前fail closed；不能以少两个axis的静默production冒充同一pipeline。
+
+完成时production仍只有本文一个decision owner，IR中没有proof、solver AST、rule、sketch、frontier或新semantic carrier。

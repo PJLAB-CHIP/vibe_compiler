@@ -880,3 +880,15 @@ whole-rank/whole-variant gates；该later工作不属于Q32或本文当前完成
 - MLIR Dialect Conversion：<https://mlir.llvm.org/docs/DialectConversion/>
 - MLIR Bufferization：<https://mlir.llvm.org/docs/Bufferization/>
 - MLIR Transform Dialect：<https://mlir.llvm.org/docs/Dialects/Transform/>
+
+## 19. 规划中的 Semantic Proof 复用边界
+
+`semantic-superoptimization`继续把本文`IndexRelation`、Presburger、physical encoding interface和descriptor cover作为
+shape/index/layout/footprint的唯一证明来源。query-local SMT只翻译候选的scalar value、typed integer/Bool、observable
+memory/effect/completion差异，并通过本文现有relation结果施加已证明的index映射；不在solver中复制第二套shape/layout
+系统，也不增加Z3-backed `IndexRelation`、proof attr或长期cache。
+
+每个accepted source/Instr clone都使旧relation、alias和physical realization analysis失效并fresh重算。SAT、unknown、
+timeout或relation无法表达时只丢弃optimized clone；不能把solver当作descriptor、invalid-lane、capacity或target legality
+fallback。Q46现有layout assignment/probe先按其独立计划闭合，Q48随后只迁移输入并删除旧implementation抽象，不改写
+本文physical relation合同。

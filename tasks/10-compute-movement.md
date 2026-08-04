@@ -621,3 +621,20 @@ candidate、selected op verifier、IndexRelation和memory/event gates。
 
 本文只拥有source implementation OpInterface、selected compute/movement IR及其instruction lowering
 legality；其它owner不得复制这些事实，也不得让本文重新承担全局planner、memory或runtime职责。
+
+## 12. 规划中的 Implementation 抽象退役
+
+`semantic-superoptimization`尚未实施。Q46先复用current `WaferTargetImplementationOpInterface`和actual-op probe闭合
+layout/compute joint assignment；Q48再把probe迁移到actual typed clones/current IR facts，并在同一任务中删除：
+
+- `WaferTargetImplementationOpInterface`及external models/registration；
+- `WaferTargetCapabilities`这层只有reciprocal/division两个默认true字段的constantized wrapper；
+- `TargetImplementationKind`、`TargetImplementationCandidate`、`WaferTargetImplementationMaterializer`；
+- candidate key/queue中的selected/forced implementation状态与所有兼容fallback。
+
+不会引入新的implementation interface、universal ISA semantics、value-equivalence interface或descriptor sidecar作为替代。
+source propagation直接读取标准Linalg/DPS/Tiling/effect/SSA事实，target synthesis直接使用11的typed op builders，二者都
+立即产生actual IR。`WaferInstructionOpInterface::getInstructionFamily()`继续保留，因为generic traversal/cost有真实
+consumer；08的`IndexRelation`继续作为current-IR-derived、可失效、可重算analysis。
+
+删除完成后本文仍拥有selected compute/movement op及其lowering legality，但不再拥有“可选实现列表”这一平行语义通道。
