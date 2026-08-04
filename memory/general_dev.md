@@ -1200,6 +1200,9 @@
 - 同一份页面规格生成PPTX、嵌入Notes、PDF、逐页PNG和contact sheet。交付前同时检查slide/notes数量、
   PPT对象边界、PDF页数、预览分辨率、图片链接、可见文字密度和source map覆盖；100% contact sheet检查后，
   对IR、表格和复杂图页再做原尺寸抽查。
+- “共同开发经验”页也要按技术页取材：选择一次真实目标纠偏或artifact评审，写清双方分别提出了什么判断、
+  工程侧怎样把判断变成代码搜索/区分实验/fresh验证、结论最终改动了哪些事实源。图形优先使用双rail、假设分叉、
+  artifact链或验收gate承载实际IR、case数字和失败分支；泛化的人机图标、循环箭头和流程口号无法支撑专家汇报。
 
 ## PyTorch source 板端 tensor 对比
 
