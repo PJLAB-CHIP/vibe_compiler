@@ -5,6 +5,12 @@ hardware 工程师，汇报沿真实 production pipeline 解释 Vibe Compiler �
 StableHLO、rank-local structured IR、physical-dataflow search、Instr、Target LLVM、RISC-V ELF、
 verified package 和 board runtime 的完整链路，并用真实 case 总结硬件校准与共同开发方法。
 
+2026-08-03 的重构只处理 presentation 层。151 张已经逐项核对、实际嵌入并完成渲染检查的 Image2
+技术图全部冻结，不重画、不改图中技术内容；当前问题集中在可见文字和讲述组织：统一的长 takeaway、
+固定“技术解读”栏与并列事实把页面写成了资料说明，page dossier 中已有的前因后果没有进入最终演示。
+本轮必须逐页重写正文和 Notes，并允许调整文字区域的层级、位置与篇幅，但不得用文字修改掩盖图中错误，
+也不得改变 compiler、hardware 或 case 事实。
+
 此前提交的 151 页批量生成版本未达到使用要求，不能通过补字、换图或调整模板修复，也不再作为完成证据。
 它暴露出的根本问题是：页面由统一生成器先行，技术分析、真实 IR、case 和专用图形随后被压缩成装饰。
 本轮只复用已经核对过的代码事实、focused host IR、硬件行为文档和
@@ -40,6 +46,10 @@ IR 和 case 时可以拆页；相邻页面能够自然合并且不会损失推�
 7. **生成图必须逐项反查 source**：图中的字段、数值、拓扑、状态、边和完成关系必须能够定位到当前
    代码、测试、设计合同或硬件行为文档。Image2 自动补出的 ABI slot、伪指令、硬件内部结构、候选数、
    性能曲线和相邻 case 数字一律视为幻觉并删除；无法确认时明确画成“未知”，不能用视觉完整性替代事实。
+8. **每页必须完成一次讲述动作**：后台先写清楚听众在本页新理解什么，再决定保留哪段 IR、哪个 case
+   数字以及文字怎样贴着主图解释。正文不能重复图中已经可见的对象，也不能统一套用“技术解读”、三段
+   说明或固定问题/机制/结论栏目；问题页、机制页、before/after 页、case 页、结果页和转场页采用各自
+   合适的语言与布局。相邻页面必须形成自然因果，章节之间必须显式完成转折。
 
 ## Pipeline Contract
 
@@ -70,7 +80,9 @@ Pipeline position:
 - Completion gate:
   每个技术页单独通过内容、图形、IR、case、语言和投影验收；全部 production stage、analysis/pass、
   18 个 optimization axis、Target LLVM/ELF/package、代表硬件 finding 与共同开发经验均有可讲页面；
-  Notes 实际嵌入；PPTX/PDF/PNG 无裁切、遮挡、低分辨率或不可读小字；数字、状态和范围与当前事实一致。
+  不读 Notes 时仍能判断本页为何出现、主要阅读路径和工程含义；连续播放时每页承接上一页并为下一页
+  留出问题；Notes 实际嵌入；PPTX/PDF/PNG 无裁切、遮挡、低分辨率或不可读小字；数字、状态和范围与
+  当前事实一致。
 ```
 
 ## 1. 汇报的因果主线
@@ -454,3 +466,16 @@ Q43才可以重新标记`done`。收尾时同步：
 
 提交继续使用 `Codex <codex@openai.com>`，并附
 `Co-authored-by: hehesnail <shashen008he@gmail.com>`。
+
+## 11. 完成记录（2026-08-04）
+
+- 正文133页与附录A1--A18全部完成逐页内容重写；151张既有技术图未修改，页面正文围绕当前图中的
+  IR、算法、artifact、case数字和状态展开，speaker notes已经写入PPT的Notes区域。
+- `python3 build_deck.py`完成151页PPTX、PDF、逐页PNG和contact sheet生成；结构检查确认151个slide、
+  151份非空Notes、标题与页面规格一致，PDF为151页16:9，preview目录包含151张PNG。
+- 最终contact sheet按每组16页放大检查；没有空页、占位页、主图裁切或正文溢出。正文与Notes扫描未出现
+  `上一页`、`下一页`、`接下来`、`真实证据`、`讲解边界`、`不是…而是…`或`oracle`等约束外表达。
+- `assets/figures/`在本轮文字重构和最终构建中保持无改动；Q40/Q41仍为`board-ready`，本任务没有执行
+  configured-board case，也没有新增硬件性能结论。
+- `memory/general_dev.md`已经包含source-backed取材、Image2事实核对、Notes/PDF/PNG/contact-sheet联合验收
+  等稳定方法，本轮无需重复增加第二份经验记录。
