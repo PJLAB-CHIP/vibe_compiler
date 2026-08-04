@@ -2,8 +2,9 @@
 
 #include "Internal.h"
 
-#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
+#include "Wafer/Analysis/PhysicalDataflow/PhysicalAccessRelation.h"
 
+#include "mlir/Analysis/FlatLinearValueConstraints.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -305,15 +306,11 @@ struct DescriptorAxis {
   int64_t count = 1;
 };
 
-struct DirectChannelDecomposition {
+struct DirectPeriodicDecomposition {
   bool requested = false;
-  bool blockedByGeneralMap = false;
-  int64_t block = 0;
+  bool requiresExplicitPartition = false;
+  int64_t period = 0;
 };
-
-bool isBlockedLayout(MemLayout layout) {
-  return layout == MemLayout::Cx || layout == MemLayout::NCx;
-}
 
 std::optional<int64_t> checkedSignedAdd(int64_t lhs, int64_t rhs) {
   __int128 value = static_cast<__int128>(lhs) + rhs;
@@ -342,30 +339,28 @@ getProjectedCoordinates(const analysis::IndexRelation &relation,
       map->getNumSymbols() != 0)
     return std::nullopt;
 
-  llvm::SmallVector<int64_t, 4> zero(iterationShape.size(), 0);
-  llvm::SmallVector<int64_t, 4> offsets = map->compose(zero);
   llvm::SmallVector<ProjectedCoordinate, 4> coordinates;
-  coordinates.reserve(offsets.size());
-  for (auto [result, offset] : llvm::enumerate(offsets)) {
+  coordinates.reserve(map->getNumResults());
+  for (mlir::AffineExpr result : map->getResults()) {
+    llvm::SmallVector<int64_t, 8> coefficients;
+    if (mlir::failed(mlir::getFlattenedAffineExpr(
+            result, iterationShape.size(), /*numSymbols=*/0, &coefficients)) ||
+        coefficients.size() != iterationShape.size() + 1)
+      return std::nullopt;
+
     ProjectedCoordinate coordinate;
-    coordinate.offset = offset;
+    coordinate.offset = coefficients.back();
     coordinate.multipliers.resize(iterationShape.size(), 0);
     unsigned nonzeroMultipliers = 0;
-    for (unsigned dim = 0; dim < iterationShape.size(); ++dim) {
-      llvm::SmallVector<int64_t, 4> unit(zero);
-      unit[dim] = 1;
-      llvm::SmallVector<int64_t, 4> value = map->compose(unit);
-      std::optional<int64_t> multiplier =
-          checkedSignedAdd(value[result], -offset);
-      if (!multiplier)
-        return std::nullopt;
-      if (*multiplier == 0)
+    for (auto [dim, multiplier] :
+         llvm::enumerate(llvm::ArrayRef(coefficients).drop_back())) {
+      if (multiplier == 0)
         continue;
-      coordinate.multipliers[dim] = *multiplier;
+      coordinate.multipliers[dim] = multiplier;
       ++nonzeroMultipliers;
       if (nonzeroMultipliers == 1) {
         coordinate.iterationDim = dim;
-        coordinate.multiplier = *multiplier;
+        coordinate.multiplier = multiplier;
       } else {
         coordinate.iterationDim = -2;
         coordinate.multiplier = 0;
@@ -391,57 +386,20 @@ getProjectedCoordinates(const analysis::IndexRelation &relation,
       minimum = *nextMinimum;
       maximum = *nextMaximum;
     }
-    int64_t endpointSize = endpointType.getDimSize(result);
+    int64_t endpointSize = endpointType.getDimSize(coordinates.size());
     if (endpointSize <= 0 || minimum < 0 || maximum >= endpointSize)
       return std::nullopt;
     coordinates.push_back(coordinate);
   }
 
-  MemoryAttr memory = getWaferMemoryAttr(endpointType);
-  if (memory && isBlockedLayout(memory.getLayout())) {
-    llvm::SmallVector<int64_t, 4> owner(iterationShape.size(), -1);
-    for (auto [coordinateIndex, coordinate] : llvm::enumerate(coordinates)) {
-      for (auto [dim, multiplier] : llvm::enumerate(coordinate.multipliers)) {
-        if (multiplier == 0)
-          continue;
-        if (owner[dim] >= 0)
-          return std::nullopt;
-        owner[dim] = coordinateIndex;
-      }
-    }
-  }
   return coordinates;
 }
 
-std::optional<llvm::SmallVector<int64_t, 4>>
-evaluateProjectedCoordinates(llvm::ArrayRef<ProjectedCoordinate> coordinates,
-                             llvm::ArrayRef<int64_t> iteration) {
-  llvm::SmallVector<int64_t, 4> result;
-  result.reserve(coordinates.size());
-  for (const ProjectedCoordinate &coordinate : coordinates) {
-    if (coordinate.multipliers.size() != iteration.size())
-      return std::nullopt;
-    int64_t value = coordinate.offset;
-    for (auto [index, multiplier] : llvm::enumerate(coordinate.multipliers)) {
-      std::optional<int64_t> scaled =
-          checkedSignedMul(multiplier, iteration[index]);
-      std::optional<int64_t> next =
-          scaled ? checkedSignedAdd(value, *scaled) : std::nullopt;
-      if (!next)
-        return std::nullopt;
-      value = *next;
-    }
-    result.push_back(value);
-  }
-  return result;
-}
-
-bool isCanonicalBlockedChannelDecomposition(
-    const ProjectedCoordinate &coordinate,
-    llvm::ArrayRef<int64_t> iterationShape, int64_t logicalChannels,
-    int64_t channelBlock) {
-  if (coordinate.offset != 0 || logicalChannels <= 0 || channelBlock <= 0 ||
-      logicalChannels % channelBlock != 0)
+bool isCanonicalPeriodicDecomposition(const ProjectedCoordinate &coordinate,
+                                      llvm::ArrayRef<int64_t> iterationShape,
+                                      int64_t logicalExtent, int64_t period) {
+  if (coordinate.offset != 0 || logicalExtent <= 0 || period <= 0 ||
+      logicalExtent % period != 0)
     return false;
   llvm::SmallVector<std::pair<int64_t, int64_t>, 4> factors;
   for (auto [dim, multiplier] : llvm::enumerate(coordinate.multipliers)) {
@@ -461,20 +419,49 @@ bool isCanonicalBlockedChannelDecomposition(
     if (!next)
       return false;
     expectedMultiplier = *next;
-    hasBlockBoundary |= expectedMultiplier == channelBlock;
+    hasBlockBoundary |= expectedMultiplier == period;
   }
-  return hasBlockBoundary && expectedMultiplier == logicalChannels;
+  return hasBlockBoundary && expectedMultiplier == logicalExtent;
 }
 
-bool appendBlockedCategoryBoundaries(
+bool appendPhysicalPieceBoundaries(
     const ProjectedCoordinate &coordinate, int64_t iterationSize,
-    const WaferPhysicalTensorInfo &info, int64_t logicalChannels,
+    unsigned logicalDim, int64_t logicalExtent,
+    llvm::ArrayRef<WaferPhysicalLayoutPiece> pieces,
     llvm::SmallVectorImpl<int64_t> &boundaries) {
   if (coordinate.iterationDim < 0 || coordinate.multiplier == 0)
     return true;
-  std::optional<int64_t> fullChannels =
-      checkedSignedMul(info.cxBlocks, info.cBlock);
-  if (!fullChannels || info.cBlock <= 0)
+
+  llvm::SmallVector<int64_t, 16> logicalBoundaries{0, logicalExtent};
+  for (const WaferPhysicalLayoutPiece &piece : pieces) {
+    if (logicalDim >= piece.logicalLowerBounds.size() ||
+        logicalDim >= piece.logicalUpperBounds.size() ||
+        logicalDim >= piece.logicalTilePeriods.size())
+      return false;
+    int64_t lower = piece.logicalLowerBounds[logicalDim];
+    int64_t upper = piece.logicalUpperBounds[logicalDim];
+    int64_t period = piece.logicalTilePeriods[logicalDim];
+    if (lower < 0 || upper < lower || upper > logicalExtent || period < 0)
+      return false;
+    logicalBoundaries.push_back(lower);
+    logicalBoundaries.push_back(upper);
+    if (period > 0) {
+      for (int64_t boundary = lower; boundary < upper;) {
+        std::optional<int64_t> next = checkedSignedAdd(boundary, period);
+        if (!next || *next <= boundary)
+          return false;
+        boundary = *next;
+        if (boundary < upper)
+          logicalBoundaries.push_back(boundary);
+      }
+    }
+  }
+  llvm::sort(logicalBoundaries);
+  logicalBoundaries.erase(
+      std::unique(logicalBoundaries.begin(), logicalBoundaries.end()),
+      logicalBoundaries.end());
+  if (logicalBoundaries.front() != 0 ||
+      logicalBoundaries.back() != logicalExtent)
     return false;
 
   int64_t cursor = 0;
@@ -483,18 +470,15 @@ bool appendBlockedCategoryBoundaries(
         checkedSignedMul(coordinate.multiplier, cursor);
     std::optional<int64_t> channel =
         scaled ? checkedSignedAdd(coordinate.offset, *scaled) : std::nullopt;
-    if (!channel || *channel < 0 || *channel >= logicalChannels)
+    if (!channel || *channel < 0 || *channel >= logicalExtent)
       return false;
 
-    int64_t categoryLow = 0;
-    int64_t categoryHigh = logicalChannels - 1;
-    if (*channel < *fullChannels) {
-      categoryLow = (*channel / info.cBlock) * info.cBlock;
-      categoryHigh =
-          std::min(logicalChannels - 1, categoryLow + info.cBlock - 1);
-    } else {
-      categoryLow = *fullChannels;
-    }
+    auto categoryEnd = llvm::upper_bound(logicalBoundaries, *channel);
+    if (categoryEnd == logicalBoundaries.begin() ||
+        categoryEnd == logicalBoundaries.end())
+      return false;
+    int64_t categoryLow = *(categoryEnd - 1);
+    int64_t categoryHigh = *categoryEnd - 1;
 
     int64_t last = cursor;
     if (coordinate.multiplier > 0) {
@@ -520,95 +504,6 @@ bool descriptorFieldFits(int64_t value) {
 }
 
 } // namespace
-
-std::optional<CanonicalReshapeMovementRelations>
-getCanonicalReshapeMovementRelations(mlir::MLIRContext *context,
-                                     llvm::ArrayRef<int64_t> sourceShape,
-                                     llvm::ArrayRef<int64_t> destShape) {
-  if (!context)
-    return std::nullopt;
-
-  auto getPrefixProducts = [](llvm::ArrayRef<int64_t> shape)
-      -> std::optional<llvm::SmallVector<int64_t, 4>> {
-    llvm::SmallVector<int64_t, 4> prefixes{1};
-    int64_t product = 1;
-    for (int64_t extent : shape) {
-      if (extent <= 0)
-        return std::nullopt;
-      std::optional<int64_t> next = checkedMulI64(product, extent);
-      if (!next)
-        return std::nullopt;
-      product = *next;
-      prefixes.push_back(product);
-    }
-    return prefixes;
-  };
-  std::optional<llvm::SmallVector<int64_t, 4>> sourcePrefixes =
-      getPrefixProducts(sourceShape);
-  std::optional<llvm::SmallVector<int64_t, 4>> destPrefixes =
-      getPrefixProducts(destShape);
-  if (!sourcePrefixes || !destPrefixes ||
-      sourcePrefixes->back() != destPrefixes->back())
-    return std::nullopt;
-
-  llvm::SmallVector<int64_t, 8> boundaries(sourcePrefixes->begin(),
-                                           sourcePrefixes->end());
-  boundaries.append(destPrefixes->begin(), destPrefixes->end());
-  llvm::sort(boundaries);
-  boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
-                   boundaries.end());
-  llvm::SmallVector<int64_t, 4> iterationShape;
-  iterationShape.reserve(boundaries.size() - 1);
-  for (size_t index = 1; index < boundaries.size(); ++index) {
-    if (boundaries[index - 1] <= 0 ||
-        boundaries[index] % boundaries[index - 1] != 0)
-      return std::nullopt;
-    iterationShape.push_back(boundaries[index] / boundaries[index - 1]);
-  }
-
-  auto buildMap =
-      [&](llvm::ArrayRef<int64_t> shape,
-          llvm::ArrayRef<int64_t> prefixes) -> std::optional<mlir::AffineMap> {
-    llvm::SmallVector<mlir::AffineExpr, 4> results;
-    results.reserve(shape.size());
-    for (size_t logicalDim = 0; logicalDim < shape.size(); ++logicalDim) {
-      if (shape[logicalDim] == 1) {
-        results.push_back(mlir::getAffineConstantExpr(0, context));
-        continue;
-      }
-      auto beginIt = llvm::find(boundaries, prefixes[logicalDim]);
-      auto endIt = llvm::find(boundaries, prefixes[logicalDim + 1]);
-      if (beginIt == boundaries.end() || endIt == boundaries.end() ||
-          beginIt >= endIt)
-        return std::nullopt;
-      size_t begin = std::distance(boundaries.begin(), beginIt);
-      size_t end = std::distance(boundaries.begin(), endIt);
-      mlir::AffineExpr expression = mlir::getAffineConstantExpr(0, context);
-      for (size_t axis = begin; axis < end; ++axis)
-        expression = expression * iterationShape[axis] +
-                     mlir::getAffineDimExpr(axis, context);
-      results.push_back(expression);
-    }
-    return mlir::AffineMap::get(iterationShape.size(), 0, results, context);
-  };
-
-  std::optional<mlir::AffineMap> sourceMap =
-      buildMap(sourceShape, *sourcePrefixes);
-  std::optional<mlir::AffineMap> destMap = buildMap(destShape, *destPrefixes);
-  if (!sourceMap || !destMap)
-    return std::nullopt;
-  analysis::IndexRelationResult sourceRelation =
-      analysis::IndexRelation::fromAffineMap(*sourceMap, iterationShape,
-                                             sourceShape);
-  analysis::IndexRelationResult destRelation =
-      analysis::IndexRelation::fromAffineMap(*destMap, iterationShape,
-                                             destShape);
-  if (!sourceRelation.isExact() || !destRelation.isExact())
-    return std::nullopt;
-  return CanonicalReshapeMovementRelations{std::move(iterationShape),
-                                           std::move(*sourceRelation.relation),
-                                           std::move(*destRelation.relation)};
-}
 
 mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
 getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
@@ -666,11 +561,20 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
   const WaferPhysicalTensorInfo &destInfo = *destInfoStorage;
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "lowering-algorithm-phase", "getRelationMovementDescriptors",
-      "TransferRealizability::proveMappedTransfer",
-      op->getName().getStringRef());
-  if (mlir::failed(analysis::TransferRealizability::proveMappedTransfer(
-          sourceType, destType, iterationShape, iterationToSource,
-          iterationToDest)))
+      "compose-physical-access-relations", op->getName().getStringRef());
+  mlir::FailureOr<analysis::PhysicalAccessRelation> sourceAccess =
+      analysis::PhysicalAccessRelation::create(sourceType, iterationShape,
+                                               iterationToSource,
+                                               /*requireInjective=*/false);
+  mlir::FailureOr<analysis::PhysicalAccessRelation> destAccess =
+      analysis::PhysicalAccessRelation::create(destType, iterationShape,
+                                               iterationToDest,
+                                               /*requireInjective=*/true);
+  if (mlir::failed(sourceAccess) || mlir::failed(destAccess) ||
+      !sourceAccess->getPhysicalLayoutRelation().isByteAddressable() ||
+      !destAccess->getPhysicalLayoutRelation().isByteAddressable() ||
+      sourceAccess->getPhysicalLayoutRelation().getElementBitWidth() !=
+          destAccess->getPhysicalLayoutRelation().getElementBitWidth())
     return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
         rewriter, op, failureReason,
         llvm::Twine(opLabel)
@@ -695,23 +599,12 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
             .concat(" requires a static projected-affine IndexRelation")
             .str());
 
-  std::optional<StaticPhysicalOffsetCalculator> sourceOffsets =
-      StaticPhysicalOffsetCalculator::create(sourceType);
-  std::optional<StaticPhysicalOffsetCalculator> destOffsets =
-      StaticPhysicalOffsetCalculator::create(destType);
-  if (!sourceOffsets || !destOffsets)
-    return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" cannot construct static physical offset calculators")
-            .str());
-
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "lowering-algorithm-phase", "getRelationMovementDescriptors",
       "partition-symbolic-domain", op->getName().getStringRef());
   llvm::SmallVector<llvm::SmallVector<int64_t, 8>, 4> boundaries(
       iterationShape.size());
-  llvm::SmallVector<DirectChannelDecomposition, 4> decompositions(
+  llvm::SmallVector<DirectPeriodicDecomposition, 4> decompositions(
       iterationShape.size());
   for (auto [dim, size] : llvm::enumerate(iterationShape)) {
     if (size <= 0)
@@ -724,43 +617,79 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
     boundaries[dim].push_back(size);
   }
 
-  auto collectBlockedConstraint =
-      [&](mlir::MemRefType type, const WaferPhysicalTensorInfo &info,
+  auto collectLayoutConstraints =
+      [&](const analysis::PhysicalAccessRelation &access,
           llvm::ArrayRef<ProjectedCoordinate> map) -> bool {
-    if (!isBlockedLayout(info.layout))
-      return true;
-    if (type.getRank() <= 0 || info.cBlock <= 0)
+    llvm::ArrayRef<WaferPhysicalLayoutPiece> pieces =
+        access.getPhysicalLayoutRelation().getPieces();
+    llvm::ArrayRef<int64_t> logicalShape = access.getEndpointType().getShape();
+    if (map.size() != logicalShape.size())
       return false;
-    const ProjectedCoordinate &channel = map.back();
-    if (channel.iterationDim == -1)
-      return true;
-    if (channel.iterationDim == -2)
-      return isCanonicalBlockedChannelDecomposition(
-          channel, iterationShape, type.getShape().back(), info.cBlock);
-    int64_t iterationDim = channel.iterationDim;
-    if (!appendBlockedCategoryBoundaries(channel, iterationShape[iterationDim],
-                                         info, type.getShape().back(),
-                                         boundaries[iterationDim]))
-      return false;
-    bool direct = channel.multiplier == 1 && channel.offset == 0 &&
-                  iterationShape[iterationDim] == type.getShape().back();
-    DirectChannelDecomposition &decomposition = decompositions[iterationDim];
-    if (!direct) {
-      decomposition.blockedByGeneralMap = true;
-      return true;
+    for (unsigned logicalDim = 0; logicalDim < logicalShape.size();
+         ++logicalDim) {
+      int64_t logicalExtent = logicalShape[logicalDim];
+      llvm::SmallVector<int64_t, 2> positivePeriods;
+      bool nonTrivialPartition = false;
+      for (const WaferPhysicalLayoutPiece &piece : pieces) {
+        if (logicalDim >= piece.logicalLowerBounds.size() ||
+            logicalDim >= piece.logicalUpperBounds.size() ||
+            logicalDim >= piece.logicalTilePeriods.size())
+          return false;
+        int64_t period = piece.logicalTilePeriods[logicalDim];
+        nonTrivialPartition |=
+            piece.logicalLowerBounds[logicalDim] != 0 ||
+            piece.logicalUpperBounds[logicalDim] != logicalExtent || period > 0;
+        if (period > 0)
+          positivePeriods.push_back(period);
+      }
+      if (!nonTrivialPartition)
+        continue;
+      llvm::sort(positivePeriods);
+      positivePeriods.erase(
+          std::unique(positivePeriods.begin(), positivePeriods.end()),
+          positivePeriods.end());
+      if (positivePeriods.size() > 1)
+        return false;
+
+      const ProjectedCoordinate &coordinate = map[logicalDim];
+      if (coordinate.iterationDim == -1)
+        continue;
+      if (coordinate.iterationDim == -2) {
+        if (positivePeriods.size() != 1 ||
+            !isCanonicalPeriodicDecomposition(coordinate, iterationShape,
+                                              logicalExtent,
+                                              positivePeriods.front()))
+          return false;
+        continue;
+      }
+
+      int64_t iterationDim = coordinate.iterationDim;
+      if (!appendPhysicalPieceBoundaries(
+              coordinate, iterationShape[iterationDim], logicalDim,
+              logicalExtent, pieces, boundaries[iterationDim]))
+        return false;
+      bool direct = positivePeriods.size() == 1 && coordinate.multiplier == 1 &&
+                    coordinate.offset == 0 &&
+                    iterationShape[iterationDim] == logicalExtent;
+      DirectPeriodicDecomposition &decomposition = decompositions[iterationDim];
+      if (!direct) {
+        decomposition.requiresExplicitPartition = true;
+        continue;
+      }
+      if (decomposition.requested &&
+          decomposition.period != positivePeriods.front())
+        return false;
+      decomposition.requested = true;
+      decomposition.period = positivePeriods.front();
     }
-    if (decomposition.requested && decomposition.block != info.cBlock)
-      return false;
-    decomposition.requested = true;
-    decomposition.block = info.cBlock;
     return true;
   };
-  if (!collectBlockedConstraint(sourceType, sourceInfo, *sourceMap) ||
-      !collectBlockedConstraint(destType, destInfo, *destMap))
+  if (!collectLayoutConstraints(*sourceAccess, *sourceMap) ||
+      !collectLayoutConstraints(*destAccess, *destMap))
     return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
         rewriter, op, failureReason,
         llvm::Twine(opLabel)
-            .concat(" cannot partition blocked-layout channel pieces")
+            .concat(" cannot partition physical-layout relation pieces")
             .str());
 
   llvm::SmallVector<llvm::SmallVector<DimensionChoice, 4>, 4> choices(
@@ -768,19 +697,19 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
   for (int64_t dim = 0; dim < static_cast<int64_t>(iterationShape.size());
        ++dim) {
     int64_t size = iterationShape[dim];
-    const DirectChannelDecomposition &decomposition = decompositions[dim];
-    if (decomposition.requested && !decomposition.blockedByGeneralMap) {
-      int64_t fullBlocks = size / decomposition.block;
-      int64_t remainder = size % decomposition.block;
+    const DirectPeriodicDecomposition &decomposition = decompositions[dim];
+    if (decomposition.requested && !decomposition.requiresExplicitPartition) {
+      int64_t fullBlocks = size / decomposition.period;
+      int64_t remainder = size % decomposition.period;
       if (fullBlocks > 0) {
         DimensionChoice full;
-        full.axes.push_back({dim, 1, decomposition.block});
-        full.axes.push_back({dim, decomposition.block, fullBlocks});
+        full.axes.push_back({dim, 1, decomposition.period});
+        full.axes.push_back({dim, decomposition.period, fullBlocks});
         choices[dim].push_back(std::move(full));
       }
       if (remainder > 0) {
         DimensionChoice tail;
-        tail.base = fullBlocks * decomposition.block;
+        tail.base = fullBlocks * decomposition.period;
         tail.axes.push_back({dim, 1, remainder});
         choices[dim].push_back(std::move(tail));
       }
@@ -816,12 +745,13 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
   llvm::SmallVector<SymbolicAxis, 8> symbolicAxes;
 
   auto getPhysicalOffset =
-      [&](const StaticPhysicalOffsetCalculator &calculator,
-          llvm::ArrayRef<ProjectedCoordinate> map,
+      [&](const analysis::PhysicalAccessRelation &access,
           llvm::ArrayRef<int64_t> iteration) -> std::optional<int64_t> {
-    std::optional<llvm::SmallVector<int64_t, 4>> logical =
-        evaluateProjectedCoordinates(map, iteration);
-    return logical ? calculator.getByteOffset(*logical) : std::nullopt;
+    mlir::FailureOr<WaferPhysicalElementSpan> span =
+        access.getPhysicalElementSpan(iteration);
+    if (mlir::failed(span) || span->bitOffset < 0 || span->bitOffset % 8 != 0)
+      return std::nullopt;
+    return span->bitOffset / 8;
   };
 
   std::function<mlir::LogicalResult(int64_t, int64_t,
@@ -1043,9 +973,9 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
   visitChoices = [&](int64_t dim) -> mlir::LogicalResult {
     if (dim == static_cast<int64_t>(choices.size())) {
       std::optional<int64_t> sourceBase =
-          getPhysicalOffset(*sourceOffsets, *sourceMap, iterationBase);
+          getPhysicalOffset(*sourceAccess, iterationBase);
       std::optional<int64_t> destBase =
-          getPhysicalOffset(*destOffsets, *destMap, iterationBase);
+          getPhysicalOffset(*destAccess, iterationBase);
       if (!sourceBase || !destBase)
         return mlir::failure();
       llvm::SmallVector<DescriptorAxis, 8> descriptorAxes;
@@ -1060,9 +990,9 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
           return mlir::failure();
         nextIteration[axis.iterationDim] = *nextCoordinate;
         std::optional<int64_t> nextSource =
-            getPhysicalOffset(*sourceOffsets, *sourceMap, nextIteration);
+            getPhysicalOffset(*sourceAccess, nextIteration);
         std::optional<int64_t> nextDest =
-            getPhysicalOffset(*destOffsets, *destMap, nextIteration);
+            getPhysicalOffset(*destAccess, nextIteration);
         if (!nextSource || !nextDest)
           return mlir::failure();
         descriptorAxes.push_back(

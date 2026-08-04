@@ -133,6 +133,10 @@ artifact/buffering/worker tuple以及完整module文本。它证明candidate集�
 - logical `IndexRelation`保持layout-agnostic；encoding提供logical index到physical bit span的exact piecewise
   relation/segments，两者在当前IR epoch组合。Tensor/NTensor、Cx/NCx和未来encoding由同一query surface扩展，
   不增加layout-pair matcher、旁路segment cache或跨rewrite proof。
+- encoding piece由半开logical domain、单结果physical-bit-offset AffineMap和element bit width组成；
+  `PhysicalLayoutRelation`将piece union规范成exact Presburger relation，`PhysicalAccessRelation`再与logical relation
+  组合。metadata view通过两端组合relation全域相等证明，不再用`maxEnumeratedElements`逐点证明；大shape与小shape使用
+  相同算法，solver预算耗尽时fail closed。
 - 本轮全consumer审计按职责收敛为四类：logical view/transpose/broadcast/reshape只构造`IndexRelation`；
   movement与physical equivalence使用`PhysicalAccessRelation`组合两端encoding；footprint、valid/padding和bit span
   由encoding interface直接投影；所有placement/ABI/qualification的alignment经同一checked-LCM入口组合。
@@ -144,10 +148,10 @@ artifact/buffering/worker tuple以及完整module文本。它证明candidate集�
   直接构造exact movement descriptor。维度循环从内到外合并为最多三层 stride × iteration；
   多余维度、field-width、directional DMA endpoint约束或真实piece边界导致拆分时，先符号计数再在
   4096 command预算内materialize，超出则在生成Instr op前structured failure。
-- Cx/NCx的逻辑C固定为最后一维。符号planner只从computeWaferPhysicalTensorInfo取dtype决定的
-  CBlock、full-block数、retained/folded C0和256B bank alignment；full域把C分解为 block × lane，
-  tail域单独生成piece，NCx的N batch stride作为真实outer loop。不复制block/tail公式，不把
-  alignedC当logical dense stride。
+- Cx/NCx的逻辑C固定为最后一维。encoding owner按dtype决定CBlock，并把full-block周期、retained/folded
+  tail域、NCx per-N bank stride编码进physical-layout pieces；符号planner只消费piece domain、period和
+  composed physical offset，把full域分解为block × lane、把tail作为独立domain。不复制block/tail公式，
+  不把alignedC当logical dense stride。
 - RDMA只把DDR source一侧的loops写入descriptor，并证明SPM destination按同一组iteration连续；
   WDMA对称地要求SPM source连续，只编码DDR destination loops。GS同时保留两侧loops。
   directional endpoint不连续时只能在符号piece边界拆command，不得偷偷使用另一侧stride。
@@ -156,6 +160,9 @@ artifact/buffering/worker tuple以及完整module文本。它证明candidate集�
   fill/invalid-lane contract闭合。
 - 生产lowering不从per-element offset数组反向猜测loop。逐元素遍历只保留为focused differential
   test oracle；符号relation或layout piece无法证明时fail closed，不以大量中间segment作为fallback。
+- descriptor synthesis的base/stride采样改由两端`PhysicalAccessRelation`回答，分段边界来自encoding piece/block事实；
+  lowering只负责target三层loop、field width、directional-contiguous约束下的split/merge，不再拥有第二份physical
+  offset calculator或layout-pair公式。
 - 大partial-reduction只有在source init为typed identity、logical dimensions可映射native reduce selector且
   selected target profile存在closed opcode/kind/format tuple时，才用一条native reduce表达完整规则归约；否则
   cheap target gate在ordered expansion必然超过4096-op预算时拒绝。target tuple由target preflight和cheap gate

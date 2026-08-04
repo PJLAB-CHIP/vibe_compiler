@@ -174,8 +174,7 @@ IndexRelation::getProjectedAffineMap(MLIRContext *context) const {
   const IntegerRelation &disjunct = relation.getDisjunct(0);
   const unsigned destinationRank = getDestinationRank();
   const unsigned sourceRank = getSourceRank();
-  if (disjunct.getNumSymbolVars() != 0 ||
-      disjunct.getNumLocalVars() != 0)
+  if (disjunct.getNumSymbolVars() != 0 || disjunct.getNumLocalVars() != 0)
     return std::nullopt;
 
   llvm::SmallVector<AffineExpr, 4> results;
@@ -193,8 +192,7 @@ IndexRelation::getProjectedAffineMap(MLIRContext *context) const {
 
       bool hasOtherSource = false;
       for (unsigned other = 0; other < sourceRank; ++other) {
-        if (other != source &&
-            coefficients[destinationRank + other] != 0) {
+        if (other != source && coefficients[destinationRank + other] != 0) {
           hasOtherSource = true;
           break;
         }
@@ -218,11 +216,10 @@ IndexRelation::getProjectedAffineMap(MLIRContext *context) const {
           getAffineConstantExpr(-constant / sourceCoefficient, context);
       for (unsigned destination = 0; destination < destinationRank;
            ++destination) {
-        int64_t multiplier =
-            -coefficients[destination] / sourceCoefficient;
+        int64_t multiplier = -coefficients[destination] / sourceCoefficient;
         if (multiplier != 0)
-          expression = expression +
-                       getAffineDimExpr(destination, context) * multiplier;
+          expression =
+              expression + getAffineDimExpr(destination, context) * multiplier;
       }
       projected = expression;
       break;
@@ -605,6 +602,90 @@ IndexRelation::implies(const IndexRelation &other,
                      "implication requires exact relations");
   return IndexRelationQueryResult{
       IndexRelationStatus::Exact, relation.isSubsetOf(other.relation), {}};
+}
+
+std::optional<CanonicalReshapeRelations>
+getCanonicalReshapeRelations(mlir::MLIRContext *context,
+                             llvm::ArrayRef<int64_t> sourceShape,
+                             llvm::ArrayRef<int64_t> destinationShape) {
+  if (!context)
+    return std::nullopt;
+
+  auto getPrefixProducts = [](llvm::ArrayRef<int64_t> shape)
+      -> std::optional<llvm::SmallVector<int64_t, 4>> {
+    llvm::SmallVector<int64_t, 4> prefixes{1};
+    int64_t product = 1;
+    for (int64_t extent : shape) {
+      if (extent <= 0 || llvm::MulOverflow(product, extent, product))
+        return std::nullopt;
+      prefixes.push_back(product);
+    }
+    return prefixes;
+  };
+  std::optional<llvm::SmallVector<int64_t, 4>> sourcePrefixes =
+      getPrefixProducts(sourceShape);
+  std::optional<llvm::SmallVector<int64_t, 4>> destinationPrefixes =
+      getPrefixProducts(destinationShape);
+  if (!sourcePrefixes || !destinationPrefixes ||
+      sourcePrefixes->back() != destinationPrefixes->back())
+    return std::nullopt;
+
+  llvm::SmallVector<int64_t, 8> boundaries(sourcePrefixes->begin(),
+                                           sourcePrefixes->end());
+  boundaries.append(destinationPrefixes->begin(), destinationPrefixes->end());
+  llvm::sort(boundaries);
+  boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                   boundaries.end());
+  llvm::SmallVector<int64_t, 4> iterationShape;
+  iterationShape.reserve(boundaries.size() - 1);
+  for (size_t index = 1; index < boundaries.size(); ++index) {
+    if (boundaries[index - 1] <= 0 ||
+        boundaries[index] % boundaries[index - 1] != 0)
+      return std::nullopt;
+    iterationShape.push_back(boundaries[index] / boundaries[index - 1]);
+  }
+
+  auto buildMap =
+      [&](llvm::ArrayRef<int64_t> shape,
+          llvm::ArrayRef<int64_t> prefixes) -> std::optional<mlir::AffineMap> {
+    llvm::SmallVector<mlir::AffineExpr, 4> results;
+    results.reserve(shape.size());
+    for (size_t logicalDim = 0; logicalDim < shape.size(); ++logicalDim) {
+      if (shape[logicalDim] == 1) {
+        results.push_back(mlir::getAffineConstantExpr(0, context));
+        continue;
+      }
+      auto beginIt = llvm::find(boundaries, prefixes[logicalDim]);
+      auto endIt = llvm::find(boundaries, prefixes[logicalDim + 1]);
+      if (beginIt == boundaries.end() || endIt == boundaries.end() ||
+          beginIt >= endIt)
+        return std::nullopt;
+      size_t begin = std::distance(boundaries.begin(), beginIt);
+      size_t end = std::distance(boundaries.begin(), endIt);
+      mlir::AffineExpr expression = mlir::getAffineConstantExpr(0, context);
+      for (size_t axis = begin; axis < end; ++axis)
+        expression = expression * iterationShape[axis] +
+                     mlir::getAffineDimExpr(axis, context);
+      results.push_back(expression);
+    }
+    return mlir::AffineMap::get(iterationShape.size(), 0, results, context);
+  };
+
+  std::optional<mlir::AffineMap> sourceMap =
+      buildMap(sourceShape, *sourcePrefixes);
+  std::optional<mlir::AffineMap> destinationMap =
+      buildMap(destinationShape, *destinationPrefixes);
+  if (!sourceMap || !destinationMap)
+    return std::nullopt;
+  IndexRelationResult sourceRelation =
+      IndexRelation::fromAffineMap(*sourceMap, iterationShape, sourceShape);
+  IndexRelationResult destinationRelation = IndexRelation::fromAffineMap(
+      *destinationMap, iterationShape, destinationShape);
+  if (!sourceRelation.isExact() || !destinationRelation.isExact())
+    return std::nullopt;
+  return CanonicalReshapeRelations{std::move(iterationShape),
+                                   std::move(*sourceRelation.relation),
+                                   std::move(*destinationRelation.relation)};
 }
 
 } // namespace wafer::analysis

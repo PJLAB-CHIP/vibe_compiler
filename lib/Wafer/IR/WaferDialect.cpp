@@ -368,6 +368,144 @@ MemoryAttr::getPaddingElementCount(mlir::MemRefType type) const {
   return info->physicalElements - *valid;
 }
 
+mlir::FailureOr<int64_t>
+MemoryAttr::getPhysicalElementBitWidth(mlir::MemRefType type) const {
+  if (getWaferMemoryAttr(type) != *this)
+    return mlir::failure();
+  std::optional<WaferPhysicalTensorInfo> info =
+      computeWaferPhysicalTensorInfo(type);
+  std::optional<int64_t> bitWidth = getElementBitWidth(type.getElementType());
+  if (!info || info->physicalBytes < 0 || !bitWidth || *bitWidth <= 0)
+    return mlir::failure();
+  return *bitWidth;
+}
+
+mlir::FailureOr<llvm::SmallVector<WaferPhysicalLayoutPiece, 2>>
+MemoryAttr::getPhysicalLayoutPieces(mlir::MemRefType type) const {
+  if (getWaferMemoryAttr(type) != *this || !type.hasStaticShape())
+    return mlir::failure();
+  std::optional<WaferPhysicalTensorInfo> infoStorage =
+      computeWaferPhysicalTensorInfo(type);
+  std::optional<int64_t> elementBits =
+      getElementBitWidth(type.getElementType());
+  if (!infoStorage || infoStorage->physicalBytes < 0 || !elementBits ||
+      *elementBits <= 0)
+    return mlir::failure();
+  const WaferPhysicalTensorInfo &info = *infoStorage;
+  llvm::ArrayRef<int64_t> shape = type.getShape();
+  mlir::MLIRContext *context = type.getContext();
+
+  llvm::SmallVector<WaferPhysicalLayoutPiece, 2> pieces;
+  auto addPiece = [&](llvm::ArrayRef<int64_t> lower,
+                      llvm::ArrayRef<int64_t> upper,
+                      llvm::ArrayRef<int64_t> periods,
+                      mlir::AffineExpr bitOffset) -> mlir::LogicalResult {
+    if (lower.size() != shape.size() || upper.size() != shape.size() ||
+        periods.size() != shape.size())
+      return mlir::failure();
+    for (auto [dim, bounds] : llvm::enumerate(llvm::zip(lower, upper))) {
+      auto [low, high] = bounds;
+      if (low < 0 || high < low || high > shape[dim])
+        return mlir::failure();
+      if (low == high)
+        return mlir::success();
+    }
+    if (llvm::any_of(periods, [](int64_t period) { return period < 0; }))
+      return mlir::failure();
+    pieces.push_back(
+        {llvm::SmallVector<int64_t, 4>(lower),
+         llvm::SmallVector<int64_t, 4>(upper),
+         llvm::SmallVector<int64_t, 4>(periods),
+         mlir::AffineMap::get(shape.size(), 0, bitOffset, context)});
+    return mlir::success();
+  };
+
+  llvm::SmallVector<int64_t, 4> lower(shape.size(), 0);
+  llvm::SmallVector<int64_t, 4> upper(shape);
+  llvm::SmallVector<int64_t, 4> noPeriods(shape.size(), 0);
+  if (getLayout() == MemLayout::Tensor || getLayout() == MemLayout::NTensor) {
+    llvm::SmallVector<int64_t, 4> elementStrides;
+    int64_t ignoredViewOffset = 0;
+    if (mlir::failed(mlir::getStridesAndOffset(type, elementStrides,
+                                               ignoredViewOffset)) ||
+        elementStrides.size() != shape.size())
+      return mlir::failure();
+    int64_t strideUnitBits = info.bitPackedElement ? *elementBits : 0;
+    if (!info.bitPackedElement &&
+        (!checkedMul(info.elementBytes, int64_t{8}, strideUnitBits) ||
+         strideUnitBits <= 0))
+      return mlir::failure();
+    mlir::AffineExpr bitOffset = mlir::getAffineConstantExpr(0, context);
+    for (auto [dim, stride] : llvm::enumerate(elementStrides)) {
+      int64_t strideBits = 0;
+      if (stride == mlir::ShapedType::kDynamic || stride < 0 ||
+          !checkedMul(stride, strideUnitBits, strideBits))
+        return mlir::failure();
+      bitOffset = bitOffset + mlir::getAffineDimExpr(dim, context) * strideBits;
+    }
+    if (mlir::failed(addPiece(lower, upper, noPeriods, bitOffset)))
+      return mlir::failure();
+    return pieces;
+  }
+
+  if ((getLayout() != MemLayout::Cx && getLayout() != MemLayout::NCx) ||
+      shape.empty() || info.bitPackedElement || info.elementBytes <= 0 ||
+      info.cBlock <= 0 || info.cxBlocks < 0 || info.c0 < 0)
+    return mlir::failure();
+
+  int64_t storageBits = 0;
+  int64_t fullC = 0;
+  int64_t blockedOuterElements =
+      getLayout() == MemLayout::NCx ? info.hwElements : info.outerElements;
+  int64_t blockStrideElements = 0;
+  int64_t fullBlockElements = 0;
+  if (!checkedMul(info.elementBytes, int64_t{8}, storageBits) ||
+      !checkedMul(info.cxBlocks, info.cBlock, fullC) ||
+      !checkedMul(blockedOuterElements, info.cBlock, blockStrideElements) ||
+      !checkedMul(info.cxBlocks, blockStrideElements, fullBlockElements) ||
+      storageBits <= 0 || blockedOuterElements <= 0)
+    return mlir::failure();
+
+  const unsigned channelDim = shape.size() - 1;
+  mlir::AffineExpr channel = mlir::getAffineDimExpr(channelDim, context);
+  mlir::AffineExpr outer = mlir::getAffineConstantExpr(0, context);
+  const unsigned firstOuterDim = getLayout() == MemLayout::NCx ? 1 : 0;
+  for (unsigned dim = firstOuterDim; dim < channelDim; ++dim)
+    outer = outer * shape[dim] + mlir::getAffineDimExpr(dim, context);
+
+  mlir::AffineExpr batchBase = mlir::getAffineConstantExpr(0, context);
+  if (getLayout() == MemLayout::NCx && shape.size() > 1)
+    batchBase = mlir::getAffineDimExpr(0, context) * info.batchElements;
+
+  const int64_t logicalC = shape.back();
+  const int64_t fullUpper = std::min(logicalC, fullC);
+  if (fullUpper > 0) {
+    llvm::SmallVector<int64_t, 4> fullUpperBounds(upper);
+    llvm::SmallVector<int64_t, 4> fullPeriods(noPeriods);
+    fullUpperBounds[channelDim] = fullUpper;
+    fullPeriods[channelDim] = info.cBlock;
+    mlir::AffineExpr physicalElements =
+        batchBase + channel.floorDiv(info.cBlock) * blockStrideElements +
+        outer * info.cBlock + channel % info.cBlock;
+    if (mlir::failed(addPiece(lower, fullUpperBounds, fullPeriods,
+                              physicalElements * storageBits)))
+      return mlir::failure();
+  }
+
+  if (fullC < logicalC) {
+    if (info.c0 <= 0)
+      return mlir::failure();
+    llvm::SmallVector<int64_t, 4> tailLowerBounds(lower);
+    tailLowerBounds[channelDim] = fullC;
+    mlir::AffineExpr physicalElements =
+        batchBase + fullBlockElements + outer * info.c0 + channel - fullC;
+    if (mlir::failed(addPiece(tailLowerBounds, upper, noPeriods,
+                              physicalElements * storageBits)))
+      return mlir::failure();
+  }
+  return pieces;
+}
+
 mlir::FailureOr<WaferPhysicalElementSpan> MemoryAttr::getPhysicalElementSpan(
     mlir::MemRefType type, llvm::ArrayRef<int64_t> logicalIndices) const {
   if (getWaferMemoryAttr(type) != *this)

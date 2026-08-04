@@ -61,10 +61,10 @@ delinearize(int64_t linear, llvm::ArrayRef<int64_t> shape) {
 
 static mlir::FailureOr<WaferPhysicalElementSpan> getEndpointSpan(
     mlir::MemRefType type, llvm::ArrayRef<int64_t> logicalPoint,
-    WaferPhysicalEncodingAttrInterface encoding,
+    const PhysicalLayoutRelation &physicalLayout,
     const std::optional<WaferStaticPhysicalOffsetCalculator> &calculator) {
   if (!calculator)
-    return encoding.getPhysicalElementSpan(type, logicalPoint);
+    return physicalLayout.getPhysicalElementSpan(logicalPoint);
   int64_t bitOffset = 0;
   int64_t bitLength = 0;
   if (llvm::MulOverflow(calculator->getByteOffsetForValidIndices(logicalPoint),
@@ -103,20 +103,18 @@ mlir::FailureOr<PhysicalAccessRelation> PhysicalAccessRelation::create(
       !relationRange.isSubsetOf(*endpointDomain.set))
     return mlir::failure();
 
-  auto encoding = mlir::dyn_cast_or_null<WaferPhysicalEncodingAttrInterface>(
-      endpointType.getMemorySpace());
-  if (!encoding)
+  mlir::FailureOr<PhysicalLayoutRelation> physicalLayout =
+      PhysicalLayoutRelation::create(endpointType);
+  if (mlir::failed(physicalLayout))
     return mlir::failure();
-  mlir::FailureOr<int64_t> footprint =
-      encoding.getPhysicalFootprintBytes(endpointType);
-  mlir::FailureOr<int64_t> alignment =
-      encoding.getMinimumAlignmentBytes(endpointType);
-  mlir::FailureOr<int64_t> valid = encoding.getValidElementCount(endpointType);
-  mlir::FailureOr<int64_t> padding =
-      encoding.getPaddingElementCount(endpointType);
-  if (mlir::failed(footprint) || mlir::failed(alignment) ||
-      mlir::failed(valid) || mlir::failed(padding) || *footprint < 0 ||
-      *alignment <= 0 || *valid < 0 || *padding < 0)
+  IndexRelationResult physicalBitOffsets = iterationToLogical.compose(
+      physicalLayout->getLogicalToPhysicalBitOffset());
+  // Both component relations are exact functions. The encoding interface owns
+  // non-overlap of valid physical element spans, so writer injectivity is
+  // already established by the logical relation check above. Re-proving the
+  // composed blocked relation with a generic solver here is both redundant and
+  // a candidate-hot-path scalability hazard.
+  if (!physicalBitOffsets.isExact())
     return mlir::failure();
 
   mlir::AffineMap projectedAffineMap =
@@ -131,12 +129,18 @@ mlir::FailureOr<PhysicalAccessRelation> PhysicalAccessRelation::create(
           iterationToLogical.isEquivalentTo(*canonical.get()).isProvenTrue();
   }
 
+  const int64_t footprint = physicalLayout->getPhysicalFootprintBytes();
+  const int64_t alignment = physicalLayout->getMinimumAlignmentBytes();
+  const int64_t valid = physicalLayout->getValidElementCount();
+  const int64_t padding = physicalLayout->getPaddingElementCount();
+
   return PhysicalAccessRelation(
       endpointType, llvm::SmallVector<int64_t, 4>(iterationShape),
-      iterationToLogical, encoding,
+      iterationToLogical, std::move(*physicalLayout),
+      std::move(*physicalBitOffsets.relation),
       WaferStaticPhysicalOffsetCalculator::create(endpointType),
-      projectedAffineMap, canonicalLinearOrder, *footprint, *alignment, *valid,
-      *padding);
+      projectedAffineMap, canonicalLinearOrder, footprint, alignment, valid,
+      padding);
 }
 
 mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
@@ -202,7 +206,21 @@ PhysicalAccessRelation::getPhysicalElementSpan(
       getLogicalPoint(iterationPoint);
   if (mlir::failed(logical))
     return mlir::failure();
-  return getEndpointSpan(endpointType, *logical, encoding, offsetCalculator);
+  return getEndpointSpan(endpointType, *logical, physicalLayout,
+                         offsetCalculator);
+}
+
+IndexRelationQueryResult PhysicalAccessRelation::hasSamePhysicalElementMapping(
+    const PhysicalAccessRelation &other) const {
+  if (iterationShape != other.iterationShape)
+    return IndexRelationQueryResult{IndexRelationStatus::Invalid, std::nullopt,
+                                    "physical mappings require the same "
+                                    "iteration domain"};
+  if (physicalLayout.getElementBitWidth() !=
+      other.physicalLayout.getElementBitWidth())
+    return IndexRelationQueryResult{IndexRelationStatus::Exact, false, {}};
+  return iterationToPhysicalBitOffset.isEquivalentTo(
+      other.iterationToPhysicalBitOffset);
 }
 
 } // namespace wafer::analysis

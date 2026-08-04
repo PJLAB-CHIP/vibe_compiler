@@ -71,19 +71,15 @@ struct MovementDescriptorPair {
 
 enum class MovementEngine { RDMA, WDMA, GatherScatter };
 
-struct CanonicalReshapeMovementRelations {
-  llvm::SmallVector<int64_t, 4> iterationShape;
-  analysis::IndexRelation iterationToSource;
-  analysis::IndexRelation iterationToDest;
-};
+using CanonicalReshapeMovementRelations = analysis::CanonicalReshapeRelations;
 
-std::optional<CanonicalReshapeMovementRelations>
+inline std::optional<CanonicalReshapeMovementRelations>
 getCanonicalReshapeMovementRelations(mlir::MLIRContext *context,
                                      llvm::ArrayRef<int64_t> sourceShape,
-                                     llvm::ArrayRef<int64_t> destShape);
-
-using StaticPhysicalOffsetCalculator =
-    wafer::WaferStaticPhysicalOffsetCalculator;
+                                     llvm::ArrayRef<int64_t> destShape) {
+  return analysis::getCanonicalReshapeRelations(context, sourceShape,
+                                                destShape);
+}
 
 std::optional<int64_t>
 getStaticPositiveElementCount(llvm::ArrayRef<int64_t> shape);

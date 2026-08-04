@@ -92,8 +92,9 @@ def Wafer_MemoryAttr : AttrDef<Wafer_Dialect, "Memory", [
     space contains the buffer and which physical layout family the buffer uses.
     It does not encode a physical SPM offset, runtime handle, packet field, or
     ABI descriptor. Its physical encoding interface derives the static
-    footprint, natural alignment, logical valid domain, physical padding, and
-    per-element physical bit segment from the memref type and this attribute.
+    footprint, natural alignment, logical valid domain, physical padding,
+    exact logical-to-physical bit-offset pieces, and per-element physical bit
+    segment from the memref type and this attribute.
   }];
 
   let parameters = (ins

@@ -192,6 +192,22 @@ struct IndexRelationQueryResult {
   }
 };
 
+/// A common rectangular iteration domain and two projected-affine mappings
+/// that express the canonical row-major correspondence between equal-element
+/// static shapes. Singleton dimensions are represented by constant-zero map
+/// results. This is shared by physical-equivalence proof and descriptor
+/// synthesis so neither rebuilds reshape semantics independently.
+struct CanonicalReshapeRelations {
+  llvm::SmallVector<int64_t, 4> iterationShape;
+  IndexRelation iterationToSource;
+  IndexRelation iterationToDest;
+};
+
+std::optional<CanonicalReshapeRelations>
+getCanonicalReshapeRelations(mlir::MLIRContext *context,
+                             llvm::ArrayRef<int64_t> sourceShape,
+                             llvm::ArrayRef<int64_t> destinationShape);
+
 } // namespace wafer::analysis
 
 #endif // WAFER_ANALYSIS_PHYSICALDATAFLOW_INDEXRELATION_H

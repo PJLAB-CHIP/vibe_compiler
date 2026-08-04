@@ -24,8 +24,8 @@ using wafer::analysis::IndexRelationResult;
 using wafer::analysis::IndexRelationStatus;
 using wafer::analysis::IndexSetResult;
 using wafer::analysis::PhysicalAccessRelation;
+using wafer::analysis::PhysicalLayoutRelation;
 using wafer::analysis::TransferRealizability;
-using wafer::analysis::TransferRealizabilityLimits;
 
 TEST(IndexRelationTest, RepresentsIdentityPermutationAndBroadcastExactly) {
   IndexRelationResult identity = IndexRelation::identity({2, 3});
@@ -156,6 +156,45 @@ TEST(PhysicalAccessRelationTest,
   EXPECT_TRUE(mlir::failed(PhysicalAccessRelation::create(
       broadcastEndpoint, {4, 97}, *broadcast.get(),
       /*requireInjective=*/true)));
+}
+
+TEST(PhysicalLayoutRelationTest,
+     NormalizesBlockedEncodingPiecesIntoExactPresburgerMap) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+  auto memory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                       wafer::MemLayout::Cx);
+  mlir::MemRefType type =
+      mlir::MemRefType::get({2, 17, 197}, mlir::Float16Type::get(&context),
+                            mlir::MemRefLayoutAttrInterface{}, memory);
+
+  mlir::FailureOr<PhysicalLayoutRelation> layout =
+      PhysicalLayoutRelation::create(type);
+  ASSERT_TRUE(mlir::succeeded(layout));
+  ASSERT_EQ(layout->getPieces().size(), 2u);
+  EXPECT_EQ(layout->getPieces()[0].logicalTilePeriods,
+            (llvm::SmallVector<int64_t, 4>{0, 0, 64}));
+  EXPECT_EQ(layout->getPieces()[1].logicalTilePeriods,
+            (llvm::SmallVector<int64_t, 4>{0, 0, 0}));
+  EXPECT_TRUE(
+      layout->getLogicalToPhysicalBitOffset().isFunctional().isProvenTrue());
+  EXPECT_TRUE(
+      layout->getLogicalToPhysicalBitOffset().isInjective().isProvenTrue());
+
+  std::optional<wafer::WaferStaticPhysicalOffsetCalculator> calculator =
+      wafer::WaferStaticPhysicalOffsetCalculator::create(type);
+  ASSERT_TRUE(calculator);
+  for (llvm::SmallVector<int64_t, 4> point :
+       {llvm::SmallVector<int64_t, 4>{0, 3, 63},
+        llvm::SmallVector<int64_t, 4>{0, 3, 64},
+        llvm::SmallVector<int64_t, 4>{1, 16, 196}}) {
+    std::optional<int64_t> byteOffset = calculator->getByteOffset(point);
+    ASSERT_TRUE(byteOffset);
+    EXPECT_TRUE(layout->getLogicalToPhysicalBitOffset().contains(
+        point, {*byteOffset * 8}));
+  }
 }
 
 TEST(IndexRelationTest, ProjectedAffineMapIsDerivedAndFailsClosed) {
@@ -388,10 +427,9 @@ TEST(IndexRelationTest, ProvesCurrentViewDmaGatherScatterAndStagedRoutes) {
   EXPECT_TRUE(mlir::failed(TransferRealizability::proveMetadataView(
       makeType({2, 3}, spmTensor), makeType({3, 2}, spmTensor),
       *permutation.get(), /*destinationMayWrite=*/true)));
-  EXPECT_TRUE(mlir::failed(TransferRealizability::proveGatherScatter(
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveGatherScatter(
       makeType({2, 3}, spmTensor), makeType({3, 2}, spmTensor),
-      *permutation.get(),
-      TransferRealizabilityLimits{/*maxEnumeratedElements=*/3})));
+      *permutation.get())));
 
   IndexRelationResult broadcast = IndexRelation::fromAffineMap(
       mlir::AffineMap::get(2, 0, {d1}, &context), {4, 3}, {3});
@@ -407,6 +445,46 @@ TEST(IndexRelationTest, ProvesCurrentViewDmaGatherScatterAndStagedRoutes) {
   EXPECT_TRUE(mlir::failed(TransferRealizability::proveMetadataView(
       makeType({3}, spmTensor), makeType({4, 3}, spmTensor), *broadcast.get(),
       /*destinationMayWrite=*/true)));
+}
+
+TEST(PhysicalAccessRelationTest,
+     ProvesBlockedReshapeEquivalenceWithoutElementEnumeration) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+  mlir::Type f16 = mlir::Float16Type::get(&context);
+  auto cx = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                   wafer::MemLayout::Cx);
+  auto ncx = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                    wafer::MemLayout::NCx);
+  auto makeType = [&](llvm::ArrayRef<int64_t> shape, wafer::MemoryAttr memory) {
+    return mlir::MemRefType::get(shape, f16, mlir::MemRefLayoutAttrInterface{},
+                                 memory);
+  };
+
+  EXPECT_TRUE(
+      mlir::succeeded(TransferRealizability::proveStaticReshapeMetadataView(
+          makeType({2, 64}, cx), makeType({1, 2, 64}, cx),
+          /*destinationMayWrite=*/true)));
+  EXPECT_TRUE(
+      mlir::succeeded(TransferRealizability::proveStaticReshapeMetadataView(
+          makeType({2, 3, 64}, ncx), makeType({2, 1, 3, 64}, ncx),
+          /*destinationMayWrite=*/true)));
+  EXPECT_TRUE(
+      mlir::failed(TransferRealizability::proveStaticReshapeMetadataView(
+          makeType({2, 65}, cx), makeType({5, 26}, cx),
+          /*destinationMayWrite=*/true)));
+
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr d1 = mlir::getAffineDimExpr(1, &context);
+  IndexRelationResult largeTranspose = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(2, 0, {d1, d0}, &context), {4096, 4096},
+      {4096, 4096});
+  ASSERT_TRUE(largeTranspose.isExact());
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveGatherScatter(
+      makeType({4096, 4096}, cx), makeType({4096, 4096}, cx),
+      *largeTranspose.get())));
 }
 
 TEST(IndexRelationTest, ResolvesMixedSliceOperandsWithValueBounds) {

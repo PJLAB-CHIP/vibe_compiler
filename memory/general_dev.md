@@ -1252,5 +1252,9 @@
 - blocked layout若同时携带非identity MLIR memref layout，必须由显式组合合同解释；当前没有该合同就调用
   `computeWaferPhysicalTensorInfo`或physical encoding interface确认失败关闭。generic reshape/subview不能仅凭element
   count或相同memory space认定为metadata alias。
+- encoding新增或修改physical-layout piece时，owner测试要用独立坐标oracle覆盖完整valid domain，检查piece domain
+  覆盖/互斥、element start无碰撞、span不越footprint和byte-addressability；production consumer组合piece relation，
+  不在每个candidate上重复穷举坐标或重证encoding固有的注入性。metadata view比较两端组合physical relation全域相等，
+  descriptor lowering从同一relation取offset、从piece period取符号分段。
 - focused回归至少包含Tensor/NTensor/Cx/NCx全pair、F16/BF16/F32/I8、跨CBlock点、C0/tail和per-N padding，另跑
   independent coordinate oracle、memory alignment lit、mapped movement、target/model codec及source-to-instruction链路。

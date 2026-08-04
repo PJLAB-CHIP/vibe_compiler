@@ -785,11 +785,12 @@
   `maxEnumeratedElements`耗尽被结构化拒绝；提高budget会把analysis成本绑定tensor元素数。
 - 根因：已经由canonical row-major relation和encoding合同表达的全域性质仍按logical element逐点取
   Presburger sample、physical span，错误地把测试oracle实现当production proof算法。
-- 修复模式：先证明relation与canonical static reshape/identity等价、两端valid domain exact cover、encoding为
-  canonical compact physical map，再只用checked footprint、element bit width和首尾代表span完成代数证明；只有
-  非canonical/piecewise map才在明确hard cap内枚举，cap耗尽fail closed。
-- 防复发：同一route测试同时覆盖小shape逐点oracle、超过默认cap的大canonical shape和非canonical超预算负例；
-  scale source必须实际经过该proof，不能只跑手写fixture。
+- 修复模式：encoding以半开logical domain和physical-bit-offset AffineMap给出exact pieces，analysis将piece union
+  规范成Presburger physical-layout relation，再与logical `IndexRelation`组合。metadata view比较两端组合relation的
+  全域相等；movement从同一relation和piece周期构造descriptor。production不保留canonical或noncanonical的逐元素
+  fallback，表达或solver预算不足时统一fail closed。
+- 防复发：同一route测试同时覆盖小shape独立逐点oracle和4096级大shape；大、小shape必须经过同一relation算法。
+  逐元素offset遍历只能存在于test oracle，不能由调高budget重新进入proof或lowering。
 
 ## 2026-07-20 scale replay必须绑定同一发布代次的program payload与reference
 
@@ -2315,6 +2316,9 @@
 - 修复模式：`IndexRelation`保持layout-agnostic，在当前IR epoch与endpoint encoding组合成可重算的physical access
   analysis；footprint/span/padding由encoding拥有，policy与allocation alignment经共享checked LCM投影。Cx/NCx上的
   rank-0、bitpacked和非identity memref layout统一失败；generic collapse/expand只对compact Tensor/NTensor折叠。
+  encoding owner以exact pieces承担valid span不重叠合同，并由独立慢oracle穷举小shape验证；候选热路径只组合relation和
+  logical writer injectivity，不为每个candidate重复调用通用solver重证同一encoding注入性，否则4096级blocked relation
+  会重新形成明显的solver性能悬崖。
 - 防复发：layout审计必须覆盖candidate、view/alias、SPM/DDR、lifetime/effect、cost、Instr、target和model，而不只看
   RDMA/WDMA/TDMA。跨Tensor/NTensor/Cx/NCx、dtype block边界、C0和tail用独立慢oracle做differential；普通consumer
   不得出现第二份Cx/NCx offset/padding公式，也不得用`max(alignment)`代替LCM。

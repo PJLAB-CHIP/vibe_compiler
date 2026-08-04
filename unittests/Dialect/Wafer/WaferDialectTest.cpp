@@ -114,12 +114,15 @@ SlowPhysicalLayout slowPhysicalLayout(const SlowLayoutCase &testCase) {
     return result;
   }
 
-  result.hwElements = slowProduct(
-      llvm::ArrayRef<int64_t>(testCase.shape).drop_front().drop_back());
-  result.outerElements = testCase.shape.front() * result.hwElements;
+  int64_t n = testCase.shape.size() > 1 ? testCase.shape.front() : 1;
+  llvm::ArrayRef<int64_t> hwShape;
+  if (testCase.shape.size() > 1)
+    hwShape = llvm::ArrayRef<int64_t>(testCase.shape).drop_front().drop_back();
+  result.hwElements = slowProduct(hwShape);
+  result.outerElements = n * result.hwElements;
   result.batchElements =
       slowAlignUp(result.hwElements * result.alignedC, bankElements);
-  result.physicalElements = testCase.shape.front() * result.batchElements;
+  result.physicalElements = n * result.batchElements;
   return result;
 }
 
@@ -164,10 +167,14 @@ int64_t slowPhysicalElementOffset(const SlowLayoutCase &testCase,
            outer * layout.cBlock + channelOffset;
   }
 
-  int64_t n = indices.front();
-  int64_t hw = slowRowMajorIndex(
-      llvm::ArrayRef<int64_t>(testCase.shape).drop_front().drop_back(),
-      indices.drop_front().drop_back());
+  int64_t n = testCase.shape.size() > 1 ? indices.front() : 0;
+  llvm::ArrayRef<int64_t> hwShape;
+  llvm::ArrayRef<int64_t> hwIndices;
+  if (testCase.shape.size() > 1) {
+    hwShape = llvm::ArrayRef<int64_t>(testCase.shape).drop_front().drop_back();
+    hwIndices = indices.drop_front().drop_back();
+  }
+  int64_t hw = slowRowMajorIndex(hwShape, hwIndices);
   int64_t batchBase = n * layout.batchElements;
   if (isTail)
     return batchBase + layout.fullBlocks * layout.hwElements * layout.cBlock +
@@ -625,6 +632,12 @@ TEST(WaferDialectTest, PhysicalLayoutMatchesIndependentSlowCoordinateOracle) {
        wafer::MemLayout::NCx,
        TestElementKind::F32,
        4,
+       false},
+      {"ncx-f16-rank1-folded-tail",
+       {97},
+       wafer::MemLayout::NCx,
+       TestElementKind::F16,
+       2,
        false},
       {"ncx-f32-rank3-block",
        {2, 3, 64},

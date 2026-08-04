@@ -3,8 +3,7 @@
 #ifndef WAFER_ANALYSIS_PHYSICALDATAFLOW_PHYSICALACCESSRELATION_H
 #define WAFER_ANALYSIS_PHYSICALDATAFLOW_PHYSICALACCESSRELATION_H
 
-#include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
-#include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Analysis/PhysicalDataflow/PhysicalLayoutRelation.h"
 
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -48,19 +47,32 @@ public:
   mlir::MemRefType getEndpointType() const { return endpointType; }
   llvm::ArrayRef<int64_t> getIterationShape() const { return iterationShape; }
   const IndexRelation &getLogicalRelation() const { return iterationToLogical; }
+  const PhysicalLayoutRelation &getPhysicalLayoutRelation() const {
+    return physicalLayout;
+  }
+  const IndexRelation &getPhysicalBitOffsetRelation() const {
+    return iterationToPhysicalBitOffset;
+  }
+
+  /// Prove that two endpoints map the same iteration domain to the same
+  /// physical element spans relative to their respective view bases.
+  IndexRelationQueryResult
+  hasSamePhysicalElementMapping(const PhysicalAccessRelation &other) const;
 
 private:
   PhysicalAccessRelation(
       mlir::MemRefType endpointType,
       llvm::SmallVector<int64_t, 4> iterationShape,
-      IndexRelation iterationToLogical,
-      WaferPhysicalEncodingAttrInterface encoding,
+      IndexRelation iterationToLogical, PhysicalLayoutRelation physicalLayout,
+      IndexRelation iterationToPhysicalBitOffset,
       std::optional<WaferStaticPhysicalOffsetCalculator> offsetCalculator,
       mlir::AffineMap projectedAffineMap, bool canonicalLinearOrder,
       int64_t physicalFootprintBytes, int64_t minimumAlignmentBytes,
       int64_t validElementCount, int64_t paddingElementCount)
       : endpointType(endpointType), iterationShape(std::move(iterationShape)),
-        iterationToLogical(std::move(iterationToLogical)), encoding(encoding),
+        iterationToLogical(std::move(iterationToLogical)),
+        physicalLayout(std::move(physicalLayout)),
+        iterationToPhysicalBitOffset(std::move(iterationToPhysicalBitOffset)),
         offsetCalculator(std::move(offsetCalculator)),
         projectedAffineMap(projectedAffineMap),
         canonicalLinearOrder(canonicalLinearOrder),
@@ -72,7 +84,8 @@ private:
   mlir::MemRefType endpointType;
   llvm::SmallVector<int64_t, 4> iterationShape;
   IndexRelation iterationToLogical;
-  WaferPhysicalEncodingAttrInterface encoding;
+  PhysicalLayoutRelation physicalLayout;
+  IndexRelation iterationToPhysicalBitOffset;
   std::optional<WaferStaticPhysicalOffsetCalculator> offsetCalculator;
   mlir::AffineMap projectedAffineMap;
   bool canonicalLinearOrder = false;

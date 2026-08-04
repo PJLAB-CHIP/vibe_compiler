@@ -117,7 +117,7 @@ public:
          dim < static_cast<int64_t>(logicalIndices.size()) - 1; ++dim)
       outerIndex += logicalIndices[dim] * linearStrides[dim];
 
-    if (info.layout == MemLayout::NCx)
+    if (info.layout == MemLayout::NCx && logicalIndices.size() > 1)
       byteOffset =
           logicalIndices.front() * info.batchElements * info.elementBytes;
     if (logicalC < fullC) {

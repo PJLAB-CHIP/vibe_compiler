@@ -287,16 +287,31 @@ physical range，movement lowering读取ordered segments与stride loops，cost�
 traffic envelope，target/model读取已验证的physical span。logical payload、physical allocation和transport
 traffic是三个不同量，不能因为都以byte表示就互相替代。
 
-当前实现以`PhysicalAccessRelation`作为上述组合查询的library入口：构造时证明logical relation覆盖完整
-iteration domain、range不越过endpoint logical domain，并按consumer要求证明functional/injective；点查询优先
-执行从relation投影出的AffineMap，canonical reshape再使用线性序关系，其余exact relation才进入Presburger点求值。
-最终地址始终由encoding的physical bit-span接口给出，analysis本身不复制Cx/NCx公式。
+encoding interface以半开logical rectangular domain加单结果AffineMap返回exact physical-layout pieces；map结果是相对
+当前view base的physical bit offset，element bit width、footprint、valid/padding和alignment仍是同一interface的typed
+投影。Tensor/NTensor产生一个static-stride piece；Cx/NCx按full-block与retained-tail语义产生最多两个piece，block中的
+`floorDiv`/`mod`保留为MLIR affine/Presburger local variable，不展开为logical element。piece union必须覆盖完整valid
+domain、是functional且对可寻址element start injective，offset加element width不得越过footprint。
+
+`PhysicalLayoutRelation`把这些encoding-owned pieces规范成exact
+`logical index -> physical bit offset` Presburger relation；`PhysicalAccessRelation`再组合
+`iteration -> logical index`，得到`iteration -> physical bit offset`。构造时证明logical relation覆盖完整iteration
+domain、range不越过endpoint logical domain，并按consumer要求证明functional/injective。点查询只用于diagnostic和测试，
+优先执行从logical relation投影出的AffineMap或canonical reshape；production legality不按element count遍历。
+
+metadata view的通用判定比较同一iteration domain上的两条组合physical relation：element width、view base、memory space和
+footprint兼容，并且source/destination physical-offset relation全域相等时才能alias；Presburger通过“offset不等反例集合为空”
+完成证明。这样blocked reshape不按layout pair或shape写特例：能证明则保留metadata view，不能证明则保留或materialize
+显式movement。descriptor synthesis从相同组合relation取base/stride，并按encoding piece、block period、tail和target三层
+loop/field budget分段、合并；它不能另建Cx/NCx地址公式。solver只负责exact legality/equivalence，最少command选择仍属于
+target-aware descriptor synthesis和cost。
 
 encoding/type组合同时承担结构门禁。Cx/NCx只接受rank大于零、非bitpacked、identity memref layout的typed
 buffer；带第二套strided/offset memref view的blocked buffer不能由当前type唯一解释，因此在footprint、alignment、
 span和composed-relation查询处统一失败。需要这种view时必须保留logical `IndexRelation`并显式materialize movement，
 不能让generic memref view悄悄改变blocked地址。Tensor/NTensor上的标准collapse/expand仍可作为metadata view；
-blocked layout上的同类折叠只有经过上述physical equivalence证明后才能消除movement。
+blocked layout上的同类折叠只有经过上述physical equivalence证明后才能消除movement。任意non-affine、data-dependent或
+超出relation/disjunct预算的映射统一fail closed；dynamic stride与iteration相乘不能伪装成Presburger线性关系。
 
 natural alignment也是encoding投影的一部分。SPM/DDR planner、candidate estimate、fixed-slot qualification、
 target ABI和storage coalescing通过同一checked-LCM入口组合target policy、allocation attr与encoding alignment；

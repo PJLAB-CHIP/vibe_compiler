@@ -505,6 +505,50 @@ func.func @reshape_cx_tail_only_metadata_view(%zero: f16) {
 // CHECK-NOT: wafer.instr.gather_scatter
 // CHECK: return
 
+func.func @reshape_large_cx_singleton_outer_metadata_view(%zero: f16) {
+  %region = wafer.tile.region(%zero : f16) -> (f16) {
+  ^bb0(%fill: f16):
+    %source = memref.alloc()
+        : memref<4096x64xf16, #wafer.memory<spm, cx>>
+    %reshaped = wafer.tile.reshape %source
+        : memref<4096x64xf16, #wafer.memory<spm, cx>>
+       -> memref<1x4096x64xf16, #wafer.memory<spm, cx>>
+    wafer.tile.yield %fill : f16
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @reshape_large_cx_singleton_outer_metadata_view
+// CHECK-NOT: wafer.tile.reshape
+// CHECK: memref.alloc() : memref<4096x64xf16, #wafer.memory<spm, cx>>
+// CHECK: memref.reinterpret_cast
+// CHECK-SAME: sizes: [1, 4096, 64]
+// CHECK-SAME: strides: [262144, 64, 1]
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK: return
+
+func.func @reshape_ncx_singleton_hw_metadata_view(%zero: f16) {
+  %region = wafer.tile.region(%zero : f16) -> (f16) {
+  ^bb0(%fill: f16):
+    %source = memref.alloc()
+        : memref<2x3x64xf16, #wafer.memory<spm, ncx>>
+    %reshaped = wafer.tile.reshape %source
+        : memref<2x3x64xf16, #wafer.memory<spm, ncx>>
+       -> memref<2x1x3x64xf16, #wafer.memory<spm, ncx>>
+    wafer.tile.yield %fill : f16
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @reshape_ncx_singleton_hw_metadata_view
+// CHECK-NOT: wafer.tile.reshape
+// CHECK: memref.alloc() : memref<2x3x64xf16, #wafer.memory<spm, ncx>>
+// CHECK: memref.reinterpret_cast
+// CHECK-SAME: sizes: [2, 1, 3, 64]
+// CHECK-SAME: strides: [192, 192, 64, 1]
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK: return
+
 func.func @reshape_cx_block_major_materializes(%zero: f16) {
   %region = wafer.tile.region(%zero : f16) -> (f16) {
   ^bb0(%fill: f16):
