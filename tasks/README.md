@@ -57,6 +57,10 @@
 Q46 layout movement elimination当前计划见`tasks/plans/layout-movement-elimination.md`；它复用06-08、10-11、13-14、
 16-17的现有合同，动态状态和完成门禁只看`tasks/progress.md`。
 
+Q47 Target ABI退役计划见`tasks/plans/target-abi-retirement.md`。它在Q46完成或暂停并形成独立ABI迁移窗口后，
+按11、14-17的owner边界把current TX81 target收口为V3-only；它不包含SMT、候选生成或优化器改造，动态状态和
+完成门禁只看`tasks/progress.md`。
+
 Q9 profiler foundation已按`tasks/archive/board-profiler.md`完成：唯一public入口是
 `wafer-compile --profile`；profile transaction只发布一个未插桩Primary production artifact，最后写入的activation把该
 production manifest与companion metadata exact-hash绑定，不另编一个关闭profile的ordinary package做逐字节对照。

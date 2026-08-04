@@ -756,3 +756,21 @@ consumer，rank-15 package assembly注入失败无final/staging。任何未来ta
 - security signature/encryption。
 
 只有出现真实consumer和兼容需求后才扩typed model；不得恢复历史计划中的完整service/authority对象图。
+
+## 12. 规划中的 V3-only Package 与 Runtime Consumer
+
+`target-abi-retirement`尚未实施；当前schema-v6仍可表达V1/V2/V3 profile。目标实现只收缩accepted target profile/
+Kernel Runtime ABI和TargetCall集合，不改变manifest wire shape，因此package schema继续为v6，不以accepted enum value
+减少为理由机械升级。
+
+- compiler assembly、canonical JSON/readback、`RuntimeSession`、no-card和TX board provider只接受
+  `wafer-tx81-single-card-kernel-v3`与`wafer-tx81-kernel-v3`，并在任何device effect前拒绝V1/V2 spelling。
+- 旧V1/V2 schema-v6 manifest不提供reader alias或translator；旧V3 package只有在TargetLLVM只引用保留的current calls
+  时才仍可消费，含LocalFence或已删除symbol时由exact module/TargetCall closure拒绝。
+- profile companion因其自身序列化TargetCall ordinal而独立升级为schema v7/correlation basis v2；manifest只保存
+  companion的versioned binding/hash，不复制registry或其ordinal表。
+- runtime/provider不能用worker0 compatibility wrapper恢复LocalFence，也不能从symbol suffix推断typed completion；它只
+  消费14发布且16验证的V3 artifact。
+
+本计划不改变`RankLocalPointerBlockV1`等独立entry ABI、loader/record schema或Direct-DTE status schema；这些对象只有
+自身wire/semantic contract变化时才各自升级。

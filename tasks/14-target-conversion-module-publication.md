@@ -703,3 +703,45 @@ alias或比较产物。count preflight和trace readback共同保留
 `next_sequence`、dropped-event count、raw record flags及terminal state，供runtime做exact-match和fail-closed检查。
 normal CRT与profile CRT使用独立target publication输入，
 任一profile clone或site-map readback失败只阻止完整profile companion激活，不得改变或部分重写已验证的普通package。
+
+## 13. 规划中的 V3-only Target ABI 退役
+
+本节是`target-abi-retirement`的未实施目标；当前实现仍保留V1/V2/V3 profile和217项TargetCall registry，不能在任务
+完成前把下列目标当作current artifact evidence。
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  final verified typed Instr、worker/completion placement和显式TX81 target profile。
+- Current stage responsibility:
+  将current target-admitted Instr唯一映射到V3 TargetCall/CRT，形成fully legal target LLVM和原子module publication。
+- Output artifact / IR:
+  只含V3 ordinary calls及七个共享NCC/DTE lifecycle calls的TargetLLVMModuleBundle。
+- Downstream consumer:
+  device linker、profile companion、package/runtime、TargetCall/SystemC model和board provider。
+- User-level driver / named pipeline:
+  wafer-compile --target-profile=wafer-tx81-single-card-kernel-v3。
+- Explicit non-goals:
+  不做instruction synthesis、SMT证明、candidate selection或package capability扩展；不改变独立entry/record ABI。
+- Completion gate:
+  V1/V2 profile、Kernel Runtime ABI、legacy ordinary TargetCall和LocalFence从current producer/consumer全部消失，
+  V3 target LLVM/package/model/no-card/board纵向闭合。
+```
+
+终态合同如下：
+
+- `TargetProfileId`和`KernelRuntimeABIId`只注册现有V3 canonical spelling；format、conversion、numeric capability与
+  model policy事实直接归V3，删除V2/V3指向V1的compatibility-profile indirection，但保留target identity与显式
+  profile join。
+- TargetCall从217项收口到112项：删除104个legacy ordinary row及LocalFence，保留NCCJoin、6个共享DTE lifecycle、
+  104个V3 ordinary和1个V3 Direct-DTE issue。这个112是过滤后的current closed registry，不是旧112-prefix，也不
+  表示112种彼此独立的高层语义。
+- 删除`TargetCallProfileAvailability`及descriptor availability/profile-bit过滤；保留真实V3 `_v3` symbol和现有
+  无版本共享NCC/DTE symbol。registry按保留row的相对顺序固定，并以exact symbol/signature/semantic序列测试锁定。
+- 不新增TargetCall registry digest。profile companion实际序列化ordinal，因此其schema由v6升为v7，correlation basis
+  由`typed-target-call-ordinal-ssa-identity-occurrence-v1`升为v2并记录registry size 112；TargetLLVM metadata、record
+  ABI或package manifest没有自身字段/语义变化时不得连带升级。
+- current V3 module必须在任何publication前通过all-and-only closed registry、prototype、worker issue domain、completion
+  和device-link closure；V1/V2 spelling、LocalFence及已删symbol稳定fail closed，不提供translator、alias或wrapper。
+
+完整施工顺序、artifact兼容性和板端门禁由`tasks/plans/target-abi-retirement.md`与16共同约束。

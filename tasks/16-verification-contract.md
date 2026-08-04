@@ -1695,3 +1695,22 @@ Pipeline position:
 - checker只从代码/结构化registry读取expected surface，不解析supporting Markdown marker。
 
 性能和calibration在correctness/board之后单独排期；profile只能排序已经合法的candidate。
+
+## 14. 规划中的 Target ABI 退役 Gate
+
+`target-abi-retirement`是独立于后续superoptimizer的migration gate。无卡阶段必须推进到`board-ready`，真实板端通过后
+才能`done`：
+
+- registry/parse gate：V3是唯一profile和Kernel Runtime ABI；V1/V2 CLI、manifest、module metadata在pre-effect拒绝；
+  exact registry为112项且symbol/signature/semantic唯一，无legacy ordinary、LocalFence或profile availability。
+- conversion/artifact gate：ordinary worker0、worker1/2、oriented GEMM、NCCJoin和Direct-DTE begin/prepare/issue/wait/
+  finish都经同一V3 preflight；schema-v6 V3 package roundtrip，profile companion v7/basis v2与registry size 112 exact join，
+  旧companion明确unsupported。
+- consumer gate：TargetCall decoder、SystemC/TargetModel、profiler、no-card、TX provider和conformance checker只消费V3；
+  rank-count 1/16 FP16/BF16完整package、guard、entry/slot/profile/ABI join fresh通过。
+- board gate：同一次qualified session内串行执行fresh FP16/BF16 ordinary worker0 completion，并执行至少一个nonzero worker
+  或Direct-DTE隔离case，校验output、guard、completion与lifecycle。LocalFence与NCCJoin CRT入口不同，因此host decoder
+  等价、旧raw或历史日志均不能代签该结论。
+
+只把driver默认值改为V3、只验证112这个计数、只过host decoder或只生成no-card package均不算完成。板不可用时保留
+`board-ready`，不得标`done`或自动retry/reset设备。

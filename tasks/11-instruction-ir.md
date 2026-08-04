@@ -1371,3 +1371,22 @@ R3.2d.4 已完成：
     未完成target CRT/golden/device-link前保持production target-illegal。
 17. 实现`wafer.instr.mxfp_decode`及packed/scale/scratch/completion合同，lower到显式software decode + scale
     composite；不得把legacy helper或普通convert当完成证明。
+
+## 13. 规划中的 V3-only Instruction 收口
+
+本节记录`target-abi-retirement`的未实施终态，不改写上文对当前IR的事实描述。该任务消费final verified typed
+Instr，并产出只可lower到current V3 TargetCall的完整rank instruction program；TargetCall/CRT与module publication
+仍由14拥有，package/runtime与证据分别由15、16拥有。
+
+- completion只保留typed `wafer.instr.ncc_join`。所有current `wafer.instr.local_fence` producer先显式改写为
+  `ncc_join participants=[worker0]`，再删除LocalFence的ODS、builder、parser/printer、verifier、effect、cost和
+  conversion分支；不得在lowering中保留名字alias或隐式fallback。
+- ordinary worker、oriented GEMM、NCCJoin及Direct-DTE lifecycle继续由各自typed op、enum、operand/type、effect和
+  verifier定义语义；V3 TargetCall symbol或registry ordinal不是instruction grammar，也不得反向恢复typed语义。
+- `GemmOrientedV2`之类由历史ABI命名污染的internal builtin改用稳定语义名；真实current CRT symbol是否带`_v3`
+  由14的ABI registry决定，不把symbol版本写回Instr op kind。
+- LocalFence与worker0 NCCJoin当前在host decoder中语义接近，但底层CRT分别调用不同wait入口。删除前必须按16的
+  fresh板端门禁验证worker0 completion和至少一个隔离的nonzero-worker或Direct-DTE路径；只过host model不算闭合。
+
+本计划不改变entry ABI、DTE status schema或其它与TargetProfile无关的版本化Instr字段，也不引入superoptimizer、
+solver或新的instruction semantics interface。

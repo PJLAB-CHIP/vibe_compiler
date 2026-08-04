@@ -1750,3 +1750,20 @@ cycle证据时cycle-accurate保持非目标。
 
 Q22 target-call/SystemC model-only实现已经完成。后续exact provider、board numeric、packet provenance或timing施工前仍应
 建立独立实施计划；本文不表示这些更高gate已经完成。
+
+## 13. 规划中的 V3-only Model Cutover
+
+`target-abi-retirement`只迁移现有model consumer，不改变Q22已闭合的numeric/bulk/SystemC职责或宣称新的hardware
+correlation。当前V1/V2/V3与LocalFence/NCCJoin并存的实现事实保持有效，直到以下迁移完整完成：
+
+- TargetCall frontend、typed transaction variant、SystemC dispatcher、model launch/config和fixtures只接受V3 closed
+  registry；删除104个legacy ordinary decoder row、LocalFence transaction/site kind和profile availability分支。
+- LocalFence producer迁移后，model只执行typed NCCJoin participants语义。host model的worker0行为只能作为正负例，
+  不能证明`TsmWaitfinish()`与`TsmWaitfinish_bywork(0)`在真实硬件上等价；该结论由16的fresh board gate拥有。
+- format/numeric/model policy registry直接以V3为current key。因key或internal representation变化而重建的qualification/
+  digest fixture只证明model identity闭合，不升级package schema，也不与后续compiler proof共享浮点政策。
+- model仍从14同源TargetLLVM/typed TargetCall恢复transaction；不得保留V1/V2 translator、LocalFence fallback或按symbol
+  suffix恢复semantic kind。
+
+Q47完成证明是V3 source→package→TargetCall/SystemC/no-card及板端纵向，不重开Q22.C numeric correlation、Q22.E exact
+package provider或Q22.P timing calibration。
