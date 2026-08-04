@@ -511,3 +511,55 @@ Q43才可以重新标记`done`。收尾时同步：
   九页构图使用时间线、双假设因果图、纵向artifact链、共享事实源、候选分叉、门控走廊和状态通道，未重复使用
   同一种网格模板。
 - 本轮只重构汇报材料并重新渲染，没有执行板端case，也没有改变Q40/Q41的`board-ready`边界。
+
+## 14. 同步与内存可见性补充章节（2026-08-04）
+
+用户在评审硬件章节时进一步要求把`worker`、NCC engine、`hrt_barrier`、DDR cache publication、
+mapped SPM和`get_ddr_memory_mapping*`讲清楚。本轮建立一份可独立演讲、也可按顺序插入主deck硬件章节的
+11页补充PPT；不修改既有151页图和正文，不重跑板端case。
+
+章节按一个tile内的实际执行关系推进：
+
+```text
+Kcore / worker / engine分别是什么
+  → same-worker dependency与participant join怎样提供完成关系
+  → hrt_barrier怎样协调16个Kcore、又不替代哪些完成动作
+  → Host、Kcore cache和NCC DMA为什么会看到不同DDR值
+  → clean、invalidate、fence、engine completion分别解决什么
+  → Kcore和NCC如何用不同地址表达访问同一块SPM
+  → get_ddr_memory_mapping为什么实际是invalidate-and-return
+  → compiler/runtime在哪个IR、lowering和publication边界承担这些语义
+```
+
+逐页范围：
+
+| 页 | 技术对象 | 必须可见的真实锚点 |
+|---:|---|---|
+| 1 | Tile执行主体 | Kcore、worker0/1/2、CT/NE/RDMA/WDMA/TDMA、Direct DTE、DDR/SPM数据路径 |
+| 2 | Worker与engine | `inter_type[9:8]`、三个worker MMIO window、五类NCC engine职责 |
+| 3 | Worker依赖与完成 | same-worker RAW/WAR/WAW/RAR 24 case/72 sample、targeted 18/18、subset 12/12、`ncc_join [0,2]→0b101` |
+| 4 | `hrt_barrier` | 16×4B SPM slot、arrival/scan/clear/release、双epoch 16/16、0 mismatch/crosstalk |
+| 5 | 完成域 | `ncc_join`、`dte_wait`、barrier、cache publication、D2H各自允许的下一动作 |
+| 6 | DDR cache的两类错误 | stale cache与dirty cache逐状态演示；`invalidate`和`clean`方向不可互换 |
+| 7 | Publication matrix | H2D→Kcore、Kcore→RDMA、WDMA→Kcore、WDMA→Host和pure NCC链；当前58/58 |
+| 8 | Cache maintenance实现 | 64B line、M/S mode、`ipa/iva/cipa/civa`、前后`fence/sync/sync.is` |
+| 9 | SPM memory mapping | `offset→0x30400000+offset`、NCC offset与Kcore pointer、uncached weak-order |
+| 10 | DDR memory mapping helper | 地址原样返回、默认8B或显式range invalidate、跨line示例；不进行地址转换 |
+| 11 | Compiler/runtime落点 | range/effect、worker participant、SSA token、barrier protocol、publication edge、runtime terminal |
+
+每页单独建立内容和Image2 prompt，使用新的专属技术图；代码、地址、位域、case数字和指令名由PPT原生文本
+精确排版。完成门禁包括：11张图逐项反查当前文档/代码/反汇编，11页Notes真实嵌入，PPTX/PDF/PNG和
+contact sheet全部生成，投影预览无裁切，页面不把软件可见行为画成未经证明的芯片内部结构。
+
+## 15. 同步与内存可见性补充章节完成记录（2026-08-04）
+
+- 11页可独立演讲、可顺序插入主deck的补充PPT已生成，覆盖Kcore/worker/engine、same/cross-worker
+  completion、16-rank `hrt_barrier`、六类完成域、stale/dirty cache状态、58/58 publication matrix、
+  C908 cache maintenance、SPM alias和DDR helper反汇编语义，以及compiler/runtime落点。
+- 11页各使用一张本轮新生成并逐项核对的Image2主图；生成过程中发现并重画了Direct DTE误连DDR、
+  barrier误替completion、worker与logical rank混淆、64B地址步长错误等图形幻觉，没有把错误图交给Notes解释。
+- 每页包含中文机制分析和可复制代码/地址公式，所有speaker notes已嵌入PowerPoint Notes；组合case覆盖
+  same-worker `RDMA→CT→WDMA`、跨worker producer/consumer、DTE token、full-card双epoch barrier、
+  H2D/Kcore/RDMA/WDMA/Host crossing、pure NCC和跨cache-line mapping例子。
+- Fresh构建生成11页PPTX、11页PDF、11张PNG和contact sheet；结构检查为`slides=11`、`notes=11`、
+  `media=11`，PDF页面为16:9。没有执行板端case，没有改变任何hardware capability或任务状态结论。
