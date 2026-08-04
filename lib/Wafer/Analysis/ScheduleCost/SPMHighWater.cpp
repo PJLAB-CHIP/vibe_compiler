@@ -149,8 +149,7 @@ public:
           if (callee && !callee.isDeclaration())
             scopes.push_back(callee.getOperation());
         }
-        if (!mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp,
-                       SyncNCCJoinOp>(op))
+        if (!mlir::isa<WaferInstructionOpInterface, SyncNCCJoinOp>(op))
           return;
         for (mlir::Value value : op->getOperands())
           accountSPMValue(value);

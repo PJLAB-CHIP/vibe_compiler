@@ -52,7 +52,6 @@ int main(int argc, char **argv) {
   if (!requireOption(options.inputProgramDirectory, "--input-program-dir") ||
       !requireOption(options.outputProgramDirectory, "--output-program-dir") ||
       !requireOption(options.executionRanks, "--execution-ranks") ||
-      !requireOption(options.targetProfile, "--target-profile") ||
       !requireOption(options.runtimeLaunchKind, "--launch-kind"))
     return 1;
   if (options.profile && options.targetModel) {
@@ -238,14 +237,6 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  llvm::Expected<wafer::TargetProfileId> targetProfile =
-      wafer::parseTargetProfileId(*options.targetProfile);
-  if (!targetProfile) {
-    llvm::errs() << "wafer-compile: "
-                 << llvm::toString(targetProfile.takeError()) << "\n";
-    return 1;
-  }
-
   llvm::Expected<wafer::RuntimeLaunchKind> runtimeLaunchKind =
       wafer::parseRuntimeLaunchKind(*options.runtimeLaunchKind);
   if (!runtimeLaunchKind) {
@@ -256,7 +247,7 @@ int main(int argc, char **argv) {
 
   llvm::Expected<wafer::compiler::ExecutionConfig> executionConfig =
       wafer::compiler::ExecutionConfig::createForSingleCard(
-          rankCount, *targetProfile, *runtimeLaunchKind);
+          rankCount, *runtimeLaunchKind);
   if (!executionConfig) {
     llvm::errs() << "wafer-compile: "
                  << llvm::toString(executionConfig.takeError()) << "\n";
@@ -661,7 +652,7 @@ int main(int argc, char **argv) {
   } else
 #endif
   {
-    if (options.targetModel) {
+    if (options.targetModel || options.compilerIRDumpDirectory) {
       mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
           compiledProgram = wafer::compiler::compileProgramWithTargetLLVMBundle(
               std::move(*request), *options.outputProgramDirectory, helperPath,
@@ -683,6 +674,15 @@ int main(int argc, char **argv) {
   }
   if (mlir::failed(compilationStatus))
     return 1;
+
+  if (options.compilerIRDumpDirectory) {
+    if (!targetCompilationProduct ||
+        !dumpCompilerIR(*options.compilerIRDumpDirectory,
+                        *targetCompilationProduct, llvm::errs()))
+      return 1;
+    llvm::outs() << "wafer-compile: dumped compiler IR: "
+                 << *options.compilerIRDumpDirectory << "\n";
+  }
 
   llvm::outs() << "wafer-compile: published verified package with "
                   "execution-ranks="

@@ -17,7 +17,7 @@ import torch
 import wafer_board_compiler_optimization_campaign_test as campaign
 
 
-TARGET_PROFILE = "wafer-tx81-single-card-kernel-v3"
+TARGET_IDENTITY = "wafer-tx81-single-card"
 BASELINE_SELECTION = "WAFER_TEST_SELECT_SERIALIZED_DIRECT_DTE_COMPUTE"
 OVERLAP_SELECTION = "WAFER_TEST_SELECT_DIRECT_DTE_COMPUTE_OVERLAP"
 SELECTION_ENVIRONMENT_VARIABLES = (
@@ -163,7 +163,6 @@ def compile_variant(
             "--output-program-dir",
             str(output),
             f"--execution-ranks={CASE.rank_count}",
-            f"--target-profile={TARGET_PROFILE}",
             f"--launch-kind={CASE.launch_kind}",
         ],
         environment=environment,
@@ -201,7 +200,7 @@ def validate_overlap_companion(
         != "direct-dte-compute-overlap"
         or attestation.get("target")
         != {
-            "profile": TARGET_PROFILE,
+            "identity": TARGET_IDENTITY,
             "rank_count": CASE.rank_count,
             "logical_ranks": list(range(CASE.rank_count)),
         }
@@ -315,7 +314,7 @@ def main() -> int:
         packages["baseline"],
         packages["winner"],
         CASE,
-        target_profile=TARGET_PROFILE,
+        target_identity=TARGET_IDENTITY,
     )
     structures = {
         name: campaign.target_structure(package, args.tx8_objdump)
@@ -331,7 +330,7 @@ def main() -> int:
             ).hexdigest()
             for relative in campaign.SOURCE_SNAPSHOT_PATHS
         },
-        "target_profile": TARGET_PROFILE,
+        "target_identity": TARGET_IDENTITY,
         "launch": CASE.launch_contract,
         "rank_count": CASE.rank_count,
         "module_digests": {

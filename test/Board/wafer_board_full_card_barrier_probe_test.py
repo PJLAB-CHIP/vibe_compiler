@@ -220,7 +220,6 @@ def compile_package(
             "--output-program-dir",
             str(package),
             f"--execution-ranks={RANK_COUNT}",
-            "--target-profile=wafer-tx81-single-card-kernel-v1",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,

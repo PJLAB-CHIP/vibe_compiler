@@ -124,11 +124,8 @@ struct CandidateWorkItem {
 class CandidateEvaluationExecutor;
 
 struct SelectionConfig {
-  explicit SelectionConfig(const WaferTargetPolicy &policy,
-                           TargetProfileId targetProfile)
-      : targetProfile(targetProfile),
-        scheduleCostPolicy(
-            analysis::getTargetScheduleCostPolicy(targetProfile)),
+  explicit SelectionConfig(const WaferTargetPolicy &policy)
+      : scheduleCostPolicy(analysis::getTargetScheduleCostPolicy()),
         preferredTileSizes(policy.tileSearch.preferredTileSizes),
         maxCandidatesPerDim(policy.tileSearch.maxCandidatesPerDim),
         maxSearchCandidates(policy.tileSearch.maxSearchCandidates),
@@ -147,11 +144,7 @@ struct SelectionConfig {
   /// preserves the result-driven queue order and retry budget exactly.
   CandidateTileTraversalKind traversalKind =
       CandidateTileTraversalKind::ResultDriven;
-  /// Exact compiler-shipped scheduling capability identity. This is retained
-  /// separately from the cost policy because legality and profitability
-  /// knowledge are independent target-contract axes.
-  TargetProfileId targetProfile;
-  /// Immutable compiler-shipped target-contract interpretation of every
+  /// Immutable compiler-shipped current-target interpretation of every
   /// candidate cost. Copies sent to evaluation workers preserve the exact
   /// static production contract; no live-card/profile state is consulted.
   analysis::TargetScheduleCostPolicy scheduleCostPolicy;
@@ -331,7 +324,7 @@ estimateTargetSPMRequiredLiveBytes(mlir::func::FuncOp task,
 
 std::optional<std::string> getCheapTargetGeometryFailure(
     mlir::func::FuncOp task, const CandidateSpec &candidate,
-    llvm::ArrayRef<int64_t> reductionRanges, TargetProfileId targetProfile);
+    llvm::ArrayRef<int64_t> reductionRanges);
 
 TileSizeOptions buildTileSizeOptions(llvm::ArrayRef<int64_t> traversalShape,
                                      llvm::ArrayRef<int64_t> reductionRanges,

@@ -31,7 +31,7 @@ RUNTIME_LAUNCH_CALIBRATION_CASES = (
         "rank-one-per-rank-add",
         1,
         runtime_launch.KERNEL_LAUNCH_KIND,
-        "full f16 expected output+schema-v6 unique entry/resource binding",
+        "full f16 expected output+schema-v7 unique entry/resource binding",
         "runtime terminal+D2H+normal cleanup",
     ),
 )
@@ -136,7 +136,7 @@ def invocation_arguments(
         context="single-op board gate",
     )
     if manifest.get("rank_count") != 1:
-        raise RuntimeError("single-op board gate requires a schema-v6 rank-one package")
+        raise RuntimeError("single-op board gate requires a schema-v7 rank-one package")
     entries = manifest.get("entries", [])
     if len(entries) != 1 or entries[0].get("id") != 0:
         raise RuntimeError("single-op board gate requires the unique entry ID 0")
@@ -185,7 +185,6 @@ def main() -> int:
             "--output-program-dir",
             str(package),
             "--execution-ranks=1",
-            "--target-profile=wafer-tx81-single-card-kernel-v1",
             "--launch-kind=kernel",
         ]
     )

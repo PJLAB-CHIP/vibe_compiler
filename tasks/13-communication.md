@@ -186,12 +186,10 @@ current SCF、token、wait和message IR验证这一关系；不得把loop ordina
 Direct-DTE issue、matching exact wait/release、fixed slots和dynamic instance legality后，才能让tile `i`的DTE与其它
 engine处理tile `i+1`并行；仅把wait文本后移或把send/recv放进loop不构成overlap。
 
-target ABI对同一accepted instruction语义有两个明确版本边界。V1/V2为已有module保留同步兼容：
-`dte_send`先lower为sender prepare，matching `dte_wait`再在CRT内部完成peer-ready、attach/async issue、
-completion和release；V3则把同一`dte_send`lower为sender prepare后紧接显式
-`direct_dte_send_issue_v3`，exact `dte_wait`只完成completion和release。这个target-call拆分不新增
+current target ABI把`dte_send`lower为sender prepare后紧接显式`direct_dte_send_issue_v3`，exact `dte_wait`只完成
+completion和release。这个target-call拆分不新增
 instruction op、token或旁路schedule；accepted IR仍由`dte_send`产生的SSA token和唯一wait拥有生命周期。
-V3 module必须出现显式issue call，V1/V2 module不得引用该V3-only symbol。
+current module必须出现显式issue call；wait-before-issue稳定失败。
 
 Direct-DTE acceptance在issue到matching exact wait之间从current IR的
 `MemoryEffectOpInterface`验证buffer ownership。operand-specific effect才描述具体SPM访问；无value的engine resource
@@ -359,10 +357,10 @@ wafer.instr.dte_wait(tokens...)
 - acceptance前没有physical endpoint、DTE id、FSM id、runtime address或raw register字段；
 - acceptance后send/recv各有且仅有一个`DirectDTEBindingAttr`。
 
-在V3 target profile中，`dte_send`的target lowering必须按
+在current target ABI中，`dte_send`的target lowering必须按
 `send_prepare -> send_issue_v3`发射；issue先等待matching receiver readiness，再attach并异步提交，随后允许
-rank继续发射与该DTE range无冲突的其它engine工作。`dte_wait`仍是唯一completion/release和source-reuse边界。
-V1/V2只为既有ABI保持wait内auto-issue，不能被scheduler或profiler解释成已经具有独立issue window。
+rank继续发射与该DTE range无冲突的其它engine工作。`dte_wait`仍是唯一completion/release和source-reuse边界，
+不会隐式补issue。
 
 send和recv保持方向明确的两个op。把方向合并到字符串attr只会削弱effect、verifier和all-rank matching，不是
 终态选择。
@@ -545,7 +543,7 @@ source/target语义决定；它不复用有界topology Ring order。ring/blocked
 ### 5.6 Segmented Peer Exchange
 
 segmented all-to-all需要typed count/control buffer、per-peer capacity、count completion、data issue、actual extent
-和failure join。当前这些producer/consumer与target contract未闭合，因此不进入production候选。
+和failure join。当前这些producer/consumer尚未闭合到可验证的target lowering，因此不进入production候选。
 
 未来实现必须在实际IR中分开：
 
@@ -672,8 +670,8 @@ receiver ready / FSM monitor init
 稳定规则：
 
 - target lowering只消费committed `dte_*` op、typed binding、topology和accepted offsets；
-- V3 target profile把peer-ready/attach/async submission放在显式issue call，把completion/release放在matching
-  wait；V1/V2兼容路径由wait内部auto-issue，但不得生成或解析V3-only issue symbol；
+- current target ABI把peer-ready/attach/async submission放在显式issue call，把completion/release放在matching
+  wait；不存在wait内部auto-issue；
 - target helper/call名称属于target conversion，不进入instruction op语义；
 - target module内部保留per-op p2p body与binding；
 - bundle只记录rank executable使用`DirectDTE` transport，不复制endpoint/message/action表；
@@ -760,7 +758,7 @@ p2p instruction：
 - package transport requirement与target module实际使用一致；
 - no-card preflight覆盖unsupported capability/status ABI；
 - target model按source/destination/message/range/completion执行并原子发布结果；
-- target model按profile区分V3 explicit issue与V1/V2 wait auto-issue；V3 wait-before-issue、legacy显式issue、
+- target model只接受explicit issue；wait-before-issue、unknown/duplicate issue、
   foreign/duplicate event均fail closed。pending NCC不能按“该rank存在任意未完成命令”粗粒度阻塞DTE：
   DTE source只与overlap的pending NCC write冲突，DTE destination与overlap的pending NCC read/write冲突；
   matching participant join必须先于DTE issue，post-issue join不能追认已经提交的传输；strided footprint
@@ -847,8 +845,8 @@ send/recv、wait和insert；self slot只有local movement。任一slot的bytes�
 - `wafer.instr.dte_send`、`dte_recv`、`dte_wait`、`DTEMessageAttr`和`DirectDTEBindingAttr`；
 - 从planned SPM range和current instruction IR执行的all-rank Direct DTE acceptance；
 - target CRT/status、target model、package requirement与runtime preflight consumer；
-- V3-only显式sender issue TargetCall、CRT symbol、profile site和SystemC readiness/completion语义；V1/V2保留
-  wait auto-issue兼容，三者共享同一Instr token/wait合同。
+- current显式sender issue TargetCall、CRT symbol、profile site和SystemC readiness/completion语义；
+  各层共享同一Instr token/wait合同。
 
 Q32.M已沿上述边界完成producer接入，Q32.S继续负责bounded joint composition：
 

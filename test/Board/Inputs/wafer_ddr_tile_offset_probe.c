@@ -115,14 +115,14 @@ static uint64_t wafer_ddr_tile_cycle(void) {
 
 static void wafer_ddr_tile_rdma(uint64_t source, uint64_t destination,
                                 uint32_t bytes) {
-  wafer_tx81_rdma(source, destination, bytes, bytes, 0U, 0U, 0U, 1U, 1U, 1U,
-                  Fmt_UINT8);
+  wafer_tx81_rdma_v3(source, destination, bytes, bytes, 0U, 0U, 0U, 1U, 1U, 1U,
+                  Fmt_UINT8, 0U);
 }
 
 static void wafer_ddr_tile_wdma(uint64_t source, uint64_t destination,
                                 uint32_t bytes) {
-  wafer_tx81_wdma(source, destination, bytes, bytes, 0U, 0U, 0U, 1U, 1U, 1U,
-                  Fmt_UINT8);
+  wafer_tx81_wdma_v3(source, destination, bytes, bytes, 0U, 0U, 0U, 1U, 1U, 1U,
+                  Fmt_UINT8, 0U);
 }
 
 static uint64_t wafer_ddr_tile_identity(uint32_t rank, uint32_t allocation,
@@ -186,20 +186,20 @@ static void wafer_ddr_tile_measure_rdma(uint32_t rank, uint32_t allocation,
           WAFER_DDR_TILE_SLOT_BYTES;
   wafer_ddr_tile_rdma(canary_source, WAFER_DDR_TILE_SPM_GUARDED,
                       WAFER_DDR_TILE_SLOT_BYTES);
-  wafer_tx81_local_fence();
+  wafer_tx81_ncc_join(1U);
 
   WaferDDRTilePMU before = wafer_ddr_tile_read_pmu();
   uint64_t begin = wafer_ddr_tile_cycle();
   wafer_ddr_tile_rdma(source,
                       WAFER_DDR_TILE_SPM_GUARDED + WAFER_DDR_TILE_GUARD_BYTES,
                       WAFER_DDR_TILE_PAYLOAD_BYTES);
-  wafer_tx81_local_fence();
+  wafer_tx81_ncc_join(1U);
   uint64_t completion_cycles = wafer_ddr_tile_cycle() - begin;
   WaferDDRTilePMU after = wafer_ddr_tile_read_pmu();
 
   wafer_ddr_tile_wdma(WAFER_DDR_TILE_SPM_GUARDED, output_base + archive_offset,
                       WAFER_DDR_TILE_SLOT_BYTES);
-  wafer_tx81_local_fence();
+  wafer_tx81_ncc_join(1U);
   wafer_ddr_tile_write_row(
       row, rank, allocation, WAFER_DDR_TILE_DIRECTION_RDMA, offset_index,
       cell_sample, input_base, output_base, source,
@@ -234,13 +234,13 @@ static void wafer_ddr_tile_measure_wdma(uint32_t rank, uint32_t allocation,
                       WAFER_DDR_TILE_GUARD_BYTES);
   wafer_ddr_tile_rdma(source, WAFER_DDR_TILE_SPM_PAYLOAD,
                       WAFER_DDR_TILE_PAYLOAD_BYTES);
-  wafer_tx81_local_fence();
+  wafer_tx81_ncc_join(1U);
 
   WaferDDRTilePMU before = wafer_ddr_tile_read_pmu();
   uint64_t begin = wafer_ddr_tile_cycle();
   wafer_ddr_tile_wdma(WAFER_DDR_TILE_SPM_PAYLOAD, destination,
                       WAFER_DDR_TILE_PAYLOAD_BYTES);
-  wafer_tx81_local_fence();
+  wafer_tx81_ncc_join(1U);
   uint64_t completion_cycles = wafer_ddr_tile_cycle() - begin;
   WaferDDRTilePMU after = wafer_ddr_tile_read_pmu();
 
@@ -248,7 +248,7 @@ static void wafer_ddr_tile_measure_wdma(uint32_t rank, uint32_t allocation,
                       WAFER_DDR_TILE_SPM_READBACK, WAFER_DDR_TILE_SLOT_BYTES);
   wafer_ddr_tile_wdma(WAFER_DDR_TILE_SPM_READBACK, output_base + archive_offset,
                       WAFER_DDR_TILE_SLOT_BYTES);
-  wafer_tx81_local_fence();
+  wafer_tx81_ncc_join(1U);
   wafer_ddr_tile_write_row(row, rank, allocation, WAFER_DDR_TILE_DIRECTION_WDMA,
                            offset_index, cell_sample, input_base, output_base,
                            destination, WAFER_DDR_TILE_SPM_PAYLOAD,
@@ -378,7 +378,7 @@ static void wafer_ddr_tile_measure_conflict_pair(
                       guarded_slot_bytes);
   wafer_ddr_tile_rdma(canary_source, WAFER_DDR_TILE_CONFLICT_SPM_B,
                       guarded_slot_bytes);
-  wafer_tx81_local_fence();
+  wafer_tx81_ncc_join(1U);
 
   WaferDDRTilePMU before = wafer_ddr_tile_read_pmu();
   uint64_t begin = wafer_ddr_tile_cycle();
@@ -387,7 +387,7 @@ static void wafer_ddr_tile_measure_conflict_pair(
         address_a, WAFER_DDR_TILE_CONFLICT_SPM_A + WAFER_DDR_TILE_GUARD_BYTES,
         transfer_bytes);
     if (schedule_index == 0U)
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
     wafer_ddr_tile_rdma(
         address_b, WAFER_DDR_TILE_CONFLICT_SPM_B + WAFER_DDR_TILE_GUARD_BYTES,
         transfer_bytes);
@@ -396,12 +396,12 @@ static void wafer_ddr_tile_measure_conflict_pair(
         address_b, WAFER_DDR_TILE_CONFLICT_SPM_B + WAFER_DDR_TILE_GUARD_BYTES,
         transfer_bytes);
     if (schedule_index == 0U)
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
     wafer_ddr_tile_rdma(
         address_a, WAFER_DDR_TILE_CONFLICT_SPM_A + WAFER_DDR_TILE_GUARD_BYTES,
         transfer_bytes);
   }
-  wafer_tx81_local_fence();
+  wafer_tx81_ncc_join(1U);
   uint64_t completion_cycles = wafer_ddr_tile_cycle() - begin;
   WaferDDRTilePMU after = wafer_ddr_tile_read_pmu();
 
@@ -409,7 +409,7 @@ static void wafer_ddr_tile_measure_conflict_pair(
                       guarded_slot_bytes);
   wafer_ddr_tile_wdma(WAFER_DDR_TILE_CONFLICT_SPM_B, output_base + archive_b,
                       guarded_slot_bytes);
-  wafer_tx81_local_fence();
+  wafer_tx81_ncc_join(1U);
   wafer_ddr_tile_write_conflict_row(
       row, rank, allocation, base_index, offset_index, transfer_index,
       issue_order_index, schedule_index, cell_sample, schedule_position,

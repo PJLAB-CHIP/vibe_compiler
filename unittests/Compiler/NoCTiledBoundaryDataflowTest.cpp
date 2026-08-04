@@ -175,8 +175,6 @@ TEST(NoCTiledBoundaryDataflowTest,
   context->loadAllAvailableDialects();
 
   std::vector<Frontier> frontiers(16);
-  constexpr wafer::TargetProfileId targetProfile =
-      wafer::TargetProfileId::waferTx81SingleCardKernelV3();
   for (int64_t rank = 0; rank < 16; ++rank) {
     mlir::OwningOpRef<mlir::ModuleOp> source =
         mlir::parseSourceString<mlir::ModuleOp>(
@@ -185,13 +183,12 @@ TEST(NoCTiledBoundaryDataflowTest,
     wafer::TensorProgramSchedulingConfig scheduling;
     scheduling.logicalRank = rank;
     scheduling.candidateParallelism = 4;
-    scheduling.targetProfile = targetProfile;
     mlir::FailureOr<std::vector<wafer::ScheduledRankCandidate>> scheduled =
         wafer::buildScheduledRankCandidateFrontier(*source, scheduling);
     ASSERT_TRUE(mlir::succeeded(scheduled));
     auto finalized =
         wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-            std::move(*scheduled), targetProfile);
+            std::move(*scheduled));
     ASSERT_TRUE(mlir::succeeded(finalized));
     for (auto &candidate : *finalized)
       frontiers[rank].push_back(
@@ -205,8 +202,7 @@ TEST(NoCTiledBoundaryDataflowTest,
   const FixedSlotInventory before = inventoryCompleteFixedSlots(frontiers);
   const size_t candidateCountBefore = frontiers.front().size();
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   wafer::frontend::FrontendProgramVerificationResult program =
       makeReplicatedProgram();

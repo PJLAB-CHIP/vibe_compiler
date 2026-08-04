@@ -735,7 +735,7 @@ CAMPAIGN_CASES = (
         oracle=_oracle(
             StructuralOracleKind.TRANSPORT_CONTRACT_RELATION,
             (
-                "schema-v6 manifest has all-and-only 16 ranked Direct-DTE entries",
+                "schema-v7 manifest has all-and-only 16 ranked Direct-DTE entries",
                 "each rank manifest entry carries the Direct-DTE status contract",
                 "the executable fixture owns one rank-sharded reduction source",
             ),

@@ -127,7 +127,7 @@ static void wafer_ncc_probe_publish(volatile uint64_t *record) {
   for (uintptr_t address = begin;
        address <
        begin + WAFER_NCC_PROTOCOL_RECORD_WORDS * sizeof(uint64_t);
-       address += WAFER_TX81_DIRECT_DTE_STATUS_V2_CACHE_LINE_BYTES) {
+       address += WAFER_TX81_DIRECT_DTE_STATUS_CACHE_LINE_BYTES) {
     if (mode == WAFER_TX81_MACHINE_MODE)
       __asm__ volatile("dcache.cipa %0" : : "r"(address) : "memory");
     else if (mode == WAFER_TX81_SUPERVISOR_MODE)
@@ -149,7 +149,7 @@ static void wafer_ncc_probe_invalidate(uint64_t begin, uint32_t bytes) {
   __asm__ volatile("csrr %0, mxstatus" : "=r"(mode));
   mode = (mode >> 30) & 3U;
   for (uintptr_t address = begin; address < begin + bytes;
-       address += WAFER_TX81_DIRECT_DTE_STATUS_V2_CACHE_LINE_BYTES) {
+       address += WAFER_TX81_DIRECT_DTE_STATUS_CACHE_LINE_BYTES) {
     if (mode == WAFER_TX81_MACHINE_MODE)
       __asm__ volatile("dcache.ipa %0" : : "r"(address) : "memory");
     else if (mode == WAFER_TX81_SUPERVISOR_MODE)
@@ -1278,7 +1278,7 @@ static int wafer_ncc_v2_seed(void *opaque,
       uint64_t cycle_before;
       uint64_t cycle_after;
       __asm__ volatile("rdcycle %0" : "=r"(cycle_before));
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       __asm__ volatile("rdcycle %0" : "=r"(cycle_after));
       context->preissue_local_wait_cycles = cycle_after - cycle_before;
       context->preissue_local_wait_done = 1;
@@ -1470,26 +1470,26 @@ static int wafer_ncc_v2_issue(void *opaque,
   *execute_rc = UINT64_MAX;
   switch (issue->engine) {
   case WAFER_NCC_ENGINE_CT:
-    wafer_tx81_elementwise_add(read0, read1, write,
-                               bytes / sizeof(uint16_t), Fmt_FP16);
+    wafer_tx81_elementwise_add_v3(read0, read1, write,
+                               bytes / sizeof(uint16_t), Fmt_FP16, 0U);
     break;
   case WAFER_NCC_ENGINE_NE:
     if (wafer_ncc_v2_is_scope_ne_lane(context, issue->lane_spec))
-      wafer_tx81_gemm(read0, read1, write, WAFER_NCC_V2_NE_SCOPE_M,
+      wafer_tx81_gemm_v3(read0, read1, write, WAFER_NCC_V2_NE_SCOPE_M,
                       WAFER_NCC_V2_NE_SCOPE_K,
-                      WAFER_NCC_V2_NE_SCOPE_N, 1, Fmt_FP16);
+                      WAFER_NCC_V2_NE_SCOPE_N, 1, Fmt_FP16, 0U);
     else if (wafer_ncc_v2_is_large_ne_lane(issue->lane_spec))
-      wafer_tx81_gemm(read0, read1, write, WAFER_NCC_V2_NE_LARGE_M,
+      wafer_tx81_gemm_v3(read0, read1, write, WAFER_NCC_V2_NE_LARGE_M,
                       WAFER_NCC_V2_NE_LARGE_K,
-                      WAFER_NCC_V2_NE_LARGE_N, 1, Fmt_FP16);
+                      WAFER_NCC_V2_NE_LARGE_N, 1, Fmt_FP16, 0U);
     else
-      wafer_tx81_gemm(read0, read1, write, 1,
+      wafer_tx81_gemm_v3(read0, read1, write, 1,
                       WAFER_NCC_PROBE_NE_LOGICAL_DIM,
-                      WAFER_NCC_PROBE_NE_LOGICAL_DIM, 1, Fmt_FP16);
+                      WAFER_NCC_PROBE_NE_LOGICAL_DIM, 1, Fmt_FP16, 0U);
     break;
   case WAFER_NCC_ENGINE_RDMA:
     if (issue->lane_spec->layout_kind == WAFER_NCC_LAYOUT_DMA_STRIDED)
-      wafer_tx81_rdma(
+      wafer_tx81_rdma_v3(
           wafer_ncc_v2_payload_address(context, issue->slot), write, bytes,
           issue->lane_spec->layout_inner_bytes,
           issue->lane_spec->layout_stride0_bytes,
@@ -1498,15 +1498,15 @@ static int wafer_ncc_v2_issue(void *opaque,
           issue->lane_spec->layout_iteration0,
           issue->lane_spec->layout_iteration1,
           issue->lane_spec->layout_iteration2,
-          issue->lane_spec->element_format);
+          issue->lane_spec->element_format, 0U);
     else
-      wafer_tx81_rdma(wafer_ncc_v2_payload_address(context, issue->slot), write,
+      wafer_tx81_rdma_v3(wafer_ncc_v2_payload_address(context, issue->slot), write,
                       bytes, bytes, 0, 0, 0, 1, 1, 1,
-                      issue->lane_spec->element_format);
+                      issue->lane_spec->element_format, 0U);
     break;
   case WAFER_NCC_ENGINE_WDMA:
     if (issue->lane_spec->layout_kind == WAFER_NCC_LAYOUT_DMA_STRIDED)
-      wafer_tx81_wdma(
+      wafer_tx81_wdma_v3(
           read0, wafer_ncc_v2_output_address(context, issue->slot), bytes,
           issue->lane_spec->layout_inner_bytes,
           issue->lane_spec->layout_stride0_bytes,
@@ -1515,11 +1515,11 @@ static int wafer_ncc_v2_issue(void *opaque,
           issue->lane_spec->layout_iteration0,
           issue->lane_spec->layout_iteration1,
           issue->lane_spec->layout_iteration2,
-          issue->lane_spec->element_format);
+          issue->lane_spec->element_format, 0U);
     else
-      wafer_tx81_wdma(read0, wafer_ncc_v2_output_address(context, issue->slot),
+      wafer_tx81_wdma_v3(read0, wafer_ncc_v2_output_address(context, issue->slot),
                       bytes, bytes, 0, 0, 0, 1, 1, 1,
-                      issue->lane_spec->element_format);
+                      issue->lane_spec->element_format, 0U);
     break;
   case WAFER_NCC_ENGINE_TDMA: {
     uint32_t format = issue->lane_spec->element_format;
@@ -1535,8 +1535,8 @@ static int wafer_ncc_v2_issue(void *opaque,
             : format == Fmt_FP16
                   ? wafer_ncc_v2_positive_integer_f16(issue->slot + 1U)
                   : UINT32_C(0x3f80);
-    wafer_tx81_memset(write, value,
-                      wafer_ncc_probe_format_elements(bytes, format), format);
+    wafer_tx81_memset_v3(write, value,
+                      wafer_ncc_probe_format_elements(bytes, format), format, 0U);
     break;
   }
   default:
@@ -2159,7 +2159,7 @@ static int wafer_ncc_v2_requested_wait(void *opaque, uint32_t wait_kind,
     (void)TsmWaitfinish();
     return 0;
   case WAFER_NCC_WAIT_LOCAL_FENCE:
-    wafer_tx81_local_fence();
+    wafer_tx81_ncc_join(1U);
     return 0;
   default:
     return wait_kind == WAFER_NCC_WAIT_NONE ? 0 : 1;
@@ -2240,7 +2240,7 @@ static void wafer_ncc_v2_copy_results(const WaferNccProbeRequest *request,
         continue;
       uint32_t bytes = wafer_ncc_v2_result_bytes(&issue);
       if (issue.lane_spec->layout_kind == WAFER_NCC_LAYOUT_DMA_STRIDED)
-        wafer_tx81_wdma(
+        wafer_tx81_wdma_v3(
             wafer_ncc_v2_operand_address(context, &issue,
                                          WAFER_NCC_OPERAND_WRITE),
             wafer_ncc_v2_output_address(context, slot), bytes,
@@ -2251,20 +2251,20 @@ static void wafer_ncc_v2_copy_results(const WaferNccProbeRequest *request,
             issue.lane_spec->layout_iteration0,
             issue.lane_spec->layout_iteration1,
             issue.lane_spec->layout_iteration2,
-            issue.lane_spec->element_format);
+            issue.lane_spec->element_format, 0U);
       else
-        wafer_tx81_wdma(
+        wafer_tx81_wdma_v3(
             wafer_ncc_v2_operand_address(context, &issue,
                                          WAFER_NCC_OPERAND_WRITE),
             wafer_ncc_v2_output_address(context, slot),
-            bytes, bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+            bytes, bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
       /*
        * Copyback is a recovery-safe observation step after the final PMU
        * snapshot, not part of the measured issue window.  Drain every entry so
        * a maximal 3-lane x 4-round plan never creates an implicit WDMA backlog
        * beyond the documented queue bound.
        */
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
     }
   }
 }

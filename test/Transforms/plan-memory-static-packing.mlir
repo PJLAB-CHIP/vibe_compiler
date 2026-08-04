@@ -21,7 +21,7 @@ func.func @packing_avoids_fragmentation_under_pressure(
     %right = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %early_dead, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %large = memref.alloc() : memref<256xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %left, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
@@ -29,7 +29,7 @@ func.func @packing_avoids_fragmentation_under_pressure(
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
     wafer.instr.fill %large, %zero
         : memref<256xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %arg0 : memref<256xf16, #wafer.memory<ddr, tensor>>
   }
   return
@@ -63,17 +63,17 @@ func.func @spm_static_search_recovers_legal_placement(
     %b = memref.alloc() : memref<256xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %d, %zero
         : memref<768xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %c = memref.alloc() : memref<512xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %b, %zero
         : memref<256xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %a = memref.alloc() : memref<640xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %c, %zero
         : memref<512xf16, #wafer.memory<spm, tensor>>, f16
     wafer.instr.fill %a, %zero
         : memref<640xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %out : memref<1xf16, #wafer.memory<ddr, tensor>>
   }
   return
@@ -134,7 +134,7 @@ func.func @spm_proven_capacity_infeasible(
         : memref<768xf16, #wafer.memory<spm, tensor>>, f16
     wafer.instr.fill %rhs, %zero
         : memref<768xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %out : memref<1xf16, #wafer.memory<ddr, tensor>>
   }
   return

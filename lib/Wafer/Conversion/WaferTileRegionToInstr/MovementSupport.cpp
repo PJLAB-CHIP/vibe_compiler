@@ -1016,14 +1016,24 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "lowering-algorithm-phase", "getRelationMovementDescriptors",
       "materialize-descriptors", op->getName().getStringRef());
-  if (mlir::failed(visitChoices(0)))
+  if (mlir::failed(visitChoices(0))) {
+    std::string typeSummary;
+    llvm::raw_string_ostream typeStream(typeSummary);
+    typeStream << " after " << descriptors.size()
+               << " descriptor(s), covered_bytes=" << coveredBytes
+               << ", source=";
+    sourceType.print(typeStream);
+    typeStream << ", destination=";
+    destType.print(typeStream);
     return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
         rewriter, op, failureReason,
         llvm::Twine("static_terminal_budget_exceeded: ")
             .concat(opLabel)
             .concat(" IndexRelation descriptor plan is not target-encodable "
                     "within 4096 commands")
+            .concat(typeStream.str())
             .str());
+  }
 
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "lowering-algorithm-phase", "getRelationMovementDescriptors",

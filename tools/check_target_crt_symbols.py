@@ -125,21 +125,21 @@ def production_symbols_from_registry(
         fail("target lowering retains the old symbol-construction path")
 
     static_bases = set(STATIC_REGISTRY_STEM_RE.findall(registry_text))
-    if len(static_bases) != 29:
+    if len(static_bases) != 18:
         fail(
-            "target-call registry must contain 29 fixed call stems, found "
+            "target-call registry must contain 18 fixed call stems, found "
             f"{len(static_bases)}"
         )
     symbols = {f"wafer_tx81_{base}" for base in static_bases}
     suffixes = set(
         re.findall(
-            r'\baddEnumSelectedCalls\(\s*"([^"]*)"\s*,',
+            r'\baddEnumSelectedCalls\(\s*"([^"]*)"\s*\)',
             registry_text,
         )
     )
-    if suffixes != {"", "_v3"}:
+    if suffixes != {"_v3"}:
         fail(
-            "target-call registry must instantiate exactly legacy and V3 "
+            "target-call registry must instantiate exactly the current "
             f"dynamic families, found {sorted(suffixes)}"
         )
     for suffix in suffixes:
@@ -198,11 +198,10 @@ def production_symbols_from_registry(
         for suffix in suffixes
         for kind in peripheral_kinds
     )
-    if len(symbols) != 217:
-        fail(f"target-call registry must close 217 symbols, found {len(symbols)}")
+    if len(symbols) != 112:
+        fail(f"target-call registry must close 112 symbols, found {len(symbols)}")
 
     shared_symbols = {
-        "wafer_tx81_local_fence",
         "wafer_tx81_ncc_join",
         "wafer_tx81_direct_dte_begin",
         "wafer_tx81_direct_dte_begin_after_prepare",
@@ -210,40 +209,24 @@ def production_symbols_from_registry(
         "wafer_tx81_direct_dte_recv_prepare",
         "wafer_tx81_direct_dte_wait",
         "wafer_tx81_direct_dte_finish",
+        "wafer_tx81_direct_dte_send_issue_v3",
     }
-    legacy_symbols = {
+    ordinary_symbols = {
         symbol
         for symbol in symbols
-        if not symbol.endswith("_v3") and symbol not in shared_symbols
+        if symbol not in shared_symbols
     }
-    v3_ordinary_symbols = {
-        symbol
-        for symbol in symbols
-        if symbol.endswith("_v3")
-        and symbol != "wafer_tx81_direct_dte_send_issue_v3"
-    }
-    if len(legacy_symbols) != 104 or len(v3_ordinary_symbols) != 104:
+    if len(ordinary_symbols) != 104 or any(
+        not symbol.endswith("_v3") for symbol in ordinary_symbols
+    ):
         fail(
-            "target-call registry must close 104 legacy and 104 V3 ordinary "
-            f"symbols, found {len(legacy_symbols)}/{len(v3_ordinary_symbols)}"
-        )
-    expected_v3_symbols = {
-        (
-            "wafer_tx81_gemm_oriented_v3"
-            if symbol == "wafer_tx81_gemm_oriented_v2"
-            else f"{symbol}_v3"
-        )
-        for symbol in legacy_symbols
-    }
-    if v3_ordinary_symbols != expected_v3_symbols:
-        fail(
-            "target-call registry V3 ordinary symbol closure does not mirror "
-            "the legacy ABI"
+            "target-call registry must close 104 current ordinary _v3 "
+            f"symbols, found {len(ordinary_symbols)}"
         )
     if "wafer_tx81_direct_dte_send_issue" in symbols:
-        fail("legacy profiles must not expose an explicit Direct DTE issue call")
+        fail("target-call registry exposes a second Direct DTE issue spelling")
     if "wafer_tx81_direct_dte_send_issue_v3" not in symbols:
-        fail("V3 profile must expose the explicit Direct DTE issue call")
+        fail("current ABI must expose the explicit Direct DTE issue call")
     return symbols
 
 

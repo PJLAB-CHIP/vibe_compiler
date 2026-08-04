@@ -30,26 +30,26 @@ def validate_pure_ncc_probe() -> None:
     assert "wafer_nec_output_guard_mismatches" not in probe
     assert "TsmWaitfinish" not in probe
 
-    first_rdma = entry.index("wafer_tx81_rdma(payload_ddr,")
+    first_rdma = entry.index("wafer_tx81_rdma_v3(payload_ddr,")
     output_seed = entry.index(
-        "wafer_tx81_rdma(payload_ddr + 2U * WAFER_NEC_SLOT_BYTES,"
+        "wafer_tx81_rdma_v3(payload_ddr + 2U * WAFER_NEC_SLOT_BYTES,"
     )
     aux_rdma = entry.index(
-        "wafer_tx81_rdma(payload_ddr + 3U * WAFER_NEC_SLOT_BYTES,"
+        "wafer_tx81_rdma_v3(payload_ddr + 3U * WAFER_NEC_SLOT_BYTES,"
     )
     pmu_before = entry.index(
         "WaferNECPMU before = wafer_nec_read_pmu();", aux_rdma
     )
     execute = entry.index("uint64_t execute_result = 0U;", pmu_before)
-    wdma = entry.index("wafer_tx81_wdma(", execute)
-    terminal_fence = entry.index("wafer_tx81_local_fence();", wdma)
+    wdma = entry.index("wafer_tx81_wdma_v3(", execute)
+    terminal_fence = entry.index("wafer_tx81_ncc_join(1U);", wdma)
     pmu_after = entry.index(
         "WaferNECPMU after = wafer_nec_read_pmu();", terminal_fence
     )
     assert first_rdma < output_seed < aux_rdma < execute
     assert execute < wdma < terminal_fence
     assert aux_rdma < pmu_before < execute < pmu_after
-    assert entry.count("wafer_tx81_local_fence();") == 1
+    assert entry.count("wafer_tx81_ncc_join(1U);") == 1
     assert "GR_PMU_NE_INST_NUMS" in probe
     assert "GR_PMU_NE_BLOCKING_TIME" in probe
     assert "GR_PMU_NE_EXE_TIME" in probe

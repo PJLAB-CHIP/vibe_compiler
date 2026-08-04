@@ -27,8 +27,8 @@ Pipeline position:
   program；05 structured optimization继续在同一IR上建立optimizer-ready handoff，physical-dataflow synthesis直接消费。
 - User-level driver / named pipeline:
   `wafer-compile-stablehlo --verify-stablehlo-program`只做frontend admission；继续编译只经
-  `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`；
-  target profile必须显式选择且没有默认值。
+  `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --launch-kind={kernel|model}`；
+  current target identity由compiler固定提供，不是用户选择。
   `wafer-opt`及named MLIR pipelines只处理显式IR，不拥有program-directory I/O。
 - Explicit non-goals:
   不定义typed model/state ABI、MPMD member graph、physical endpoint、layout、SPM/DDR allocation、DTE、

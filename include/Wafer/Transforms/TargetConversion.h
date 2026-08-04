@@ -3,7 +3,7 @@
 #ifndef WAFER_TRANSFORMS_TARGETCONVERSION_H
 #define WAFER_TRANSFORMS_TARGETCONVERSION_H
 
-#include "Wafer/Target/TargetProfile.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include <cstdint>
 #include <memory>
@@ -15,10 +15,8 @@ class Pass;
 namespace wafer {
 
 /// Complete, typed request for production instruction-to-target conversion.
-/// The target profile has no default: production callers must forward the
-/// profile already carried by their accepted executable artifact.
+/// The production pipeline targets the one current Wafer backend.
 struct TargetConversionRequest {
-  TargetProfileId targetProfile;
   int64_t defaultDDRArenaArgumentIndex = -1;
   int64_t logicalRank = -1;
   int64_t transportStatusArgumentIndex = -1;

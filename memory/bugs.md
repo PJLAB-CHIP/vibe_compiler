@@ -1020,7 +1020,7 @@
   `DirectDTESendInfo.dst_addr`。当前SDK生成的ring module实际调用
   `get_tile_spm_addr_base(remote_tile, tile_x, tile_y)`并加receiver offset；其sender source和receiver FSM则都直接使用本地raw SPM
   offset。把三者都当普通offset或都转成`get_spm_memory_mapping`都会破坏firmware地址合同。
-- 修复模式：保持IR/TargetCall fixed signature不变，在TX81 CRT sender边界按当前full-16 4×4 target profile构造peer base加offset，
+- 修复模式：保持IR/TargetCall fixed signature不变，在TX81 CRT sender边界按current full-16 4×4 topology构造peer base加offset，
   checked拒绝加法overflow；base loader ABI显式允许该Kcore symbol。receiver lowering/CRT不做映射，避免把本地FSM offset误改为CPU pointer。
 - 防复发：CRT conformance检查source/remote/receiver三类地址分工；RISC-V CRT反汇编必须看到remote helper call和base+offset，receiver
   function不得调用local/peer mapping helper；fresh shared module的全部imports必须与同版本Kcore exports闭包。static gate通过后才允许
@@ -1533,7 +1533,7 @@
 - 现象：production package在板端完成并通过完整CPU output comparison，但该结果只能证明当前winner在tested domain
   正确；它没有反事实证明目标优化进入最终ELF，也无法区分收益来自candidate选择、其它lowering变化、payload差异或运行噪声。
   独立raw instruction/memory probe同样不能证明production coordinator选择了对应mechanism。
-- 根因：把“默认winner可执行”“优化结构已生效”和“相对baseline存在硬件收益”合并成一个结论，缺少同一source/profile/ABI
+- 根因：把“默认winner可执行”“优化结构已生效”和“相对baseline存在硬件收益”合并成一个结论，缺少同一source/current ABI
   下、经过相同late gate的保守候选，以及最终目标结构和成对执行顺序证据。host wall time还混入provider、OS与runtime成本，
   不能充当device cost。
 - 修复模式：从whole-variant coordinator已经接受的唯一reserved baseline建立compiler-private test seam，分别发布
@@ -1739,7 +1739,7 @@
   相同，混入`+0/-0`或舍入敏感值后baseline与winner逐bit不同。
 - 根因：candidate generation没有typed source-algebra policy，而paired fixture把所有输出硬编码为raw-bit
   exact；这同时让项目已采用的宽松浮点合同失效，并把`+0/-0`差异反复误报。
-- 修复模式：用target profile拥有的`SourceExact`/`Relaxed`显式控制floating algebra candidate；exact保持
+- 修复模式：用current target numeric policy拥有的`SourceExact`/`Relaxed`显式控制floating algebra candidate；exact保持
   source DAG，relaxed允许改写且replacement只继承输入op flags交集。paired preflight复用typed comparator：
   signed zero相等、finite按显式ULP/abs/rel、NaN/Inf单独处理；同一policy必须显式传给`wafer-run`校验
   每个variant的实际board output，不能只做host预检。结构、长度、guard、index和completion保持exact。
@@ -2247,9 +2247,9 @@
 ## 2026-07-29 旧的大shape overlap fixture不能代替当前target gate
 
 - 现象：`16x64 · 64x262144` GEMM + AllReduce的rank-frontier测试要求产生fixed-slot Direct-DTE/GEMM窗口，
-  但fixture使用V1 profile；V1没有显式mixed DTE/NCC capability。改用正确V3后，所有满足多tile的fixed-slot
+  但fixture使用obsolete ABI；它没有显式mixed DTE/NCC capability。改用current ABI后，所有满足多tile的fixed-slot
   邻居又被真实3 MiB SPM gate拒绝，缩小shape则失去原窗口且搜索更慢。该测试已不可能同时满足自己声称的合同。
-- 根因：历史测试把特定shape、旧target profile和“必须出现候选”绑定在一起，并在后续capability/SPM合同收紧后
+- 根因：历史测试把特定shape、obsolete ABI和“必须出现候选”绑定在一起，并在后续capability/SPM合同收紧后
   仍留在suite；默认测试减负又让它没有及时暴露。campaign driver中同名旧case、CMake owner集合和catalog随后形成
   三份不一致inventory。
 - 修复模式：删除失效GEMM fixture及其payload/oracle/driver entry。底层rotation、issue/wait、binding、range和
@@ -2347,3 +2347,40 @@
   不能替代dtype-changing traversal proof。
 - 防复发：测试同时覆盖packed i1→float正例、同宽blocked正例、source较短反例和dtype-specific CBlock relation反例；
   target preflight与lowering必须消费同一proof，不能各自按logical count猜测。
+
+## 2026-08-04 单target不能用singleton profile复制format legality
+
+- 现象：compiler只有一个Wafer backend，却同时维护target选择对象、format兼容表和instruction×dtype表；同一F32
+  movement/reduce在不同入口得到不同结论，实际Llama的合法F32非GEMM路径被误拒绝。
+- 根因：把artifact identity、ABI版本、format编码和instruction语义限制捆进一个可选择的全局对象，形成多个互相漂移的
+  白名单；历史兼容分支又让current reader/writer不再唯一。
+- 修复模式：compiler固定进入唯一Wafer target lowering；artifact只保存exact target identity和current runtime ABI。
+  `TargetFormat`完整拥有5个format-bearing engine乘13种logical format的65行编码；instruction verifier/preflight只增加
+  自身限制，当前唯一dtype例外是GEMM拒绝F32。每种wire artifact保留自己的current schema version并只接受该值，删除旧
+  reader、translator、wrapper和选择CLI；不同artifact的schema号不应被强行合并成一个全局版本。
+- 防复发：新增format或engine时验证完整矩阵；新增instruction限制时必须是该instruction自身的硬件/语义事实，不能再建
+  第二份通用dtype白名单。ABI/schema测试必须同时证明current roundtrip和旧值pre-effect拒绝，不能以兼容读取代替升级。
+
+## 2026-08-04 F16物理摘要比较必须保留同一padding基底
+
+- 现象：bulk qualification中F16 logical values逐项raw-exact，但formal结果与backend结果的完整physical digest不同；F32
+  case不会暴露该问题。
+- 根因：比较器分别从零初始化的storage打包两侧logical values，丢失了fixture为unused/padding bits设置的poison基底；它
+  实际比较了两套padding，而不是同一physical destination上的语义写入。
+- 修复模式：两侧都以同一个destination template storage为基底，仅通过physical tensor codec覆盖logical-valid values，
+  再比较完整physical digest。这样padding保持相同，logical值或写入范围错误仍会被检测。
+- 防复发：qualification同时保留logical raw-exact、padding poison和完整physical digest；至少包含F16/BF16等会留下
+  unused/padding storage的正例，以及只破坏logical lane和只破坏padding基底的负例。
+
+## 2026-08-04 model-scale source会暴露rank-zero和动态SPM view边界
+
+- 现象：小shape fixture可编译，实际Llama block先在dynamic tile-local `tensor.extract_slice`失败，修复后又在rank-zero
+  F32 scalar broadcast处得到零条movement descriptor。
+- 根因：tensor-program lowering只允许动态DDR subview，没有把同一标准strided view语义用于SPM；另外
+  `PhysicalAccessRelation`把合法的零结果AffineMap/Presburger projection误当成缺失projection，无法取rank-zero唯一逻辑点。
+- 修复模式：动态Tensor-layout slice统一materialize为标准`memref.subview`，SPM view再经已有`tile.copy`形成compact
+  result；target地址lowering对DDR/SPM Tensor strided subview使用同一checked offset逻辑。rank-zero endpoint在
+  `PhysicalAccessRelation::getLogicalPoint`中验证relation membership后返回唯一空坐标，原有descriptor planner即可生成
+  `src_stride=0`的单条gather/scatter广播。
+- 防复发：focused测试覆盖dynamic DDR/SPM subview正例、blocked layout负例、rank-zero到非单元素tensor广播；完成证明还要
+  用真实model shape重放source→16-rank package→no-card，不能只依赖tiny或shape-only fixture。

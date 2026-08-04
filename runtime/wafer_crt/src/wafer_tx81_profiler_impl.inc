@@ -785,60 +785,6 @@ static void wafer_profile_clear_completed_worker(uint32_t worker) {
       bookkeeping_begin, bookkeeping_end);
 }
 
-static uint32_t wafer_profile_wait_local_completion(void) {
-  /*
-   * Count capture retains the production primitive but accounts for the same
-   * explicit completion event that Trace will store.
-   */
-  if (!wafer_profile_is_trace_capture()) {
-    if (wafer_profile_header != NULL &&
-        (wafer_profile_header->flags &
-         WAFER_TX81_PROFILER_RECORD_COUNT_ONLY) != 0U)
-      ++wafer_profile_header->next_sequence;
-    return TsmWaitfinish();
-  }
-
-  uint32_t event_index = wafer_profile_allocate_event(
-      WAFER_TX81_PROFILER_ENGINE_NONE,
-      WAFER_TX81_PROFILER_EVENT_NCC_COMPLETION_WAIT,
-      WAFER_TX81_PROFILER_EVENT_WAIT_LOCAL);
-  uint64_t ncc_sample_before =
-      wafer_profile_header->cost_summary.ncc_pmu_sample_cycles;
-  uint64_t event_bookkeeping_before =
-      wafer_profile_header->cost_summary.event_bookkeeping_cycles;
-  uint64_t status_poll_before =
-      wafer_profile_header->cost_summary.status_poll_cycles;
-  uint64_t operation_begin_cycle = wafer_profile_cycle();
-  uint32_t poll_count = 0;
-  for (;;) {
-    wafer_profile_observe_ncc_activity();
-    uint64_t poll_begin_cycle = wafer_profile_cycle();
-    uint32_t done = TsmGetCsrTaskstatus();
-    uint64_t poll_end_cycle = wafer_profile_cycle();
-    wafer_profile_add_cost(
-        &wafer_profile_header->cost_summary.status_poll_cycles,
-        poll_begin_cycle, poll_end_cycle);
-    if (poll_count == UINT32_MAX)
-      wafer_profile_mark_protocol_error();
-    else
-      ++poll_count;
-    if (done == 1U)
-      break;
-  }
-  wafer_profile_observe_ncc_activity();
-  uint64_t operation_end_cycle = wafer_profile_cycle();
-  wafer_profile_complete_wait_event(
-      event_index, operation_begin_cycle, operation_end_cycle, poll_count,
-      ncc_sample_before, event_bookkeeping_before, status_poll_before);
-  /*
-   * The vendor TsmWaitfinish contract drains only default worker 0. Preserve
-   * other workers as outstanding (and conservatively ambiguous) so later PMU
-   * deltas are never dropped as if this were an all-worker fence.
-   */
-  wafer_profile_clear_completed_worker(0U);
-  return 1U;
-}
-
 static uint32_t
 wafer_profile_wait_ncc_worker_completion(uint32_t worker) {
   if (!wafer_profile_is_trace_capture()) {

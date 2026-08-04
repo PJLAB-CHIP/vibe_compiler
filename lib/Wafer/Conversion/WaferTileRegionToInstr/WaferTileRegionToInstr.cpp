@@ -44,8 +44,8 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
                          mlir::func::FuncDialect, mlir::memref::MemRefDialect,
                          mlir::scf::SCFDialect>();
   target
-      .addLegalOp<mlir::ModuleOp, TileRegionOp, TileYieldOp, SyncLocalFenceOp,
-                  SyncNCCJoinOp, InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp,
+      .addLegalOp<mlir::ModuleOp, TileRegionOp, TileYieldOp, SyncNCCJoinOp,
+                  InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp,
                   InstrFillOp, InstrElementwiseOp, InstrBit2FpOp,
                   InstrMaskMoveOp, InstrReduceOp, InstrConvertOp, InstrGemmOp,
                   InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>();
@@ -656,8 +656,8 @@ wafer::detail::checkStaticTerminalOperationBudget(mlir::Operation *root,
   operationCount = 0;
   bool overflow = false;
   root->walk([&](mlir::Operation *operation) {
-    if (overflow || !mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp,
-                               SyncNCCJoinOp>(operation))
+    if (overflow ||
+        !mlir::isa<WaferInstructionOpInterface, SyncNCCJoinOp>(operation))
       return;
     if (operationCount == std::numeric_limits<uint64_t>::max()) {
       overflow = true;

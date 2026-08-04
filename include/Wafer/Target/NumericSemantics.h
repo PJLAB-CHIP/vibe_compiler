@@ -343,27 +343,25 @@ public:
   NumericCommandKey() = delete;
 
   static llvm::Expected<NumericCommandKey>
-  createCTConvert(TargetProfileId targetProfile, uint16_t opcode,
-                  NumericTensorKey source, NumericTensorKey destination,
+  createCTConvert(uint16_t opcode, NumericTensorKey source,
+                  NumericTensorKey destination,
                   std::optional<NumericConvertParameter> parameter);
   static llvm::Expected<NumericCommandKey> createCTElementwise(
-      TargetProfileId targetProfile, NumericElementwiseOperation operation,
+      NumericElementwiseOperation operation,
       std::vector<NumericTensorKey> inputs, NumericTensorKey destination);
   static llvm::Expected<NumericCommandKey>
-  createNEGemm(TargetProfileId targetProfile, NumericTensorKey lhs,
-               NumericTensorKey rhs, NumericTensorKey destination, uint32_t m,
+  createNEGemm(NumericTensorKey lhs, NumericTensorKey rhs,
+               NumericTensorKey destination, uint32_t m,
                uint32_t k, uint32_t n, uint32_t batchCount,
                NumericGemmAxes axes,
                GemmOrientation lhsOrientation = GemmOrientation::Normal,
                GemmOrientation rhsOrientation = GemmOrientation::Normal);
   static llvm::Expected<NumericCommandKey>
-  createNativeCTReduce(TargetProfileId targetProfile,
-                       NumericReduceOperation operation, NumericTensorKey input,
+  createNativeCTReduce(NumericReduceOperation operation, NumericTensorKey input,
                        NumericTensorKey destination,
                        NativeCTReduceDimension dimension);
 
   NumericCommandFamily getFamily() const;
-  TargetProfileId getTargetProfile() const { return targetProfile; }
   const NumericCommandPayload &getPayload() const { return payload; }
   const NumericCTConvertCommand *getCTConvert() const;
   const NumericCTElementwiseCommand *getCTElementwise() const;
@@ -373,8 +371,7 @@ public:
 
   friend bool operator==(const NumericCommandKey &lhs,
                          const NumericCommandKey &rhs) {
-    return lhs.targetProfile == rhs.targetProfile &&
-           lhs.payload == rhs.payload && lhs.keyDigest == rhs.keyDigest;
+    return lhs.payload == rhs.payload && lhs.keyDigest == rhs.keyDigest;
   }
   friend bool operator!=(const NumericCommandKey &lhs,
                          const NumericCommandKey &rhs) {
@@ -382,12 +379,9 @@ public:
   }
 
 private:
-  NumericCommandKey(TargetProfileId targetProfile,
-                    NumericCommandPayload payload, std::string keyDigest)
-      : targetProfile(targetProfile), payload(std::move(payload)),
-        keyDigest(std::move(keyDigest)) {}
+  NumericCommandKey(NumericCommandPayload payload, std::string keyDigest)
+      : payload(std::move(payload)), keyDigest(std::move(keyDigest)) {}
 
-  TargetProfileId targetProfile;
   NumericCommandPayload payload;
   std::string keyDigest;
 };
@@ -475,13 +469,10 @@ enum class NumericReductionOrderPolicy : uint8_t {
 class NumericCTConvertSemanticsIdentity {
 public:
   NumericCTConvertSemanticsIdentity() = delete;
-  NumericCTConvertSemanticsIdentity(TargetProfileId targetProfile,
-                                    uint16_t opcode,
+  NumericCTConvertSemanticsIdentity(uint16_t opcode,
                                     NumericRoundingMode effectiveRounding)
-      : targetProfile(targetProfile), opcode(opcode),
-        effectiveRounding(effectiveRounding) {}
+      : opcode(opcode), effectiveRounding(effectiveRounding) {}
 
-  TargetProfileId getTargetProfile() const { return targetProfile; }
   NumericCommandFamily getFamily() const {
     return NumericCommandFamily::CTConvert;
   }
@@ -493,31 +484,24 @@ public:
 
   friend bool operator==(const NumericCTConvertSemanticsIdentity &lhs,
                          const NumericCTConvertSemanticsIdentity &rhs) {
-    return lhs.targetProfile == rhs.targetProfile && lhs.opcode == rhs.opcode &&
+    return lhs.opcode == rhs.opcode &&
            lhs.effectiveRounding == rhs.effectiveRounding;
   }
 
 private:
-  TargetProfileId targetProfile;
   uint16_t opcode;
   NumericRoundingMode effectiveRounding;
 };
 
-/// Compatibility name for convert-only formal execution callers. New families
-/// never use this identity.
-using NumericRoutePolicyIdentity = NumericCTConvertSemanticsIdentity;
-
 class NumericCTElementwiseSemanticsIdentity {
 public:
   NumericCTElementwiseSemanticsIdentity() = delete;
-  NumericCTElementwiseSemanticsIdentity(TargetProfileId targetProfile,
-                                        NumericElementwiseOperation operation,
+  NumericCTElementwiseSemanticsIdentity(NumericElementwiseOperation operation,
                                         LogicalFormat inputFormat,
                                         LogicalFormat destinationFormat)
-      : targetProfile(targetProfile), operation(operation),
-        inputFormat(inputFormat), destinationFormat(destinationFormat) {}
+      : operation(operation), inputFormat(inputFormat),
+        destinationFormat(destinationFormat) {}
 
-  TargetProfileId getTargetProfile() const { return targetProfile; }
   NumericCommandFamily getFamily() const {
     return NumericCommandFamily::CTElementwise;
   }
@@ -527,14 +511,12 @@ public:
 
   friend bool operator==(const NumericCTElementwiseSemanticsIdentity &lhs,
                          const NumericCTElementwiseSemanticsIdentity &rhs) {
-    return lhs.targetProfile == rhs.targetProfile &&
-           lhs.operation == rhs.operation &&
+    return lhs.operation == rhs.operation &&
            lhs.inputFormat == rhs.inputFormat &&
            lhs.destinationFormat == rhs.destinationFormat;
   }
 
 private:
-  TargetProfileId targetProfile;
   NumericElementwiseOperation operation;
   LogicalFormat inputFormat;
   LogicalFormat destinationFormat;
@@ -543,11 +525,9 @@ private:
 class NumericNEGemmSemanticsIdentity {
 public:
   NumericNEGemmSemanticsIdentity() = delete;
-  NumericNEGemmSemanticsIdentity(TargetProfileId targetProfile,
-                                 LogicalFormat format)
-      : targetProfile(targetProfile), format(format) {}
+  explicit NumericNEGemmSemanticsIdentity(LogicalFormat format)
+      : format(format) {}
 
-  TargetProfileId getTargetProfile() const { return targetProfile; }
   NumericCommandFamily getFamily() const {
     return NumericCommandFamily::NEGemm;
   }
@@ -555,23 +535,20 @@ public:
 
   friend bool operator==(const NumericNEGemmSemanticsIdentity &lhs,
                          const NumericNEGemmSemanticsIdentity &rhs) {
-    return lhs.targetProfile == rhs.targetProfile && lhs.format == rhs.format;
+    return lhs.format == rhs.format;
   }
 
 private:
-  TargetProfileId targetProfile;
   LogicalFormat format;
 };
 
 class NumericNativeCTReduceSemanticsIdentity {
 public:
   NumericNativeCTReduceSemanticsIdentity() = delete;
-  NumericNativeCTReduceSemanticsIdentity(TargetProfileId targetProfile,
-                                         NumericReduceOperation operation,
+  NumericNativeCTReduceSemanticsIdentity(NumericReduceOperation operation,
                                          LogicalFormat format)
-      : targetProfile(targetProfile), operation(operation), format(format) {}
+      : operation(operation), format(format) {}
 
-  TargetProfileId getTargetProfile() const { return targetProfile; }
   NumericCommandFamily getFamily() const {
     return NumericCommandFamily::NativeCTReduce;
   }
@@ -580,12 +557,10 @@ public:
 
   friend bool operator==(const NumericNativeCTReduceSemanticsIdentity &lhs,
                          const NumericNativeCTReduceSemanticsIdentity &rhs) {
-    return lhs.targetProfile == rhs.targetProfile &&
-           lhs.operation == rhs.operation && lhs.format == rhs.format;
+    return lhs.operation == rhs.operation && lhs.format == rhs.format;
   }
 
 private:
-  TargetProfileId targetProfile;
   NumericReduceOperation operation;
   LogicalFormat format;
 };
@@ -608,7 +583,6 @@ public:
   const NumericNEGemmSemanticsIdentity *getNEGemmIdentity() const;
   const NumericNativeCTReduceSemanticsIdentity *
   getNativeCTReduceIdentity() const;
-  const NumericRoutePolicyIdentity &getRoutePolicyIdentity() const;
   NumericRoundingMode getRoundingMode() const;
   std::optional<NumericRoundingMode> getRoundingModePolicy() const {
     return roundingMode;
@@ -738,7 +712,7 @@ private:
   std::string semanticDigest;
 
   friend llvm::ArrayRef<NumericSemanticsProfile>
-  getRegisteredNumericSemanticsProfiles();
+  getRegisteredNumericCTConvertSemanticsProfiles();
   friend llvm::ArrayRef<NumericSemanticsProfile>
   getRegisteredNumericCTElementwiseSemanticsProfiles();
   friend llvm::ArrayRef<NumericSemanticsProfile>
@@ -747,9 +721,8 @@ private:
   getRegisteredNumericNativeCTReduceSemanticsProfiles();
 };
 
-/// Compatibility entry point for the 101 CT-convert semantics consumed by the
-/// scalar formal executor.
-llvm::ArrayRef<NumericSemanticsProfile> getRegisteredNumericSemanticsProfiles();
+llvm::ArrayRef<NumericSemanticsProfile>
+getRegisteredNumericCTConvertSemanticsProfiles();
 llvm::ArrayRef<NumericSemanticsProfile>
 getRegisteredNumericCTElementwiseSemanticsProfiles();
 llvm::ArrayRef<NumericSemanticsProfile>
@@ -888,7 +861,6 @@ public:
   NumericCapabilityPattern() = delete;
 
   ModelProfileId getModelProfile() const { return modelProfile; }
-  TargetProfileId getTargetProfile() const { return targetProfile; }
   NumericCommandFamily getFamily() const { return family; }
   const NumericCapabilitySelector &getSelector() const { return selector; }
   const NumericCTConvertPatternSelector *getCTConvertSelector() const;
@@ -930,8 +902,8 @@ public:
 
 private:
   NumericCapabilityPattern(
-      ModelProfileId modelProfile, TargetProfileId targetProfile,
-      NumericCommandFamily family, NumericCapabilitySelector selector,
+      ModelProfileId modelProfile, NumericCommandFamily family,
+      NumericCapabilitySelector selector,
       NumericModelImplementationCapability modelCapability,
       NumericCompilerEmittabilityCapability compilerCapability,
       NumericEvidenceCapability evidenceCapability,
@@ -940,8 +912,8 @@ private:
       std::optional<NumericComparatorKind> comparator,
       std::optional<FormalNumericBackendKind> formalBackend,
       std::string patternDigest)
-      : modelProfile(modelProfile), targetProfile(targetProfile),
-        family(family), selector(std::move(selector)),
+      : modelProfile(modelProfile), family(family),
+        selector(std::move(selector)),
         modelCapability(modelCapability),
         compilerCapability(compilerCapability),
         evidenceCapability(evidenceCapability), semantics(semantics),
@@ -949,7 +921,6 @@ private:
         formalBackend(formalBackend), patternDigest(std::move(patternDigest)) {}
 
   ModelProfileId modelProfile;
-  TargetProfileId targetProfile;
   NumericCommandFamily family;
   NumericCapabilitySelector selector;
   NumericModelImplementationCapability modelCapability;

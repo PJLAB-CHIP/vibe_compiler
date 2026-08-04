@@ -648,7 +648,7 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
 
     auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(&operation);
     if (!instruction) {
-      if (mlir::isa<SyncLocalFenceOp, SyncNCCJoinOp>(operation))
+      if (mlir::isa<SyncNCCJoinOp>(operation))
         continue;
       if (!isSupportedPureBodyOperation(&operation))
         return failPlan(
@@ -761,7 +761,7 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
     }
   }
 
-  // The current target contract exposes one Direct-DTE sender slot. Preserve
+  // The current target exposes one Direct-DTE sender slot. Preserve
   // its typed issue/release chain independently of buffer aliasing so
   // pipelining may overlap one send with NCC work but never overlaps two
   // sender events that the ABI cannot represent.

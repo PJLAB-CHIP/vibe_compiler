@@ -5,6 +5,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/TargetFormat.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -260,10 +261,9 @@ enum class TargetCallBuiltin : uint8_t {
   Bit2FP,
   MaskMove,
   Gemm,
-  GemmOrientedV2,
+  GemmOriented,
   TDMAPad,
   TDMAImg2Col,
-  LocalFence,
   NCCJoin,
   DirectDTEBegin,
   DirectDTEBeginAfterPrepare,
@@ -290,27 +290,15 @@ enum class TargetCallTSMEngine : uint8_t {
   DirectDTE
 };
 
-/// Typed issue-domain metadata owned by the target-call registry. Closed
-/// worker-0 ABIs carry their worker as fixed metadata. Worker-aware ABIs carry
-/// it in one exact registered argument position. Direct DTE carries neither
-/// because its completion is represented by its opaque event/wait
-/// transaction.
+/// Typed issue-domain metadata owned by the target-call registry. NCC engine
+/// calls carry their worker in one exact registered argument position. Direct
+/// DTE carries no NCC worker because its completion is represented by its
+/// opaque event/wait transaction.
 struct TargetCallIssueDomain {
   TargetCallTSMEngine engine;
-  std::optional<NCCWorker> fixedNCCWorker;
   std::optional<size_t> nccWorkerArgument;
   LocalInstructionCompletion completionBehavior =
       LocalInstructionCompletion::None;
-};
-
-/// Explicit profile availability for one public target-call ABI descriptor.
-/// The bit values are registry implementation details, not a serialized ABI.
-enum class TargetCallProfileAvailability : uint8_t {
-  V1 = 1u << 0,
-  V2 = 1u << 1,
-  V3 = 1u << 2,
-  V1AndV2 = (1u << 0) | (1u << 1),
-  All = (1u << 0) | (1u << 1) | (1u << 2),
 };
 
 /// A semantic identity owned by typed compiler enums, never reconstructed
@@ -328,27 +316,19 @@ struct TargetCallDescriptor {
   std::vector<TargetCallScalarType> arguments;
   TargetCallSemantic semantic;
   std::optional<TargetCallIssueDomain> issueDomain;
-  TargetCallProfileAvailability availability;
 };
 
 struct TargetCallDecodeContext {
-  TargetProfileId targetProfile;
   int64_t rankCount;
 };
 
-/// Returns the closed, versioned target-call surface. The original 112
-/// descriptors remain first and byte-for-byte stable; V3-only descriptors are
-/// appended so existing profiler site identities do not move.
+/// Returns the one closed target-call ABI surface consumed by compiler,
+/// runtime, models, and profiling.
 llvm::ArrayRef<TargetCallDescriptor> getTargetCallDescriptors();
 
 const TargetCallDescriptor *findTargetCallDescriptor(llvm::StringRef symbol);
 const TargetCallDescriptor *
-findTargetCallDescriptor(llvm::StringRef symbol, TargetProfileId targetProfile);
-const TargetCallDescriptor *
-findTargetCallDescriptor(const TargetCallSemantic &semantic,
-                         TargetProfileId targetProfile);
-bool isTargetCallAvailableForProfile(const TargetCallDescriptor &descriptor,
-                                     TargetProfileId targetProfile);
+findTargetCallDescriptor(const TargetCallSemantic &semantic);
 
 std::optional<TargetCallTSMEngine>
 getTargetCallTSMEngine(const TargetCallSemantic &semantic);
@@ -357,30 +337,22 @@ getTargetCallTSMEngine(const TargetCallDescriptor &descriptor);
 llvm::StringRef stringifyTargetCallTSMEngine(TargetCallTSMEngine engine);
 
 const TargetCallDescriptor &
-getTargetCallDescriptor(TargetCallBuiltin call, TargetProfileId targetProfile);
+getTargetCallDescriptor(TargetCallBuiltin call);
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrElementwiseKind kind,
-                        TargetProfileId targetProfile);
+getTargetCallDescriptor(InstrElementwiseKind kind);
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrReduceKind kind, TargetProfileId targetProfile);
+getTargetCallDescriptor(InstrReduceKind kind);
 
-/// Returns whether the selected target profile has a closed
-/// opcode/kind/format qualification row for one native CT reduction.  Generic
-/// CT format encoding support alone is not sufficient to emit a reduce call.
-bool isTargetReduceFormatTupleAvailable(TargetProfileId targetProfile,
-                                        InstrReduceKind kind,
-                                        LogicalFormat format);
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrConvertKind kind, TargetProfileId targetProfile);
+getTargetCallDescriptor(InstrConvertKind kind);
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrConvKind kind, TargetProfileId targetProfile);
+getTargetCallDescriptor(InstrConvKind kind);
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrPoolKind kind, TargetProfileId targetProfile);
+getTargetCallDescriptor(InstrPoolKind kind);
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrUnpoolKind kind, TargetProfileId targetProfile);
+getTargetCallDescriptor(InstrUnpoolKind kind);
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrPeripheralKind kind,
-                        TargetProfileId targetProfile);
+getTargetCallDescriptor(InstrPeripheralKind kind);
 
 /// Decodes one exact ABI argument vector into the descriptor's typed payload.
 /// This is the only field-position factory shared by the JIT frontend and

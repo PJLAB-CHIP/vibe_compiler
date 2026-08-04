@@ -17,8 +17,7 @@ namespace {
 
 llvm::Error validateRuntimeEnvironment(const PackageManifest &manifest,
                                        const RuntimeEnvironment &environment) {
-  if (environment.targetProfile != manifest.targetProfile ||
-      environment.targetIdentity != manifest.targetIdentity ||
+  if (environment.targetIdentity != manifest.targetIdentity ||
       environment.runtimeABI != manifest.runtimeABI ||
       environment.moduleFormat != manifest.moduleFormat)
     return invalid("runtime environment is incompatible with package target");

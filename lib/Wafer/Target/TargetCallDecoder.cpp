@@ -38,11 +38,10 @@ static llvm::Error verifyStaticKind(uint32_t actual, uint32_t expected,
 }
 
 static llvm::Expected<LogicalFormat>
-decodeFormat(const TargetCallDecodeContext &context, TargetFormatEngine engine,
-             uint64_t code) {
+decodeFormat(TargetFormatEngine engine, uint64_t code) {
   if (code > std::numeric_limits<uint32_t>::max())
     return llvm::createStringError("target format field does not fit uint32");
-  return decodeTargetFormat(context.targetProfile, engine,
+  return decodeTargetFormat(engine,
                             static_cast<uint32_t>(code));
 }
 
@@ -57,7 +56,7 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
                                     ? TargetFormatEngine::RDMA
                                     : TargetFormatEngine::WDMA;
     llvm::Expected<LogicalFormat> format =
-        decodeFormat(context, engine, arguments[10]);
+        decodeFormat(engine, arguments[10]);
     if (!format)
       return format.takeError();
     return TargetTransactionPayload{TargetStridedDMATransaction{
@@ -75,7 +74,7 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
         argumentArray32<3>(arguments, 13)}};
   case TargetCallBuiltin::Memset: {
     llvm::Expected<LogicalFormat> format =
-        decodeFormat(context, TargetFormatEngine::TDMA, arguments[3]);
+        decodeFormat(TargetFormatEngine::TDMA, arguments[3]);
     if (!format)
       return format.takeError();
     return TargetTransactionPayload{
@@ -84,7 +83,7 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
   }
   case TargetCallBuiltin::Bit2FP: {
     llvm::Expected<LogicalFormat> format =
-        decodeFormat(context, TargetFormatEngine::CT, arguments[3]);
+        decodeFormat(TargetFormatEngine::CT, arguments[3]);
     if (!format)
       return format.takeError();
     return TargetTransactionPayload{TargetBit2FPTransaction{
@@ -92,7 +91,7 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
   }
   case TargetCallBuiltin::MaskMove: {
     llvm::Expected<LogicalFormat> format =
-        decodeFormat(context, TargetFormatEngine::CT, arguments[4]);
+        decodeFormat(TargetFormatEngine::CT, arguments[4]);
     if (!format)
       return format.takeError();
     return TargetTransactionPayload{TargetMaskMoveTransaction{
@@ -101,7 +100,7 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
   }
   case TargetCallBuiltin::Gemm: {
     llvm::Expected<LogicalFormat> format =
-        decodeFormat(context, TargetFormatEngine::NE, arguments[7]);
+        decodeFormat(TargetFormatEngine::NE, arguments[7]);
     if (!format)
       return format.takeError();
     return TargetTransactionPayload{TargetGemmTransaction{
@@ -109,16 +108,9 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
         argument32(arguments, 4), argument32(arguments, 5),
         argument32(arguments, 6), *format}};
   }
-  case TargetCallBuiltin::GemmOrientedV2: {
-    KernelRuntimeABIId runtimeABI =
-        getTargetProfileRecord(context.targetProfile).kernelRuntimeABI;
-    if (runtimeABI != KernelRuntimeABIId::waferTx81KernelV2() &&
-        runtimeABI != KernelRuntimeABIId::waferTx81KernelV3())
-      return llvm::createStringError(
-          "oriented GEMM target call requires wafer-tx81-kernel-v2 or "
-          "wafer-tx81-kernel-v3 ABI");
+  case TargetCallBuiltin::GemmOriented: {
     llvm::Expected<LogicalFormat> format =
-        decodeFormat(context, TargetFormatEngine::NE, arguments[7]);
+        decodeFormat(TargetFormatEngine::NE, arguments[7]);
     if (!format)
       return format.takeError();
     uint32_t lhsOrientation = argument32(arguments, 8);
@@ -139,7 +131,7 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
     bool imageToColumn = builtin == TargetCallBuiltin::TDMAImg2Col;
     size_t formatIndex = imageToColumn ? 18 : 14;
     llvm::Expected<LogicalFormat> format =
-        decodeFormat(context, TargetFormatEngine::TDMA, arguments[formatIndex]);
+        decodeFormat(TargetFormatEngine::TDMA, arguments[formatIndex]);
     if (!format)
       return format.takeError();
     std::optional<std::array<uint32_t, 4>> kernelStrides;
@@ -152,9 +144,6 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
         argumentArray32<4>(arguments, 6), argumentArray32<4>(arguments, 10),
         kernelStrides, *format}};
   }
-  case TargetCallBuiltin::LocalFence:
-    return TargetTransactionPayload{TargetNCCJoinTransaction{
-        uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0)}};
   case TargetCallBuiltin::NCCJoin: {
     uint32_t participants = argument32(arguments, 0);
     if (participants == 0 || (participants & ~kAllNCCWorkersMask) != 0)
@@ -203,7 +192,7 @@ buildElementwiseTransaction(const TargetCallDecodeContext &context,
   size_t countIndex = unary ? 2 : 3;
   size_t formatIndex = unary ? 3 : 4;
   llvm::Expected<LogicalFormat> format =
-      decodeFormat(context, TargetFormatEngine::CT, arguments[formatIndex]);
+      decodeFormat(TargetFormatEngine::CT, arguments[formatIndex]);
   if (!format)
     return format.takeError();
   return TargetTransactionPayload{TargetElementwiseTransaction{
@@ -217,7 +206,7 @@ buildReduceTransaction(const TargetCallDecodeContext &context,
                        InstrReduceKind kind,
                        llvm::ArrayRef<uint64_t> arguments) {
   llvm::Expected<LogicalFormat> format =
-      decodeFormat(context, TargetFormatEngine::CT, arguments[7]);
+      decodeFormat(TargetFormatEngine::CT, arguments[7]);
   if (!format)
     return format.takeError();
   return TargetTransactionPayload{TargetReduceTransaction{
@@ -252,7 +241,7 @@ buildConvTransaction(const TargetCallDecodeContext &context, InstrConvKind kind,
           argument32(arguments, 3), static_cast<uint32_t>(kind), "convolution"))
     return std::move(error);
   llvm::Expected<LogicalFormat> format =
-      decodeFormat(context, TargetFormatEngine::NE, arguments[30]);
+      decodeFormat(TargetFormatEngine::NE, arguments[30]);
   if (!format)
     return format.takeError();
   return TargetTransactionPayload{TargetConvTransaction{
@@ -273,7 +262,7 @@ buildPoolTransaction(const TargetCallDecodeContext &context, InstrPoolKind kind,
                                            static_cast<uint32_t>(kind), "pool"))
     return std::move(error);
   llvm::Expected<LogicalFormat> format =
-      decodeFormat(context, TargetFormatEngine::CT, arguments[firstField + 17]);
+      decodeFormat(TargetFormatEngine::CT, arguments[firstField + 17]);
   if (!format)
     return format.takeError();
   return TargetTransactionPayload{TargetPoolTransaction{
@@ -293,7 +282,7 @@ buildUnpoolTransaction(const TargetCallDecodeContext &context,
           argument32(arguments, 2), static_cast<uint32_t>(kind), "unpool"))
     return std::move(error);
   llvm::Expected<LogicalFormat> format =
-      decodeFormat(context, TargetFormatEngine::CT, arguments[16]);
+      decodeFormat(TargetFormatEngine::CT, arguments[16]);
   if (!format)
     return format.takeError();
   return TargetTransactionPayload{TargetUnpoolTransaction{
@@ -336,7 +325,7 @@ buildPeripheralTransaction(const TargetCallDecodeContext &context,
   size_t elementIndex = addressCount + 1;
   size_t formatIndex = addressCount + 2;
   llvm::Expected<LogicalFormat> format =
-      decodeFormat(context, TargetFormatEngine::CT, arguments[formatIndex]);
+      decodeFormat(TargetFormatEngine::CT, arguments[formatIndex]);
   if (!format)
     return format.takeError();
 
@@ -382,9 +371,6 @@ llvm::Expected<compiler::TargetTransactionPayload>
 decodeTargetCallPayload(const TargetCallDescriptor &descriptor,
                         const TargetCallDecodeContext &context,
                         llvm::ArrayRef<uint64_t> arguments) {
-  if (!isTargetCallAvailableForProfile(descriptor, context.targetProfile))
-    return llvm::createStringError(
-        "target-call symbol is not available for the invocation profile");
   if (arguments.size() != descriptor.arguments.size())
     return llvm::createStringError(
         "target-call payload argument count does not match its descriptor");
@@ -432,12 +418,6 @@ decodeTargetCallNCCWorker(const TargetCallDescriptor &descriptor,
         "target-call worker argument count does not match its descriptor");
   if (!descriptor.issueDomain)
     return std::optional<NCCWorker>{};
-  if (descriptor.issueDomain->fixedNCCWorker &&
-      descriptor.issueDomain->nccWorkerArgument)
-    return llvm::createStringError(
-        "target-call registry has conflicting NCC worker encodings");
-  if (descriptor.issueDomain->fixedNCCWorker)
-    return descriptor.issueDomain->fixedNCCWorker;
   if (!descriptor.issueDomain->nccWorkerArgument)
     return std::optional<NCCWorker>{};
   size_t index = *descriptor.issueDomain->nccWorkerArgument;

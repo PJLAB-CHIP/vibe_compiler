@@ -56,7 +56,7 @@ mlir::LogicalResult FunctionLowering::lowerRDMA(InstrRDMAOp op) {
   dest = addStaticOffset(op, *dest,
                          getOptionalIntegerAttrValue(op.getDstOffsetAttr(), 0));
   mlir::FailureOr<int64_t> fmt =
-      getDataFormatCode(op, op.getDest(), "rdma dest", targetProfile);
+      getDataFormatCode(op, op.getDest(), "rdma dest");
   if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(fmt))
     return mlir::failure();
   args.push_back(materializeAddress(op.getLoc(), *source));
@@ -67,7 +67,7 @@ mlir::LogicalResult FunctionLowering::lowerRDMA(InstrRDMAOp op) {
   appendArrayI32(op.getLoc(), args, op.getSrcIterations());
   appendI32(op.getLoc(), args, *fmt);
   emitNCCCall(op.getLoc(),
-              getTargetCallDescriptor(TargetCallBuiltin::RDMA, targetProfile),
+              getTargetCallDescriptor(TargetCallBuiltin::RDMA),
               args, op.getWorker());
   return mlir::success();
 }
@@ -85,7 +85,7 @@ mlir::LogicalResult FunctionLowering::lowerWDMA(InstrWDMAOp op) {
   dest = addStaticOffset(op, *dest,
                          getOptionalIntegerAttrValue(op.getDstOffsetAttr(), 0));
   mlir::FailureOr<int64_t> fmt =
-      getDataFormatCode(op, op.getSource(), "wdma source", targetProfile);
+      getDataFormatCode(op, op.getSource(), "wdma source");
   if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(fmt))
     return mlir::failure();
   args.push_back(materializeAddress(op.getLoc(), *source));
@@ -96,7 +96,7 @@ mlir::LogicalResult FunctionLowering::lowerWDMA(InstrWDMAOp op) {
   appendArrayI32(op.getLoc(), args, op.getDstIterations());
   appendI32(op.getLoc(), args, *fmt);
   emitNCCCall(op.getLoc(),
-              getTargetCallDescriptor(TargetCallBuiltin::WDMA, targetProfile),
+              getTargetCallDescriptor(TargetCallBuiltin::WDMA),
               args, op.getWorker());
   return mlir::success();
 }
@@ -127,7 +127,7 @@ FunctionLowering::lowerGatherScatter(InstrGatherScatterOp op) {
   appendArrayI32(op.getLoc(), args, op.getDstIterations());
   emitNCCCall(
       op.getLoc(),
-      getTargetCallDescriptor(TargetCallBuiltin::GatherScatter, targetProfile),
+      getTargetCallDescriptor(TargetCallBuiltin::GatherScatter),
       args, op.getWorker());
   return mlir::success();
 }
@@ -163,7 +163,7 @@ FunctionLowering::lowerTDMADataMove(InstrTDMADataMoveOp op) {
   mlir::FailureOr<mlir::Value> dest =
       materializeAddress(op, op.getDest(), "tdma_data_move dest");
   mlir::FailureOr<int64_t> fmt =
-      getDataFormatCode(op, op.getDest(), "tdma_data_move dest", targetProfile);
+      getDataFormatCode(op, op.getDest(), "tdma_data_move dest");
   if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(fmt))
     return mlir::failure();
   args.push_back(*source);
@@ -179,14 +179,14 @@ FunctionLowering::lowerTDMADataMove(InstrTDMADataMoveOp op) {
   if (op.getKind() == InstrDataMoveKind::Pad) {
     emitNCCCall(
         op.getLoc(),
-        getTargetCallDescriptor(TargetCallBuiltin::TDMAPad, targetProfile),
+        getTargetCallDescriptor(TargetCallBuiltin::TDMAPad),
         args, op.getWorker());
     return mlir::success();
   }
   if (op.getKind() == InstrDataMoveKind::Img2Col) {
     emitNCCCall(
         op.getLoc(),
-        getTargetCallDescriptor(TargetCallBuiltin::TDMAImg2Col, targetProfile),
+        getTargetCallDescriptor(TargetCallBuiltin::TDMAImg2Col),
         args, op.getWorker());
     return mlir::success();
   }

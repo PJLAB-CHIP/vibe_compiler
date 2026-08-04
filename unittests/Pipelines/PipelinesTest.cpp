@@ -128,9 +128,7 @@ module {
                                 replicatedBoundary(/*index=*/1, {2}, "f32")};
   llvm::Expected<wafer::compiler::ExecutionConfig> executionConfig =
       wafer::compiler::ExecutionConfig::createForSingleCard(
-          /*executionRankCount=*/1,
-          wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-          wafer::RuntimeLaunchKind::Kernel);
+          /*executionRankCount=*/1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(executionConfig));
 
   std::string diagnosticsText;
@@ -179,7 +177,6 @@ module {
   EXPECT_TRUE(hasSPMOperand);
   EXPECT_EQ(countOps<wafer::InstrRDMAOp>(scheduled), 1u);
   EXPECT_EQ(countOps<wafer::InstrWDMAOp>(scheduled), 2u);
-  EXPECT_EQ(countOps<wafer::SyncLocalFenceOp>(scheduled), 0u);
   // The producer and each consumer retain a terminal participant join.
   // Cross-region join sinking is a separate optimization.
   EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(scheduled), 3u);

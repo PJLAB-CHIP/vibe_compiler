@@ -55,8 +55,7 @@ llvm::Error validateRuntimeLaunchContractDomain(
   const ExecutionConfig &config = targetLLVMModules.getExecutionConfig();
   const RuntimeLaunchContract &launch =
       targetLLVMModules.getRuntimeLaunchContract();
-  if (launch.getKind() != config.getRuntimeLaunchKind() ||
-      !isRuntimeLaunchContractCompatible(launch, config.getTargetProfileId()))
+  if (launch.getKind() != config.getRuntimeLaunchKind())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "runtime launch contract does not match the execution configuration");
@@ -93,7 +92,7 @@ llvm::Error validateRuntimeLaunchContractDomain(
     const uint64_t packetBytes = kernel->form == KernelLaunchForm::Cluster
                                      ? kTx81ClusterKernelArgumentBytesMax
                                      : kTx81KernelArgumentBytesMax;
-    if (kernel->entryABI == KernelEntryABI::RankMajorPointerTableV1) {
+    if (kernel->entryABI == KernelEntryABI::RankMajorPointerTable) {
       if (first.getKernelABISlots().size() >
           packetBytes / sizeof(uint64_t) /
               static_cast<uint64_t>(config.getRankCount()))
@@ -101,7 +100,7 @@ llvm::Error validateRuntimeLaunchContractDomain(
             llvm::errc::invalid_argument,
             "multi-tile rank-major argument table exceeds the qualified V5.6 "
             "packet limit");
-    } else if (kernel->entryABI == KernelEntryABI::RankRowPointerTableV1) {
+    } else if (kernel->entryABI == KernelEntryABI::RankRowPointerTable) {
       if (static_cast<uint64_t>(config.getRankCount()) >
           packetBytes / sizeof(uint64_t))
         return llvm::createStringError(
@@ -278,8 +277,7 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
     else if (llvm::Error error =
                  detail::verifyProfileTargetModuleInstrumentation(
                      targetLLVMModule.getModule(),
-                     targetLLVMModule.getEntrySymbol(),
-                     targetLLVMModule.getTargetProfileId(), profileCapture))
+                     targetLLVMModule.getEntrySymbol(), profileCapture))
       return detail::fail(
           diagnostics,
           "target LLVM profiler instrumentation verification failed: " +
@@ -310,7 +308,7 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
           llvm::ArrayRef<KernelABISlot> slots, int64_t logicalRank,
           llvm::StringRef workStem, llvm::StringRef modulePath,
           llvm::ArrayRef<VerifiedTargetExport> exports,
-          TargetProfileId targetProfile, llvm::StringRef expectedFormat,
+          TargetIdentityId targetIdentity, llvm::StringRef expectedFormat,
           bool hasMaterializedEntryABI)
       -> llvm::Expected<detail::TargetModuleReadback> {
     llvm::SmallString<256> llvmIRPath(workDirectory);
@@ -333,7 +331,7 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
             runtimeLaunchContract, profileCapture))
       return std::move(error);
     llvm::Expected<detail::TargetModuleReadback> readback =
-        detail::verifyTargetModule(modulePath, exports, targetProfile,
+        detail::verifyTargetModule(modulePath, exports, targetIdentity,
                                    runtimeLaunchContract);
     if (!readback)
       return readback.takeError();
@@ -367,7 +365,7 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
     llvm::Expected<detail::TargetModuleReadback> readback = linkAndReadback(
         *aggregate->module, first.getEntrySymbol(), first.getKernelABISlots(),
         /*logicalRank=*/0, stem, modulePath, exports,
-        first.getTargetProfileId(), first.getModuleFormat(),
+        first.getTargetIdentityId(), first.getModuleFormat(),
         /*hasMaterializedEntryABI=*/true);
     if (!readback)
       return detail::fail(diagnostics,
@@ -376,8 +374,8 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
     const TargetArtifactModuleId moduleId(0);
     modules.push_back(TargetArtifactBundleBuilder::makeModule(
         moduleId, "modules/module_00000.so", readback->contentDigest,
-        first.getTargetProfileId(), first.getTargetIdentityId(),
-        first.getKernelRuntimeABIId(), readback->moduleFormat,
+        first.getTargetIdentityId(), first.getKernelRuntimeABIId(),
+        readback->moduleFormat,
         std::move(exports)));
     for (const TargetLLVMModule &rank : targetLLVMModules.getModules())
       rankInterfaces.push_back(TargetArtifactBundleBuilder::makeRankInterface(
@@ -396,7 +394,7 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
           targetLLVMModule.getModule(), targetLLVMModule.getEntrySymbol(),
           targetLLVMModule.getKernelABISlots(),
           targetLLVMModule.getLogicalRank(), stem, modulePath, exports,
-          targetLLVMModule.getTargetProfileId(),
+          targetLLVMModule.getTargetIdentityId(),
           targetLLVMModule.getModuleFormat(),
           /*hasMaterializedEntryABI=*/false);
       if (!readback)
@@ -407,7 +405,6 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
           (llvm::Twine("modules/") + stem + ".so").str();
       modules.push_back(TargetArtifactBundleBuilder::makeModule(
           moduleId, relativePath, readback->contentDigest,
-          targetLLVMModule.getTargetProfileId(),
           targetLLVMModule.getTargetIdentityId(),
           targetLLVMModule.getKernelRuntimeABIId(), readback->moduleFormat,
           std::move(exports)));

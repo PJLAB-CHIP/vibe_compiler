@@ -6,7 +6,6 @@
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/Support/CompileTiming.h"
-#include "Wafer/Target/TargetProfile.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
@@ -43,10 +42,6 @@ struct TileRegionToInstrOptions {
   AllGatherSchedule allGatherSchedule = AllGatherSchedule::Ring;
   AllReduceSchedule allReduceSchedule = AllReduceSchedule::Auto;
   ReduceScatterSchedule reduceScatterSchedule = ReduceScatterSchedule::Direct;
-  /// When present, target-dependent instruction choices must already match
-  /// the selected closed profile.  The standalone conversion pass leaves this
-  /// empty and checks only target-independent instruction IR legality.
-  std::optional<TargetProfileId> targetProfile;
 };
 
 /// Compiler-private materialization point used only by actual-clone candidate

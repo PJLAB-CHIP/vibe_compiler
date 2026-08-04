@@ -8,17 +8,17 @@
 # The private selector only chooses the production-generated worker sibling;
 # every source, whole-variant, target, publication and canonical readback gate
 # remains the ordinary transaction.
-# RUN: env WAFER_TEST_SELECT_WORKER_PLACEMENT=1 %wafer_compile_test --input-program-dir %t.source --output-program-dir %t.outputs/qualified --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v3 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
-# RUN: %python -c 'import json,pathlib; p=pathlib.Path("%t.outputs/qualified"); m=json.loads((p/"manifest.json").read_text()); assert m["schema_version"]==6 and m["rank_count"]==1 and m["target"]["profile"]=="wafer-tx81-single-card-kernel-v3"; assert len(m["modules"])==len(m["entries"])==len(m["completions"])==1; assert (p/m["modules"][0]["path"]).read_bytes().startswith(b"\x7fELF")'
-# RUN: %python -c 'import pathlib,re,subprocess; p=pathlib.Path("%t.outputs/qualified/modules/module_00000.so"); d=subprocess.run(["%wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump","-dr",str(p)],check=True,text=True,capture_output=True).stdout; count=lambda name:len(re.findall(r"\b(?:jal|j)\s+[^\n]*<"+re.escape(name)+r">",d)); assert {name:count(name) for name in ("wafer_tx81_rdma_v3","wafer_tx81_wdma_v3","wafer_tx81_elementwise_add_v3","wafer_tx81_ncc_join")}=={"wafer_tx81_rdma_v3":3,"wafer_tx81_wdma_v3":1,"wafer_tx81_elementwise_add_v3":2,"wafer_tx81_ncc_join":3},d; assert "wafer_tx81_local_fence" not in d,d'
+# RUN: env WAFER_TEST_SELECT_WORKER_PLACEMENT=1 %wafer_compile_test --input-program-dir %t.source --output-program-dir %t.outputs/qualified --execution-ranks=1 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
+# RUN: %python -c 'import json,pathlib; p=pathlib.Path("%t.outputs/qualified"); m=json.loads((p/"manifest.json").read_text()); assert m["schema_version"]==7 and m["rank_count"]==1 and m["target"]["identity"]=="wafer-tx81-single-card"; assert len(m["modules"])==len(m["entries"])==len(m["completions"])==1; assert (p/m["modules"][0]["path"]).read_bytes().startswith(b"\x7fELF")'
+# RUN: %python -c 'import pathlib,re,subprocess; p=pathlib.Path("%t.outputs/qualified/modules/module_00000.so"); d=subprocess.run(["%wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump","-dr",str(p)],check=True,text=True,capture_output=True).stdout; count=lambda name:len(re.findall(r"\b(?:jal|j)\s+[^\n]*<"+re.escape(name)+r">",d)); assert {name:count(name) for name in ("wafer_tx81_rdma_v3","wafer_tx81_wdma_v3","wafer_tx81_elementwise_add_v3","wafer_tx81_ncc_join")}=={"wafer_tx81_rdma_v3":3,"wafer_tx81_wdma_v3":1,"wafer_tx81_elementwise_add_v3":2,"wafer_tx81_ncc_join":3},d'
 # RUN: %python %wafer_src_root/test/Tools/Inputs/inspect_tx81_worker_calls.py --objdump %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump --elf %t.outputs/qualified/modules/module_00000.so | FileCheck %s --check-prefix=WORKERS
 # RUN: wafer-run --package-dir %t.outputs/qualified --all-ranks --no-card | FileCheck %s --check-prefix=NO-CARD
 
 # The production executable cannot consume the private environment seam.
-# RUN: env WAFER_TEST_SELECT_WORKER_PLACEMENT=1 wafer-compile --input-program-dir %t.source --output-program-dir %t.outputs/production --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v3 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
+# RUN: env WAFER_TEST_SELECT_WORKER_PLACEMENT=1 wafer-compile --input-program-dir %t.source --output-program-dir %t.outputs/production --execution-ranks=1 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
 # RUN: wafer-run --package-dir %t.outputs/production --all-ranks --no-card | FileCheck %s --check-prefix=NO-CARD
 
-# RUN: not env WAFER_TEST_SELECT_WORKER_PLACEMENT=1 WAFER_TEST_FAIL_AFTER_LOGICAL_RANK=0 %wafer_compile_test --input-program-dir %t.source --output-program-dir %t.outputs/conflicting --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v3 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=CONFLICT
+# RUN: not env WAFER_TEST_SELECT_WORKER_PLACEMENT=1 WAFER_TEST_FAIL_AFTER_LOGICAL_RANK=0 %wafer_compile_test --input-program-dir %t.source --output-program-dir %t.outputs/conflicting --execution-ranks=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=CONFLICT
 # RUN: test ! -e %t.outputs/conflicting
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
@@ -27,6 +27,6 @@
 # WORKERS-NEXT: wafer_tx81_wdma_v3 workers=1
 # WORKERS-NEXT: wafer_tx81_elementwise_add_v3 workers=1,1
 # WORKERS-NEXT: wafer_tx81_ncc_join participant_masks=1,4,2
-# NO-CARD: package: id=0 schema=6 ranks=1
+# NO-CARD: package: id=0 schema=7 ranks=1
 # NO-CARD: board_execution: false
 # CONFLICT: wafer-compile: test-only worker-placement qualification cannot be combined with failure injection

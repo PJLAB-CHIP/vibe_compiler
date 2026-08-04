@@ -140,8 +140,12 @@ mlir::LogicalResult MoveCopyOp::verify() {
       mlir::failed(getSPMBufferTensor(getOperation(), getResult().getType(),
                                       "copy result", resultTensor)))
     return mlir::failure();
-  if (getSource().getType() != getResult().getType())
-    return emitOpError("copy source and result types must match");
+  if (mlir::failed(verifySameElementLayoutAndSpace(
+          getOperation(), getSource().getType(), sourceTensor,
+          getResult().getType(), resultTensor, "copy")))
+    return mlir::failure();
+  if (sourceTensor.getShape() != resultTensor.getShape())
+    return emitOpError("copy source and result shapes must match");
   return mlir::success();
 }
 

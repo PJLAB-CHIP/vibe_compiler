@@ -61,7 +61,7 @@ mlir::FailureOr<int64_t> getStaticViewOffsetBytes(mlir::Operation *op,
                                                   mlir::MemRefType viewType,
                                                   llvm::StringRef role);
 mlir::FailureOr<DynamicSubviewAddressPlan>
-analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp);
+analyzeDynamicTensorSubviewAddressing(mlir::memref::SubViewOp subviewOp);
 mlir::FailureOr<int64_t> getStaticUInt32SPMAddress(mlir::Operation *op,
                                                    mlir::Value value,
                                                    llvm::StringRef role);
@@ -73,12 +73,9 @@ int64_t getOptionalIntegerAttrValue(mlir::IntegerAttr attr, int64_t fallback);
 mlir::FailureOr<int64_t> getConstantScalarValue(mlir::Operation *op,
                                                 mlir::Value value);
 bool isTargetRelationElementwiseKind(InstrElementwiseKind kind);
-mlir::FailureOr<int64_t> getDataFormatCode(mlir::Operation *op,
-                                           mlir::Value value,
-                                           llvm::StringRef role,
-                                           TargetProfileId targetProfile);
-mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp,
-                                           TargetProfileId targetProfile);
+mlir::FailureOr<int64_t>
+getDataFormatCode(mlir::Operation *op, mlir::Value value, llvm::StringRef role);
+mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp);
 mlir::LogicalResult preflightTargetAddresses(mlir::ModuleOp moduleOp);
 mlir::FailureOr<DirectDTEEndpointDomain>
 resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp, int64_t logicalRank);
@@ -86,7 +83,6 @@ resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp, int64_t logicalRank);
 struct FunctionLowering {
   mlir::OpBuilder &builder;
   mlir::MLIRContext *context;
-  TargetProfileId targetProfile;
   mlir::Type i64Type;
   mlir::Type i32Type;
   mlir::Type voidType;
@@ -94,7 +90,6 @@ struct FunctionLowering {
   llvm::StringMap<CalleeSignature> &usedCallees;
 
   FunctionLowering(mlir::MLIRContext *context, mlir::OpBuilder &builder,
-                   TargetProfileId targetProfile,
                    llvm::StringMap<CalleeSignature> &used);
 
   mlir::Value constantI64(mlir::Location loc, int64_t value);
@@ -148,7 +143,6 @@ struct FunctionLowering {
   bool isTransformLikeTDMA(InstrDataMoveKind kind);
   mlir::LogicalResult lowerTDMADataMove(InstrTDMADataMoveOp op);
   mlir::LogicalResult lowerPeripheral(InstrPeripheralOp op);
-  mlir::LogicalResult lowerLocalFence(SyncLocalFenceOp op);
   mlir::LogicalResult lowerNCCJoin(SyncNCCJoinOp op);
   mlir::LogicalResult lowerInstruction(mlir::Operation *op);
 };
@@ -184,16 +178,16 @@ void populateTargetLLVMStructureConversionPatterns(
 void populateTargetInstructionConversionPatterns(
     mlir::LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns,
     llvm::StringMap<CalleeSignature> &usedCallees,
-    TargetProfileId targetProfile, const DirectDTEEndpointDomain *dteDomain);
+    const DirectDTEEndpointDomain *dteDomain);
 
-mlir::LogicalResult injectDirectDTEStatusLifecycle(
-    mlir::ModuleOp moduleOp, llvm::StringRef entrySymbol,
-    int64_t statusArgumentIndex, int64_t rankCount,
-    TargetCallBuiltin beginBuiltin, TargetProfileId targetProfile,
-    llvm::StringMap<CalleeSignature> &usedCallees);
+mlir::LogicalResult
+injectDirectDTEStatusLifecycle(mlir::ModuleOp moduleOp,
+                               llvm::StringRef entrySymbol,
+                               int64_t statusArgumentIndex, int64_t rankCount,
+                               TargetCallBuiltin beginBuiltin,
+                               llvm::StringMap<CalleeSignature> &usedCallees);
 
 mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
-                                       TargetProfileId targetProfile,
                                        bool transportPreparedBeforeEntry,
                                        int64_t defaultDDRArenaArgumentIndex,
                                        int64_t logicalRank,

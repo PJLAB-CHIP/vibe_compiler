@@ -120,8 +120,8 @@ class ProtocolTest(unittest.TestCase):
         )[1].split(
             '__attribute__((visibility("hidden")))', maxsplit=1
         )[0]
-        issue = function.index("wafer_tx81_wdma(")
-        drain = function.index("wafer_tx81_local_fence();", issue)
+        issue = function.index("wafer_tx81_wdma_v3(")
+        drain = function.index("wafer_tx81_ncc_join(1U);", issue)
         loop_end = function.index("\n    }", issue)
         self.assertLess(issue, drain)
         self.assertLess(drain, loop_end)
@@ -1785,7 +1785,7 @@ class ProtocolTest(unittest.TestCase):
             '__asm__ volatile("sync" ::: "memory");', ordered
         )
         preissue_wait = source.index(
-            "wafer_tx81_local_fence();", sync
+            "wafer_tx81_ncc_join(1U);", sync
         )
         issued = source.index(
             "static int wafer_ncc_v2_issue(", preissue_wait

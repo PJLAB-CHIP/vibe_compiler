@@ -10,13 +10,6 @@
 #include <vector>
 
 namespace wafer::numeric_semantics_internal {
-namespace {
-
-constexpr TargetProfileId kTargetProfile =
-    TargetProfileId::waferTx81SingleCardKernelV1();
-
-} // namespace
-
 std::string digestCanonical(llvm::StringRef canonical) {
   llvm::SHA256 hasher;
   hasher.update(canonical);
@@ -92,41 +85,16 @@ bool isInteger(LogicalFormat format) {
 
 llvm::ArrayRef<LogicalFormat>
 getCompilerNumericFormats(TargetFormatEngine engine) {
-  static const std::vector<LogicalFormat> ctFormats = [] {
-    std::vector<LogicalFormat> result;
-    for (const LogicalFormatDescriptor &descriptor :
-         getLogicalFormatDescriptors()) {
-      const TargetFormatEncodingRecord *record = findTargetFormatEncoding(
-          kTargetProfile, TargetFormatEngine::CT, descriptor.format);
-      if (record && record->isSupported() &&
-          descriptor.category != LogicalFormatCategory::Boolean)
-        result.push_back(descriptor.format);
-    }
-    if (result.size() != 4)
-      llvm::report_fatal_error(
-          "CT compiler numeric format closure is not four rows");
-    return result;
-  }();
-  static const std::vector<LogicalFormat> neFormats = [] {
-    std::vector<LogicalFormat> result;
-    for (const LogicalFormatDescriptor &descriptor :
-         getLogicalFormatDescriptors()) {
-      const TargetFormatEncodingRecord *record = findTargetFormatEncoding(
-          kTargetProfile, TargetFormatEngine::NE, descriptor.format);
-      if (record && record->isSupported() &&
-          descriptor.category != LogicalFormatCategory::Boolean)
-        result.push_back(descriptor.format);
-    }
-    if (result.size() != 4)
-      llvm::report_fatal_error(
-          "NE compiler numeric format closure is not four rows");
-    return result;
-  }();
+  // This is the formal numeric-model domain, not target instruction legality.
+  // The current target encoding registry admits every LogicalFormat.
+  static constexpr LogicalFormat modeledFormats[] = {
+      LogicalFormat::I8, LogicalFormat::F16, LogicalFormat::BF16,
+      LogicalFormat::F32};
   switch (engine) {
   case TargetFormatEngine::CT:
-    return ctFormats;
+    return modeledFormats;
   case TargetFormatEngine::NE:
-    return neFormats;
+    return modeledFormats;
   case TargetFormatEngine::RDMA:
   case TargetFormatEngine::WDMA:
   case TargetFormatEngine::TDMA:

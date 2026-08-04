@@ -288,7 +288,6 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
   }
 
   bool hasPhysicalFact = false;
-  bool hasLegacyFence = false;
   bool hasDTE = false;
   bool hasUnsupportedObserver = false;
   bool hasNonzeroWorker = false;
@@ -296,7 +295,6 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
     if (auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(operation))
       hasPhysicalFact |= allocation->hasAttr(kWaferSPMOffsetAttrName) ||
                          allocation->hasAttr(kWaferDDROffsetAttrName);
-    hasLegacyFence |= mlir::isa<SyncLocalFenceOp>(operation);
     auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(operation);
     hasDTE |=
         instruction && instruction.getInstructionFamily() == InstrFamily::DTE;
@@ -320,9 +318,9 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
                                                             failureReason))) {
     return mlir::failure();
   }
-  if (hasLegacyFence || hasUnsupportedObserver) {
+  if (hasUnsupportedObserver) {
     fail(failureReason,
-         "worker placement rejects legacy or synchronous completion");
+         "worker placement rejects synchronous completion");
     return mlir::failure();
   }
 

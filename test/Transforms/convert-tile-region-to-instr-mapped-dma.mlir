@@ -36,4 +36,4 @@ func.func @mapped_load_store(
 // CHECK-SAME: dst_offset = 6 : i64
 // CHECK-SAME: src_offset = 8 : i64
 // CHECK: wafer.instr.ncc_join [0]
-// CHECK-NOT: wafer.instr.local_fence
+// CHECK-NOT: wafer.instr.ncc_join [0]

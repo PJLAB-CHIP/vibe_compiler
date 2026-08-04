@@ -71,7 +71,7 @@ static llvm::Expected<RuntimeLaunchContract> formAcceptedRuntimeLaunchContract(
           llvm::errc::invalid_argument,
           "model runtime launch requires 16 ranks without a prepare phase");
     return RuntimeLaunchContract::createModel(
-        ModelEntryABI::Tx81ModelBootParamV1, main);
+        ModelEntryABI::Tx81ModelBootParam, main);
   }
   if (executionConfig.getRankCount() == 1) {
     if (requiresRuntimePrepare)
@@ -79,7 +79,7 @@ static llvm::Expected<RuntimeLaunchContract> formAcceptedRuntimeLaunchContract(
           llvm::errc::invalid_argument,
           "rank-one kernel runtime launch does not support a prepare phase");
     return RuntimeLaunchContract::createKernel(
-        KernelLaunchForm::PerRank, KernelEntryABI::RankLocalPointerBlockV1,
+        KernelLaunchForm::PerRank, KernelEntryABI::RankLocalPointerBlock,
         main);
   }
   const KernelLaunchForm form = requiresRuntimePrepare
@@ -100,8 +100,8 @@ static llvm::Expected<RuntimeLaunchContract> formAcceptedRuntimeLaunchContract(
   const KernelEntryABI entryABI =
       programSlotCount > directSlotsPerRank ||
               possibleCompilerSlots > directSlotsPerRank - programSlotCount
-          ? KernelEntryABI::RankRowPointerTableV1
-          : KernelEntryABI::RankMajorPointerTableV1;
+          ? KernelEntryABI::RankRowPointerTable
+          : KernelEntryABI::RankMajorPointerTable;
   if (requiresRuntimePrepare)
     return RuntimeLaunchContract::createKernel(form, entryABI, prepareMain);
   return RuntimeLaunchContract::createKernel(form, entryABI, main);
@@ -607,7 +607,7 @@ struct PreTargetWholeVariant {
   std::vector<uint32_t> selectedBufferingPlanOrdinals;
   std::vector<wafer::RankWorkerPlacementKind> selectedWorkerPlacementKinds;
   std::vector<uint32_t> selectedWorkerPlacementPlanOrdinals;
-  /// Recomputable target-contract result for scheduling mechanisms introduced
+  /// Recomputable current-target result for scheduling mechanisms introduced
   /// after the reserved serial/storage frontier. It is invocation-local
   /// analysis, never persisted beside the accepted IR.
   bool hasSchedulingCapabilityQuery = false;
@@ -627,7 +627,7 @@ static mlir::LogicalResult classifySchedulingCapability(
     llvm::ArrayRef<mlir::ModuleOp> modules,
     wafer::RankBufferingKind bufferingKind,
     wafer::RankWorkerPlacementKind workerPlacementKind,
-    TargetProfileId targetProfile, bool &hasQuery,
+    bool &hasQuery,
     TargetSchedulingProfitabilityEvidence &profitability) {
   hasQuery = false;
   profitability = {};
@@ -661,7 +661,7 @@ static mlir::LogicalResult classifySchedulingCapability(
   }
 
   llvm::Expected<TargetSchedulingCapabilityRegistry> registry =
-      getTargetSchedulingCapabilityRegistry(targetProfile);
+      getTargetSchedulingCapabilityRegistry();
   if (!registry) {
     llvm::consumeError(registry.takeError());
     return mlir::failure();
@@ -671,7 +671,7 @@ static mlir::LogicalResult classifySchedulingCapability(
   bool allDrainQualified = true;
   for (mlir::ModuleOp module : modules) {
     llvm::Expected<TargetSchedulingWindowQuery> query =
-        analyzeTargetSchedulingWindow(module, targetProfile, mechanism);
+        analyzeTargetSchedulingWindow(module, mechanism);
     if (!query) {
       llvm::consumeError(query.takeError());
       return mlir::failure();
@@ -1076,7 +1076,7 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
   TargetSchedulingProfitabilityEvidence schedulingProfitability;
   if (mlir::failed(classifySchedulingCapability(
           moduleViews, *bufferingKind, *workerPlacementKind,
-          executionConfig.getTargetProfileId(), hasSchedulingCapabilityQuery,
+          hasSchedulingCapabilityQuery,
           schedulingProfitability))) {
     failureGate = "target-scheduling-capability";
     return mlir::failure();
@@ -2006,8 +2006,7 @@ selectAcceptedWholeVariants(
   const TargetStaticSelectionPolicy selectionPolicy =
       getDefaultWaferTargetPolicy(TileSearchEffort::Default).staticSelection;
   const analysis::TargetScheduleCostPolicy scheduleCostPolicy =
-      analysis::getTargetScheduleCostPolicy(
-          executionConfig.getTargetProfileId());
+      analysis::getTargetScheduleCostPolicy();
 
   llvm::SmallVector<AcceptedWholeVariant, kWholeVariantParetoLimit>
       paretoFrontier;

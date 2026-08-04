@@ -425,32 +425,32 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
     record[WAFER_CTV_REC_FULL_UNIT_ELEMENTS] =
         selected.full_unit_elements;
 
-    wafer_tx81_rdma(payload_ddr, WAFER_CTV_SPM_A,
+    wafer_tx81_rdma_v3(payload_ddr, WAFER_CTV_SPM_A,
                     WAFER_CTV_SLOT_BYTES, WAFER_CTV_SLOT_BYTES,
-                    0, 0, 0, 1, 1, 1, Fmt_UINT8);
-    wafer_tx81_rdma(payload_ddr + WAFER_CTV_SLOT_BYTES,
+                    0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
+    wafer_tx81_rdma_v3(payload_ddr + WAFER_CTV_SLOT_BYTES,
                     WAFER_CTV_SPM_B, WAFER_CTV_SLOT_BYTES,
                     WAFER_CTV_SLOT_BYTES, 0, 0, 0, 1, 1, 1,
-                    Fmt_UINT8);
+                    Fmt_UINT8, 0U);
     /*
      * The request resource's second slot is an all-canary host buffer.  Seed
      * the output through RDMA so the entire probe remains one NCC issue window;
      * the host validates the full result and guard after terminal WDMA.
      */
-    wafer_tx81_rdma(request_ddr + WAFER_CTV_SLOT_BYTES,
+    wafer_tx81_rdma_v3(request_ddr + WAFER_CTV_SLOT_BYTES,
                     WAFER_CTV_SPM_OUTPUT, WAFER_CTV_SLOT_BYTES,
                     WAFER_CTV_SLOT_BYTES, 0, 0, 0, 1, 1, 1,
-                    Fmt_UINT8);
+                    Fmt_UINT8, 0U);
     uint64_t execute_result = wafer_ctv_issue(&selected);
     record[WAFER_CTV_REC_EXECUTE_RESULT] = execute_result;
     if (execute_result == 0) {
       status = WAFER_CTV_STATUS_EXECUTE_FAILED;
     } else {
-      wafer_tx81_wdma(WAFER_CTV_SPM_OUTPUT,
+      wafer_tx81_wdma_v3(WAFER_CTV_SPM_OUTPUT,
                       output_ddr + WAFER_CTV_OUTPUT_DDR_OFFSET,
                       WAFER_CTV_SLOT_BYTES, WAFER_CTV_SLOT_BYTES,
-                      0, 0, 0, 1, 1, 1, Fmt_UINT8);
-      wafer_tx81_local_fence();
+                      0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
+      wafer_tx81_ncc_join(1U);
     }
     record[WAFER_CTV_REC_STATUS] = status;
   }

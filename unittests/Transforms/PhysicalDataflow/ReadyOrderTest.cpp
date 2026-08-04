@@ -96,7 +96,7 @@ module {
        src_iterations = array<i64: 1, 1, 1>}
       : memref<4x8xf16, #wafer.memory<ddr, tensor>>
      to memref<4x8xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   wafer.instr.elementwise #wafer.instr_elementwise_kind<add>
       %compute_source, %compute_source into %compute_dest
       : memref<4x8xf16, #wafer.memory<spm, tensor>>,
@@ -112,14 +112,14 @@ module {
             0u);
   llvm::SmallVector<mlir::Operation *, 4> ordered;
   module->walk([&](mlir::Operation *operation) {
-    if (mlir::isa<wafer::WaferInstructionOpInterface, wafer::SyncLocalFenceOp>(
+    if (mlir::isa<wafer::WaferInstructionOpInterface, wafer::SyncNCCJoinOp>(
             operation))
       ordered.push_back(operation);
   });
   ASSERT_EQ(ordered.size(), 4u);
   EXPECT_TRUE(mlir::isa<wafer::InstrRDMAOp>(ordered[0]));
   EXPECT_TRUE(mlir::isa<wafer::InstrElementwiseOp>(ordered[1]));
-  EXPECT_TRUE(mlir::isa<wafer::SyncLocalFenceOp>(ordered[2]));
+  EXPECT_TRUE(mlir::isa<wafer::SyncNCCJoinOp>(ordered[2]));
   EXPECT_TRUE(mlir::isa<wafer::InstrElementwiseOp>(ordered[3]));
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
 }

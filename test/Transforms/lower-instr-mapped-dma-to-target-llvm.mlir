@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %s | FileCheck %s
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %s | FileCheck %s
 
 module {
   wafer.target.topology @default
@@ -36,9 +36,9 @@ module {
 // CHECK: %[[IN:.+]] = llvm.add %{{.+}}, %[[IN_OFFSET]] : i64
 // CHECK: %[[SPM_READ_OFFSET:.+]] = llvm.mlir.constant(2 : i64)
 // CHECK: %[[SPM_READ:.+]] = llvm.add %{{.+}}, %[[SPM_READ_OFFSET]] : i64
-// CHECK: llvm.call @wafer_tx81_rdma(%[[IN]], %[[SPM_READ]]
+// CHECK: llvm.call @wafer_tx81_rdma_v3(%[[IN]], %[[SPM_READ]]
 // CHECK: %[[SPM_WRITE_OFFSET:.+]] = llvm.mlir.constant(6 : i64)
 // CHECK: %[[SPM_WRITE:.+]] = llvm.add %{{.+}}, %[[SPM_WRITE_OFFSET]] : i64
 // CHECK: %[[OUT_OFFSET:.+]] = llvm.mlir.constant(8 : i64)
 // CHECK: %[[OUT:.+]] = llvm.add %{{.+}}, %[[OUT_OFFSET]] : i64
-// CHECK: llvm.call @wafer_tx81_wdma(%[[SPM_WRITE]], %[[OUT]]
+// CHECK: llvm.call @wafer_tx81_wdma_v3(%[[SPM_WRITE]], %[[OUT]]

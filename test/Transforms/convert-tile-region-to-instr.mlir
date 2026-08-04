@@ -166,7 +166,7 @@ func.func @gemm_reduce_and_reshape(
 // CHECK-NOT: wafer.tile.reshape
 // CHECK: wafer.instr.wdma
 // CHECK: wafer.instr.ncc_join [0]
-// CHECK-NOT: wafer.instr.local_fence
+// CHECK-NOT: wafer.instr.ncc_join [0]
 
 func.func @nested_control_flow(
     %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
@@ -304,6 +304,34 @@ func.func @nested_loop(
 // CHECK: wafer.instr.gather_scatter
 // CHECK: scf.yield
 
+func.func @unit_dimension_broadcast_is_metadata_only(%zero: f16) {
+  %region = wafer.tile.region(%zero : f16) -> (f16) {
+  ^bb0(%fill: f16):
+    %scalar = memref.alloc()
+        : memref<f32, #wafer.memory<spm, tensor>>
+    %expanded = wafer.tile.broadcast %scalar
+        {dimensions = array<i64>}
+        : memref<f32, #wafer.memory<spm, tensor>>
+       -> memref<1x1x1x1xf32, #wafer.memory<spm, tensor>>
+    wafer.tile.yield %fill : f16
+  }
+  return
+}
+
+func.func @scalar_broadcast_materializes_repeat(%zero: f16) {
+  %region = wafer.tile.region(%zero : f16) -> (f16) {
+  ^bb0(%fill: f16):
+    %scalar = memref.alloc()
+        : memref<f32, #wafer.memory<spm, tensor>>
+    %expanded = wafer.tile.broadcast %scalar
+        {dimensions = array<i64>}
+        : memref<f32, #wafer.memory<spm, tensor>>
+       -> memref<1x1x8x4xf32, #wafer.memory<spm, tensor>>
+    wafer.tile.yield %fill : f16
+  }
+  return
+}
+
 func.func @movement_extract_insert_broadcast_transpose(%zero: f16) {
   %region = wafer.tile.region(%zero : f16) -> (f16) {
   ^bb0(%fill: f16):
@@ -334,6 +362,22 @@ func.func @movement_extract_insert_broadcast_transpose(%zero: f16) {
   }
   return
 }
+
+// CHECK-LABEL: func.func @unit_dimension_broadcast_is_metadata_only
+// CHECK: %[[SCALAR:.+]] = memref.alloc() : memref<f32, #wafer.memory<spm, tensor>>
+// CHECK: memref.reinterpret_cast %[[SCALAR]] to offset: [0], sizes: [1, 1, 1, 1], strides: [1, 1, 1, 1]
+// CHECK-NOT: wafer.instr.gather_scatter
+
+// CHECK-LABEL: func.func @scalar_broadcast_materializes_repeat
+// CHECK: %[[SCALAR:.+]] = memref.alloc() : memref<f32, #wafer.memory<spm, tensor>>
+// CHECK: %[[EXPANDED:.+]] = memref.alloc() : memref<1x1x8x4xf32, #wafer.memory<spm, tensor>>
+// CHECK: wafer.instr.gather_scatter %[[SCALAR]] to %[[EXPANDED]]
+// CHECK-SAME: byte_count = 128 : i64
+// CHECK-SAME: dst_iterations = array<i64: 32, 1, 1>
+// CHECK-SAME: dst_strides = array<i64: 4, 0, 0>
+// CHECK-SAME: inner_bytes = 4 : i64
+// CHECK-SAME: src_iterations = array<i64: 32, 1, 1>
+// CHECK-SAME: src_strides = array<i64: 0, 0, 0>
 
 // CHECK-LABEL: func.func @movement_extract_insert_broadcast_transpose
 // CHECK-NOT: wafer.tile.extract_slice

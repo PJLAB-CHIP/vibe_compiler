@@ -31,7 +31,7 @@ func.func @plan_external_strided_views(
          dst_strides = array<i64: 16, 0, 0>, inner_bytes = 6 : i64}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %out
         : memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
   }

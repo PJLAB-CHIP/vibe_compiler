@@ -70,23 +70,21 @@ struct TxApi {
 };
 
 RuntimeEnvironment makeTxProviderEnvironment() {
-  const TargetProfileRecord &profile =
-      getTargetProfileRecord(TargetProfileId::waferTx81SingleCardKernelV1());
-  RuntimeEnvironment environment(profile.id, profile.targetIdentity,
-                                 profile.kernelRuntimeABI,
-                                 profile.moduleFormat);
+  RuntimeEnvironment environment(TargetIdentityId::waferTx81SingleCard(),
+                                 KernelRuntimeABIId::waferTx81Kernel(),
+                                 kCurrentTargetModuleFormat);
   environment.supportedKernelLaunchForms = {
       KernelLaunchForm::PerRank,
       KernelLaunchForm::Grid,
       KernelLaunchForm::Cluster,
   };
   environment.supportedKernelEntryABIs = {
-      KernelEntryABI::RankLocalPointerBlockV1,
-      KernelEntryABI::RankMajorPointerTableV1,
-      KernelEntryABI::RankRowPointerTableV1,
+      KernelEntryABI::RankLocalPointerBlock,
+      KernelEntryABI::RankMajorPointerTable,
+      KernelEntryABI::RankRowPointerTable,
   };
   environment.supportedModelEntryABIs = {
-      ModelEntryABI::Tx81ModelBootParamV1,
+      ModelEntryABI::Tx81ModelBootParam,
   };
   environment.supportsDirectDTE = true;
   environment.directDTEStatusABI = kDirectDTEStatusABI.str();

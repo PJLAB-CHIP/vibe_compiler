@@ -18,7 +18,7 @@ import sys
 import wafer_runtime_launch_contract as runtime_launch
 
 
-TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
+TARGET_IDENTITY = "wafer-tx81-single-card"
 LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
@@ -289,7 +289,6 @@ def compile_seed_package(
             "--output-program-dir",
             str(package),
             "--execution-ranks=1",
-            f"--target-profile={TARGET_PROFILE}",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
@@ -326,7 +325,7 @@ def prepare_workspace_manifest(
     if (
         manifest.get("rank_count") != 1
         or not isinstance(target, dict)
-        or target.get("profile") != TARGET_PROFILE
+        or target.get("identity") != TARGET_IDENTITY
         or not isinstance(entries, list)
         or len(entries) != 1
         or not isinstance(modules, list)

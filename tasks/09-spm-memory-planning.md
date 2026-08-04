@@ -101,7 +101,7 @@ Pipeline position:
   fresh recost，只有没有survivor时rank才失败。
 - User-level driver / named pipeline:
   Q16以后由同一
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=<registered-id>`
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --launch-kind={kernel|model}`
   的whole-variant
   candidate loop调用本stage；Q15只产出verified structured tensor program directory，不执行SPM planning；
   `wafer-opt`和`wafer-plan-spm-memory`只处理显式IR，用于instruction-level replay/lit/debug，不能成为
@@ -272,7 +272,7 @@ SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op �
 - `wafer.tile.*` communication ops p2p op：需要 communication instruction lowering 报告 send source、recv destination、
   communication staging buffer、fixed byte count、token/wait lifetime 和 DTE/FSM resource class。
 - typed `wafer.instr.ncc_join`和后续sync boundary：报告participant join、comm wait、group barrier对
-  instruction event、buffer lifetime和reuse的收口；legacy `local_fence`只按`join {worker0}`兼容解释。
+  instruction event、buffer lifetime和reuse的收口；completion只接受typed NCC join。
 
 如果某个 target-abstract op 无法产出可验证 instruction-level IR，不能让 SPM memory planning 用名字或示例
 shape 猜测；应先扩 op interface / instruction IR，或保持在更高层 IR。
@@ -427,7 +427,7 @@ alignment：
 V0 对 coloring 的处理：
 
 - 普通 buffer 不做 hard coloring。
-- overlap-critical buffer 只有在 target profile 已由 board calibration 提供可解释的 bank/color
+- overlap-critical buffer只有在current target policy已由board calibration提供可解释的bank/color
   mapping 时才记录 color class；未校准时只保留 address-range/alignment 事实和 Unknown cost。
 - 只有当 scheduler 明确启用 parallel issue 且 target policy 要求隔离时，color conflict 才升级为
   hard legality。
@@ -746,7 +746,7 @@ isolated complete-rank clone
 candidate owner可以根据current IR的capacity/lifetime/descriptor压力生成另一份clone，尝试不同implementation、tile、encoding、
 transfer、resident cut、buffering或order；allocator只评估已物化clone，不建议或修改这些选择，也不按名字或case恢复语义。
 NCC participant join、communication wait和DTE completion是不同event，lifetime analysis只能按各自typed
-worker/effect/token合同处理；legacy local fence仅等价于worker0 join。
+worker/effect/token合同处理；NCC completion只接受typed participant join。
 
 
 ## 15. 后续扩展

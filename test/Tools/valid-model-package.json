@@ -165,7 +165,7 @@
       "wait_policy": "local_wait"
     },
     {
-      "op": "wafer.instr.local_fence",
+      "op": "wafer.instr.ncc_join [0]",
       "wait_policy": "local_wait"
     },
     {

@@ -77,7 +77,7 @@ func.func @large_identity_sum_uses_native_reduce(
 // CHECK-SAME: dim = 1 : i64
 // CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK: return
-// CHECK-NOT: wafer.instr.local_fence
+// CHECK-NOT: wafer.instr.ncc_join [0]
 
 func.func @large_f16_identity_sum_uses_native_reduce(
     %input: memref<4096x1xf16, #wafer.memory<spm, cx>>)
@@ -95,7 +95,7 @@ func.func @large_f16_identity_sum_uses_native_reduce(
 // CHECK-SAME: dim = 1 : i64
 // CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK: return
-// CHECK-NOT: wafer.instr.local_fence
+// CHECK-NOT: wafer.instr.ncc_join [0]
 
 func.func @ordered_max(
     %input: memref<2x2xf16, #wafer.memory<spm, cx>>)

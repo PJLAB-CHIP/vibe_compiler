@@ -1,5 +1,4 @@
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v2' %s | FileCheck %s
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %s 2>&1 | FileCheck --check-prefix=V1 %s
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %s | FileCheck %s
 
 module {
   wafer.target.topology @default
@@ -38,5 +37,5 @@ module {
 // CHECK: %[[FORMAT:.*]] = llvm.mlir.constant(2 : i32) : i32
 // CHECK: %[[LHS_ORIENTATION:.*]] = llvm.mlir.constant(1 : i32) : i32
 // CHECK: %[[RHS_ORIENTATION:.*]] = llvm.mlir.constant(1 : i32) : i32
-// CHECK: llvm.call @wafer_tx81_gemm_oriented_v2(%[[LHS]], %[[RHS]], %[[DST]], %[[M]], %[[K]], %[[N]], %[[BATCH]], %[[FORMAT]], %[[LHS_ORIENTATION]], %[[RHS_ORIENTATION]])
-// V1: unsupported_target_abi: explicit GEMM orientations require wafer-tx81-kernel-v2
+// CHECK: %[[WORKER:.*]] = llvm.mlir.constant(0 : i32) : i32
+// CHECK: llvm.call @wafer_tx81_gemm_oriented_v3(%[[LHS]], %[[RHS]], %[[DST]], %[[M]], %[[K]], %[[N]], %[[BATCH]], %[[FORMAT]], %[[LHS_ORIENTATION]], %[[RHS_ORIENTATION]], %[[WORKER]])

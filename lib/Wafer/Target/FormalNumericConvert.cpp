@@ -154,16 +154,15 @@ evaluateFormalConvert(const ResolvedNumericCommand &command,
                        "the resolved command is not a CT convert command");
   const NumericSemanticsProfile &semantics = *command.getSemantics();
   const TargetConvertRoute *routeRecord =
-      findTargetConvertRoute(key.getTargetProfile(), convert->opcode);
+      findTargetConvertRoute(convert->opcode);
   if (!routeRecord || convert->source.getFormat() != routeRecord->source ||
       convert->destination.getFormat() != routeRecord->destination)
     return formalError(FormalNumericErrorCode::UnsupportedResolvedCommand,
                        "the resolved convert key lost its validated route");
   const TargetConvertRoute &route = *routeRecord;
-  const NumericRoutePolicyIdentity &routePolicy =
-      semantics.getRoutePolicyIdentity();
+  const NumericCTConvertSemanticsIdentity &routePolicy =
+      *semantics.getCTConvertIdentity();
   if (semantics.getModelProfile() != command.getPattern().getModelProfile() ||
-      routePolicy.getTargetProfile() != key.getTargetProfile() ||
       routePolicy.getFamily() != key.getFamily() ||
       routePolicy.getCTConvertOpcode() != convert->opcode)
     return formalError(FormalNumericErrorCode::UnsupportedResolvedCommand,

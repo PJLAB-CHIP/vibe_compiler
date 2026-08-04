@@ -1,25 +1,25 @@
 // RUN: split-file %s %t
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/positive.mlir | FileCheck %s --check-prefix=POS
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/positive.mlir | mlir-translate --mlir-to-llvmir | FileCheck %s --check-prefix=LLVMIR
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/indirect.mlir 2>&1 | FileCheck %s --check-prefix=INDIRECT
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/recursive.mlir 2>&1 | FileCheck %s --check-prefix=RECURSIVE
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/external.mlir 2>&1 | FileCheck %s --check-prefix=EXTERNAL
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/alias-mismatch.mlir 2>&1 | FileCheck %s --check-prefix=ALIAS
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/scalar-arg.mlir 2>&1 | FileCheck %s --check-prefix=SCALAR
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ddr-alloc.mlir 2>&1 | FileCheck %s --check-prefix=DDR-ALLOC
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/mask-address-overflow.mlir 2>&1 | FileCheck %s --check-prefix=MASK-ADDRESS
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/factorize.mlir 2>&1 | FileCheck %s --check-prefix=FACTORIZE
-// RUN: not wafer-opt --mlir-disable-threading --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' --mlir-print-ir-after-failure --mlir-print-ir-module-scope -o /dev/null %t/dte-atomic.mlir 2>&1 | FileCheck %s --check-prefix=DTE-ATOMIC --implicit-check-not=llvm.func --implicit-check-not=llvm.call
-// RUN: not wafer-opt --mlir-disable-threading --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' --mlir-print-ir-after-failure --mlir-print-ir-module-scope -o /dev/null %t/late-atomic.mlir 2>&1 | FileCheck %s --check-prefix=LATE-ATOMIC --implicit-check-not=llvm.func --implicit-check-not=llvm.call
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/positive.mlir | FileCheck %s --check-prefix=POS
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/positive.mlir | mlir-translate --mlir-to-llvmir | FileCheck %s --check-prefix=LLVMIR
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/indirect.mlir 2>&1 | FileCheck %s --check-prefix=INDIRECT
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/recursive.mlir 2>&1 | FileCheck %s --check-prefix=RECURSIVE
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/external.mlir 2>&1 | FileCheck %s --check-prefix=EXTERNAL
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/alias-mismatch.mlir 2>&1 | FileCheck %s --check-prefix=ALIAS
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/scalar-arg.mlir 2>&1 | FileCheck %s --check-prefix=SCALAR
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/ddr-alloc.mlir 2>&1 | FileCheck %s --check-prefix=DDR-ALLOC
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/mask-address-overflow.mlir 2>&1 | FileCheck %s --check-prefix=MASK-ADDRESS
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/factorize.mlir 2>&1 | FileCheck %s --check-prefix=FACTORIZE
+// RUN: not wafer-opt --mlir-disable-threading --wafer-lower-instr-to-target-llvm --mlir-print-ir-after-failure --mlir-print-ir-module-scope -o /dev/null %t/dte-atomic.mlir 2>&1 | FileCheck %s --check-prefix=DTE-ATOMIC --implicit-check-not=llvm.func --implicit-check-not=llvm.call
+// RUN: not wafer-opt --mlir-disable-threading --wafer-lower-instr-to-target-llvm --mlir-print-ir-after-failure --mlir-print-ir-module-scope -o /dev/null %t/late-atomic.mlir 2>&1 | FileCheck %s --check-prefix=LATE-ATOMIC --implicit-check-not=llvm.func --implicit-check-not=llvm.call
 
 //--- positive.mlir
 
 func.func @false_branch() {
   %false = arith.constant false
   scf.if %false {
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   } else {
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   }
   return
 }
@@ -27,9 +27,9 @@ func.func @false_branch() {
 func.func @true_branch() {
   %true = arith.constant true
   scf.if %true {
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   } else {
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   }
   return
 }
@@ -38,7 +38,7 @@ func.func @zero_trip_loop() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   scf.for %i = %c0 to %c0 step %c1 {
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   }
   return
 }
@@ -47,7 +47,7 @@ func.func @one_trip_loop() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   scf.for %i = %c0 to %c1 step %c1 {
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   }
   return
 }
@@ -59,7 +59,7 @@ func.func @two_trip_nested() {
   %true = arith.constant true
   scf.for %i = %c0 to %c2 step %c1 {
     scf.if %true {
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     }
   }
   return
@@ -69,20 +69,20 @@ func.func @diamond_cfg() {
   %cond = arith.constant true
   cf.cond_br %cond, ^left, ^right
 ^left:
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   cf.br ^merge
 ^right:
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   cf.br ^merge
 ^merge:
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
 func.func private @forward_alias(
     %arg: memref<4xf16, #wafer.memory<ddr, tensor>>)
     -> memref<4xf16, #wafer.memory<ddr, tensor>> {
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return %arg : memref<4xf16, #wafer.memory<ddr, tensor>>
 }
 
@@ -128,7 +128,7 @@ func.func @tile_boundary_yield(
       %arg : memref<4xf16, #wafer.memory<ddr, tensor>>)
       -> (memref<4xf16, #wafer.memory<ddr, tensor>>) {
   ^bb0(%boundary: memref<4xf16, #wafer.memory<ddr, tensor>>):
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %boundary
         : memref<4xf16, #wafer.memory<ddr, tensor>>
   }
@@ -165,8 +165,8 @@ func.func @mask_uint32_boundary() {
 
 // POS-LABEL: llvm.func @false_branch
 // POS: llvm.cond_br
-// POS: llvm.call @wafer_tx81_local_fence
-// POS: llvm.call @wafer_tx81_local_fence
+// POS: llvm.call @wafer_tx81_ncc_join
+// POS: llvm.call @wafer_tx81_ncc_join
 // POS-LABEL: llvm.func @true_branch
 // POS: llvm.cond_br
 // POS-LABEL: llvm.func @zero_trip_loop
@@ -182,29 +182,29 @@ func.func @mask_uint32_boundary() {
 // POS: llvm.br
 // POS-LABEL: llvm.func @forward_alias(
 // POS-SAME: %[[ALIAS_ARG:.+]]: i64) -> i64
-// POS: llvm.call @wafer_tx81_local_fence
+// POS: llvm.call @wafer_tx81_ncc_join
 // POS: llvm.return %[[ALIAS_ARG]] : i64
 // POS-LABEL: llvm.func @direct_call(
 // POS-SAME: %[[CALL_ARG:.+]]: i64)
 // POS: %[[CALL_RESULT:.+]] = llvm.call @forward_alias(%[[CALL_ARG]]) : (i64) -> i64
-// POS: llvm.call @wafer_tx81_rdma(%[[CALL_RESULT]],
+// POS: llvm.call @wafer_tx81_rdma_v3(%[[CALL_RESULT]],
 // POS-LABEL: llvm.func @nested_subview(
 // POS-SAME: %[[NESTED_BASE:.+]]: i64)
 // POS: %[[FIRST_DELTA:.+]] = llvm.mlir.constant(4 : i64) : i64
 // POS: %[[FIRST_ADDR:.+]] = llvm.add %[[NESTED_BASE]], %[[FIRST_DELTA]] : i64
 // POS: %[[SECOND_DELTA:.+]] = llvm.mlir.constant(2 : i64) : i64
 // POS: %[[SECOND_ADDR:.+]] = llvm.add %[[FIRST_ADDR]], %[[SECOND_DELTA]] : i64
-// POS: llvm.call @wafer_tx81_rdma(%[[SECOND_ADDR]],
+// POS: llvm.call @wafer_tx81_rdma_v3(%[[SECOND_ADDR]],
 // POS-LABEL: llvm.func @tile_boundary_yield
 // POS-NOT: wafer.tile
-// POS: llvm.call @wafer_tx81_local_fence
+// POS: llvm.call @wafer_tx81_ncc_join
 // POS: llvm.return
 // POS-LABEL: llvm.func @loop_carried_alias
 // POS: llvm.cond_br
 // POS: llvm.br
 // POS: llvm.return
 // POS-LABEL: llvm.func @mask_uint32_boundary
-// POS: llvm.call @wafer_tx81_mask_move({{.*}}) : (i64, i32, i64, i32, i32) -> ()
+// POS: llvm.call @wafer_tx81_mask_move_v3({{.*}}) : (i64, i32, i64, i32, i32, i32) -> ()
 
 // LLVMIR-LABEL: define void @false_branch()
 // LLVMIR: br i1
@@ -218,18 +218,18 @@ func.func @mask_uint32_boundary() {
 // LLVMIR-LABEL: define void @direct_call(
 // LLVMIR-SAME: i64 %[[CALL_ARG:.+]])
 // LLVMIR: %[[CALL:.+]] = call i64 @forward_alias(i64 %[[CALL_ARG]])
-// LLVMIR: call void @wafer_tx81_rdma(i64 %[[CALL]],
+// LLVMIR: call void @wafer_tx81_rdma_v3(i64 %[[CALL]],
 // LLVMIR-LABEL: define void @nested_subview(
 // LLVMIR: %[[FIRST:.+]] = add i64 %{{.+}}, 4
 // LLVMIR: %[[SECOND:.+]] = add i64 %[[FIRST]], 2
-// LLVMIR: call void @wafer_tx81_rdma(i64 %[[SECOND]],
+// LLVMIR: call void @wafer_tx81_rdma_v3(i64 %[[SECOND]],
 // LLVMIR-LABEL: define void @tile_boundary_yield
 // LLVMIR: ret void
 // LLVMIR-LABEL: define void @loop_carried_alias
 // LLVMIR: phi i64
 // LLVMIR: ret void
 // LLVMIR-LABEL: define void @mask_uint32_boundary()
-// LLVMIR: call void @wafer_tx81_mask_move(i64 65536, i32 -8, i64 65792,
+// LLVMIR: call void @wafer_tx81_mask_move_v3(i64 65536, i32 -8, i64 65792,
 
 //--- indirect.mlir
 
@@ -335,12 +335,12 @@ func.func @reject_factorize() {
   return
 }
 
-// FACTORIZE: unsupported_target_operation: peripheral factorize lacks a proven production target semantic profile
+// FACTORIZE: unsupported_target_operation: peripheral factorize lacks a proven production target semantic implementation
 
 //--- dte-atomic.mlir
 
 func.func @valid_before_transport_failure() {
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
@@ -356,14 +356,14 @@ func.func @transport_failure() {
 // DTE-ATOMIC: unsupported_target_transport: Direct DTE requires a launch-observable status argument
 // DTE-ATOMIC: module {
 // DTE-ATOMIC: func.func @valid_before_transport_failure
-// DTE-ATOMIC: wafer.instr.local_fence
+// DTE-ATOMIC: wafer.instr.ncc_join [0]
 // DTE-ATOMIC: func.func @transport_failure
 // DTE-ATOMIC: wafer.instr.dte_send
 
 //--- late-atomic.mlir
 
 func.func @valid_before_late_failure() {
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
@@ -384,6 +384,6 @@ func.func @late_failure() {
 // LATE-ATOMIC: unsupported_target_instr: transform-like tdma_data_move kind reached target LLVM lowering
 // LATE-ATOMIC: module {
 // LATE-ATOMIC: func.func @valid_before_late_failure
-// LATE-ATOMIC: wafer.instr.local_fence
+// LATE-ATOMIC: wafer.instr.ncc_join [0]
 // LATE-ATOMIC: func.func @late_failure
 // LATE-ATOMIC: wafer.instr.tdma_data_move

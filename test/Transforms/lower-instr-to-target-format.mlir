@@ -1,14 +1,15 @@
 // RUN: split-file %s %t
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/supported.mlir | FileCheck %s --check-prefix=SUPPORTED
-// RUN: not wafer-opt --mlir-disable-threading --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' --mlir-print-ir-after-failure --mlir-print-ir-module-scope -o /dev/null %t/i64.mlir 2>&1 | FileCheck %s --check-prefix=I64 --implicit-check-not=llvm.func --implicit-check-not=llvm.call
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/uint.mlir 2>&1 | FileCheck %s --check-prefix=UINT
-// RUN: not wafer-opt --verify-each=false --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/f64.mlir 2>&1 | FileCheck %s --check-prefix=F64
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ct-i16.mlir 2>&1 | FileCheck %s --check-prefix=CT-I16
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ct-bool-add.mlir 2>&1 | FileCheck %s --check-prefix=CT-BOOL
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ct-pool-i8.mlir 2>&1 | FileCheck %s --check-prefix=CT-POOL-I8
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ct-pool-f32.mlir 2>&1 | FileCheck %s --check-prefix=CT-POOL-F32
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ct-unpool-bf16.mlir 2>&1 | FileCheck %s --check-prefix=CT-UNPOOL-BF16
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ct-reduce-f32.mlir 2>&1 | FileCheck %s --check-prefix=CT-REDUCE-F32
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/supported.mlir | FileCheck %s --check-prefix=SUPPORTED
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/i64.mlir | FileCheck %s --check-prefix=I64
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/uint.mlir | FileCheck %s --check-prefix=UINT
+// RUN: not wafer-opt --verify-each=false --wafer-lower-instr-to-target-llvm %t/f64.mlir 2>&1 | FileCheck %s --check-prefix=F64
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/ct-i16.mlir | FileCheck %s --check-prefix=CT-I16
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/ct-bool-add.mlir | FileCheck %s --check-prefix=CT-BOOL
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/ct-pool-i8.mlir | FileCheck %s --check-prefix=CT-POOL-I8
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/ct-pool-f32.mlir | FileCheck %s --check-prefix=CT-POOL-F32
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/ct-unpool-bf16.mlir | FileCheck %s --check-prefix=CT-UNPOOL-BF16
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/ct-reduce-f32.mlir | FileCheck %s --check-prefix=CT-REDUCE-F32
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/gemm-f32.mlir 2>&1 | FileCheck %s --check-prefix=GEMM-F32
 
 //--- supported.mlir
 module {
@@ -38,14 +39,15 @@ module {
 }
 
 // SUPPORTED-LABEL: llvm.func @supported
-// SUPPORTED: llvm.call @wafer_tx81_rdma
-// SUPPORTED: llvm.call @wafer_tx81_elementwise_logic_and
+// SUPPORTED: llvm.call @wafer_tx81_rdma_v3
+// SUPPORTED: llvm.call @wafer_tx81_elementwise_logic_and_v3
 
 //--- i64.mlir
 module {
-  func.func @i64_is_not_proven(
+  func.func @i64_rdma(
       %source: memref<4xi64, #wafer.memory<ddr, tensor>>) {
-    %dest = memref.alloc() : memref<4xi64, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xi64, #wafer.memory<spm, tensor>>
     wafer.instr.rdma %source to %dest
         {byte_count = 32 : i64, inner_bytes = 32 : i64,
          src_strides = array<i64: 0, 0, 0>,
@@ -56,16 +58,15 @@ module {
   }
 }
 
-// I64: unsupported_target_format: profile 'wafer-tx81-single-card-kernel-v1', engine 'rdma', format 'i64' is unsupported: 64-bit-command-encoding-unproven
-// I64: IR Dump After LowerInstrToTargetLLVMPass Failed
-// I64: func.func @i64_is_not_proven
-// I64: wafer.instr.rdma
+// I64-LABEL: llvm.func @i64_rdma
+// I64: llvm.call @wafer_tx81_rdma_v3
 
 //--- uint.mlir
 module {
-  func.func @unsigned_is_not_proven(
+  func.func @u8_rdma(
       %source: memref<4xui8, #wafer.memory<ddr, tensor>>) {
-    %dest = memref.alloc() : memref<4xui8, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xui8, #wafer.memory<spm, tensor>>
     wafer.instr.rdma %source to %dest
         {byte_count = 4 : i64, inner_bytes = 4 : i64,
          src_strides = array<i64: 0, 0, 0>,
@@ -76,7 +77,8 @@ module {
   }
 }
 
-// UINT: engine 'rdma', format 'u8' is unsupported: unsigned-command-encoding-unproven
+// UINT-LABEL: llvm.func @u8_rdma
+// UINT: llvm.call @wafer_tx81_rdma_v3
 
 //--- f64.mlir
 module {
@@ -97,9 +99,11 @@ module {
 
 //--- ct-i16.mlir
 module {
-  func.func @ct_i16_is_engine_specific() {
-    %lhs = memref.alloc() : memref<4xi16, #wafer.memory<spm, tensor>>
-    %dest = memref.alloc() : memref<4xi16, #wafer.memory<spm, tensor>>
+  func.func @ct_i16_add() {
+    %lhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xi16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xi16, #wafer.memory<spm, tensor>>
     wafer.instr.elementwise #wafer.instr_elementwise_kind<add> %lhs, %lhs into %dest
         : memref<4xi16, #wafer.memory<spm, tensor>>,
           memref<4xi16, #wafer.memory<spm, tensor>>
@@ -108,13 +112,16 @@ module {
   }
 }
 
-// CT-I16: engine 'ct', format 'i16' is unsupported: generic-compute-integer-command-encoding-unproven
+// CT-I16-LABEL: llvm.func @ct_i16_add
+// CT-I16: llvm.call @wafer_tx81_elementwise_add_v3
 
 //--- ct-bool-add.mlir
 module {
-  func.func @ct_bool_add_is_not_a_registered_bool_kind() {
-    %lhs = memref.alloc() : memref<8xi1, #wafer.memory<spm, tensor>>
-    %dest = memref.alloc() : memref<8xi1, #wafer.memory<spm, tensor>>
+  func.func @ct_bool_add() {
+    %lhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<8xi1, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<8xi1, #wafer.memory<spm, tensor>>
     wafer.instr.elementwise #wafer.instr_elementwise_kind<add> %lhs, %lhs into %dest
         : memref<8xi1, #wafer.memory<spm, tensor>>,
           memref<8xi1, #wafer.memory<spm, tensor>>
@@ -123,11 +130,12 @@ module {
   }
 }
 
-// CT-BOOL: CT BOOL is restricted to the registered relation/logic elementwise kinds
+// CT-BOOL-LABEL: llvm.func @ct_bool_add
+// CT-BOOL: llvm.call @wafer_tx81_elementwise_add_v3
 
 //--- ct-pool-i8.mlir
 module {
-  func.func @ct_pool_i8_has_no_typed_evidence() {
+  func.func @ct_pool_i8() {
     %input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
         : memref<1x2x4x64xi8, #wafer.memory<spm, ncx>>
     %output = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
@@ -143,11 +151,12 @@ module {
   }
 }
 
-// CT-POOL-I8: unsupported_target_instr_profile: pool format 'i8' has no closed opcode/kind/format board-evidence tuple
+// CT-POOL-I8-LABEL: llvm.func @ct_pool_i8
+// CT-POOL-I8: llvm.call @wafer_tx81_pool_max_v3
 
 //--- ct-pool-f32.mlir
 module {
-  func.func @ct_pool_f32_has_no_typed_evidence() {
+  func.func @ct_pool_f32() {
     %input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
         : memref<1x2x4x64xf32, #wafer.memory<spm, ncx>>
     %output = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67584>}
@@ -163,11 +172,12 @@ module {
   }
 }
 
-// CT-POOL-F32: unsupported_target_instr_profile: pool format 'f32' has no closed opcode/kind/format board-evidence tuple
+// CT-POOL-F32-LABEL: llvm.func @ct_pool_f32
+// CT-POOL-F32: llvm.call @wafer_tx81_pool_max_v3
 
 //--- ct-unpool-bf16.mlir
 module {
-  func.func @ct_unpool_bf16_has_no_typed_evidence() {
+  func.func @ct_unpool_bf16() {
     %input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
         : memref<1x1x2x64xbf16, #wafer.memory<spm, ncx>>
     %output = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
@@ -182,11 +192,12 @@ module {
   }
 }
 
-// CT-UNPOOL-BF16: unsupported_target_instr_profile: unpool format 'bf16' has no closed opcode/kind/format board-evidence tuple
+// CT-UNPOOL-BF16-LABEL: llvm.func @ct_unpool_bf16
+// CT-UNPOOL-BF16: llvm.call @wafer_tx81_unpool_avg_v3
 
 //--- ct-reduce-f32.mlir
 module {
-  func.func @ct_reduce_f32_has_no_packet_evidence() {
+  func.func @ct_reduce_f32() {
     %input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
         : memref<4x64xf32, #wafer.memory<spm, cx>>
     %output = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66560>}
@@ -199,4 +210,25 @@ module {
   }
 }
 
-// CT-REDUCE-F32: unsupported_target_instr_profile: reduce format 'f32' has no closed opcode/kind/format board-evidence tuple
+// CT-REDUCE-F32-LABEL: llvm.func @ct_reduce_f32
+// CT-REDUCE-F32: llvm.call @wafer_tx81_reduce_sum_v3
+
+//--- gemm-f32.mlir
+module {
+  func.func @gemm_f32() {
+    %lhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<2x3xf32, #wafer.memory<spm, cx>>
+    %rhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<3x4xf32, #wafer.memory<spm, cx>>
+    %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<2x4xf32, #wafer.memory<spm, cx>>
+    wafer.instr.gemm %lhs, %rhs into %dst
+        {m = 2 : i64, k = 3 : i64, n = 4 : i64}
+        : memref<2x3xf32, #wafer.memory<spm, cx>>,
+          memref<3x4xf32, #wafer.memory<spm, cx>>
+      into memref<2x4xf32, #wafer.memory<spm, cx>>
+    return
+  }
+}
+
+// GEMM-F32: unsupported_target_instr: GEMM does not support f32

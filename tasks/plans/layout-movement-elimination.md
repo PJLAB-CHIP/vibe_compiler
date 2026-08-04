@@ -29,7 +29,7 @@ Pipeline position:
   现有wafer-compile source-to-bundle production pipeline；wafer-opt仅作局部replay/test。
 - Explicit non-goals:
   不新增layout dialect、VirtualTensor、Linear Layout、shadow graph/plan、layout demand或physical-access接口、
-  `TargetProfileId`查询参数、conversion matrix、solver result attr、外部ILP/CP-SAT或第二个decision owner；
+  target identity查询参数、conversion matrix、solver result attr、外部ILP/CP-SAT或第二个decision owner；
   不支持无法由当前IR精确证明的dynamic-shape关系；多root concat继续由现有exact concat-piece与显式
   `insert_slice` compound movement表达，不把它伪装成单root alias，也不在本任务把必要concat copy算作冗余layout movement。
 - Completion gate:
@@ -44,7 +44,7 @@ Pipeline position:
 - `IndexRelation`只表示logical index关系，继续支持composition、identity、domain/image、functional、
   injective/bijective及piecewise证明。
 - `WaferPhysicalEncodingAttrInterface`继续独占footprint、alignment、valid/padding、mapping和segment事实；
-  查询签名保持不变，不接收target profile或`TargetProfileId`。
+  查询签名保持不变，不接收target identity。
 - `MemLayout`是compiler IR、Kernel ABI、numeric model与qualification共享的唯一layout family枚举；
   `MemoryAttr`只组合`MemorySpace + MemLayout`并派生geometry，不在model、codec或candidate projection中复制
   一套同值layout marker。
@@ -178,7 +178,7 @@ PBQP只负责有界提案，不复制implementation、value、shape或legality�
 
 只完成文档、接口声明、局部FileCheck、proposal生成或单个case的IR op数下降均不算实现完成。
 
-当前无卡证据：host unit与compiler integration gate通过，lit为209/209；`layout-movement-chain`两包通过schema-v6
+当前无卡证据：host unit与compiler integration gate通过，lit为209/209；`layout-movement-chain`两包通过schema-v7
 package/no-card，baseline与winner的GEMM、multiply、RDMA、WDMA和join call count完全一致，winner只减少3个
 `wafer_tx81_gather_scatter`。当前CMake均为`WAFER_ENABLE_BOARD_TEST_EXECUTION=OFF`，因此没有硬件correctness、guard或
 matched性能结论，任务状态只能是`board-ready`而不是`done`。

@@ -28,9 +28,7 @@
 
 namespace wafer::bulk_qualification_detail {
 
-static constexpr llvm::StringLiteral kSpecSchema =
-    "wafer-bulk-qualification-spec-v1";
-static constexpr llvm::StringLiteral kExplicitPayloadSpecSchema =
+static constexpr llvm::StringLiteral kCurrentSpecSchema =
     "wafer-bulk-qualification-spec-v2";
 
 llvm::Error invalid(const llvm::Twine &detail) {
@@ -231,8 +229,7 @@ parsePhysicalHex(llvm::StringRef value, llvm::StringRef field) {
 
 llvm::json::Object specJSON(const BulkQualificationSpec &spec) {
   llvm::json::Object object{
-      {"schema", spec.hasExplicitPhysicalPayload() ? kExplicitPayloadSpecSchema
-                                                   : kSpecSchema},
+      {"schema", kCurrentSpecSchema},
       {"format", stringifyLogicalFormat(spec.getFormat())},
       {"m", static_cast<int64_t>(spec.getM())},
       {"k", static_cast<int64_t>(spec.getK())},
@@ -356,9 +353,11 @@ parseSpecObject(const llvm::json::Object &object) {
       requireString(object, "schema", "bulk qualification spec");
   if (!schema)
     return schema.takeError();
-  const bool explicitPayload = *schema == kExplicitPayloadSpecSchema;
-  if (*schema != kSpecSchema && !explicitPayload)
+  if (*schema != kCurrentSpecSchema)
     return invalid("bulk qualification spec schema mismatch");
+  const bool explicitPayload = object.get("lhs_physical") ||
+                               object.get("rhs_physical") ||
+                               object.get("destination_template_physical");
   if (explicitPayload) {
     if (llvm::Error error = requireFields(
             object,

@@ -24,8 +24,8 @@ struct DirectDTEInvocationData {
 
 llvm::Expected<compiler::TargetLLVMModuleBundle>
 buildDirectDTETargetBundle(std::string &diagnosticText,
-                           TargetProfileId targetProfile =
-                               TargetProfileId::waferTx81SingleCardKernelV1());
+                           TargetIdentityId targetIdentity =
+                               TargetIdentityId::waferTx81SingleCard());
 
 llvm::Expected<DirectDTEInvocationData>
 buildDirectDTEInvocationData(const compiler::TargetLLVMModuleBundle &bundle);

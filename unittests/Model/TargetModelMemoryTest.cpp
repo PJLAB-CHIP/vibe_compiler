@@ -69,9 +69,9 @@ TargetCallInvocationDescriptor makeInvocation(size_t rankCount = 2) {
           256}},
         {base, base + UINT64_C(0x1000), base + UINT64_C(0x2000)},
         TargetIdentityId::waferTx81SingleCard(),
-        KernelRuntimeABIId::waferTx81KernelV1()});
+        KernelRuntimeABIId::waferTx81Kernel()});
   }
-  return {TargetProfileId::waferTx81SingleCardKernelV1(), std::move(ranks)};
+  return {TargetIdentityId::waferTx81SingleCard(), std::move(ranks)};
 }
 
 std::vector<TargetModelInputBinding> makeBindings(size_t rankCount = 2) {

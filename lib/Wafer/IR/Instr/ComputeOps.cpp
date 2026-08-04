@@ -978,7 +978,7 @@ mlir::LogicalResult InstrGemmOp::verify() {
       static_cast<bool>(getRhsOrientationAttr()))
     return emitOpError(
         "lhs_orientation and rhs_orientation must either both be present for "
-        "the oriented GEMM ABI or both be absent for the v1 NN ABI");
+        "oriented GEMM or both be absent for normal/normal GEMM");
   GemmOrientation lhsOrientation =
       getLhsOrientation().value_or(GemmOrientation::Normal);
   GemmOrientation rhsOrientation =

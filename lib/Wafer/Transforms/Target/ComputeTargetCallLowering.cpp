@@ -76,7 +76,7 @@ mlir::LogicalResult FunctionLowering::lowerFill(InstrFillOp op) {
   mlir::FailureOr<int64_t> elements = getFillElementCount(op);
   mlir::FailureOr<int64_t> scalar = getConstantScalarValue(op, op.getValue());
   mlir::FailureOr<int64_t> fmt =
-      getDataFormatCode(op, op.getDest(), "fill dest", targetProfile);
+      getDataFormatCode(op, op.getDest(), "fill dest");
   if (mlir::failed(dest) || mlir::failed(elements) || mlir::failed(scalar) ||
       mlir::failed(fmt))
     return mlir::failure();
@@ -85,7 +85,7 @@ mlir::LogicalResult FunctionLowering::lowerFill(InstrFillOp op) {
   appendI32(op.getLoc(), args, *elements);
   appendI32(op.getLoc(), args, *fmt);
   emitNCCCall(op.getLoc(),
-              getTargetCallDescriptor(TargetCallBuiltin::Memset, targetProfile),
+              getTargetCallDescriptor(TargetCallBuiltin::Memset),
               args, op.getWorker());
   return mlir::success();
 }
@@ -112,13 +112,13 @@ mlir::LogicalResult FunctionLowering::lowerElementwise(InstrElementwiseOp op) {
                                 ? op.getInputs().front()
                                 : op.getDest();
   mlir::FailureOr<int64_t> fmt =
-      getDataFormatCode(op, formatValue, "elementwise format", targetProfile);
+      getDataFormatCode(op, formatValue, "elementwise format");
   if (mlir::failed(dest) || mlir::failed(elements) || mlir::failed(fmt))
     return mlir::failure();
   args.push_back(*dest);
   appendI32(op.getLoc(), args, *elements);
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()),
               args, op.getWorker());
   return mlir::success();
 }
@@ -133,7 +133,7 @@ mlir::LogicalResult FunctionLowering::lowerBit2Fp(InstrBit2FpOp op) {
   mlir::FailureOr<int64_t> elements =
       getPhysicalTraversalElementCount(op, destType, "bit2fp dest");
   mlir::FailureOr<int64_t> fmt =
-      getDataFormatCode(op, op.getDest(), "bit2fp dest", targetProfile);
+      getDataFormatCode(op, op.getDest(), "bit2fp dest");
   if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(elements) ||
       mlir::failed(fmt))
     return mlir::failure();
@@ -142,7 +142,7 @@ mlir::LogicalResult FunctionLowering::lowerBit2Fp(InstrBit2FpOp op) {
   appendI32(op.getLoc(), args, *elements);
   appendI32(op.getLoc(), args, *fmt);
   emitNCCCall(op.getLoc(),
-              getTargetCallDescriptor(TargetCallBuiltin::Bit2FP, targetProfile),
+              getTargetCallDescriptor(TargetCallBuiltin::Bit2FP),
               args, op.getWorker());
   return mlir::success();
 }
@@ -159,7 +159,7 @@ mlir::LogicalResult FunctionLowering::lowerMaskMove(InstrMaskMoveOp op) {
   mlir::FailureOr<int64_t> elements =
       getPhysicalTraversalElementCount(op, destType, "mask_move dest");
   mlir::FailureOr<int64_t> fmt =
-      getDataFormatCode(op, op.getDest(), "mask_move dest", targetProfile);
+      getDataFormatCode(op, op.getDest(), "mask_move dest");
   if (mlir::failed(source) || mlir::failed(mask) || mlir::failed(dest) ||
       mlir::failed(elements) || mlir::failed(fmt))
     return mlir::failure();
@@ -170,7 +170,7 @@ mlir::LogicalResult FunctionLowering::lowerMaskMove(InstrMaskMoveOp op) {
   appendI32(op.getLoc(), args, *fmt);
   emitNCCCall(
       op.getLoc(),
-      getTargetCallDescriptor(TargetCallBuiltin::MaskMove, targetProfile), args,
+      getTargetCallDescriptor(TargetCallBuiltin::MaskMove), args,
       op.getWorker());
   return mlir::success();
 }
@@ -187,7 +187,7 @@ mlir::LogicalResult FunctionLowering::lowerReduce(InstrReduceOp op) {
       materializeAddress(op, op.getDest(), "reduce dest");
   auto inputType = mlir::cast<mlir::MemRefType>(op.getInput().getType());
   mlir::FailureOr<int64_t> fmt =
-      getDataFormatCode(op, op.getInput(), "reduce input", targetProfile);
+      getDataFormatCode(op, op.getInput(), "reduce input");
   mlir::FailureOr<llvm::SmallVector<int64_t, 4>> shape =
       getNHWCShape(op, inputType, "reduce input");
   if (mlir::failed(input) || mlir::failed(dest) || mlir::failed(fmt) ||
@@ -198,7 +198,7 @@ mlir::LogicalResult FunctionLowering::lowerReduce(InstrReduceOp op) {
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getDimAttr()));
   appendArrayI32(op.getLoc(), args, *shape);
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()),
               args, op.getWorker());
   return mlir::success();
 }
@@ -221,7 +221,7 @@ mlir::LogicalResult FunctionLowering::lowerConvert(InstrConvertOp op) {
             getOptionalIntegerAttrValue(op.getZeroPointAttr(), -1));
   appendI32(op.getLoc(), args,
             getOptionalIntegerAttrValue(op.getRoundingModeAttr(), -1));
-  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()),
               args, op.getWorker());
   return mlir::success();
 }
@@ -235,7 +235,7 @@ mlir::LogicalResult FunctionLowering::lowerGemm(InstrGemmOp op) {
   mlir::FailureOr<mlir::Value> dest =
       materializeAddress(op, op.getDest(), "gemm dest");
   mlir::FailureOr<int64_t> fmt =
-      getDataFormatCode(op, op.getDest(), "gemm dest", targetProfile);
+      getDataFormatCode(op, op.getDest(), "gemm dest");
   if (mlir::failed(lhs) || mlir::failed(rhs) || mlir::failed(dest) ||
       mlir::failed(fmt))
     return mlir::failure();
@@ -249,22 +249,14 @@ mlir::LogicalResult FunctionLowering::lowerGemm(InstrGemmOp op) {
             getOptionalIntegerAttrValue(op.getBatchCountAttr(), 1));
   appendI32(op.getLoc(), args, *fmt);
   if (op.getLhsOrientationAttr()) {
-    KernelRuntimeABIId runtimeABI =
-        getTargetProfileRecord(targetProfile).kernelRuntimeABI;
-    if (runtimeABI != KernelRuntimeABIId::waferTx81KernelV2() &&
-        runtimeABI != KernelRuntimeABIId::waferTx81KernelV3())
-      return op.emitError()
-             << "unsupported_target_abi: explicit GEMM orientations require "
-                "wafer-tx81-kernel-v2 or wafer-tx81-kernel-v3";
     appendI32(op.getLoc(), args, static_cast<int64_t>(*op.getLhsOrientation()));
     appendI32(op.getLoc(), args, static_cast<int64_t>(*op.getRhsOrientation()));
     emitNCCCall(op.getLoc(),
-                getTargetCallDescriptor(TargetCallBuiltin::GemmOrientedV2,
-                                        targetProfile),
+                getTargetCallDescriptor(TargetCallBuiltin::GemmOriented),
                 args, op.getWorker());
   } else {
     emitNCCCall(op.getLoc(),
-                getTargetCallDescriptor(TargetCallBuiltin::Gemm, targetProfile),
+                getTargetCallDescriptor(TargetCallBuiltin::Gemm),
                 args, op.getWorker());
   }
   return mlir::success();
@@ -279,7 +271,7 @@ mlir::LogicalResult FunctionLowering::lowerConv(InstrConvOp op) {
   mlir::FailureOr<mlir::Value> dest =
       materializeAddress(op, op.getDest(), "conv dest");
   mlir::FailureOr<int64_t> fmt =
-      getDataFormatCode(op, op.getDest(), "conv dest", targetProfile);
+      getDataFormatCode(op, op.getDest(), "conv dest");
   if (mlir::failed(input) || mlir::failed(weight) || mlir::failed(dest) ||
       mlir::failed(fmt))
     return mlir::failure();
@@ -295,7 +287,7 @@ mlir::LogicalResult FunctionLowering::lowerConv(InstrConvOp op) {
   appendArrayI32(op.getLoc(), args, op.getKernelStrides());
   appendArrayI32(op.getLoc(), args, op.getDilations());
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()),
               args, op.getWorker());
   return mlir::success();
 }
@@ -305,7 +297,7 @@ mlir::LogicalResult FunctionLowering::lowerPool(InstrPoolOp op) {
   mlir::FailureOr<mlir::Value> input =
       materializeAddress(op, op.getInput(), "pool input");
   mlir::FailureOr<int64_t> fmt =
-      getDataFormatCode(op, op.getInput(), "pool input", targetProfile);
+      getDataFormatCode(op, op.getInput(), "pool input");
   if (mlir::failed(input) || mlir::failed(fmt))
     return mlir::failure();
   args.push_back(*input);
@@ -322,7 +314,7 @@ mlir::LogicalResult FunctionLowering::lowerPool(InstrPoolOp op) {
   appendArrayI32(op.getLoc(), args, op.getPads());
   appendArrayI32(op.getLoc(), args, op.getKernelStrides());
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()),
               args, op.getWorker());
   return mlir::success();
 }
@@ -334,7 +326,7 @@ mlir::LogicalResult FunctionLowering::lowerUnpool(InstrUnpoolOp op) {
   mlir::FailureOr<mlir::Value> dest =
       materializeAddress(op, op.getDest(), "unpool dest");
   mlir::FailureOr<int64_t> fmt =
-      getDataFormatCode(op, op.getInput(), "unpool input", targetProfile);
+      getDataFormatCode(op, op.getInput(), "unpool input");
   if (mlir::failed(input) || mlir::failed(dest) || mlir::failed(fmt))
     return mlir::failure();
   int64_t indexAddress = 0;
@@ -353,7 +345,7 @@ mlir::LogicalResult FunctionLowering::lowerUnpool(InstrUnpoolOp op) {
   appendArrayI32(op.getLoc(), args, op.getDestShape());
   appendArrayI32(op.getLoc(), args, op.getKernelStrides());
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()),
               args, op.getWorker());
   return mlir::success();
 }

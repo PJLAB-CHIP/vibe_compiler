@@ -42,7 +42,7 @@ struct InvocationContext {
 struct RankInvocationContext {
   int64_t logicalRank;
   int64_t rankCount;
-  TargetProfileId targetProfile;
+  TargetIdentityId targetIdentity;
   InvocationContext *invocation;
   uint64_t nextIssueOrdinal = 0;
   uint64_t issuedTransactionCount = 0;
@@ -82,11 +82,6 @@ extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
     return 0;
   }
   const TargetCallDescriptor &descriptor = descriptors[descriptorIndex];
-  if (!isTargetCallAvailableForProfile(descriptor, context->targetProfile)) {
-    context->invocation->failure =
-        "target-call bridge used a descriptor outside the invocation profile";
-    return 0;
-  }
   if (argumentCount != descriptor.arguments.size()) {
     context->invocation->failure =
         "target-call bridge used an invalid argument count";
@@ -94,7 +89,7 @@ extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
   }
   llvm::ArrayRef<uint64_t> argumentValues(arguments, argumentCount);
   llvm::Expected<TargetTransactionPayload> payload = decodeTargetCallPayload(
-      descriptor, {context->targetProfile, context->rankCount}, argumentValues);
+      descriptor, {context->rankCount}, argumentValues);
   if (!payload) {
     context->invocation->failure = llvm::toString(payload.takeError());
     return 0;
@@ -249,12 +244,11 @@ static llvm::Error preflightModule(const TargetLLVMModule &targetModule) {
       return llvm::createStringError(
           "target module contains an unsupported personality function");
     if (function.isDeclaration() && !function.isIntrinsic()) {
-      const TargetCallDescriptor *descriptor = findTargetCallDescriptor(
-          function.getName(), targetModule.getTargetProfileId());
+      const TargetCallDescriptor *descriptor =
+          findTargetCallDescriptor(function.getName());
       if (!descriptor)
         return llvm::createStringError(
-            "target module contains unknown or profile-incompatible external "
-            "call @%s",
+            "target module contains unknown external call @%s",
             function.getName().str().c_str());
       if (llvm::Error error = verifyDescriptorType(function, *descriptor))
         return error;
@@ -314,10 +308,6 @@ static llvm::Error defineTargetCallBridges(llvm::Module &module,
     llvm::Function *function = module.getFunction(descriptor.symbol);
     if (!function)
       continue;
-    if (!isTargetCallAvailableForProfile(descriptor, context.targetProfile))
-      return llvm::createStringError(
-          "target call bridge symbol is unavailable for the invocation "
-          "profile");
     if (!function->isDeclaration())
       return llvm::createStringError(
           "target call bridge symbol is already defined");
@@ -456,7 +446,7 @@ validateInvocation(const TargetLLVMModuleBundle &bundle,
     return llvm::createStringError(
         "target-call invocation does not cover the complete rank domain");
   TargetCallInvocationDescriptor descriptor{
-      bundle.getExecutionConfig().getTargetProfileId(), {}};
+      bundle.getExecutionConfig().getTargetIdentityId(), {}};
   descriptor.ranks.reserve(modules.size());
   for (size_t index = 0; index < modules.size(); ++index) {
     const TargetLLVMModule &module = modules[index];
@@ -468,9 +458,9 @@ validateInvocation(const TargetLLVMModuleBundle &bundle,
     if (rankArguments.slots.size() != module.getKernelABISlots().size())
       return llvm::createStringError(
           "target-call invocation slot count does not match the typed ABI");
-    if (module.getTargetProfileId() != descriptor.targetProfile)
+    if (module.getTargetIdentityId() != descriptor.targetIdentity)
       return llvm::createStringError(
-          "target-call invocation contains inconsistent target profiles");
+          "target-call invocation contains inconsistent target identities");
     descriptor.ranks.push_back({module.getLogicalRank(),
                                 module.getKernelABISlots(), rankArguments.slots,
                                 module.getTargetIdentityId(),
@@ -624,7 +614,7 @@ prepareTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
   for (const TargetLLVMModule &module : bundle.getModules())
     executable->contexts.push_back(
         {module.getLogicalRank(), bundle.getExecutionConfig().getRankCount(),
-         module.getTargetProfileId(), &executable->invocation});
+         module.getTargetIdentityId(), &executable->invocation});
 
   executable->materialized.reserve(bundle.getModules().size());
   for (size_t index = 0; index < bundle.getModules().size(); ++index) {

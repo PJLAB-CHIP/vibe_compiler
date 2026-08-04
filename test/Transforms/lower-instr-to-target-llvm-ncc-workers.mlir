@@ -1,8 +1,6 @@
 // RUN: split-file %s %t
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/join.mlir | FileCheck %s --check-prefix=JOIN
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/nonzero-issue.mlir 2>&1 | FileCheck %s --check-prefix=V1
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v2' %t/nonzero-issue.mlir 2>&1 | FileCheck %s --check-prefix=V2
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v3' %t/nonzero-issue.mlir | FileCheck %s --check-prefix=V3
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/join.mlir | FileCheck %s --check-prefix=JOIN
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/nonzero-issue.mlir | FileCheck %s --check-prefix=WORKERS
 
 //--- join.mlir
 
@@ -37,13 +35,11 @@ func.func @nonzero_issue_worker(
   return
 }
 
-// V1: unsupported_target_abi: nonzero NCC workers require wafer-tx81-kernel-v3
-// V2: unsupported_target_abi: nonzero NCC workers require wafer-tx81-kernel-v3
-// V3: llvm.func @wafer_tx81_memset_v3(i64, i32, i32, i32, i32)
-// V3: llvm.func @wafer_tx81_rdma_v3(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
-// V3-LABEL: llvm.func @nonzero_issue_worker
-// V3: %[[WORKER1:.+]] = llvm.mlir.constant(1 : i32) : i32
-// V3-NEXT: llvm.call @wafer_tx81_memset_v3({{.*}}%[[WORKER1]])
-// V3: %[[FORMAT:.+]] = llvm.mlir.constant(2 : i32) : i32
-// V3-NEXT: %[[WORKER2:.+]] = llvm.mlir.constant(2 : i32) : i32
-// V3-NEXT: llvm.call @wafer_tx81_rdma_v3({{.*}}%[[FORMAT]], %[[WORKER2]])
+// WORKERS: llvm.func @wafer_tx81_memset_v3(i64, i32, i32, i32, i32)
+// WORKERS: llvm.func @wafer_tx81_rdma_v3(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
+// WORKERS-LABEL: llvm.func @nonzero_issue_worker
+// WORKERS: %[[WORKER1:.+]] = llvm.mlir.constant(1 : i32) : i32
+// WORKERS-NEXT: llvm.call @wafer_tx81_memset_v3({{.*}}%[[WORKER1]])
+// WORKERS: %[[FORMAT:.+]] = llvm.mlir.constant(2 : i32) : i32
+// WORKERS-NEXT: %[[WORKER2:.+]] = llvm.mlir.constant(2 : i32) : i32
+// WORKERS-NEXT: llvm.call @wafer_tx81_rdma_v3({{.*}}%[[FORMAT]], %[[WORKER2]])

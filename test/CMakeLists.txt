@@ -404,6 +404,8 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
         --wafer-run $<TARGET_FILE:wafer-run>
         --work-dir
           ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-hf-megatron-transformer-block-no-card
+        --dump-compiler-ir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-hf-megatron-transformer-block-no-card/compiler-ir
         --no-card
     )
     set_tests_properties(

@@ -14,17 +14,17 @@
 | 01 | `tasks/01-architecture.md` | compiler stack主架构：production pipeline、IR/artifact DAG、跨层不变量、consumer分支和owner索引 |
 | 02 | `tasks/02-frontend-stablehlo-program.md` | 当前StableHLO program directory与frontend验证；typed state是后续扩展 |
 | 03 | `tasks/03-shardy-spmd.md` | 当前Shardy/XLA SPMD artifact、显式rank identity；MPMD/rank class延后 |
-| 04 | `tasks/04-topology-execution-mesh.md` | 当前topology/execution mesh；Q0.L typed target-profile仅随ExecutionConfig透传，不进入mesh IR |
+| 04 | `tasks/04-topology-execution-mesh.md` | 当前topology/execution mesh；current target identity不进入mesh IR |
 | 05 | `tasks/05-local-compute-normalization.md` | rank-local structured compute normalization与tensor collective handoff |
 | 06 | `tasks/06-physical-dataflow-synthesis.md` | MLIR-native physical-dataflow synthesis：implementation/tile/encoding/route/residency/buffering/order/communication的bounded actual-clone selection与atomic commit |
 | 07 | `tasks/07-tile-region.md` | selected proposal的typed task/traversal IR物化与完整coverage；不是planner或per-group SPM/DDR边界 |
 | 08 | `tasks/08-physical-realization.md` | physical encoding attr/type语义、valid domain、view、transfer realizability analysis、descriptor cover和selected physical realization |
 | 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/completion、fixed-capacity legality、validated high-water和accepted offsets；candidate choice仍由06拥有 |
 | 10 | `tasks/10-compute-movement.md` | 窄source implementation OpInterface/external model、typed target-abstract compute/movement、standard MLIR effects/interface reuse和issue/token/fence/wait |
-| 11 | `tasks/11-instruction-ir.md` | complete static rank instruction program、current v1 descriptor/geometry/range/narrowing legality及Q32.V mapped/physical-fill/oriented typed extension |
+| 11 | `tasks/11-instruction-ir.md` | complete static rank instruction program、current descriptor/geometry/range/narrowing legality及mapped/physical-fill/oriented typed extension |
 | 12 | `tasks/12-ddr-memory-planning.md` | 当前DDR demand/accepted offsets；multi-arena/state/streaming延后 |
 | 13 | `tasks/13-communication.md` | logical collective lowering到typed p2p/staging/token/wait IR、Direct DTE all-rank acceptance和completion；segmented/multi-card延后 |
-| 14 | `tasks/14-target-conversion-module-publication.md` | target profile/format registry、structure-preserving target conversion、CRT ABI和atomic module publication；Q32.V扩展从typed winner rows派生 |
+| 14 | `tasks/14-target-conversion-module-publication.md` | current target identity/format registry、structure-preserving target conversion、CRT ABI和atomic module publication；Q32.V扩展从typed winner rows派生 |
 | 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest/PackageBundle、当前schema、canonical JSON、no-card RuntimeSession和board adapter边界；Q32.V仅在真实consumer需要时升级schema |
 | 16 | `tasks/16-verification-contract.md` | 跨stage verification contract：target correctness、1/16-rank bundle、CPU oracle、target-model、scale、no-card和board分层gate |
 | 17 | `tasks/17-target-execution-model.md` | multi-dtype numeric、oneDNN bulk、same-lowering target LLVM bundle消费、repo-owned target-call/SystemC untimed CModel、7B managed-reference scale、optional CRT/packet provenance、Q22.C板端numeric correlation、Q22.E exact-module和deferred Q22.P timing边界 |
@@ -58,7 +58,7 @@ Q46 layout movement elimination当前计划见`tasks/plans/layout-movement-elimi
 16-17的现有合同，动态状态和完成门禁只看`tasks/progress.md`。
 
 Q47 Target ABI退役计划见`tasks/plans/target-abi-retirement.md`。它在Q46完成或暂停并形成独立ABI迁移窗口后，
-按11、14-17的owner边界把current TX81 target收口为V3-only；它不包含SMT、候选生成或优化器改造，动态状态和
+按11、14-17的owner边界把TX81 target收口为唯一current ABI；它不包含SMT、候选生成或优化器改造，动态状态和
 完成门禁只看`tasks/progress.md`。
 
 Q48语义驱动superoptimizer计划见`tasks/plans/semantic-superoptimization.md`。它必须在Q46、Q47完成后启动，
@@ -163,7 +163,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | `tasks/archive/09-system-design-implementation-review.md` | 2026-07-10 系统设计与实现审计；只作风险和整改依据，不是架构合同 |
 | `tasks/archive/10-target-crt-closure-plan.md` | 已完成并被当前路线替代的 CRT closure 实施记录 |
 | `tasks/archive/11-target-crt-conformance-plan.md` | 已完成并被当前路线替代的 CRT conformance 实施记录 |
-| `tasks/archive/target-command-legality-closure.md` | 已完成Q0.L的typed target profile、format legality、map/reduce lowering和fresh source replay实施记录 |
+| `tasks/archive/target-command-legality-closure.md` | 已完成Q0.L的typed target format legality、map/reduce lowering和fresh source replay实施记录 |
 | `tasks/archive/12-architecture-evidence-reset.md` | 2026-07-12架构事实重基线审计；只作证据和整改依据 |
 | `tasks/archive/single-card-vertical-slice.md` | 已完成的单卡纵向切片实施计划；只保留历史checkpoint和验证记录 |
 | `tasks/archive/2026-07-10-long-horizon-plans/` | 已被重基线取代的7份生成式长周期计划；non-normative |

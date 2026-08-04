@@ -15,7 +15,7 @@ func.func @plan_compiler_managed_ddr_range() {
          dst_strides = array<i64: 6, 0, 0>, inner_bytes = 6 : i64}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, #wafer.memory<ddr, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %out : memref<2x3xf16, #wafer.memory<ddr, tensor>>
   }
   return
@@ -217,7 +217,7 @@ func.func @keep_overlapping_ddr_ranges_distinct() {
        dst_strides = array<i64: 6, 0, 0>, inner_bytes = 6 : i64}
       : memref<2x3xf16, #wafer.memory<spm, tensor>>
      to memref<2x3xf16, #wafer.memory<ddr, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
@@ -274,7 +274,7 @@ func.func @reuse_non_overlapping_ddr_ranges() {
        dst_strides = array<i64: 6, 0, 0>, inner_bytes = 6 : i64}
       : memref<2x3xf16, #wafer.memory<spm, tensor>>
      to memref<2x3xf16, #wafer.memory<ddr, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
 
   %ddr1 = memref.alloc()
       : memref<2x3xf16, #wafer.memory<ddr, tensor>>
@@ -286,7 +286,7 @@ func.func @reuse_non_overlapping_ddr_ranges() {
        dst_strides = array<i64: 6, 0, 0>, inner_bytes = 6 : i64}
       : memref<2x3xf16, #wafer.memory<spm, tensor>>
      to memref<2x3xf16, #wafer.memory<ddr, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
@@ -306,7 +306,7 @@ func.func @reuse_exclusive_if_branch_ddr_ranges(%cond: i1) {
          dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
         : memref<128xf16, #wafer.memory<spm, tensor>>
        to memref<128xf16, #wafer.memory<ddr, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   } else {
     %else_ddr = memref.alloc()
         : memref<128xf16, #wafer.memory<ddr, tensor>>
@@ -318,7 +318,7 @@ func.func @reuse_exclusive_if_branch_ddr_ranges(%cond: i1) {
          dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
         : memref<128xf16, #wafer.memory<spm, tensor>>
        to memref<128xf16, #wafer.memory<ddr, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   }
   return
 }
@@ -345,7 +345,7 @@ func.func @for_carried_ddr_lifetime_blocks_reuse() {
          dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
         : memref<128xf16, #wafer.memory<spm, tensor>>
        to memref<128xf16, #wafer.memory<ddr, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     scf.yield %next : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   %after = memref.alloc()
@@ -358,7 +358,7 @@ func.func @for_carried_ddr_lifetime_blocks_reuse() {
        dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
       : memref<128xf16, #wafer.memory<spm, tensor>>
      to memref<128xf16, #wafer.memory<ddr, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 

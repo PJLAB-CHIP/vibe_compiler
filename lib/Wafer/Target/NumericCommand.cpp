@@ -150,18 +150,16 @@ void writeTensorDigest(llvm::raw_ostream &stream, llvm::StringRef role,
   stream << role << "-tensor-digest=" << tensor.getDigest() << '\n';
 }
 
-std::string makeCommandKeyDigest(TargetProfileId targetProfile,
-                                 const NumericCommandPayload &payload) {
+std::string makeCommandKeyDigest(const NumericCommandPayload &payload) {
   std::string canonical;
   llvm::raw_string_ostream stream(canonical);
-  stream << "wafer-numeric-command-key-v2\n"
-         << "target=" << stringifyTargetProfileId(targetProfile) << '\n';
+  stream << "wafer-numeric-command-key\n";
   std::visit(
       [&](const auto &command) {
         using Command = std::decay_t<decltype(command)>;
         if constexpr (std::is_same_v<Command, NumericCTConvertCommand>) {
           const TargetConvertRoute *route =
-              findTargetConvertRoute(targetProfile, command.opcode);
+              findTargetConvertRoute(command.opcode);
           if (!route)
             llvm::report_fatal_error("validated convert key lost its route");
           stream << "family=ct-convert\n"
@@ -240,12 +238,11 @@ std::string makeCommandKeyDigest(TargetProfileId targetProfile,
   return digestCanonical(canonical);
 }
 
-llvm::Error requireEngineFormat(TargetProfileId targetProfile,
-                                TargetFormatEngine engine, LogicalFormat format,
+llvm::Error requireEngineFormat(TargetFormatEngine engine, LogicalFormat format,
                                 llvm::StringRef role) {
   const TargetFormatEncodingRecord *record =
-      findTargetFormatEncoding(targetProfile, engine, format);
-  if (!record || !record->isSupported())
+      findTargetFormatEncoding(engine, format);
+  if (!record)
     return llvm::createStringError(
         llvm::errc::not_supported,
         "%s format '%s' is not compiler-emittable for target engine '%s'",
@@ -619,16 +616,13 @@ NumericCommandKey::getNativeCTReduce() const {
 }
 
 llvm::Expected<NumericCommandKey> NumericCommandKey::createCTConvert(
-    TargetProfileId targetProfile, uint16_t opcode, NumericTensorKey source,
-    NumericTensorKey destination,
+    uint16_t opcode, NumericTensorKey source, NumericTensorKey destination,
     std::optional<NumericConvertParameter> parameter) {
   const TargetConvertRoute *route =
-      findTargetConvertRoute(targetProfile, opcode);
+      findTargetConvertRoute(opcode);
   if (!route)
     return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "unknown CT convert route for target profile '%s' and opcode %u",
-        stringifyTargetProfileId(targetProfile).str().c_str(),
+        llvm::errc::invalid_argument, "unknown CT convert opcode %u",
         static_cast<unsigned>(opcode));
   if (source.getFormat() != route->source ||
       destination.getFormat() != route->destination)
@@ -690,13 +684,12 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createCTConvert(
 
   NumericCommandPayload payload = NumericCTConvertCommand{
       opcode, std::move(source), std::move(destination), parameter};
-  std::string digest = makeCommandKeyDigest(targetProfile, payload);
-  return NumericCommandKey(targetProfile, std::move(payload),
-                           std::move(digest));
+  std::string digest = makeCommandKeyDigest(payload);
+  return NumericCommandKey(std::move(payload), std::move(digest));
 }
 
 llvm::Expected<NumericCommandKey> NumericCommandKey::createCTElementwise(
-    TargetProfileId targetProfile, NumericElementwiseOperation operation,
+    NumericElementwiseOperation operation,
     std::vector<NumericTensorKey> inputs, NumericTensorKey destination) {
   if (!isKnownElementwiseOperation(operation))
     return llvm::createStringError(llvm::errc::invalid_argument,
@@ -712,7 +705,7 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createCTElementwise(
         llvm::errc::result_out_of_range,
         "CT elementwise destination element count must fit uint32_t");
   if (llvm::Error error = requireEngineFormat(
-          targetProfile, TargetFormatEngine::CT, destination.getFormat(),
+          TargetFormatEngine::CT, destination.getFormat(),
           "CT elementwise destination"))
     return std::move(error);
 
@@ -723,7 +716,7 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createCTElementwise(
           llvm::errc::invalid_argument,
           "CT elementwise input shapes must match destination shape");
     if (llvm::Error error =
-            requireEngineFormat(targetProfile, TargetFormatEngine::CT,
+            requireEngineFormat(TargetFormatEngine::CT,
                                 input.getFormat(), "CT elementwise input"))
       return std::move(error);
   }
@@ -760,14 +753,13 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createCTElementwise(
 
   NumericCommandPayload payload = NumericCTElementwiseCommand{
       operation, std::move(inputs), std::move(destination)};
-  std::string digest = makeCommandKeyDigest(targetProfile, payload);
-  return NumericCommandKey(targetProfile, std::move(payload),
-                           std::move(digest));
+  std::string digest = makeCommandKeyDigest(payload);
+  return NumericCommandKey(std::move(payload), std::move(digest));
 }
 
 llvm::Expected<NumericCommandKey> NumericCommandKey::createNEGemm(
-    TargetProfileId targetProfile, NumericTensorKey lhs, NumericTensorKey rhs,
-    NumericTensorKey destination, uint32_t m, uint32_t k, uint32_t n,
+    NumericTensorKey lhs, NumericTensorKey rhs, NumericTensorKey destination,
+    uint32_t m, uint32_t k, uint32_t n,
     uint32_t batchCount, NumericGemmAxes axes, GemmOrientation lhsOrientation,
     GemmOrientation rhsOrientation) {
   if (lhs.getFormat() != rhs.getFormat() ||
@@ -776,7 +768,7 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createNEGemm(
         llvm::errc::invalid_argument,
         "NE GEMM lhs, rhs and destination formats must match");
   if (llvm::Error error = requireEngineFormat(
-          targetProfile, TargetFormatEngine::NE, lhs.getFormat(), "NE GEMM"))
+          TargetFormatEngine::NE, lhs.getFormat(), "NE GEMM"))
     return std::move(error);
   if (!isAlignedLayout(lhs.getLayout()) || !isAlignedLayout(rhs.getLayout()) ||
       !isAlignedLayout(destination.getLayout()))
@@ -862,14 +854,13 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createNEGemm(
                            std::move(axes),
                            lhsOrientation,
                            rhsOrientation};
-  std::string digest = makeCommandKeyDigest(targetProfile, payload);
-  return NumericCommandKey(targetProfile, std::move(payload),
-                           std::move(digest));
+  std::string digest = makeCommandKeyDigest(payload);
+  return NumericCommandKey(std::move(payload), std::move(digest));
 }
 
 llvm::Expected<NumericCommandKey> NumericCommandKey::createNativeCTReduce(
-    TargetProfileId targetProfile, NumericReduceOperation operation,
-    NumericTensorKey input, NumericTensorKey destination,
+    NumericReduceOperation operation, NumericTensorKey input,
+    NumericTensorKey destination,
     NativeCTReduceDimension dimension) {
   if (!isKnownReduceOperation(operation))
     return llvm::createStringError(llvm::errc::invalid_argument,
@@ -881,12 +872,8 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createNativeCTReduce(
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "native CT reduce input and destination formats must match");
-  if (input.getFormat() == LogicalFormat::Bool)
-    return llvm::createStringError(
-        llvm::errc::not_supported,
-        "native CT reduce does not accept the BOOL-specific CT format row");
   if (llvm::Error error =
-          requireEngineFormat(targetProfile, TargetFormatEngine::CT,
+          requireEngineFormat(TargetFormatEngine::CT,
                               input.getFormat(), "native CT reduce"))
     return std::move(error);
 
@@ -927,9 +914,8 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createNativeCTReduce(
 
   NumericCommandPayload payload = NumericNativeCTReduceCommand{
       operation, std::move(input), std::move(destination), dimension};
-  std::string digest = makeCommandKeyDigest(targetProfile, payload);
-  return NumericCommandKey(targetProfile, std::move(payload),
-                           std::move(digest));
+  std::string digest = makeCommandKeyDigest(payload);
+  return NumericCommandKey(std::move(payload), std::move(digest));
 }
 
 } // namespace wafer

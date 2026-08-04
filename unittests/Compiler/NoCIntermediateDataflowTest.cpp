@@ -60,7 +60,7 @@ static unsigned countDDRAllocations(mlir::ModuleOp module) {
 static uint64_t countTerminalOperations(mlir::ModuleOp module) {
   uint64_t count = 0;
   module.walk([&](mlir::Operation *operation) {
-    if (mlir::isa<wafer::WaferInstructionOpInterface, wafer::SyncLocalFenceOp,
+    if (mlir::isa<wafer::WaferInstructionOpInterface, wafer::SyncNCCJoinOp,
                   wafer::SyncNCCJoinOp>(operation))
       ++count;
   });
@@ -306,8 +306,7 @@ module {
 
   llvm::Expected<wafer::compiler::ExecutionConfig> makeConfig() {
     return wafer::compiler::ExecutionConfig::createForSingleCard(
-        16, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-        wafer::RuntimeLaunchKind::Kernel);
+        16, wafer::RuntimeLaunchKind::Kernel);
   }
 
   void makeFirstProducerDifferent(mlir::ModuleOp module) {

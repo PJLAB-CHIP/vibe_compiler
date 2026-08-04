@@ -1,7 +1,7 @@
 // RUN: wafer-opt %s | FileCheck %s
 
 module {
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
 }
 
-// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]

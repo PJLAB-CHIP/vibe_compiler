@@ -12,7 +12,7 @@ Pipeline position:
   measurement activation contracts, and reject cells that the current bounded
   probe or production compiler cannot honestly produce.
 - Output artifact / IR:
-  Raw board observations plus a narrow profile-scoped activation decision.
+  Raw board observations plus a narrow qualification-scoped activation decision.
   This catalog never writes latency constants or a shadow schedule into IR.
 - Downstream consumer:
   Future scheduling/cost calibration and the production multi-buffer
@@ -163,7 +163,7 @@ PIPELINE_CONTRACT = PipelineContract(
         "matched measurement selection and fail-closed activation"
     ),
     output_artifact=(
-        "raw board observations plus profile-scoped activation decision"
+        "raw board observations plus qualification-scoped activation decision"
     ),
     downstream_consumer="future scheduling and cost calibration",
     user_level_driver=(
@@ -1693,8 +1693,8 @@ def production_pipeline_preparation_gate(
             manifest = load_closed_json(
                 manifest_path, "production package manifest"
             )
-            if manifest.get("schema_version") != 6:
-                fail("production package schema is not the accepted schema-v6")
+            if manifest.get("schema_version") != 7:
+                fail("production package schema is not the accepted schema-v7")
             manifest_rank_count = exact_int(
                 manifest.get("rank_count"),
                 "production manifest rank_count",
@@ -1703,9 +1703,9 @@ def production_pipeline_preparation_gate(
             manifest_target = manifest.get("target")
             if not isinstance(manifest_target, dict):
                 fail("production manifest target is not an object")
-            manifest_profile = exact_string(
-                manifest_target.get("profile"),
-                "production manifest target profile",
+            manifest_identity = exact_string(
+                manifest_target.get("identity"),
+                "production manifest target identity",
             )
             manifest_digest = digest_bytes(manifest_path.read_bytes())
 
@@ -1812,17 +1812,13 @@ def production_pipeline_preparation_gate(
 
             target = require_fields(
                 attestation["target"],
-                {"profile", "rank_count", "logical_ranks"},
+                {"identity", "rank_count", "logical_ranks"},
                 "qualification target",
             )
-            if target["profile"] != manifest_profile:
-                fail("qualification target profile differs from manifest")
-            if manifest_profile not in {
-                "wafer-tx81-single-card-kernel-v1",
-                "wafer-tx81-single-card-kernel-v2",
-                "wafer-tx81-single-card-kernel-v3",
-            }:
-                fail("qualification target profile is not closed")
+            if target["identity"] != manifest_identity:
+                fail("qualification target identity differs from manifest")
+            if manifest_identity != "wafer-tx81-single-card":
+                fail("qualification target identity is not closed")
             if (
                 exact_int(
                     target["rank_count"],

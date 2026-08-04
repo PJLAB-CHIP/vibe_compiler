@@ -43,7 +43,7 @@ struct TargetCallRankDescriptor {
 };
 
 struct TargetCallInvocationDescriptor {
-  TargetProfileId targetProfile;
+  TargetIdentityId targetIdentity;
   std::vector<TargetCallRankDescriptor> ranks;
 };
 

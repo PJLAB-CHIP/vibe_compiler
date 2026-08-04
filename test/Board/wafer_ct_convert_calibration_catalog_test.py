@@ -31,20 +31,20 @@ def validate_pure_ncc_probe() -> None:
     assert "get_spm_memory_mapping" not in probe
     assert "wafer_ctc_fill_output" not in probe
     assert "wafer_ctc_guard_mismatches" not in probe
-    assert "wafer_tx81_local_fence" not in issue
+    assert "wafer_tx81_ncc_join" not in issue
 
     before = entry.index("WaferCTCPMU before")
-    input_rdma = entry.index("wafer_tx81_rdma(payload_ddr,", before)
+    input_rdma = entry.index("wafer_tx81_rdma_v3(payload_ddr,", before)
     canary_rdma = entry.index(
-        "wafer_tx81_rdma(request_ddr + WAFER_CTC_SLOT_BYTES,"
+        "wafer_tx81_rdma_v3(request_ddr + WAFER_CTC_SLOT_BYTES,"
     )
     execute = entry.index("wafer_ctc_issue(&selected)", before)
-    wdma = entry.index("wafer_tx81_wdma(", execute)
-    terminal_fence = entry.index("wafer_tx81_local_fence();", wdma)
+    wdma = entry.index("wafer_tx81_wdma_v3(", execute)
+    terminal_fence = entry.index("wafer_tx81_ncc_join(1U);", wdma)
     after = entry.index("WaferCTCPMU after", terminal_fence)
     assert before < input_rdma < canary_rdma < execute
     assert execute < wdma < terminal_fence < after
-    assert entry.count("wafer_tx81_local_fence();") == 1
+    assert entry.count("wafer_tx81_ncc_join(1U);") == 1
 
     runner_source = pathlib.Path(runner.__file__).read_text()
     assert "OUTPUT_GUARD_MISMATCHES" not in runner_source

@@ -1,8 +1,8 @@
 # Wafer Target Topology 与 Execution Mesh 设计
 
 状态：2026-07-23按topology-aware communication consumer边界同步。本文只拥有`wafer.target.topology`和
-`wafer.execution.mesh`合同；tasks/14拥有`TargetProfileId`和target-profile registry，本层只要求`ExecutionConfig`无损
-携带，不把它复制进topology/mesh IR。calibration、accepted physical transport binding和多卡deployment均不属于本层；
+`wafer.execution.mesh`合同；tasks/14拥有current target identity，本层不把它复制进topology/mesh IR。
+calibration、accepted physical transport binding和多卡deployment均不属于本层；
 实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -10,13 +10,11 @@
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  verified pre-SPMD StableHLO program directory，以及显式validated single-card ExecutionConfig；rank-count只能是1或16；
-  config还必须携带由tasks/14 registry解析出的typed `TargetProfileId`。
+  verified pre-SPMD StableHLO program directory，以及显式validated single-card ExecutionConfig；rank-count只能是1或16。
 - Current stage responsibility:
   在transaction-owned program snapshot中建立或核对唯一、module-top-level的single-card target topology和
   execution mesh；证明mesh rank domain与ExecutionConfig精确一致；在helper调用前临时从helper input副本移除
-  Wafer topology/mesh，helper返回后补回并重新verify。该stage不解释target profile，只在typed config/request/bundle链中
-  保持其identity不变。
+  Wafer topology/mesh，helper返回后补回并重新verify。该stage不解释或传播target选择。
 - Output artifact / IR:
   `wafer.target.topology @default`和`wafer.execution.mesh @default_mesh`。它们只表达规则物理topology事实与
   logical execution-rank domain，不是sharding plan、per-rank executable或runtime placement。
@@ -26,18 +24,17 @@ Pipeline position:
   topology/mesh fresh派生rank endpoint和minimum-hop facts。
 - User-level driver / named pipeline:
   正式入口为
-  `wafer-compile --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`；两个选项都必须显式给出，
-  均无默认值。
+  `wafer-compile --execution-ranks={1|16} --launch-kind={kernel|model}`；两个执行字段都必须显式给出。
   topology/mesh materialization passes及
   `wafer-opt`只处理显式IR，用于debug/test，不能成为用户可选stage或production rank配置旁路。
 - Explicit non-goals:
   topology/mesh IR不表达target revision/ABI/capability fingerprint、SPM/DDR容量、calibration profile、rank class、DTE
   route、physical transport binding、target module或runtime handle；不从axis名恢复dp/tp/pp语义，也不拥有
-  `TargetProfileId` registry。
+  target identity registry。
 - Completion gate:
   rank-count=1/16均得到exact topology/mesh，已有不匹配、重复或nested事实fail closed；post-SPMD metadata中的
-  logical_rank_count与mesh一致；Q15最终structured tensor program重新parse后仍通过同一exact-config gate。Q0.L另要求registered
-  target profile从CLI/request/config到accepted bundle和target preparation逐层相同，缺失/冲突/default fail closed；
+  logical_rank_count与mesh一致；Q15最终structured tensor program重新parse后仍通过同一exact-config gate；
+  current target identity由compiler在target preparation形成并由artifact readback exact-match；
   通用analysis对mesh/torus、explicit placement和unavailable detour给出一致、可重算的rank mapping与shortest-hop结果。
 ```
 
@@ -53,9 +50,8 @@ Pipeline position:
 两个配置走同一个typed driver和相同验证路径；1-rank不是debug fallback，16-rank也不是默认。其它rank-count可以
 出现在IR-local topology/mesh verifier测试，但不属于当前用户driver支持面。
 
-factory输入为`(rankCount, TargetProfileId)`，其中ID必须由tasks/14注册表把CLI spelling解析成closed typed value，不能把
-任意字符串留到后端。topology/mesh仍只投影rank/topology字段；typed profile保留在request/config及后续bundle中，
-helper前后不得丢失或重建。Q15历史完成仍只覆盖rank/topology；profile carry-through和Q15/Q16/Q17重放证据归Q0.L。
+factory输入只含`rankCount`，不接受target字符串。topology/mesh只投影rank/topology字段；current target identity
+在后续target preparation由compiler固定形成，helper前后无需传播或重建。
 
 Q15要求production module中的facts精确为：
 
@@ -131,7 +127,7 @@ execution mesh及其引用topology派生：
 
 这些结果可失效、可重算且不写入IR。shortest-hop只表示当前typed graph上不可避免的minimum link traversal；
 在IR没有route policy时，不从它伪造实际N/S/E/W route、per-link congestion、cycle或带宽时间。若未来需要任意
-带权/不规则graph或确定route，必须扩展本层typed topology合同并同步verifier，不能靠target profile名、side table
+带权/不规则graph或确定route，必须扩展本层typed topology合同并同步verifier，不能靠target identity名、side table
 或特定卡编号补猜。
 
 communication consumer可在一次rewrite调用内继续从上述距离和current `rank_group`派生有界参数。当前
@@ -173,7 +169,7 @@ logical rank必须严格为`0..N-1`，即使replicated modules字节相同也不
 module转成verified target artifacts；Q18才定义manifest和runtime binding。topology/mesh可以作为这些阶段的已验证
 输入，但当前没有target capability op、accepted physical transport binding、rank class或relocation protocol。
 
-Q0.L的target profile/identity/Kernel Runtime ABI已经是tasks/14 target conversion和Q22 model的真实consumer，但profile只作为
+current target identity/Kernel Runtime ABI已经是tasks/14 target conversion和Q22 model的真实consumer，但identity只作为
 `ExecutionConfig`中的typed ID传递，不进入topology/mesh op。bad-tile deployment或multi-card transport未来成为真实
 consumer时仍需扩展对应owner。不得把历史environment fingerprint、projection set、calibration profile或WCRE identity
 重新写进当前topology/mesh合同。

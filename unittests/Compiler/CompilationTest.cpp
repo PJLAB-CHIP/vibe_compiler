@@ -23,8 +23,7 @@ namespace {
 TEST(CompilationTest, ExecutionConfigAcceptsOnlyCurrentSingleCardDomains) {
   for (int64_t accepted : {int64_t{1}, int64_t{16}}) {
     auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-        accepted, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-        wafer::RuntimeLaunchKind::Kernel);
+        accepted, wafer::RuntimeLaunchKind::Kernel);
     ASSERT_TRUE(static_cast<bool>(config));
     EXPECT_EQ(config->getRankCount(), accepted);
   }
@@ -33,25 +32,22 @@ TEST(CompilationTest, ExecutionConfigAcceptsOnlyCurrentSingleCardDomains) {
                            int64_t{0}, int64_t{2}, int64_t{8}, int64_t{15},
                            int64_t{17}, std::numeric_limits<int64_t>::max()}) {
     auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-        rejected, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-        wafer::RuntimeLaunchKind::Kernel);
+        rejected, wafer::RuntimeLaunchKind::Kernel);
     ASSERT_FALSE(static_cast<bool>(config));
     EXPECT_FALSE(llvm::toString(config.takeError()).empty());
   }
 }
 
-TEST(CompilationTest, ExecutionConfigEqualityCoversRankProfileAndLaunchKind) {
-  wafer::TargetProfileId profile =
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1();
+TEST(CompilationTest, ExecutionConfigEqualityCoversRankAndLaunchKind) {
   auto first = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, profile, wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   auto same = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, profile, wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   auto differentRank = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, profile, wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   auto differentLaunchKind =
       wafer::compiler::ExecutionConfig::createForSingleCard(
-          16, profile, wafer::RuntimeLaunchKind::Model);
+          16, wafer::RuntimeLaunchKind::Model);
   ASSERT_TRUE(static_cast<bool>(first));
   ASSERT_TRUE(static_cast<bool>(same));
   ASSERT_TRUE(static_cast<bool>(differentRank));
@@ -61,18 +57,15 @@ TEST(CompilationTest, ExecutionConfigEqualityCoversRankProfileAndLaunchKind) {
   EXPECT_NE(*differentRank, *differentLaunchKind);
 
   auto invalidModel = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, profile, wafer::RuntimeLaunchKind::Model);
+      1, wafer::RuntimeLaunchKind::Model);
   ASSERT_FALSE(static_cast<bool>(invalidModel));
   EXPECT_NE(llvm::toString(invalidModel.takeError())
                 .find("model runtime launch requires execution-ranks=16"),
             std::string::npos);
 
-  auto unqualifiedModel = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::RuntimeLaunchKind::Model);
-  ASSERT_FALSE(static_cast<bool>(unqualifiedModel));
-  EXPECT_NE(llvm::toString(unqualifiedModel.takeError()).find("not qualified"),
-            std::string::npos);
+  auto completeModel = wafer::compiler::ExecutionConfig::createForSingleCard(
+      16, wafer::RuntimeLaunchKind::Model);
+  ASSERT_TRUE(static_cast<bool>(completeModel));
 }
 
 TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
@@ -118,8 +111,7 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
   static_assert(std::is_move_constructible_v<wafer::compiler::PackageBundle>);
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::string source = "/tmp/source.program";
   auto request =
@@ -128,16 +120,15 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
   source.assign("/tmp/changed-after-request-construction.program");
   EXPECT_EQ(request->getSourceProgramDirectory(), "/tmp/source.program");
   EXPECT_EQ(request->getExecutionConfig().getRankCount(), 1);
-  EXPECT_EQ(request->getExecutionConfig().getTargetProfileId(),
-            wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  EXPECT_EQ(request->getExecutionConfig().getTargetIdentityId(),
+            wafer::TargetIdentityId::waferTx81SingleCard());
   EXPECT_EQ(request->getExecutionConfig().getRuntimeLaunchKind(),
             wafer::RuntimeLaunchKind::Kernel);
 }
 
 TEST(CompilationTest, CompilationRequestRejectsEmptySourceLocator) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   auto request = wafer::compiler::CompilationRequest::create("", *config);
   ASSERT_FALSE(static_cast<bool>(request));
@@ -146,8 +137,7 @@ TEST(CompilationTest, CompilationRequestRejectsEmptySourceLocator) {
 
 TEST(CompilationTest, ProfileOptionsRequireCompleteSingleCardRankDomain) {
   auto rankOne = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(rankOne));
 
   auto rejected = wafer::compiler::CompilationOptions::profile(*rankOne);
@@ -156,8 +146,7 @@ TEST(CompilationTest, ProfileOptionsRequireCompleteSingleCardRankDomain) {
             std::string::npos);
 
   auto fullCard = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(fullCard));
   auto accepted = wafer::compiler::CompilationOptions::profile(*fullCard);
   ASSERT_TRUE(static_cast<bool>(accepted));
@@ -174,8 +163,7 @@ TEST(CompilationTest, ProfileOptionsRequireCompleteSingleCardRankDomain) {
   EXPECT_TRUE(acceptedTimed->shouldReportDetailedTiming());
 
   auto model = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Model);
+      16, wafer::RuntimeLaunchKind::Model);
   ASSERT_TRUE(static_cast<bool>(model));
   auto rejectedModel = wafer::compiler::CompilationOptions::profile(*model);
   ASSERT_FALSE(static_cast<bool>(rejectedModel));

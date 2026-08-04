@@ -65,8 +65,6 @@ mlir::LogicalResult FunctionLowering::lowerInstruction(mlir::Operation *op) {
           [&](auto typedOp) { return lowerTDMADataMove(typedOp); })
       .Case<InstrPeripheralOp>(
           [&](auto typedOp) { return lowerPeripheral(typedOp); })
-      .Case<SyncLocalFenceOp>(
-          [&](auto typedOp) { return lowerLocalFence(typedOp); })
       .Case<SyncNCCJoinOp>(
           [&](auto typedOp) { return lowerNCCJoin(typedOp); })
       .Default([&](mlir::Operation *unknown) {
@@ -80,12 +78,10 @@ namespace {
 struct TargetInstructionOpLowering : public mlir::ConversionPattern {
   TargetInstructionOpLowering(mlir::LLVMTypeConverter &converter,
                               llvm::StringMap<CalleeSignature> &usedCallees,
-                              TargetProfileId targetProfile,
                               const DirectDTEEndpointDomain *dteDomain)
       : mlir::ConversionPattern(converter, mlir::Pattern::MatchAnyOpTypeTag(),
                                 /*benefit=*/10, &converter.getContext()),
-        usedCallees(usedCallees), targetProfile(targetProfile),
-        dteDomain(dteDomain) {}
+        usedCallees(usedCallees), dteDomain(dteDomain) {}
 
   mlir::LogicalResult
   matchAndRewrite(mlir::Operation *op, llvm::ArrayRef<mlir::Value> operands,
@@ -101,7 +97,7 @@ struct TargetInstructionOpLowering : public mlir::ConversionPattern {
         peripheral && peripheral.getKind() == InstrPeripheralKind::Factorize)
       return op->emitError()
              << "unsupported_target_operation: peripheral factorize lacks a "
-                "proven production target semantic profile";
+                "proven production target semantic implementation";
     if (operands.size() != op->getNumOperands())
       return op->emitError()
              << "target_llvm_lowering_failure: converted operand count "
@@ -115,8 +111,7 @@ struct TargetInstructionOpLowering : public mlir::ConversionPattern {
                << "unsupported_target_instr: instruction result type is not "
                   "a target async token";
 
-    FunctionLowering lowering(op->getContext(), rewriter, targetProfile,
-                              usedCallees);
+    FunctionLowering lowering(op->getContext(), rewriter, usedCallees);
     for (auto [source, converted] :
          llvm::zip_equal(op->getOperands(), operands))
       lowering.convertedValues[source] = converted;
@@ -159,7 +154,6 @@ struct TargetInstructionOpLowering : public mlir::ConversionPattern {
   }
 
   llvm::StringMap<CalleeSignature> &usedCallees;
-  TargetProfileId targetProfile;
   const DirectDTEEndpointDomain *dteDomain;
 };
 } // namespace
@@ -167,9 +161,9 @@ struct TargetInstructionOpLowering : public mlir::ConversionPattern {
 void populateTargetInstructionConversionPatterns(
     mlir::LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns,
     llvm::StringMap<CalleeSignature> &usedCallees,
-    TargetProfileId targetProfile, const DirectDTEEndpointDomain *dteDomain) {
+    const DirectDTEEndpointDomain *dteDomain) {
   patterns.add<TargetInstructionOpLowering>(converter, usedCallees,
-                                            targetProfile, dteDomain);
+                                            dteDomain);
 }
 
 } // namespace wafer::target_llvm_detail

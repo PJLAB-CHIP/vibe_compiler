@@ -54,15 +54,15 @@ static void wafer_ddr_sparse_cache_range(uint64_t begin, uint32_t bytes,
 }
 
 static void wafer_ddr_sparse_rdma(uint64_t source, uint64_t destination) {
-  wafer_tx81_rdma(source, destination, WAFER_DDR_SPARSE_SLOT_BYTES,
+  wafer_tx81_rdma_v3(source, destination, WAFER_DDR_SPARSE_SLOT_BYTES,
                   WAFER_DDR_SPARSE_SLOT_BYTES, 0U, 0U, 0U, 1U, 1U, 1U,
-                  Fmt_UINT8);
+                  Fmt_UINT8, 0U);
 }
 
 static void wafer_ddr_sparse_wdma(uint64_t source, uint64_t destination) {
-  wafer_tx81_wdma(source, destination, WAFER_DDR_SPARSE_SLOT_BYTES,
+  wafer_tx81_wdma_v3(source, destination, WAFER_DDR_SPARSE_SLOT_BYTES,
                   WAFER_DDR_SPARSE_SLOT_BYTES, 0U, 0U, 0U, 1U, 1U, 1U,
-                  Fmt_UINT8);
+                  Fmt_UINT8, 0U);
 }
 
 static uint32_t wafer_ddr_sparse_request_status(
@@ -180,16 +180,16 @@ wafer_tx81_ddr_sparse_high_offset_probe(uint64_t input, uint64_t output,
 
       wafer_ddr_sparse_rdma(input + input_offset,
                             WAFER_DDR_SPARSE_SPM_SOURCE);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       wafer_ddr_sparse_wdma(WAFER_DDR_SPARSE_SPM_SOURCE,
                             workspace_address);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       wafer_ddr_sparse_rdma(workspace_address,
                             WAFER_DDR_SPARSE_SPM_READBACK);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       wafer_ddr_sparse_wdma(WAFER_DDR_SPARSE_SPM_READBACK,
                             output + archive_offset);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       wafer_ddr_sparse_write_row(
           rows + index * WAFER_DDR_SPARSE_ROW_WORDS, index, workspace,
           workspace_bytes);

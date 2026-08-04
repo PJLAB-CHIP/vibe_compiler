@@ -76,7 +76,7 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<3x2xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %value = memref.load %dest[%c0, %c0]
         : memref<3x2xf16, #wafer.memory<spm, tensor>>
     return %value : f16
@@ -118,7 +118,7 @@ module {
                  #wafer.memory<spm, tensor>>
        to memref<2x2xf16, strided<[3, 1]>,
                  #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %value = memref.load %dest[%c0, %c0]
         : memref<2x2xf16, strided<[3, 1]>,
                  #wafer.memory<spm, tensor>>
@@ -155,7 +155,7 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<1x128xf16, #wafer.memory<spm, cx>>
        to memref<128xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %value = memref.load %dest[%c0]
         : memref<128xf16, #wafer.memory<spm, tensor>>
     return %value : f16
@@ -202,7 +202,7 @@ module {
         : memref<128xf16, strided<[1], offset: ?>,
                  #wafer.memory<spm, tensor>>
        to memref<128xf16, #wafer.memory<spm, cx>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %value = memref.load %dest[%c0]
         : memref<128xf16, #wafer.memory<spm, cx>>
     return %value : f16
@@ -248,14 +248,14 @@ module {
         : memref<4x64xf16, strided<[64, 1], offset: ?>,
                  #wafer.memory<spm, tensor>>
        to memref<4x64xf16, #wafer.memory<spm, cx>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %reduced = memref.alloc()
         : memref<4xf16, #wafer.memory<spm, cx>>
     wafer.instr.reduce #wafer.instr_reduce_kind<sum> %dest into %reduced
         {dim = 0 : i64}
         : memref<4x64xf16, #wafer.memory<spm, cx>>
       into memref<4xf16, #wafer.memory<spm, cx>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     return
   }
 }
@@ -297,11 +297,11 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<3x2xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.instr.elementwise <neg> %dest into %computed
         : memref<3x2xf16, #wafer.memory<spm, tensor>>
       into memref<3x2xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %value = memref.load %computed[%c0, %c0]
         : memref<3x2xf16, #wafer.memory<spm, tensor>>
     return %value : f16
@@ -339,7 +339,7 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %source_value = memref.load %source[%c0, %c0]
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     %dest_value = memref.load %dest[%c1, %c1]
@@ -379,7 +379,7 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     memref.store %zero, %dest[%c0, %c0]
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     %written_value = memref.load %dest[%c0, %c0]
@@ -418,7 +418,7 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %value = memref.load %dest[%c0, %c0]
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     return %value : f16
@@ -444,7 +444,7 @@ module {
          dst_iterations = array<i64: 3, 2, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %value = memref.load %dest[%c0, %c0]
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     return %value : f16
@@ -472,7 +472,7 @@ module {
         : memref<2x2xf16, #wafer.memory<spm, tensor>>
        to memref<2x2xf16, strided<[1, 2]>,
                  #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %value = memref.load %dest[%c0, %c0]
         : memref<2x2xf16, strided<[1, 2]>,
                  #wafer.memory<spm, tensor>>
@@ -500,7 +500,7 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %value = memref.load %dest[%c0, %c0]
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     memref.dealloc %dest
@@ -539,7 +539,7 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     memref.store %zero, %maybe_alias[%c0, %c0]
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     %value = memref.load %dest[%c0, %c0]
@@ -576,7 +576,7 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     memref.store %zero, %root[%c0, %c0]
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     %value = memref.load %dest[%c0, %c0]
@@ -611,7 +611,7 @@ module {
         : memref<128xf16, strided<[1], offset: ?>,
                  #wafer.memory<spm, tensor>>
        to memref<128xf16, #wafer.memory<spm, cx>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %value = memref.load %dest[%c0]
         : memref<128xf16, #wafer.memory<spm, cx>>
     return %value : f16
@@ -639,7 +639,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     }
     %value = memref.load %dest[%c0, %c0]
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
@@ -669,7 +669,7 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     memref.store %zero, %dest[%c0, %c0]
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     %dest_value = memref.load %dest[%c0, %c1]
@@ -701,7 +701,7 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     memref.store %zero, %source[%c0, %c0]
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     %dest_value = memref.load %dest[%c0, %c0]
@@ -733,7 +733,7 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %token = wafer.instr.dte_send %dest
         {peer = 1 : i64, bytes = 12 : i64,
          message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
@@ -772,7 +772,7 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     memref.store %zero, %dest[%c0, %c0]
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     wafer.instr.dte_wait %token : !async.token
@@ -802,7 +802,7 @@ module {
          dst_iterations = array<i64: 1, 1, 1>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %token = wafer.instr.dte_send %dest
         {peer = 1 : i64, bytes = 12 : i64,
          message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
@@ -848,7 +848,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       %unused = memref.load %dest[%c0, %c0]
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
     }
@@ -888,7 +888,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<1x128xf16, #wafer.memory<spm, tensor>>
          to memref<128xf16, #wafer.memory<spm, cx>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       %unused = memref.load %dest[%c0]
           : memref<128xf16, #wafer.memory<spm, cx>>
     }
@@ -934,7 +934,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       %token = wafer.instr.dte_send %dest
           {peer = 1 : i64, bytes = 12 : i64,
            message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
@@ -977,7 +977,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       %unused = memref.load %dest[%c0, %c0]
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
     }
@@ -1006,7 +1006,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       %unused = memref.load %dest[%c0, %c0]
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
     }
@@ -1037,7 +1037,7 @@ module {
              dst_iterations = array<i64: 1, 1, 1>}
             : memref<2x3xf16, #wafer.memory<spm, tensor>>
            to memref<2x3xf16, #wafer.memory<spm, tensor>>
-        wafer.instr.local_fence
+        wafer.instr.ncc_join [0]
         %unused = memref.load %dest[%c0, %c0]
             : memref<2x3xf16, #wafer.memory<spm, tensor>>
       }
@@ -1069,7 +1069,7 @@ module {
              dst_iterations = array<i64: 1, 1, 1>}
             : memref<2x3xf16, #wafer.memory<spm, tensor>>
            to memref<2x3xf16, #wafer.memory<spm, tensor>>
-        wafer.instr.local_fence
+        wafer.instr.ncc_join [0]
         %unused = memref.load %dest[%c0, %c0]
             : memref<2x3xf16, #wafer.memory<spm, tensor>>
       }
@@ -1101,7 +1101,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       %unused = memref.load %dest[%c0, %c0]
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
     }
@@ -1133,7 +1133,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       %unused = memref.load %iter[%c0, %c0]
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
       scf.yield %iter
@@ -1166,7 +1166,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       memref.store %zero, %dest[%c0, %c0]
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
     }
@@ -1198,7 +1198,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       memref.store %zero, %source[%c0, %c0]
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
       %unused = memref.load %dest[%c0, %c0]
@@ -1233,7 +1233,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       %after = memref.load %dest[%c0, %c0]
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
     }
@@ -1263,7 +1263,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     }
     %value = memref.load %dest[%c0, %c0]
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
@@ -1300,7 +1300,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       %next = wafer.instr.dte_send %dest
           {peer = 1 : i64, bytes = 12 : i64,
            message = #wafer.dte_message<communication = 1, phase = collective_permute, round = 0, slice = 0>}
@@ -1339,7 +1339,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.instr.dte_wait %token : !async.token
       %unused = memref.load %dest[%c0, %c0]
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
@@ -1368,7 +1368,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     }
     return
   }
@@ -1396,7 +1396,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
          to memref<2x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       %unused = memref.load %dest[%c0, %c0]
           : memref<2x3xf16, #wafer.memory<spm, tensor>>
     }

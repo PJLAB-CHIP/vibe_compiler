@@ -28,7 +28,7 @@ from wafer_collective_traffic_behavior_catalog import (
 )
 
 
-TARGET_PROFILE = paired_support.TARGET_PROFILE
+TARGET_IDENTITY = paired_support.TARGET_IDENTITY
 LAUNCH_KIND = paired_support.CLUSTER_LAUNCH_KIND
 STATUS_ABI = paired_support.DIRECT_DTE_STATUS_ABI
 PROCESS_TIMEOUT_MARGIN_SECONDS = paired_support.PROCESS_TIMEOUT_MARGIN_SECONDS
@@ -379,7 +379,6 @@ def compile_package(
             "--output-program-dir",
             str(output),
             f"--execution-ranks={RANK_COUNT}",
-            f"--target-profile={TARGET_PROFILE}",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         environment=environment,
@@ -460,9 +459,9 @@ def validate_package(
     )
     if (
         manifest.get("rank_count") != RANK_COUNT
-        or manifest.get("target", {}).get("profile") != TARGET_PROFILE
+        or manifest.get("target", {}).get("identity") != TARGET_IDENTITY
     ):
-        raise RuntimeError("collective traffic package target contract is invalid")
+        raise RuntimeError("collective traffic package target fields are invalid")
     transport = direct_dte_evidence.validate_direct_dte_manifest(manifest)
 
     resources = manifest.get("resources")
@@ -686,7 +685,7 @@ def main() -> int:
         "graph_kind": case.contract.graph_kind.value,
         "payload_bytes_per_rank": case.contract.payload_bytes,
         "rank_count": RANK_COUNT,
-        "target_profile": TARGET_PROFILE,
+        "target_identity": TARGET_IDENTITY,
         "launch": runtime_launch.CLUSTER_KERNEL_LAUNCH,
         "source_mode": "explicit-post-spmd-traffic-carrier",
         "source_snapshots_sha256": {

@@ -29,9 +29,6 @@ using wafer::tensor_program_scheduling::getYieldedRootLinalgOps;
 using wafer::tensor_program_scheduling::SelectedCandidate;
 using wafer::tensor_program_scheduling::SelectionConfig;
 
-constexpr wafer::TargetProfileId kTargetProfile =
-    wafer::TargetProfileId::waferTx81SingleCardKernelV1();
-
 class CandidateSearchExecutionTest : public ::testing::Test {
 protected:
   CandidateSearchExecutionTest() {
@@ -104,8 +101,7 @@ module {
     }
 
     wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-    SelectionConfig config(
-        policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+    SelectionConfig config(policy);
     config.logicalRank = 0;
     config.preferredTileSizes = {16, 8, 4, 2, 1};
     config.maxCandidatesPerDim = 5;
@@ -196,8 +192,7 @@ protected:
     }
 
     wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-    SelectionConfig config(
-        policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+    SelectionConfig config(policy);
     config.logicalRank = 0;
     config.preferredTileSizes = {8, 4, 2, 1};
     config.maxCandidatesPerDim = 4;
@@ -299,8 +294,7 @@ module {
 )mlir";
 
   wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  SelectionConfig config(policy,
-                         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  SelectionConfig config(policy);
   config.logicalRank = 0;
   CandidateSpec candidate{/*tileSizes=*/{8, 4},
                           /*reductionSplitSizes=*/{}};
@@ -334,8 +328,7 @@ module {
 )mlir";
 
   wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  SelectionConfig config(policy,
-                         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  SelectionConfig config(policy);
   config.logicalRank = 0;
 
   CandidateSpec baseline{/*tileSizes=*/{2},
@@ -583,7 +576,7 @@ module {
       getCheapTargetGeometryFailure(wrapped,
                                     CandidateSpec{/*tileSizes=*/{65536, 1},
                                                   /*reductionSplitSizes=*/{}},
-                                    /*reductionRanges=*/{}, kTargetProfile));
+                                    /*reductionRanges=*/{}));
 }
 
 TEST(CandidateSelectionTest,
@@ -682,17 +675,14 @@ module {
   CandidateSpec fullTraversal{/*tileSizes=*/{458752},
                               /*reductionSplitSizes=*/{}};
   EXPECT_FALSE(getCheapTargetGeometryFailure(task, fullTraversal,
-                                             /*reductionRanges=*/{1},
-                                             kTargetProfile));
+                                             /*reductionRanges=*/{1}));
   EXPECT_TRUE(getCheapTargetGeometryFailure(task, fullTraversal,
-                                            /*reductionRanges=*/{2},
-                                            kTargetProfile));
+                                            /*reductionRanges=*/{2}));
 
   CandidateSpec narrowTraversalWideReduction{/*tileSizes=*/{57344},
                                              /*reductionSplitSizes=*/{65536}};
   EXPECT_TRUE(getCheapTargetGeometryFailure(task, narrowTraversalWideReduction,
-                                            /*reductionRanges=*/{65536},
-                                            kTargetProfile));
+                                            /*reductionRanges=*/{65536}));
 }
 
 TEST_F(InterfaceTraversalCandidateSelectionTest,
@@ -889,8 +879,7 @@ module {
 }
 )mlir";
   wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  SelectionConfig config(policy,
-                         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  SelectionConfig config(policy);
   config.logicalRank = 0;
   CandidateSpec candidate{/*tileSizes=*/{2, 3},
                           /*reductionSplitSizes=*/{}};
@@ -931,8 +920,7 @@ module {
 }
 )mlir";
   wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  SelectionConfig config(policy,
-                         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  SelectionConfig config(policy);
   config.logicalRank = 0;
   CandidateSpec candidate{/*tileSizes=*/{2},
                           /*reductionSplitSizes=*/{4}};
@@ -979,12 +967,11 @@ module {
                           /*reductionSplitSizes=*/{1024}};
   candidate.traversalKind = wafer::CandidateTileTraversalKind::PartialReduction;
   std::optional<std::string> oversized = getCheapTargetGeometryFailure(
-      function, candidate, {1024}, kTargetProfile);
+      function, candidate, {1024});
   EXPECT_FALSE(oversized);
 
   candidate.reductionSplitSizes = {512};
-  EXPECT_FALSE(getCheapTargetGeometryFailure(function, candidate, {1024},
-                                             kTargetProfile));
+  EXPECT_FALSE(getCheapTargetGeometryFailure(function, candidate, {1024}));
 }
 
 TEST(CandidateSelectionTest,
@@ -1023,8 +1010,7 @@ module {
 }
 )mlir";
   wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  SelectionConfig config(policy,
-                         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  SelectionConfig config(policy);
   config.logicalRank = 0;
   CandidateSpec candidate{/*tileSizes=*/{2},
                           /*reductionSplitSizes=*/{4}};

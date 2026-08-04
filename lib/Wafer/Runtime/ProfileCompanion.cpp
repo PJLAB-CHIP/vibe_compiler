@@ -1063,8 +1063,7 @@ parseOptionalEngine(const llvm::json::Object &object, llvm::StringRef context,
 
 llvm::Expected<ProfileTargetCallSite>
 parseSite(const llvm::json::Value &value, uint64_t index,
-          const PackageParseLimits &limits, llvm::StringRef rankContext,
-          TargetProfileId targetProfile) {
+          const PackageParseLimits &limits, llvm::StringRef rankContext) {
   std::string context =
       (rankContext + ".sites[" + llvm::Twine(index) + "]").str();
   llvm::Expected<const llvm::json::Object *> object =
@@ -1129,10 +1128,6 @@ parseSite(const llvm::json::Value &value, uint64_t index,
   if (descriptor.symbol != *symbol)
     return invalid(context +
                    " target-call registry ordinal/symbol do not agree");
-  if (!isTargetCallAvailableForProfile(descriptor, targetProfile))
-    return invalid(context +
-                   " target-call descriptor is unavailable for the package "
-                   "target profile");
   const ProfileTargetSiteKind descriptorKind =
       getProfileTargetSiteKind(descriptor);
   if (descriptorKind != *siteKind)
@@ -1175,8 +1170,7 @@ parseSite(const llvm::json::Value &value, uint64_t index,
 llvm::Expected<ProfileRankSiteMap>
 parseRankSiteMap(const llvm::json::Value &value, uint64_t index,
                  const PackageParseLimits &limits, uint64_t &totalRecords,
-                 llvm::StringRef variantContext,
-                 TargetProfileId targetProfile) {
+                 llvm::StringRef variantContext) {
   std::string context =
       (variantContext + ".ranks[" + llvm::Twine(index) + "]").str();
   llvm::Expected<const llvm::json::Object *> object =
@@ -1205,7 +1199,7 @@ parseRankSiteMap(const llvm::json::Value &value, uint64_t index,
   result.sites.reserve((*sites)->size());
   for (auto [siteIndex, siteValue] : llvm::enumerate(**sites)) {
     llvm::Expected<ProfileTargetCallSite> site =
-        parseSite(siteValue, siteIndex, limits, context, targetProfile);
+        parseSite(siteValue, siteIndex, limits, context);
     if (!site)
       return site.takeError();
     result.sites.push_back(std::move(*site));
@@ -1224,7 +1218,7 @@ parseRankSiteMap(const llvm::json::Value &value, uint64_t index,
 
 llvm::Expected<std::vector<ProfileVariantSiteMap>>
 parseSiteMaps(const llvm::json::Object &root, const PackageParseLimits &limits,
-              uint64_t &totalRecords, TargetProfileId targetProfile) {
+              uint64_t &totalRecords) {
   if (llvm::Error error = requireFields(
           root,
           {"schema", "schema_version", "site_basis", "correlation_basis",
@@ -1290,7 +1284,7 @@ parseSiteMaps(const llvm::json::Object &root, const PackageParseLimits &limits,
     variant.ranks.reserve((*ranks)->size());
     for (auto [rankIndex, rankValue] : llvm::enumerate(**ranks)) {
       llvm::Expected<ProfileRankSiteMap> rank = parseRankSiteMap(
-          rankValue, rankIndex, limits, totalRecords, context, targetProfile);
+          rankValue, rankIndex, limits, totalRecords, context);
       if (!rank)
         return rank.takeError();
       variant.ranks.push_back(std::move(*rank));
@@ -1524,8 +1518,7 @@ bool isProfilerRecordResource(const PackageResourceRecord &resource,
 llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
                                          const PackageManifest &capture,
                                          uint64_t recordBytes) {
-  if (execution.targetProfile != capture.targetProfile ||
-      execution.targetIdentity != capture.targetIdentity ||
+  if (execution.targetIdentity != capture.targetIdentity ||
       execution.runtimeABI != capture.runtimeABI ||
       execution.launch != capture.launch ||
       execution.moduleFormat != capture.moduleFormat)
@@ -1701,7 +1694,6 @@ getProfileTargetSiteKind(const TargetCallDescriptor &descriptor) {
     llvm_unreachable(
         "non-builtin target call without an NCC issue-domain engine");
   switch (*builtin) {
-  case TargetCallBuiltin::LocalFence:
   case TargetCallBuiltin::NCCJoin:
     return ProfileTargetSiteKind::NCCCompletion;
   case TargetCallBuiltin::DirectDTEBegin:
@@ -1717,7 +1709,7 @@ getProfileTargetSiteKind(const TargetCallDescriptor &descriptor) {
   case TargetCallBuiltin::Bit2FP:
   case TargetCallBuiltin::MaskMove:
   case TargetCallBuiltin::Gemm:
-  case TargetCallBuiltin::GemmOrientedV2:
+  case TargetCallBuiltin::GemmOriented:
   case TargetCallBuiltin::TDMAPad:
   case TargetCallBuiltin::TDMAImg2Col:
   case TargetCallBuiltin::DirectDTESendIssue:
@@ -1928,10 +1920,8 @@ loadVerifiedProfileCompanion(llvm::StringRef companionRoot,
       packages.front().getRole() != ProfileVariantRole::FinalArtifact)
     return invalid("profile companion final artifact is incomplete");
 
-  const TargetProfileId targetProfile =
-      packages.front().getPackage().getManifest().targetProfile;
   llvm::Expected<std::vector<ProfileVariantSiteMap>> siteMaps = parseSiteMaps(
-      *siteMapJSON->root.getAsObject(), limits, totalRecords, targetProfile);
+      *siteMapJSON->root.getAsObject(), limits, totalRecords);
   if (!siteMaps)
     return siteMaps.takeError();
   if (llvm::Error error = verifyVariantGraph(*rawVariants, *plan, *siteMaps))

@@ -792,8 +792,7 @@ deriveWorkerPlacedResidentTuple(const ResidentTuple &unplaced,
     return std::nullopt;
 
   llvm::Expected<TargetSchedulingCapabilityRegistry> registry =
-      getTargetSchedulingCapabilityRegistry(
-          executionConfig.getTargetProfileId());
+      getTargetSchedulingCapabilityRegistry();
   if (!registry) {
     llvm::consumeError(registry.takeError());
     return std::nullopt;
@@ -824,9 +823,7 @@ deriveWorkerPlacedResidentTuple(const ResidentTuple &unplaced,
         : hasDirectDTE ? TargetSchedulingMechanism::DirectDTEOverlap
                        : TargetSchedulingMechanism::WorkerPlacement;
     llvm::Expected<TargetSchedulingWindowQuery> query =
-        analyzeTargetSchedulingWindow(*candidate->module,
-                                      executionConfig.getTargetProfileId(),
-                                      mechanism);
+        analyzeTargetSchedulingWindow(*candidate->module, mechanism);
     if (!query) {
       llvm::consumeError(query.takeError());
       return std::nullopt;
@@ -1019,8 +1016,7 @@ appendFixedSlotNeighbors(ResidentTuple &source,
                          size_t &workerPlacedTupleCount,
                          llvm::SmallVectorImpl<ResidentTuple> &neighbors) {
   llvm::Expected<TargetSchedulingCapabilityRegistry> registry =
-      getTargetSchedulingCapabilityRegistry(
-          executionConfig.getTargetProfileId());
+      getTargetSchedulingCapabilityRegistry();
   if (!registry) {
     llvm::consumeError(registry.takeError());
     return;
@@ -1075,8 +1071,7 @@ appendFixedSlotNeighbors(ResidentTuple &source,
 
       llvm::Expected<TargetSchedulingWindowQuery> query =
           analyzeTargetSchedulingWindow(
-              *derived->module, executionConfig.getTargetProfileId(),
-              TargetSchedulingMechanism::StaticFixedSlot);
+              *derived->module, TargetSchedulingMechanism::StaticFixedSlot);
       if (!query) {
         llvm::consumeError(query.takeError());
         valid = false;

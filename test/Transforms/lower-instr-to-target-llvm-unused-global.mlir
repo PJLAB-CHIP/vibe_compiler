@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %s | FileCheck %s
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %s | FileCheck %s
 
 memref.global "private" constant @folded_splat
     : memref<4xf16, #wafer.memory<ddr, tensor>> = dense<1.0>

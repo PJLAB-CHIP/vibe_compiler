@@ -34,8 +34,6 @@ constexpr llvm::StringLiteral kTargetLLVMTriple = "riscv64-unknown-unknown-elf";
 constexpr llvm::StringLiteral kTargetLLVMSchemaMetadata = "wafer.target.schema";
 constexpr llvm::StringLiteral kTargetLLVMRankMetadata = "wafer.target.rank";
 constexpr llvm::StringLiteral kTargetLLVMEntryMetadata = "wafer.target.entry";
-constexpr llvm::StringLiteral kTargetLLVMProfileMetadata =
-    "wafer.target.profile";
 constexpr llvm::StringLiteral kTargetLLVMIdentityMetadata =
     "wafer.target.identity";
 constexpr llvm::StringLiteral kTargetLLVMABIMetadata = "wafer.target.abi";
@@ -43,7 +41,7 @@ constexpr llvm::StringLiteral kTargetLLVMFormatMetadata =
     "wafer.target.module_format";
 constexpr llvm::StringLiteral kTargetLLVMSlotsMetadata =
     "wafer.target.abi_slots";
-constexpr llvm::StringLiteral kTargetLLVMSchema = "wafer-target-llvm-module-v2";
+constexpr llvm::StringLiteral kTargetLLVMSchema = "wafer-target-llvm-module-v3";
 
 llvm::StringRef stringifyKernelABISlotRole(KernelABISlotRole role) {
   switch (role) {
@@ -89,8 +87,6 @@ void attachTargetLLVMMetadata(llvm::Module &module,
   addStringMetadata(module, kTargetLLVMSchemaMetadata, kTargetLLVMSchema);
   addSignedMetadata(module, kTargetLLVMRankMetadata, prepared.logicalRank);
   addStringMetadata(module, kTargetLLVMEntryMetadata, entrySymbol);
-  addStringMetadata(module, kTargetLLVMProfileMetadata,
-                    stringifyTargetProfileId(prepared.targetProfile));
   addStringMetadata(module, kTargetLLVMIdentityMetadata,
                     stringifyTargetIdentityId(prepared.targetIdentity));
   addStringMetadata(module, kTargetLLVMABIMetadata,
@@ -269,7 +265,6 @@ verifyTargetLLVMSlotMetadata(const llvm::Module &module,
 llvm::Error
 verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
                        llvm::StringRef expectedEntrySymbol,
-                       TargetProfileId expectedProfile,
                        TargetIdentityId expectedTargetIdentity,
                        KernelRuntimeABIId expectedKernelRuntimeABI,
                        llvm::StringRef expectedModuleFormat,
@@ -303,10 +298,6 @@ verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
       readSingleStringMetadata(module, kTargetLLVMEntryMetadata);
   if (!entrySymbol)
     return entrySymbol.takeError();
-  llvm::Expected<llvm::StringRef> profileSpelling =
-      readSingleStringMetadata(module, kTargetLLVMProfileMetadata);
-  if (!profileSpelling)
-    return profileSpelling.takeError();
   llvm::Expected<llvm::StringRef> identitySpelling =
       readSingleStringMetadata(module, kTargetLLVMIdentityMetadata);
   if (!identitySpelling)
@@ -319,10 +310,6 @@ verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
       readSingleStringMetadata(module, kTargetLLVMFormatMetadata);
   if (!moduleFormat)
     return moduleFormat.takeError();
-  llvm::Expected<TargetProfileId> profile =
-      parseTargetProfileId(*profileSpelling);
-  if (!profile)
-    return profile.takeError();
   llvm::Expected<TargetIdentityId> identity =
       parseTargetIdentityId(*identitySpelling);
   if (!identity)
@@ -332,7 +319,7 @@ verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
   if (!abi)
     return abi.takeError();
   if (*schema != kTargetLLVMSchema || *logicalRank != expectedLogicalRank ||
-      *entrySymbol != expectedEntrySymbol || *profile != expectedProfile ||
+      *entrySymbol != expectedEntrySymbol ||
       *identity != expectedTargetIdentity || *abi != expectedKernelRuntimeABI ||
       *moduleFormat != expectedModuleFormat)
     return llvm::createStringError(
@@ -358,7 +345,7 @@ verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
 }
 
 mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared) {
-  TargetConversionRequest request{prepared.targetProfile};
+  TargetConversionRequest request{};
   request.defaultDDRArenaArgumentIndex = prepared.defaultDDRArenaArgumentIndex;
   request.logicalRank = prepared.logicalRank;
   request.transportStatusArgumentIndex = prepared.transportStatusArgumentIndex;
@@ -403,19 +390,19 @@ translatePreparedTargetRank(PreparedTargetRank prepared,
       llvm::formatv("wafer.target.rank.{0:D5}", prepared.logicalRank).str());
   llvmModule->setTargetTriple(kTargetLLVMTriple);
   if (llvm::Error error = instrumentProfileTargetModule(
-          *llvmModule, entrySymbol, prepared.targetProfile,
-          prepared.profileCapture))
+          *llvmModule, entrySymbol, prepared.profileCapture))
     return std::move(error);
   attachTargetLLVMMetadata(*llvmModule, prepared, entrySymbol);
   if (llvm::Error error = verifyTargetLLVMModule(
           *llvmModule, prepared.logicalRank, entrySymbol,
-          prepared.targetProfile, prepared.targetIdentity,
-          prepared.kernelRuntimeABI, prepared.moduleFormat, prepared.slots))
+          prepared.targetIdentity, prepared.kernelRuntimeABI,
+          prepared.moduleFormat, prepared.slots))
     return std::move(error);
   return TargetLLVMModuleBundleBuilder::makeModule(
-      prepared.logicalRank, entrySymbol, prepared.targetProfile,
-      prepared.targetIdentity, prepared.kernelRuntimeABI, prepared.moduleFormat,
-      std::move(prepared.slots), std::move(llvmContext), std::move(llvmModule));
+      prepared.logicalRank, entrySymbol, prepared.targetIdentity,
+      prepared.kernelRuntimeABI, prepared.moduleFormat,
+      std::move(prepared.slots), std::move(llvmContext),
+      std::move(llvmModule));
 }
 
 } // namespace wafer::compiler::detail

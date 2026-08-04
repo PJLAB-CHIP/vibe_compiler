@@ -142,8 +142,7 @@ module {
   program.distributedInputs = {replicatedBoundary(0), replicatedBoundary(1)};
   program.distributedOutputs = {replicatedBoundary(0)};
   llvm::Expected<ExecutionConfig> config = ExecutionConfig::createForSingleCard(
-      1, TargetProfileId::waferTx81SingleCardKernelV3(),
-      RuntimeLaunchKind::Kernel);
+      1, RuntimeLaunchKind::Kernel);
   if (!config)
     return config.takeError();
 
@@ -226,8 +225,8 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   ASSERT_TRUE(static_cast<bool>(executable))
       << diagnosticText << llvm::toString(executable.takeError());
   ASSERT_EQ(executable->getRankExecutables().size(), 1u);
-  EXPECT_EQ(executable->getExecutionConfig().getTargetProfileId(),
-            TargetProfileId::waferTx81SingleCardKernelV3());
+  EXPECT_EQ(executable->getExecutionConfig().getTargetIdentityId(),
+            TargetIdentityId::waferTx81SingleCard());
 
   mlir::ModuleOp selected =
       executable->getRankExecutables().front().getModule();
@@ -249,14 +248,12 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   });
   llvm::SmallVector<mlir::scf::ForOp, 2> loops;
   llvm::SmallVector<SyncNCCJoinOp, 2> joins;
-  unsigned localFenceCount = 0;
   unsigned nestedSPMAllocationCount = 0;
   unsigned externalSPMAllocationCount = 0;
   bool missingSPMOffset = false;
   std::set<int64_t> spmOffsets;
   selected.walk([&](mlir::scf::ForOp loop) { loops.push_back(loop); });
   selected.walk([&](SyncNCCJoinOp join) { joins.push_back(join); });
-  selected.walk([&](SyncLocalFenceOp) { ++localFenceCount; });
   selected.walk([&](mlir::memref::AllocOp allocation) {
     if (!isWaferSPMMemRefType(allocation.getType()))
       return;
@@ -289,7 +286,6 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   EXPECT_EQ(steadyAddCount, 1u);
   EXPECT_EQ(steadyWDMACount, 1u);
   EXPECT_EQ(steadyJoinCount, 0u);
-  EXPECT_EQ(localFenceCount, 0u);
   ASSERT_EQ(joins.size(), 1u);
   EXPECT_FALSE(joins.front()->getParentOfType<mlir::scf::ForOp>());
   ASSERT_EQ(joins.front().getParticipants().size(), 2u);
@@ -307,34 +303,25 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
       << diagnosticText << llvm::toString(targetBundle.takeError());
   ASSERT_EQ(targetBundle->getModules().size(), 1u);
   const TargetLLVMModule &targetModule = targetBundle->getModules().front();
-  EXPECT_EQ(targetModule.getTargetProfileId(),
-            executable->getExecutionConfig().getTargetProfileId());
+  EXPECT_EQ(targetModule.getTargetIdentityId(),
+            executable->getExecutionConfig().getTargetIdentityId());
 
   const llvm::Module &llvmModule = targetModule.getModule();
   const size_t targetAddCallCount = countCallsTo(
-      llvmModule, getTargetCallDescriptor(InstrElementwiseKind::Add,
-                                          targetModule.getTargetProfileId())
+      llvmModule, getTargetCallDescriptor(InstrElementwiseKind::Add)
                       .symbol);
   EXPECT_EQ(targetAddCallCount, 3u);
-  EXPECT_EQ(countCallsTo(llvmModule, getTargetCallDescriptor(
-                                         TargetCallBuiltin::RDMA,
-                                         targetModule.getTargetProfileId())
-                                         .symbol),
+  EXPECT_EQ(countCallsTo(llvmModule,
+                         getTargetCallDescriptor(TargetCallBuiltin::RDMA)
+                             .symbol),
             targetAddCallCount * 2);
-  EXPECT_EQ(countCallsTo(llvmModule, getTargetCallDescriptor(
-                                         TargetCallBuiltin::WDMA,
-                                         targetModule.getTargetProfileId())
-                                         .symbol),
+  EXPECT_EQ(countCallsTo(llvmModule,
+                         getTargetCallDescriptor(TargetCallBuiltin::WDMA)
+                             .symbol),
             targetAddCallCount);
-  EXPECT_EQ(countCallsTo(llvmModule, getTargetCallDescriptor(
-                                         TargetCallBuiltin::LocalFence,
-                                         targetModule.getTargetProfileId())
-                                         .symbol),
-            0u);
-  EXPECT_EQ(countCallsTo(llvmModule, getTargetCallDescriptor(
-                                         TargetCallBuiltin::NCCJoin,
-                                         targetModule.getTargetProfileId())
-                                         .symbol),
+  EXPECT_EQ(countCallsTo(llvmModule,
+                         getTargetCallDescriptor(TargetCallBuiltin::NCCJoin)
+                             .symbol),
             1u);
 
   TargetCallRankArguments rankArguments{0, {}};
@@ -376,8 +363,8 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   EXPECT_TRUE(recording.committed);
   EXPECT_TRUE(recording.aborted.empty());
   ASSERT_TRUE(recording.invocation.has_value());
-  EXPECT_EQ(recording.invocation->targetProfile,
-            TargetProfileId::waferTx81SingleCardKernelV3());
+  EXPECT_EQ(recording.invocation->targetIdentity,
+            TargetIdentityId::waferTx81SingleCard());
   EXPECT_EQ(recording.terminalRanks, std::vector<int64_t>({0}));
   EXPECT_EQ(decoded->issuedTransactionCount, recording.transactions.size());
 

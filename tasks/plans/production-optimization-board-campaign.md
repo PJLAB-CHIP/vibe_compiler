@@ -66,7 +66,7 @@ Pipeline position:
 
 每个可执行case必须同时具备：
 
-- baseline与winner来自同一source snapshot、target profile、完整runtime launch contract和payload；
+- baseline与winner来自同一source snapshot、current target identity、完整runtime launch contract和payload；
 - 两份package均独立通过完整late gate，manifest boundary、resource role/type/bytes和expected
   binding相同；
 - final ELF结构签名证明目标优化真的造成目标call数量、种类或顺序差异；

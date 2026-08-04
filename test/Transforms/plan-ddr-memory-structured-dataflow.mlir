@@ -74,7 +74,7 @@ func.func @pre_loop_issue_completed_after_loop(
      to memref<128xf16, #wafer.memory<spm, tensor>>
   scf.for %i = %lb to %ub step %step {
   }
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
@@ -82,7 +82,7 @@ func.func @pre_loop_issue_completed_after_loop(
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<0>
 // CHECK: wafer.instr.rdma
 // CHECK: scf.for
-// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 
 func.func @unrelated_loop_carried_async_token(
     %token: !async.token, %lb: index, %ub: index, %step: index) {
@@ -117,7 +117,7 @@ func.func @if_result_preserves_managed_descriptor_ownership(%cond: i1) {
        src_strides = array<i64: 0, 0, 0>}
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
@@ -147,7 +147,7 @@ func.func @for_result_preserves_managed_descriptor_ownership(
        src_strides = array<i64: 0, 0, 0>}
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 

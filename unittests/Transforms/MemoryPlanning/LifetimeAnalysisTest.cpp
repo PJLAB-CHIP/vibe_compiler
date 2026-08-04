@@ -761,7 +761,7 @@ module {
       }));
 }
 
-TEST_F(LifetimeAnalysisTest, DDRLocalFenceExtendsManagedRootLifetime) {
+TEST_F(LifetimeAnalysisTest, DDRNCCJoinExtendsManagedRootLifetime) {
   auto module = parse(R"mlir(
 module {
   func.func @main() {
@@ -774,7 +774,7 @@ module {
          dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
         : memref<128xf16, #wafer.memory<spm, tensor>>
        to memref<128xf16, #wafer.memory<ddr, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     return
   }
 }
@@ -782,12 +782,12 @@ module {
   ASSERT_TRUE(module);
   mlir::func::FuncOp function = getOnlyFunction(*module);
   mlir::memref::AllocOp ddrAllocation;
-  wafer::SyncLocalFenceOp fence;
+  wafer::SyncNCCJoinOp fence;
   function.walk([&](mlir::memref::AllocOp op) {
     if (wafer::isWaferDDRMemRefType(op.getType()))
       ddrAllocation = op;
   });
-  function.walk([&](wafer::SyncLocalFenceOp op) { fence = op; });
+  function.walk([&](wafer::SyncNCCJoinOp op) { fence = op; });
   ASSERT_TRUE(ddrAllocation);
   ASSERT_TRUE(fence);
 
@@ -1626,7 +1626,7 @@ module {
            to memref<128xf16, #wafer.memory<ddr, tensor>>
       }
     }
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     return
   }
 }
@@ -1998,7 +1998,7 @@ module {
         : memref<128xf16, #wafer.memory<spm, tensor>>
        to memref<128xf16, #wafer.memory<ddr, tensor>>
     scf.for %index = %c0 to %c0 step %c1 {
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     }
     return
   }

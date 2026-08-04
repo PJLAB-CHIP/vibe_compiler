@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66048' %s | wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' | FileCheck --implicit-check-not=wafer.tile.region %s
+// RUN: wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66048' %s | wafer-opt --wafer-lower-instr-to-target-llvm | FileCheck --implicit-check-not=wafer.tile.region %s
 
 module {
   func.func @tensor_layout_spm_handoff(
@@ -12,7 +12,7 @@ module {
           : memref<1x2x4xf16, #wafer.memory<spm, tensor>>
       wafer.instr.fill %produced, %zero
           : memref<1x2x4xf16, #wafer.memory<spm, tensor>>, f16
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %produced
           : memref<1x2x4xf16, #wafer.memory<spm, tensor>>
     }
@@ -41,7 +41,7 @@ module {
           : memref<2x4xf16, strided<[4, 1], offset: ?>,
                    #wafer.memory<spm, tensor>>
          to memref<2x4xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %ddr
           : memref<1xf16, #wafer.memory<ddr, tensor>>
     }
@@ -51,9 +51,9 @@ module {
 
 // CHECK-LABEL: llvm.func @tensor_layout_spm_handoff
 // CHECK: %[[SOURCE:.+]] = llvm.mlir.constant(65536 : i64) : i64
-// CHECK: llvm.call @wafer_tx81_memset(%[[SOURCE]],
+// CHECK: llvm.call @wafer_tx81_memset_v3(%[[SOURCE]],
 // CHECK: %[[DESTINATION:.+]] = llvm.mlir.constant(65792 : i64) : i64
-// CHECK: llvm.call @wafer_tx81_gather_scatter
+// CHECK: llvm.call @wafer_tx81_gather_scatter_v3
 // CHECK-SAME: (%[[SOURCE]], %[[DESTINATION]],
-// CHECK: llvm.call @wafer_tx81_local_fence
+// CHECK: llvm.call @wafer_tx81_ncc_join
 // CHECK: llvm.return

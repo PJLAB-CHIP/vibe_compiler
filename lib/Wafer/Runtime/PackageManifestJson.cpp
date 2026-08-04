@@ -596,17 +596,13 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
     return std::move(error);
   if (llvm::Error error = requireExactFields(
           **target,
-          {"profile", "identity", "runtime_abi", "launch", "module_format"},
+          {"identity", "runtime_abi", "launch", "module_format"},
           "manifest.target"))
     return std::move(error);
   llvm::Expected<uint64_t> programId =
       requireUnsigned(**program, "id", "manifest.program");
   if (!programId)
     return programId.takeError();
-  llvm::Expected<std::string> targetProfile =
-      requireString(**target, "profile", "manifest.target", limits);
-  if (!targetProfile)
-    return targetProfile.takeError();
   llvm::Expected<std::string> targetIdentity =
       requireString(**target, "identity", "manifest.target", limits);
   if (!targetIdentity)
@@ -624,10 +620,6 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
   if (!moduleFormat)
     return moduleFormat.takeError();
 
-  llvm::Expected<TargetProfileId> parsedTargetProfile =
-      parseTargetProfileId(*targetProfile);
-  if (!parsedTargetProfile)
-    return parsedTargetProfile.takeError();
   llvm::Expected<TargetIdentityId> parsedTargetIdentity =
       parseTargetIdentityId(*targetIdentity);
   if (!parsedTargetIdentity)
@@ -640,9 +632,8 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
       parseRuntimeLaunchContract(**launch, "manifest.target.launch", limits);
   if (!parsedLaunch)
     return parsedLaunch.takeError();
-  PackageManifest manifest(*parsedTargetProfile, *parsedTargetIdentity,
-                           *parsedRuntimeABI, std::move(*parsedLaunch),
-                           *moduleFormat);
+  PackageManifest manifest(*parsedTargetIdentity, *parsedRuntimeABI,
+                           std::move(*parsedLaunch), *moduleFormat);
 
   manifest.schemaVersion = static_cast<uint32_t>(*schemaVersion);
   manifest.program = ProgramId(*programId);

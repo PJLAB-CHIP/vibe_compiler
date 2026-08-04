@@ -115,8 +115,7 @@ std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
 }
 
 llvm::Expected<wafer::compiler::TargetLLVMModuleBundle>
-buildElementwiseTargetBundle(std::string &diagnosticText,
-                             wafer::TargetProfileId targetProfile) {
+buildElementwiseTargetBundle(std::string &diagnosticText) {
   auto context = createCompilerContext();
 
   auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
@@ -151,7 +150,7 @@ module {
   program.distributedInputs = {boundary(0), boundary(1)};
   program.distributedOutputs = {boundary(0)};
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, targetProfile, wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
@@ -163,12 +162,6 @@ module {
   tensorProgram = nullptr;
   return wafer::compiler::compileExecutableBundleToTargetLLVMModules(
       *executable, diagnostics);
-}
-
-llvm::Expected<wafer::compiler::TargetLLVMModuleBundle>
-buildElementwiseTargetBundle(std::string &diagnosticText) {
-  return buildElementwiseTargetBundle(
-      diagnosticText, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
 }
 
 llvm::Expected<wafer::compiler::TargetLLVMModuleBundle>
@@ -202,8 +195,7 @@ module {
   program.distributedInputs = {partitionedBoundary(0)};
   program.distributedOutputs = {partitionedBoundary(0)};
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
@@ -283,22 +275,9 @@ public:
 
 uint64_t supportedF32Code(wafer::TargetFormatEngine engine) {
   const wafer::TargetFormatEncodingRecord *record =
-      wafer::findTargetFormatEncoding(
-          wafer::TargetProfileId::waferTx81SingleCardKernelV1(), engine,
-          wafer::LogicalFormat::F32);
-  assert(record && record->isSupported() && record->dataFormatCode);
-  return *record->dataFormatCode;
-}
-
-wafer::TargetProfileId
-profileForDescriptor(const wafer::TargetCallDescriptor &descriptor) {
-  if (wafer::isTargetCallAvailableForProfile(
-          descriptor, wafer::TargetProfileId::waferTx81SingleCardKernelV1()))
-    return wafer::TargetProfileId::waferTx81SingleCardKernelV1();
-  if (wafer::isTargetCallAvailableForProfile(
-          descriptor, wafer::TargetProfileId::waferTx81SingleCardKernelV2()))
-    return wafer::TargetProfileId::waferTx81SingleCardKernelV2();
-  return wafer::TargetProfileId::waferTx81SingleCardKernelV3();
+      wafer::findTargetFormatEncoding(engine, wafer::LogicalFormat::F32);
+  assert(record);
+  return record->dataFormatCode;
 }
 
 std::vector<uint64_t>
@@ -334,7 +313,7 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
     case wafer::TargetCallBuiltin::Gemm:
       arguments[7] = supportedF32Code(wafer::TargetFormatEngine::NE);
       break;
-    case wafer::TargetCallBuiltin::GemmOrientedV2:
+    case wafer::TargetCallBuiltin::GemmOriented:
       arguments[7] = supportedF32Code(wafer::TargetFormatEngine::NE);
       arguments[8] = 1;
       arguments[9] = 0;
@@ -353,7 +332,6 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
       arguments[6] = 1;
       break;
     case wafer::TargetCallBuiltin::GatherScatter:
-    case wafer::TargetCallBuiltin::LocalFence:
     case wafer::TargetCallBuiltin::NCCJoin:
     case wafer::TargetCallBuiltin::DirectDTESendIssue:
     case wafer::TargetCallBuiltin::DirectDTERecvPrepare:
@@ -526,7 +504,7 @@ void expectPayloadFields(
       return;
     }
     case wafer::TargetCallBuiltin::Gemm:
-    case wafer::TargetCallBuiltin::GemmOrientedV2: {
+    case wafer::TargetCallBuiltin::GemmOriented: {
       ASSERT_TRUE(
           std::holds_alternative<wafer::compiler::TargetGemmTransaction>(
               payload));
@@ -541,7 +519,7 @@ void expectPayloadFields(
       EXPECT_EQ(value.batchCount, u32(6));
       expectFormat(value.format);
       EXPECT_EQ(value.lhsOrientation,
-                *builtin == wafer::TargetCallBuiltin::GemmOrientedV2
+                *builtin == wafer::TargetCallBuiltin::GemmOriented
                     ? wafer::GemmOrientation::Transpose
                     : wafer::GemmOrientation::Normal);
       EXPECT_EQ(value.rhsOrientation, wafer::GemmOrientation::Normal);
@@ -573,16 +551,13 @@ void expectPayloadFields(
       expectFormat(value.format);
       return;
     }
-    case wafer::TargetCallBuiltin::LocalFence:
     case wafer::TargetCallBuiltin::NCCJoin: {
       ASSERT_TRUE(
           std::holds_alternative<wafer::compiler::TargetNCCJoinTransaction>(
               payload));
       const auto &join =
           std::get<wafer::compiler::TargetNCCJoinTransaction>(payload);
-      EXPECT_EQ(join.participantMask,
-                *builtin == wafer::TargetCallBuiltin::LocalFence ? uint32_t{1}
-                                                                 : u32(0));
+      EXPECT_EQ(join.participantMask, u32(0));
       return;
     }
     case wafer::TargetCallBuiltin::DirectDTEBegin:
@@ -869,11 +844,10 @@ void expectPayloadFields(
 TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   llvm::ArrayRef<wafer::TargetCallDescriptor> descriptors =
       wafer::getTargetCallDescriptors();
-  ASSERT_EQ(descriptors.size(), 217u);
+  ASSERT_EQ(descriptors.size(), 112u);
   llvm::DenseSet<llvm::StringRef> symbols;
   size_t issueDomainCount = 0;
   size_t nccIssueDomainCount = 0;
-  size_t fixedNCCIssueDomainCount = 0;
   size_t argumentNCCIssueDomainCount = 0;
   size_t synchronousWritebackCount = 0;
   size_t directDTEIssueDomainCount = 0;
@@ -881,8 +855,7 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
     EXPECT_TRUE(llvm::StringRef(descriptor.symbol).starts_with("wafer_tx81_"));
     EXPECT_TRUE(symbols.insert(descriptor.symbol).second);
     EXPECT_EQ(wafer::findTargetCallDescriptor(descriptor.symbol), &descriptor);
-    const wafer::TargetProfileId profile = profileForDescriptor(descriptor);
-    EXPECT_EQ(wafer::findTargetCallDescriptor(descriptor.semantic, profile),
+    EXPECT_EQ(wafer::findTargetCallDescriptor(descriptor.semantic),
               &descriptor);
     if (!descriptor.issueDomain) {
       EXPECT_FALSE(wafer::getTargetCallTSMEngine(descriptor));
@@ -894,25 +867,17 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
     if (descriptor.issueDomain->engine ==
         wafer::TargetCallTSMEngine::DirectDTE) {
       ++directDTEIssueDomainCount;
-      EXPECT_FALSE(descriptor.issueDomain->fixedNCCWorker);
       EXPECT_FALSE(descriptor.issueDomain->nccWorkerArgument);
       EXPECT_EQ(descriptor.issueDomain->completionBehavior,
                 wafer::LocalInstructionCompletion::None);
     } else {
       ++nccIssueDomainCount;
-      EXPECT_NE(descriptor.issueDomain->fixedNCCWorker.has_value(),
-                descriptor.issueDomain->nccWorkerArgument.has_value());
-      if (descriptor.issueDomain->fixedNCCWorker) {
-        ++fixedNCCIssueDomainCount;
-        EXPECT_EQ(*descriptor.issueDomain->fixedNCCWorker,
-                  wafer::NCCWorker::Worker0);
-      } else {
-        ++argumentNCCIssueDomainCount;
-        EXPECT_EQ(*descriptor.issueDomain->nccWorkerArgument + 1,
-                  descriptor.arguments.size());
-        EXPECT_EQ(descriptor.arguments.back(),
-                  wafer::TargetCallScalarType::I32);
-      }
+      ASSERT_TRUE(descriptor.issueDomain->nccWorkerArgument);
+      ++argumentNCCIssueDomainCount;
+      EXPECT_EQ(*descriptor.issueDomain->nccWorkerArgument + 1,
+                descriptor.arguments.size());
+      EXPECT_EQ(descriptor.arguments.back(),
+                wafer::TargetCallScalarType::I32);
       const auto *peripheral =
           std::get_if<wafer::InstrPeripheralKind>(&descriptor.semantic);
       const bool synchronous =
@@ -925,120 +890,65 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
       synchronousWritebackCount += synchronous;
     }
   }
-  EXPECT_EQ(issueDomainCount, 210u);
-  EXPECT_EQ(nccIssueDomainCount, 208u);
-  EXPECT_EQ(fixedNCCIssueDomainCount, 104u);
+  EXPECT_EQ(issueDomainCount, 106u);
+  EXPECT_EQ(nccIssueDomainCount, 104u);
   EXPECT_EQ(argumentNCCIssueDomainCount, 104u);
-  EXPECT_EQ(synchronousWritebackCount, 4u);
+  EXPECT_EQ(synchronousWritebackCount, 2u);
   EXPECT_EQ(directDTEIssueDomainCount, 2u);
   EXPECT_EQ(wafer::findTargetCallDescriptor("wafer_tx81_unknown"), nullptr);
 
   const auto &join = wafer::getTargetCallDescriptor(
-      wafer::TargetCallBuiltin::NCCJoin,
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      wafer::TargetCallBuiltin::NCCJoin);
   EXPECT_EQ(join.result, wafer::TargetCallResultType::Void);
   ASSERT_EQ(join.arguments.size(), 1u);
   EXPECT_EQ(join.arguments.front(), wafer::TargetCallScalarType::I32);
   EXPECT_FALSE(join.issueDomain);
   const auto &send = wafer::getTargetCallDescriptor(
-      wafer::TargetCallBuiltin::DirectDTESendPrepare,
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      wafer::TargetCallBuiltin::DirectDTESendPrepare);
   EXPECT_EQ(send.result, wafer::TargetCallResultType::I64);
   EXPECT_EQ(send.arguments.size(), 7u);
   EXPECT_EQ(send.arguments[0], wafer::TargetCallScalarType::I64);
   EXPECT_EQ(send.arguments[2], wafer::TargetCallScalarType::I32);
-  const auto v1 = wafer::TargetProfileId::waferTx81SingleCardKernelV1();
-  const auto v3 = wafer::TargetProfileId::waferTx81SingleCardKernelV3();
-  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrElementwiseKind::Abs, v1)
-                .arguments.size(),
-            4u);
-  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrElementwiseKind::Add, v1)
+  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrElementwiseKind::Abs)
                 .arguments.size(),
             5u);
-  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrConvKind::Conv, v1)
+  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrElementwiseKind::Add)
                 .arguments.size(),
-            31u);
+            6u);
+  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrConvKind::Conv)
+                .arguments.size(),
+            32u);
   EXPECT_EQ(
-      wafer::getTargetCallDescriptor(wafer::InstrPeripheralKind::Bilinear, v1)
+      wafer::getTargetCallDescriptor(wafer::InstrPeripheralKind::Bilinear)
           .arguments.size(),
-      17u);
-  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrElementwiseKind::Add, v3)
+      18u);
+  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrElementwiseKind::Add)
                 .symbol,
             "wafer_tx81_elementwise_add_v3");
   EXPECT_EQ(wafer::getTargetCallDescriptor(
-                wafer::TargetCallBuiltin::GemmOrientedV2, v3)
+                wafer::TargetCallBuiltin::GemmOriented)
                 .symbol,
             "wafer_tx81_gemm_oriented_v3");
 }
 
-TEST(TargetCallRegistryTest, FreezesLegacyAndSeparatesV3Availability) {
-  const auto v1 = wafer::TargetProfileId::waferTx81SingleCardKernelV1();
-  const auto v2 = wafer::TargetProfileId::waferTx81SingleCardKernelV2();
-  const auto v3 = wafer::TargetProfileId::waferTx81SingleCardKernelV3();
-
-  const auto &legacyRDMA =
-      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA, v1);
-  EXPECT_EQ(legacyRDMA.symbol, "wafer_tx81_rdma");
-  EXPECT_EQ(legacyRDMA.arguments.size(), 11u);
-  EXPECT_EQ(legacyRDMA.issueDomain->fixedNCCWorker, wafer::NCCWorker::Worker0);
-  EXPECT_FALSE(legacyRDMA.issueDomain->nccWorkerArgument);
-  EXPECT_EQ(wafer::findTargetCallDescriptor(legacyRDMA.symbol, v2),
-            &legacyRDMA);
-  EXPECT_EQ(wafer::findTargetCallDescriptor(legacyRDMA.symbol, v3), nullptr);
-
-  const auto &workerRDMA =
-      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA, v3);
-  EXPECT_EQ(workerRDMA.symbol, "wafer_tx81_rdma_v3");
-  EXPECT_EQ(workerRDMA.arguments.size(), 12u);
-  EXPECT_FALSE(workerRDMA.issueDomain->fixedNCCWorker);
-  ASSERT_TRUE(workerRDMA.issueDomain->nccWorkerArgument);
-  EXPECT_EQ(*workerRDMA.issueDomain->nccWorkerArgument, 11u);
-  EXPECT_EQ(wafer::findTargetCallDescriptor(workerRDMA.symbol, v1), nullptr);
-  EXPECT_EQ(wafer::findTargetCallDescriptor(workerRDMA.symbol, v2), nullptr);
-
-  EXPECT_EQ(
-      wafer::findTargetCallDescriptor(
-          wafer::TargetCallSemantic(wafer::TargetCallBuiltin::GemmOrientedV2),
-          v1),
-      nullptr);
+TEST(TargetCallRegistryTest, ContainsOnlyCurrentWorkerAwareABI) {
+  const auto &rdma =
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA);
+  EXPECT_EQ(rdma.symbol, "wafer_tx81_rdma_v3");
+  EXPECT_EQ(rdma.arguments.size(), 12u);
+  ASSERT_TRUE(rdma.issueDomain);
+  ASSERT_TRUE(rdma.issueDomain->nccWorkerArgument);
+  EXPECT_EQ(*rdma.issueDomain->nccWorkerArgument, 11u);
+  EXPECT_EQ(wafer::findTargetCallDescriptor(rdma.symbol), &rdma);
+  EXPECT_EQ(wafer::findTargetCallDescriptor("wafer_tx81_rdma"), nullptr);
   EXPECT_EQ(wafer::getTargetCallDescriptor(
-                wafer::TargetCallBuiltin::GemmOrientedV2, v2)
-                .symbol,
-            "wafer_tx81_gemm_oriented_v2");
-  EXPECT_EQ(wafer::getTargetCallDescriptor(
-                wafer::TargetCallBuiltin::GemmOrientedV2, v3)
+                wafer::TargetCallBuiltin::GemmOriented)
                 .symbol,
             "wafer_tx81_gemm_oriented_v3");
-
-  EXPECT_EQ(wafer::findTargetCallDescriptor(
-                wafer::TargetCallSemantic(
-                    wafer::TargetCallBuiltin::DirectDTESendIssue),
-                v1),
-            nullptr);
-  EXPECT_EQ(wafer::findTargetCallDescriptor(
-                wafer::TargetCallSemantic(
-                    wafer::TargetCallBuiltin::DirectDTESendIssue),
-                v2),
-            nullptr);
   EXPECT_EQ(wafer::getTargetCallDescriptor(
-                wafer::TargetCallBuiltin::DirectDTESendIssue, v3)
+                wafer::TargetCallBuiltin::DirectDTESendIssue)
                 .symbol,
             "wafer_tx81_direct_dte_send_issue_v3");
-
-  const auto &sharedFence =
-      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::LocalFence, v1);
-  EXPECT_EQ(wafer::findTargetCallDescriptor(sharedFence.symbol, v2),
-            &sharedFence);
-  EXPECT_EQ(wafer::findTargetCallDescriptor(sharedFence.symbol, v3),
-            &sharedFence);
-
-  std::vector<uint64_t> arguments = makeDecodableArguments(workerRDMA);
-  auto wrongProfile =
-      wafer::decodeTargetCallPayload(workerRDMA, {v1, 1}, arguments);
-  ASSERT_FALSE(static_cast<bool>(wrongProfile));
-  EXPECT_NE(llvm::toString(wrongProfile.takeError())
-                .find("not available for the invocation profile"),
-            std::string::npos);
 }
 
 TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
@@ -1046,8 +956,7 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
   for (const wafer::TargetCallDescriptor &descriptor :
        wafer::getTargetCallDescriptors()) {
     std::vector<uint64_t> arguments = makeDecodableArguments(descriptor);
-    wafer::TargetCallDecodeContext context{profileForDescriptor(descriptor),
-                                           16};
+    wafer::TargetCallDecodeContext context{16};
     auto payload =
         wafer::decodeTargetCallPayload(descriptor, context, arguments);
     ASSERT_TRUE(static_cast<bool>(payload))
@@ -1055,14 +964,13 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
     expectPayloadFields(descriptor, arguments, *payload);
     ++decoded;
   }
-  EXPECT_EQ(decoded, 217u);
+  EXPECT_EQ(decoded, 112u);
 }
 
 TEST(TargetCallRegistryTest, DecodesExplicitWorkerOneAndTwo) {
   const wafer::TargetCallDescriptor &descriptor =
       wafer::getTargetCallDescriptor(
-          wafer::InstrElementwiseKind::Add,
-          wafer::TargetProfileId::waferTx81SingleCardKernelV3());
+          wafer::InstrElementwiseKind::Add);
   ASSERT_TRUE(descriptor.issueDomain.has_value());
   ASSERT_TRUE(descriptor.issueDomain->nccWorkerArgument.has_value());
   for (wafer::NCCWorker expected :
@@ -1077,8 +985,7 @@ TEST(TargetCallRegistryTest, DecodesExplicitWorkerOneAndTwo) {
     ASSERT_TRUE(worker->has_value());
     EXPECT_EQ(**worker, expected);
     auto payload = wafer::decodeTargetCallPayload(
-        descriptor, {wafer::TargetProfileId::waferTx81SingleCardKernelV3(), 1},
-        arguments);
+        descriptor, {1}, arguments);
     ASSERT_TRUE(static_cast<bool>(payload))
         << llvm::toString(payload.takeError());
   }
@@ -1087,8 +994,7 @@ TEST(TargetCallRegistryTest, DecodesExplicitWorkerOneAndTwo) {
 TEST(TargetCallRegistryTest, RejectsOutOfRangeExplicitWorker) {
   const wafer::TargetCallDescriptor &descriptor =
       wafer::getTargetCallDescriptor(
-          wafer::TargetCallBuiltin::RDMA,
-          wafer::TargetProfileId::waferTx81SingleCardKernelV3());
+          wafer::TargetCallBuiltin::RDMA);
   std::vector<uint64_t> arguments = makeDecodableArguments(descriptor);
   arguments[*descriptor.issueDomain->nccWorkerArgument] =
       wafer::kNCCWorkerCount;
@@ -1102,10 +1008,8 @@ TEST(TargetCallRegistryTest, RejectsOutOfRangeExplicitWorker) {
 TEST(TargetCallRegistryTest, NCCJoinDecoderRejectsInvalidParticipantMasks) {
   const wafer::TargetCallDescriptor &descriptor =
       wafer::getTargetCallDescriptor(
-          wafer::TargetCallBuiltin::NCCJoin,
-          wafer::TargetProfileId::waferTx81SingleCardKernelV1());
-  wafer::TargetCallDecodeContext context{
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1(), 1};
+          wafer::TargetCallBuiltin::NCCJoin);
+  wafer::TargetCallDecodeContext context{1};
   auto empty = wafer::decodeTargetCallPayload(descriptor, context, {0});
   ASSERT_FALSE(static_cast<bool>(empty));
   EXPECT_NE(llvm::toString(empty.takeError()).find("participant mask"),
@@ -1192,8 +1096,7 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
 
 TEST(TargetCallFrontendTest, CarriesExplicitWorkerOneAndTwoIntoTransactions) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(
-      diagnostics, wafer::TargetProfileId::waferTx81SingleCardKernelV3());
+  auto bundle = buildElementwiseTargetBundle(diagnostics);
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
   llvm::Module &module =
@@ -1263,7 +1166,7 @@ TEST(TargetCallFrontendTest,
                                           wafer::InstrPeripheralKind::ArgMin}) {
     const wafer::TargetCallDescriptor &descriptor =
         wafer::getTargetCallDescriptor(
-            kind, bundle->getModules().front().getTargetProfileId());
+            kind);
     llvm::SmallVector<llvm::Type *, 10> argumentTypes;
     llvm::SmallVector<llvm::Value *, 10> callArguments;
     std::vector<uint64_t> values = makeDecodableArguments(descriptor);
@@ -1667,7 +1570,8 @@ TEST(TargetCallFrontendTest, WrongTargetCallSignatureFailsBeforeSinkBegin) {
       << diagnostics << llvm::toString(bundle.takeError());
   llvm::Module &module =
       const_cast<llvm::Module &>(bundle->getModules().front().getModule());
-  llvm::Function *original = module.getFunction("wafer_tx81_elementwise_add");
+  llvm::Function *original =
+      module.getFunction("wafer_tx81_elementwise_add_v3");
   ASSERT_NE(original, nullptr);
   llvm::SmallVector<llvm::Instruction *, 2> calls;
   for (llvm::User *user : original->users())
@@ -1680,7 +1584,7 @@ TEST(TargetCallFrontendTest, WrongTargetCallSignatureFailsBeforeSinkBegin) {
       {llvm::Type::getInt64Ty(module.getContext())}, /*isVarArg=*/false);
   llvm::Function *wrong =
       llvm::Function::Create(wrongType, llvm::GlobalValue::ExternalLinkage,
-                             "wafer_tx81_elementwise_add", module);
+                             "wafer_tx81_elementwise_add_v3", module);
   (void)wrong;
 
   std::vector<wafer::compiler::TargetCallRankArguments> arguments = {

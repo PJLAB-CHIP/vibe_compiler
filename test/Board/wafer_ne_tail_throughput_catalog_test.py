@@ -136,8 +136,8 @@ def validate_protocol_and_real_execution_chain() -> None:
     assert "GR_PMU_NE_BLOCKING_TIME" in probe
     assert "GR_PMU_NE_EXE_TIME" in probe
     assert "TsmExecute(&instruction)" in probe
-    assert "wafer_tx81_wdma(" in probe
-    assert "wafer_tx81_local_fence();" in probe
+    assert "wafer_tx81_wdma_v3(" in probe
+    assert "wafer_tx81_ncc_join(1U);" in probe
     assert "compile_seed_package" in board_driver
     assert "build_probe" in board_driver
     assert "verify_no_card" in board_driver
@@ -243,7 +243,7 @@ def validate_exact_terminal_completion_gate() -> None:
     with tempfile.TemporaryDirectory() as directory:
         package = pathlib.Path(directory)
         manifest = {
-            "schema_version": 6,
+            "schema_version": 7,
             "rank_count": 1,
             "entries": [
                 {"id": 0, "rank": 0, "terminal_completion": 31}

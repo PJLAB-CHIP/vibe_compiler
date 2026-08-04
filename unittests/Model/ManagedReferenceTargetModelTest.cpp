@@ -21,8 +21,6 @@ namespace {
 using namespace wafer;
 using namespace wafer::model;
 
-constexpr TargetProfileId kTargetProfile =
-    TargetProfileId::waferTx81SingleCardKernelV1();
 constexpr ModelProfileId kModelProfile =
     ModelProfileId::formalDeterministicV1();
 
@@ -75,7 +73,7 @@ TEST(ManagedReferenceTargetModelTest,
   NumericTensorKey key = makeTensor(LogicalFormat::F16, MemLayout::Tensor, {6});
   ResolvedNumericCommand command =
       resolve(llvm::cantFail(NumericCommandKey::createCTElementwise(
-          kTargetProfile, NumericElementwiseOperation::Add, {key, key}, key)));
+          NumericElementwiseOperation::Add, {key, key}, key)));
   const std::vector<RawLogicalValue> lhs{
       {LogicalFormat::F16, UINT64_C(0x0000)},
       {LogicalFormat::F16, UINT64_C(0x8000)},
@@ -132,7 +130,7 @@ TEST(ManagedReferenceTargetModelTest,
       {LogicalFormat::F32, UINT64_C(0xc77ff000)}};
   ResolvedNumericCommand convert =
       resolve(llvm::cantFail(NumericCommandKey::createCTConvert(
-          kTargetProfile, /*fp32_fp16=*/166, f32, f16,
+          /*fp32_fp16=*/166, f32, f16,
           NumericConvertParameter::roundingMode(
               NumericRoundingMode::NearestEven))));
   TargetModelNumericRequest convertRequest{
@@ -164,7 +162,7 @@ TEST(ManagedReferenceTargetModelTest,
       {LogicalFormat::F32, UINT64_C(0x40800000)}};
   ResolvedNumericCommand reduce =
       resolve(llvm::cantFail(NumericCommandKey::createNativeCTReduce(
-          kTargetProfile, NumericReduceOperation::Sum, reduceInput,
+          NumericReduceOperation::Sum, reduceInput,
           reduceOutput, NativeCTReduceDimension::Trailing0)));
   TargetModelNumericRequest reduceRequest{
       reduce,
@@ -192,7 +190,7 @@ TEST(ManagedReferenceTargetModelTest,
   NumericTensorKey key = makeTensor(LogicalFormat::F32, MemLayout::Tensor, {1});
   ResolvedNumericCommand command =
       resolve(llvm::cantFail(NumericCommandKey::createCTElementwise(
-          kTargetProfile, NumericElementwiseOperation::Exp, {key}, key)));
+          NumericElementwiseOperation::Exp, {key}, key)));
   TargetModelNumericRequest request{
       command,
       {makeStorage(key, {{LogicalFormat::F32, UINT64_C(0xff800000)}})},

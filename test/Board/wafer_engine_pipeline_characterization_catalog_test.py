@@ -527,10 +527,10 @@ class ProductionGateTest(unittest.TestCase):
         cls._write_json(
             manifest_path,
             {
-                "schema_version": 6,
+                "schema_version": 7,
                 "rank_count": 1,
                 "target": {
-                    "profile": "wafer-tx81-single-card-kernel-v1"
+                    "identity": "wafer-tx81-single-card"
                 },
             },
         )
@@ -552,7 +552,7 @@ class ProductionGateTest(unittest.TestCase):
                     "final-accepted-instr-module-text-v1"
                 ),
                 "target": {
-                    "profile": "wafer-tx81-single-card-kernel-v1",
+                    "identity": "wafer-tx81-single-card",
                     "rank_count": 1,
                     "logical_ranks": [0],
                 },
@@ -710,12 +710,10 @@ class ProductionGateTest(unittest.TestCase):
             (package / "manifest.json").write_text(
                 json.dumps(
                     {
-                        "schema_version": 6,
+                        "schema_version": 7,
                         "rank_count": 1,
                         "target": {
-                            "profile": (
-                                "wafer-tx81-single-card-kernel-v1"
-                            )
+                            "identity": "wafer-tx81-single-card"
                         },
                     }
                 )
@@ -916,7 +914,7 @@ class DriverEvidenceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             package = pathlib.Path(temporary)
             manifest = {
-                "schema_version": 6,
+                "schema_version": 7,
                 "rank_count": 1,
                 "entries": [
                     {
@@ -982,11 +980,11 @@ class DriverEvidenceTest(unittest.TestCase):
         self.assertEqual(
             qualification,
             {
-                "target_profile": ncc_driver.TARGET_PROFILE,
+                "target_identity": ncc_driver.TARGET_IDENTITY,
                 "launch": {
                     "kind": "kernel",
                     "form": "per-rank",
-                    "entry_abi": "rank-local-pointer-block-v1",
+                    "entry_abi": "rank-local-pointer-block",
                     "phases": ["main"],
                 },
                 "device_id": 0,

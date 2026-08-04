@@ -7,13 +7,13 @@
 
 # Detailed timing is opt-in. The ordinary production transaction remains free
 # of detailed events and tables.
-# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.default --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --optimization-preset=none 2>&1 | tee %t.default.log
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.default --execution-ranks=1 --launch-kind=kernel --optimization-preset=none 2>&1 | tee %t.default.log
 # RUN: not grep -q 'compile-timing-' %t.default.log
 
 # One source-to-package invocation exposes orchestration, every configured
 # optimization axis, MLIR passes/analyses, conversions/patterns, and internal
 # algorithm phases. Numeric timings are deliberately not golden values.
-# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.timed --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --optimization-preset=production --compile-timing 2>&1 | tee %t.timed.log | FileCheck %s --check-prefix=TIMING
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.timed --execution-ranks=1 --launch-kind=kernel --optimization-preset=production --compile-timing 2>&1 | tee %t.timed.log | FileCheck %s --check-prefix=TIMING
 # RUN: test -s %t.timed/modules/module_00000.so
 
 # TIMING: wafer-compile: compile-timing-summary-begin

@@ -373,7 +373,7 @@ static void wafer_wp_cache_range(uint64_t begin, uint32_t bytes,
   mode = (mode >> 30) & 3U;
   for (uintptr_t address = (uintptr_t)begin;
        address < (uintptr_t)begin + bytes;
-       address += WAFER_TX81_DIRECT_DTE_STATUS_V2_CACHE_LINE_BYTES) {
+       address += WAFER_TX81_DIRECT_DTE_STATUS_CACHE_LINE_BYTES) {
     if (mode == WAFER_WP_MACHINE_MODE) {
       if (invalidate)
         __asm__ volatile("dcache.ipa %0" : : "r"(address) : "memory");
@@ -881,7 +881,7 @@ static void wafer_wp_archive_outputs(WaferWPContext *context,
               WAFER_WP_GUARD_BYTES + cursor,
           wafer_wp_archive(context, ordinal) + cursor, chunk, chunk, 0, 0,
           0, 1, 1, 1, Fmt_UINT8, 0U);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       cursor += chunk;
     }
     record[WAFER_WP_REC_OUTPUT_BYTES_BASE + ordinal] =

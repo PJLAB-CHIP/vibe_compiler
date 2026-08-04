@@ -85,7 +85,7 @@ def _kernel_launch() -> dict[str, Any]:
     return {
         "kind": "kernel",
         "form": "grid",
-        "entry_abi": "rank-major-pointer-table-v1",
+        "entry_abi": "rank-major-pointer-table",
         "phases": ["main"],
     }
 
@@ -463,11 +463,11 @@ def _sites() -> list[dict[str, Any]]:
 def make_evidence() -> dict[str, Any]:
     """Build one complete, final-artifact-only profile evidence object."""
 
-    target_profile = "wafer-tx81-single-card-kernel-v1"
+    target_identity = "wafer-tx81-single-card"
     experiment = {
         "artifact": {
             "digest": FINAL_DIGEST,
-            "target_profile": target_profile,
+            "target_identity": target_identity,
             "launch": _kernel_launch(),
             "execution_ranks": 16,
         },
@@ -495,13 +495,13 @@ def make_evidence() -> dict[str, Any]:
         "run_id": "fixture-final-artifact",
         "identity": {
             "production_manifest_sha256": FINAL_DIGEST,
-            "profile_companion_schema_version": 6,
+            "profile_companion_schema_version": 7,
             "record_abi": RECORD_ABI,
-            "target_profile": target_profile,
+            "target_identity": target_identity,
             "launch": _kernel_launch(),
             "execution_ranks": 16,
             "site_correlation_basis": (
-                "typed-target-call-ordinal-ssa-identity-occurrence-v1"
+                "typed-target-call-ordinal-ssa-identity-occurrence-v2"
             ),
         },
         "topology": [

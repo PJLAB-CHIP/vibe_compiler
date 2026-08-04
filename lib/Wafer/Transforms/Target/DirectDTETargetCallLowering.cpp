@@ -209,13 +209,11 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
   mlir::Value event =
       emitI64Call(op.getLoc(),
                   getTargetCallDescriptor(
-                      TargetCallBuiltin::DirectDTESendPrepare, targetProfile),
+                      TargetCallBuiltin::DirectDTESendPrepare),
                   args);
-  if (targetProfile == TargetProfileId::waferTx81SingleCardKernelV3())
-    emitCall(op.getLoc(),
-             getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue,
-                                     targetProfile),
-             mlir::ValueRange(event));
+  emitCall(op.getLoc(),
+           getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue),
+           mlir::ValueRange(event));
   return event;
 }
 
@@ -258,8 +256,7 @@ FunctionLowering::lowerDTERecv(InstrDTERecvOp op,
   appendI32(op.getLoc(), args, binding.getReceiverFsmId());
   return emitI64Call(
       op.getLoc(),
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTERecvPrepare,
-                              targetProfile),
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTERecvPrepare),
       args);
 }
 
@@ -272,8 +269,7 @@ FunctionLowering::lowerDTEWait(InstrDTEWaitOp op,
               "does not match its token count";
   for (mlir::Value event : events)
     emitCall(op.getLoc(),
-             getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait,
-                                     targetProfile),
+             getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait),
              mlir::ValueRange(event));
   return mlir::success();
 }
@@ -299,7 +295,7 @@ static void registerTargetCallee(mlir::MLIRContext *context,
 mlir::LogicalResult injectDirectDTEStatusLifecycle(
     mlir::ModuleOp moduleOp, llvm::StringRef entrySymbol,
     int64_t statusArgumentIndex, int64_t rankCount,
-    TargetCallBuiltin beginBuiltin, TargetProfileId targetProfile,
+    TargetCallBuiltin beginBuiltin,
     llvm::StringMap<CalleeSignature> &usedCallees) {
   auto entry = moduleOp.lookupSymbol<mlir::LLVM::LLVMFuncOp>(entrySymbol);
   if (!entry || entry.isDeclaration() || entry.getBody().empty() ||
@@ -318,9 +314,9 @@ mlir::LogicalResult injectDirectDTEStatusLifecycle(
   mlir::OpBuilder builder(moduleOp.getContext());
   mlir::Type i32Type = mlir::IntegerType::get(moduleOp.getContext(), 32);
   const TargetCallDescriptor &begin =
-      getTargetCallDescriptor(beginBuiltin, targetProfile);
+      getTargetCallDescriptor(beginBuiltin);
   const TargetCallDescriptor &finish = getTargetCallDescriptor(
-      TargetCallBuiltin::DirectDTEFinish, targetProfile);
+      TargetCallBuiltin::DirectDTEFinish);
   registerTargetCallee(moduleOp.getContext(), usedCallees, begin);
   registerTargetCallee(moduleOp.getContext(), usedCallees, finish);
 

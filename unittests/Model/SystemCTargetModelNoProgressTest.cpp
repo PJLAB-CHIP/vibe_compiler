@@ -25,8 +25,7 @@ using namespace wafer::model;
 
 llvm::CallInst *findSendPrepareCall(llvm::Module &module) {
   const llvm::StringRef symbol =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare,
-                              TargetProfileId::waferTx81SingleCardKernelV1())
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare)
           .symbol;
   for (llvm::Function &function : module)
     for (llvm::BasicBlock &block : function)

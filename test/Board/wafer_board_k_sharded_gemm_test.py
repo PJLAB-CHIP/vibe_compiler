@@ -36,7 +36,7 @@ OUTPUT_SHAPE = [M, N]
 LHS_BYTES = M * LOCAL_K * F16_BYTES
 RHS_BYTES = LOCAL_K * N * F16_BYTES
 OUTPUT_BYTES = M * N * F16_BYTES
-TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
+TARGET_IDENTITY = "wafer-tx81-single-card"
 LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 STATUS_ABI = "wafer-direct-dte-status-v2"
 STATUS_STORAGE_BYTES = 64
@@ -274,9 +274,9 @@ def validate_manifest(
     )
     if (
         manifest.get("rank_count") != RANK_COUNT
-        or manifest.get("target", {}).get("profile") != TARGET_PROFILE
+        or manifest.get("target", {}).get("identity") != TARGET_IDENTITY
     ):
-        raise RuntimeError("full-4096 GEMM package target contract is invalid")
+        raise RuntimeError("full-4096 GEMM package target fields are invalid")
     modules = manifest.get("modules")
     if (
         not isinstance(modules, list)
@@ -456,7 +456,7 @@ def write_payloads(
 
 def verify_no_card_evidence(stdout: str) -> None:
     required = {
-        "package: id=0 schema=6 ranks=16",
+        "package: id=0 schema=7 ranks=16",
         "invocation_ranks: 16",
         "board_execution: false",
     }
@@ -538,7 +538,6 @@ def main() -> int:
             "--output-program-dir",
             str(package),
             f"--execution-ranks={RANK_COUNT}",
-            f"--target-profile={TARGET_PROFILE}",
             f"--launch-kind={LAUNCH_KIND}",
         ]
     )

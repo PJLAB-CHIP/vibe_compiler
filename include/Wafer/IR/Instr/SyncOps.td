@@ -3,13 +3,6 @@
 #ifndef WAFER_IR_OPS_SYNCOPS_TD
 #define WAFER_IR_OPS_SYNCOPS_TD
 
-def Wafer_SyncLocalFenceOp : Wafer_Op<"instr.local_fence", [
-    MemoryEffects<[MemWrite<Wafer_SyncResource>]>
-  ]> {
-  let summary = "legacy default-worker NCC completion fence";
-  let assemblyFormat = "attr-dict";
-}
-
 def Wafer_SyncNCCJoinOp : Wafer_Op<"instr.ncc_join", [
     MemoryEffects<[MemWrite<Wafer_SyncResource>]>
   ]> {

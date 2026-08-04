@@ -6,7 +6,7 @@ module {
        tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
 
   func.func @unlowered_instr() {
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     return
   }
 }

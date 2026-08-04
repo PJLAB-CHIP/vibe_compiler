@@ -103,6 +103,7 @@ FRONTEND_PROGRAM_SOURCES = (
     "ProgramSupport.cpp",
 )
 WAFER_COMPILE_SOURCES = (
+    "CompilerIRDump.cpp",
     "DriverOptions.cpp",
     "TargetModelGate.cpp",
     "wafer-compile.cpp",

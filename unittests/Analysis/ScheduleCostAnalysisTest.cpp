@@ -47,14 +47,8 @@ protected:
   }
 
   InstructionProgramCost analyze(mlir::ModuleOp module) {
-    return analyzeForProfile(
-        module, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
-  }
-
-  InstructionProgramCost analyzeForProfile(mlir::ModuleOp module,
-                                           wafer::TargetProfileId profile) {
     return wafer::analysis::analyzeInstructionProgramCost(
-        module, wafer::analysis::getTargetScheduleCostPolicy(profile));
+        module, wafer::analysis::getTargetScheduleCostPolicy());
   }
 
   mlir::OwningOpRef<mlir::ModuleOp> makeDTERankModule(
@@ -88,8 +82,7 @@ protected:
 };
 
 TEST_F(ScheduleCostAnalysisTest, ExposesOnlyEstablishedTargetRates) {
-  auto policy = wafer::analysis::getTargetScheduleCostPolicy(
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  auto policy = wafer::analysis::getTargetScheduleCostPolicy();
   EXPECT_EQ(policy.cardDDRBytesPerSecond, 200'000'000'000ULL);
   EXPECT_EQ(policy.cardDDRNominalBytesPerSecond, 150'000'000'000ULL);
   EXPECT_EQ(policy.directionalNoCBytesPerSecond, 128'000'000'000ULL);
@@ -143,7 +136,7 @@ module {
              dst_iterations = array<i64: 1, 1, 1>}
             : memref<4xf16, #wafer.memory<spm, tensor>>
            to memref<4xf16, #wafer.memory<ddr, tensor>>
-        wafer.instr.local_fence
+        wafer.instr.ncc_join [0]
       }
     }
     return
@@ -481,7 +474,7 @@ module {
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       DirectDTEComputeWitnessRequiresV3IssueBeforeMatchingWait) {
+       DirectDTEComputeWitnessRequiresIssueBeforeMatchingWait) {
   auto module = parse(R"mlir(
 module {
   func.func @main() {
@@ -531,16 +524,11 @@ module {
 )mlir");
   ASSERT_TRUE(module);
 
-  InstructionProgramCost v3 = analyzeForProfile(
-      *module, wafer::TargetProfileId::waferTx81SingleCardKernelV3());
-  ASSERT_TRUE(v3.directDTEComputeOverlapWindowCount.isKnown());
-  EXPECT_EQ(v3.directDTEComputeOverlapWindowCount.value, 1u);
-  ASSERT_TRUE(v3.qualifiedOverlapWindowCount.isKnown());
-  EXPECT_EQ(v3.qualifiedOverlapWindowCount.value, 1u);
-
-  InstructionProgramCost v1 = analyze(*module);
-  ASSERT_TRUE(v1.directDTEComputeOverlapWindowCount.isKnown());
-  EXPECT_EQ(v1.directDTEComputeOverlapWindowCount.value, 0u);
+  InstructionProgramCost cost = analyze(*module);
+  ASSERT_TRUE(cost.directDTEComputeOverlapWindowCount.isKnown());
+  EXPECT_EQ(cost.directDTEComputeOverlapWindowCount.value, 1u);
+  ASSERT_TRUE(cost.qualifiedOverlapWindowCount.isKnown());
+  EXPECT_EQ(cost.qualifiedOverlapWindowCount.value, 1u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
@@ -570,8 +558,7 @@ module {
 )mlir");
   ASSERT_TRUE(module);
 
-  InstructionProgramCost cost = analyzeForProfile(
-      *module, wafer::TargetProfileId::waferTx81SingleCardKernelV3());
+  InstructionProgramCost cost = analyze(*module);
   ASSERT_TRUE(cost.directDTEComputeOverlapWindowCount.isKnown());
   EXPECT_EQ(cost.directDTEComputeOverlapWindowCount.value, 1u);
 }
@@ -616,8 +603,7 @@ module {
 )mlir");
   ASSERT_TRUE(module);
 
-  InstructionProgramCost cost = analyzeForProfile(
-      *module, wafer::TargetProfileId::waferTx81SingleCardKernelV3());
+  InstructionProgramCost cost = analyze(*module);
   ASSERT_TRUE(cost.directDTEComputeOverlapWindowCount.isKnown());
   EXPECT_EQ(cost.directDTEComputeOverlapWindowCount.value, 0u);
 }
@@ -1130,8 +1116,7 @@ module {
   llvm::SmallVector<mlir::Operation *, 2> roots{first->getOperation(),
                                                 second->getOperation()};
   auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy(
-                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+      roots, wafer::analysis::getTargetScheduleCostPolicy());
   ASSERT_EQ(cost.rankCosts.size(), 2u);
   ASSERT_TRUE(cost.aggregateDDRReadBytes.isKnown());
   EXPECT_EQ(cost.aggregateDDRReadBytes.value, 16u);
@@ -1176,8 +1161,7 @@ module {
   ASSERT_TRUE(dynamic);
   llvm::SmallVector<mlir::Operation *, 1> roots{dynamic->getOperation()};
   auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy(
-                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+      roots, wafer::analysis::getTargetScheduleCostPolicy());
   EXPECT_EQ(cost.aggregateDDRReadBytes.knowledge,
             ScheduleCostKnowledge::Unknown);
   EXPECT_EQ(cost.aggregateDDRReadBytes.reason,
@@ -1222,8 +1206,7 @@ TEST_F(ScheduleCostAnalysisTest,
     farRoots.push_back(farOwners.back()->getOperation());
   }
 
-  const auto policy = wafer::analysis::getTargetScheduleCostPolicy(
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  const auto policy = wafer::analysis::getTargetScheduleCostPolicy();
   auto nearCost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
       nearRoots, policy);
   auto farCost =
@@ -1269,8 +1252,7 @@ TEST_F(ScheduleCostAnalysisTest,
     ASSERT_TRUE(owners.back());
     roots.push_back(owners.back()->getOperation());
   }
-  const auto policy = wafer::analysis::getTargetScheduleCostPolicy(
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  const auto policy = wafer::analysis::getTargetScheduleCostPolicy();
   auto cost =
       wafer::analysis::analyzeWholeCardInstructionProgramCost(roots, policy);
   ASSERT_TRUE(cost.directedNoCLinkCount.isKnown());
@@ -1322,8 +1304,7 @@ TEST_F(ScheduleCostAnalysisTest,
     roots.push_back(owners.back()->getOperation());
   }
   auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy(
-                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+      roots, wafer::analysis::getTargetScheduleCostPolicy());
   ASSERT_TRUE(cost.minimumHopLinkByteDemand.isKnown());
   EXPECT_EQ(cost.minimumHopLinkByteDemand.value, 24u);
   ASSERT_TRUE(cost.minimumHopMessageDemand.isKnown());
@@ -1376,8 +1357,7 @@ TEST_F(ScheduleCostAnalysisTest,
     hotspotRoots.push_back(hotspotOwners.back()->getOperation());
   }
 
-  const auto policy = wafer::analysis::getTargetScheduleCostPolicy(
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  const auto policy = wafer::analysis::getTargetScheduleCostPolicy();
   auto balanced = wafer::analysis::analyzeWholeCardInstructionProgramCost(
       balancedRoots, policy);
   auto hotspot = wafer::analysis::analyzeWholeCardInstructionProgramCost(
@@ -1433,8 +1413,7 @@ TEST_F(ScheduleCostAnalysisTest,
   }
 
   auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy(
-                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+      roots, wafer::analysis::getTargetScheduleCostPolicy());
   ASSERT_TRUE(cost.aggregateNoC.aggregateTransmitBytes.isKnown());
   EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.value, 8u);
   ASSERT_TRUE(cost.aggregateNoC.aggregateReceiveBytes.isKnown());
@@ -1484,8 +1463,7 @@ TEST_F(ScheduleCostAnalysisTest,
     roots.push_back(owners.back()->getOperation());
   }
   auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy(
-                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+      roots, wafer::analysis::getTargetScheduleCostPolicy());
   EXPECT_EQ(cost.minimumHopLinkByteDemand.knowledge,
             ScheduleCostKnowledge::Overflow);
   EXPECT_EQ(cost.minimumHopLinkByteDemand.reason,
@@ -1521,8 +1499,7 @@ TEST_F(ScheduleCostAnalysisTest,
   llvm::SmallVector<mlir::Operation *, 2> roots{rank0->getOperation(),
                                                 rank1->getOperation()};
   auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy(
-                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+      roots, wafer::analysis::getTargetScheduleCostPolicy());
   EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.knowledge,
             ScheduleCostKnowledge::Overflow);
   EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.reason,
@@ -1549,8 +1526,7 @@ TEST_F(ScheduleCostAnalysisTest,
   llvm::SmallVector<mlir::Operation *, 2> roots{rank0->getOperation(),
                                                 rank1->getOperation()};
   auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy(
-                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+      roots, wafer::analysis::getTargetScheduleCostPolicy());
   EXPECT_EQ(cost.minimumHopLinkByteDemand.knowledge,
             ScheduleCostKnowledge::Unknown);
   EXPECT_EQ(cost.minimumHopLinkByteDemand.reason,
@@ -1583,8 +1559,7 @@ TEST_F(ScheduleCostAnalysisTest,
   llvm::SmallVector<mlir::Operation *, 2> roots{rank0->getOperation(),
                                                 rank1->getOperation()};
   auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy(
-                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+      roots, wafer::analysis::getTargetScheduleCostPolicy());
   EXPECT_EQ(cost.minimumHopLinkByteDemand.knowledge,
             ScheduleCostKnowledge::Unknown);
   EXPECT_EQ(cost.minimumHopLinkByteDemand.reason,

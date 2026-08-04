@@ -127,8 +127,7 @@ module {
                                shapedBoundary(2, {4})};
   program.distributedOutputs = {shapedBoundary(0, {4})};
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);

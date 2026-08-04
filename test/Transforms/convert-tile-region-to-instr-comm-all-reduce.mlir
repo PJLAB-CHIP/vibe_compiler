@@ -129,7 +129,7 @@ module {
 // CHECK-SAME: byte_count = 4 : i64
 // CHECK-SAME: inner_bytes = 4 : i64
 // CHECK: wafer.instr.ncc_join [0]
-// CHECK-NOT: wafer.instr.local_fence
+// CHECK-NOT: wafer.instr.ncc_join [0]
 // CHECK-NOT: wafer.instr.elementwise <add>
 // CHECK-NOT: wafer.instr.dte_send
 // CHECK-NOT: wafer.instr.dte_recv

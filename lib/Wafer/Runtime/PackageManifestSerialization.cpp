@@ -22,8 +22,6 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
       json.attribute("id", int64_t(manifest.program.getValue()));
     });
     json.attributeObject("target", [&] {
-      json.attribute("profile",
-                     stringifyTargetProfileId(manifest.targetProfile));
       json.attribute("identity",
                      stringifyTargetIdentityId(manifest.targetIdentity));
       json.attribute("runtime_abi",

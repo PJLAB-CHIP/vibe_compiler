@@ -28,7 +28,7 @@ from wafer_collective_hardware_characterization_catalog import (
 )
 
 
-TARGET_PROFILE = paired_support.TARGET_PROFILE
+TARGET_IDENTITY = paired_support.TARGET_IDENTITY
 LAUNCH_KIND = paired_support.CLUSTER_LAUNCH_KIND
 STATUS_ABI = paired_support.DIRECT_DTE_STATUS_ABI
 RANK_COUNT = 16
@@ -445,7 +445,6 @@ def compile_package(
             "--output-program-dir",
             str(output),
             f"--execution-ranks={RANK_COUNT}",
-            f"--target-profile={TARGET_PROFILE}",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         environment=environment,
@@ -1248,7 +1247,7 @@ def main() -> int:
         "payload_bytes": contract.payload_bytes,
         "element_type": contract.element_type,
         "rank_count": RANK_COUNT,
-        "target_profile": TARGET_PROFILE,
+        "target_identity": TARGET_IDENTITY,
         "launch": runtime_launch.CLUSTER_KERNEL_LAUNCH,
         "source_mode": (
             "explicit-post-spmd-carrier"

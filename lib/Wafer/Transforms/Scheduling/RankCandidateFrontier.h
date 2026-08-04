@@ -4,7 +4,7 @@
 #define WAFER_LIB_TRANSFORMS_SCHEDULING_RANKCANDIDATEFRONTIER_H
 
 #include "Wafer/Support/OptimizationConfig.h"
-#include "Wafer/Target/TargetProfile.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -149,11 +149,6 @@ struct TensorProgramSchedulingConfig {
   /// `frontierOrderOrdinal` and readmitted before they form a rank frontier.
   uint32_t requestShardIndex = 0;
   uint32_t requestShardCount = 1;
-  /// Exact versioned target/ABI contract selected by the production
-  /// ExecutionConfig. This is static compile input, never a live-card or
-  /// profiler result. There is deliberately no scheduler-local default: an
-  /// omitted contract rejects the frontier before any candidate analysis.
-  std::optional<TargetProfileId> targetProfile;
   /// Optional semantic candidate producers enabled for this invocation.
   /// Mandatory legality and lowering stages are not represented here.
   OptimizationConfig optimizations = OptimizationConfig::production();

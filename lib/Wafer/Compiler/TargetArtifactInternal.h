@@ -23,13 +23,13 @@ namespace wafer::compiler {
 struct TargetLLVMModuleBundleBuilder {
   static TargetLLVMModule
   makeModule(int64_t logicalRank, llvm::StringRef entrySymbol,
-             TargetProfileId targetProfile, TargetIdentityId targetIdentity,
+             TargetIdentityId targetIdentity,
              KernelRuntimeABIId kernelRuntimeABI, llvm::StringRef moduleFormat,
              std::vector<KernelABISlot> kernelABISlots,
              std::unique_ptr<llvm::LLVMContext> context,
              std::unique_ptr<llvm::Module> module) {
-    return TargetLLVMModule(logicalRank, entrySymbol, targetProfile,
-                            targetIdentity, kernelRuntimeABI, moduleFormat,
+    return TargetLLVMModule(logicalRank, entrySymbol, targetIdentity,
+                            kernelRuntimeABI, moduleFormat,
                             std::move(kernelABISlots), std::move(context),
                             std::move(module));
   }
@@ -51,12 +51,11 @@ struct TargetArtifactBundleBuilder {
 
   static VerifiedTargetModule
   makeModule(TargetArtifactModuleId id, llvm::StringRef relativePath,
-             llvm::StringRef contentDigest, TargetProfileId targetProfile,
-             TargetIdentityId targetIdentity,
+             llvm::StringRef contentDigest, TargetIdentityId targetIdentity,
              KernelRuntimeABIId kernelRuntimeABI, llvm::StringRef moduleFormat,
              std::vector<VerifiedTargetExport> exports) {
-    return VerifiedTargetModule(id, relativePath, contentDigest, targetProfile,
-                                targetIdentity, kernelRuntimeABI, moduleFormat,
+    return VerifiedTargetModule(id, relativePath, contentDigest, targetIdentity,
+                                kernelRuntimeABI, moduleFormat,
                                 std::move(exports));
   }
 
@@ -111,8 +110,7 @@ struct ProfileTargetCallSite {
 /// are retained only for diagnostics and never recover the typed identity.
 llvm::Expected<std::vector<ProfileTargetCallSite>>
 collectProfileTargetCallSites(const llvm::Module &module,
-                              llvm::StringRef entrySymbol,
-                              TargetProfileId targetProfile);
+                              llvm::StringRef entrySymbol);
 
 /// Verifies that a trace clone preserves the final production artifact's
 /// rank-local site order and exact typed target-call identity. Instrumentation
@@ -120,19 +118,17 @@ collectProfileTargetCallSites(const llvm::Module &module,
 /// canonical source position written to the companion.
 llvm::Error verifyProfileTargetCallSiteIdentity(
     const llvm::Module &productionModule, llvm::StringRef productionEntrySymbol,
-    const llvm::Module &traceModule, llvm::StringRef traceEntrySymbol,
-    TargetProfileId targetProfile);
+    const llvm::Module &traceModule, llvm::StringRef traceEntrySymbol);
 
 /// Adds profile entry bracketing for every non-None capture and per-site
 /// bracketing only for Trace. Count relies on the profile CRT helpers to count
 /// the real NCC issue and Direct-DTE wait calls without per-site branches.
 llvm::Error instrumentProfileTargetModule(llvm::Module &module,
                                           llvm::StringRef entrySymbol,
-                                          TargetProfileId targetProfile,
                                           ProfileCaptureKind capture);
 llvm::Error verifyProfileTargetModuleInstrumentation(
     const llvm::Module &module, llvm::StringRef entrySymbol,
-    TargetProfileId targetProfile, ProfileCaptureKind capture);
+    ProfileCaptureKind capture);
 
 /// Owns one synthesized LLVM module and its uniquing context. Declaration
 /// order ensures the module is destroyed before its context.
@@ -147,7 +143,6 @@ struct PreparedTargetRank {
 
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::vector<KernelABISlot> slots;
-  TargetProfileId targetProfile;
   bool transportPreparedBeforeEntry = false;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId kernelRuntimeABI;
@@ -181,7 +176,6 @@ translatePreparedTargetRank(PreparedTargetRank prepared,
 llvm::Error verifyTargetLLVMModule(const llvm::Module &module,
                                    int64_t expectedLogicalRank,
                                    llvm::StringRef expectedEntrySymbol,
-                                   TargetProfileId expectedProfile,
                                    TargetIdentityId expectedTargetIdentity,
                                    KernelRuntimeABIId expectedKernelRuntimeABI,
                                    llvm::StringRef expectedModuleFormat,
@@ -208,14 +202,14 @@ runDeviceLink(const TargetToolchain &toolchain, llvm::StringRef llvmIR,
 llvm::Expected<TargetModuleReadback>
 verifyTargetModule(llvm::StringRef path,
                    llvm::ArrayRef<VerifiedTargetExport> expectedExports,
-                   TargetProfileId expectedProfile,
+                   TargetIdentityId expectedTargetIdentity,
                    const RuntimeLaunchContract &expectedLaunch);
 
 /// Verifies a genuinely linked module with the production ELF readback path
 /// and exposes the immutable typed facts that production stores per module.
 llvm::Expected<VerifiedTargetModule> verifyLinkedTargetModuleForTesting(
     llvm::StringRef path, llvm::StringRef entrySymbol,
-    TargetProfileId targetProfile,
+    TargetIdentityId targetIdentity,
     const RuntimeLaunchContract &runtimeLaunchContract);
 
 /// Re-runs the production target LLVM module readback against the immutable

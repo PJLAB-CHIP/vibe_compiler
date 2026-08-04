@@ -1008,7 +1008,7 @@ def main() -> int:
     assert "WAFER_MDC_REC_LANE_B_WORKER_INST_DELTA" in probe
     assert "WAFER_MDC_REC_WORKER_MASK" in probe
     assert "WAFER_MDC_REC_CONTROL_FINAL" in probe
-    assert "wafer_tx81_local_fence" in probe
+    assert "wafer_tx81_ncc_join" in probe
     assert "wafer_mdc_seed_slot" in probe
     assert "wafer_mdc_dump_slot" in probe
     assert "wafer_mdc_first_spm_dump_offset" in probe

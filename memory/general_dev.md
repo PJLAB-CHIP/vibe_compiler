@@ -221,7 +221,7 @@
   `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-cluster-direct-dte$' --output-on-failure`。各项之间只读验卡，
   首个失败或超时即停，不retry/reset/power，也不能用临时runner路径替代已注册CTest。开启importer/SPMD helper的配置还应在未armed
   环境实际执行对应kernel-grid和Direct DTE production no-card gate，它们从production source fresh编译到
-  schema-v6 package并进入all-rank no-card consumer，不允许返回77或以fake manifest替代。schema-v6 module不带rank，
+  schema-v7 package并进入all-rank no-card consumer，不允许返回77或以fake manifest替代。schema-v7 module不带rank，
   entry不带symbol；rank覆盖只由entry到module引用表达，module通过typed exports定位`prepare`/`main`。
   vendor adapter由`tools/wafer-run` executable拥有，通用`WaferRuntime`只拥有typed provider接口和lifecycle executor；
   不把`tx_runtime` header/library依赖放进compiler或通用runtime library。
@@ -348,11 +348,11 @@
   `sdy.constant`、`sdy.reshard`或其它SDY中间op写给只接StableHLO的helper。graph已有用户`mhlo.sharding`
   时由helper消费；无用户seed时当前采用replicated correctness基线。基于execution mesh自动补split seed的
   named pipeline只作IR-local调试，等有完整SDY→StableHLO bridge后才能进入production。单卡execution rank
-  没有默认值，用户必须显式选择1或16；target profile同样没有默认值。
+  没有默认值，用户必须显式选择1或16；current target identity由compiler固定，不是用户选项。
 - default-sharding/SPMD chain不能用手写`sdy.sharding`、`wafer.spmd.*` attr、私有JSON或名字约定冒充partitioned
   program。正确主链是：frontend Python 只通过 `torch_xla.distributed.spmd.mark_sharding`
   标记 4096 matmul 图并导出带 `mhlo.sharding` 的 PyTorch/XLA StableHLO program directory；随后由
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --launch-kind={kernel|model}`
   在 Wafer compiler
   层接管 target/mesh，并由pinned helper内部完成Shardy/XLA SPMD partition，再执行local normalization
   和structured tensor program legality。当前typed compiler driver的Q15输出是重新读取并验证过的
@@ -662,7 +662,7 @@
   typed参数，但不能恢复用户selector。展开后只保留`wafer.instr.dte_*`/local compute body，不保存algorithm attr。
 - execution topology的rank mapping与hop事实只由共享`ExecutionTopologyAnalysis`从current module唯一
   `wafer.target.topology`/`wafer.execution.mesh`重算。isolated task/candidate clone必须同时复制这两个typed fact op；
-  不得回退到logical rank编号、target profile名或固定4x4算术。Ring有序cycle和Tree edge/root是rewrite-local
+  不得回退到logical rank编号、target identity名或固定4x4算术。Ring有序cycle和Tree edge/root是rewrite-local
   C++值；whole-card cost从final send peer计算minimum-hop link-byte demand，不把shortest path冒充实际route或timing。
 - tile-region-to-instr 的 V0 all-gather lowering 从 `wafer.tile.all_gather` 的 compact `tensor/ntensor`
   local/gather SPM buffer shape 推导唯一 gather axis。`ring` 先把 local chunk 写入本 rank slot，
@@ -690,9 +690,8 @@
   的真实跨rank协议。
 - 通用 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。裸的 `tx8` / `tx81` 不能作为 dialect、pipeline、pass、fixture 或可推断字段的
-  主线命名；硬件/依赖逆向事实和tasks/14 closed registry中的opaque canonical profile key例外。例如
-  `wafer-tx81-single-card-kernel-v1` 只能整体解析为typed `TargetProfileId`，不得拆字符串恢复target、
-  revision、ABI或numeric policy。
+  主线命名；硬件/依赖逆向事实中的外部spelling例外。current target identity、Kernel Runtime ABI和module format由
+  `TargetIdentity`集中定义并exact-match，不得拆字符串恢复revision、capability或numeric policy。
 - 非小修主线任务动实现前必须先写清楚 pipeline contract：upstream artifact / IR、current stage
   responsibility、output artifact / IR、downstream consumer、user-level driver / named pipeline、
   explicit non-goals 和 completion gate。只说明某个 pass / tool / test 的局部功能不够；完成证明
@@ -700,7 +699,7 @@
 - 主链路gate应由独立`wafer-compile` owner-aware program driver重放已完成上游链路，不在Integration
   里手动拼 pass 串。当前 frontend verifier 入口是
   `wafer-compile-stablehlo --verify-stablehlo-program`；production compile入口统一为
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`。
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --launch-kind={kernel|model}`。
   typed structured-program boundary从frontend admission推进到重新读取并验证过的structured tensor program directory；
   同一production transaction随后把frontend verifier返回的typed boundary/shard facts和structured module直接交给
   per-rank bundle boundary，不暴露stop-stage。
@@ -921,7 +920,7 @@
 - full-shape direct boundary route应从原始task boundary物化。若先构造one-trip complete traversal，identity
   extract/insert slice可能只在lowering后显现，使distinct direct route静默退回Tensor staging；非full tile仍必须依赖exact
   mapped-transfer proof，不能用shape或recipe flag强行直连。
-- final selection先保留完整exact Pareto frontier，再由target profile显式static policy在survivors间持续比较当前winner。
+- final selection先保留完整exact Pareto frontier，再由current target static policy在survivors间持续比较当前winner。
   不能找到第一个优于baseline的candidate就返回，否则较早share/fusion会遮住DDR movement更低的recompute联合candidate。
   generation/discovery ordinal只用于确定性与跨rank对应，不是语义winner维度；Unknown、overflow或同一priority class双向tradeoff
   保持保守。
@@ -934,7 +933,7 @@
 
 ## Production optimizer同源成对板测
 
-- 验证优化归因时，用同一source snapshot、payload、ExecutionConfig、target profile和host-visible ABI分别发布
+- 验证优化归因时，用同一source snapshot、payload、ExecutionConfig、current target identity和host-visible ABI分别发布
   coordinator已接受的reserved baseline与默认production winner。普通对照使用正式CLI的`none`/`production`
   candidate-domain preset；单轴归因使用`production + disable-one`和`none + enable-one`互证，不能靠改source、
   跳correctness pass或编译两个版本构造对照。每个稳定option映射一个语义alternative owner，不映射pass、case或文件；
@@ -1064,7 +1063,7 @@
   first-failure stop和no retry/reset/power。CPU增量构建可高并发；硬件launch仍串行。no-card与host gate通过只标记
   pre-board readiness，不升级成`board-observed`。
 - 需要跨CTest合并small/steady/tail或control/experiment时，runner必须为本次execute生成不可复用的session id，
-  archive还要精确绑定target profile、完整runtime launch contract、device/runtime身份和runtime library digest；只靠work directory
+  archive还要精确绑定current target identity、完整runtime launch contract、device/runtime身份和runtime library digest；只靠work directory
   或case名会把旧轮、旧卡或其它profile的结果混进当前分类。
 - matched group按sample-major执行并在sample间轮换condition顺序；涉及physical rank时，baseline和其它condition
   必须使用同phase的nested active set，避免tile差异伪装成contention slope。只做到equal-mean position的四轮
@@ -1091,13 +1090,13 @@
   loop-local allocation和纯pointer permutation是结构节点；后续same-worker issue可接管有序访问责任，最终由
   一个unconditional participant join收口。conditional region、Direct DTE/Kcore observer、cross-worker冲突、
   root/range Unknown仍必须fail closed，不能为了让planner通过而补逐iteration waitfinish。
-- `TargetProfileId`在scheduler入口只代表compiler-shipped、versioned target/ABI合同。候选生成必须离线确定，
+- current target identity由compiler固定。候选生成必须离线确定，
   不得读取实卡身份、Q9 profiler、PMU、runtime历史或本地校准缓存；板端结果只能离线验证实现，若要改变静态
   capability，必须通过后续compiler revision评审发布，不能形成per-card schedule。
 - fixed-slot source-to-package资格不要把accepted Instr schedule塞进manifest。testing seam从同一次fully accepted
   `ExecutableBundle`派生闭合attestation，至少绑定accepted module digest、placed SPM roots、static loop/root rotation、
   engine×worker issue、DTE token/exact wait和completion；activation最后写入并同时绑定attestation及staged
-  schema-v6 manifest bytes。package与相邻qualification目录用双rename no-replace transaction发布，companion失败后
+  schema-v7 manifest bytes。package与相邻qualification目录用双rename no-replace transaction发布，companion失败后
   回滚package；normal production mode不检查也不生成这个testing sibling。需要数值资格时复用同次retained
   TargetLLVMModuleBundle进入SystemC，不重新lower或重编。
 - 把root-path storage coalescing扩展到loop body时，`StructuredTimeline`只给出一次静态body顺序，不能代表
@@ -1274,3 +1273,15 @@
 - 无卡阶段必须生成两份完整package并逐份fresh no-card，随后把case同时登记到CMake board owner list和
   `COMPILER_OPTIMIZATION_PAIRED_CASES`硬件batch目录。真实板端未启用时只能签`board-ready`，不能用host oracle、
   no-card或历史板端输出代签exact output/guard或matched性能。
+
+## Current ABI/schema收口
+
+- 单target compiler不提供target选择CLI或singleton target-profile registry。target identity只用于package/runtime exact
+  join，runtime ABI只对应一套current TargetCall/CRT symbol和signature；内部builtin使用稳定语义名，外部symbol若因已发布
+  ABI保留revision suffix，也不得保留旧wrapper、lookup branch或兼容reader。
+- package manifest、profiler record、profile companion、qualification record等是不同wire artifact，各自保留一个current
+  schema常量、一个writer和一个exact reader。它们的版本号无需相同；“只维护一套”指每种artifact没有旧reader/translator，
+  不是造一个跨artifact总schema。
+- compiler级IR取证使用稳定入口`wafer-compile --dump-compiler-ir <dir>`；每rank final Instr输出到
+  `instruction/rank_XXXXX.mlir`，对应Target LLVM输出到`target-llvm/rank_XXXXX.ll`。runner要验证all-and-only rank文件、
+  稳定零填充命名和非空内容；目录名表达artifact语义，不包含任务号、阶段号或临时case名。

@@ -73,9 +73,6 @@ wafer::NCCCompletionContract
 wafer::getNCCCompletionContract(mlir::Operation *operation) {
   if (!operation)
     return {};
-  if (mlir::isa<SyncLocalFenceOp>(operation))
-    return {LocalInstructionCompletion::ParticipantJoin, std::nullopt,
-            uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0)};
   if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(operation)) {
     uint32_t participants = 0;
     for (int64_t worker : join.getParticipants()) {

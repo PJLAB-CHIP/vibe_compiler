@@ -1515,11 +1515,11 @@ def validate_probe_seed_is_ncc_local_and_completed() -> None:
     ).read_text()
     start = probe.index("static void wafer_ifp_seed")
     body = probe[start : probe.index("\n}", start) + 2]
-    assert "wafer_tx81_rdma" in body
+    assert "wafer_tx81_rdma_v3" in body
     assert "payload_ddr + slot * WAFER_IFP_SLOT_BYTES" in body
     assert "destinations[slot]" in body
     assert "get_spm_memory_mapping" not in body
-    assert body.index("wafer_tx81_rdma") < body.index(
+    assert body.index("wafer_tx81_rdma_v3") < body.index(
         "wafer_ifp_wait_worker0_drain"
     )
     wait_start = probe.index("static void wafer_ifp_wait_worker0_drain")
@@ -1682,21 +1682,21 @@ def validate_unpool_rows() -> None:
     for symbol, wrapper, opcode in (
         (
             "UNPOOL_F16",
-            "wafer_tx81_unpool_mask",
+            "wafer_tx81_unpool_mask_v3",
             "OP_FUNC_CGRATensor_DataMoveOp_T_T_maskunpool",
         ),
         (
             "UNPOOL_INDEX_F16",
-            "wafer_tx81_unpool_unpool",
+            "wafer_tx81_unpool_unpool_v3",
             "OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool",
         ),
     ):
         start = probe.index(f"case WAFER_IFP_CASE_{symbol}:")
         case_body = probe[start : probe.index("break;", start)]
-        pool = case_body.index("wafer_tx81_pool_indexedmax")
+        pool = case_body.index("wafer_tx81_pool_indexedmax_v3")
         unpool = case_body.index(wrapper)
         assert pool < unpool
-        assert "wafer_tx81_local_fence" not in case_body
+        assert "wafer_tx81_ncc_join" not in case_body
         assert opcode in case_body
         assert "(uint32_t)auxiliary" in case_body
 
@@ -1903,41 +1903,41 @@ def validate_unpool_capability_rows() -> None:
         / "wafer_instruction_family_probe.c"
     ).read_text()
     for symbol, wrapper in (
-        ("UNPOOL_INDEX_BF16_OBSERVED", "wafer_tx81_unpool_unpool"),
-        ("UNPOOL_INDEX_F32_OBSERVED", "wafer_tx81_unpool_unpool"),
-        ("UNPOOL_AVG_BF16", "wafer_tx81_unpool_avg"),
-        ("UNPOOL_AVG_F32", "wafer_tx81_unpool_avg"),
-        ("UNPOOL_MASK_BF16", "wafer_tx81_unpool_mask"),
-        ("UNPOOL_MASK_F32", "wafer_tx81_unpool_mask"),
+        ("UNPOOL_INDEX_BF16_OBSERVED", "wafer_tx81_unpool_unpool_v3"),
+        ("UNPOOL_INDEX_F32_OBSERVED", "wafer_tx81_unpool_unpool_v3"),
+        ("UNPOOL_AVG_BF16", "wafer_tx81_unpool_avg_v3"),
+        ("UNPOOL_AVG_F32", "wafer_tx81_unpool_avg_v3"),
+        ("UNPOOL_MASK_BF16", "wafer_tx81_unpool_mask_v3"),
+        ("UNPOOL_MASK_F32", "wafer_tx81_unpool_mask_v3"),
         (
             "UNPOOL_INDEX_F16_ASYMMETRIC_OBSERVED",
-            "wafer_tx81_unpool_unpool",
+            "wafer_tx81_unpool_unpool_v3",
         ),
         (
             "UNPOOL_AVG_F16_ASYMMETRIC_OBSERVED",
-            "wafer_tx81_unpool_avg",
+            "wafer_tx81_unpool_avg_v3",
         ),
-        ("UNPOOL_MASK_F16_ASYMMETRIC", "wafer_tx81_unpool_mask"),
+        ("UNPOOL_MASK_F16_ASYMMETRIC", "wafer_tx81_unpool_mask_v3"),
         (
             "UNPOOL_INDEX_F16_REPEATED_OVERLAP_OBSERVED",
-            "wafer_tx81_unpool_unpool",
+            "wafer_tx81_unpool_unpool_v3",
         ),
         (
             "UNPOOL_MASK_F16_REPEATED_OVERLAP_OBSERVED",
-            "wafer_tx81_unpool_mask",
+            "wafer_tx81_unpool_mask_v3",
         ),
     ):
         start = probe.index(f"case WAFER_IFP_CASE_{symbol}:")
         body = probe[start : probe.index("break;", start)]
         assert wrapper in body
         if "AVG" not in symbol:
-            assert "wafer_tx81_pool_indexedmax" in body
-            assert "wafer_tx81_local_fence" not in body
+            assert "wafer_tx81_pool_indexedmax_v3" in body
+            assert "wafer_tx81_ncc_join" not in body
         if "REPEATED_OVERLAP" in symbol:
             assert "wafer_ifp_wait_worker0_drain();" not in body
             assert "wafer_ifp_copy_spm_bytes(" not in body
             assert body.count("wafer_ifp_copy_spm_bytes_ncc(") == 2
-            pool = body.index("wafer_tx81_pool_indexedmax")
+            pool = body.index("wafer_tx81_pool_indexedmax_v3")
             snapshot = body.index(
                 "WAFER_IFP_REPEATED_AUX_SNAPSHOT_OFFSET"
             )

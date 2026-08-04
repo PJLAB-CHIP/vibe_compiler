@@ -1,6 +1,6 @@
 // RUN: wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66048' %s | FileCheck %s
 
-func.func @local_fence_extends_prior_local_write(
+func.func @ncc_join_extends_prior_local_write(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
   %region = wafer.tile.region(%boundary
       : memref<128xf16, #wafer.memory<ddr, tensor>>)
@@ -14,23 +14,23 @@ func.func @local_fence_extends_prior_local_write(
         : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %before_drain, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %after_drain = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %after_drain, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
 }
 
-// CHECK-LABEL: func.func @local_fence_extends_prior_local_write
+// CHECK-LABEL: func.func @ncc_join_extends_prior_local_write
 // CHECK: %[[SOURCE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[SOURCE]]
 // CHECK: %[[BEFORE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[BEFORE]]
-// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK: %[[AFTER:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[AFTER]]
 
@@ -45,18 +45,18 @@ func.func @dte_recv_token_extends_destination_until_wait(
     %token = wafer.instr.dte_recv %dest {peer = 1 : i64, bytes = 256 : i64,
         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %before_wait = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %before_wait, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.instr.dte_wait %token : !async.token
     %after_wait = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %after_wait, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
@@ -65,14 +65,14 @@ func.func @dte_recv_token_extends_destination_until_wait(
 // CHECK-LABEL: func.func @dte_recv_token_extends_destination_until_wait
 // CHECK: %[[DEST:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: %[[TOKEN:.+]] = wafer.instr.dte_recv %[[DEST]]
-// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK: %[[BEFORE_WAIT:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[BEFORE_WAIT]]
 // CHECK: wafer.instr.dte_wait %[[TOKEN]]
 // CHECK: %[[AFTER_WAIT:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[AFTER_WAIT]]
 
-func.func @local_fence_extends_wdma_source_read(
+func.func @ncc_join_extends_wdma_source_read(
     %output: memref<128xf16, #wafer.memory<ddr, tensor>>) {
   %region = wafer.tile.region(%output
       : memref<128xf16, #wafer.memory<ddr, tensor>>)
@@ -89,27 +89,27 @@ func.func @local_fence_extends_wdma_source_read(
         : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %before_fence, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %after_fence = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %after_fence, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %out : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
 }
 
-// CHECK-LABEL: func.func @local_fence_extends_wdma_source_read
+// CHECK-LABEL: func.func @ncc_join_extends_wdma_source_read
 // CHECK: %[[WDMA_SOURCE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.wdma %[[WDMA_SOURCE]]
 // CHECK: %[[BEFORE_FENCE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[BEFORE_FENCE]]
-// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK: %[[AFTER_FENCE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[AFTER_FENCE]]
 
-func.func @branch_local_fences_clear_covered_write(
+func.func @branch_ncc_joins_clear_covered_write(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>, %cond: i1) {
   %region = wafer.tile.region(%boundary, %cond
       : memref<128xf16, #wafer.memory<ddr, tensor>>, i1)
@@ -120,21 +120,21 @@ func.func @branch_local_fences_clear_covered_write(
     wafer.instr.fill %source, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
     scf.if %c {
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     } else {
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     }
     %after_branch = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %after_branch, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
 }
 
-// CHECK-LABEL: func.func @branch_local_fences_clear_covered_write
+// CHECK-LABEL: func.func @branch_ncc_joins_clear_covered_write
 // CHECK: %[[BR_SOURCE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[BR_SOURCE]]
 // CHECK: scf.if

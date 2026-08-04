@@ -95,7 +95,7 @@ def valid_manifest() -> dict[str, object]:
             "launch": {
                 "kind": "kernel",
                 "form": "cluster",
-                "entry_abi": "rank-major-pointer-table-v1",
+                "entry_abi": "rank-major-pointer-table",
                 "phases": ["prepare", "main"],
             }
         },
@@ -172,7 +172,7 @@ class DirectDTEManifestEvidenceTest(unittest.TestCase):
     def test_rejects_wrong_abi_watchdog_or_completion_relation(self) -> None:
         wrong_abi = valid_manifest()
         wrong_abi["entries"][7]["transport"]["status_abi"] = (
-            "wafer-direct-dte-status-v1"
+            "unsupported-status-abi"
         )
 
         no_watchdog = valid_manifest()
@@ -278,7 +278,7 @@ class DirectDTEBoardEvidenceTest(unittest.TestCase):
         )
         wrong_abi = list(observations)
         wrong_abi[6] = dataclasses.replace(
-            wrong_abi[6], status_abi="wafer-direct-dte-status-v1"
+            wrong_abi[6], status_abi="unsupported-status-abi"
         )
         transport_error = list(observations)
         transport_error[15] = dataclasses.replace(

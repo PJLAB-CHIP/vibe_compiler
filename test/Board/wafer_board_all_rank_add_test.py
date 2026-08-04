@@ -33,9 +33,9 @@ RANK_COUNT = 16
 LOCAL_ELEMENTS = 458752
 GLOBAL_ELEMENTS = RANK_COUNT * LOCAL_ELEMENTS
 ELEMENT_DTYPE = np.dtype("<f2")
-TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
+TARGET_IDENTITY = "wafer-tx81-single-card"
 PROFILE_COMPANION_READY = (
-    "profile_companion: ready schema=6 ranks=16 variants=1 captures=2"
+    "profile_companion: ready schema=7 ranks=16 variants=1 captures=2"
 )
 PROFILE_CAMPAIGN_LAUNCH_COUNT = 3
 PROFILE_PRIMARY_EXECUTION_COUNT = 1
@@ -54,7 +54,7 @@ RUNTIME_LAUNCH_CALIBRATION_CASES = tuple(
         f"rank16-{launch_kind}-add",
         RANK_COUNT,
         launch_kind,
-        "all-rank exact slices+full f16 output+schema-v6 rank domain",
+        "all-rank exact slices+full f16 output+schema-v7 rank domain",
         "all-rank terminal+D2H+normal cleanup",
     )
     for launch_kind in LAUNCH_EVIDENCE
@@ -185,7 +185,6 @@ def compile_package(
         "--output-program-dir",
         str(package),
         f"--execution-ranks={RANK_COUNT}",
-        f"--target-profile={TARGET_PROFILE}",
         f"--launch-kind={args.launch_kind}",
     ]
     if profile:
@@ -358,10 +357,10 @@ def validate_manifest(
     if (
         manifest.get("rank_count") != RANK_COUNT
         or not isinstance(target, dict)
-        or target.get("profile") != TARGET_PROFILE
+        or target.get("identity") != TARGET_IDENTITY
     ):
         raise RuntimeError(
-            "all-rank board gate requires a schema-v6 rank-16 TX package"
+            "all-rank board gate requires a schema-v7 rank-16 TX package"
         )
 
     modules = manifest.get("modules")
@@ -627,7 +626,7 @@ def verify_board_evidence(
 
 def verify_no_card_evidence(stdout: str) -> None:
     required = (
-        "package: id=0 schema=6 ranks=16",
+        "package: id=0 schema=7 ranks=16",
         f"invocation_ranks: {RANK_COUNT}",
         "board_execution: false",
     )

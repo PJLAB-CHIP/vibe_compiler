@@ -73,9 +73,6 @@ def LowerInstrToTargetLLVMPass
                            "mlir::LLVM::LLVMDialect",
                            "wafer::WaferDialect"];
   let options = [
-    Option<"targetProfile", "target-profile", "std::string",
-           /*default=*/"\"\"",
-           "Required registered target profile for debug direct lowering">,
     Option<"defaultDDRArenaArgumentIndex",
            "default-ddr-arena-argument-index", "int64_t", /*default=*/"-1",
            "Entry argument carrying the default DDR arena base; -1 rejects "

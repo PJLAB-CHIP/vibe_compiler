@@ -29,15 +29,15 @@ llvm::Expected<RuntimeLaunchContract> RuntimeLaunchContract::createKernel(
     KernelLaunchForm form, KernelEntryABI entryABI,
     llvm::ArrayRef<RuntimeLaunchPhaseRole> phases) {
   const bool valid = (form == KernelLaunchForm::PerRank &&
-                      entryABI == KernelEntryABI::RankLocalPointerBlockV1 &&
+                      entryABI == KernelEntryABI::RankLocalPointerBlock &&
                       hasPhases(phases, {RuntimeLaunchPhaseRole::Main})) ||
                      (form == KernelLaunchForm::Grid &&
-                      (entryABI == KernelEntryABI::RankMajorPointerTableV1 ||
-                       entryABI == KernelEntryABI::RankRowPointerTableV1) &&
+                      (entryABI == KernelEntryABI::RankMajorPointerTable ||
+                       entryABI == KernelEntryABI::RankRowPointerTable) &&
                       hasPhases(phases, {RuntimeLaunchPhaseRole::Main})) ||
                      (form == KernelLaunchForm::Cluster &&
-                      (entryABI == KernelEntryABI::RankMajorPointerTableV1 ||
-                       entryABI == KernelEntryABI::RankRowPointerTableV1) &&
+                      (entryABI == KernelEntryABI::RankMajorPointerTable ||
+                       entryABI == KernelEntryABI::RankRowPointerTable) &&
                       hasPhases(phases, {RuntimeLaunchPhaseRole::Prepare,
                                          RuntimeLaunchPhaseRole::Main}));
   if (!valid)
@@ -51,7 +51,7 @@ llvm::Expected<RuntimeLaunchContract> RuntimeLaunchContract::createKernel(
 
 llvm::Expected<RuntimeLaunchContract> RuntimeLaunchContract::createModel(
     ModelEntryABI entryABI, llvm::ArrayRef<RuntimeLaunchPhaseRole> phases) {
-  if (entryABI != ModelEntryABI::Tx81ModelBootParamV1 ||
+  if (entryABI != ModelEntryABI::Tx81ModelBootParam ||
       !hasPhases(phases, {RuntimeLaunchPhaseRole::Main}))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
@@ -143,39 +143,39 @@ parseKernelLaunchForm(llvm::StringRef canonicalSpelling) {
 
 llvm::StringRef stringifyKernelEntryABI(KernelEntryABI entryABI) {
   switch (entryABI) {
-  case KernelEntryABI::RankLocalPointerBlockV1:
-    return "rank-local-pointer-block-v1";
-  case KernelEntryABI::RankMajorPointerTableV1:
-    return "rank-major-pointer-table-v1";
-  case KernelEntryABI::RankRowPointerTableV1:
-    return "rank-row-pointer-table-v1";
+  case KernelEntryABI::RankLocalPointerBlock:
+    return "rank-local-pointer-block";
+  case KernelEntryABI::RankMajorPointerTable:
+    return "rank-major-pointer-table";
+  case KernelEntryABI::RankRowPointerTable:
+    return "rank-row-pointer-table";
   }
   llvm_unreachable("unknown kernel entry ABI");
 }
 
 llvm::Expected<KernelEntryABI>
 parseKernelEntryABI(llvm::StringRef canonicalSpelling) {
-  if (canonicalSpelling == "rank-local-pointer-block-v1")
-    return KernelEntryABI::RankLocalPointerBlockV1;
-  if (canonicalSpelling == "rank-major-pointer-table-v1")
-    return KernelEntryABI::RankMajorPointerTableV1;
-  if (canonicalSpelling == "rank-row-pointer-table-v1")
-    return KernelEntryABI::RankRowPointerTableV1;
+  if (canonicalSpelling == "rank-local-pointer-block")
+    return KernelEntryABI::RankLocalPointerBlock;
+  if (canonicalSpelling == "rank-major-pointer-table")
+    return KernelEntryABI::RankMajorPointerTable;
+  if (canonicalSpelling == "rank-row-pointer-table")
+    return KernelEntryABI::RankRowPointerTable;
   return invalidValue<KernelEntryABI>("kernel entry ABI", canonicalSpelling);
 }
 
 llvm::StringRef stringifyModelEntryABI(ModelEntryABI entryABI) {
   switch (entryABI) {
-  case ModelEntryABI::Tx81ModelBootParamV1:
-    return "tx81-model-bootparam-v1";
+  case ModelEntryABI::Tx81ModelBootParam:
+    return "tx81-model-bootparam";
   }
   llvm_unreachable("unknown model entry ABI");
 }
 
 llvm::Expected<ModelEntryABI>
 parseModelEntryABI(llvm::StringRef canonicalSpelling) {
-  if (canonicalSpelling == "tx81-model-bootparam-v1")
-    return ModelEntryABI::Tx81ModelBootParamV1;
+  if (canonicalSpelling == "tx81-model-bootparam")
+    return ModelEntryABI::Tx81ModelBootParam;
   return invalidValue<ModelEntryABI>("model entry ABI", canonicalSpelling);
 }
 
@@ -197,15 +197,6 @@ parseRuntimeLaunchPhaseRole(llvm::StringRef canonicalSpelling) {
     return RuntimeLaunchPhaseRole::Main;
   return invalidValue<RuntimeLaunchPhaseRole>("runtime launch phase role",
                                               canonicalSpelling);
-}
-
-bool isRuntimeLaunchContractCompatible(const RuntimeLaunchContract &launch,
-                                       TargetProfileId targetProfile) {
-  const auto *kernel = launch.getKernel();
-  if (kernel && kernel->form == KernelLaunchForm::PerRank)
-    return true;
-  return targetProfile == TargetProfileId::waferTx81SingleCardKernelV1() ||
-         targetProfile == TargetProfileId::waferTx81SingleCardKernelV3();
 }
 
 } // namespace wafer

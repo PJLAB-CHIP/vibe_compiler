@@ -4,8 +4,6 @@
 #ifndef WAFER_TARGET_TARGETSCHEDULINGCAPABILITY_H
 #define WAFER_TARGET_TARGETSCHEDULINGCAPABILITY_H
 
-#include "Wafer/Target/TargetProfile.h"
-
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -72,7 +70,7 @@ enum class TargetSchedulingCompletionKind : uint8_t {
 
 /// The registry never replaces dependency, lifetime, address, or completion
 /// verification. A supported row means that those exact IR late gates are the
-/// required proof mechanism for this target contract.
+/// required proof mechanism for the current target.
 enum class TargetSchedulingIRRelation : uint8_t {
   RequiresExactLateGate,
 };
@@ -139,11 +137,9 @@ struct TargetSchedulingProfitabilityRow {
 
 /// Recomputable query derived from one actual instruction module.
 struct TargetSchedulingWindowQuery {
-  TargetSchedulingWindowQuery(TargetProfileId targetProfile,
-                              TargetSchedulingMechanism mechanism)
-      : targetProfile(targetProfile), mechanism(mechanism) {}
+  explicit TargetSchedulingWindowQuery(TargetSchedulingMechanism mechanism)
+      : mechanism(mechanism) {}
 
-  TargetProfileId targetProfile;
   TargetSchedulingMechanism mechanism;
   TargetSchedulingEngineMask engines = 0;
   TargetSchedulingWorkerRelation workerRelation =
@@ -176,7 +172,7 @@ struct TargetSchedulingWindowDecision {
   TargetSchedulingProfitabilityEvidence profitability;
 };
 
-/// Immutable, versioned, compiler-owned scheduling registry. Construction
+/// Immutable compiler-owned scheduling registry. Construction
 /// validates the complete row set and rejects malformed, duplicate, or
 /// overlapping predicates before any query can be consumed.
 class TargetSchedulingCapabilityRegistry {
@@ -184,12 +180,8 @@ public:
   TargetSchedulingCapabilityRegistry() = delete;
 
   static llvm::Expected<TargetSchedulingCapabilityRegistry>
-  create(TargetProfileId targetProfile, uint32_t contractVersion,
-         llvm::ArrayRef<TargetSchedulingLegalityRow> legalityRows,
+  create(llvm::ArrayRef<TargetSchedulingLegalityRow> legalityRows,
          llvm::ArrayRef<TargetSchedulingProfitabilityRow> profitabilityRows);
-
-  TargetProfileId getTargetProfile() const { return targetProfile; }
-  uint32_t getContractVersion() const { return contractVersion; }
 
   llvm::ArrayRef<TargetSchedulingLegalityRow> getLegalityRows() const {
     return legalityRows;
@@ -204,30 +196,25 @@ public:
 
 private:
   TargetSchedulingCapabilityRegistry(
-      TargetProfileId targetProfile, uint32_t contractVersion,
       std::vector<TargetSchedulingLegalityRow> legalityRows,
       std::vector<TargetSchedulingProfitabilityRow> profitabilityRows)
-      : targetProfile(targetProfile), contractVersion(contractVersion),
-        legalityRows(std::move(legalityRows)),
+      : legalityRows(std::move(legalityRows)),
         profitabilityRows(std::move(profitabilityRows)) {}
 
-  TargetProfileId targetProfile;
-  uint32_t contractVersion;
   std::vector<TargetSchedulingLegalityRow> legalityRows;
   std::vector<TargetSchedulingProfitabilityRow> profitabilityRows;
 };
 
-/// Returns the validated compiler-shipped registry for the exact target
-/// profile. No card state, runtime profile, PMU sample, or local cache is read.
+/// Returns the validated compiler-shipped registry for the current target. No
+/// card state, runtime sample, PMU sample, or local cache is read.
 llvm::Expected<TargetSchedulingCapabilityRegistry>
-getTargetSchedulingCapabilityRegistry(TargetProfileId targetProfile);
+getTargetSchedulingCapabilityRegistry();
 
 /// Derives an exact categorical scheduling query from typed instruction IR.
 /// Dynamic/unknown physical geometry is represented as `geometryKnown=false`
 /// and therefore cannot match a supported static row.
 llvm::Expected<TargetSchedulingWindowQuery>
 analyzeTargetSchedulingWindow(mlir::ModuleOp module,
-                              TargetProfileId targetProfile,
                               TargetSchedulingMechanism mechanism);
 
 } // namespace wafer

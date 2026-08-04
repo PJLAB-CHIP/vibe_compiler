@@ -44,7 +44,7 @@ Pipeline position:
 - Upstream artifact / IR:
   framework/exporter产生的static-ranked StableHLO program directory，其`forward.mlir`可来自pre-exported StableHLO，并包含与
   function boundary一致的input/output/parameter/constant metadata和payload；用户另显式提供
-  ExecutionConfig(rank-count={1|16}, registered TargetProfileId)。target topology不是用户输入，由compiler内部materialize/verify。
+  ExecutionConfig(rank-count={1|16})。target topology和current target identity不是用户输入，由compiler内部materialize/verify。
 - Current stage responsibility:
   在transaction-owned source snapshot上完成frontend admission；调用pinned XLA helper完成Shardy/XLA SPMD并重新验证输出；
   normalization到rank-local Linalg/Tensor/SCF structured program，并形成经过显式required normalization的
@@ -82,7 +82,7 @@ Pipeline position:
 
 ```text
 CompilationRequest
-  = source program directory + ExecutionConfig(rank-count, TargetProfileId)
+  = source program directory + ExecutionConfig(rank-count)
         |
         v
 verified source snapshot
@@ -123,7 +123,7 @@ manifest的move-only lifetime/container artifact，不是另一份program或pack
 | Boundary | 稳定表示 | 责任 | 明确不负责 |
 | --- | --- | --- | --- |
 | Verified program | StableHLO、function boundary metadata、NPY payload/shards | model语义、static shape/dtype、resource role与payload admission | rank placement、tile、physical layout、runtime handle |
-| Execution configuration | factory-only `ExecutionConfig` | 显式1/16 rank domain与registered `TargetProfileId` | tensor sharding、topology IR、planner policy |
+| Execution configuration | factory-only `ExecutionConfig` | 显式1/16 rank domain；current target identity由compiler固定提供 | tensor sharding、topology IR、planner policy |
 | Topology/SPMD | `wafer.target.topology`、`wafer.execution.mesh`、post-SPMD StableHLO | compiler内部single-card endpoint与logical rank domain、rank-local partition | candidate、SPM/DDR、physical transport |
 | Structured tensor program | Linalg/Tensor/SCF/Arith/Math与typed logical collective | rank-local数学语义、iterator/indexing relation、effect/control及native numeric semantics/permissions | target implementation、physical encoding、offset |
 | Candidate analysis | transformation-local rewrite scopes、IndexRelation、complete clones与final static cost | 少量implementation/tile/encoding/route/residency alternatives；每个选择立即物化进clone | accepted事实、package字段、shadow schedule、长期side table |
@@ -245,7 +245,7 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | numeric transformation | supported integer exact/modular变换，以及f16/bf16/f32 reassociation、tree、distribution/factorization、reduction/GEMM split与floating collective；统一typed comparator验收 | 任意fast-math、未证明FMA contraction、用容差掩盖special value/index/layout/guard错误 |
 | physical realization | typed Tensor/Cx/NCx、mapped/compact movement、physical-footprint fill、fixed-capacity SPM/DDR packing和oriented GEMM | 无typed target/profile依据的encoding、bank coloring或route猜测 |
 | communication | 不超过16 rank的topology-derived Direct/Ring/ordered-Tree，显式p2p/local work/completion和all-rank Direct DTE acceptance | ragged/segmented peer exchange、subgroup full-card barrier替代、cross-card transport |
-| artifact/runtime | all-and-only rank `ExecutableBundle`、same-lowering Target LLVM、schema-v6 verified package、no-card、TargetCall/SystemC和configured TX81 RuntimeProvider | exact-package ISS/vendor simulator |
+| artifact/runtime | all-and-only rank `ExecutableBundle`、same-lowering Target LLVM、schema-v7 verified package、no-card、TargetCall/SystemC和configured TX81 RuntimeProvider | exact-package ISS/vendor simulator |
 | hardware evidence | 当前profile的compiler-sensitive行为按supported/board-observed/unknown/excluded闭合；unknown采用保守compiler策略 | 通用model/board numeric correlation、packet/MMIO provenance、cycle-accurate timing |
 | performance evidence | compiler只消费final IR可证明的静态cost；板端样本不自动回写candidate ranking | production-artifact profiler完成资格化，以及其后独立的hardware-informed ranking |
 

@@ -1,8 +1,8 @@
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %s | FileCheck %s
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %s | mlir-translate --mlir-to-llvmir | FileCheck %s --check-prefix=LLVMIR
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %s | FileCheck %s
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %s | mlir-translate --mlir-to-llvmir | FileCheck %s --check-prefix=LLVMIR
 
 // This is the terminal-instruction vertical for the typed CT capability
-// profile.  It proves real wafer.instr operations, verifier geometry, target
+// path. It proves real wafer.instr operations, verifier geometry, target
 // format preflight and target-call argument order together; the board probe's
 // direct CRT calls do not substitute for this path.
 module {
@@ -53,19 +53,19 @@ module {
 }
 
 // CHECK-LABEL: llvm.func @ct_reduce_pool_capability_vertical
-// CHECK: llvm.call @wafer_tx81_reduce_sum
-// CHECK: llvm.call @wafer_tx81_pool_indexedmax
-// CHECK: llvm.call @wafer_tx81_unpool_mask
+// CHECK: llvm.call @wafer_tx81_reduce_sum_v3
+// CHECK: llvm.call @wafer_tx81_pool_indexedmax_v3
+// CHECK: llvm.call @wafer_tx81_unpool_mask_v3
 
 // LLVMIR-LABEL: define void @ct_reduce_pool_capability_vertical()
-// LLVMIR: call void @wafer_tx81_reduce_sum(i64 65536, i64 66048, i32 1,
-// LLVMIR-SAME: i32 1, i32 1, i32 4, i32 64, i32 2)
-// LLVMIR: call void @wafer_tx81_pool_indexedmax(i64 66304, i64 68352, i64 68864,
+// LLVMIR: call void @wafer_tx81_reduce_sum_v3(i64 65536, i64 66048, i32 1,
+// LLVMIR-SAME: i32 1, i32 1, i32 4, i32 64, i32 2, i32 0)
+// LLVMIR: call void @wafer_tx81_pool_indexedmax_v3(i64 66304, i64 68352, i64 68864,
 // LLVMIR-SAME: i32 118, i32 1, i32 3, i32 5, i32 64,
 // LLVMIR-SAME: i32 1, i32 2, i32 2, i32 64,
 // LLVMIR-SAME: i32 0, i32 0, i32 0, i32 0,
-// LLVMIR-SAME: i32 3, i32 2, i32 2, i32 1, i32 2)
-// LLVMIR: call void @wafer_tx81_unpool_mask(i64 68352, i64 69376, i32 123,
+// LLVMIR-SAME: i32 3, i32 2, i32 2, i32 1, i32 2, i32 0)
+// LLVMIR: call void @wafer_tx81_unpool_mask_v3(i64 68352, i64 69376, i32 123,
 // LLVMIR-SAME: i32 68864, i32 1, i32 2, i32 2, i32 64,
 // LLVMIR-SAME: i32 1, i32 3, i32 5, i32 64,
-// LLVMIR-SAME: i32 3, i32 2, i32 2, i32 1, i32 2)
+// LLVMIR-SAME: i32 3, i32 2, i32 2, i32 1, i32 2, i32 0)

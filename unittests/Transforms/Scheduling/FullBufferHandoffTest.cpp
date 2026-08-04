@@ -47,7 +47,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<1x2x2xf16, #wafer.memory<spm, tensor>>
          to memref<1x2x2xf16, #wafer.memory<ddr, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %output
           : memref<1x2x2xf16, #wafer.memory<ddr, tensor>>
     }
@@ -65,7 +65,7 @@ module {
            src_iterations = array<i64: 1, 1, 1>}
           : memref<2x2xf16, #wafer.memory<ddr, tensor>>
          to memref<2x2xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %pass : i1
     }
     %second = wafer.tile.region(%reshaped, %token
@@ -79,7 +79,7 @@ module {
            src_iterations = array<i64: 1, 1, 1>}
           : memref<2x2xf16, #wafer.memory<ddr, tensor>>
          to memref<2x2xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %pass : i1
     }
     return
@@ -111,7 +111,7 @@ module {
           : memref<1x2x2xf16, #wafer.memory<spm, tensor>>
          to memref<1x2x2xf16, strided<[4, 2, 1]>,
                    #wafer.memory<ddr, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %output
           : memref<1x2x2xf16, #wafer.memory<ddr, tensor>>
     }
@@ -134,7 +134,7 @@ module {
           : memref<2x2xf16, strided<[2, 1]>,
                    #wafer.memory<ddr, tensor>>
          to memref<2x2xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %pass : i1
     }
     return
@@ -160,7 +160,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<4xf16, #wafer.memory<spm, tensor>>
          to memref<4xf16, #wafer.memory<ddr, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %output
           : memref<4xf16, #wafer.memory<ddr, tensor>>
     }
@@ -175,7 +175,7 @@ module {
            src_iterations = array<i64: 1, 1, 1>}
           : memref<4xf16, #wafer.memory<ddr, tensor>>
          to memref<4xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %pass : i1
     }
     return
@@ -202,7 +202,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<4x8xf16, #wafer.memory<spm, cx>>
          to memref<4x8xf16, #wafer.memory<ddr, cx>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %output
           : memref<4x8xf16, #wafer.memory<ddr, cx>>
     }
@@ -217,7 +217,7 @@ module {
            src_iterations = array<i64: 1, 1, 1>}
           : memref<4x8xf16, #wafer.memory<ddr, cx>>
          to memref<4x8xf16, #wafer.memory<spm, cx>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %pass : i1
     }
     return
@@ -337,7 +337,7 @@ TEST_F(FullBufferHandoffTest, AcceptsProducerJoinThatCompletesTheWDMAWorker) {
   auto fence = *regions.front()
                     .getBody()
                     .front()
-                    .getOps<wafer::SyncLocalFenceOp>()
+                    .getOps<wafer::SyncNCCJoinOp>()
                     .begin();
   mlir::OpBuilder builder(fence);
   builder.create<wafer::SyncNCCJoinOp>(fence.getLoc(),
@@ -367,7 +367,7 @@ TEST_F(FullBufferHandoffTest,
   auto fence = *regions.front()
                     .getBody()
                     .front()
-                    .getOps<wafer::SyncLocalFenceOp>()
+                    .getOps<wafer::SyncNCCJoinOp>()
                     .begin();
 
   mlir::OpBuilder builder(wdma);
@@ -408,7 +408,7 @@ TEST_F(FullBufferHandoffTest,
   auto fence = *regions.front()
                     .getBody()
                     .front()
-                    .getOps<wafer::SyncLocalFenceOp>()
+                    .getOps<wafer::SyncNCCJoinOp>()
                     .begin();
   mlir::OpBuilder builder(fence);
   builder.create<wafer::SyncNCCJoinOp>(fence.getLoc(),

@@ -152,7 +152,7 @@ typedef struct WaferTx81ProfilerLaunchConfig {
  * Counter order is statistics-window, FU union, CT, NE, RDMA, WDMA, TDMA,
  * scalar.  Instruction and blocking arrays are worker-major, then
  * CT/NE/RDMA/WDMA/TDMA.  Values remain raw until their measurement basis is
- * qualified for the exact target profile.
+ * qualified for the exact current target ABI.
  */
 typedef struct WaferTx81ProfilerPMUSnapshot {
   uint64_t counters[WAFER_TX81_PROFILER_PMU64_COUNTERS];

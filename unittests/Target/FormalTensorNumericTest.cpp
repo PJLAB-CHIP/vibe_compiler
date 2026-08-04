@@ -19,8 +19,6 @@ namespace {
 
 using namespace wafer;
 
-constexpr TargetProfileId kTargetProfile =
-    TargetProfileId::waferTx81SingleCardKernelV1();
 constexpr ModelProfileId kModelProfile =
     ModelProfileId::formalDeterministicV1();
 
@@ -57,8 +55,7 @@ ResolvedNumericCommand resolve(NumericCommandKey key) {
 uint16_t findConvertOpcode(LogicalFormat source, LogicalFormat destination,
                            TargetConvertParameterKind parameterKind) {
   for (const TargetConvertRoute &route : getTargetConvertRoutes())
-    if (route.profile == kTargetProfile && route.source == source &&
-        route.destination == destination &&
+    if (route.source == source && route.destination == destination &&
         route.parameterKind == parameterKind)
       return route.opcode;
   ADD_FAILURE() << "missing requested convert route";
@@ -74,7 +71,7 @@ ResolvedNumericCommand makeConvert(LogicalFormat source,
   NumericTensorKey destinationKey =
       makeTensor(destination, MemLayout::Tensor, std::move(shape));
   return resolve(llvm::cantFail(NumericCommandKey::createCTConvert(
-      kTargetProfile, opcode, std::move(sourceKey), std::move(destinationKey),
+      opcode, std::move(sourceKey), std::move(destinationKey),
       NumericConvertParameter::roundingMode(
           NumericRoundingMode::NearestEven))));
 }
@@ -88,7 +85,7 @@ ResolvedNumericCommand makePlainConvert(LogicalFormat source,
   NumericTensorKey destinationKey =
       makeTensor(destination, MemLayout::Tensor, std::move(shape));
   return resolve(llvm::cantFail(NumericCommandKey::createCTConvert(
-      kTargetProfile, opcode, std::move(sourceKey), std::move(destinationKey),
+      opcode, std::move(sourceKey), std::move(destinationKey),
       std::nullopt)));
 }
 
@@ -101,7 +98,7 @@ ResolvedNumericCommand makeElementwise(NumericElementwiseOperation operation,
   for (unsigned index = 0; index < arity; ++index)
     inputs.push_back(makeTensor(input, MemLayout::Tensor, shape));
   return resolve(llvm::cantFail(NumericCommandKey::createCTElementwise(
-      kTargetProfile, operation, std::move(inputs),
+      operation, std::move(inputs),
       makeTensor(destination, MemLayout::Tensor, std::move(shape)))));
 }
 
@@ -111,7 +108,7 @@ ResolvedNumericCommand makeGemm(LogicalFormat format, uint32_t batch,
   std::vector<uint64_t> rhsShape{batch, k, n};
   std::vector<uint64_t> destinationShape{batch, m, n};
   return resolve(llvm::cantFail(NumericCommandKey::createNEGemm(
-      kTargetProfile, makeTensor(format, MemLayout::NCx, std::move(lhsShape)),
+      makeTensor(format, MemLayout::NCx, std::move(lhsShape)),
       makeTensor(format, MemLayout::NCx, std::move(rhsShape)),
       makeTensor(format, MemLayout::NCx, std::move(destinationShape)), m, k, n,
       batch, llvm::cantFail(getCanonicalNumericGemmAxes(/*rank=*/3)))));
@@ -128,7 +125,7 @@ ResolvedNumericCommand makeOrientedGemm(LogicalFormat format, uint32_t m,
                                        ? std::vector<uint64_t>{k, n}
                                        : std::vector<uint64_t>{n, k};
   return resolve(llvm::cantFail(NumericCommandKey::createNEGemm(
-      kTargetProfile, makeTensor(format, MemLayout::Cx, std::move(lhsShape)),
+      makeTensor(format, MemLayout::Cx, std::move(lhsShape)),
       makeTensor(format, MemLayout::Cx, std::move(rhsShape)),
       makeTensor(format, MemLayout::Cx, {m, n}), m, k, n,
       /*batchCount=*/1, llvm::cantFail(getCanonicalNumericGemmAxes(/*rank=*/2)),
@@ -423,7 +420,7 @@ TEST(FormalTensorNumericTest,
       makeTensor(LogicalFormat::F32, MemLayout::Cx, {2});
   ResolvedNumericCommand reduce =
       resolve(llvm::cantFail(NumericCommandKey::createNativeCTReduce(
-          kTargetProfile, NumericReduceOperation::Sum, std::move(reduceInput),
+          NumericReduceOperation::Sum, std::move(reduceInput),
           std::move(reduceDestination), NativeCTReduceDimension::Trailing0)));
   std::array<RawLogicalValue, 4> values{
       RawLogicalValue{LogicalFormat::F32, UINT64_C(0x3f800000)},

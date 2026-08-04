@@ -27,9 +27,6 @@ namespace {
 
 constexpr ModelProfileId kFormalDeterministicV1 =
     ModelProfileId::formalDeterministicV1();
-constexpr TargetProfileId kTargetProfile =
-    TargetProfileId::waferTx81SingleCardKernelV1();
-
 constexpr NumericRoundingMode kDeterministicRoundingModes[] = {
     NumericRoundingMode::NearestEven,
     NumericRoundingMode::TowardZero,
@@ -91,10 +88,7 @@ std::string makeSemanticsDigest(
   std::visit(
       [&](const auto &typedIdentity) {
         using Identity = std::decay_t<decltype(typedIdentity)>;
-        stream << "target="
-               << stringifyTargetProfileId(typedIdentity.getTargetProfile())
-               << '\n'
-               << "family="
+        stream << "family="
                << stringifyNumericCommandFamily(typedIdentity.getFamily())
                << '\n';
         if constexpr (std::is_same_v<Identity,
@@ -248,7 +242,7 @@ stringifyFormalNumericBackendKind(FormalNumericBackendKind kind) {
 const TargetConvertRoute &
 NumericCTConvertSemanticsIdentity::getCTConvertRoute() const {
   const TargetConvertRoute *route =
-      findTargetConvertRoute(targetProfile, opcode);
+      findTargetConvertRoute(opcode);
   if (!route)
     llvm_unreachable("numeric route policy lost its CT convert route");
   return *route;
@@ -280,14 +274,6 @@ NumericSemanticsProfile::getNativeCTReduceIdentity() const {
   return std::get_if<NumericNativeCTReduceSemanticsIdentity>(&identity);
 }
 
-const NumericRoutePolicyIdentity &
-NumericSemanticsProfile::getRoutePolicyIdentity() const {
-  const NumericCTConvertSemanticsIdentity *convert = getCTConvertIdentity();
-  if (!convert)
-    llvm_unreachable("non-convert semantics requested a convert identity");
-  return *convert;
-}
-
 NumericRoundingMode NumericSemanticsProfile::getRoundingMode() const {
   const NumericCTConvertSemanticsIdentity *convert = getCTConvertIdentity();
   if (!convert || !roundingMode)
@@ -296,7 +282,7 @@ NumericRoundingMode NumericSemanticsProfile::getRoundingMode() const {
 }
 
 llvm::ArrayRef<NumericSemanticsProfile>
-getRegisteredNumericSemanticsProfiles() {
+getRegisteredNumericCTConvertSemanticsProfiles() {
   static const std::vector<NumericSemanticsProfile> profiles = [] {
     std::vector<NumericSemanticsProfile> result;
     result.reserve(101);
@@ -307,9 +293,6 @@ getRegisteredNumericSemanticsProfiles() {
         getModelProfileRecord(kFormalDeterministicV1);
 
     for (const TargetConvertRoute &route : getTargetConvertRoutes()) {
-      if (route.profile != kTargetProfile)
-        llvm::report_fatal_error(
-            "numeric semantics registry saw an unexpected target profile");
       if (route.parameterKind == TargetConvertParameterKind::ZeroPoint) {
         ++zeroPointRouteCount;
         continue;
@@ -325,7 +308,7 @@ getRegisteredNumericSemanticsProfiles() {
       }
       for (NumericRoundingMode mode : modes) {
         NumericSemanticsIdentity identity = NumericCTConvertSemanticsIdentity(
-            route.profile, route.opcode, mode);
+            route.opcode, mode);
         const bool floatToInteger =
             isFloating(route.source) && isInteger(route.destination);
         const bool floatToFloat =
@@ -405,8 +388,8 @@ getRegisteredNumericSemanticsProfiles() {
         llvm::report_fatal_error(
             "numeric semantics registry produced an invalid digest");
       for (size_t other = index + 1; other < result.size(); ++other) {
-        if (result[index].getRoutePolicyIdentity() ==
-            result[other].getRoutePolicyIdentity())
+        if (*result[index].getCTConvertIdentity() ==
+            *result[other].getCTConvertIdentity())
           llvm::report_fatal_error(
               "numeric semantics registry contains a duplicate route policy");
         if (result[index].getDigest() == result[other].getDigest())
@@ -432,7 +415,7 @@ getRegisteredNumericCTElementwiseSemanticsProfiles() {
       const LogicalFormat destinationFormat =
           getElementwiseDestinationFormat(operation, inputFormat);
       NumericSemanticsIdentity identity = NumericCTElementwiseSemanticsIdentity(
-          kTargetProfile, operation, inputFormat, destinationFormat);
+          operation, inputFormat, destinationFormat);
       const bool logic = isNumericElementwiseLogic(operation);
       const bool relation = isNumericElementwiseRelation(operation);
       const std::optional<NumericRoundingMode> roundingMode =
@@ -562,7 +545,7 @@ getRegisteredNumericNEGemmSemanticsProfiles() {
       if (format == LogicalFormat::I8)
         continue;
       NumericSemanticsIdentity identity =
-          NumericNEGemmSemanticsIdentity(kTargetProfile, format);
+          NumericNEGemmSemanticsIdentity(format);
       std::string digest = makeSemanticsDigest(
           model, identity, NumericRoundingMode::NearestEven,
           NumericRoundingPointPolicy::GemmFusedMultiplyAddAndDestination,
@@ -631,7 +614,7 @@ getRegisteredNumericNativeCTReduceSemanticsProfiles() {
     const ModelProfileRecord &model =
         getModelProfileRecord(kFormalDeterministicV1);
     NumericSemanticsIdentity identity = NumericNativeCTReduceSemanticsIdentity(
-        kTargetProfile, NumericReduceOperation::Sum, LogicalFormat::F32);
+        NumericReduceOperation::Sum, LogicalFormat::F32);
     std::string digest = makeSemanticsDigest(
         model, identity, NumericRoundingMode::NearestEven,
         NumericRoundingPointPolicy::ReductionStep,

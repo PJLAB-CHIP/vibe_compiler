@@ -30,14 +30,10 @@ compileExecutableBundleToTargetLLVMModulesImpl(
     return fail(diagnostics,
                 "profile target LLVM requires the complete 16-rank domain");
 
-  const TargetProfileRecord &targetProfile =
-      getTargetProfileRecord(executionConfig.getTargetProfileId());
   const RuntimeLaunchContract &runtimeLaunchContract =
       executableBundle.getRuntimeLaunchContract();
   if (runtimeLaunchContract.getKind() !=
-          executionConfig.getRuntimeLaunchKind() ||
-      !isRuntimeLaunchContractCompatible(runtimeLaunchContract,
-                                         executionConfig.getTargetProfileId()))
+      executionConfig.getRuntimeLaunchKind())
     return fail(diagnostics,
                 "executable runtime launch contract does not match the "
                 "execution configuration");
@@ -69,14 +65,13 @@ compileExecutableBundleToTargetLLVMModulesImpl(
                   "target ABI verification failed for logical rank " +
                       std::to_string(expectedRank));
     if (prepared->logicalRank != static_cast<int64_t>(expectedRank) ||
-        prepared->targetProfile != targetProfile.id ||
+        prepared->targetIdentity != executionConfig.getTargetIdentityId() ||
         prepared->transportPreparedBeforeEntry !=
             transportPreparedBeforeEntry ||
-        prepared->targetIdentity != targetProfile.targetIdentity ||
-        prepared->kernelRuntimeABI != targetProfile.kernelRuntimeABI ||
-        prepared->moduleFormat != targetProfile.moduleFormat)
+        prepared->kernelRuntimeABI != KernelRuntimeABIId::waferTx81Kernel() ||
+        prepared->moduleFormat != kCurrentTargetModuleFormat)
       return fail(diagnostics,
-                  "prepared target profile readback failed for logical rank " +
+                  "prepared target identity readback failed for logical rank " +
                       std::to_string(expectedRank));
     preparedRanks.push_back(std::move(*prepared));
   }
@@ -107,9 +102,9 @@ llvm::Error
 verifyTargetLLVMModuleForTesting(const TargetLLVMModule &targetModule) {
   return verifyTargetLLVMModule(
       targetModule.getModule(), targetModule.getLogicalRank(),
-      targetModule.getEntrySymbol(), targetModule.getTargetProfileId(),
-      targetModule.getTargetIdentityId(), targetModule.getKernelRuntimeABIId(),
-      targetModule.getModuleFormat(), targetModule.getKernelABISlots());
+      targetModule.getEntrySymbol(), targetModule.getTargetIdentityId(),
+      targetModule.getKernelRuntimeABIId(), targetModule.getModuleFormat(),
+      targetModule.getKernelABISlots());
 }
 
 } // namespace wafer::compiler::detail

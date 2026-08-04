@@ -343,8 +343,8 @@ int runNoCard(const Options &options,
                         resource.access, true});
   }
   wafer::runtime::RuntimeEnvironment environment{
-      manifest.targetProfile, manifest.targetIdentity, manifest.runtimeABI,
-      manifest.moduleFormat, options.maxResourceBytes};
+      manifest.targetIdentity, manifest.runtimeABI, manifest.moduleFormat,
+      options.maxResourceBytes};
   if (const auto *kernel = manifest.launch.getKernel()) {
     environment.supportedKernelLaunchForms.push_back(kernel->form);
     environment.supportedKernelEntryABIs.push_back(kernel->entryABI);
@@ -378,8 +378,8 @@ int runNoCard(const Options &options,
   llvm::outs() << "package: id=" << manifest.program.getValue()
                << " schema=" << manifest.schemaVersion
                << " ranks=" << manifest.rankCount << "\n";
-  llvm::outs() << "target_profile: "
-               << wafer::stringifyTargetProfileId(manifest.targetProfile)
+  llvm::outs() << "target_identity: "
+               << wafer::stringifyTargetIdentityId(manifest.targetIdentity)
                << "\n";
   llvm::outs() << "target: "
                << wafer::stringifyTargetIdentityId(manifest.targetIdentity)

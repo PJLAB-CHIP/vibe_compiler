@@ -134,7 +134,6 @@ resolveDirectDTEContractRankCount(mlir::ModuleOp moduleOp) {
 } // namespace
 
 mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
-                                       TargetProfileId targetProfile,
                                        bool transportPreparedBeforeEntry,
                                        int64_t defaultDDRArenaArgumentIndex,
                                        int64_t logicalRank,
@@ -244,8 +243,7 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
   populateTargetLLVMStructureConversionPatterns(converter, patterns,
                                                 defaultDDRArenaArgumentIndex);
   populateTargetInstructionConversionPatterns(
-      converter, patterns, usedCallees, targetProfile,
-      dteDomain ? &*dteDomain : nullptr);
+      converter, patterns, usedCallees, dteDomain ? &*dteDomain : nullptr);
   mlir::arith::populateArithToLLVMConversionPatterns(converter, patterns);
   mlir::cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
 
@@ -269,7 +267,7 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
   if (hasDirectDTEContract &&
       mlir::failed(injectDirectDTEStatusLifecycle(
           moduleOp, dteEntrySymbol, transportStatusArgumentIndex, *dteRankCount,
-          dteBeginBuiltin, targetProfile, usedCallees)))
+          dteBeginBuiltin, usedCallees)))
     return mlir::failure();
 
   if (mlir::failed(declareCallees(moduleOp, usedCallees)))

@@ -1,16 +1,15 @@
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "program": {
     "id": 0
   },
   "target": {
-    "profile": "wafer-tx81-single-card-kernel-v1",
     "identity": "wafer-tx81-single-card",
-    "runtime_abi": "wafer-tx81-kernel-v1",
+    "runtime_abi": "wafer-tx81-kernel-v3",
     "launch": {
       "kind": "kernel",
       "form": "per-rank",
-      "entry_abi": "rank-local-pointer-block-v1",
+      "entry_abi": "rank-local-pointer-block",
       "phases": [
         "main"
       ]

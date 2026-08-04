@@ -270,7 +270,6 @@ CandidateEvaluation evaluateCompleteCandidate(
   }
   TileRegionToInstrOptions instructionOptions =
       getCommunicationOptions(config.communicationAlternative);
-  instructionOptions.targetProfile = config.targetProfile;
   return finishCandidateEvaluation(std::move(evaluation), config,
                                    instructionOptions);
 }

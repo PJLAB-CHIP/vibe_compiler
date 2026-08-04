@@ -47,7 +47,7 @@ TEST(SystemCTargetModelDTELateJoinTest,
   std::string diagnostics;
   llvm::Expected<TargetLLVMModuleBundle> bundle =
       test::buildDirectDTETargetBundle(
-          diagnostics, TargetProfileId::waferTx81SingleCardKernelV3());
+          diagnostics, TargetIdentityId::waferTx81SingleCard());
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
 

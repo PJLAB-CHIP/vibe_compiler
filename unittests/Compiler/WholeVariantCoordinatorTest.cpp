@@ -89,16 +89,16 @@ protected:
   func.func @main(%input: memref<4xf32, #wafer.memory<ddr, tensor>>) -> memref<4xf32, #wafer.memory<ddr, tensor>> {
     %loaded = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<4xf32, #wafer.memory<spm, tensor>>
     wafer.instr.rdma %input to %loaded {byte_count = 16 : i64, inner_bytes = 16 : i64, src_iterations = array<i64: 1, 1, 1>, src_strides = array<i64: 0, 0, 0>} : memref<4xf32, #wafer.memory<ddr, tensor>> to memref<4xf32, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
 )mlir";
     llvm::StringRef ringBuffer = "%loaded";
     if (privateSpill) {
       os << R"mlir(    %spill = memref.alloc() : memref<4xf32, #wafer.memory<ddr, tensor>>
     wafer.instr.wdma %loaded to %spill {byte_count = 16 : i64, inner_bytes = 16 : i64, dst_iterations = array<i64: 1, 1, 1>, dst_strides = array<i64: 0, 0, 0>} : memref<4xf32, #wafer.memory<spm, tensor>> to memref<4xf32, #wafer.memory<ddr, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %reloaded = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>} : memref<4xf32, #wafer.memory<spm, tensor>>
     wafer.instr.rdma %spill to %reloaded {byte_count = 16 : i64, inner_bytes = 16 : i64, src_iterations = array<i64: 1, 1, 1>, src_strides = array<i64: 0, 0, 0>} : memref<4xf32, #wafer.memory<ddr, tensor>> to memref<4xf32, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
 )mlir";
       ringBuffer = "%reloaded";
     }
@@ -121,7 +121,7 @@ protected:
           "dst_strides = array<i64: 0, 0, 0>} : "
           "memref<4xf32, #wafer.memory<spm, tensor>> to "
           "memref<4xf32, #wafer.memory<ddr, tensor>>\n"
-          "    wafer.instr.local_fence\n"
+          "    wafer.instr.ncc_join [0]\n"
           "    return %output : "
           "memref<4xf32, #wafer.memory<ddr, tensor>>\n"
           "  }\n"
@@ -247,16 +247,13 @@ protected:
       wafer::TensorProgramSchedulingConfig schedulingConfig;
       schedulingConfig.logicalRank = rank;
       schedulingConfig.candidateParallelism = 1;
-      schedulingConfig.targetProfile =
-          wafer::TargetProfileId::waferTx81SingleCardKernelV1();
       auto scheduled =
           wafer::buildScheduledRankCandidateFrontier(source, schedulingConfig);
       if (mlir::failed(scheduled))
         return mlir::failure();
       auto finalized =
           wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-              std::move(*scheduled),
-              wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+              std::move(*scheduled));
       if (mlir::failed(finalized))
         return mlir::failure();
 
@@ -265,8 +262,7 @@ protected:
         if (baselineCost && rank == 0 && candidate.reservedBaseline)
           *baselineCost = wafer::analysis::analyzeInstructionProgramCost(
               candidate.module.get(),
-              wafer::analysis::getTargetScheduleCostPolicy(
-                  wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+              wafer::analysis::getTargetScheduleCostPolicy());
         frontiers[rank].push_back(
             {std::move(candidate.module), candidate.stableOrdinal,
              candidate.artifactKind, candidate.reservedBaseline,
@@ -277,8 +273,7 @@ protected:
     }
     auto executionConfig =
         wafer::compiler::ExecutionConfig::createForSingleCard(
-            rankCount, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-            wafer::RuntimeLaunchKind::Kernel);
+            rankCount, wafer::RuntimeLaunchKind::Kernel);
     if (!executionConfig)
       return mlir::failure();
     std::string dataflowFailure;
@@ -353,26 +348,25 @@ protected:
 TEST_F(WholeVariantCoordinatorTest,
        UsesCoordinatedFallbackBeyondTheBestFirstVisitBound) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   frontiers[0].push_back(candidate(kSendMismatched, 16, 0, 0));
   frontiers[0].push_back(candidate(kSendMatched, 16, 0, 5));
   frontiers[0].push_back(
-      candidate((kSendMatched + "    wafer.instr.local_fence\n").str(), 16, 100,
+      candidate((kSendMatched + "    wafer.instr.ncc_join [0]\n").str(), 16, 100,
                 9, true));
   frontiers[1].push_back(candidate(kRecvMismatched, 16, 0, 0));
   frontiers[1].push_back(candidate(kRecvMatched, 16, 0, 5));
   frontiers[1].push_back(
-      candidate((kRecvMatched + "    wafer.instr.local_fence\n").str(), 16, 100,
+      candidate((kRecvMatched + "    wafer.instr.ncc_join [0]\n").str(), 16, 100,
                 9, true));
   for (int rank = 2; rank < 16; ++rank) {
     frontiers[rank].push_back(candidate("", 16, 0, 0));
     frontiers[rank].push_back(candidate("", 16, 0, 5));
     frontiers[rank].push_back(
-        candidate("    wafer.instr.local_fence", 16, 100, 9, true));
+        candidate("    wafer.instr.ncc_join [0]", 16, 100, 9, true));
   }
 
   wafer::frontend::FrontendProgramVerificationResult program;
@@ -403,14 +397,13 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        DoesNotMixDistinctGenerationOrdinalsAcrossRanks) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   for (int rank = 0; rank < 16; ++rank) {
     frontiers[rank].push_back(
-        candidate("    wafer.instr.local_fence", 16, 100, 9, true));
+        candidate("    wafer.instr.ncc_join [0]", 16, 100, 9, true));
     frontiers[rank].push_back(candidate("", 16, 0, rank == 0 ? 0 : 2));
   }
 
@@ -431,14 +424,13 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        DoesNotMixPhysicalArtifactKindsAcrossRanks) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   for (int rank = 0; rank < 16; ++rank) {
     frontiers[rank].push_back(
-        candidate("    wafer.instr.local_fence", 16, 100, 9, true));
+        candidate("    wafer.instr.ncc_join [0]", 16, 100, 9, true));
     frontiers[rank].push_back(
         candidate("", 16, 0, 0, false,
                   rank == 0 ? wafer::RankArtifactKind::Resident
@@ -464,14 +456,13 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        DoesNotMixFixedSlotAndSingleBufferingAcrossRanks) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   for (int rank = 0; rank < 16; ++rank) {
     frontiers[rank].push_back(
-        candidate("    wafer.instr.local_fence", 16, 100, 9, true));
+        candidate("    wafer.instr.ncc_join [0]", 16, 100, 9, true));
     frontiers[rank].push_back(candidate(
         "", 16, 0, 0, false, wafer::RankArtifactKind::Spill,
         rank == 0 ? wafer::RankBufferingKind::StaticFixedSlot
@@ -498,14 +489,13 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        DoesNotMixDistinctFixedSlotPlansAcrossRanks) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   for (int rank = 0; rank < 16; ++rank) {
     frontiers[rank].push_back(
-        candidate("    wafer.instr.local_fence", 16, 100, 9, true));
+        candidate("    wafer.instr.ncc_join [0]", 16, 100, 9, true));
     frontiers[rank].push_back(candidate(
         "", 16, 0, 0, false, wafer::RankArtifactKind::Spill,
         wafer::RankBufferingKind::StaticFixedSlot,
@@ -529,14 +519,13 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        DoesNotMixPlacedAndUnplacedWorkerIdentitiesAcrossRanks) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   for (int rank = 0; rank < 16; ++rank) {
     frontiers[rank].push_back(
-        candidate("    wafer.instr.local_fence", 16, 100, 9, true));
+        candidate("    wafer.instr.ncc_join [0]", 16, 100, 9, true));
     frontiers[rank].push_back(
         candidate("", 16, 0, 0, false, wafer::RankArtifactKind::Spill,
                   wafer::RankBufferingKind::Single, 0,
@@ -566,14 +555,13 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        DoesNotMixDistinctWorkerPlacementPlansAcrossRanks) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   for (int rank = 0; rank < 16; ++rank) {
     frontiers[rank].push_back(
-        candidate("    wafer.instr.local_fence", 16, 100, 9, true));
+        candidate("    wafer.instr.ncc_join [0]", 16, 100, 9, true));
     frontiers[rank].push_back(
         candidate("", 16, 0, 0, false, wafer::RankArtifactKind::Spill,
                   wafer::RankBufferingKind::Single, 0,
@@ -599,8 +587,7 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        ProductionAndQualificationRejectMetadataOnlyMixedDTEFixedSlots) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   auto bodyFor = [](int64_t rank, bool addUnnecessaryDrain) {
@@ -688,8 +675,7 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        MetadataOnlyUnattemptableSlotsPreserveTheEagerWinner) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   auto makeFrontiers = [&](bool lazy) {
@@ -704,7 +690,7 @@ TEST_F(WholeVariantCoordinatorTest,
                                             wafer::RankArtifactKind::Spill));
       }
       frontiers[rank].push_back(
-          candidate("    wafer.instr.local_fence", 16, 100, 0, true));
+          candidate("    wafer.instr.ncc_join [0]", 16, 100, 0, true));
       frontiers[rank].push_back(candidate("", 16, 0, 1));
     }
     return frontiers;
@@ -736,12 +722,11 @@ TEST_F(WholeVariantCoordinatorTest,
 
 TEST_F(WholeVariantCoordinatorTest, RejectsMetadataOnlyAttemptableSlot) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
-  frontiers[0].push_back(candidate("    wafer.instr.local_fence", 1, 0, 9,
+  frontiers[0].push_back(candidate("    wafer.instr.ncc_join [0]", 1, 0, 9,
                                    /*reservedBaseline=*/true));
   frontiers[0].push_back({mlir::OwningOpRef<mlir::ModuleOp>{},
                           /*stableOrdinal=*/0, wafer::RankArtifactKind::Spill,
@@ -762,8 +747,7 @@ TEST_F(WholeVariantCoordinatorTest, RejectsMetadataOnlyAttemptableSlot) {
 TEST_F(WholeVariantCoordinatorTest,
        RejectsCompleteFrontierWithoutMutatingCandidateBindings) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
@@ -792,8 +776,7 @@ TEST_F(WholeVariantCoordinatorTest,
 
 TEST_F(WholeVariantCoordinatorTest, RetainsBaselineWhenExactCostsAreEqual) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(candidate("", 1, 0, 3, true));
@@ -815,12 +798,11 @@ TEST_F(WholeVariantCoordinatorTest, RetainsBaselineWhenExactCostsAreEqual) {
 TEST_F(WholeVariantCoordinatorTest,
        SelectsStrictlyDominatingAlternativeAfterBaselineAcceptance) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(
-      candidate("    wafer.instr.local_fence", 1, 100, 5, true));
+      candidate("    wafer.instr.ncc_join [0]", 1, 100, 5, true));
   frontiers[0].push_back(candidate("", 1, 0, 0));
 
   wafer::frontend::FrontendProgramVerificationResult program;
@@ -839,15 +821,14 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        ProfileSelectionRetainsAcceptedBaselineBesideProductionWinner) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(
-      candidate("    wafer.instr.local_fence", 1, 100, 5, true));
+      candidate("    wafer.instr.ncc_join [0]", 1, 100, 5, true));
   frontiers[0].push_back(candidate("", 1, 0, 0));
   frontiers[0].push_back(candidate(
-      "    wafer.instr.local_fence\n    wafer.instr.local_fence", 1, 0, 1));
+      "    wafer.instr.ncc_join [0]\n    wafer.instr.ncc_join [0]", 1, 0, 1));
 
   wafer::frontend::FrontendProgramVerificationResult program;
   program.logicalRankCount = 1;
@@ -880,8 +861,7 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        ProfileSelectionAliasesRolesWhenBaselineIsTheProductionWinner) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(candidate("", 1, 0, 5, true));
@@ -903,12 +883,11 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        ReservedBaselineModeBypassesThePreferredProductionWinner) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(
-      candidate("    wafer.instr.local_fence", 1, 0, 9, true));
+      candidate("    wafer.instr.ncc_join [0]", 1, 0, 9, true));
   frontiers[0].push_back(candidate("", 1, 0, 1));
 
   wafer::frontend::FrontendProgramVerificationResult program;
@@ -935,7 +914,7 @@ TEST_F(WholeVariantCoordinatorTest,
 
   unsigned fences = 0;
   baseline->ranks.front().getModule().walk(
-      [&](wafer::SyncLocalFenceOp) { ++fences; });
+      [&](wafer::SyncNCCJoinOp) { ++fences; });
   EXPECT_EQ(fences, 1u);
 }
 
@@ -983,8 +962,7 @@ TEST_F(WholeVariantCoordinatorTest,
   };
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   for (int64_t rank = 0; rank < 16; ++rank)
@@ -1064,8 +1042,7 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        CharacterizationModeFailsWhenAcceptedPhaseIsMissing) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(candidate("", 1, 0, 0, true));
@@ -1086,8 +1063,7 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        NoCResidentRingQualificationUsesCurrentIRInsteadOfArtifactKind) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   wafer::frontend::FrontendProgramVerificationResult program =
       replicated1DProgram(/*inputCount=*/1, /*elementCount=*/4, "float32",
@@ -1130,8 +1106,7 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        NoCResidentRingQualificationRejectsPrivateDDRUnderResidentLabel) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   for (int64_t rank = 0; rank < 16; ++rank) {
@@ -1225,8 +1200,7 @@ module {
 TEST_F(WholeVariantCoordinatorTest,
        NoCResidentRingQualificationRejectsReservedBoundaryOnlyCandidate) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   for (int64_t rank = 0; rank < 16; ++rank)
@@ -1256,17 +1230,16 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        SelectsFinalParetoWinnerInsteadOfFirstBaselineImprovement) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(
-      candidate("    wafer.instr.local_fence\n    wafer.instr.local_fence", 1,
+      candidate("    wafer.instr.ncc_join [0]\n    wafer.instr.ncc_join [0]", 1,
                 200, 5, true));
   // The earlier stable ordinal is visited first, but the later candidate has a
   // strictly lower final instruction count and must replace it on the exact
   // Pareto frontier.
-  frontiers[0].push_back(candidate("    wafer.instr.local_fence", 1, 0, 0));
+  frontiers[0].push_back(candidate("    wafer.instr.ncc_join [0]", 1, 0, 0));
   frontiers[0].push_back(candidate("", 1, 100, 1));
 
   wafer::frontend::FrontendProgramVerificationResult program;
@@ -1306,8 +1279,7 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        PrefersFewerParticipantWaitsOverFewerJoinOperationsWhenDDRIsEqual) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(candidate(
@@ -1340,18 +1312,17 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        SkipsTargetGateForParetoRejectedOptimizedCandidates) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(
-      candidate("    wafer.instr.local_fence\n    wafer.instr.local_fence\n"
-                "    wafer.instr.local_fence",
+      candidate("    wafer.instr.ncc_join [0]\n    wafer.instr.ncc_join [0]\n"
+                "    wafer.instr.ncc_join [0]",
                 1, 0, 9, true));
   frontiers[0].push_back(candidate("", 1, 0, 0));
-  frontiers[0].push_back(candidate("    wafer.instr.local_fence", 1, 0, 1));
+  frontiers[0].push_back(candidate("    wafer.instr.ncc_join [0]", 1, 0, 1));
   frontiers[0].push_back(candidate(
-      "    wafer.instr.local_fence\n    wafer.instr.local_fence", 1, 0, 2));
+      "    wafer.instr.ncc_join [0]\n    wafer.instr.ncc_join [0]", 1, 0, 2));
   frontiers[0].push_back(candidate("", 1, 0, 3));
 
   wafer::frontend::FrontendProgramVerificationResult program;
@@ -1373,12 +1344,11 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        SkipsTargetGateForLaterEquivalentStaticOrderCandidate) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(
-      candidate("    wafer.instr.local_fence", 1, 0, 9, true));
+      candidate("    wafer.instr.ncc_join [0]", 1, 0, 9, true));
   frontiers[0].push_back(candidate("", 1, 0, 0));
   frontiers[0].push_back(candidate("", 1, 0, 1));
 
@@ -1400,8 +1370,7 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        ParetoCapPreservesLateExternalMovementPolicyBestCandidate) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   const auto appendDDRRead = [](llvm::raw_ostream &os,
@@ -1423,7 +1392,7 @@ TEST_F(WholeVariantCoordinatorTest,
           "#wafer.spm_offset<65536>} : "
           "memref<4xf32, #wafer.memory<spm, tensor>>\n";
     appendDDRRead(os, "%buffer");
-    os << "    wafer.instr.local_fence\n";
+    os << "    wafer.instr.ncc_join [0]\n";
   }
   frontiers[0].push_back(candidate(baselineBody, 1, 0, 100, true));
   for (int64_t ordinal = 0; ordinal < 17; ++ordinal) {
@@ -1443,7 +1412,7 @@ TEST_F(WholeVariantCoordinatorTest,
     // for a strict DDR reduction.
     if (ordinal < 16)
       appendDDRRead(os, "%buffer");
-    os << "    wafer.instr.local_fence\n";
+    os << "    wafer.instr.ncc_join [0]\n";
     frontiers[0].push_back(candidate(body, 1, 0, ordinal));
   }
 
@@ -1466,16 +1435,15 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        LateTargetFailurePreservesBaselineAndContinuesLaterCandidates) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(
-      candidate("    wafer.instr.local_fence\n    wafer.instr.local_fence", 1,
+      candidate("    wafer.instr.ncc_join [0]\n    wafer.instr.ncc_join [0]", 1,
                 0, 9, true));
   frontiers[0].push_back(
       candidateWithUnboundEntryArgument("", 1, /*stableOrdinal=*/0));
-  frontiers[0].push_back(candidate("    wafer.instr.local_fence", 1, 0, 1));
+  frontiers[0].push_back(candidate("    wafer.instr.ncc_join [0]", 1, 0, 1));
 
   wafer::frontend::FrontendProgramVerificationResult program;
   program.logicalRankCount = 1;
@@ -1496,12 +1464,11 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        ReservedBaselineTargetFailureCannotBeMaskedByOptimizedCandidate) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(candidateWithUnboundEntryArgument(
-      "    wafer.instr.local_fence", 1, /*stableOrdinal=*/9,
+      "    wafer.instr.ncc_join [0]", 1, /*stableOrdinal=*/9,
       /*reservedBaseline=*/true));
   frontiers[0].push_back(candidate("", 1, 0, 0));
 
@@ -1528,8 +1495,7 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        UsesValidatedSPMHighWaterInExactParetoSelection) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   constexpr llvm::StringLiteral highWater = R"mlir(
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<131072>} : memref<4xf32, #wafer.memory<spm, tensor>>
@@ -1555,12 +1521,11 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        StaticPolicyAcceptsKnownExecutionGainWithinSPMCapacity) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   constexpr llvm::StringLiteral lowWaterWithFence = R"mlir(
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<4xf32, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
 )mlir";
   constexpr llvm::StringLiteral highWaterWithoutFence = R"mlir(
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<131072>} : memref<4xf32, #wafer.memory<spm, tensor>>
@@ -1617,18 +1582,15 @@ module {
                                                         context.get());
   ASSERT_TRUE(source);
 
-  constexpr wafer::TargetProfileId targetProfile =
-      wafer::TargetProfileId::waferTx81SingleCardKernelV3();
   wafer::TensorProgramSchedulingConfig schedulingConfig;
   schedulingConfig.logicalRank = 0;
   schedulingConfig.candidateParallelism = 1;
-  schedulingConfig.targetProfile = targetProfile;
   auto scheduled =
       wafer::buildScheduledRankCandidateFrontier(*source, schedulingConfig);
   ASSERT_TRUE(mlir::succeeded(scheduled));
   auto finalized =
       wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-          std::move(*scheduled), targetProfile);
+          std::move(*scheduled));
   ASSERT_TRUE(mlir::succeeded(finalized));
 
   bool sawProductionWorkerPlacement = false;
@@ -1669,7 +1631,7 @@ module {
   ASSERT_TRUE(sawProductionWorkerPlacement);
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, targetProfile, wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   wafer::frontend::FrontendProgramVerificationResult program =
       replicated1DProgram(/*inputCount=*/3, /*elementCount=*/1024, "f32",
@@ -1737,15 +1699,12 @@ module {
   wafer::TensorProgramSchedulingConfig schedulingConfig;
   schedulingConfig.logicalRank = 0;
   schedulingConfig.candidateParallelism = 1;
-  schedulingConfig.targetProfile =
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1();
   auto scheduled =
       wafer::buildScheduledRankCandidateFrontier(*source, schedulingConfig);
   ASSERT_TRUE(mlir::succeeded(scheduled));
   auto finalized =
       wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-          std::move(*scheduled),
-          wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+          std::move(*scheduled));
   ASSERT_TRUE(mlir::succeeded(finalized));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
@@ -1763,8 +1722,7 @@ module {
     wafer::analysis::InstructionProgramCost exact =
         wafer::analysis::analyzeInstructionProgramCost(
             candidate.module.get(),
-            wafer::analysis::getTargetScheduleCostPolicy(
-                wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+            wafer::analysis::getTargetScheduleCostPolicy());
     if (candidate.reservedBaseline) {
       baselineInstructions = exact.instructionCount.value;
       baselineHighWater = exact.spmHighWaterBytes.value;
@@ -1789,8 +1747,7 @@ module {
   EXPECT_LE(*reciprocalHighWater, *baselineHighWater);
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   wafer::frontend::FrontendProgramVerificationResult program;
   program.logicalRankCount = 1;
@@ -1857,8 +1814,7 @@ module {
 TEST_F(WholeVariantCoordinatorTest,
        DoesNotUseAlternativeToMaskReservedBaselineFailure) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   constexpr llvm::StringLiteral oversizedSPM = R"mlir(
@@ -2569,8 +2525,6 @@ module {
   wafer::TensorProgramSchedulingConfig schedulingConfig;
   schedulingConfig.logicalRank = 0;
   schedulingConfig.candidateParallelism = 1;
-  schedulingConfig.targetProfile =
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1();
   auto rankFrontier =
       wafer::buildScheduledRankCandidateFrontier(*source, schedulingConfig);
   ASSERT_TRUE(mlir::succeeded(rankFrontier));
@@ -2891,8 +2845,7 @@ module {
   const wafer::WaferTargetPolicy targetPolicy =
       wafer::getDefaultWaferTargetPolicy();
   const wafer::analysis::TargetScheduleCostPolicy scheduleCostPolicy =
-      wafer::analysis::getTargetScheduleCostPolicy(
-          wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      wafer::analysis::getTargetScheduleCostPolicy();
 
   unsigned totalGemmCount = 0;
   unsigned totalDTEIssueCount = 0;

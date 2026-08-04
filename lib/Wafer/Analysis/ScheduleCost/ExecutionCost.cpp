@@ -332,8 +332,7 @@ static uint64_t countParticipants(uint32_t participantMask) {
 }
 
 static bool isInstructionProgramOperation(mlir::Operation *op) {
-  return mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp,
-                   SyncNCCJoinOp>(op);
+  return mlir::isa<WaferInstructionOpInterface, SyncNCCJoinOp>(op);
 }
 
 static bool hasFollowingExecutableWork(mlir::Operation *op) {

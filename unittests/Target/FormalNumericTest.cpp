@@ -32,8 +32,6 @@ using wafer::RawLogicalValue;
 using wafer::ResolvedNumericCommand;
 using wafer::TargetConvertParameterKind;
 
-constexpr wafer::TargetProfileId kTargetProfile =
-    wafer::TargetProfileId::waferTx81SingleCardKernelV1();
 constexpr wafer::ModelProfileId kModelProfile =
     wafer::ModelProfileId::formalDeterministicV1();
 
@@ -47,7 +45,7 @@ std::optional<ResolvedNumericCommand>
 getResolution(uint16_t opcode,
               NumericRoundingMode mode = NumericRoundingMode::NearestEven) {
   const wafer::TargetConvertRoute *route =
-      wafer::findTargetConvertRoute(kTargetProfile, opcode);
+      wafer::findTargetConvertRoute(opcode);
   if (!route) {
     ADD_FAILURE() << "missing test CT convert route " << opcode;
     return std::nullopt;
@@ -71,7 +69,7 @@ getResolution(uint16_t opcode,
     return std::nullopt;
   }
   llvm::Expected<NumericCommandKey> key = NumericCommandKey::createCTConvert(
-      kTargetProfile, opcode, std::move(*source), std::move(*destination),
+      opcode, std::move(*source), std::move(*destination),
       parameter);
   if (!key) {
     ADD_FAILURE() << llvm::toString(key.takeError());
@@ -108,7 +106,7 @@ getElementwiseResolution(NumericElementwiseOperation operation,
       wafer::getNumericElementwiseArity(operation), input);
   llvm::Expected<NumericCommandKey> key =
       NumericCommandKey::createCTElementwise(
-          kTargetProfile, operation, std::move(inputs),
+          operation, std::move(inputs),
           makeTensor(destinationFormat, MemLayout::Tensor, {1}));
   if (!key) {
     ADD_FAILURE() << llvm::toString(key.takeError());
@@ -131,7 +129,7 @@ std::optional<ResolvedNumericCommand> getGemmResolution(LogicalFormat format) {
     return std::nullopt;
   }
   llvm::Expected<NumericCommandKey> key = NumericCommandKey::createNEGemm(
-      kTargetProfile, makeTensor(format, MemLayout::Cx, {1, 1}),
+      makeTensor(format, MemLayout::Cx, {1, 1}),
       makeTensor(format, MemLayout::NCx, {1, 1}),
       makeTensor(format, MemLayout::Cx, {1, 1}), 1, 1, 1, 1, std::move(*axes));
   if (!key) {
@@ -223,13 +221,13 @@ uint64_t largestFiniteBits(const wafer::LogicalFormatDescriptor &descriptor) {
 
 TEST(FormalNumericTest, ExecutesZeroAndBoundarySmokeForAll101Rows) {
   llvm::ArrayRef<NumericSemanticsProfile> profiles =
-      wafer::getRegisteredNumericSemanticsProfiles();
+      wafer::getRegisteredNumericCTConvertSemanticsProfiles();
   ASSERT_EQ(profiles.size(), 101u);
 
   size_t executedRows = 0;
   for (const NumericSemanticsProfile &semantics : profiles) {
     const wafer::TargetConvertRoute &route =
-        semantics.getRoutePolicyIdentity().getCTConvertRoute();
+        semantics.getCTConvertIdentity()->getCTConvertRoute();
     SCOPED_TRACE(
         route.canonicalSpelling.str() + "/" +
         wafer::stringifyNumericRoundingMode(semantics.getRoundingMode()).str());
@@ -665,7 +663,7 @@ TEST(FormalNumericTest, RejectsUnsupportedResolutionWithoutChangingContext) {
   ASSERT_TRUE(static_cast<bool>(source));
   ASSERT_TRUE(static_cast<bool>(destination));
   llvm::Expected<NumericCommandKey> key = NumericCommandKey::createCTConvert(
-      kTargetProfile, /*int32_fp16=*/147, std::move(*source),
+      /*int32_fp16=*/147, std::move(*source),
       std::move(*destination),
       NumericConvertParameter::roundingMode(NumericRoundingMode::Stochastic));
   ASSERT_TRUE(static_cast<bool>(key))

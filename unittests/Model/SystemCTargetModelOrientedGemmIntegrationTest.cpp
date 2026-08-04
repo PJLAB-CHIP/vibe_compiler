@@ -109,11 +109,11 @@ llvm::Error rewriteGemmAsOrientationChain(TargetLLVMModuleBundle &bundle) {
     if (!call || !call->getCalledFunction())
       continue;
     llvm::StringRef name = call->getCalledFunction()->getName();
-    if (name == "wafer_tx81_gemm") {
+    if (name == "wafer_tx81_gemm_v3") {
       if (gemm)
         return llvm::createStringError("expected one GEMM call");
       gemm = call;
-    } else if (name == "wafer_tx81_wdma") {
+    } else if (name == "wafer_tx81_wdma_v3") {
       hasWdma = true;
     }
   }
@@ -128,10 +128,11 @@ llvm::Error rewriteGemmAsOrientationChain(TargetLLVMModuleBundle &bundle) {
   llvm::Type *i64 = builder.getInt64Ty();
   llvm::Type *i32 = builder.getInt32Ty();
   llvm::FunctionType *functionType = llvm::FunctionType::get(
-      builder.getVoidTy(), {i64, i64, i64, i32, i32, i32, i32, i32, i32, i32},
+      builder.getVoidTy(),
+      {i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32},
       false);
   llvm::FunctionCallee oriented =
-      module.getOrInsertFunction("wafer_tx81_gemm_oriented_v2", functionType);
+      module.getOrInsertFunction("wafer_tx81_gemm_oriented_v3", functionType);
   auto emit = [&](llvm::Value *callLhs, llvm::Value *callRhs,
                   llvm::Value *callDestination, GemmOrientation lhsOrientation,
                   GemmOrientation rhsOrientation) {
@@ -140,7 +141,8 @@ llvm::Error rewriteGemmAsOrientationChain(TargetLLVMModuleBundle &bundle) {
                    gemm->getArgOperand(4), gemm->getArgOperand(5),
                    gemm->getArgOperand(6), gemm->getArgOperand(7),
                    builder.getInt32(static_cast<uint32_t>(lhsOrientation)),
-                   builder.getInt32(static_cast<uint32_t>(rhsOrientation))});
+                   builder.getInt32(static_cast<uint32_t>(rhsOrientation)),
+                   gemm->getArgOperand(8)});
   };
   emit(lhs, rhs, destination, GemmOrientation::Normal, GemmOrientation::Normal);
   emit(lhs, rhs, destination, GemmOrientation::Normal,
@@ -183,8 +185,7 @@ module {
   program.distributedInputs = {boundary(0), boundary(1)};
   program.distributedOutputs = {boundary(0)};
   llvm::Expected<ExecutionConfig> config = ExecutionConfig::createForSingleCard(
-      1, TargetProfileId::waferTx81SingleCardKernelV2(),
-      RuntimeLaunchKind::Kernel);
+      1, RuntimeLaunchKind::Kernel);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);

@@ -26,11 +26,10 @@ using namespace wafer::model;
 
 static llvm::Expected<size_t>
 cloneIndependentNCCAfterSendIssue(TargetLLVMModuleBundle &bundle) {
-  const TargetProfileId targetProfile =
-      bundle.getExecutionConfig().getTargetProfileId();
+  const TargetIdentityId targetIdentity =
+      bundle.getExecutionConfig().getTargetIdentityId();
   const llvm::StringRef issueSymbol =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue,
-                              targetProfile)
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue)
           .symbol;
   size_t inserted = 0;
   for (const TargetLLVMModule &targetModule : bundle.getModules()) {
@@ -80,7 +79,7 @@ TEST(SystemCTargetModelDTEReadinessTest,
   std::string diagnostics;
   llvm::Expected<TargetLLVMModuleBundle> bundle =
       test::buildDirectDTETargetBundle(
-          diagnostics, TargetProfileId::waferTx81SingleCardKernelV3());
+          diagnostics);
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
 

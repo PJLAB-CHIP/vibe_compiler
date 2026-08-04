@@ -46,7 +46,7 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = (
     transport_catalog.CALIBRATION_LEAF_BINDINGS
 )
 LAUNCH_KIND = "kernel"
-TARGET_PROFILE = "wafer-tx81-single-card-kernel-v3"
+TARGET_IDENTITY = "wafer-tx81-single-card"
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_dte_ncc_execution_probe.c"
@@ -320,7 +320,6 @@ def compile_package(
             "--output-program-dir",
             str(package),
             f"--execution-ranks={RANK_COUNT}",
-            f"--target-profile={TARGET_PROFILE}",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
@@ -333,8 +332,8 @@ def compile_package(
         element_type="f32",
     )
     manifest = json.loads((package / "manifest.json").read_text())
-    if manifest.get("target", {}).get("profile") != TARGET_PROFILE:
-        raise RuntimeError("ordered DTE/NCC package target profile is not V3")
+    if manifest.get("target", {}).get("identity") != TARGET_IDENTITY:
+        raise RuntimeError("ordered DTE/NCC package target identity is invalid")
     host_resources = (
         resource
         for resource in manifest["resources"]
@@ -409,15 +408,14 @@ def execute_production_baseline(
             "--output-program-dir",
             str(package),
             f"--execution-ranks={RANK_COUNT}",
-            f"--target-profile={TARGET_PROFILE}",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )
     bindings = production_baseline.validate_manifest(package)
     manifest = json.loads((package / "manifest.json").read_text())
-    if manifest.get("target", {}).get("profile") != TARGET_PROFILE:
-        raise RuntimeError("ordered DTE/NCC baseline target profile is not V3")
+    if manifest.get("target", {}).get("identity") != TARGET_IDENTITY:
+        raise RuntimeError("ordered DTE/NCC baseline target identity is invalid")
     resource_args = production_baseline.write_raw_files(
         baseline_work_dir, bindings
     )

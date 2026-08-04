@@ -4,7 +4,6 @@
 #define WAFER_ANALYSIS_SCHEDULECOSTANALYSIS_H
 
 #include "Wafer/Support/TargetPolicy.h"
-#include "Wafer/Target/TargetProfile.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -71,12 +70,8 @@ enum class NoCCollectiveKind : uint8_t {
 /// nominal, and conservative-bound fields are deliberately distinct:
 /// reporting references must not silently become production bounds.
 struct TargetScheduleCostPolicy {
-  explicit constexpr TargetScheduleCostPolicy(TargetProfileId targetProfile)
-      : targetProfile(targetProfile) {}
-
-  TargetProfileId targetProfile;
   /// Exact same-worker NCC engine group with compiler-shipped overlap
-  /// qualification. A zero mask means the target contract has no qualified
+  /// qualification. A zero mask means the current target has no qualified
   /// group. Bits use the closed InstrFamily enum values; this is an ordinal
   /// profitability fact, not a latency estimate.
   uint32_t qualifiedOverlapFamilyMask = 0;
@@ -155,8 +150,7 @@ struct TargetScheduleCostPolicy {
       static_cast<uint64_t>(TargetMemoryPolicy{}.spmLimit);
 };
 
-TargetScheduleCostPolicy
-getTargetScheduleCostPolicy(TargetProfileId targetProfile);
+TargetScheduleCostPolicy getTargetScheduleCostPolicy();
 
 struct ScheduleComputeCost {
   ScheduleCostMetric npuF16Bf16LogicalOps;
@@ -282,7 +276,7 @@ struct ModeledNoCRouteCost {
 /// Work and traffic dimensions are summed over the complete variant. SPM
 /// remains private to a tile, so both the maximum per-rank high-water and the
 /// sum of rank-local high-waters are retained. No bandwidth-to-time conversion
-/// is performed here: the current target contract does not establish issue
+/// is performed here: the current target does not establish issue
 /// timing or cross-resource overlap.
 struct WholeCardInstructionProgramCost {
   llvm::SmallVector<InstructionProgramCost, 16> rankCosts;
@@ -319,7 +313,7 @@ struct WholeCardInstructionProgramCost {
   ScheduleCostMetric idealizedMinimumPeakLinkByteDemand;
   /// Explicitly modeled link pressure. This is kept separate from exact
   /// final-IR work and route-independent lower bounds because the current
-  /// target contract does not expose the hardware's selected physical routes.
+  /// target does not expose the hardware's selected physical routes.
   ModeledNoCRouteCost modeledNoCRoute;
   /// Maximum minimum-hop distance among final send sites that may execute.
   /// This remains a typed-topology lower bound; dynamic execution multiplicity

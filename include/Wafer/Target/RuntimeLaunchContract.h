@@ -3,8 +3,6 @@
 #ifndef WAFER_TARGET_RUNTIMELAUNCHCONTRACT_H
 #define WAFER_TARGET_RUNTIMELAUNCHCONTRACT_H
 
-#include "Wafer/Target/TargetProfile.h"
-
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -33,12 +31,12 @@ enum class RuntimeLaunchKind : uint8_t { Kernel, Model };
 enum class KernelLaunchForm : uint8_t { PerRank, Grid, Cluster };
 
 enum class KernelEntryABI : uint8_t {
-  RankLocalPointerBlockV1,
-  RankMajorPointerTableV1,
-  RankRowPointerTableV1,
+  RankLocalPointerBlock,
+  RankMajorPointerTable,
+  RankRowPointerTable,
 };
 
-enum class ModelEntryABI : uint8_t { Tx81ModelBootParamV1 };
+enum class ModelEntryABI : uint8_t { Tx81ModelBootParam };
 
 enum class RuntimeLaunchPhaseRole : uint8_t { Prepare, Main };
 
@@ -109,9 +107,6 @@ parseModelEntryABI(llvm::StringRef canonicalSpelling);
 llvm::StringRef stringifyRuntimeLaunchPhaseRole(RuntimeLaunchPhaseRole phase);
 llvm::Expected<RuntimeLaunchPhaseRole>
 parseRuntimeLaunchPhaseRole(llvm::StringRef canonicalSpelling);
-
-bool isRuntimeLaunchContractCompatible(const RuntimeLaunchContract &launch,
-                                       TargetProfileId targetProfile);
 
 } // namespace wafer
 

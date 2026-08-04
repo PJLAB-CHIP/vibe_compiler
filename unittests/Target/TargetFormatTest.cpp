@@ -28,12 +28,7 @@ using wafer::LogicalFormat;
 using wafer::LogicalFormatCategory;
 using wafer::TargetConvertParameterKind;
 using wafer::TargetFormatConstraint;
-using wafer::TargetFormatEncodingSupport;
 using wafer::TargetFormatEngine;
-using wafer::TargetFormatUnsupportedReason;
-
-constexpr wafer::TargetProfileId kProfile =
-    wafer::TargetProfileId::waferTx81SingleCardKernelV1();
 
 TEST(TargetFormatTest, LogicalDescriptorsExactlyCoverStorageFormats) {
   llvm::ArrayRef<wafer::LogicalFormatDescriptor> descriptors =
@@ -137,7 +132,7 @@ TEST(TargetFormatTest, LogicalAndEngineLookupsHaveNoUnknownFallback) {
       std::string::npos);
 }
 
-TEST(TargetFormatTest, ProfileDataFormatCodeRegistryExactlyCoversVendorEnum) {
+TEST(TargetFormatTest, DataFormatCodeRegistryExactlyCoversVendorEnum) {
   llvm::ArrayRef<wafer::LogicalFormatDescriptor> formats =
       wafer::getLogicalFormatDescriptors();
   llvm::ArrayRef<wafer::TargetDataFormatCodeRecord> codes =
@@ -149,33 +144,17 @@ TEST(TargetFormatTest, ProfileDataFormatCodeRegistryExactlyCoversVendorEnum) {
   std::set<uint8_t> uniqueCodes;
   for (size_t index = 0; index < codes.size(); ++index) {
     const wafer::TargetDataFormatCodeRecord &code = codes[index];
-    EXPECT_EQ(code.profile, kProfile);
     EXPECT_EQ(code.format, formats[index].format);
     EXPECT_EQ(code.dataFormatCode, index);
     EXPECT_TRUE(uniqueFormats.insert(code.format).second);
     EXPECT_TRUE(uniqueCodes.insert(code.dataFormatCode).second);
-    EXPECT_EQ(wafer::findTargetDataFormatCode(kProfile, code.format), &code);
+    EXPECT_EQ(wafer::findTargetDataFormatCode(code.format), &code);
   }
-  EXPECT_EQ(wafer::findTargetDataFormatCode(
-                kProfile, static_cast<LogicalFormat>(UINT8_MAX)),
+  EXPECT_EQ(wafer::findTargetDataFormatCode(static_cast<LogicalFormat>(UINT8_MAX)),
             nullptr);
 }
 
-TEST(TargetFormatTest, EncodingMatrixIsExplicitCompleteAndConservative) {
-  constexpr bool expectedSupported[5][13] = {
-      // I8, I16, F16, BF16, I32, F32, TF32, BOOL, U8, U16, U32, I64, U64
-      {true, true, true, true, true, true, false, true, false, false, false,
-       false, false}, // RDMA
-      {true, true, true, true, true, true, false, true, false, false, false,
-       false, false}, // WDMA
-      {true, true, true, true, true, true, false, true, false, false, false,
-       false, false}, // TDMA
-      {true, false, true, true, false, true, false, true, false, false, false,
-       false, false}, // CT
-      {true, false, true, true, false, true, false, false, false, false, false,
-       false, false}, // NE
-  };
-
+TEST(TargetFormatTest, EncodingMatrixExactlyCoversEveryEngineAndFormat) {
   llvm::ArrayRef<TargetFormatEngine> engines = wafer::getTargetFormatEngines();
   llvm::ArrayRef<wafer::LogicalFormatDescriptor> formats =
       wafer::getLogicalFormatDescriptors();
@@ -185,74 +164,51 @@ TEST(TargetFormatTest, EncodingMatrixIsExplicitCompleteAndConservative) {
   ASSERT_EQ(records.size(), engines.size() * formats.size());
 
   std::set<std::tuple<unsigned, unsigned>> uniqueRows;
-  size_t supportedCount = 0;
   for (size_t engineIndex = 0; engineIndex < engines.size(); ++engineIndex) {
     std::set<uint8_t> uniqueEngineCodes;
     for (size_t formatIndex = 0; formatIndex < formats.size(); ++formatIndex) {
       TargetFormatEngine engine = engines[engineIndex];
       LogicalFormat format = formats[formatIndex].format;
       const wafer::TargetFormatEncodingRecord *record =
-          wafer::findTargetFormatEncoding(kProfile, engine, format);
+          wafer::findTargetFormatEncoding(engine, format);
       ASSERT_NE(record, nullptr);
       EXPECT_TRUE(uniqueRows
                       .insert({static_cast<unsigned>(engine),
                                static_cast<unsigned>(format)})
                       .second);
-      EXPECT_EQ(record->isSupported(),
-                expectedSupported[engineIndex][formatIndex]);
-
-      if (record->isSupported()) {
-        ++supportedCount;
-        EXPECT_EQ(record->support, TargetFormatEncodingSupport::Supported);
-        EXPECT_EQ(record->unsupportedReason,
-                  TargetFormatUnsupportedReason::None);
-        ASSERT_TRUE(record->dataFormatCode.has_value());
-        const wafer::TargetDataFormatCodeRecord *code =
-            wafer::findTargetDataFormatCode(kProfile, format);
-        ASSERT_NE(code, nullptr);
-        EXPECT_EQ(*record->dataFormatCode, code->dataFormatCode);
-        EXPECT_TRUE(uniqueEngineCodes.insert(*record->dataFormatCode).second);
-      } else {
-        EXPECT_EQ(record->support, TargetFormatEncodingSupport::Unsupported);
-        EXPECT_EQ(record->constraint, TargetFormatConstraint::None);
-        EXPECT_FALSE(record->dataFormatCode.has_value());
-        EXPECT_NE(record->unsupportedReason,
-                  TargetFormatUnsupportedReason::None);
-        EXPECT_NE(wafer::stringifyTargetFormatUnsupportedReason(
-                      record->unsupportedReason),
-                  "none");
-      }
+      const wafer::TargetDataFormatCodeRecord *code =
+          wafer::findTargetDataFormatCode(format);
+      ASSERT_NE(code, nullptr);
+      EXPECT_EQ(record->dataFormatCode, code->dataFormatCode);
+      EXPECT_TRUE(uniqueEngineCodes.insert(record->dataFormatCode).second);
     }
   }
   EXPECT_EQ(uniqueRows.size(), 65u);
-  EXPECT_EQ(supportedCount, 30u);
 
   auto expectConstraint = [](TargetFormatEngine engine,
                              TargetFormatConstraint constraint) {
     const wafer::TargetFormatEncodingRecord *record =
-        wafer::findTargetFormatEncoding(kProfile, engine, LogicalFormat::Bool);
+        wafer::findTargetFormatEncoding(engine, LogicalFormat::Bool);
     ASSERT_NE(record, nullptr);
-    ASSERT_TRUE(record->isSupported());
     EXPECT_EQ(record->constraint, constraint);
   };
   expectConstraint(
       TargetFormatEngine::RDMA,
-      TargetFormatConstraint::BitpackedLayoutAndCheckedElementCount);
+      TargetFormatConstraint::BitpackedDMA);
   expectConstraint(
       TargetFormatEngine::WDMA,
-      TargetFormatConstraint::BitpackedLayoutAndCheckedElementCount);
+      TargetFormatConstraint::BitpackedDMA);
   expectConstraint(
       TargetFormatEngine::CT,
-      TargetFormatConstraint::BoolSpecificCTOpKindAndBitpackedLayout);
+      TargetFormatConstraint::BitpackedLayout);
   expectConstraint(TargetFormatEngine::TDMA,
-                   TargetFormatConstraint::BitpackedPhysicalFootprintFill);
+                   TargetFormatConstraint::BitpackedLayout);
 
-  EXPECT_EQ(wafer::findTargetFormatEncoding(
-                kProfile, static_cast<TargetFormatEngine>(UINT8_MAX),
+  EXPECT_EQ(wafer::findTargetFormatEncoding(static_cast<TargetFormatEngine>(UINT8_MAX),
                 LogicalFormat::I8),
             nullptr);
   EXPECT_EQ(
-      wafer::findTargetFormatEncoding(kProfile, TargetFormatEngine::RDMA,
+      wafer::findTargetFormatEncoding(TargetFormatEngine::RDMA,
                                       static_cast<LogicalFormat>(UINT8_MAX)),
       nullptr);
 }
@@ -260,47 +216,18 @@ TEST(TargetFormatTest, EncodingMatrixIsExplicitCompleteAndConservative) {
 TEST(TargetFormatTest, SupportedEngineCodesRoundTripThroughTypedDecoder) {
   for (const wafer::TargetFormatEncodingRecord &record :
        wafer::getTargetFormatEncodingRecords()) {
-    if (!record.isSupported())
-      continue;
-    ASSERT_TRUE(record.dataFormatCode.has_value());
     llvm::Expected<wafer::LogicalFormat> decoded = wafer::decodeTargetFormat(
-        record.profile, record.engine, *record.dataFormatCode);
+        record.engine, record.dataFormatCode);
     ASSERT_TRUE(static_cast<bool>(decoded))
         << llvm::toString(decoded.takeError());
     EXPECT_EQ(*decoded, record.format);
   }
 
   auto unsupported = wafer::decodeTargetFormat(
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
       wafer::TargetFormatEngine::CT, 255);
   ASSERT_FALSE(static_cast<bool>(unsupported));
   EXPECT_NE(llvm::toString(unsupported.takeError()).find("unsupported"),
             std::string::npos);
-}
-
-TEST(TargetFormatTest, VersionedABIProfileInheritsExactFormatContracts) {
-  constexpr wafer::TargetProfileId kVersionedProfile =
-      wafer::TargetProfileId::waferTx81SingleCardKernelV2();
-  for (const wafer::TargetFormatEncodingRecord &record :
-       wafer::getTargetFormatEncodingRecords()) {
-    EXPECT_EQ(wafer::findTargetFormatEncoding(kVersionedProfile, record.engine,
-                                              record.format),
-              &record);
-    const wafer::TargetDataFormatCodeRecord *code =
-        wafer::findTargetDataFormatCode(kVersionedProfile, record.format);
-    ASSERT_NE(code, nullptr);
-    if (!record.isSupported())
-      continue;
-    ASSERT_TRUE(record.dataFormatCode.has_value());
-    llvm::Expected<LogicalFormat> decoded = wafer::decodeTargetFormat(
-        kVersionedProfile, record.engine, *record.dataFormatCode);
-    ASSERT_TRUE(static_cast<bool>(decoded))
-        << llvm::toString(decoded.takeError());
-    EXPECT_EQ(*decoded, record.format);
-  }
-  for (const wafer::TargetConvertRoute &route : wafer::getTargetConvertRoutes())
-    EXPECT_EQ(wafer::findTargetConvertRoute(kVersionedProfile, route.opcode),
-              &route);
 }
 
 struct ExpectedConvertRoute {
@@ -411,11 +338,11 @@ TEST(TargetFormatTest, TypedConvertRoutesExactlyMatchOpcodeContract) {
     EXPECT_TRUE(spellings.insert(route.canonicalSpelling.str()).second);
     EXPECT_TRUE(typePairs.insert({route.source, route.destination}).second);
 
-    EXPECT_EQ(wafer::findTargetConvertRoute(kProfile, route.opcode), &route);
-    EXPECT_EQ(wafer::findTargetConvertRoute(kProfile, route.source,
+    EXPECT_EQ(wafer::findTargetConvertRoute(route.opcode), &route);
+    EXPECT_EQ(wafer::findTargetConvertRoute(route.source,
                                             route.destination),
               &route);
-    EXPECT_EQ(wafer::findTargetConvertRoute(kProfile, route.canonicalSpelling),
+    EXPECT_EQ(wafer::findTargetConvertRoute(route.canonicalSpelling),
               &route);
     EXPECT_FALSE(wafer::stringifyTargetConvertParameterKind(route.parameterKind)
                      .empty());
@@ -442,43 +369,42 @@ TEST(TargetFormatTest, TypedConvertRoutesExactlyMatchOpcodeContract) {
 }
 
 TEST(TargetFormatTest, TypedConvertWhitelistDoesNotOpenGenericCTRows) {
-  EXPECT_EQ(wafer::findTargetConvertRoute(kProfile, 138), nullptr);
-  EXPECT_EQ(wafer::findTargetConvertRoute(kProfile, 175), nullptr);
-  EXPECT_EQ(wafer::findTargetConvertRoute(kProfile, "unknown_convert"),
+  EXPECT_EQ(wafer::findTargetConvertRoute(138), nullptr);
+  EXPECT_EQ(wafer::findTargetConvertRoute(175), nullptr);
+  EXPECT_EQ(wafer::findTargetConvertRoute("unknown_convert"),
             nullptr);
 
   for (const wafer::LogicalFormatDescriptor &format :
        wafer::getLogicalFormatDescriptors())
     EXPECT_EQ(
-        wafer::findTargetConvertRoute(kProfile, format.format, format.format),
+        wafer::findTargetConvertRoute(format.format, format.format),
         nullptr);
 
   for (LogicalFormat excluded :
        {LogicalFormat::Bool, LogicalFormat::U8, LogicalFormat::U16,
         LogicalFormat::U32, LogicalFormat::I64, LogicalFormat::U64}) {
     EXPECT_EQ(
-        wafer::findTargetConvertRoute(kProfile, excluded, LogicalFormat::F32),
+        wafer::findTargetConvertRoute(excluded, LogicalFormat::F32),
         nullptr);
     EXPECT_EQ(
-        wafer::findTargetConvertRoute(kProfile, LogicalFormat::F32, excluded),
+        wafer::findTargetConvertRoute(LogicalFormat::F32, excluded),
         nullptr);
   }
 
-  for (LogicalFormat genericUnsupported :
+  for (LogicalFormat genericFormat :
        {LogicalFormat::I16, LogicalFormat::I32, LogicalFormat::TF32}) {
     const wafer::TargetFormatEncodingRecord *generic =
-        wafer::findTargetFormatEncoding(kProfile, TargetFormatEngine::CT,
-                                        genericUnsupported);
+        wafer::findTargetFormatEncoding(TargetFormatEngine::CT,
+                                        genericFormat);
     ASSERT_NE(generic, nullptr);
-    EXPECT_FALSE(generic->isSupported());
   }
-  EXPECT_NE(wafer::findTargetConvertRoute(kProfile, LogicalFormat::I16,
+  EXPECT_NE(wafer::findTargetConvertRoute(LogicalFormat::I16,
                                           LogicalFormat::F16),
             nullptr);
-  EXPECT_NE(wafer::findTargetConvertRoute(kProfile, LogicalFormat::I32,
+  EXPECT_NE(wafer::findTargetConvertRoute(LogicalFormat::I32,
                                           LogicalFormat::F32),
             nullptr);
-  EXPECT_NE(wafer::findTargetConvertRoute(kProfile, LogicalFormat::TF32,
+  EXPECT_NE(wafer::findTargetConvertRoute(LogicalFormat::TF32,
                                           LogicalFormat::F32),
             nullptr);
 }
@@ -531,7 +457,7 @@ TEST(TargetFormatTest, EveryTypedConvertRoutePassesTargetPreflight) {
                                                 mlir::ParserConfig(&context));
     ASSERT_TRUE(module) << source;
     mlir::PassManager manager(&context);
-    wafer::TargetConversionRequest request{kProfile};
+    wafer::TargetConversionRequest request{};
     manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
     ASSERT_TRUE(mlir::succeeded(manager.run(*module))) << source;
 
@@ -545,12 +471,12 @@ TEST(TargetFormatTest, EveryTypedConvertRoutePassesTargetPreflight) {
 }
 
 static mlir::OwningOpRef<mlir::ModuleOp>
-parseLocalFenceModule(mlir::MLIRContext &context, uint64_t operationCount) {
+parseNCCJoinModule(mlir::MLIRContext &context, uint64_t operationCount) {
   std::string source;
   llvm::raw_string_ostream os(source);
   os << "module {\n  func.func @main() {\n";
   for (uint64_t index = 0; index < operationCount; ++index)
-    os << "    wafer.instr.local_fence\n";
+    os << "    wafer.instr.ncc_join [0]\n";
   os << "    return\n  }\n}\n";
   os.flush();
   return mlir::parseSourceString<mlir::ModuleOp>(source,
@@ -565,10 +491,10 @@ TEST(TargetFormatTest, DirectTargetAcceptsExactly4096TerminalOperations) {
   context.loadAllAvailableDialects();
 
   mlir::OwningOpRef<mlir::ModuleOp> module =
-      parseLocalFenceModule(context, 4096);
+      parseNCCJoinModule(context, 4096);
   ASSERT_TRUE(module);
   mlir::PassManager manager(&context);
-  wafer::TargetConversionRequest request{kProfile};
+  wafer::TargetConversionRequest request{};
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
   ASSERT_TRUE(mlir::succeeded(manager.run(*module)));
   EXPECT_EQ(module->lookupSymbol("main")->getName().getStringRef(),
@@ -583,7 +509,7 @@ TEST(TargetFormatTest, DirectTargetRejects4097TerminalOperationsAtomically) {
   context.loadAllAvailableDialects();
 
   mlir::OwningOpRef<mlir::ModuleOp> module =
-      parseLocalFenceModule(context, 4097);
+      parseNCCJoinModule(context, 4097);
   ASSERT_TRUE(module);
   std::string diagnostics;
   mlir::ScopedDiagnosticHandler handler(
@@ -593,19 +519,19 @@ TEST(TargetFormatTest, DirectTargetRejects4097TerminalOperationsAtomically) {
         return mlir::success();
       });
   mlir::PassManager manager(&context);
-  wafer::TargetConversionRequest request{kProfile};
+  wafer::TargetConversionRequest request{};
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
   EXPECT_TRUE(mlir::failed(manager.run(*module)));
   EXPECT_NE(diagnostics.find("static_terminal_budget_exceeded"),
             std::string::npos)
       << diagnostics;
 
-  uint64_t remainingFences = 0;
+  uint64_t remainingJoins = 0;
   module->walk([&](mlir::Operation *operation) {
-    if (operation->getName().getStringRef() == "wafer.instr.local_fence")
-      ++remainingFences;
+    if (operation->getName().getStringRef() == "wafer.instr.ncc_join")
+      ++remainingJoins;
   });
-  EXPECT_EQ(remainingFences, 4097u);
+  EXPECT_EQ(remainingJoins, 4097u);
   EXPECT_EQ(module->lookupSymbol("main")->getName().getStringRef(),
             "func.func");
 }
@@ -648,7 +574,7 @@ module {
       });
   mlir::PassManager manager(&context);
   manager.enableVerifier(false);
-  wafer::TargetConversionRequest request{kProfile};
+  wafer::TargetConversionRequest request{};
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
   EXPECT_TRUE(mlir::failed(manager.run(*module)));
   EXPECT_NE(diagnostics.find("terminal reduce retains source initialization "

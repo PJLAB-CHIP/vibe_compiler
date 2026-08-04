@@ -2,7 +2,7 @@
 
 // -----
 
-func.func @local_fence_does_not_complete_dte(
+func.func @ncc_join_does_not_complete_dte(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
   %region = wafer.tile.region(%boundary
       : memref<128xf16, #wafer.memory<ddr, tensor>>)
@@ -15,7 +15,7 @@ func.func @local_fence_does_not_complete_dte(
         {peer = 1 : i64, bytes = 256 : i64,
          message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
@@ -70,7 +70,7 @@ func.func @dte_wait_does_not_complete_local_engine(
 
 // -----
 
-func.func @branch_only_one_local_fence(
+func.func @branch_only_one_ncc_join(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>, %cond: i1) {
   %region = wafer.tile.region(%boundary, %cond
       : memref<128xf16, #wafer.memory<ddr, tensor>>, i1)
@@ -83,7 +83,7 @@ func.func @branch_only_one_local_fence(
     wafer.instr.fill %buffer, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
     scf.if %c {
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     } else {
     }
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
@@ -117,7 +117,7 @@ func.func @branch_only_one_dte_wait(
 
 // -----
 
-func.func @loop_may_skip_only_local_fence(
+func.func @loop_may_skip_only_ncc_join(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>,
     %lb: index, %ub: index, %step: index) {
   %region = wafer.tile.region(%boundary, %lb, %ub, %step
@@ -132,7 +132,7 @@ func.func @loop_may_skip_only_local_fence(
     wafer.instr.fill %buffer, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
     scf.for %i = %l to %u step %s {
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     }
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
@@ -158,7 +158,7 @@ func.func @loop_body_same_worker_stream_reaches_outer_completion(
       wafer.instr.fill %buffer, %zero
           : memref<128xf16, #wafer.memory<spm, tensor>>, f16
     }
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return

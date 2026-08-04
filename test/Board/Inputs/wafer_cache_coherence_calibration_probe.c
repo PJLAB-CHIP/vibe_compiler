@@ -414,50 +414,50 @@ static void wafer_cch_issue_bank_pair(const WaferCCHCase *selected,
                                       uint64_t input0, uint64_t input1,
                                       uint64_t output0, uint64_t output1) {
   if (selected->pair_kind == 1U) {
-    wafer_tx81_rdma(input0, WAFER_CCH_SPM_A, selected->payload_bytes,
-                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+    wafer_tx81_rdma_v3(input0, WAFER_CCH_SPM_A, selected->payload_bytes,
+                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
     if (selected->schedule == 1U)
-      wafer_tx81_local_fence();
-    wafer_tx81_rdma(input1, WAFER_CCH_SPM_B, selected->payload_bytes,
-                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+      wafer_tx81_ncc_join(1U);
+    wafer_tx81_rdma_v3(input1, WAFER_CCH_SPM_B, selected->payload_bytes,
+                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
   } else if (selected->pair_kind == 2U) {
-    wafer_tx81_wdma(WAFER_CCH_SPM_A, output0, selected->payload_bytes,
-                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+    wafer_tx81_wdma_v3(WAFER_CCH_SPM_A, output0, selected->payload_bytes,
+                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
     if (selected->schedule == 1U)
-      wafer_tx81_local_fence();
-    wafer_tx81_wdma(WAFER_CCH_SPM_B, output1, selected->payload_bytes,
-                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+      wafer_tx81_ncc_join(1U);
+    wafer_tx81_wdma_v3(WAFER_CCH_SPM_B, output1, selected->payload_bytes,
+                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
   } else {
-    wafer_tx81_rdma(input1, WAFER_CCH_SPM_B, selected->payload_bytes,
-                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+    wafer_tx81_rdma_v3(input1, WAFER_CCH_SPM_B, selected->payload_bytes,
+                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
     if (selected->schedule == 1U)
-      wafer_tx81_local_fence();
-    wafer_tx81_wdma(WAFER_CCH_SPM_A, output0, selected->payload_bytes,
-                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+      wafer_tx81_ncc_join(1U);
+    wafer_tx81_wdma_v3(WAFER_CCH_SPM_A, output0, selected->payload_bytes,
+                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
   }
 }
 
 static void wafer_cch_seed_bank_slots(uint64_t input0, uint64_t input1) {
-  wafer_tx81_rdma(input0 - WAFER_CCH_SPM_GUARD_BYTES,
+  wafer_tx81_rdma_v3(input0 - WAFER_CCH_SPM_GUARD_BYTES,
                   WAFER_CCH_SPM_A - WAFER_CCH_SPM_GUARD_BYTES,
                   WAFER_CCH_BANK_SLOT_BYTES, WAFER_CCH_BANK_SLOT_BYTES, 0, 0,
-                  0, 1, 1, 1, Fmt_UINT8);
-  wafer_tx81_rdma(input1 - WAFER_CCH_SPM_GUARD_BYTES,
+                  0, 1, 1, 1, Fmt_UINT8, 0U);
+  wafer_tx81_rdma_v3(input1 - WAFER_CCH_SPM_GUARD_BYTES,
                   WAFER_CCH_SPM_B - WAFER_CCH_SPM_GUARD_BYTES,
                   WAFER_CCH_BANK_SLOT_BYTES, WAFER_CCH_BANK_SLOT_BYTES, 0, 0,
-                  0, 1, 1, 1, Fmt_UINT8);
+                  0, 1, 1, 1, Fmt_UINT8, 0U);
 }
 
 static void wafer_cch_readback_bank_slots(uint64_t output0,
                                           uint64_t output1) {
-  wafer_tx81_wdma(WAFER_CCH_SPM_A - WAFER_CCH_SPM_GUARD_BYTES,
+  wafer_tx81_wdma_v3(WAFER_CCH_SPM_A - WAFER_CCH_SPM_GUARD_BYTES,
                   output0 - WAFER_CCH_SPM_GUARD_BYTES,
                   WAFER_CCH_BANK_SLOT_BYTES, WAFER_CCH_BANK_SLOT_BYTES, 0, 0,
-                  0, 1, 1, 1, Fmt_UINT8);
-  wafer_tx81_wdma(WAFER_CCH_SPM_B - WAFER_CCH_SPM_GUARD_BYTES,
+                  0, 1, 1, 1, Fmt_UINT8, 0U);
+  wafer_tx81_wdma_v3(WAFER_CCH_SPM_B - WAFER_CCH_SPM_GUARD_BYTES,
                   output1 - WAFER_CCH_SPM_GUARD_BYTES,
                   WAFER_CCH_BANK_SLOT_BYTES, WAFER_CCH_BANK_SLOT_BYTES, 0, 0,
-                  0, 1, 1, 1, Fmt_UINT8);
+                  0, 1, 1, 1, Fmt_UINT8, 0U);
 }
 
 static uint64_t wafer_cch_cycle(void) {
@@ -475,18 +475,18 @@ static void wafer_cch_issue_conflict_pair(
     uint64_t address = lane == 0U ? address_a : address_b;
     uint64_t spm = lane == 0U ? WAFER_CCH_SPM_A : WAFER_CCH_SPM_B;
     if (selected->pair_kind == 1U) {
-      wafer_tx81_rdma(address, spm, selected->transfer_bytes,
+      wafer_tx81_rdma_v3(address, spm, selected->transfer_bytes,
                       selected->transfer_bytes, 0U, 0U, 0U, 1U, 1U,
-                      1U, Fmt_UINT8);
+                      1U, Fmt_UINT8, 0U);
     } else {
-      wafer_tx81_wdma(spm, address, selected->transfer_bytes,
+      wafer_tx81_wdma_v3(spm, address, selected->transfer_bytes,
                       selected->transfer_bytes, 0U, 0U, 0U, 1U, 1U,
-                      1U, Fmt_UINT8);
+                      1U, Fmt_UINT8, 0U);
     }
     if (schedule == 1U && ordinal == 0U)
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
   }
-  wafer_tx81_local_fence();
+  wafer_tx81_ncc_join(1U);
 }
 
 static uint32_t wafer_cch_conflict_identity(
@@ -550,36 +550,36 @@ static uint32_t wafer_cch_execute_conflict(
   uint64_t seed_b =
       selected->pair_kind == 1U ? *address_b : payload_ddr + offset_b;
   *total_before = wafer_cch_read_pmu();
-  wafer_tx81_rdma(
+  wafer_tx81_rdma_v3(
       seed_a - WAFER_CCH_SPM_GUARD_BYTES,
       WAFER_CCH_SPM_A - WAFER_CCH_SPM_GUARD_BYTES,
       selected->transfer_bytes + 2U * WAFER_CCH_SPM_GUARD_BYTES,
       selected->transfer_bytes + 2U * WAFER_CCH_SPM_GUARD_BYTES,
-      0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8);
-  wafer_tx81_rdma(
+      0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8, 0U);
+  wafer_tx81_rdma_v3(
       seed_b - WAFER_CCH_SPM_GUARD_BYTES,
       WAFER_CCH_SPM_B - WAFER_CCH_SPM_GUARD_BYTES,
       selected->transfer_bytes + 2U * WAFER_CCH_SPM_GUARD_BYTES,
       selected->transfer_bytes + 2U * WAFER_CCH_SPM_GUARD_BYTES,
-      0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8);
-  wafer_tx81_local_fence();
+      0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8, 0U);
+  wafer_tx81_ncc_join(1U);
 
   if (selected->pair_kind == 2U) {
     const uint64_t spm[2] = {WAFER_CCH_SPM_A, WAFER_CCH_SPM_B};
     const uint64_t address[2] = {*address_a, *address_b};
     for (uint32_t lane = 0; lane < 2U; ++lane) {
-      wafer_tx81_wdma(
+      wafer_tx81_wdma_v3(
           spm[lane] - WAFER_CCH_SPM_GUARD_BYTES,
           address[lane] - WAFER_CCH_SPM_GUARD_BYTES,
           WAFER_CCH_SPM_GUARD_BYTES, WAFER_CCH_SPM_GUARD_BYTES,
-          0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8);
-      wafer_tx81_wdma(
+          0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8, 0U);
+      wafer_tx81_wdma_v3(
           spm[lane] + selected->transfer_bytes,
           address[lane] + selected->transfer_bytes,
           WAFER_CCH_SPM_GUARD_BYTES, WAFER_CCH_SPM_GUARD_BYTES,
-          0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8);
+          0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8, 0U);
     }
-    wafer_tx81_local_fence();
+    wafer_tx81_ncc_join(1U);
   }
 
   uint32_t rows_written = 0U;
@@ -609,17 +609,17 @@ static uint32_t wafer_cch_execute_conflict(
           uint32_t slot_bytes =
               selected->transfer_bytes +
               2U * WAFER_CCH_SPM_GUARD_BYTES;
-          wafer_tx81_rdma(
+          wafer_tx81_rdma_v3(
               *address_a - WAFER_CCH_SPM_GUARD_BYTES,
               WAFER_CCH_SPM_A - WAFER_CCH_SPM_GUARD_BYTES,
               slot_bytes, slot_bytes, 0U, 0U, 0U, 1U, 1U, 1U,
-              Fmt_UINT8);
-          wafer_tx81_rdma(
+              Fmt_UINT8, 0U);
+          wafer_tx81_rdma_v3(
               *address_b - WAFER_CCH_SPM_GUARD_BYTES,
               WAFER_CCH_SPM_B - WAFER_CCH_SPM_GUARD_BYTES,
               slot_bytes, slot_bytes, 0U, 0U, 0U, 1U, 1U, 1U,
-              Fmt_UINT8);
-          wafer_tx81_local_fence();
+              Fmt_UINT8, 0U);
+          wafer_tx81_ncc_join(1U);
         }
         uint64_t result_mismatches =
             wafer_cch_conflict_spm_mismatches(
@@ -678,15 +678,15 @@ static uint32_t wafer_cch_execute_conflict(
           uint32_t slot_bytes =
               selected->transfer_bytes +
               2U * WAFER_CCH_SPM_GUARD_BYTES;
-          wafer_tx81_wdma(
+          wafer_tx81_wdma_v3(
               WAFER_CCH_SPM_A - WAFER_CCH_SPM_GUARD_BYTES,
               output_ddr + archive0, slot_bytes, slot_bytes,
-              0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8);
-          wafer_tx81_wdma(
+              0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8, 0U);
+          wafer_tx81_wdma_v3(
               WAFER_CCH_SPM_B - WAFER_CCH_SPM_GUARD_BYTES,
               output_ddr + archive1, slot_bytes, slot_bytes,
-              0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8);
-          wafer_tx81_local_fence();
+              0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8, 0U);
+          wafer_tx81_ncc_join(1U);
         }
       }
     }
@@ -796,7 +796,7 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
       wafer_cch_issue_bank_pair(&selected, input, bank_input1, output0,
                                 bank_output1);
       wafer_cch_readback_bank_slots(output0, bank_output1);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       cache_control_mask |= WAFER_CCH_MATCHING_LOCAL_FENCE;
     } else {
       wafer_cch_seed_spm(WAFER_CCH_SPM_A);
@@ -815,33 +815,33 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
       wafer_cch_cache_range(input, WAFER_CCH_PAYLOAD_BYTES, 1U);
       cache_control_mask |= WAFER_CCH_CACHE_INVALIDATE_INPUT;
       wafer_cch_store_generated(input, selected.case_id, sample);
-      wafer_tx81_rdma(input, WAFER_CCH_SPM_A, WAFER_CCH_PAYLOAD_BYTES,
-                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
-      wafer_tx81_local_fence();
+      wafer_tx81_rdma_v3(input, WAFER_CCH_SPM_A, WAFER_CCH_PAYLOAD_BYTES,
+                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
+      wafer_tx81_ncc_join(1U);
       mismatch_before =
           wafer_cch_mismatch_spm(WAFER_CCH_SPM_A, selected.case_id, sample, 1U);
       wafer_cch_cache_range(input, WAFER_CCH_PAYLOAD_BYTES, 0U);
       cache_control_mask |= WAFER_CCH_CACHE_CLEAN_SOURCE;
-      wafer_tx81_rdma(input, WAFER_CCH_SPM_B, WAFER_CCH_PAYLOAD_BYTES,
-                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
-      wafer_tx81_local_fence();
+      wafer_tx81_rdma_v3(input, WAFER_CCH_SPM_B, WAFER_CCH_PAYLOAD_BYTES,
+                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
+      wafer_tx81_ncc_join(1U);
       mismatch_after =
           wafer_cch_mismatch_spm(WAFER_CCH_SPM_B, selected.case_id, sample, 1U);
-      wafer_tx81_wdma(WAFER_CCH_SPM_A, output0, WAFER_CCH_PAYLOAD_BYTES,
-                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
-      wafer_tx81_wdma(WAFER_CCH_SPM_B, output1, WAFER_CCH_PAYLOAD_BYTES,
-                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
-      wafer_tx81_local_fence();
+      wafer_tx81_wdma_v3(WAFER_CCH_SPM_A, output0, WAFER_CCH_PAYLOAD_BYTES,
+                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
+      wafer_tx81_wdma_v3(WAFER_CCH_SPM_B, output1, WAFER_CCH_PAYLOAD_BYTES,
+                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
+      wafer_tx81_ncc_join(1U);
       cache_control_mask |= WAFER_CCH_MATCHING_LOCAL_FENCE;
       break;
     case 2U:
-      wafer_tx81_rdma(input, WAFER_CCH_SPM_A, WAFER_CCH_PAYLOAD_BYTES,
-                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
-      wafer_tx81_local_fence();
+      wafer_tx81_rdma_v3(input, WAFER_CCH_SPM_A, WAFER_CCH_PAYLOAD_BYTES,
+                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
+      wafer_tx81_ncc_join(1U);
       (void)wafer_cch_mismatch_ddr(output0, selected.case_id, sample, 0U);
-      wafer_tx81_wdma(WAFER_CCH_SPM_A, output0, WAFER_CCH_PAYLOAD_BYTES,
-                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
-      wafer_tx81_local_fence();
+      wafer_tx81_wdma_v3(WAFER_CCH_SPM_A, output0, WAFER_CCH_PAYLOAD_BYTES,
+                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
+      wafer_tx81_ncc_join(1U);
       cache_control_mask |= WAFER_CCH_MATCHING_LOCAL_FENCE;
       mismatch_before =
           wafer_cch_mismatch_ddr(output0, selected.case_id, sample, 0U);
@@ -851,12 +851,12 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
           wafer_cch_mismatch_ddr(output0, selected.case_id, sample, 0U);
       break;
     case 3U:
-      wafer_tx81_rdma(input, WAFER_CCH_SPM_A, WAFER_CCH_PAYLOAD_BYTES,
-                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
-      wafer_tx81_local_fence();
-      wafer_tx81_wdma(WAFER_CCH_SPM_A, output0, WAFER_CCH_PAYLOAD_BYTES,
-                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
-      wafer_tx81_local_fence();
+      wafer_tx81_rdma_v3(input, WAFER_CCH_SPM_A, WAFER_CCH_PAYLOAD_BYTES,
+                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
+      wafer_tx81_ncc_join(1U);
+      wafer_tx81_wdma_v3(WAFER_CCH_SPM_A, output0, WAFER_CCH_PAYLOAD_BYTES,
+                      WAFER_CCH_PAYLOAD_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
+      wafer_tx81_ncc_join(1U);
       cache_control_mask |= WAFER_CCH_MATCHING_LOCAL_FENCE;
       break;
     default:

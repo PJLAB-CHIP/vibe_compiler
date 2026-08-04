@@ -276,7 +276,6 @@ mlir::LogicalResult writeCollectiveCharacterizationReport(
 
 llvm::Expected<ExecutionConfig>
 ExecutionConfig::createForSingleCard(int64_t executionRankCount,
-                                     TargetProfileId targetProfile,
                                      RuntimeLaunchKind runtimeLaunchKind) {
   if (executionRankCount != 1 && executionRankCount != 16)
     return llvm::createStringError(
@@ -286,13 +285,7 @@ ExecutionConfig::createForSingleCard(int64_t executionRankCount,
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "model runtime launch requires execution-ranks=16");
-  if (runtimeLaunchKind == RuntimeLaunchKind::Model &&
-      targetProfile != TargetProfileId::waferTx81SingleCardKernelV1())
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "model runtime launch is not qualified for the selected target "
-        "profile");
-  return ExecutionConfig(executionRankCount, targetProfile, runtimeLaunchKind);
+  return ExecutionConfig(executionRankCount, runtimeLaunchKind);
 }
 
 llvm::Expected<CompilationRequest>

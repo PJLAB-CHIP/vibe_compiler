@@ -27,11 +27,9 @@
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
 # RUN:   -dr -M no-aliases --disassemble=wafer_tx81_peripheral_argmin_v3 %t.crt.o | FileCheck --check-prefix=ARGMIN %s
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
-# RUN:   -dr -M no-aliases --disassemble=wafer_tx81_local_fence %t.crt.o | FileCheck --check-prefix=LOCAL-FENCE %s
-# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
 # RUN:   -dr -M no-aliases --disassemble=wafer_tx81_ncc_join %t.crt.o | FileCheck --check-prefix=NCC-JOIN %s
 
-# SURFACE: checked 217 production wafer_tx81_* CRT symbols from the shared typed target-call registry
+# SURFACE: checked 112 production wafer_tx81_* CRT symbols from the shared typed target-call registry
 # CONFORMANCE: checked Wafer target CRT conformance rules from compiler and CRT code: formats=13, encoding_rows=65, convert_routes=36, groups=4/23/9
 
 # ARGMAX-LABEL: <wafer_tx81_peripheral_argmax_v3>:
@@ -52,20 +50,6 @@
 # ARGMIN-NEXT: sync
 # ARGMIN-NOT: dcache.
 # ARGMIN: R_RISCV_CALL_PLT TsmDeletePeripheral
-# LOCAL-FENCE-LABEL: <wafer_tx81_local_fence>:
-# LOCAL-FENCE: fence iorw,iorw
-# LOCAL-FENCE-NEXT: sync
-# LOCAL-FENCE-NEXT: sync.is
-# LOCAL-FENCE-NEXT: fence iorw,iorw
-# LOCAL-FENCE-NEXT: auipc ra,0x0
-# LOCAL-FENCE-NEXT: R_RISCV_CALL_PLT TsmWaitfinish
-# LOCAL-FENCE: jalr ra,0(ra)
-# LOCAL-FENCE-NEXT: fence iorw,iorw
-# LOCAL-FENCE-NEXT: sync
-# LOCAL-FENCE-NEXT: sync.is
-# LOCAL-FENCE-NEXT: fence iorw,iorw
-# LOCAL-FENCE-NOT: R_RISCV_CALL_PLT TsmWaitfinish_bywork
-# LOCAL-FENCE-NOT: dcache.
 # NCC-JOIN-LABEL: <wafer_tx81_ncc_join>:
 # NCC-JOIN: fence iorw,iorw
 # NCC-JOIN: R_RISCV_CALL_PLT TsmWaitfinish_bywork
@@ -95,9 +79,9 @@
 # LIFECYCLE-NOT: get_tile_spm_addr_base
 # LIFECYCLE: R_RISCV_CALL_PLT direct_fsm_monitor_init
 # LIFECYCLE-LABEL: <wafer_tx81_direct_dte_wait>:
-# LIFECYCLE: R_RISCV_CALL_PLT direct_sync_wait
-# LIFECYCLE: R_RISCV_CALL_PLT direct_dte_attach
-# LIFECYCLE: R_RISCV_CALL_PLT direct_dte_send_async
+# LIFECYCLE-NOT: R_RISCV_CALL_PLT direct_sync_wait
+# LIFECYCLE-NOT: R_RISCV_CALL_PLT direct_dte_attach
+# LIFECYCLE-NOT: R_RISCV_CALL_PLT direct_dte_send_async
 # LIFECYCLE: R_RISCV_CALL_PLT direct_dte_wait_done
 # LIFECYCLE: R_RISCV_CALL_PLT direct_dte_release
 # LIFECYCLE: li {{[a-z0-9]+}},2

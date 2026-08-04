@@ -17,8 +17,6 @@ namespace {
 
 using namespace wafer;
 
-constexpr TargetProfileId kTargetProfile =
-    TargetProfileId::waferTx81SingleCardKernelV1();
 constexpr ModelProfileId kModelProfile =
     ModelProfileId::formalDeterministicV1();
 
@@ -130,7 +128,7 @@ ResolvedNumericCommand resolve(uint16_t opcode, LogicalFormat sourceFormat,
   NumericTensorKey destination = llvm::cantFail(
       NumericTensorKey::create(destinationFormat, MemLayout::Tensor, {1}));
   llvm::Expected<NumericCommandKey> key = NumericCommandKey::createCTConvert(
-      kTargetProfile, opcode, std::move(source), std::move(destination),
+      opcode, std::move(source), std::move(destination),
       NumericConvertParameter::roundingMode(mode));
   NumericCommandKey exact = llvm::cantFail(std::move(key));
   llvm::Expected<ResolvedNumericCommand> command =
@@ -144,8 +142,7 @@ ResolvedNumericCommand resolveMultiply(LogicalFormat format) {
   NumericTensorKey input =
       llvm::cantFail(NumericTensorKey::create(format, MemLayout::Tensor, {1}));
   llvm::Expected<NumericCommandKey> key =
-      NumericCommandKey::createCTElementwise(kTargetProfile,
-                                             NumericElementwiseOperation::Mul,
+      NumericCommandKey::createCTElementwise(NumericElementwiseOperation::Mul,
                                              {input, input}, input);
   NumericCommandKey exact = llvm::cantFail(std::move(key));
   ResolvedNumericCommand resolved =
@@ -163,7 +160,7 @@ ResolvedNumericCommand resolveGemm(LogicalFormat format) {
       llvm::cantFail(NumericTensorKey::create(format, MemLayout::Cx, {1, 1}));
   NumericGemmAxes axes = llvm::cantFail(getCanonicalNumericGemmAxes(2));
   NumericCommandKey key = llvm::cantFail(NumericCommandKey::createNEGemm(
-      kTargetProfile, std::move(lhs), std::move(rhs), std::move(destination), 1,
+      std::move(lhs), std::move(rhs), std::move(destination), 1,
       1, 1, 1, std::move(axes)));
   ResolvedNumericCommand resolved =
       llvm::cantFail(resolveNumericCommand(kModelProfile, std::move(key)));

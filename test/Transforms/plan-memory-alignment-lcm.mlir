@@ -43,7 +43,7 @@ func.func @ddr_non_dividing_alignment() {
        dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
       : memref<128xf16, #wafer.memory<spm, tensor>>
      to memref<128xf16, #wafer.memory<ddr, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
@@ -90,7 +90,7 @@ func.func @ddr_encoding_alignment() {
        dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
       : memref<1x65xf16, #wafer.memory<spm, cx>>
      to memref<1x65xf16, #wafer.memory<ddr, cx>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 

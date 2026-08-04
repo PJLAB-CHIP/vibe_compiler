@@ -45,9 +45,8 @@ namespace wafer::target_llvm_detail {
 
 FunctionLowering::FunctionLowering(mlir::MLIRContext *context,
                                    mlir::OpBuilder &builder,
-                                   TargetProfileId targetProfile,
                                    llvm::StringMap<CalleeSignature> &used)
-    : builder(builder), context(context), targetProfile(targetProfile),
+    : builder(builder), context(context),
       i64Type(mlir::IntegerType::get(context, 64)),
       i32Type(mlir::IntegerType::get(context, 32)),
       voidType(mlir::LLVM::LLVMVoidType::get(context)), usedCallees(used) {}
@@ -207,8 +206,6 @@ void FunctionLowering::verifyCallSignature(
 void FunctionLowering::emitCall(mlir::Location loc,
                                 const TargetCallDescriptor &descriptor,
                                 mlir::ValueRange args) {
-  if (!isTargetCallAvailableForProfile(descriptor, targetProfile))
-    llvm_unreachable("target call is unavailable for the lowering profile");
   verifyCallSignature(descriptor, args, TargetCallResultType::Void);
   llvm::SmallVector<mlir::Type, 16> argTypes;
   for (mlir::Value arg : args)
@@ -231,14 +228,6 @@ void FunctionLowering::emitNCCCall(mlir::Location loc,
                                    mlir::ValueRange args, NCCWorker worker) {
   if (!descriptor.issueDomain)
     llvm_unreachable("NCC target call must register an issue domain");
-  if (descriptor.issueDomain->fixedNCCWorker) {
-    if (descriptor.issueDomain->nccWorkerArgument ||
-        *descriptor.issueDomain->fixedNCCWorker != worker)
-      llvm_unreachable(
-          "fixed-worker target ABI cannot emit the requested NCC worker");
-    emitCall(loc, descriptor, args);
-    return;
-  }
   if (!descriptor.issueDomain->nccWorkerArgument ||
       *descriptor.issueDomain->nccWorkerArgument != args.size())
     llvm_unreachable("worker-aware target call must register one trailing "
@@ -252,8 +241,6 @@ mlir::Value
 FunctionLowering::emitI64Call(mlir::Location loc,
                               const TargetCallDescriptor &descriptor,
                               mlir::ValueRange args) {
-  if (!isTargetCallAvailableForProfile(descriptor, targetProfile))
-    llvm_unreachable("target call is unavailable for the lowering profile");
   verifyCallSignature(descriptor, args, TargetCallResultType::I64);
   llvm::SmallVector<mlir::Type, 16> argTypes;
   for (mlir::Value arg : args)

@@ -25,10 +25,10 @@ struct TargetCallDescriptor;
 
 namespace runtime {
 
-inline constexpr uint32_t kProfileCompanionSchemaVersion = 6;
+inline constexpr uint32_t kProfileCompanionSchemaVersion = 7;
 inline constexpr int64_t kProfileCompanionRankCount = 16;
 inline constexpr llvm::StringLiteral kProfileSiteCorrelationBasis =
-    "typed-target-call-ordinal-ssa-identity-occurrence-v1";
+    "typed-target-call-ordinal-ssa-identity-occurrence-v2";
 inline constexpr llvm::StringLiteral kProfileRecordABI =
     WAFER_TX81_PROFILER_RECORD_ABI_V4;
 inline constexpr llvm::StringLiteral kProfileStaticCostModelName =
@@ -86,7 +86,7 @@ struct ProfileStaticCostRates {
   uint64_t f16Bf16NPULogicalOpsPerSecondPerTile = 0;
   uint64_t f16Bf16VectorLogicalOpsPerSecondPerTile = 0;
   uint64_t f32VectorLogicalOpsPerSecondPerTile = 0;
-  /// The current target contract deliberately has no calibrated SPM rate.
+  /// The current target has no calibrated SPM rate.
   std::optional<uint64_t> spmMovementBytesPerSecond;
 };
 

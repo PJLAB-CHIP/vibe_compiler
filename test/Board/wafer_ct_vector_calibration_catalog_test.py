@@ -100,11 +100,11 @@ def main() -> int:
     )
     assert "return TsmExecute(&instruction);" in issue
     assert "TsmWaitfinish" not in issue
-    assert "wafer_tx81_local_fence" not in issue
+    assert "wafer_tx81_ncc_join" not in issue
     entry_parse = entry.index(
         "wafer_ctv_invalidate(request_ddr, WAFER_CTV_RESOURCE_BYTES);"
     )
-    first_rdma = entry.index("wafer_tx81_rdma(")
+    first_rdma = entry.index("wafer_tx81_rdma_v3(")
     assert entry_parse < first_rdma
     assert "WAFER_CTV_SPM_SCRATCH" not in entry
     observed = entry.index(
@@ -114,18 +114,18 @@ def main() -> int:
     assert probe.count("wafer_ctv_issue(") == 2
     assert first_rdma < observed
     second_rdma = entry.index(
-        "wafer_tx81_rdma(payload_ddr + WAFER_CTV_SLOT_BYTES,"
+        "wafer_tx81_rdma_v3(payload_ddr + WAFER_CTV_SLOT_BYTES,"
     )
     canary_rdma = entry.index(
-        "wafer_tx81_rdma(request_ddr + WAFER_CTV_SLOT_BYTES,"
+        "wafer_tx81_rdma_v3(request_ddr + WAFER_CTV_SLOT_BYTES,"
     )
     assert second_rdma < canary_rdma < observed
-    assert "wafer_tx81_local_fence();" not in entry[first_rdma:observed]
-    wdma = entry.index("wafer_tx81_wdma(", observed)
-    output_drain = entry.index("wafer_tx81_local_fence();", wdma)
+    assert "wafer_tx81_ncc_join(1U);" not in entry[first_rdma:observed]
+    wdma = entry.index("wafer_tx81_wdma_v3(", observed)
+    output_drain = entry.index("wafer_tx81_ncc_join(1U);", wdma)
     assert wdma < output_drain
-    assert "wafer_tx81_local_fence();" not in entry[observed:wdma]
-    assert entry.count("wafer_tx81_local_fence();") == 1
+    assert "wafer_tx81_ncc_join(1U);" not in entry[observed:wdma]
+    assert entry.count("wafer_tx81_ncc_join(1U);") == 1
 
     selected_for_continue = catalog.CATALOG[:2]
     original_board_command = runner.package_support.board_command

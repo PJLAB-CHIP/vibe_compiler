@@ -100,11 +100,11 @@ static void wafer_dar_target_dma(uint32_t direction, uint64_t source,
                                  uint32_t inner_bytes, uint32_t stride0,
                                  uint32_t iteration0) {
   if (direction == WAFER_DAR_DIRECTION_RDMA)
-    wafer_tx81_rdma(source, destination, payload_bytes, inner_bytes, stride0,
-                    0U, 0U, iteration0, 1U, 1U, Fmt_UINT8);
+    wafer_tx81_rdma_v3(source, destination, payload_bytes, inner_bytes, stride0,
+                    0U, 0U, iteration0, 1U, 1U, Fmt_UINT8, 0U);
   else
-    wafer_tx81_wdma(source, destination, payload_bytes, inner_bytes, stride0,
-                    0U, 0U, iteration0, 1U, 1U, Fmt_UINT8);
+    wafer_tx81_wdma_v3(source, destination, payload_bytes, inner_bytes, stride0,
+                    0U, 0U, iteration0, 1U, 1U, Fmt_UINT8, 0U);
 }
 
 static void wafer_dar_copy_chunks(uint32_t direction, uint64_t source,
@@ -226,7 +226,7 @@ wafer_tx81_ddr_tile_offset_probe(uint32_t rank, uint64_t input0,
       wafer_dar_copy_chunks(WAFER_DAR_DIRECTION_WDMA,
                             WAFER_DAR_SPM_RDMA - WAFER_DAR_GUARD_BYTES,
                             output0 + WAFER_DAR_WDMA_TARGET_OFFSET, span);
-    wafer_tx81_local_fence();
+    wafer_tx81_ncc_join(1U);
   }
 
   hrt_barrier();
@@ -250,7 +250,7 @@ wafer_tx81_ddr_tile_offset_probe(uint32_t rank, uint64_t input0,
                                  WAFER_DAR_GUARD_BYTES,
                              payload_bytes, inner_bytes, stride0, iteration0);
     }
-    wafer_tx81_local_fence();
+    wafer_tx81_ncc_join(1U);
   }
   uint64_t completion_cycles = wafer_ddr_tile_cycle() - begin;
   WaferDDRTilePMU after = wafer_dar_read_pmu(&after_stable);
@@ -273,7 +273,7 @@ wafer_tx81_ddr_tile_offset_probe(uint32_t rank, uint64_t input0,
     wafer_dar_copy_chunks(WAFER_DAR_DIRECTION_WDMA,
                           WAFER_DAR_SPM_RDMA - WAFER_DAR_GUARD_BYTES,
                           output0 + WAFER_DAR_RDMA_ARCHIVE_OFFSET, span);
-    wafer_tx81_local_fence();
+    wafer_tx81_ncc_join(1U);
   }
   hrt_barrier();
 

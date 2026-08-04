@@ -16,8 +16,8 @@ namespace wafer::runtime {
 /// Digest-qualified TX81 V5.6 model wire layout recovered from the public
 /// runtime and matching Kcore firmware. This is deliberately not a generic
 /// vendor ABI: callers must opt into this exact layout identity.
-inline constexpr llvm::StringLiteral kTx81ModelBootParamV1 =
-    "tx81-model-bootparam-v1";
+inline constexpr llvm::StringLiteral kTx81ModelBootParam =
+    "tx81-model-bootparam";
 
 enum class Tx81ModelTensorClass { Input, Output, Parameter };
 
@@ -42,7 +42,7 @@ struct Tx81ModelBootParamImage {
 
 /// Builds the host bytes copied to the device before txLaunchModel. The first
 /// implementation intentionally accepts only the parameter-free FP32 tensor
-/// subset admitted by the closed model BootParam v1 contract. Unsupported
+/// subset admitted by the closed current model BootParam contract. Unsupported
 /// tensor contracts fail before any TX call.
 llvm::Expected<Tx81ModelBootParamImage> buildTx81ModelBootParam(
     llvm::ArrayRef<Tx81ModelTensorDescriptor> tensors,

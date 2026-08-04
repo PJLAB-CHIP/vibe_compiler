@@ -9,11 +9,11 @@ func.func @reuse_after_last_use(%boundary: memref<128xf16, #wafer.memory<ddr, te
     %first = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %first, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %second = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %second, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return

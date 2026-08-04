@@ -64,9 +64,9 @@ def main() -> int:
     assert "host-only verifier negatives" in protocol
     assert "get_spm_memory_mapping" not in probe
     assert "TsmWaitfinish" not in probe
-    assert probe.count("wafer_tx81_rdma(") == 3
-    assert probe.count("wafer_tx81_wdma(") == 1
-    assert probe.count("wafer_tx81_local_fence();") == 1
+    assert probe.count("wafer_tx81_rdma_v3(") == 3
+    assert probe.count("wafer_tx81_wdma_v3(") == 1
+    assert probe.count("wafer_tx81_ncc_join(1U);") == 1
     assert "selected->unit_elem_count != 64U" in probe
     assert (
         "(uint64_t)selected->full_elem_count *" in probe

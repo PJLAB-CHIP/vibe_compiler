@@ -353,7 +353,7 @@
           "properties": {
             "kind": {"const": "kernel"},
             "form": {"const": "per-rank"},
-            "entry_abi": {"const": "rank-local-pointer-block-v1"},
+            "entry_abi": {"const": "rank-local-pointer-block"},
             "phases": {"const": ["main"]}
           }
         },
@@ -364,7 +364,7 @@
           "properties": {
             "kind": {"const": "kernel"},
             "form": {"const": "grid"},
-            "entry_abi": {"const": "rank-major-pointer-table-v1"},
+            "entry_abi": {"const": "rank-major-pointer-table"},
             "phases": {"const": ["main"]}
           }
         },
@@ -375,7 +375,7 @@
           "properties": {
             "kind": {"const": "kernel"},
             "form": {"const": "cluster"},
-            "entry_abi": {"const": "rank-major-pointer-table-v1"},
+            "entry_abi": {"const": "rank-major-pointer-table"},
             "phases": {"const": ["prepare", "main"]}
           }
         },
@@ -385,7 +385,7 @@
           "required": ["kind", "entry_abi", "phases"],
           "properties": {
             "kind": {"const": "model"},
-            "entry_abi": {"const": "tx81-model-bootparam-v1"},
+            "entry_abi": {"const": "tx81-model-bootparam"},
             "phases": {"const": ["main"]}
           }
         }
@@ -397,7 +397,7 @@
       "required": [
         "production_manifest_sha256",
         "profile_companion_schema_version",
-        "target_profile",
+        "target_identity",
         "launch",
         "execution_ranks",
         "site_correlation_basis",
@@ -410,7 +410,7 @@
         "profile_companion_schema_version": {
           "const": 6
         },
-        "target_profile": {
+        "target_identity": {
           "$ref": "#/$defs/nonEmptyString"
         },
         "launch": {
@@ -420,7 +420,7 @@
           "const": 16
         },
         "site_correlation_basis": {
-          "const": "typed-target-call-ordinal-ssa-identity-occurrence-v1"
+          "const": "typed-target-call-ordinal-ssa-identity-occurrence-v2"
         },
         "record_abi": {
           "const": "wafer-tx81-profiler-record-v4"
@@ -498,7 +498,7 @@
       "additionalProperties": false,
       "required": [
         "digest",
-        "target_profile",
+        "target_identity",
         "launch",
         "execution_ranks"
       ],
@@ -506,7 +506,7 @@
         "digest": {
           "$ref": "#/$defs/sha256"
         },
-        "target_profile": {
+        "target_identity": {
           "$ref": "#/$defs/nonEmptyString"
         },
         "launch": {

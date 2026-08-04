@@ -7,7 +7,7 @@
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Pipelines/Pipelines.h"
-#include "Wafer/Target/TargetProfile.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Pass/PassManager.h"
@@ -78,7 +78,7 @@ getExactCostClosureFailure(const analysis::InstructionProgramCost &cost) {
 mlir::FailureOr<std::vector<FinalizedRankCandidate>>
 finalizeScheduledRankCandidateFrontier(
     std::vector<wafer::ScheduledRankCandidate> frontier,
-    TargetProfileId targetProfile, bool requireReservedBaseline) {
+    bool requireReservedBaseline) {
   if (frontier.empty()) {
     if (requireReservedBaseline)
       return mlir::failure();
@@ -127,7 +127,7 @@ finalizeScheduledRankCandidateFrontier(
     analysis::InstructionProgramCost exactCost =
         analysis::analyzeInstructionProgramCost(
             candidate.module->getOperation(),
-            analysis::getTargetScheduleCostPolicy(targetProfile));
+            analysis::getTargetScheduleCostPolicy());
     if (std::optional<std::string> failure =
             getExactCostClosureFailure(exactCost)) {
       candidate.module->emitError()

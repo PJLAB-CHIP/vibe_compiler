@@ -53,7 +53,7 @@ struct FinalizedRankCandidate {
 mlir::FailureOr<std::vector<FinalizedRankCandidate>>
 finalizeScheduledRankCandidateFrontier(
     std::vector<wafer::ScheduledRankCandidate> frontier,
-    TargetProfileId targetProfile, bool requireReservedBaseline = true);
+    bool requireReservedBaseline = true);
 
 } // namespace wafer::compiler::detail
 

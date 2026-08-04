@@ -219,8 +219,7 @@ module {
       });
   mlir::PassManager manager(&context);
   manager.enableVerifier(false);
-  wafer::TargetConversionRequest request{
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
+  wafer::TargetConversionRequest request{};
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
 
   EXPECT_TRUE(mlir::failed(manager.run(*source)));
@@ -261,7 +260,7 @@ module {
            src_iterations = array<i64: 1, 1, 1>}
           : memref<1x3xf16, strided<[8, 1], offset: ?>, #wafer.memory<ddr, tensor>>
          to memref<1x3xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     }
     return
   }
@@ -271,8 +270,7 @@ module {
   ASSERT_TRUE(source);
 
   mlir::PassManager manager(&context);
-  wafer::TargetConversionRequest request{
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
+  wafer::TargetConversionRequest request{};
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
 
   EXPECT_TRUE(mlir::succeeded(manager.run(*source)));
@@ -319,12 +317,11 @@ module {
         return mlir::success();
       });
   mlir::PassManager manager(&context);
-  wafer::TargetConversionRequest request{
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
+  wafer::TargetConversionRequest request{};
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
 
   EXPECT_TRUE(mlir::failed(manager.run(*source)));
-  EXPECT_NE(diagnostics.find("dynamic DDR tensor subview offset #0 must be a "
+  EXPECT_NE(diagnostics.find("dynamic tensor subview offset #0 must be a "
                              "supported statically bounded index expression"),
             std::string::npos)
       << diagnostics;
@@ -358,8 +355,7 @@ module {
   ASSERT_TRUE(source);
 
   mlir::PassManager manager(&context);
-  wafer::TargetConversionRequest request{
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
+  wafer::TargetConversionRequest request{};
   request.logicalRank = 15;
   request.transportStatusArgumentIndex = 0;
   request.transportPreparedBeforeEntry = true;
@@ -386,7 +382,7 @@ module {
 }
 
 TEST(LowerInstrToTargetLLVMTest,
-     NumericPreflightRejectsI8ArithmeticBeforeTargetMutation) {
+     LowersI8ArithmeticWithoutFormalModelQualification) {
   mlir::DialectRegistry registry;
   registerTargetConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -414,29 +410,16 @@ module {
       mlir::ParserConfig(&context));
   ASSERT_TRUE(source);
 
-  std::string diagnostics;
-  mlir::ScopedDiagnosticHandler handler(
-      &context, [&](mlir::Diagnostic &diagnostic) {
-        llvm::raw_string_ostream stream(diagnostics);
-        diagnostic.print(stream);
-        return mlir::success();
-      });
   mlir::PassManager manager(&context);
-  wafer::TargetConversionRequest request{
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
+  wafer::TargetConversionRequest request{};
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
-  EXPECT_TRUE(mlir::failed(manager.run(*source)));
-  EXPECT_NE(diagnostics.find("unsupported_target_numeric"), std::string::npos)
-      << diagnostics;
-  EXPECT_NE(diagnostics.find("integer-elementwise-policy-unproven"),
-            std::string::npos)
-      << diagnostics;
-  EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*source), 1u);
-  EXPECT_EQ(countOps<mlir::LLVM::LLVMFuncOp>(*source), 0u);
+  EXPECT_TRUE(mlir::succeeded(manager.run(*source)));
+  EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*source), 0u);
+  EXPECT_GT(countOps<mlir::LLVM::LLVMFuncOp>(*source), 0u);
 }
 
 TEST(LowerInstrToTargetLLVMTest,
-     NumericPreflightRejectsExactFloatingNegSignedZeroContract) {
+     LowersF32ElementwiseWithoutFormalModelQualification) {
   mlir::DialectRegistry registry;
   registerTargetConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -460,21 +443,12 @@ module {
       mlir::ParserConfig(&context));
   ASSERT_TRUE(source);
 
-  std::string diagnostics;
-  mlir::ScopedDiagnosticHandler handler(
-      &context, [&](mlir::Diagnostic &diagnostic) {
-        llvm::raw_string_ostream stream(diagnostics);
-        diagnostic.print(stream);
-        return mlir::success();
-      });
   mlir::PassManager manager(&context);
-  wafer::TargetConversionRequest request{
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
+  wafer::TargetConversionRequest request{};
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
-  EXPECT_TRUE(mlir::failed(manager.run(*source)));
-  EXPECT_NE(diagnostics.find("exact-signed-zero-policy-unproven"),
-            std::string::npos)
-      << diagnostics;
+  EXPECT_TRUE(mlir::succeeded(manager.run(*source)));
+  EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*source), 0u);
+  EXPECT_GT(countOps<mlir::LLVM::LLVMFuncOp>(*source), 0u);
 }
 
 TEST(LowerInstrToTargetLLVMTest,
@@ -523,8 +497,7 @@ module {
   ASSERT_TRUE(source);
 
   mlir::PassManager manager(&context);
-  wafer::TargetConversionRequest request{
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
+  wafer::TargetConversionRequest request{};
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
   EXPECT_TRUE(mlir::succeeded(manager.run(*source)));
   EXPECT_EQ(countOps<wafer::InstrRDMAOp>(*source), 0u);
@@ -595,7 +568,7 @@ module {
       mlir::ParserConfig(&context));
   ASSERT_TRUE(source);
   EXPECT_TRUE(mlir::succeeded(wafer::target_llvm_detail::preflightTargetFormats(
-      *source, wafer::TargetProfileId::waferTx81SingleCardKernelV1())));
+      *source)));
 }
 
 TEST(LowerInstrToTargetLLVMTest,
@@ -631,7 +604,7 @@ module {
         return mlir::success();
       });
   EXPECT_TRUE(mlir::failed(wafer::target_llvm_detail::preflightTargetFormats(
-      *source, wafer::TargetProfileId::waferTx81SingleCardKernelV1())));
+      *source)));
   EXPECT_NE(diagnostics.find("unsupported_target_physical_traversal: convert"),
             std::string::npos)
       << diagnostics;

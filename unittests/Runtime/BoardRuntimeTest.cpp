@@ -53,23 +53,23 @@ makeLaunchContract(TestLaunchContractCase launchCase) {
   switch (launchCase) {
   case TestLaunchContractCase::PerRank:
     return llvm::cantFail(RuntimeLaunchContract::createKernel(
-        KernelLaunchForm::PerRank, KernelEntryABI::RankLocalPointerBlockV1,
+        KernelLaunchForm::PerRank, KernelEntryABI::RankLocalPointerBlock,
         {RuntimeLaunchPhaseRole::Main}));
   case TestLaunchContractCase::Grid:
     return llvm::cantFail(RuntimeLaunchContract::createKernel(
-        KernelLaunchForm::Grid, KernelEntryABI::RankMajorPointerTableV1,
+        KernelLaunchForm::Grid, KernelEntryABI::RankMajorPointerTable,
         {RuntimeLaunchPhaseRole::Main}));
   case TestLaunchContractCase::GridRankRows:
     return llvm::cantFail(RuntimeLaunchContract::createKernel(
-        KernelLaunchForm::Grid, KernelEntryABI::RankRowPointerTableV1,
+        KernelLaunchForm::Grid, KernelEntryABI::RankRowPointerTable,
         {RuntimeLaunchPhaseRole::Main}));
   case TestLaunchContractCase::Cluster:
     return llvm::cantFail(RuntimeLaunchContract::createKernel(
-        KernelLaunchForm::Cluster, KernelEntryABI::RankMajorPointerTableV1,
+        KernelLaunchForm::Cluster, KernelEntryABI::RankMajorPointerTable,
         {RuntimeLaunchPhaseRole::Prepare, RuntimeLaunchPhaseRole::Main}));
   case TestLaunchContractCase::Model:
     return llvm::cantFail(RuntimeLaunchContract::createModel(
-        ModelEntryABI::Tx81ModelBootParamV1, {RuntimeLaunchPhaseRole::Main}));
+        ModelEntryABI::Tx81ModelBootParam, {RuntimeLaunchPhaseRole::Main}));
   }
   llvm_unreachable("unknown test launch contract case");
 }
@@ -446,20 +446,18 @@ public:
 
 private:
   static wafer::runtime::RuntimeEnvironment makeProviderEnvironment() {
-    const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
-        wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     wafer::runtime::RuntimeEnvironment environment{
-        target.id, target.targetIdentity, target.kernelRuntimeABI,
-        target.moduleFormat};
+        wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
+        wafer::kCurrentTargetModuleFormat};
     environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::PerRank,
                                               wafer::KernelLaunchForm::Grid,
                                               wafer::KernelLaunchForm::Cluster};
     environment.supportedKernelEntryABIs = {
-        wafer::KernelEntryABI::RankLocalPointerBlockV1,
-        wafer::KernelEntryABI::RankMajorPointerTableV1,
-        wafer::KernelEntryABI::RankRowPointerTableV1};
+        wafer::KernelEntryABI::RankLocalPointerBlock,
+        wafer::KernelEntryABI::RankMajorPointerTable,
+        wafer::KernelEntryABI::RankRowPointerTable};
     environment.supportedModelEntryABIs = {
-        wafer::ModelEntryABI::Tx81ModelBootParamV1};
+        wafer::ModelEntryABI::Tx81ModelBootParam};
     environment.supportsDirectDTE = true;
     environment.directDTEStatusABI = wafer::runtime::kDirectDTEStatusABI.str();
     environment.supportsHostWatchdog = true;
@@ -524,14 +522,12 @@ protected:
 
   wafer::runtime::PackageManifest makeManifest() const {
     using namespace wafer::runtime;
-    const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
-        wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     llvm::SHA256 hasher;
     hasher.update(moduleBytes);
     PackageManifest manifest(
-        target.id, target.targetIdentity, target.kernelRuntimeABI,
+        wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
         makeLaunchContract(TestLaunchContractCase::PerRank),
-        target.moduleFormat);
+        wafer::kCurrentTargetModuleFormat);
     manifest.program = ProgramId(0);
     manifest.rankCount = 1;
     manifest.resources = {{ResourceId(0),
@@ -568,7 +564,7 @@ protected:
         {ModuleId(0),
          "modules/rank_00000.so",
          "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true),
-         target.moduleFormat.str(),
+         wafer::kCurrentTargetModuleFormat.str(),
          {{PackageModuleExportRole::Main, "main"}}}};
     manifest.entries = {{EntryId(0),
                          0,
@@ -608,11 +604,9 @@ protected:
       bool withProfiler = false,
       std::optional<bool> directDTEOverride = std::nullopt) const {
     using namespace wafer::runtime;
-    const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
-        wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     PackageManifest manifest(
-        target.id, target.targetIdentity, target.kernelRuntimeABI,
-        makeLaunchContract(launchCase), target.moduleFormat);
+        wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
+        makeLaunchContract(launchCase), wafer::kCurrentTargetModuleFormat);
     manifest.program = ProgramId(0);
     manifest.rankCount = 16;
     const bool sharedModule =
@@ -635,7 +629,7 @@ protected:
       if (!sharedModule || rank == 0)
         manifest.modules.push_back(
             {module, "modules/" + moduleName, moduleDigest(),
-             target.moduleFormat.str(),
+             wafer::kCurrentTargetModuleFormat.str(),
              cluster ? std::vector<
                            PackageModuleExportRecord>{{PackageModuleExportRole::
                                                            Prepare,

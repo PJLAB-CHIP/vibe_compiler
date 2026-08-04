@@ -43,7 +43,7 @@ func.func @repeated_branch_spm(
         scf.if %first {
           wafer.instr.fill %a, %one
               : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-          wafer.instr.local_fence
+          wafer.instr.ncc_join [0]
         }
         wafer.instr.wdma %a to %out_a
             {byte_count = 256 : i64, inner_bytes = 256 : i64,
@@ -51,18 +51,18 @@ func.func @repeated_branch_spm(
              dst_strides = array<i64: 0, 0, 0>}
             : memref<128xf16, #wafer.memory<spm, tensor>>
            to memref<128xf16, #wafer.memory<ddr, tensor>>
-        wafer.instr.local_fence
+        wafer.instr.ncc_join [0]
       } else {
         wafer.instr.fill %b, %zero
             : memref<64xf16, #wafer.memory<spm, tensor>>, f16
-        wafer.instr.local_fence
+        wafer.instr.ncc_join [0]
         wafer.instr.wdma %b to %out_b
             {byte_count = 128 : i64, inner_bytes = 128 : i64,
              dst_iterations = array<i64: 1, 1, 1>,
              dst_strides = array<i64: 0, 0, 0>}
             : memref<64xf16, #wafer.memory<spm, tensor>>
            to memref<64xf16, #wafer.memory<ddr, tensor>>
-        wafer.instr.local_fence
+        wafer.instr.ncc_join [0]
       }
       %next = arith.xori %flag, %true : i1
       scf.yield %next : i1
@@ -102,7 +102,7 @@ func.func @repeated_branch_ddr() {
              dst_strides = array<i64: 0, 0, 0>}
             : memref<128xf16, #wafer.memory<spm, tensor>>
            to memref<128xf16, #wafer.memory<ddr, tensor>>
-        wafer.instr.local_fence
+        wafer.instr.ncc_join [0]
       }
       wafer.instr.rdma %a to %spm_a
           {byte_count = 256 : i64, inner_bytes = 256 : i64,
@@ -110,7 +110,7 @@ func.func @repeated_branch_ddr() {
            src_strides = array<i64: 0, 0, 0>}
           : memref<128xf16, #wafer.memory<ddr, tensor>>
          to memref<128xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     } else {
       wafer.instr.wdma %spm_b to %b
           {byte_count = 128 : i64, inner_bytes = 128 : i64,
@@ -118,7 +118,7 @@ func.func @repeated_branch_ddr() {
            dst_strides = array<i64: 0, 0, 0>}
           : memref<64xf16, #wafer.memory<spm, tensor>>
          to memref<64xf16, #wafer.memory<ddr, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     }
     %next = arith.xori %flag, %true : i1
     scf.yield %next : i1
@@ -154,7 +154,7 @@ func.func @token_select_keeps_root_live(%condition: i1) {
        src_strides = array<i64: 0, 0, 0>}
       : memref<64xf16, #wafer.memory<ddr, tensor>>
      to memref<64xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   async.await %selected : !async.token
   return
 }
@@ -194,7 +194,7 @@ func.func @token_for_keeps_root_live() {
        src_strides = array<i64: 0, 0, 0>}
       : memref<64xf16, #wafer.memory<ddr, tensor>>
      to memref<64xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   async.await %looped : !async.token
   return
 }
@@ -225,7 +225,7 @@ func.func @captured_spm_root_survives_backedge(
         : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %captured, %one
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     scf.for %i = %c0 to %c3 step %c1 {
       wafer.instr.wdma %captured to %out
           {byte_count = 256 : i64, inner_bytes = 256 : i64,
@@ -233,12 +233,12 @@ func.func @captured_spm_root_survives_backedge(
            dst_strides = array<i64: 0, 0, 0>}
           : memref<128xf16, #wafer.memory<spm, tensor>>
          to memref<128xf16, #wafer.memory<ddr, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       %body = memref.alloc()
           : memref<64xf16, #wafer.memory<spm, tensor>>
       wafer.instr.fill %body, %zero
           : memref<64xf16, #wafer.memory<spm, tensor>>, f16
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     }
     wafer.tile.yield %out
         : memref<128xf16, #wafer.memory<ddr, tensor>>
@@ -271,7 +271,7 @@ func.func @captured_ddr_root_survives_backedge() {
        dst_strides = array<i64: 0, 0, 0>}
       : memref<128xf16, #wafer.memory<spm, tensor>>
      to memref<128xf16, #wafer.memory<ddr, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   scf.for %i = %c0 to %c3 step %c1 {
     wafer.instr.rdma %captured to %spm_captured
         {byte_count = 256 : i64, inner_bytes = 256 : i64,
@@ -279,7 +279,7 @@ func.func @captured_ddr_root_survives_backedge() {
          src_strides = array<i64: 0, 0, 0>}
         : memref<128xf16, #wafer.memory<ddr, tensor>>
        to memref<128xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %body = memref.alloc()
         : memref<64xf16, #wafer.memory<ddr, tensor>>
     wafer.instr.wdma %spm_body to %body
@@ -288,7 +288,7 @@ func.func @captured_ddr_root_survives_backedge() {
          dst_strides = array<i64: 0, 0, 0>}
         : memref<64xf16, #wafer.memory<spm, tensor>>
        to memref<64xf16, #wafer.memory<ddr, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   }
   return
 }
@@ -310,7 +310,7 @@ func.func @nested_tile_region_clobbers_outer(
     %a = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %a, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %inner = wafer.tile.region(%outer_output
         : memref<128xf16, #wafer.memory<ddr, tensor>>)
         -> (memref<128xf16, #wafer.memory<ddr, tensor>>) {
@@ -319,7 +319,7 @@ func.func @nested_tile_region_clobbers_outer(
       %b = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
       wafer.instr.fill %b, %one
           : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %inner_output
           : memref<128xf16, #wafer.memory<ddr, tensor>>
     }
@@ -329,7 +329,7 @@ func.func @nested_tile_region_clobbers_outer(
          dst_strides = array<i64: 0, 0, 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>>
        to memref<128xf16, #wafer.memory<ddr, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %inner
         : memref<128xf16, #wafer.memory<ddr, tensor>>
   }

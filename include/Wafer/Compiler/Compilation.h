@@ -6,7 +6,7 @@
 #include "Wafer/Frontend/Program.h"
 #include "Wafer/Support/OptimizationConfig.h"
 #include "Wafer/Target/RuntimeLaunchContract.h"
-#include "Wafer/Target/TargetProfile.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -37,17 +37,18 @@ enum class CompilationTimingMode { Disabled, Detailed };
 class ExecutionConfig {
 public:
   static llvm::Expected<ExecutionConfig>
-  createForSingleCard(int64_t executionRankCount, TargetProfileId targetProfile,
+  createForSingleCard(int64_t executionRankCount,
                       RuntimeLaunchKind runtimeLaunchKind);
 
   int64_t getRankCount() const { return executionRankCount; }
-  TargetProfileId getTargetProfileId() const { return targetProfile; }
+  TargetIdentityId getTargetIdentityId() const {
+    return TargetIdentityId::waferTx81SingleCard();
+  }
   RuntimeLaunchKind getRuntimeLaunchKind() const { return runtimeLaunchKind; }
 
   friend bool operator==(const ExecutionConfig &lhs,
                          const ExecutionConfig &rhs) {
     return lhs.executionRankCount == rhs.executionRankCount &&
-           lhs.targetProfile == rhs.targetProfile &&
            lhs.runtimeLaunchKind == rhs.runtimeLaunchKind;
   }
   friend bool operator!=(const ExecutionConfig &lhs,
@@ -56,13 +57,12 @@ public:
   }
 
 private:
-  ExecutionConfig(int64_t executionRankCount, TargetProfileId targetProfile,
+  ExecutionConfig(int64_t executionRankCount,
                   RuntimeLaunchKind runtimeLaunchKind)
-      : executionRankCount(executionRankCount), targetProfile(targetProfile),
+      : executionRankCount(executionRankCount),
         runtimeLaunchKind(runtimeLaunchKind) {}
 
   int64_t executionRankCount;
-  TargetProfileId targetProfile;
   RuntimeLaunchKind runtimeLaunchKind;
 };
 

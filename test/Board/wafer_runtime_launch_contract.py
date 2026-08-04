@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Canonical schema-v6 runtime launch contracts used by board tests."""
+"""Canonical current runtime launch contracts used by board tests."""
 
 from __future__ import annotations
 
@@ -7,34 +7,34 @@ from collections.abc import Mapping
 from typing import Any
 
 
-PACKAGE_SCHEMA_VERSION = 6
+PACKAGE_SCHEMA_VERSION = 7
 KERNEL_LAUNCH_KIND = "kernel"
 MODEL_LAUNCH_KIND = "model"
 
 RANK_ONE_KERNEL_LAUNCH: dict[str, Any] = {
     "kind": KERNEL_LAUNCH_KIND,
     "form": "per-rank",
-    "entry_abi": "rank-local-pointer-block-v1",
+    "entry_abi": "rank-local-pointer-block",
     "phases": ["main"],
 }
 
 GRID_KERNEL_LAUNCH: dict[str, Any] = {
     "kind": KERNEL_LAUNCH_KIND,
     "form": "grid",
-    "entry_abi": "rank-major-pointer-table-v1",
+    "entry_abi": "rank-major-pointer-table",
     "phases": ["main"],
 }
 
 CLUSTER_KERNEL_LAUNCH: dict[str, Any] = {
     "kind": KERNEL_LAUNCH_KIND,
     "form": "cluster",
-    "entry_abi": "rank-major-pointer-table-v1",
+    "entry_abi": "rank-major-pointer-table",
     "phases": ["prepare", "main"],
 }
 
 MODEL_LAUNCH: dict[str, Any] = {
     "kind": MODEL_LAUNCH_KIND,
-    "entry_abi": "tx81-model-bootparam-v1",
+    "entry_abi": "tx81-model-bootparam",
     "phases": ["main"],
 }
 

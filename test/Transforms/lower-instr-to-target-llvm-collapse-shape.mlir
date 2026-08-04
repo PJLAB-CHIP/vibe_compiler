@@ -1,6 +1,6 @@
 // RUN: split-file %s %t
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/compact.mlir | FileCheck %s --check-prefix=COMPACT
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/aligned.mlir 2>&1 | FileCheck %s --check-prefix=ALIGNED
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/compact.mlir | FileCheck %s --check-prefix=COMPACT
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/aligned.mlir 2>&1 | FileCheck %s --check-prefix=ALIGNED
 
 //--- compact.mlir
 
@@ -24,15 +24,15 @@ func.func @compact_collapse(
        dst_iterations = array<i64: 1, 1, 1>}
       : memref<4x16xf32, #wafer.memory<spm, tensor>>
      to memref<4x16xf32, #wafer.memory<ddr, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
 // COMPACT-LABEL: llvm.func @compact_collapse(
 // COMPACT-SAME: %[[INPUT:.+]]: i64, %[[OUTPUT:.+]]: i64
 // COMPACT-NOT: memref.collapse_shape
-// COMPACT: llvm.call @wafer_tx81_rdma(%[[INPUT]],
-// COMPACT: llvm.call @wafer_tx81_wdma({{.*}}%[[OUTPUT]]
+// COMPACT: llvm.call @wafer_tx81_rdma_v3(%[[INPUT]],
+// COMPACT: llvm.call @wafer_tx81_wdma_v3({{.*}}%[[OUTPUT]]
 // COMPACT: llvm.return
 
 //--- aligned.mlir

@@ -164,7 +164,7 @@ artifact/buffering/worker tuple以及完整module文本。它证明candidate集�
   lowering只负责target三层loop、field width、directional-contiguous约束下的split/merge，不再拥有第二份physical
   offset calculator或layout-pair公式。
 - 大partial-reduction只有在source init为typed identity、logical dimensions可映射native reduce selector且
-  selected target profile存在closed opcode/kind/format tuple时，才用一条native reduce表达完整规则归约；否则
+  current target存在closed opcode/kind/format tuple时，才用一条native reduce表达完整规则归约；否则
   cheap target gate在ordered expansion必然超过4096-op预算时拒绝。target tuple由target preflight和cheap gate
   共用同一事实源，不能再分别写F16/F32判断。SPM lower bound同时计入partial GEMM multiply点必然同时存活的
   四个张量。两者只提前执行现有exact gate的必然拒绝，不改变可表示候选。
@@ -200,7 +200,7 @@ invocation，不进入IR、package或selection input。
 
 实际Llama-2 7B单block使用hidden `4096`、intermediate `11008`、32 heads、head dim `128`、batch `1`、
 sequence `16`和Megatron TP16。输入和parameter由固定seed PyTorch random API形成，CPU eager是唯一expected；
-同一PyTorch/XLA source program完成production 16-rank compile、schema-v6 package和fresh no-card。
+同一PyTorch/XLA source program完成production 16-rank compile、schema-v7 package和fresh no-card。
 
 修正计时器自身锁竞争后，本轮完整transaction结果如下：
 
@@ -258,7 +258,7 @@ op name或当前winner固化shortcut。
 - whole-variant selection `12.969 s`：77/153 planned attempt、77 pre-target attempt、14 pre-target accepted、
   5 target gate、80 target-rank lowering、5 fully accepted、4 Pareto retained，rank clone上界1232；
 - profile product `44.913 s`：1个production package、2个capture package、48个target-rank lowering；
-- production schema-v6 manifest为16 rank，module digest
+- production schema-v7 manifest为16 rank，module digest
   `sha256:9c4e3a703b42d7673866a58f385cc04f446c0caf60cc1aca2951461d13c6c449`；
   profile plan绑定production manifest digest
   `sha256:c144a44a6590f33e30b92d261743566f029c8bad215abe1e5ba40488058e22e2`，
@@ -273,7 +273,7 @@ package并证明递归bytes完全一致、NE GEMM target structure一致、profi
 
 实际Llama-2 7B Megatron TP16另以同一Release production配置完成493.374秒transaction和fresh no-card：
 manifest为schema 6、16 rank、cluster prepare/main、一个aggregate ELF；每rank 18个typed slot，选择
-`rank-row-pointer-table-v1`，runtime packet携带16个row pointer而非288个资源pointer。288个resource、完整
+`rank-row-pointer-table`，runtime packet携带16个row pointer而非288个资源pointer。288个resource、完整
 transport status及all-rank invocation preflight均通过，`board_execution: false`。该结果同时恢复Q41
 `board-ready`并使Q44的第三个PyTorch case达到board-ready；真实tensor capture/torch eager comparison仍须在
 configured board执行后才能标`done`。

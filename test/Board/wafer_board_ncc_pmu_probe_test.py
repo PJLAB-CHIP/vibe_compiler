@@ -47,7 +47,7 @@ METADATA = {
     "unused_inputs": [],
 }
 
-TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
+TARGET_IDENTITY = "wafer-tx81-single-card"
 LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 PROBE_BYTES = 256
 PROBE_WORDS = 32
@@ -168,7 +168,6 @@ def compile_seed_package(args: argparse.Namespace, source: pathlib.Path) -> path
             "--output-program-dir",
             str(package),
             "--execution-ranks=1",
-            f"--target-profile={TARGET_PROFILE}",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
@@ -195,7 +194,7 @@ def validate_manifest(
     if (
         manifest.get("rank_count") != 1
         or not isinstance(target, dict)
-        or target.get("profile") != TARGET_PROFILE
+        or target.get("identity") != TARGET_IDENTITY
         or not isinstance(modules, list)
         or len(modules) != 1
         or not isinstance(entries, list)

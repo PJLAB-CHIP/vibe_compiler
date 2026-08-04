@@ -724,8 +724,7 @@ estimateTargetSPMRequiredLiveBytes(mlir::func::FuncOp task,
 
 static std::optional<std::string> getCheapTargetGeometryFailureImpl(
     std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots,
-    const CandidateSpec &candidate, llvm::ArrayRef<int64_t> reductionRanges,
-    TargetProfileId targetProfile) {
+    const CandidateSpec &candidate, llvm::ArrayRef<int64_t> reductionRanges) {
   if (!roots)
     return std::nullopt;
 
@@ -762,8 +761,8 @@ static std::optional<std::string> getCheapTargetGeometryFailureImpl(
           mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
       // Mirror the exact native-reduce target tuple here so refinement reaches
       // a representable split without first expanding a guaranteed-illegal
-      // partial tensor. Generic CT format support is not enough: this query is
-      // the same opcode/kind/format qualification used by target preflight.
+      // partial tensor. The same CT format encoding registry is consumed by
+      // target preflight.
       if (resultType && static_cast<uint64_t>(reductionTupleCount) >
                             maximumOrderedReductionTuples) {
         std::optional<LogicalFormat> format;
@@ -773,8 +772,10 @@ static std::optional<std::string> getCheapTargetGeometryFailureImpl(
           format = LogicalFormat::BF16;
         else if (mlir::isa<mlir::Float32Type>(resultType.getElementType()))
           format = LogicalFormat::F32;
-        if (!format || !isTargetReduceFormatTupleAvailable(
-                           targetProfile, InstrReduceKind::Sum, *format))
+        const TargetFormatEncodingRecord *encoding =
+            format ? findTargetFormatEncoding(TargetFormatEngine::CT, *format)
+                   : nullptr;
+        if (!encoding)
           return "static_terminal_budget_exceeded: partial-reduction merge "
                  "minimum terminal operation count exceeds 4096";
       }
@@ -809,10 +810,9 @@ static std::optional<std::string> getCheapTargetGeometryFailureImpl(
 
 std::optional<std::string> getCheapTargetGeometryFailure(
     mlir::func::FuncOp task, const CandidateSpec &candidate,
-    llvm::ArrayRef<int64_t> reductionRanges, TargetProfileId targetProfile) {
+    llvm::ArrayRef<int64_t> reductionRanges) {
   return getCheapTargetGeometryFailureImpl(
-      getTraversalComputeRootLinalgOps(task), candidate, reductionRanges,
-      targetProfile);
+      getTraversalComputeRootLinalgOps(task), candidate, reductionRanges);
 }
 
 static void addUnique(llvm::SmallVectorImpl<int64_t> &values, int64_t value,

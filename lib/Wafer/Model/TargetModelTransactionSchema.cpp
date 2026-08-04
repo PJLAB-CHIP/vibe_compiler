@@ -63,9 +63,8 @@ llvm::Error requireEngineFormat(LogicalFormat format, TargetFormatEngine engine,
                                 llvm::StringRef role) {
   if (llvm::Error error = requireFormat(format, role))
     return error;
-  const TargetFormatEncodingRecord *record = findTargetFormatEncoding(
-      TargetProfileId::waferTx81SingleCardKernelV1(), engine, format);
-  if (!record || !record->isSupported() || !record->dataFormatCode)
+  const TargetFormatEncodingRecord *record = findTargetFormatEncoding(engine, format);
+  if (!record)
     return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
                        llvm::Twine(role) +
                            " format is unsupported by its target engine");
@@ -147,8 +146,7 @@ llvm::Error validateConvert(const compiler::TargetConvertTransaction &value) {
     return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
                        "convert has an unknown kind");
   const TargetConvertRoute *route =
-      findTargetConvertRoute(TargetProfileId::waferTx81SingleCardKernelV1(),
-                             static_cast<uint16_t>(opcode));
+      findTargetConvertRoute(static_cast<uint16_t>(opcode));
   if (!route)
     return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
                        "convert kind has no exact target route");

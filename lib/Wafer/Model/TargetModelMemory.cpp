@@ -3,7 +3,7 @@
 #include "Wafer/Model/TargetModelMemory.h"
 
 #include "Wafer/Support/TargetPolicy.h"
-#include "Wafer/Target/TargetProfile.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -128,8 +128,9 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
     return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
                        "invocation has no logical ranks");
 
-  const TargetProfileRecord &profile =
-      getTargetProfileRecord(invocation.targetProfile);
+  if (invocation.targetIdentity != TargetIdentityId::waferTx81SingleCard())
+    return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
+                       "invocation target identity is unsupported");
   const size_t rankCount = invocation.ranks.size();
   std::vector<const compiler::TargetCallRankDescriptor *> ranks(rankCount,
                                                                 nullptr);
@@ -144,12 +145,12 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
       return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
                          llvm::Twine("duplicate logical rank ") +
                              llvm::Twine(rank.logicalRank));
-    if (rank.targetIdentity != profile.targetIdentity ||
-        rank.kernelRuntimeABI != profile.kernelRuntimeABI)
+    if (rank.targetIdentity != invocation.targetIdentity ||
+        rank.kernelRuntimeABI != KernelRuntimeABIId::waferTx81Kernel())
       return memoryError(
           TargetModelMemoryErrorCode::InvalidInvocation,
           llvm::Twine("rank ") + llvm::Twine(rank.logicalRank) +
-              " identity or kernel runtime ABI differs from target profile");
+              " identity or kernel runtime ABI is inconsistent");
     ranks[static_cast<size_t>(rank.logicalRank)] = &rank;
   }
   if (llvm::is_contained(ranks, nullptr))
@@ -272,7 +273,7 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
               rankSlot(byBase[index]->logicalRank, byBase[index]->slotOrdinal));
   }
 
-  return InvocationAddressPlan(invocation.targetProfile,
+  return InvocationAddressPlan(invocation.targetIdentity,
                                std::move(logicalRanks), std::move(slots),
                                std::move(initialStorage), spmBase, spmLimit);
 }

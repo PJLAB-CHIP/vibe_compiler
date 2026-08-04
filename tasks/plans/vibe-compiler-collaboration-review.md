@@ -59,7 +59,7 @@ Pipeline position:
   当前 production PyTorch/XLA StableHLO program、ExecutionConfig、Shardy/XLA SPMD、
   rank-local structured tensor IR、independent physical-dataflow candidates、selected Tile/Instr、
   ExecutableBundle、TargetLLVMModuleBundle、TargetArtifactBundle、PackageBundle，以及当前
-  target-profile 硬件行为、Q38-Q41 优化状态、现有代码、测试和本轮 focused host 输出。
+  target format/ABI 硬件行为、Q38-Q41 优化状态、现有代码、测试和本轮 focused host 输出。
 - Current stage responsibility:
   逐页解释 representation、analysis、transformation、candidate selection、lowering、artifact 和
   verification 的因果关系。每个 transformation 读取当前实现与测试，必要时实际运行 focused pipeline；
@@ -338,7 +338,7 @@ page dossier；表格内容不是最终页面栏目。
 | 90 | Target artifact pipeline | 展示ExecutableBundle→TargetLLVMModuleBundle→TargetArtifactBundle→PackageBundle；同一lowered module分支服务device link和TargetCall/SystemC，不重复lower。 | 四类bundle的ownership DAG，中心module只出现一次；每条consumer边标实际artifact。 | `TargetArtifact.h`、architecture doc；不能把文件名当对象。 |
 | 91 | Kernel ABI slot layout | 用一个entry展示input/parameter/constant/output/workspace/status的ordinal、role、dtype、layout、shape、bytes、alignment；真实function signature与manifest slot对应。 | function boundary展开成slot conveyor，右侧真实ABI表和pointer order；相同resource颜色贯穿。 | `TargetABIPreparation.cpp`、ABI tests。 |
 | 92 | Instr-to-LLVM conversion | 从address、descriptor、format、worker、token五条线展示Instr字段如何物化为LLVM constants/calls/control flow；conversion后无Wafer op。 | Instr IR、conversion patterns、LLVM dialect三层semantic wiring；不是op名称列表。 | `lower-instr-to-target-llvm.mlir`与conversion code。 |
-| 93 | Oriented GEMM call mapping | before为`wafer.instr.gemm`，after为`@wafer_tx81_gemm_oriented_v2`；连出3个SPM offset、m/k/n、batch、format和orientation。 | 中央runtime call，左侧Instr fields、右侧LLVM constants逐参数连线；真实IR可读。 | oriented GEMM focused test；v1负例自然放在capability处。 |
+| 93 | Oriented GEMM call mapping | before为`wafer.instr.gemm`，after为current `@wafer_tx81_gemm_oriented_v3`；连出3个SPM offset、m/k/n、batch、format、orientation和worker。 | 中央runtime call，左侧Instr fields、右侧LLVM constants逐参数连线；真实IR可读。 | oriented GEMM focused test；非法orientation在typed verifier/target preflight失败。 |
 | 94 | Direct DTE LLVM lifecycle | 展示receiver-first四泳道：begin、recv prepare、remote address select、send prepare/issue、two waits、finish/status；token use与status slot都可见。 | host/rank0/peer/runtime四泳道时序与LLVM call片段局部对应。 | Direct DTE focused run；不把结构witness说成已测overlap。 |
 | 95 | Target LLVM module readback | 展示RISC-V triple、fixed entry、rank/profile、slot schema、LLVM verifier；一个triple/entry mismatch case被拒。 | LLVM module cutaway：header、function、metadata、slot mapping围绕同一module。 | `TargetLLVMTranslation.cpp`及tests。 |
 | 96 | Target LLVM module consumers | 同一owned all-rank modules分别进入device link、TargetCall decoder/SystemC；显示为什么single-lowering保证一致。 | Y形ownership graph，module digest贯穿两支；模型支路不重新生成IR。 | `TargetCompilationProduct`、model tests。 |
@@ -365,7 +365,7 @@ page dossier；表格内容不是最终页面栏目。
 | 112 | DTE timeout quarantine | modes1--6成功、7/8/9/12返回预期错误、mode13 timeout/poison；用state machine说明为何首个timeout后停止批次，不自动retry/reset。 | 协议状态机+case矩阵+quarantine path；不做安全告警风格。 | DTE evidence tests/behavior doc。 |
 | 113 | DDR offset coverage | 显示16 ranks×14 offsets×2 allocations=2688 exact，40GiB sparse windows；actual base与relative offset/guard对应，同时列bank/controller/hop未观测。 | base×offset散点/窗口图与guarded transfer示意；未知微架构区域留空而非虚构。 | DDR probe contracts。 |
 | 114 | Numerical qualification of encoded options | NE ReLU 8192 outputs中3828 negatives且与bare一致；ArgMin正域通过、负域失败；将wrapper option、packet completion与numeric support分开。 | encodable→executed→semantic result的三层图，两个具体反例用真实输出统计。 | instruction calibration/behavior doc。 |
-| 115 | Compiler impact of hardware findings | 把前述finding逐项连回fixed-slot window、descriptor/range planner、cache publication、worker joins、DTE pre-submit、target profile；每条用实际IR/pass对象而非抽象owner。 | compiler pipeline回写图：hardware findings从下方连接到具体IR/gate，颜色保持前页语义。 | behavior doc和consumer code；作为硬件章节收束并引向协作方法。 |
+| 115 | Compiler impact of hardware findings | 把前述finding逐项连回fixed-slot window、descriptor/range planner、cache publication、worker joins、DTE pre-submit和target legality；每条用实际IR/pass对象而非抽象owner。 | compiler pipeline回写图：hardware findings从下方连接到具体IR/gate，颜色保持前页语义。 | behavior doc和consumer code；作为硬件章节收束并引向协作方法。 |
 
 ### L. 共同开发：用真实case解释方法（116--125）
 

@@ -36,9 +36,6 @@
 
 namespace {
 
-constexpr wafer::TargetProfileId kTargetProfile =
-    wafer::TargetProfileId::waferTx81SingleCardKernelV1();
-
 using RankCandidateSignature =
     std::tuple<int64_t, wafer::RankArtifactKind, bool, wafer::RankBufferingKind,
                uint32_t, wafer::RankWorkerPlacementKind, uint32_t, std::string>;
@@ -145,7 +142,6 @@ module {
   wafer::TensorProgramSchedulingConfig unshardedConfig;
   unshardedConfig.logicalRank = 0;
   unshardedConfig.candidateParallelism = 1;
-  unshardedConfig.targetProfile = kTargetProfile;
   auto unsharded =
       wafer::buildScheduledRankCandidateFrontier(*source, unshardedConfig);
   ASSERT_TRUE(mlir::succeeded(unsharded));
@@ -225,7 +221,6 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  config.targetProfile = kTargetProfile;
   config.optimizations = wafer::OptimizationConfig::none();
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
@@ -235,32 +230,6 @@ module {
   EXPECT_EQ(frontier->front().bufferingKind, wafer::RankBufferingKind::Single);
   EXPECT_EQ(frontier->front().workerPlacementKind,
             wafer::RankWorkerPlacementKind::Unplaced);
-}
-
-TEST(RankCandidateFrontierTest,
-     RejectsMissingTargetProfileBeforeCandidateAnalysis) {
-  mlir::MLIRContext context;
-  mlir::OwningOpRef<mlir::ModuleOp> source =
-      mlir::parseSourceString<mlir::ModuleOp>("module {}", &context);
-  ASSERT_TRUE(source);
-
-  std::string diagnostics;
-  mlir::ScopedDiagnosticHandler handler(
-      &context, [&](mlir::Diagnostic &diagnostic) {
-        llvm::raw_string_ostream os(diagnostics);
-        diagnostic.print(os);
-        os << "\n";
-        return mlir::success();
-      });
-
-  wafer::TensorProgramSchedulingConfig config;
-  config.logicalRank = 0;
-  config.candidateParallelism = 1;
-  EXPECT_TRUE(mlir::failed(
-      wafer::buildScheduledRankCandidateFrontier(*source, config)));
-  EXPECT_NE(diagnostics.find("target-profile must be explicitly provided"),
-            std::string::npos)
-      << diagnostics;
 }
 
 TEST(RankCandidateFrontierTest,
@@ -305,7 +274,6 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
 
@@ -414,7 +382,6 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  config.targetProfile = wafer::TargetProfileId::waferTx81SingleCardKernelV3();
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), wafer::kMaximumScheduledRankFrontierSize);
@@ -493,7 +460,6 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   ASSERT_GE(frontier->size(), 2u);
@@ -631,7 +597,6 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_EQ(llvm::count_if(*frontier,
@@ -692,7 +657,6 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  config.targetProfile = kTargetProfile;
   auto serialFrontier =
       wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(serialFrontier));
@@ -831,7 +795,6 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), wafer::kMaximumScheduledRankFrontierSize);
@@ -952,7 +915,6 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), wafer::kMaximumScheduledRankFrontierSize);
@@ -1030,7 +992,6 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), wafer::kMaximumScheduledRankFrontierSize);
@@ -1105,7 +1066,6 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), wafer::kMaximumScheduledRankFrontierSize);
@@ -1158,7 +1118,6 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
 
@@ -1238,7 +1197,6 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
 
@@ -1249,7 +1207,7 @@ module {
     wafer::analysis::InstructionProgramCost cost =
         wafer::analysis::analyzeInstructionProgramCost(
             *candidate.module,
-            wafer::analysis::getTargetScheduleCostPolicy(kTargetProfile));
+            wafer::analysis::getTargetScheduleCostPolicy());
     ASSERT_TRUE(cost.spmMovementBytes.isKnown());
     if (candidate.reservedBaseline) {
       baselineMovement = cost.spmMovementBytes.value;

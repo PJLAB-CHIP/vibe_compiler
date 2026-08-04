@@ -43,14 +43,6 @@
 
 namespace wafer::target_llvm_detail {
 
-mlir::LogicalResult FunctionLowering::lowerLocalFence(SyncLocalFenceOp op) {
-  emitCall(
-      op.getLoc(),
-      getTargetCallDescriptor(TargetCallBuiltin::LocalFence, targetProfile),
-      {});
-  return mlir::success();
-}
-
 mlir::LogicalResult FunctionLowering::lowerNCCJoin(SyncNCCJoinOp op) {
   uint32_t participantMask = 0;
   for (int64_t worker : op.getParticipants()) {
@@ -63,7 +55,7 @@ mlir::LogicalResult FunctionLowering::lowerNCCJoin(SyncNCCJoinOp op) {
     return op.emitError()
            << "target_completion_failure: NCC participant set is empty";
   emitCall(op.getLoc(),
-           getTargetCallDescriptor(TargetCallBuiltin::NCCJoin, targetProfile),
+           getTargetCallDescriptor(TargetCallBuiltin::NCCJoin),
            {constantI32(op.getLoc(), participantMask)});
   return mlir::success();
 }

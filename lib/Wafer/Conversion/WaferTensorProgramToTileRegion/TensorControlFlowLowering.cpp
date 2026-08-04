@@ -393,20 +393,20 @@ bool TileRegionBodyEmitter::allStatic(llvm::ArrayRef<int64_t> values) const {
   });
 }
 
-mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeDdrSubview(
-    mlir::Location loc, mlir::Value sourceDdr,
+mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeMemRefSubview(
+    mlir::Location loc, mlir::Value sourceMemRef,
     mlir::RankedTensorType tileTensorType,
     llvm::ArrayRef<mlir::OpFoldResult> offsets, llvm::ArrayRef<int64_t> sizes,
     llvm::ArrayRef<int64_t> strides, mlir::OpBuilder &builder) {
-  auto sourceType = mlir::dyn_cast<mlir::MemRefType>(sourceDdr.getType());
+  auto sourceType = mlir::dyn_cast<mlir::MemRefType>(sourceMemRef.getType());
   if (!sourceType)
-    return failValue("external tile view source is not a memref");
+    return failValue("tile view source is not a memref");
   if (sourceType.getElementType() != tileTensorType.getElementType())
-    return failValue("external tile view element type mismatch");
+    return failValue("tile view element type mismatch");
   if (sourceType.getRank() != static_cast<int64_t>(offsets.size()) ||
       sourceType.getRank() != static_cast<int64_t>(sizes.size()) ||
       sourceType.getRank() != static_cast<int64_t>(strides.size()))
-    return failValue("external tile view rank mismatch");
+    return failValue("tile view rank mismatch");
 
   llvm::SmallVector<mlir::OpFoldResult, 4> convertedOffsets;
   llvm::SmallVector<mlir::OpFoldResult, 4> mixedSizes;
@@ -432,7 +432,8 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeDdrSubview(
           tileTensorType.getShape(), sourceType, convertedOffsets, mixedSizes,
           mixedStrides));
   auto subview = builder.create<mlir::memref::SubViewOp>(
-      loc, subviewType, sourceDdr, convertedOffsets, mixedSizes, mixedStrides);
+      loc, subviewType, sourceMemRef, convertedOffsets, mixedSizes,
+      mixedStrides);
   return subview.getResult();
 }
 
@@ -532,7 +533,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorExtractSlice(
 
   if (auto externalIt = externalBuffers.find(extractSlice.getSource());
       externalIt != externalBuffers.end()) {
-    mlir::FailureOr<mlir::Value> tileView = materializeDdrSubview(
+    mlir::FailureOr<mlir::Value> tileView = materializeMemRefSubview(
         extractSlice.getLoc(), externalIt->second, resultTensorType,
         extractSlice.getMixedOffsets(), extractSlice.getStaticSizes(),
         extractSlice.getStaticStrides(), builder);
@@ -549,13 +550,24 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorExtractSlice(
     return mlir::success();
   }
 
-  if (!allStatic(extractSlice.getStaticOffsets()))
-    return fail("dynamic tile-local tensor.extract_slice is not representable");
-
   mlir::FailureOr<mlir::Value> source =
       getOrMaterialize(extractSlice.getSource(), MemLayout::Tensor, builder);
   if (mlir::failed(source))
     return mlir::failure();
+
+  if (!allStatic(extractSlice.getStaticOffsets())) {
+    mlir::FailureOr<mlir::Value> tileView = materializeMemRefSubview(
+        extractSlice.getLoc(), *source, resultTensorType,
+        extractSlice.getMixedOffsets(), extractSlice.getStaticSizes(),
+        extractSlice.getStaticStrides(), builder);
+    if (mlir::failed(tileView))
+      return mlir::failure();
+    auto move = builder.create<MoveCopyOp>(
+        extractSlice.getLoc(),
+        makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *tileView);
+    record(extractSlice.getResult(), MemLayout::Tensor, move.getResult());
+    return mlir::success();
+  }
 
   mlir::MLIRContext *context = extractSlice.getContext();
   auto offsets =
@@ -617,7 +629,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
     if (mlir::failed(source))
       return mlir::failure();
 
-    mlir::FailureOr<mlir::Value> tileView = materializeDdrSubview(
+    mlir::FailureOr<mlir::Value> tileView = materializeMemRefSubview(
         insertSlice.getLoc(), externalBuffer, sourceTensorType,
         insertSlice.getMixedOffsets(), insertSlice.getStaticSizes(),
         insertSlice.getStaticStrides(), builder);

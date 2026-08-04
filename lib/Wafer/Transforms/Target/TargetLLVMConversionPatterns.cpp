@@ -297,12 +297,12 @@ struct TargetSubViewOpLowering
     }
 
     mlir::FailureOr<DynamicSubviewAddressPlan> plan =
-        analyzeDynamicDDRSubviewAddressing(subviewOp);
+        analyzeDynamicTensorSubviewAddressing(subviewOp);
     if (mlir::failed(plan))
       return mlir::failure();
     if (adaptor.getOffsets().size() != plan->dynamicByteStrides.size())
       return subviewOp.emitError()
-             << "unsupported_target_address: converted dynamic DDR tensor "
+             << "unsupported_target_address: converted dynamic tensor "
                 "subview offset count changed during lowering";
 
     mlir::Value address =
@@ -314,7 +314,7 @@ struct TargetSubViewOpLowering
       auto offsetType = mlir::dyn_cast<mlir::IntegerType>(offset.getType());
       if (!offsetType || offsetType.getWidth() != 64)
         return subviewOp.emitError()
-               << "unsupported_target_address: dynamic DDR tensor subview "
+               << "unsupported_target_address: dynamic tensor subview "
                   "offset must lower to i64";
       mlir::Value dynamicBytes = offset;
       if (byteStride != 1) {
@@ -503,12 +503,12 @@ struct TargetDeallocOpLowering
 void populateTargetLLVMStructureConversionPatterns(
     mlir::LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns,
     int64_t defaultDDRArenaArgumentIndex) {
-  patterns.add<TargetFuncOpLowering, TargetCallOpLowering,
-               TargetReturnOpLowering, TargetSubViewOpLowering,
-               TargetReinterpretCastOpLowering, TargetCollapseShapeOpLowering,
-               TargetExpandShapeOpLowering,
-               TargetMemRefCastOpLowering, TargetDeallocOpLowering>(
-      converter, &converter.getContext());
+  patterns
+      .add<TargetFuncOpLowering, TargetCallOpLowering, TargetReturnOpLowering,
+           TargetSubViewOpLowering, TargetReinterpretCastOpLowering,
+           TargetCollapseShapeOpLowering, TargetExpandShapeOpLowering,
+           TargetMemRefCastOpLowering, TargetDeallocOpLowering>(
+          converter, &converter.getContext());
   patterns.add<TargetAllocOpLowering>(converter, &converter.getContext(),
                                       defaultDDRArenaArgumentIndex);
 }

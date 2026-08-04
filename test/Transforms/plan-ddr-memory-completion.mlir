@@ -1,6 +1,6 @@
 // RUN: wafer-opt --wafer-plan-ddr-memory='ddr-capacity-bytes=2048 ddr-largest-contiguous-bytes=2048' %s | FileCheck %s
 
-func.func @managed_wdma_roots_live_until_local_fence() {
+func.func @managed_wdma_roots_live_until_ncc_join() {
   %ddr0 = memref.alloc()
       : memref<128xf16, #wafer.memory<ddr, tensor>>
   %spm0 = memref.alloc()
@@ -22,7 +22,7 @@ func.func @managed_wdma_roots_live_until_local_fence() {
        dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
       : memref<128xf16, #wafer.memory<spm, tensor>>
      to memref<128xf16, #wafer.memory<ddr, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
 
   %ddr2 = memref.alloc()
       : memref<128xf16, #wafer.memory<ddr, tensor>>
@@ -34,17 +34,17 @@ func.func @managed_wdma_roots_live_until_local_fence() {
        dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
       : memref<128xf16, #wafer.memory<spm, tensor>>
      to memref<128xf16, #wafer.memory<ddr, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
-// CHECK-LABEL: func.func @managed_wdma_roots_live_until_local_fence
+// CHECK-LABEL: func.func @managed_wdma_roots_live_until_ncc_join
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<0>
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<256>
-// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<0>
 
-func.func @managed_rdma_roots_live_until_local_fence() {
+func.func @managed_rdma_roots_live_until_ncc_join() {
   %ddr0 = memref.alloc()
       : memref<128xf16, #wafer.memory<ddr, tensor>>
   %spm0 = memref.alloc()
@@ -68,7 +68,7 @@ func.func @managed_rdma_roots_live_until_local_fence() {
        src_strides = array<i64: 0, 0, 0>}
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
 
   %ddr2 = memref.alloc()
       : memref<128xf16, #wafer.memory<ddr, tensor>>
@@ -81,14 +81,14 @@ func.func @managed_rdma_roots_live_until_local_fence() {
        src_strides = array<i64: 0, 0, 0>}
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
-// CHECK-LABEL: func.func @managed_rdma_roots_live_until_local_fence
+// CHECK-LABEL: func.func @managed_rdma_roots_live_until_ncc_join
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<0>
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<256>
-// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<0>
 
 func.func @both_branch_fences_complete_prior_issue(%cond: i1) {
@@ -104,9 +104,9 @@ func.func @both_branch_fences_complete_prior_issue(%cond: i1) {
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
   scf.if %cond {
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   } else {
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   }
 
   %ddr1 = memref.alloc()
@@ -120,16 +120,16 @@ func.func @both_branch_fences_complete_prior_issue(%cond: i1) {
        src_strides = array<i64: 0, 0, 0>}
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
 // CHECK-LABEL: func.func @both_branch_fences_complete_prior_issue
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<0>
 // CHECK: scf.if
-// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK: else
-// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<0>
 
 func.func @loop_body_issue_completed_in_body(
@@ -146,7 +146,7 @@ func.func @loop_body_issue_completed_in_body(
          src_strides = array<i64: 0, 0, 0>}
         : memref<128xf16, #wafer.memory<ddr, tensor>>
        to memref<128xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   }
   return
 }
@@ -155,7 +155,7 @@ func.func @loop_body_issue_completed_in_body(
 // CHECK: scf.for
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<0>
 // CHECK: wafer.instr.rdma
-// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 
 func.func @managed_subview_extends_root_lifetime() {
   %root = memref.alloc()
@@ -184,7 +184,7 @@ func.func @managed_subview_extends_root_lifetime() {
        src_strides = array<i64: 0, 0, 0>}
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
 
   %after = memref.alloc()
       : memref<128xf16, #wafer.memory<ddr, tensor>>
@@ -197,7 +197,7 @@ func.func @managed_subview_extends_root_lifetime() {
        src_strides = array<i64: 0, 0, 0>}
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
@@ -205,5 +205,5 @@ func.func @managed_subview_extends_root_lifetime() {
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<0>
 // CHECK: memref.subview
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<512>
-// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<0>

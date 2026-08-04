@@ -1,4 +1,4 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v1 default-ddr-arena-argument-index=1})' %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{default-ddr-arena-argument-index=1})' %s | FileCheck %s
 
 module {
   func.func @arena_bound(

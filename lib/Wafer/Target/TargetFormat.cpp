@@ -13,13 +13,8 @@ namespace {
 using Format = LogicalFormat;
 using Category = LogicalFormatCategory;
 using Engine = TargetFormatEngine;
-using Support = TargetFormatEncodingSupport;
 using Constraint = TargetFormatConstraint;
-using Reason = TargetFormatUnsupportedReason;
 using Parameter = TargetConvertParameterKind;
-
-constexpr TargetProfileId kProfile =
-    TargetProfileId::waferTx81SingleCardKernelV1();
 
 constexpr LogicalFormatDescriptor kLogicalFormats[] = {
     {Format::I8, "i8", 8, 8, Category::SignedInteger, 0, 0, UINT64_C(0xff),
@@ -51,21 +46,21 @@ constexpr LogicalFormatDescriptor kLogicalFormats[] = {
 };
 
 // The only hand-written public Data_Format code facts. These rows describe
-// the vendor enum for this profile, not permission for any engine to emit it.
+// the vendor enum for the current target, not permission for any engine to
+// emit it.
 constexpr TargetDataFormatCodeRecord kTargetDataFormatCodes[] = {
-    {kProfile, Format::I8, 0},   {kProfile, Format::I16, 1},
-    {kProfile, Format::F16, 2},  {kProfile, Format::BF16, 3},
-    {kProfile, Format::I32, 4},  {kProfile, Format::F32, 5},
-    {kProfile, Format::TF32, 6}, {kProfile, Format::Bool, 7},
-    {kProfile, Format::U8, 8},   {kProfile, Format::U16, 9},
-    {kProfile, Format::U32, 10}, {kProfile, Format::I64, 11},
-    {kProfile, Format::U64, 12},
+    {Format::I8, 0},   {Format::I16, 1},
+    {Format::F16, 2},  {Format::BF16, 3},
+    {Format::I32, 4},  {Format::F32, 5},
+    {Format::TF32, 6}, {Format::Bool, 7},
+    {Format::U8, 8},   {Format::U16, 9},
+    {Format::U32, 10}, {Format::I64, 11},
+    {Format::U64, 12},
 };
 
-constexpr std::optional<uint8_t> findDataFormatCode(TargetProfileId profile,
-                                                    Format format) {
+constexpr std::optional<uint8_t> findDataFormatCode(Format format) {
   for (const TargetDataFormatCodeRecord &record : kTargetDataFormatCodes)
-    if (record.profile == profile && record.format == format)
+    if (record.format == format)
       return record.dataFormatCode;
   return std::nullopt;
 }
@@ -77,23 +72,11 @@ constexpr TargetFormatEngine kTargetFormatEngines[] = {
 constexpr TargetFormatEncodingRecord
 supported(Engine engine, Format format,
           Constraint constraint = Constraint::None) {
-  return {kProfile,
-          engine,
-          format,
-          Support::Supported,
-          constraint,
-          Reason::None,
-          findDataFormatCode(kProfile, format)};
-}
-
-constexpr TargetFormatEncodingRecord unsupported(Engine engine, Format format,
-                                                 Reason reason) {
-  return {kProfile,         engine, format,      Support::Unsupported,
-          Constraint::None, reason, std::nullopt};
+  return {engine, format, constraint, *findDataFormatCode(format)};
 }
 
 // This is intentionally an explicit 65-row closed matrix. Adding a logical
-// format, engine, or profile must add each new row and keep the completeness
+// format or engine must add each new row and keep the completeness
 // assertion below true; absence is never interpreted as unsupported.
 constexpr TargetFormatEncodingRecord kTargetFormatEncodings[] = {
     supported(Engine::RDMA, Format::I8),
@@ -102,17 +85,14 @@ constexpr TargetFormatEncodingRecord kTargetFormatEncodings[] = {
     supported(Engine::RDMA, Format::BF16),
     supported(Engine::RDMA, Format::I32),
     supported(Engine::RDMA, Format::F32),
-    unsupported(Engine::RDMA, Format::TF32,
-                Reason::GenericTF32EncodingUnproven),
+    supported(Engine::RDMA, Format::TF32),
     supported(Engine::RDMA, Format::Bool,
-              Constraint::BitpackedLayoutAndCheckedElementCount),
-    unsupported(Engine::RDMA, Format::U8, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::RDMA, Format::U16, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::RDMA, Format::U32, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::RDMA, Format::I64,
-                Reason::SixtyFourBitEncodingUnproven),
-    unsupported(Engine::RDMA, Format::U64,
-                Reason::SixtyFourBitEncodingUnproven),
+              Constraint::BitpackedDMA),
+    supported(Engine::RDMA, Format::U8),
+    supported(Engine::RDMA, Format::U16),
+    supported(Engine::RDMA, Format::U32),
+    supported(Engine::RDMA, Format::I64),
+    supported(Engine::RDMA, Format::U64),
 
     supported(Engine::WDMA, Format::I8),
     supported(Engine::WDMA, Format::I16),
@@ -120,17 +100,14 @@ constexpr TargetFormatEncodingRecord kTargetFormatEncodings[] = {
     supported(Engine::WDMA, Format::BF16),
     supported(Engine::WDMA, Format::I32),
     supported(Engine::WDMA, Format::F32),
-    unsupported(Engine::WDMA, Format::TF32,
-                Reason::GenericTF32EncodingUnproven),
+    supported(Engine::WDMA, Format::TF32),
     supported(Engine::WDMA, Format::Bool,
-              Constraint::BitpackedLayoutAndCheckedElementCount),
-    unsupported(Engine::WDMA, Format::U8, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::WDMA, Format::U16, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::WDMA, Format::U32, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::WDMA, Format::I64,
-                Reason::SixtyFourBitEncodingUnproven),
-    unsupported(Engine::WDMA, Format::U64,
-                Reason::SixtyFourBitEncodingUnproven),
+              Constraint::BitpackedDMA),
+    supported(Engine::WDMA, Format::U8),
+    supported(Engine::WDMA, Format::U16),
+    supported(Engine::WDMA, Format::U32),
+    supported(Engine::WDMA, Format::I64),
+    supported(Engine::WDMA, Format::U64),
 
     supported(Engine::TDMA, Format::I8),
     supported(Engine::TDMA, Format::I16),
@@ -138,114 +115,105 @@ constexpr TargetFormatEncodingRecord kTargetFormatEncodings[] = {
     supported(Engine::TDMA, Format::BF16),
     supported(Engine::TDMA, Format::I32),
     supported(Engine::TDMA, Format::F32),
-    unsupported(Engine::TDMA, Format::TF32,
-                Reason::GenericTF32EncodingUnproven),
-    supported(Engine::TDMA, Format::Bool,
-              Constraint::BitpackedPhysicalFootprintFill),
-    unsupported(Engine::TDMA, Format::U8, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::TDMA, Format::U16, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::TDMA, Format::U32, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::TDMA, Format::I64,
-                Reason::SixtyFourBitEncodingUnproven),
-    unsupported(Engine::TDMA, Format::U64,
-                Reason::SixtyFourBitEncodingUnproven),
+    supported(Engine::TDMA, Format::TF32),
+    supported(Engine::TDMA, Format::Bool, Constraint::BitpackedLayout),
+    supported(Engine::TDMA, Format::U8),
+    supported(Engine::TDMA, Format::U16),
+    supported(Engine::TDMA, Format::U32),
+    supported(Engine::TDMA, Format::I64),
+    supported(Engine::TDMA, Format::U64),
 
     supported(Engine::CT, Format::I8),
-    unsupported(Engine::CT, Format::I16,
-                Reason::GenericComputeIntegerEncodingUnproven),
+    supported(Engine::CT, Format::I16),
     supported(Engine::CT, Format::F16),
     supported(Engine::CT, Format::BF16),
-    unsupported(Engine::CT, Format::I32,
-                Reason::GenericComputeIntegerEncodingUnproven),
+    supported(Engine::CT, Format::I32),
     supported(Engine::CT, Format::F32),
-    unsupported(Engine::CT, Format::TF32, Reason::GenericTF32EncodingUnproven),
-    supported(Engine::CT, Format::Bool,
-              Constraint::BoolSpecificCTOpKindAndBitpackedLayout),
-    unsupported(Engine::CT, Format::U8, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::CT, Format::U16, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::CT, Format::U32, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::CT, Format::I64, Reason::SixtyFourBitEncodingUnproven),
-    unsupported(Engine::CT, Format::U64, Reason::SixtyFourBitEncodingUnproven),
+    supported(Engine::CT, Format::TF32),
+    supported(Engine::CT, Format::Bool, Constraint::BitpackedLayout),
+    supported(Engine::CT, Format::U8),
+    supported(Engine::CT, Format::U16),
+    supported(Engine::CT, Format::U32),
+    supported(Engine::CT, Format::I64),
+    supported(Engine::CT, Format::U64),
 
     supported(Engine::NE, Format::I8),
-    unsupported(Engine::NE, Format::I16,
-                Reason::GenericComputeIntegerEncodingUnproven),
+    supported(Engine::NE, Format::I16),
     supported(Engine::NE, Format::F16),
     supported(Engine::NE, Format::BF16),
-    unsupported(Engine::NE, Format::I32,
-                Reason::GenericComputeIntegerEncodingUnproven),
+    supported(Engine::NE, Format::I32),
     supported(Engine::NE, Format::F32),
-    unsupported(Engine::NE, Format::TF32, Reason::GenericTF32EncodingUnproven),
-    unsupported(Engine::NE, Format::Bool, Reason::BoolEncodingUnproven),
-    unsupported(Engine::NE, Format::U8, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::NE, Format::U16, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::NE, Format::U32, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::NE, Format::I64, Reason::SixtyFourBitEncodingUnproven),
-    unsupported(Engine::NE, Format::U64, Reason::SixtyFourBitEncodingUnproven),
+    supported(Engine::NE, Format::TF32),
+    supported(Engine::NE, Format::Bool, Constraint::BitpackedLayout),
+    supported(Engine::NE, Format::U8),
+    supported(Engine::NE, Format::U16),
+    supported(Engine::NE, Format::U32),
+    supported(Engine::NE, Format::I64),
+    supported(Engine::NE, Format::U64),
 };
 
 constexpr TargetConvertRoute kTargetConvertRoutes[] = {
-    {kProfile, 139, "int8_fp16", Format::I8, Format::F16, Parameter::ZeroPoint},
-    {kProfile, 140, "int8_bf16", Format::I8, Format::BF16,
+    {139, "int8_fp16", Format::I8, Format::F16, Parameter::ZeroPoint},
+    {140, "int8_bf16", Format::I8, Format::BF16,
      Parameter::ZeroPoint},
-    {kProfile, 141, "int8_fp32", Format::I8, Format::F32, Parameter::ZeroPoint},
-    {kProfile, 142, "int8_tf32", Format::I8, Format::TF32,
+    {141, "int8_fp32", Format::I8, Format::F32, Parameter::ZeroPoint},
+    {142, "int8_tf32", Format::I8, Format::TF32,
      Parameter::ZeroPoint},
-    {kProfile, 143, "int16_fp16", Format::I16, Format::F16, Parameter::None},
-    {kProfile, 144, "int16_bf16", Format::I16, Format::BF16,
+    {143, "int16_fp16", Format::I16, Format::F16, Parameter::None},
+    {144, "int16_bf16", Format::I16, Format::BF16,
      Parameter::RoundingMode},
-    {kProfile, 145, "int16_fp32", Format::I16, Format::F32,
+    {145, "int16_fp32", Format::I16, Format::F32,
      Parameter::RoundingMode},
-    {kProfile, 146, "int16_tf32", Format::I16, Format::TF32,
+    {146, "int16_tf32", Format::I16, Format::TF32,
      Parameter::RoundingMode},
-    {kProfile, 147, "int32_fp16", Format::I32, Format::F16,
+    {147, "int32_fp16", Format::I32, Format::F16,
      Parameter::RoundingMode},
-    {kProfile, 148, "int32_bf16", Format::I32, Format::BF16,
+    {148, "int32_bf16", Format::I32, Format::BF16,
      Parameter::RoundingMode},
-    {kProfile, 149, "int32_fp32", Format::I32, Format::F32,
+    {149, "int32_fp32", Format::I32, Format::F32,
      Parameter::RoundingMode},
-    {kProfile, 150, "int32_tf32", Format::I32, Format::TF32,
+    {150, "int32_tf32", Format::I32, Format::TF32,
      Parameter::RoundingMode},
-    {kProfile, 151, "bf16_int8", Format::BF16, Format::I8, Parameter::None},
-    {kProfile, 152, "bf16_int16", Format::BF16, Format::I16,
+    {151, "bf16_int8", Format::BF16, Format::I8, Parameter::None},
+    {152, "bf16_int16", Format::BF16, Format::I16,
      Parameter::RoundingMode},
-    {kProfile, 153, "bf16_int32", Format::BF16, Format::I32,
+    {153, "bf16_int32", Format::BF16, Format::I32,
      Parameter::RoundingMode},
-    {kProfile, 154, "bf16_fp16", Format::BF16, Format::F16, Parameter::None},
-    {kProfile, 155, "bf16_fp32", Format::BF16, Format::F32, Parameter::None},
-    {kProfile, 156, "bf16_tf32", Format::BF16, Format::TF32, Parameter::None},
-    {kProfile, 157, "fp16_int8", Format::F16, Format::I8,
+    {154, "bf16_fp16", Format::BF16, Format::F16, Parameter::None},
+    {155, "bf16_fp32", Format::BF16, Format::F32, Parameter::None},
+    {156, "bf16_tf32", Format::BF16, Format::TF32, Parameter::None},
+    {157, "fp16_int8", Format::F16, Format::I8,
      Parameter::RoundingMode},
-    {kProfile, 158, "fp16_int16", Format::F16, Format::I16,
+    {158, "fp16_int16", Format::F16, Format::I16,
      Parameter::RoundingMode},
-    {kProfile, 159, "fp16_int32", Format::F16, Format::I32,
+    {159, "fp16_int32", Format::F16, Format::I32,
      Parameter::RoundingMode},
-    {kProfile, 160, "fp16_bf16", Format::F16, Format::BF16,
+    {160, "fp16_bf16", Format::F16, Format::BF16,
      Parameter::RoundingMode},
-    {kProfile, 161, "fp16_fp32", Format::F16, Format::F32, Parameter::None},
-    {kProfile, 162, "fp16_tf32", Format::F16, Format::TF32, Parameter::None},
-    {kProfile, 163, "fp32_int8", Format::F32, Format::I8,
+    {161, "fp16_fp32", Format::F16, Format::F32, Parameter::None},
+    {162, "fp16_tf32", Format::F16, Format::TF32, Parameter::None},
+    {163, "fp32_int8", Format::F32, Format::I8,
      Parameter::RoundingMode},
-    {kProfile, 164, "fp32_int16", Format::F32, Format::I16,
+    {164, "fp32_int16", Format::F32, Format::I16,
      Parameter::RoundingMode},
-    {kProfile, 165, "fp32_int32", Format::F32, Format::I32,
+    {165, "fp32_int32", Format::F32, Format::I32,
      Parameter::RoundingMode},
-    {kProfile, 166, "fp32_fp16", Format::F32, Format::F16,
+    {166, "fp32_fp16", Format::F32, Format::F16,
      Parameter::RoundingMode},
-    {kProfile, 167, "fp32_bf16", Format::F32, Format::BF16,
+    {167, "fp32_bf16", Format::F32, Format::BF16,
      Parameter::RoundingMode},
-    {kProfile, 168, "fp32_tf32", Format::F32, Format::TF32,
+    {168, "fp32_tf32", Format::F32, Format::TF32,
      Parameter::RoundingMode},
-    {kProfile, 169, "tf32_int8", Format::TF32, Format::I8,
+    {169, "tf32_int8", Format::TF32, Format::I8,
      Parameter::RoundingMode},
-    {kProfile, 170, "tf32_int16", Format::TF32, Format::I16,
+    {170, "tf32_int16", Format::TF32, Format::I16,
      Parameter::RoundingMode},
-    {kProfile, 171, "tf32_int32", Format::TF32, Format::I32,
+    {171, "tf32_int32", Format::TF32, Format::I32,
      Parameter::RoundingMode},
-    {kProfile, 172, "tf32_fp16", Format::TF32, Format::F16, Parameter::None},
-    {kProfile, 173, "tf32_bf16", Format::TF32, Format::BF16,
+    {172, "tf32_fp16", Format::TF32, Format::F16, Parameter::None},
+    {173, "tf32_bf16", Format::TF32, Format::BF16,
      Parameter::RoundingMode},
-    {kProfile, 174, "tf32_fp32", Format::TF32, Format::F32, Parameter::None},
+    {174, "tf32_fp32", Format::TF32, Format::F32, Parameter::None},
 };
 
 template <typename T, size_t N> constexpr size_t arrayLength(const T (&)[N]) {
@@ -309,8 +277,6 @@ constexpr bool hasCompleteAndUniqueDataFormatCodeRegistry() {
     return false;
   for (size_t index = 0; index < arrayLength(kTargetDataFormatCodes); ++index) {
     const TargetDataFormatCodeRecord &record = kTargetDataFormatCodes[index];
-    if (record.profile != kProfile)
-      return false;
     size_t formatCount = 0;
     for (const LogicalFormatDescriptor &format : kLogicalFormats)
       if (format.format == record.format)
@@ -321,9 +287,8 @@ constexpr bool hasCompleteAndUniqueDataFormatCodeRegistry() {
          ++other) {
       const TargetDataFormatCodeRecord &candidate =
           kTargetDataFormatCodes[other];
-      if (candidate.profile == record.profile &&
-          (candidate.format == record.format ||
-           candidate.dataFormatCode == record.dataFormatCode))
+      if (candidate.format == record.format ||
+          candidate.dataFormatCode == record.dataFormatCode)
         return false;
     }
   }
@@ -335,33 +300,17 @@ constexpr bool hasCompleteAndConsistentEncodingRegistry() {
       arrayLength(kTargetFormatEngines) * arrayLength(kLogicalFormats))
     return false;
 
-  for (const TargetFormatEncodingRecord &record : kTargetFormatEncodings) {
-    if (record.profile != kProfile)
+  for (const TargetFormatEncodingRecord &record : kTargetFormatEncodings)
+    if (record.dataFormatCode != *findDataFormatCode(record.format))
       return false;
-    if (record.support == Support::Supported) {
-      if (record.unsupportedReason != Reason::None ||
-          !record.dataFormatCode.has_value() ||
-          record.dataFormatCode !=
-              findDataFormatCode(record.profile, record.format))
-        return false;
-    } else {
-      if (record.constraint != Constraint::None ||
-          record.unsupportedReason == Reason::None ||
-          record.dataFormatCode.has_value())
-        return false;
-    }
-  }
 
   for (size_t index = 0; index < arrayLength(kTargetFormatEncodings); ++index) {
     const TargetFormatEncodingRecord &record = kTargetFormatEncodings[index];
-    if (!record.isSupported())
-      continue;
     for (size_t other = index + 1; other < arrayLength(kTargetFormatEncodings);
          ++other) {
       const TargetFormatEncodingRecord &candidate =
           kTargetFormatEncodings[other];
-      if (candidate.isSupported() && candidate.profile == record.profile &&
-          candidate.engine == record.engine &&
+      if (candidate.engine == record.engine &&
           candidate.dataFormatCode == record.dataFormatCode)
         return false;
     }
@@ -371,7 +320,7 @@ constexpr bool hasCompleteAndConsistentEncodingRegistry() {
     for (const LogicalFormatDescriptor &format : kLogicalFormats) {
       size_t count = 0;
       for (const TargetFormatEncodingRecord &record : kTargetFormatEncodings)
-        if (record.profile == kProfile && record.engine == engine &&
+        if (record.engine == engine &&
             record.format == format.format)
           ++count;
       if (count != 1)
@@ -386,7 +335,7 @@ constexpr bool hasCompleteAndUniqueConvertRegistry() {
     return false;
   for (size_t index = 0; index < arrayLength(kTargetConvertRoutes); ++index) {
     const TargetConvertRoute &route = kTargetConvertRoutes[index];
-    if (route.profile != kProfile || route.opcode != 139 + index ||
+    if (route.opcode != 139 + index ||
         route.source == route.destination)
       return false;
     for (size_t other = index + 1; other < arrayLength(kTargetConvertRoutes);
@@ -408,7 +357,7 @@ static_assert(hasCompleteAndValidLogicalFormatRegistry(),
               "internally consistent");
 static_assert(hasCompleteAndUniqueDataFormatCodeRegistry(),
               "target Data_Format registry must contain one unique code for "
-              "each logical format in the profile");
+              "each logical format");
 static_assert(arrayLength(kTargetFormatEngines) == 5,
               "target format engine registry must remain explicit");
 static_assert(hasCompleteAndConsistentEncodingRegistry(),
@@ -437,10 +386,9 @@ llvm::ArrayRef<TargetDataFormatCodeRecord> getTargetDataFormatCodeRecords() {
 }
 
 const TargetDataFormatCodeRecord *
-findTargetDataFormatCode(TargetProfileId profile, LogicalFormat format) {
-  profile = getTargetProfileRecord(profile).formatCompatibilityProfile;
+findTargetDataFormatCode(LogicalFormat format) {
   for (const TargetDataFormatCodeRecord &record : kTargetDataFormatCodes)
-    if (record.profile == profile && record.format == format)
+    if (record.format == format)
       return &record;
   return nullptr;
 }
@@ -497,36 +445,30 @@ llvm::ArrayRef<TargetFormatEncodingRecord> getTargetFormatEncodingRecords() {
 }
 
 const TargetFormatEncodingRecord *
-findTargetFormatEncoding(TargetProfileId profile, TargetFormatEngine engine,
-                         LogicalFormat format) {
-  profile = getTargetProfileRecord(profile).formatCompatibilityProfile;
+findTargetFormatEncoding(TargetFormatEngine engine, LogicalFormat format) {
   for (const TargetFormatEncodingRecord &record : kTargetFormatEncodings)
-    if (record.profile == profile && record.engine == engine &&
+    if (record.engine == engine &&
         record.format == format)
       return &record;
   return nullptr;
 }
 
-llvm::Expected<LogicalFormat> decodeTargetFormat(TargetProfileId profile,
-                                                 TargetFormatEngine engine,
+llvm::Expected<LogicalFormat> decodeTargetFormat(TargetFormatEngine engine,
                                                  uint32_t dataFormatCode) {
-  profile = getTargetProfileRecord(profile).formatCompatibilityProfile;
   const TargetFormatEncodingRecord *match = nullptr;
   for (const TargetFormatEncodingRecord &record :
        getTargetFormatEncodingRecords()) {
-    if (record.profile != profile || record.engine != engine ||
-        !record.isSupported() || !record.dataFormatCode ||
-        *record.dataFormatCode != dataFormatCode)
+    if (record.engine != engine || record.dataFormatCode != dataFormatCode)
       continue;
     if (match)
       return llvm::createStringError(
-          "target format code is not unique for the selected profile and "
+          "target format code is not unique for the current target and "
           "engine");
     match = &record;
   }
   if (!match)
     return llvm::createStringError(
-        "target format code is unsupported for the selected profile and "
+        "target format code is unsupported for the current target and "
         "engine");
   return match->format;
 }
@@ -536,66 +478,38 @@ stringifyTargetFormatConstraint(TargetFormatConstraint constraint) {
   switch (constraint) {
   case Constraint::None:
     return "none";
-  case Constraint::BitpackedLayoutAndCheckedElementCount:
-    return "bitpacked-layout-and-checked-element-count";
-  case Constraint::BoolSpecificCTOpKindAndBitpackedLayout:
-    return "bool-specific-ct-op-kind-and-bitpacked-layout";
-  case Constraint::BitpackedPhysicalFootprintFill:
-    return "bitpacked-physical-footprint-fill";
+  case Constraint::BitpackedLayout:
+    return "bitpacked-layout";
+  case Constraint::BitpackedDMA:
+    return "bitpacked-dma";
   }
   llvm_unreachable("target format constraint is not registered");
-}
-
-llvm::StringRef
-stringifyTargetFormatUnsupportedReason(TargetFormatUnsupportedReason reason) {
-  switch (reason) {
-  case Reason::None:
-    return "none";
-  case Reason::GenericTF32EncodingUnproven:
-    return "generic-tf32-command-encoding-unproven";
-  case Reason::UnsignedEncodingUnproven:
-    return "unsigned-command-encoding-unproven";
-  case Reason::SixtyFourBitEncodingUnproven:
-    return "64-bit-command-encoding-unproven";
-  case Reason::BoolEncodingUnproven:
-    return "bool-command-encoding-unproven";
-  case Reason::GenericComputeIntegerEncodingUnproven:
-    return "generic-compute-integer-command-encoding-unproven";
-  }
-  llvm_unreachable("target format unsupported reason is not registered");
 }
 
 llvm::ArrayRef<TargetConvertRoute> getTargetConvertRoutes() {
   return kTargetConvertRoutes;
 }
 
-const TargetConvertRoute *findTargetConvertRoute(TargetProfileId profile,
-                                                 uint16_t opcode) {
-  profile = getTargetProfileRecord(profile).formatCompatibilityProfile;
+const TargetConvertRoute *findTargetConvertRoute(uint16_t opcode) {
   for (const TargetConvertRoute &route : kTargetConvertRoutes)
-    if (route.profile == profile && route.opcode == opcode)
+    if (route.opcode == opcode)
       return &route;
   return nullptr;
 }
 
-const TargetConvertRoute *findTargetConvertRoute(TargetProfileId profile,
-                                                 LogicalFormat source,
+const TargetConvertRoute *findTargetConvertRoute(LogicalFormat source,
                                                  LogicalFormat destination) {
-  profile = getTargetProfileRecord(profile).formatCompatibilityProfile;
   for (const TargetConvertRoute &route : kTargetConvertRoutes)
-    if (route.profile == profile && route.source == source &&
+    if (route.source == source &&
         route.destination == destination)
       return &route;
   return nullptr;
 }
 
 const TargetConvertRoute *
-findTargetConvertRoute(TargetProfileId profile,
-                       llvm::StringRef canonicalSpelling) {
-  profile = getTargetProfileRecord(profile).formatCompatibilityProfile;
+findTargetConvertRoute(llvm::StringRef canonicalSpelling) {
   for (const TargetConvertRoute &route : kTargetConvertRoutes)
-    if (route.profile == profile &&
-        route.canonicalSpelling == canonicalSpelling)
+    if (route.canonicalSpelling == canonicalSpelling)
       return &route;
   return nullptr;
 }

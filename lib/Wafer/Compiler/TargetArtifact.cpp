@@ -12,7 +12,6 @@ namespace wafer::compiler {
 
 TargetLLVMModule::TargetLLVMModule(int64_t logicalRank,
                                    llvm::StringRef entrySymbol,
-                                   TargetProfileId targetProfile,
                                    TargetIdentityId targetIdentity,
                                    KernelRuntimeABIId kernelRuntimeABI,
                                    llvm::StringRef moduleFormat,
@@ -20,7 +19,7 @@ TargetLLVMModule::TargetLLVMModule(int64_t logicalRank,
                                    std::unique_ptr<llvm::LLVMContext> context,
                                    std::unique_ptr<llvm::Module> module)
     : logicalRank(logicalRank), entrySymbol(entrySymbol.str()),
-      targetProfile(targetProfile), targetIdentity(targetIdentity),
+      targetIdentity(targetIdentity),
       kernelRuntimeABI(kernelRuntimeABI), moduleFormat(moduleFormat.str()),
       kernelABISlots(std::move(kernelABISlots)), context(std::move(context)),
       module(std::move(module)) {}

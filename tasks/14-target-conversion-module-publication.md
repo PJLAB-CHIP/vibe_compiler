@@ -1,9 +1,9 @@
 # Wafer Target Conversion、CRT 与 Module Publication
 
-状态：当前 production 合同包含保持不变的 TX81 Kernel Runtime ABI v1、Q32.V新增的closed v2 oriented-GEMM
-profile/ABI、closed v3 worker-aware ABI、owner-backed `TargetLLVMModuleBundle`、Q17 staged device link和atomic
-`TargetArtifactBundle` publication。Mapped DMA与physical-footprint fill复用既有address/count ABI但增加typed
-Instr legality；oriented GEMM在v2使用独立exact call，v3 ordinary call surface统一使用`_v3`并追加worker字段。
+状态：当前production只保留一套worker-aware TX81 Kernel Runtime ABI、112项current TargetCall registry、
+owner-backed `TargetLLVMModuleBundle`、Q17 staged device link和atomic `TargetArtifactBundle` publication。
+Mapped DMA、physical-footprint fill和oriented GEMM都使用同一current target surface；普通format-bearing
+instruction接受13种可编码logical format，只有GEMM显式拒绝F32。
 
 `RequiredCapabilitySet`和package/schema升级只在这些扩展的真实consumer需要逐row preflight时从winner派生。
 Count writeback属于独立Q3.6。任何能力都不能由planner是否能构造某个候选而自动启用。实现状态只看
@@ -30,11 +30,8 @@ Count writeback属于独立Q3.6。任何能力都不能由planner是否能构造
 - 不从 op/var/file 名字推导 ABI；
 - 不把 CRT symbol 存在等同于 packet、numeric、model admission 或 board correctness；
 - 不为 host model 另造一条 target lowering；
-- 不改变已经发布的 v1 symbol signature、target profile 或 package identity；
-- 不改变已经发布的 v2 symbol signature、target profile 或 package identity；v1/v2 ordinary call均冻结为
-  legacy arity和worker0语义，不能原地追加worker；
-- current v1仍只接受compact/implicit-normal合同；mapped DMA和physical fill由typed Instr字段选择，oriented GEMM只在
-  `wafer-tx81-single-card-kernel-v2`下进入独立exact call；capability-set/schema仍未引入，Count仍由Q3.6拥有；
+- 不提供旧Kernel Runtime ABI、旧symbol、worker0 wrapper、profile选择或schema translator；
+- 不把formal numeric model覆盖范围反写成target dtype legality；Count仍由Q3.6拥有；
 - Direct DTE 只有 accepted remote receiver offset、endpoint/slot/completion 合同闭合后才能进入
   production target module；发送端不能假定各 rank 的 SPM allocation 同址。
 
@@ -43,15 +40,15 @@ Count writeback属于独立Q3.6。任何能力都不能由planner是否能构造
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  atomic、profile-bearing ExecutableBundle 中 all-and-only rank static entries 和 ExecutionConfig；
+  atomic ExecutableBundle 中 all-and-only rank static entries 和 ExecutionConfig；
   已完成 candidate selection/commit、function-boundary bufferization、tile-to-instruction conversion、
   SPM/DDR planning、transport binding及completion verification的selected typed wafer.instr/SCF/CF/func IR。
   每个rank已有accepted SPM/DDR offsets、typed views、physical geometry和ordered Kernel ABI resources。
 - Current stage responsibility:
-  从 ExecutionConfig 读取 TargetProfileId和两值RuntimeLaunchKind；在ExecutableBundle已有all-rank transport事实后，
+  从 ExecutionConfig 读取两值RuntimeLaunchKind；在ExecutableBundle已有all-rank transport事实后，
   由compiler resolver一次性形成typed RuntimeLaunchContract（kernel/model kind、kernel form、entry ABI和ordered phases）；
-  用当前closed target-profile/format/target-call contracts
-  映射 TargetIdentityId、KernelRuntimeABIId、module format和exact CRT signatures；从selected typed IR
+  用current target identity、format encoding和TargetCall registry映射
+  TargetIdentityId、KernelRuntimeABIId、module format和exact CRT signatures；从selected typed IR
   验证geometry、range、effect/completion和narrow fields。在module clone上执行structure-preserving
   DialectConversion，全部成功后翻译成由独立LLVMContext拥有的llvm::Module。Q17随后直接消费该
   TargetLLVMModuleBundle及其resolved launch contract做entry wrapper、aggregate kernel publication、CRT compile/device link、
@@ -59,7 +56,7 @@ Pipeline position:
   并在all-rank成功后原子发布TargetArtifactBundle。
 - Output artifact / IR:
   move-only、不可序列化的TargetLLVMModuleBundle：ExecutionConfig和all-and-only rank modules；每个module
-  拥有logical rank、entry、TargetProfileId、TargetIdentityId、KernelRuntimeABIId、module format、
+  拥有logical rank、entry、TargetIdentityId、KernelRuntimeABIId、module format、
   ordered Kernel ABI slots、LLVMContext和fully legal llvm::Module。
   Q17另输出move-only TargetArtifactBundle：publication root、同一ExecutionConfig及all-and-only
   VerifiedTargetModule records；每项包含rank、entry、relative delivery path、content digest、typed
@@ -68,22 +65,22 @@ Pipeline position:
   Q17 RISC-V device link、repo-owned target-call/SystemC frontend直接消费同一个TargetLLVMModuleBundle；
   package transaction消费TargetArtifactBundle并逐字段readback。runtime/module loader只消费verified package。
 - User-level driver / named pipeline:
-  production wafer-compile要求显式--target-profile=<registered-id>与--launch-kind=<kernel|model>，在all-rank ExecutableBundle完成后自动
-  进入target conversion/publication。focused C++ tests可直接构造typed request；没有profile default，
-  也不提供从中间调度IR直达target LLVM的兼容pipeline。
+  production wafer-compile要求显式--launch-kind=<kernel|model>，在all-rank ExecutableBundle完成后自动进入
+  target conversion/publication。focused C++ tests可直接构造typed request；不提供target选择，也不提供从中间
+  调度IR直达target LLVM的兼容pipeline。
 - Explicit non-goals:
   不重新做candidate、movement、memory或transport planning；不在lowering失败时换implementation/route；
   不发布partial module；不消费model profile、board environment或任何planning capability query；
   不把未来target-capability schema当作current artifact字段。
 - Completion gate:
-  当前v1：normal/normal GEMM、现有compact RDMA/WDMA、GS、compute、peripheral、sync和已闭合Direct DTE
+  current：oriented GEMM、RDMA/WDMA、GS、compute、peripheral、sync和已闭合Direct DTE
   family通过geometry/range/narrowing/full-conversion；任一失败source module byte-identical。
-  TargetProfileId和两值RuntimeLaunchKind从CompilationRequest/ExecutionConfig进入ExecutableBundle；完整RuntimeLaunchContract
-  从唯一compiler resolver贯穿TargetLLVMModuleBundle、TargetArtifactBundle和package readback且没有default；closed
-  compatibility table拒绝未资格化组合；217-symbol CRT conformance（含冻结的112-symbol legacy prefix、
-  104个V3 ordinary counterparts、V3-only Direct DTE issue及typed NCC participant join）、rank-count=1/16
+  两值RuntimeLaunchKind从CompilationRequest/ExecutionConfig进入ExecutableBundle；完整RuntimeLaunchContract
+  从唯一compiler resolver贯穿TargetLLVMModuleBundle、TargetArtifactBundle和package readback；current identity/ABI
+  exact mapping拒绝不匹配组合；112-symbol CRT conformance（104个worker-aware ordinary calls、Direct DTE issue及
+  typed NCC/DTE lifecycle）、rank-count=1/16
   owner lifetime、all-and-only module/ABI-slot/digest、late-rank atomic failure和真实production driver通过。
-  Q32.V/Q3.6各自拥有独立completion gate，不反向改写current v1证据；Q32.V新增typed profile/ABI row由
+  Q32.V/Q3.6各自拥有独立completion gate，不反向改写current证据；Q32.V新增typed operation由
   Q32.M/S通用candidate owner消费。
 ```
 
@@ -96,35 +93,22 @@ repo-owned SystemC/formal gate，只用于证明新增typed capability可被下�
 Q32.M/S随后才把已闭合capability放入candidate selection；production `TargetLLVMModuleBundle`仍只在winner
 commit之后从accepted instruction IR生成。
 
-## 3. Current Closed Target Profile 与 Format Contract
+## 3. Current Target Identity 与 Format Encoding
 
-### 3.1 closed profile identity
+### 3.1 唯一current target identity
 
-registry包含`wafer-tx81-single-card-kernel-v1`、`wafer-tx81-single-card-kernel-v2`和
-`wafer-tx81-single-card-kernel-v3`三个closed typed `TargetProfileId`。三者都映射到target identity
-`wafer-tx81-single-card`和module format `elf-riscv64`；分别映射`wafer-tx81-kernel-v1`、
-`wafer-tx81-kernel-v2`和`wafer-tx81-kernel-v3`。v2只扩展oriented GEMM exact call；v3新增coexistable
-worker-aware ordinary call surface和显式Direct DTE issue，并显式引用既有format/numeric compatibility。
-这些row不合并Kernel ABI identity，也不改变v1/v2含义。
+compiler只拥有一组target publication facts：target identity `wafer-tx81-single-card`、Kernel Runtime ABI
+`wafer-tx81-kernel-v3`和module format `elf-riscv64`。它们由`TargetIdentity`集中定义，供conversion、artifact、
+package和runtime exact-match；不是用户可选profile，也不通过字符串拆分恢复。未知值、旧ABI spelling和缺失字段
+均fail closed，不存在default、alias、translator或兼容wrapper。
 
 GEMM orientation在Instr、TargetCall和public CRT signature中始终是semantic normal/transpose。TX81 raw
-`SetTransflag`只有RHS bit采用相反编码，因此CRT packet wrapper在唯一硬件边界执行映射：v1 semantic
-normal/normal固定发`(0, 1)`，v2发`(lhs_orientation, !rhs_orientation)`。该映射不改变v1/v2 symbol
-signature、profile identity或上层IR语义，conformance checker必须锁定raw packet mapping而不能把semantic值直接转发。
+`SetTransflag`只有RHS bit采用相反编码，因此CRT packet wrapper在唯一硬件边界执行
+`(lhs_orientation, !rhs_orientation)`映射；conformance checker锁定raw packet mapping，不能把semantic值直接转发。
 
-v1唯一映射到：
-
-- target identity `wafer-tx81-single-card`；
-- Kernel Runtime ABI `wafer-tx81-kernel-v1`；
-- module format `elf-riscv64`。
-
-spelling 是 opaque canonical key，不能按连字符拆字段，也不表示未有证据的 silicon revision。不存在
-unknown revision、default profile 或字符串 fallback。future profile仍必须新增 closed typed record，不能改变
-v1 key 含义。
-
-普通 instruction-to-target conversion只用`TargetProfileId`取得target identity、runtime
-ABI、module format、logical-format encoding 和 exact call signature，并与 selected typed IR 交叉验证。它不读取
-model profile、board environment、admission status或planner上下文。lowering只接收它实际消费的
+普通instruction-to-target conversion读取current target identity、runtime ABI、module format、logical-format encoding
+和exact call signature，并与selected typed IR交叉验证。它不读取model configuration、board environment、admission
+status或planner上下文。lowering只接收它实际消费的
 transport-initialization-point投影，不接收完整runtime launch contract。Q17 device-entry materialization消费
 compiler-owned resolved contract：rank-local pointer block、rank-major pointer table或model BootParam属于entry ABI；
 per-rank/grid/cluster属于kernel form；`prepare`与`main`属于ordered phase/export role。Direct DTE仍是独立transport
@@ -141,30 +125,26 @@ encoding category、floating exponent/precision、canonical storage mask、speci
 byte order、TF32 noncanonical input policy 以及 BOOL byte 内 bit order 由明确的 target/model encoding policy
 选择，不能成为 logical format 本身。
 
-公开 `Data_Format` code 由 v1 target profile 固定：
+公开 `Data_Format` code 由current target encoding固定：
 
 | Logical format | I8 | I16 | F16 | BF16 | I32 | F32 | TF32 | BOOL | U8 | U16 | U32 | I64 | U64 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `Data_Format` code | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
 
-该枚举表只证明公开 ABI code，不代表每个 engine 都能发射。format-bearing command 还必须命中当前
-profile×engine×logical-format 的 typed encoding row：
+format-bearing command按engine和logical format命中current typed encoding row：
 
 | `TargetFormatEngine` | I8 | I16 | F16 | BF16 | I32 | F32 | TF32 | BOOL | U8 | U16 | U32 | I64 | U64 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| RDMA | S | S | S | S | S | S | — | S | — | — | — | — | — |
-| WDMA | S | S | S | S | S | S | — | S | — | — | — | — | — |
-| TDMA | S | S | S | S | S | S | — | — | — | — | — | — | — |
-| CT | S | — | S | S | — | S | — | S* | — | — | — | — | — |
-| NE | S | — | S | S | — | S | — | — | — | — | — | — | — |
+| RDMA | S | S | S | S | S | S | S | S | S | S | S | S | S |
+| WDMA | S | S | S | S | S | S | S | S | S | S | S | S | S |
+| TDMA | S | S | S | S | S | S | S | S | S | S | S | S | S |
+| CT | S | S | S | S | S | S | S | S | S | S | S | S | S |
+| NE | S | S | S | S | S | S | S | S | S | S | S | S | S |
 
-`S`只表示当前 ABI/register 证据足以编码该 engine 的 format-bearing command；op-kind、shape、layout、
-geometry 和 narrowing 仍分别验证。`CT×BOOL` 的 `S*` 只准入明确列出的 bool relation/logic op，
-不是通用 CT BOOL。TDMA `gather_scatter` 和 DTE 是 byte-counted contract，不因表中某个 format row
-自动获得支持。TDMA×BOOL的`—`明确表示current profile不发射native `Fmt_BOOL` packet；
-`physical_footprint` BOOL fill仍保持BOOL Instr/TargetCall语义，target verifier闭合physical range后只在唯一
-TX81 CRT边界改写成TDMA×I8 byte fill，因此不会把该cell升级为`S`。未列 format、F64、`Fmt_UNUSED`
-和 unknown code 均 fail closed。
+`S`表示该engine的format-bearing command可编码该storage dtype；op-kind、shape、layout、geometry和narrowing仍分别
+验证。GEMM是唯一dtype特例，显式拒绝F32；这不把整个NE×F32 encoding cell改成unsupported。TDMA
+`gather_scatter`和DTE是byte-counted contract，仍按自身geometry验证。未列format、F64、`Fmt_UNUSED`和unknown code
+均fail closed。formal numeric model可以只覆盖一部分op×dtype semantics，但不得作为target legality白名单。
 
 CT convert 使用独立 typed whitelist，只准入 opcode 139..174 定义的 36 条 route：
 
@@ -182,7 +162,7 @@ attr/type interface；target format contract不能复制这些几何公式。
 
 Cx/NCx absorption不增加target capability、Instr字段或CRT参数；Q32当前证据覆盖GEMM/batched-GEMM。Q46计划扩展到
 native reduce及physical-traversal-compatible CT relation/select/logic/convert/bitpacked；只有Q46 actual winner中的
-compute/instruction真正引用Cx/NCx typed memref后本层才消费它。本层按现有TargetProfileId×engine×format合同验证instruction
+compute/instruction真正引用Cx/NCx typed memref后本层才消费它。本层按current engine×format合同验证instruction
 capability，固定packing/footprint只从tasks/08 physical encoding interface派生；不能接收`vector_width`、packing mode或
 “已吸收”planner标志。显式layout/GS是否消失只能从对应winner IR readback证明。
 
@@ -244,7 +224,7 @@ target conversion 从 typed memref/view、physical encoding interface、instruct
 - op-specific shape relation和element count；
 - target ABI表示范围。
 
-current v1 最低规则：
+current最低规则：
 
 - RDMA：DDR source stride/iteration 与 sequential SPM destination；WDMA方向相反。两端最终地址从 typed
   operand view、allocation root 和 accepted base/offset checked推导。
@@ -254,12 +234,10 @@ current v1 最低规则：
   使用raw positive iteration，inactive dimension为1；普通dtype的inclusive range按
   `dst + Σ((iteration_i - 1) * stride_i) + elem_count * element_bytes - 1`验证，不能复用
   RDMA/WDMA packet中的`iteration - 1`编码。
-- current profile的BOOL fill只接受连续`physical_footprint`：TargetCall bit count必须等于完整physical
-  byte range乘8，scalar必须是canonical false/true；TX81 CRT将其改写为`Fmt_INT8`、physical byte count和
-  `0x00/0xff` byte splat。native `Fmt_BOOL`和logical-valid BOOL均在call emission前fail closed。
+- BOOL fill的logical和physical traversal由typed instruction字段区分，range和scalar均在call emission前闭合；
 - reduce：dim 和 input/output shape 合法；terminal op 不携带 init，source init 已 lower 为有序 composite。
-- GEMM：v1 只接受 normal/normal canonical mapping；M/K/N/batch、stored operands 和 result mapping一致。
-  任何 transpose/oriented tuple 当前 target-illegal。
+- GEMM：normal/transpose orientation、M/K/N/batch、stored operands和result mapping一致；F32稳定拒绝，
+  其它可编码logical format按相同target path处理。
 - Q32当前Cx/NCx absorption后的GEMM仍走相同format ABI；typed operand encoding、block/C0 tail/padding和physical range必须
   一致，不存在额外packing field或lowering-time pack fallback。Q46完成后CT和native reduce沿用各自既有format ABI与同一规则，
   不因设计文档提前扩大current capability。
@@ -269,13 +247,11 @@ current v1 最低规则：
   destination，并在wrapper返回前对两个实际写入range覆盖的每条cache line执行mode-dependent
   `dcache.cipa/civa`及fence/sync。`TsmWaitfinish()`只建立指令到CPU store的完成边界，`volatile` store本身不建立
   后续NCC DMA可见性；该publication合同由两个extrema wrapper共享，不按kind特判。
-- NCC issue/join：ordinary instruction的typed worker必须与target operator ABI一致；v1/v2 descriptors固定
-  worker0且legacy public signature没有worker参数，worker1/2在call emission前以`unsupported_target_abi`拒绝。
-  v3 descriptors使用独立`_v3` symbol并在exact signature末尾追加`uint32_t worker`，允许closed
-  `worker0/worker1/worker2`。canonical非空participant集合
+- NCC issue/join：ordinary instruction的typed worker必须与target operator ABI一致；current descriptors使用
+  worker-aware `_v3` symbol并在exact signature末尾携带`uint32_t worker`，允许closed `worker0/worker1/worker2`。
+  canonical非空participant集合
   lower到`wafer_tx81_ncc_join(i32 mask)`；CRT按participant逐worker调用`TsmWaitfinish_bywork`，一次participant
-  就是一次高代价blocking drain。legacy `local_fence`只表示worker0，二者都不完成Direct DTE、cache publication
-  或multi-tile barrier。
+  就是一次高代价blocking drain；它不完成Direct DTE、cache publication或multi-tile barrier。
 - DTE：bytes/range、peer/endpoint、remote offset、event/status/completion 都来自 typed accepted IR；
   lowering传递本地source offset、accepted remote receiver offset和本地receiver offset，TX81 CRT只在sender
   `dst_addr`边界结合target 4×4 topology形成peer SPM映射地址。不得把mapped peer address回写进IR，
@@ -305,7 +281,7 @@ call boundary，但不得拥有未绑定的 compiler-managed DDR root。
 - resource role 和 resource index；
 - access、dtype、shape、byte size 和 alignment；
 - rank 和 entry symbol；
-- target profile、target identity、Kernel Runtime ABI 和 module format。
+- target identity、Kernel Runtime ABI 和 module format。
 
 input、parameter、constant、output、workspace 和 transport status 必须与 slots 精确对应。function result 只表达
 已绑定 resource 的完成语义，不创建 runtime allocation。slot name 只作 delivery/debug，不能参与 identity、
@@ -332,12 +308,10 @@ device linker共享同一 exact signature事实。CRT wrapper只传递已经验�
 
 current closed ABI 已验证边界：
 
-- 217 个 production symbols 在 header/source/symbol checker/device link 闭合：原始112项保持顺序、
-  symbol和exact signature，其中`wafer_tx81_gemm_oriented_v2`只属于v2 ABI；V3新增104个ordinary
-  counterparts和一个`wafer_tx81_direct_dte_send_issue_v3`。除oriented GEMM从`_v2`映射到`_v3`外，
-  V3 ordinary symbol统一在legacy symbol后追加`_v3`，exact signature只追加末尾`uint32_t worker`；
-- legacy 104个ordinary CRT definitions都是到对应V3 implementation的worker0 compatibility wrapper，
-  因而旧module可与新CRT继续链接；shared local fence、NCC join和其余DTE lifecycle symbols不复制版本；
+- 112个production symbols在header/source/symbol checker/device link闭合：104个worker-aware ordinary calls、
+  一个Direct-DTE issue及七个共享NCC/DTE lifecycle calls；ordinary exact signature显式携带末尾`uint32_t worker`；
+- 没有legacy ordinary definitions、worker0 compatibility wrapper或local fence；completion统一使用typed NCC join，
+  Direct DTE显式执行prepare→issue→wait；
 - LLVM calls 使用 fixed function type，不使用 vararg；
 - `wafer_tx81_mask_move` 端到端使用显式 `uint32_t mask`；
 - `wafer_tx81_ncc_join`使用checked participant mask并按canonical worker顺序执行exact by-worker waits；
@@ -355,14 +329,10 @@ current closed ABI 已验证边界：
   range执行C908 cache clean-and-invalidate publication；其 typed effect/completion、result-store与后续NCC DMA
   可见性contract由现有verifier/lowering及CRT conformance共同检查。
 
-current v1不包含oriented GEMM或Count。`wafer_tx81_gemm`永远只代表v1 normal/normal；
-`wafer_tx81_gemm_oriented_v2`逐字段携带两个orientation且只在v2 runtime ABI解码。symbol存在也不证明
-packet、shape、numeric、completion或board support。heap loader closure同样只证明当前loader surface与module
-静态闭包，运行时heap初始化仍由tasks/16真实board gate证明。
-
-V3不复用legacy ordinary symbol表达worker。`wafer_tx81_gemm_v3`保持implicit normal/normal并追加worker；
-`wafer_tx81_gemm_oriented_v3`逐字段携带orientation再追加worker。V3 module引用legacy ordinary symbol、
-或v1/v2 module引用任意V3-only symbol，均在reachable target-call profile preflight失败。
+`wafer_tx81_gemm_v3`保持implicit normal/normal并携带worker；`wafer_tx81_gemm_oriented_v3`逐字段携带
+orientation和worker。symbol存在不证明packet、shape、numeric、completion或board support。heap loader closure同样只证明
+当前loader surface与module静态闭包，运行时heap初始化仍由tasks/16真实board gate证明。任何旧ordinary symbol、
+LocalFence或unknown call在reachable TargetCall preflight失败。
 
 ## 9. Owner-Backed Target LLVM Bundle
 
@@ -372,7 +342,6 @@ V3不复用legacy ordinary symbol表达worker。`wafer_tx81_gemm_v3`保持implic
 TargetLLVMModule {
   logical_rank
   entry_symbol
-  TargetProfileId
   TargetIdentityId
   KernelRuntimeABIId
   module_format
@@ -417,7 +386,6 @@ scope或slot schema：
 ```text
 ExecutionConfig {
   execution_rank_count
-  TargetProfileId
   RuntimeLaunchKind             // kernel | model
 }
 
@@ -451,7 +419,6 @@ VerifiedTargetModule {
   TargetArtifactModuleId
   delivery_relative_path
   content_sha256
-  TargetProfileId
   TargetIdentityId
   KernelRuntimeABIId
   module_format
@@ -515,14 +482,13 @@ package随后把整个verified bundle作为输入，不能补救缺rank或未验
 - `target_module_verification_failed`；
 - `target_publication_failed`。
 
-current v1测试层次：
+current测试层次：
 
 1. op/verifier negative：OOB、descriptor payload、shape relation、alignment和narrowing；
 2. conversion：branch/loop/call结构保持、typed calls、full legality、late failure source identity；
-3. profile/format：explicit v1 profile、unknown/missing拒绝、engine×format和convert whitelist；
-4. CRT：217-symbol header/source/signature/wrapper conformance，冻结原始112项、验证104组
-   legacy-worker0/V3-trailing-worker配对、V3-only Direct DTE issue及typed NCC participant join；v1/v2/v3
-   GEMM transflag和exact signature分别固定；
+3. identity/format：current target facts exact-match、unknown/missing拒绝、65个engine×format row及GEMM/F32负例；
+4. CRT：112-symbol header/source/signature conformance，验证104个worker-aware ordinary calls、Direct DTE issue及
+   typed NCC/DTE lifecycle；GEMM transflag和exact signature固定；
    ArgMax/ArgMin共同writeback helper的wait、mapped store、cache-range publication顺序由source checker与
    C908 object反汇编同时锁定；
 5. device link：compiler-generated positive和required/allowed undefined negative；
@@ -588,15 +554,13 @@ Tile/Instr IR。current profile的native `Fmt_BOOL`板端小range在10秒内未�
 所以native row为excluded；I8 canonicalization只有通过独立板端held-out后才能从实现合同升级为supported。
 profile绑定、证据等级和held-out状态统一见`docs/tx81-compiler-hardware-calibration.md`。
 
-### 12.3 Q32.V：Oriented GEMM ABI
+### 12.3 Oriented GEMM ABI
 
-v1 profile和`wafer_tx81_gemm`保持normal/normal原义。Q32.V已建立structured source/typed Tile/Instr/TargetCall和
-repo-owned SystemC/formal consumer，并冻结`wafer-tx81-single-card-kernel-v2`、`wafer-tx81-kernel-v2`及
-`wafer_tx81_gemm_oriented_v2(lhs,rhs,dst,m,k,n,batch,format,lhs_orientation,rhs_orientation)` exact signature。
-
-V3在不改写上述v2合同的前提下提供
-`wafer_tx81_gemm_oriented_v3(lhs,rhs,dst,m,k,n,batch,format,lhs_orientation,rhs_orientation,worker)`；
-其普通GEMM和其它ordinary target calls同样遵守“独立`_v3` symbol、只追加末尾worker”的统一规则。
+plain `wafer_tx81_gemm_v3`保持normal/normal原义。oriented GEMM已经闭合structured source、typed
+Tile/Instr/TargetCall和repo-owned SystemC/formal consumer，并只使用current
+`wafer_tx81_gemm_oriented_v3(lhs,rhs,dst,m,k,n,batch,format,lhs_orientation,rhs_orientation,worker)`
+exact signature。普通GEMM、oriented GEMM和其它ordinary target calls统一消费同一worker-aware ABI；当前
+reader/lowering/CRT不保留旧revision选择或兼容分支。
 
 orientation必须是Instr、TargetCall transaction、LLVM call和decoder中逐字段验证的closed enum；CRT只做checked enum到
 wrapper transflag的映射，不从shape、layout、symbol后缀或payload猜测。新revision不能让v1 module或symbol静默获得
@@ -617,7 +581,7 @@ admission属于tasks/15/17的later/external gate；二者都不阻塞Q32.V或Q32
 未来最小typed requirement应只从final selected Instr/TargetCall rows派生，至少能区分：
 
 ```text
-target profile and Kernel Runtime ABI
+target identity and Kernel Runtime ABI
 target-call family/revision and exact signature
 operand/result target format tuple
 ABI-visible mode fields
@@ -634,8 +598,8 @@ stable key encoding、digest、module metadata和package schema revision必须�
 
 ### 12.5 Q3.6：Count Writeback ABI
 
-Count不改变current v1 surface。只有source predicate、typed instruction、wrapper语义和实际model/runtime consumer均已
-确认时，Q3.6才增加新的closed target ABI revision；symbol、参数顺序、field width和profile spelling与这些consumer
+Count不改变current surface。只有source predicate、typed instruction、wrapper语义和实际model/runtime consumer均已
+确认时，Q3.6才改变target ABI；symbol、参数顺序和field width与这些consumer
 同批冻结，本文不预先指定。
 
 target conversion届时至少验证：typed source和single-element i32 destination、positive checked element count、
@@ -649,7 +613,7 @@ Instr/TargetCall、CRT、decoder、symbol closure、target model和必要package
 
 ### 12.6 Admission Ownership
 
-普通compiler conversion只回答：“selected typed IR能否按这个`TargetProfileId`无损发射并通过ABI/geometry
+普通compiler conversion只回答：“selected typed IR能否按current target facts无损发射并通过ABI/geometry
 verification”。它不回答某个model或board环境是否允许执行。
 
 - tasks/17拥有model implementation/numeric/effect evidence及显式model admission；
@@ -666,7 +630,7 @@ verification”。它不回答某个model或board环境是否允许执行。
 - owner-approved CRT/packet/MMIO provenance；
 - extended CRT surface。
 
-恢复任一项时必须先确认typed consumer、failure gate和版本边界，不能改变current v1 profile含义，也不能把
+恢复任一项时必须先确认typed consumer、failure gate和版本边界，不能隐式改变current ABI含义，也不能把
 execution admission或package schema反写成Q32 candidate生成输入。
 
 ### 12.8 Profile-Only Target Publication
@@ -704,44 +668,34 @@ alias或比较产物。count preflight和trace readback共同保留
 normal CRT与profile CRT使用独立target publication输入，
 任一profile clone或site-map readback失败只阻止完整profile companion激活，不得改变或部分重写已验证的普通package。
 
-## 13. 规划中的 V3-only Target ABI 退役
-
-本节是`target-abi-retirement`的未实施目标；当前实现仍保留V1/V2/V3 profile和217项TargetCall registry，不能在任务
-完成前把下列目标当作current artifact evidence。
+## 13. Current Target ABI Closure
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  final verified typed Instr、worker/completion placement和显式TX81 target profile。
+  final verified typed Instr、worker/completion placement和current target identity。
 - Current stage responsibility:
-  将current target-admitted Instr唯一映射到V3 TargetCall/CRT，形成fully legal target LLVM和原子module publication。
+  将target-admitted Instr唯一映射到current TargetCall/CRT，形成fully legal target LLVM和原子module publication。
 - Output artifact / IR:
-  只含V3 ordinary calls及七个共享NCC/DTE lifecycle calls的TargetLLVMModuleBundle。
+  只含worker-aware ordinary calls及共享NCC/DTE lifecycle calls的TargetLLVMModuleBundle。
 - Downstream consumer:
   device linker、profile companion、package/runtime、TargetCall/SystemC model和board provider。
 - User-level driver / named pipeline:
-  wafer-compile --target-profile=wafer-tx81-single-card-kernel-v3。
+  wafer-compile production pipeline；没有target选择选项。
 - Explicit non-goals:
   不做instruction synthesis、SMT证明、candidate selection或package capability扩展；不改变独立entry/record ABI。
 - Completion gate:
-  V1/V2 profile、Kernel Runtime ABI、legacy ordinary TargetCall和LocalFence从current producer/consumer全部消失，
-  V3 target LLVM/package/model/no-card/board纵向闭合。
+  旧Kernel Runtime ABI、ordinary TargetCall、LocalFence和schema reader从current producer/consumer全部消失，
+  current target LLVM/package/model/no-card纵向闭合；真实board gate fresh通过后任务才能done。
 ```
 
-终态合同如下：
-
-- `TargetProfileId`和`KernelRuntimeABIId`只注册现有V3 canonical spelling；format、conversion、numeric capability与
-  model policy事实直接归V3，删除V2/V3指向V1的compatibility-profile indirection，但保留target identity与显式
-  profile join。
-- TargetCall从217项收口到112项：删除104个legacy ordinary row及LocalFence，保留NCCJoin、6个共享DTE lifecycle、
-  104个V3 ordinary和1个V3 Direct-DTE issue。这个112是过滤后的current closed registry，不是旧112-prefix，也不
-  表示112种彼此独立的高层语义。
-- 删除`TargetCallProfileAvailability`及descriptor availability/profile-bit过滤；保留真实V3 `_v3` symbol和现有
-  无版本共享NCC/DTE symbol。registry按保留row的相对顺序固定，并以exact symbol/signature/semantic序列测试锁定。
-- 不新增TargetCall registry digest。profile companion实际序列化ordinal，因此其schema由v6升为v7，correlation basis
-  由`typed-target-call-ordinal-ssa-identity-occurrence-v1`升为v2并记录registry size 112；TargetLLVM metadata、record
-  ABI或package manifest没有自身字段/语义变化时不得连带升级。
-- current V3 module必须在任何publication前通过all-and-only closed registry、prototype、worker issue domain、completion
-  和device-link closure；V1/V2 spelling、LocalFence及已删symbol稳定fail closed，不提供translator、alias或wrapper。
+- `TargetIdentity`集中拥有唯一target identity、Kernel Runtime ABI和module format；format、conversion和model各自消费
+  需要的current事实，不再经过一个恒定profile join。
+- TargetCall registry为112项：104个worker-aware ordinary calls、一个Direct-DTE issue及七个共享NCC/DTE lifecycle。
+  registry按current相对顺序固定，并以exact symbol/signature/semantic序列测试锁定。
+- profile companion因序列化TargetCall ordinal而使用自己的current schema v7/correlation basis v2并记录registry size
+  112；package、record和TargetLLVM metadata按各自wire语义独立版本化，不共享全局schema编号。
+- current module必须在publication前通过all-and-only registry、prototype、worker issue domain、completion和device-link
+  closure；旧ABI spelling、LocalFence及已删symbol稳定fail closed，不提供translator、alias或wrapper。
 
 完整施工顺序、artifact兼容性和板端门禁由`tasks/plans/target-abi-retirement.md`与16共同约束。

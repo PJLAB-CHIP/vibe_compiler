@@ -425,9 +425,9 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
     const VerifiedPackageManifest &package, llvm::StringRef packageRoot,
     BoardRuntimeInvocationRequest request, BoardRuntimeDriver &driver);
 
-/// Compatibility entry point for a rank-count=1 package. It delegates to the
-/// same owner-backed invocation implementation; it cannot select one rank out
-/// of a multi-rank package.
+/// Rank-one convenience entry point. It delegates to the same owner-backed
+/// invocation implementation and cannot select one rank out of a multi-rank
+/// package.
 llvm::Expected<BoardRuntimeResult>
 executeBoardEntry(const VerifiedPackageManifest &package,
                   llvm::StringRef packageRoot, BoardRuntimeRequest request,

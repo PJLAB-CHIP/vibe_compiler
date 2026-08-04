@@ -37,7 +37,7 @@ Pipeline position:
   rank-local scheduling/finalization产生并导入bundle-owner MLIRContext的actual rank frontiers；每个slot携带
   semantic stable ordinal、physical artifact kind、reserved-baseline、buffering和worker-placement metadata，
   module可能因metadata prefilter而为空。frontend verifier同时提供完整logical-rank domain及distributed
-  input/parameter的typed global/local ProgramRankSlice，ExecutionConfig提供rank count与TargetProfileId。
+  input/parameter的typed global/local ProgramRankSlice，ExecutionConfig提供rank count；target identity由compiler固定。
 - Current stage responsibility:
   先调用与whole-variant coordinator相同的attempt-plan逻辑，按稳定顺序恢复correspondence-valid的完整
   actual tuples；reserved baseline固定为第一个seed，总seed上限为8。canonical generation parent必须是
@@ -196,7 +196,7 @@ Pipeline position:
 - Upstream artifact / IR:
   已通过completion、SPM/DDR placement、Direct-DTE matching、whole-card resource和target capability gate的
   disposable complete-rank actual Instr candidate，以及同一source/config中已经通过全部late gate的reserved
-  baseline；ExecutionConfig提供exact TargetProfileId和typed execution topology。
+  baseline；ExecutionConfig提供typed execution topology，target identity由compiler固定。
 - Current stage responsibility:
   只从两份current final Instr fresh重算DDR read/write、per-rank CT/NE work、Direct-DTE message/bytes、
   source/destination endpoint pressure、minimum-hop total link-byte、minimum-hop message demand、wait/join、
@@ -538,7 +538,7 @@ iteration i:
 ```
 
 这不是必须实现的三stage模板。实际stage由DAG和target capabilities决定。V3 Direct-DTE production路径为
-`prepare -> explicit issue -> exact wait/release`；V1/V2只保留wait内auto-issue兼容，不取得独立transport
+`prepare -> explicit issue -> exact wait/release`；不保留wait内auto-issue，不取得独立transport
 overlap legality。任何profile下，只有一个buffer导致reuse冲突或wait无法推迟到真实consumer cut时，都不能
 宣称overlap winner。
 

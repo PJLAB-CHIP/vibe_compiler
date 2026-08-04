@@ -123,8 +123,7 @@ module {
   program.distributedInputs = {boundary(0), boundary(1)};
   program.distributedOutputs = {boundary(0)};
   llvm::Expected<ExecutionConfig> config = ExecutionConfig::createForSingleCard(
-      16, TargetProfileId::waferTx81SingleCardKernelV1(),
-      RuntimeLaunchKind::Kernel);
+      16, RuntimeLaunchKind::Kernel);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);

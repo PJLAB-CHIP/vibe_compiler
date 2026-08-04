@@ -85,13 +85,13 @@ TargetCallInvocationDescriptor makeInvocation(size_t rankCount = 1) {
           "u32",
           MemLayout::Tensor,
           {1},
-          WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_BYTES,
-          WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_ALIGNMENT}},
+          WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES,
+          WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT}},
         {rankBase, rankBase + UINT64_C(0x1000), rankBase + UINT64_C(0x2000)},
         TargetIdentityId::waferTx81SingleCard(),
-        KernelRuntimeABIId::waferTx81KernelV1()});
+        KernelRuntimeABIId::waferTx81Kernel()});
   }
-  return {TargetProfileId::waferTx81SingleCardKernelV1(), std::move(ranks)};
+  return {TargetIdentityId::waferTx81SingleCard(), std::move(ranks)};
 }
 
 InvocationMemoryRegistry makeRegistry(size_t rankCount = 1) {
@@ -131,10 +131,9 @@ std::vector<RawLogicalValue> readTensor(const InvocationMemoryRegistry &memory,
 }
 
 uint64_t supportedFormatCode(TargetFormatEngine engine, LogicalFormat format) {
-  const TargetFormatEncodingRecord *record = findTargetFormatEncoding(
-      TargetProfileId::waferTx81SingleCardKernelV1(), engine, format);
-  assert(record && record->isSupported() && record->dataFormatCode);
-  return *record->dataFormatCode;
+  const TargetFormatEncodingRecord *record = findTargetFormatEncoding(engine, format);
+  assert(record);
+  return record->dataFormatCode;
 }
 
 uint64_t supportedF32Code(TargetFormatEngine engine) {
@@ -207,7 +206,7 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
       arguments[3] = arguments[4] = arguments[5] = arguments[6] = 1;
       arguments[7] = supportedF32Code(TargetFormatEngine::NE);
       break;
-    case TargetCallBuiltin::GemmOrientedV2:
+    case TargetCallBuiltin::GemmOriented:
       arguments[3] = arguments[4] = arguments[5] = arguments[6] = 1;
       arguments[7] = supportedF32Code(TargetFormatEngine::NE);
       arguments[8] = 1;
@@ -226,7 +225,6 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
     case TargetCallBuiltin::DirectDTESendPrepare:
       arguments[6] = 1;
       break;
-    case TargetCallBuiltin::LocalFence:
     case TargetCallBuiltin::NCCJoin:
     case TargetCallBuiltin::DirectDTESendIssue:
     case TargetCallBuiltin::DirectDTERecvPrepare:
@@ -304,14 +302,7 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
 TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
   size_t validated = 0;
   for (const TargetCallDescriptor &descriptor : getTargetCallDescriptors()) {
-    TargetProfileId profile = TargetProfileId::waferTx81SingleCardKernelV1();
-    if (!isTargetCallAvailableForProfile(descriptor, profile)) {
-      profile = TargetProfileId::waferTx81SingleCardKernelV2();
-      if (!isTargetCallAvailableForProfile(descriptor, profile))
-        profile = TargetProfileId::waferTx81SingleCardKernelV3();
-    }
-    ASSERT_TRUE(isTargetCallAvailableForProfile(descriptor, profile));
-    TargetCallDecodeContext context{profile, 16};
+    TargetCallDecodeContext context{16};
     llvm::Expected<TargetTransactionPayload> payload = decodeTargetCallPayload(
         descriptor, context, makeFieldValidArguments(descriptor));
     ASSERT_TRUE(static_cast<bool>(payload))
@@ -322,7 +313,7 @@ TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
         << descriptor.symbol << ": " << llvm::toString(std::move(error));
     ++validated;
   }
-  EXPECT_EQ(validated, 217u);
+  EXPECT_EQ(validated, 112u);
 }
 
 TEST(TargetModelCompletionTest,

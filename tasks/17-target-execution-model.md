@@ -1,11 +1,11 @@
 # Wafer Target Execution Model（CModel）
 
-状态：2026-08-04补充Q46 future execution-model边界；2026-07-28同步typed NCC worker/participant completion及closed V3
-worker-aware target ABI；此前已完成Q22.N/L/B/H/S/V、
-Q22 model-only functional-numeric profile、Q28标准7B单block scale vertical、
-Q31多seed数值表征及Q32.V typed target vertical。mapped DMA、physical-footprint fill和v2 oriented GEMM已经通过
-exact TargetCall、formal和SystemC gate；Q46规划的relation-guided Cx/NCx physical-version absorption只消费现有
-encoding与memref type事实，不增加可编程vector-width、packing参数或physical-encoding profile查询。`RequiredCapabilitySet`/package schema upgrade只在真实
+状态：2026-08-04同步唯一current worker-aware target ABI、typed NCC worker/participant completion及Q46
+future execution-model边界；此前已完成Q22.N/L/B/H/S/V、Q22 model-only functional-numeric policy、Q28标准7B
+单block scale vertical、Q31多seed数值表征及Q32.V typed target vertical。mapped DMA、physical-footprint fill和
+oriented GEMM已经通过exact TargetCall、formal和SystemC gate；Q46规划的relation-guided Cx/NCx
+physical-version absorption只消费现有encoding与memref type事实，不增加可编程vector-width、packing参数或
+physical-encoding旁路查询。`RequiredCapabilitySet`/package schema upgrade只在真实
 execution consumer需要逐row preflight时从winner派生。model/board admission仍由本文拥有，Q22.C board correlation和
 Q22.E exact-package execution保持独立later gate。封闭vendor Host-CRT/packet/DWFC seam不作为数值CModel依赖。本文固定以数值正确性为
 近期目标的untimed target execution model、SystemC/TLM边界、实现分层和板端numeric correlation计划；timing calibration
@@ -25,19 +25,19 @@ target-call ABI、address space、engine和completion事实执行程序，并与
 - 让同一份accepted rank program在RISC-V device link之外多一个目标相关consumer，尽早暴露instruction-to-target
   lowering、typed CRT call、地址、descriptor、engine和Direct DTE错误；
 - 以SystemC作为正式target model的模块、并发和event容器；当前private memory/event实现不建立无consumer的TLM socket，
-  TLM只保留给未来ISS/MMIO/interconnect consumer；近期只发布untimed/delta-cycle profile，不建立任意时间参数；
+  TLM只保留给未来ISS/MMIO/interconnect consumer；近期只发布untimed/delta-cycle执行模式，不建立任意时间参数；
 - 把算子数值、packet decode和checked memory effect保留为不依赖SystemC的plain C++ kernel，使其可做独立unit/
   differential test，并由SystemC modules调用；
-- 已在任何f32 workload vertical之前建立覆盖当前全部13种logical storage format、有证据的target-profile×engine×format encoding、7种公开
-  compute/convert format及完整product/accumulator/intermediate/destination、舍入/overflow/special-value政策的数值基础层；
+- 已在任何f32 workload vertical之前建立覆盖当前全部13种logical storage format、65个current engine×format encoding，以及
+  model已实现compute/convert tuple的完整product/accumulator/intermediate/destination、舍入/overflow/special-value政策；
   kernel只消费唯一`NumericSemanticsProfile`，不保留先写f32、以后再补dtype的旁路；
 - 让Q22.L同一份fully legal target LLVM在host执行；由共享typed target-call registry和exact-signature bridge把
   实际`wafer_tx81_*`调用形成invocation-local `TargetTransaction`并进入SystemC，不重新lower或预构造整程序
   command vector；
-- Q22最初只消费已经完成的v1 TargetCall；current CModel按显式target profile过滤shared registry，只消费该
-  profile可用的exact TargetCall。V1/V2 ordinary call固定worker0；V3 ordinary `_v3` call从末尾scalar解码
+- Q22最初只消费当时已经完成的TargetCall；current CModel消费唯一current registry中的exact TargetCall。
+  ordinary `_v3` call从末尾scalar解码
   `worker0/worker1/worker2`。CModel不读取Instr IR、planner candidate或index relation补猜事实。启用mapped
-  DMA、physical fill或额外GEMM orientation后，也只能消费最终versioned TargetCall中的address/domain、
+  DMA、physical fill或额外GEMM orientation后，也只能消费最终current TargetCall中的address/domain、
   direction-correct descriptor、typed orientation和worker字段；
 - 保持source CPU oracle、target model和board执行独立，以differential定位模型实现和硬件行为差异；compiler lowering
   由逐层IR legality、conversion和artifact readback gate定位，不再维护accepted-IR第二套解释器；
@@ -70,21 +70,20 @@ Pipeline position:
 - Upstream artifact / IR:
   近期入口消费同一production compilation product中的Q16 ExecutableBundle及其经过tasks/14 target ABI preparation和
   full conversion形成的all-and-only、owner-backed fully legal target LLVM modules，以及与每rank entry精确双射的typed ABI slots。该target-LLVM
-  bundle还必须消费`CompilationRequest -> ExecutionConfig`端到端携带的typed target profile，以及该
-  profile由tasks/14 registry唯一映射的target identity/Kernel Runtime ABI。Q32 candidate selection不要求
+  bundle还必须消费compiler固定的current target identity和由tasks/14 registry唯一映射的current Kernel Runtime ABI。Q32 candidate selection不要求
   planner-side `RequiredCapabilitySet`；Q32.V也只在真实execution consumer采用逐row package preflight时增加
-  capability-bearing package revision。当前profile不表示silicon revision，也禁止在full conversion后补default。
+  capability-bearing package revision。禁止在full conversion后补default或按旧revision回退。
   bundle不可序列化，不进入package。exact-module扩展另行消费其已实现版本对应的Q18 VerifiedPackageManifest和
   all-and-only Q17 RISC-V ELF modules。Q32.V仅在真实consumer需要时增加final TargetCall capability projection及扩展package readback。
   CPU expected只作独立比较，不作为target model执行输入。
 - Current stage responsibility:
-  在任何执行副作用前，从reachable typed target-call rows验证显式选择profile的command、ABI、model kernel和
+  在任何执行副作用前，从reachable typed target-call rows验证current command、ABI、model kernel和
   `ModelProfileId`均明确支持；host materialize并执行同一target LLVM，由共享typed
   target-call registry和exact-signature bridge形成invocation/rank-bound `TargetTransaction`，交给SystemC
   tile/engine/memory/fabric modules执行rank/tile address spaces、CT/NE/RDMA/WDMA/TDMA、local completion和
   Direct DTE/FSM event。registry descriptor与frontend transaction已携带typed NCC worker和completion behavior；
   model维护三个worker pending watermark，participant join只完成mask覆盖的NCC worker，Direct DTE仍由独立event
-  完成。V1/V2 ordinary ABI只兑现worker0 issue；V3 ordinary ABI可兑现三个typed worker，但模型不据此
+  完成。current ordinary ABI可兑现三个typed worker，但模型不据此
   猜测物理queue、occupancy、并行吞吐、仲裁或timing。
   Q32.V对mapped DMA、physical fill与额外GEMM orientation执行repo-owned exact-signature、
   formal/SystemC语义验证；采用扩展package capability集合的consumer再做all-and-only readback。external model
@@ -93,15 +92,14 @@ Pipeline position:
   layout、memory或transport planning。
 - Output artifact / IR:
   invocation-local、owner-backed target model execution result，包含all-and-only rank terminal status、typed
-  output tensors、model/profile provenance和可选typed diagnostic trace。结果不进入compiler IR、
+  output tensors、model provenance和可选typed diagnostic trace。结果不进入compiler IR、
   ExecutableBundle、TargetArtifactBundle或PackageManifest，也不作为后续planning输入。
 - Downstream consumer:
   tasks/16 differential/CI和Q22.C board numeric correlation；Q22.E exact-module与deferred Q22.P timing calibration是
   独立consumer。target model结果不是compiler transformation输入。
 - User-level driver / named pipeline:
-  用户通过`wafer-compile --target-profile=<registered-id> --target-model`显式选择tasks/14 typed
-  profile和model consumer，且不存在target profile默认值；v1/v2 legacy及v3 worker-aware profile必须各自
-  显式选择，并由同一production candidate owner消费。`--model-input`和`--model-expected`只使用调用者提供的
+  用户通过`wafer-compile --target-model`显式启用model consumer；target identity和worker-aware ABI由compiler固定，
+  并由同一production candidate owner消费。`--model-input`和`--model-expected`只使用调用者提供的
   固定source corpus payload/expected。wafer-compile在Q17/Q18原子发布后、同一invocation仍持有target LLVM bundle时
   执行host target LLVM，exact-signature bridge再向SystemC model发typed transaction/event。GEMM policy显式选择
   `formal`、`prefer-admitted`或`managed-reference`：`prefer-admitted`只能消费verified bulk qualification record；
@@ -112,21 +110,21 @@ Pipeline position:
   不复制instruction schedule，不改变manifest语义，不用CPU expected驱动target model执行，不把untimed结果升级为
   board/timing/cycle证据，不用代表rank、手写LLVM、手写packet或单个kernel替代真实纵向链。
 - Completion gate:
-  Q0.L、Q22.N、Q22.L、Q22.B、Q22.H、Q22.S与Q22.V已经完成。Q22.N闭合13种logical codec、有证据的target-profile×engine×format encoding、当前7种
-  compute/convert format、36条convert route、4种确定性舍入和逐family formal conformance；Q22.L原子形成all-rank
-  owner-backed target LLVM bundle；Q22.B闭合首批F16/BF16/F32 exact-payload `profile-bounded` oneDNN admission。Q22.L
+  Q0.L、Q22.N、Q22.L、Q22.B、Q22.H、Q22.S与Q22.V已经完成。Q22.N闭合13种logical codec、65个current engine×format encoding、
+  model已实现compute/convert tuple、36条convert route、4种确定性舍入和逐family formal conformance；Q22.L原子形成all-rank
+  owner-backed target LLVM bundle；Q22.B闭合首批F16/BF16/F32 exact-payload bounded oneDNN admission。Q22.L
   直接解锁Q22.H repo-owned target-call frontend；Q22.N+Q22.H+既有Q16.T已由Q22.S闭合SystemC functional-event model，Q22.B不是Q22.S前置。
   Q22.B+Q22.S+既有Q20/Q21已由Q22.V重放Q20 f32、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama和
   deterministic source-backed large GEMM，覆盖all-and-only ranks、typed target call/ABI、SPM/DDR、
   supported engine和Direct DTE，并与独立source CPU oracle比较完整输出；任一late failure无partial result，model mismatch
-  不回滚已验证Q17/Q18 artifacts。Q22只汇总model-only untimed functional-numeric profile；board numeric、exact
+  不回滚已验证Q17/Q18 artifacts。Q22只汇总model-only untimed functional-numeric结果；board numeric、exact
   package/ELF和timing accuracy分别由Q22.C、Q22.E和deferred Q22.P保持为更高独立gate。缺许可兼容vendor host seam或
   独立packet/MMIO事实源只阻塞可选packet provenance升级，不阻塞Q22数值功能模型，并禁止CRT/packet/vendor-exact claim。
   Q28在同一production入口上进一步闭合标准7B单block TP16、managed-reference bulk/tensor lane和完整PyTorch eager
   output differential；它是Q22之后的scale consumer，不扩大Q22 capability claim，且不证明board、exact package/ELF、性能或timing。
-  Q32.I/R/B沿同一production入口重放当前Q22 v1 model gate；Q32.V另行闭合mapped DMA、physical fill、额外GEMM
+  Q32.I/R/B沿同一production入口重放current model gate；Q32.V另行闭合mapped DMA、physical fill、额外GEMM
   orientation及其typed target-call/SystemC纵向。只有声明执行这些扩展且采用capability-bearing package的
-  model/board/exact-package consumer才必须消费Q32.V package set，不能回退为profile-wide
+  model/board/exact-package consumer才必须消费Q32.V package set，不能回退为隐式全支持
   隐式支持。repo-owned formal/SystemC gate属于Q32.V完成条件；external exact-package/board admission仍是
   Q22.E/Q6.B/Q22.C gate，且不参与compiler candidate生成或选择。
 ```
@@ -139,16 +137,14 @@ Pipeline position:
   transport和terminal completion；target model不得重新选择candidate或重算跨rankbinding。
 - tasks/14现有per-rank transaction-local target preparation已完成entry output/workspace/status ABI preparation，随后把
   instruction结构保持地lower为fixed `void(i64...)` target LLVM CRT calls；RISC-V device link在该lowering之后发生。
-- 当前Wafer CRT header、lowering、source和checker形成217个production symbol的闭合surface：冻结的112项
-  legacy prefix、104个V3 ordinary counterparts和V3-only Direct DTE issue。frontend只从profile-available
-  closed descriptor的engine/worker metadata建立
+- 当前Wafer CRT header、lowering、source和checker形成112个production symbol的闭合surface：104个worker-aware
+  ordinary calls、一个Direct DTE issue及七个共享NCC/DTE lifecycle。frontend只从closed descriptor的engine/worker metadata建立
   transaction issue domain，不从symbol spelling恢复；model identity为
   `untimed-delta-worker-aware-ncc-v2`。CRT源码通过
   `TsmNew*`/operator function table填写`Tsm*Instr`并调用`TsmExecute`，而不是直接写模型结果；symbol存在仍只证明
   ABI closure，不证明packet、numeric或hardware completion。
-- plain `wafer_tx81_gemm`没有orientation字段，模型继续发布implicit normal/normal canonical row；v2
-  `wafer_tx81_gemm_oriented_v2`逐字段解码两个orientation。V3分别从`wafer_tx81_gemm_v3`和
-  `wafer_tx81_gemm_oriented_v3`解码末尾worker，并在oriented row逐字段解码orientation。mapped RDMA/WDMA的Instr-local offset由target lowering
+- `wafer_tx81_gemm_v3`发布implicit normal/normal canonical row；
+  `wafer_tx81_gemm_oriented_v3`解码末尾worker，并逐字段解码orientation。mapped RDMA/WDMA的Instr-local offset由target lowering
   checked折入最终transaction address，模型不读取planner relation或恢复layout conversion。
 - Q17正式交付物是all-and-only RISC-V ELF `TargetArtifactBundle`；Q18 package只包含typed resource/slot/module/
   entry/completion/transport requirement，不包含instruction schedule。
@@ -157,12 +153,11 @@ Pipeline position:
   16-rank、每rank 256-byte tree reduction/broadcast闭合真实receiver placement/readiness/completion；这些证据彼此不能替代。
 - accepted instruction/memory facts由target lowering和target model直接消费；不存在独立reference-only numeric或
   deterministic DTE policy可成为target model的旁路事实源。
-- Q0.L shared registry显式枚举13种logical format，但engine×format准入只开放tasks/14有静态编码证据的row；
-  UINT、64-bit和通用TF32 format-bearing command均在target effect前fail closed。`wafer.instr.convert`是独立例外：
-  typed `InstrConvertKind`通过opcode 139..174的36条closed route选择含TF32的wrapper，但这不会打开通用
-  CT/RDMA/WDMA/GEMM的TF32 row。frontend可接收的f64在target profile中也没有descriptor。Q22 numeric foundation应
-  实现TF32 raw32 codec并分别记录logical codec、convert可达性和engine-specific format legality；不能用model有codec扩大
-  compiler legality，也不能让f64晚到packet阶段才失败。
+- Q0.L shared registry显式枚举13种logical format，并为RDMA/WDMA/TDMA/CT/NE形成完整65-row current
+  engine×format encoding；format-bearing instruction均消费这一个编码事实源。instruction自身的语义/shape/layout verifier
+  继续独立生效，唯一额外dtype限制是GEMM拒绝F32。`wafer.instr.convert`仍按opcode 139..174的36条typed route选择
+  wrapper；route集合描述可转换的source/destination pair，不是第二份通用format白名单。model kernel缺口只能让
+  target-model consumer拒绝执行，不能缩小compiler target legality。
 
 当前实现已经把tasks/14中完成ABI preparation和full target conversion的结果提升为owner-backed、不可序列化的
 **target LLVM bundle**。factory-only `TargetCompilationProduct`同时持有accepted executable和生成Q17 artifact时实际消费的
@@ -171,7 +166,7 @@ typed slots的all-rank集合，同时被现有RISC-V link和repo-owned target-ca
 artifact或package成员。具体C++类名和文件布局只作实现索引，不属于artifact合同。
 
 repo CRT当前在源码内强制定义`USING_RISCV=1`。fresh host probe证明同一C源码和public header可由GCC完整编成x86-64
-object，但只调用`wafer_tx81_local_fence`的最小链接首先缺`TsmWaitfinish`；完整object还要求36个Tsm factory/delete/
+object，但只调用`wafer_tx81_ncc_join`的最小链接首先缺`TsmWaitfinish_bywork`；完整object还要求Tsm factory/delete/
 execute/wait入口和11个Direct-DTE/SPM platform入口。把现有`libinstr_tx81.a`加入会因其成员为RISC-V ELF
 （EM=243、RVC、double-float ABI）而`file in wrong format`；`libcommon_util.a`、`liblibc_stub.a`和runtime archive同样不能
 成为host provider。`op_fw_sim_if`的host CMake只是include-only INTERFACE target，checkout没有这些host定义。因此“同源”
@@ -190,8 +185,7 @@ packet provenance施工前必须由项目owner/法务确认当前材料的实际
 获准时增加独立CRT/packet claim。
 
 Q32.I/R/B沿用已完成的v1 identity链；Q32.V在同一链上增加typed extension：
-`wafer-compile --target-profile=wafer-tx81-single-card-kernel-v1`把
-tasks/14拥有的唯一`TargetProfileId`写入`CompilationRequest`/`ExecutionConfig`，并贯穿
+`wafer-compile`使用tasks/14拥有的current target identity，并贯穿
 profile-bearing `ExecutableBundle`、target conversion、transaction-local prepared target LLVM/ABI artifact、
 `TargetArtifactBundle`和PackageManifest readback。`TargetLLVMModuleBundle`再原子拥有canonical all-rank domain、
 每rank logical rank/entry/module、ordered typed ABI slots、该validated identity及全部LLVM context lifetime；所有rank完成
@@ -206,14 +200,14 @@ ABI preparation、full conversion和readback后才能交给device link或host mo
 
 | 范围 | 已确认事实 | 初版可声明 | 仍不可声明 |
 | --- | --- | --- | --- |
-| topology/memory | 当前目标单卡4×4、16 tile；每tile 3 MiB SPM，ordinary allocation只使用`[0x10000, 0x2F0000)`，末64 KiB有Kcore/runtime占用证据；另有SPM alias和多个consumer-specific DDR mapping/address-view线索 | 当前profile的rank/tile隔离、half-open SPM reservation和byte-level model window；DDR只按typed resource注册 | 所有SKU容量、bad-tile/PG行为、64 KiB粒度等价于bank，或单一静态DDR范围可硬编码 |
+| topology/memory | 当前目标单卡4×4、16 tile；每tile 3 MiB SPM，ordinary allocation只使用`[0x10000, 0x2F0000)`，末64 KiB有Kcore/runtime占用证据；另有SPM alias和多个consumer-specific DDR mapping/address-view线索 | current target的rank/tile隔离、half-open SPM reservation和byte-level model window；DDR只按typed resource注册 | 所有SKU容量、bad-tile/PG行为、64 KiB粒度等价于bank，或单一静态DDR范围可硬编码 |
 | physical layout | compiler当前accepted compact、Cx/NCx规则可由typed layout重算；Cx/NCx是block-major而不是普通dense stride，INT8/UINT8 full block为128 lane、其它格式为64 lane，并存在compact C0 tail；hardware helper另有256B alignment/footprint证据 | source-backed accepted layout的logical coordinate到physical byte offset及越界检查 | Cx/NCx可直接表示成oneDNN stride；名称或256B规则是所有dtype/op的通用硬件layout |
-| dtype/storage | `Data_Format`公开13种有效格式：INT8/16/32、UINT8/16/32、INT64/UINT64、FP16/BF16/FP32/TF32和bitpacked BOOL；storage width为1/2/4/8 byte，BOOL为1 bit/element | 13种logical raw codec；tasks/08拥有bit/byte footprint和layout geometry，tasks/14只对有证据的target-profile×engine×format发布ABI/register encoding legality | enum存在即证明每个engine都能搬运或计算该dtype；当前DMA helper只有0..7编码却把8..12当作已支持；把BOOL scalar helper的byte store当作bitpacked硬件合同 |
+| dtype/storage | `Data_Format`公开13种有效格式：INT8/16/32、UINT8/16/32、INT64/UINT64、FP16/BF16/FP32/TF32和bitpacked BOOL；storage width为1/2/4/8 byte，BOOL为1 bit/element | 13种logical raw codec；tasks/08拥有bit/byte footprint和layout geometry，tasks/14发布65个current engine×format ABI/register encoding row；GEMM单独拒绝F32 | enum存在即免除op-specific shape/layout/geometry验证；把BOOL scalar helper的byte store当作bitpacked硬件合同 |
 | compute/convert | 当前CRT公开INT8/INT16/INT32/FP16/BF16/FP32/TF32七种格式间36条convert route；代码检查显示typed convert lowering可选择含TF32的wrapper，但还没有target-lowering integration正例；`RND_MODE`有nearest-even、zero、positive-infinity、negative-infinity、stochastic五种值 | 七种格式的logical numeric descriptor、36条route结构和四种确定性rounding的model candidate；每条op另按完整语义profile和engine-specific format legality准入 | 通用format-bearing op已能发射TF32；code-reachable convert即已被集成验证；UINT/INT64 compute、任意op×dtype笛卡尔积、INT8-source zero-point公式或stochastic随机状态已由ABI证明 |
 | packet/ABI | CT、NE、RDMA、WDMA、TDMA packet字段、worker window、trigger和range/end字段已有证据，但近期frontend不消费vendor packet | typed target-call descriptor/range conformance；packet只作Q22.K future oracle | repo-owned target-call已验证packet字段、worker或vendor CRT一致性 |
 | movement | contiguous/strided RDMA/WDMA、基础TDMA/gather-scatter/memset的混合单位和descriptor字段已恢复；element count、byte stride、iteration-minus-one及byte-count字段按family区分 | 受支持descriptor的功能执行和逐字段单位检查 | 把所有count当byte、所有alignment/stride组合的性能公式 |
-| local issue | 每tile三个worker identity；`serial_mode=0`语义把accepted CT/NE/RDMA/WDMA/TDMA分成五个逻辑NCC issue class并存在range/busytable依赖 | typed descriptor/transaction区分engine与worker，model维护三个worker pending watermark；v1/v2 ordinary call固定worker0，v3 ordinary `_v3` call可携带三个worker，typed participant join独立于DTE event | V3 ABI或functional overlap结果证明`3×5`物理queue occupancy、provider逐worker配置、多发射、精确仲裁、worker物理独立性、带宽或timing |
-| Direct DTE | raw DTE register含模式/多目的字段；public helper只证明single-destination setup、receiver-ready、issue、busy/done/error、wait/release生命周期及部分resource限制 | 当前accepted single-destination profile的功能/event模型 | raw broadcast/gather等完整模式及精确contention |
+| local issue | 每tile三个worker identity；`serial_mode=0`语义把accepted CT/NE/RDMA/WDMA/TDMA分成五个逻辑NCC issue class并存在range/busytable依赖 | typed descriptor/transaction区分engine与worker，model维护三个worker pending watermark；current ordinary `_v3` call可携带三个worker，typed participant join独立于DTE event | functional overlap结果证明`3×5`物理queue occupancy、provider逐worker配置、多发射、精确仲裁、worker物理独立性、带宽或timing |
+| Direct DTE | raw DTE register含模式/多目的字段；public helper只证明single-destination setup、receiver-ready、issue、busy/done/error、wait/release生命周期及部分resource限制 | 当前accepted single-destination path的功能/event模型 | raw broadcast/gather等完整模式及精确contention |
 | PMU | DTE/SPM/NCC base、record种类和counter shape已知；现有helper的worker scope不一致 | 保留raw counter、记录实际register/worker provenance并建立校准实验 | 所有counter均per-worker，或单位、wrap、workload correlation已证明 |
 
 底层事实的长期owner仍是`docs/wafer-hardware-instruction-set-and-programming-model.md`、
@@ -337,11 +331,11 @@ Direct DTE event仍按原ABI返回opaque `i64`，失败先锁存错误再返回�
 
 正式模型按稳定硬件责任拆分为SystemC modules/channels：
 
-- model top/context：target profile/identity、当前profile的16个physical tile slots、capability/good-tile map、logical/physical
+- model top/context：target identity、current 16个physical tile slots、capability/good-tile map、logical/physical
   rank/tile mapping和invocation-local状态；
 - tile memory：每tile SPM、reserved region、card DDR/resource slots和checked address translation；
 - 每tile维护三个typed NCC worker pending watermark，按typed call明确区分CT、NE、RDMA、WDMA、TDMA
-  engine family；V1/V2 descriptor把ordinary operator call映射到worker0，V3 descriptor读取exact trailing
+  engine family；current descriptor读取exact trailing
   worker scalar，participant join按mask完成worker；模型只表达三个独立completion identity，不建模或声称
   worker window容量、`serial_mode=0`带来物理并行、`3×5`物理queue occupancy、engine复制关系、吞吐或timing；
 - tile-level CT/NE/RDMA/WDMA/TDMA engine endpoints及保守共享resource arbitration；
@@ -350,8 +344,7 @@ Direct DTE event仍按原ABI返回opaque `i64`，失败先锁存错误再返回�
 - completion/result：typed worker issue/participant completion、DTE destination visible、all-rank terminal和
   typed no-progress diagnostic。
 
-V1/V2 ordinary operator call signature没有worker scalar且固定worker0；V3通过独立`_v3` symbol和末尾
-worker scalar成为coexistable production ABI。typed descriptor/transaction与NCC join mask提供model completion
+current ordinary operator call通过`_v3` symbol和末尾worker scalar表达worker。typed descriptor/transaction与NCC join mask提供model completion
 identity。静态证据没有证明queue resident/full、
 同queue多发射、cross-worker arbitration或SPM bank函数。模型保持untimed/delta-cycle functional-event边界；
 不能把header queue shape、任意`sc_fifo`容量、worker数或调度顺序升级成pipeline window或微架构事实。
@@ -370,7 +363,7 @@ bulk row时必须在compute前返回`bulk_backend_unavailable`，不能以隐式
 
 typed target command只是一次真实target-call bridge产生的瞬时transaction；bridge必须在返回前把异步处理所需的
 typed arguments复制进transaction，绝不能保留caller栈指针。该复制不授权在Direct DTE issue时snapshot payload；DTE
-source具体读取时刻仍由model profile和后续board/vendor correlation决定。transaction不预构造整程序command vector，不进入
+source具体读取时刻仍由显式model numeric policy和后续board/vendor correlation决定。transaction不预构造整程序command vector，不进入
 compiler artifact或package，不能成为长期shadow program。SystemC modules读取transaction执行时状态，不复制compiler
 completion DAG或planner trace。exact ELF路径必须经过ISS产生raw packet/register transaction再进入decoder，不能由ISS
 hook直接合成高层command绕过packet证据。
@@ -382,22 +375,22 @@ hook直接合成高层command绕过packet证据。
 | 对象 | 必须拥有 | 禁止拥有 |
 | --- | --- | --- |
 | same-lowering compilation product | factory-only ownership relation，原子持有accepted executable及直接生成Q17 artifacts的同一target LLVM bundle | 从package/readback重建bundle、公开构造伪造同源关系或第二次lowering |
-| `TargetLLVMModuleBundle` | 当前Q22拥有canonical all-rank domain、每rank独立LLVM context owner、logical rank/entry/fully legal module、ordered ABI slots、`ExecutionConfig`（内含唯一`TargetProfileId`），以及由module metadata经closed registry解析/readback的target identity/kernel ABI；Q32.V可在同一owner上增加per-rank capability projection和all-rank set digest | packet list、schedule、model state、从symbol/metadata digest反推typed facts、默认补出的revision或任何可序列化sidecar |
+| `TargetLLVMModuleBundle` | 当前Q22拥有canonical all-rank domain、每rank独立LLVM context owner、logical rank/entry/fully legal module、ordered ABI slots、`ExecutionConfig`，以及module metadata readback的current target identity/kernel ABI；Q32.V可在同一owner上增加per-rank capability projection和all-rank set digest | packet list、schedule、model state、从symbol/metadata digest反推typed facts、默认补出的revision或任何可序列化sidecar |
 | `RequiredCapabilitySet`（Q32.V按真实consumer需要引入） | 从final instruction/TargetCall rows经tasks/14 owner派生的canonical sorted unique row keys及digest；采用capability-bearing package的model provider以显式`ModelProfileId`、board provider以显式environment在effect前逐key匹配 | Q32 candidate输入、无consumer时的Q32.V前置、command地址/顺序/次数、implementation/residency/movement choice、capability lease、由profile名猜出的隐式全集 |
 | compact program invocation | typed `ProgramTensor`、完整logical user input、accepted per-rank slice和已验证package-relative parameter/constant payload | reference compute、model compute、target physical address、从文件名恢复resource role |
 | `ModelProfileId` | 显式选择的一组确定性model-only semantics identity；Q22.C可另发布绑定target/environment的hardware-correlated profile | compiler legality、隐式default、hardware等价声明 |
-| `NumericCommandKey` | static preflight和runtime从shared typed target-call registry/transaction投影的target profile/Kernel Runtime ABI、engine/op kind/variant、operand role/storage dtype、shape/layout、M/K/N/batch、convert kind及fixed optional fields；Q32.V target call另加入typed lhs/rhs orientation | erased Instr sidecar、任意symbol/string推断、numeric comparator、oneDNN选择、板端阈值 |
+| `NumericCommandKey` | static preflight和runtime从shared current target-call registry/transaction投影的Kernel Runtime ABI、engine/op kind/variant、operand role/storage dtype、shape/layout、M/K/N/batch、convert kind及fixed optional fields；Q32.V target call另加入typed lhs/rhs orientation | erased Instr sidecar、任意symbol/string推断、numeric comparator、oneDNN选择、板端阈值 |
 | `NumericSemanticsProfile` | 稳定typed identity/digest；完整operand storage/compute、product、accumulator、intermediate、destination、rounding points、FMA/reduction order、overflow、FTZ/DAZ、NaN/special/status及optional-field顺序 | 单个dtype、host library默认值、按workload临时覆盖的side table |
 | `TargetModelCapability` | `(ModelProfileId, NumericCommandKey)`到唯一`NumericSemanticsProfile` identity的映射，以及shape/layout/descriptor、event/transport、compiler-emittable和hardware evidence状态 | 重复保存压缩的src/accum/dst key、由symbol存在推导支持、扩大compiler legality的规则 |
 | `BulkBackendAdmission` | 完整semantic profile digest、shape/layout adapter、value domain、backend environment和已签发的`bit-exact/profile-bounded`类别；`rejected`表示不产生该对象 | target numeric semantics、target comparator或“library支持该dtype” |
 | `FormalNumericExecutionContext` | non-yielding formal kernel作用域内的profile、model status与MPFR state save/set/clear/capture/restore和显式target status映射；APFloat/APInt每次调用显式传rounding | rank identity、跨SystemC wait的全局/TLS状态、SoftFloat oracle状态或oneDNN worker状态 |
 | `BulkExecutionEnvironment` | oneDNN runtime/threads/ISA/implementation、当前SEQ caller-worker control readback、caller fenv恢复和admission provenance；未来非SEQ profile再要求逐worker initialization evidence | worker native flags到target status的映射、architectural memory或SystemC API |
 | prepared target-model invocation | 两个same-lowering bundle引用、all-rank ordered slot value、按slot layout编码的read-only physical bytes、checked non-overlap address plan和prepared target-call executable | host pointer伪装的device address、从文件名恢复rank/resource、别名source NPY storage |
-| `TargetTransaction` | exact-signature bridge返回前复制的typed call kind/ABI revision、engine、typed NCC worker/completion behavior、最终地址/descriptor、dtype/shape/optional fields、explicit rank context和invocation-local sequence identity；Q32.V transaction按versioned ABI增加orientation等扩展字段 | Instr local-offset字段、planner index relation、raw packet/register worker字段、caller栈指针、整程序command vector、shadow schedule或DTE payload的无证据snapshot |
+| `TargetTransaction` | exact-signature bridge返回前复制的typed call kind/current ABI、engine、typed NCC worker/completion behavior、最终地址/descriptor、dtype/shape/optional fields、explicit rank context和invocation-local sequence identity；orientation等字段直接属于current typed call | Instr local-offset字段、planner index relation、raw packet/register worker字段、caller栈指针、整程序command vector、shadow schedule或DTE payload的无证据snapshot |
 | `TargetModelResult` | all-and-only rank terminal status、完整output、numeric flags、transaction/thread/delta计数、formal/bulk command计数、MatMul/reorder/formal-FMA evidence和record digest | partial successful rank集合、回写compiler/package的状态 |
 
-`NumericCommandKey`只包含typed target-call registry/transaction已经表达、并由typed target profile唯一解释的事实。
-当前v1没有orientation字段；Q32.V启用额外GEMM orientation时，orientation和ABI revision必须参与
+`NumericCommandKey`只包含current typed target-call registry/transaction已经表达的事实。
+GEMM orientation和ABI identity必须参与
 key/pattern/resolution/admission digest，不能与normal/normal记录共用。它
 不保留被erase的Instr program或shadow command list。`NumericSemanticsProfile`是所选`ModelProfileId`下这些事实对应的唯一
 完整数值解释；`BulkBackendAdmission`只决定该解释能否由host bulk library
@@ -419,9 +412,9 @@ effect前失败。dependency/actual-loaded-binary identity进execution provenanc
 映射必须满足以下唯一性规则：如果accumulator、FMA、逐步rounding、quant或optional-field行为可由程序选择，先扩typed
 tile/instruction IR和Wafer CRT ABI；如果它是target固定隐含行为，则每个显式`ModelProfileId`与完整command tuple必须恰好
 映射一个semantic profile。板端校准前可并存多个命名model profile，但每次execution必须显式选择并记录一个，
-不能进入compiler legality、隐式default或CModel side table。Q22只发布确定性model-only profile；Q22.C再把board evidence
-绑定到target revision/environment，选择或拒绝对应row并发布hardware-correlated profile。当前v1 plain GEMM只有
-normal/normal、单一format且要求lhs/rhs/dst同element type；Q32.V的v2每个lhs/rhs orientation tuple是不同exact key，
+不能进入compiler legality、隐式default或CModel side table。Q22只发布确定性model-only policy；Q22.C再把board evidence
+绑定到target/environment并选择或拒绝对应row。current plain GEMM只有normal/normal、单一format且要求
+lhs/rhs/dst同element type；每个lhs/rhs orientation tuple是不同exact key，
 但仍由一个parameterized pattern family覆盖，不建立四套kernel。f16/bf16 narrow/wide、TF32 product和i8 accumulator等分别属于不同显式model profile，
 不能在同一次execution内按数据猜测切换。这里的model/board row只控制execution admission，不能反馈给planner选择candidate。
 
@@ -435,7 +428,7 @@ intrinsic、inline asm、未知address space或其它不能安全host materializ
 model executable。
 
 正式entry必须在SystemC可yield process中调用，使DTE wait和FSM receive可等待`sc_event`；typed participant
-join和legacy local fence在当前untimed模型中只更新对应worker completion state，不执行production busy-poll。所有rank process
+join在当前untimed模型中只更新对应worker completion state，不执行production busy-poll。所有rank process
 先创建再启动。invocation/rank context由per-rank exact-signature bridge显式绑定，不能只靠TLS或`sc_process_handle`推断。
 首个正式入口在每个driver进程的initial elaboration中建立一次invocation-local model，不调用`sc_stop`，由`sc_start`运行到
 process/queue/event quiescent后销毁私有memory和error latch；需要重复运行时重新启动driver进程。同进程长寿命
@@ -456,7 +449,7 @@ resolve必须显式携带logical rank、address space和read/write role；返回
 所有range/payload通过后，SystemC completion event才一次提交。单command错误无partial write，整次invocation只有all-rank
 terminal success后才extract/copy output。
 
-当前Q22 v1 RDMA transaction只执行strided DDR source到从最终destination address开始的sequential SPM bytes，
+current RDMA transaction只执行strided DDR source到从最终destination address开始的sequential SPM bytes，
 WDMA严格反向。Q32.V启用mapped DMA后，模型仍不增加“layout conversion”分支；Instr两端
 root-relative offset必须先由target lowering折入最终source/destination address。plain kernel只按最终descriptor检查
 payload、source/destination end、overlap、snapshot和canary，不接收logical index map。若compiler错误地把需要双侧
@@ -464,7 +457,7 @@ strided的关系编码成DMA，target-call/memory oracle必须暴露byte差异�
 
 当前target-call/SystemC executable preflight直接枚举reachable typed calls，并对每个command查询fresh
 `(NumericCommandKey, ModelProfileId)` model record；它不需要package capability set。Q32.V package consumer
-才对manifest中每个required capability查询同版本record，旧版本record即使其它字段相同也不匹配。任何missing row都在
+才对manifest中每个required capability查询current record。任何missing row都在
 memory import/effect前拒绝，board row完全独立。
 
 later Q3.6 Count当前只有opcode/wrapper和raw low-u32 writeback线索，尚未定义source predicate、format-specific numeric
@@ -502,7 +495,7 @@ i1临时值、select和bitpacked physical effect已经支持的事实，也不�
 Q46的relation-guided Cx/NCx physical-version absorption不是新的target capability；Q32现有typed contract已接受
 GEMM/batched-GEMM和native reduce的Cx/NCx形态，Q46在相同边界为physical-traversal-compatible CT生成候选。
 packing identity由dtype、typed encoding、
-shape/tail和physical map唯一确定；`TargetProfileId`只选择instruction/format/ABI capability，不进入physical encoding查询。
+shape/tail和physical map唯一确定；current target identity不进入physical encoding查询。
 Instr、`TargetTransaction`、`NumericCommandKey`、CRT ABI和SystemC均不增加`vector_width`、`packing_mode`或planner field。
 tasks/17每次只执行tasks/16提供的一个accepted TargetCall/transaction artifact，
 分别返回logical output、numeric result、consumer-observable defined bytes、padding/canary和movement event/bytes；它不读取
@@ -522,7 +515,7 @@ logical format、layout geometry与target format encoding必须分层；同一lo
 | 对象 | 必须显式表达 | 不能表达为 |
 | --- | --- | --- |
 | `LogicalFormatDescriptor` | format identity、raw container与semantic bit width、signedness、exponent/significand、canonical encoding、NaN/Inf/subnormal能力 | C++ `sizeof(T)`、CRT enum值范围、physical block或host native type |
-| `TargetFormatEncodingRecord` | typed target profile、engine、logical format、public ABI enum/register code、format-specific constraint和evidence状态；实际layout另作typed command fact由tasks/08 helper验证 | 一个对所有engine通用的`Data_Format -> code` switch、Cx/NCx几何副本或logical format名称 |
+| `TargetFormatEncodingRecord` | engine、logical format、public ABI enum/register code和format-specific constraint；实际layout另作typed command fact由tasks/08 helper验证 | Cx/NCx几何副本或logical format名称 |
 | `NumericSemanticsProfile` | 每个operand的storage/compute type、product、accumulator和intermediate、destination、每个rounding point、FMA/reduction order、overflow/saturate/wrap、FTZ/DAZ、NaN/special/status、zero-point和stochastic policy | 单个`dtype`、symbol后缀或全局rounding flag |
 | capability row | `ModelProfileId`、`NumericCommandKey`、唯一semantic profile identity、target format encoding及shape/layout/descriptor/optional-field范围、evidence status | “library支持该dtype”、压缩src/accum/dst tuple或13种格式的笛卡尔积 |
 
@@ -561,7 +554,7 @@ model-only evidence，不伪造成硬件可见状态。
 或f32累加后写回原类型；TF32 operand以显式TF32 product policy、f32 accumulator写回TF32或f32；i8乘法、i32累加并以
 i32 component result验证，量化写回另需显式quantization profile。它们是用于compiler验证和板端区分实验的候选，不是
 硬件已确认矩阵。当前`InstrGemm`只验证lhs/rhs/dst同element type，target ABI也只传一个format且没有accumulator字段；
-若target profile不能唯一固定隐含accumulator，就必须扩typed IR/ABI表达，不能把候选选择放进CModel side table或从dtype猜。
+若current target ABI不能唯一固定隐含accumulator，就必须扩typed IR/ABI表达，不能把候选选择放进CModel side table或从dtype猜。
 
 ### 4.5 数值库分工和独立性
 
@@ -837,7 +830,7 @@ TLM-2.0不要求用于每条内部边界。推荐范围是：
 - NCC packet、worker queue、Direct DTE/FSM event使用保留字段身份的typed transaction/channel；
 - 不把硬件packet再包装成opaque payload，不让socket/port拓扑进入compiler IR或package；
 - 初版只发布untimed/delta-cycle functional-event profile；没有测量依据时不写任意`wait(N, SC_NS)`；
-- model中的typed NCC join和legacy local fence必须是worker-scoped completion state transition；
+- model中的typed NCC join必须是worker-scoped completion state transition；
   `direct_sync_wait`、DTE wait和FSM receive从可yield的SystemC process等待event，不能把production
   `TsmWaitfinish*`的busy-poll实现复制进模型；
   所有rank process先注册再启动，不能顺序运行到第一个peer wait才创建其它rank；
@@ -903,7 +896,7 @@ typed invocation bindings、transport capability、共同submit/progress/status�
 - multi-rank no-progress/deadlock；
 - provider terminal status和copyback eligibility。
 
-target-call bridge返回不表示对应worker已完成；typed participant join或legacy local fence都不能替代DTE wait或
+target-call bridge返回不表示对应worker已完成；typed participant join不能替代DTE wait或
 multi-tile arrival。每个NCC issue携带worker与单调invocation-local ordinal，join只从mask覆盖的worker pending
 set取出ordinal并推进共同terminal prefix；Direct DTE ordinal只能由自己的event完成，不能因NCC join顺带完成。
 delta scheduling order不能充当identity。保守模型可以延后event完成，但不能合并没有证据的completion domain。
@@ -931,7 +924,7 @@ descriptor和runtime event错误，在私有invocation内、相应read/effect前
 | exact-module functional | Q22 model-only、Q32 integrated audit后当次Q18 verified package、all-and-only RISC-V ELF、ISS/loader/MMIO/provider lifecycle；Q32.V扩展package另要求required-capability preflight | package target-model execution | real board、hardware timing |
 | deferred Q22.P timing | 另行恢复后的PMU measurement basis和独立timing held-out | 实际通过的LT/AT profile | 改变numeric、IR legality或candidate acceptance；无RTL证据时称cycle-accurate |
 
-profile是execution result provenance，不是compiler legality或package semantic branch。高层profile失败不能反向改变
+model profile是execution result provenance，不是compiler legality或package semantic branch。高层profile失败不能反向改变
 accepted instruction支持范围；如果硬件可表达但model未覆盖，应扩target model capability或保持该profile拒绝。
 
 ### 7.1 当前Q22发布能力矩阵
@@ -941,12 +934,12 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 | 边界 | 当前发布支持 | 明确拒绝或未升级 |
 | --- | --- | --- |
 | storage / physical codec | 13种logical raw codec；compact、Cx、NCx及bitpacked BOOL的shared physical geometry/roundtrip；typed ABI slot显式携带layout | program-boundary compact BOOL NPY尚无bitpacked source合同；codec存在不开放无target encoding的engine row |
-| formal convert | 101条确定性typed convert policy，四种确定性rounding及完整raw/special/status政策 | 4条INT8-source zero-point公式和stochastic state未证，保持命名candidate/rejected；f64不在target profile |
+| formal convert | 101条确定性typed convert policy，四种确定性rounding及完整raw/special/status政策 | 4条INT8-source zero-point公式和stochastic state未证，保持命名candidate/rejected；f64不在current target |
 | formal elementwise | 88条selector（84条floating和4条BOOL logic）；f16/bf16/f32的已注册算术、关系、基础/MPFR transcendental按唯一profile执行 | integer elementwise、`exp_lp`/`sat_relu`/`leaky_relu`未闭合参数政策；未知selector无fallback |
-| formal GEMM / reduce | v1 normal/normal、v2 NN/NT/TN/TT及其V3 worker-aware exact-call counterparts的f16、bf16、f32同dtype GEMM；stored shape、orientation和ABI revision进入exact key，worker只影响completion identity而不改变numeric semantics；F32 fused accumulator、+0 init、K递增、destination RNE；native F32 sum reduce按+0 accumulator、logical row-major input递增和逐step RNE执行 | oriented external bulk lane仍需独立exact admission，board执行另需独立board row；I8 accumulator政策、TF32 generic GEMM、其余15条native reduce selector拒绝；不从dtype猜窄/宽accumulator |
-| admitted bulk GEMM | 当前component资格覆盖v1 normal/normal f16/bf16/f32同dtype、rank 2/3、Cx/NCx；Q22 source发布的admitted完整case为Q20首个f32 GEMM和64³ f32 GEMM | orientation是exact identity；无exact command/payload/destination/environment/expected-output record即no admission；超过formal budget时绝不scalar fallback；不外推连续输入域bit-exact |
+| formal GEMM / reduce | worker-aware oriented f16/bf16 GEMM；stored shape和orientation进入exact key，worker只影响completion identity而不改变numeric semantics；formal F32 GEMM保留为model oracle但current target preflight拒绝；native F32 sum reduce按+0 accumulator、logical row-major input递增和逐step RNE执行 | oriented external bulk lane仍需独立exact admission，board执行另需独立board row；I8 accumulator政策、TF32 generic GEMM、其余native reduce selector未在formal model闭合；不从dtype猜窄/宽accumulator |
+| admitted bulk GEMM | model-only component资格覆盖f16/bf16/f32同dtype、rank 2/3、Cx/NCx；F32 rows只用于oracle/qualification，不扩大current target legality | orientation是exact identity；无exact command/payload/destination/environment/expected-output record即no admission；超过formal budget时绝不scalar fallback；不外推连续输入域bit-exact |
 | managed-reference bulk GEMM | Q28 scale gate逐command验证supported GEMM semantic、shape/layout、受管environment、finite inputs及byte budget，并强制完整PyTorch expected tolerance comparison | 不产生exact qualification record，不声明raw-exact target arithmetic、hardware correlation或未检查value-domain；provenance与exact admission分字段 |
-| functional transaction / event | checked compact/mapped RDMA/WDMA、gather/scatter、logical/physical memset、elementwise、convert、v1/v2/v3 GEMM、V3 ordinary trailing-worker decode、typed NCC worker issue/participant join、legacy local fence及当前single-destination Direct DTE control；all-rank private SPM/DDR和atomic output | Count当前只有opcode/raw-writeback线索且无typed semantic/model consumer，必须pre-effect拒绝；field-valid但无kernel的conv/pool/unpool等family、未知地址/layout/endpoint；functional三worker结果不证明worker queue容量/occupancy、物理并行、packet或timing |
+| functional transaction / event | checked compact/mapped RDMA/WDMA、gather/scatter、logical/physical memset、elementwise、convert、current oriented GEMM、ordinary trailing-worker decode、typed NCC worker issue/participant join及single-destination Direct DTE control；all-rank private SPM/DDR和atomic output | Count当前只有opcode/raw-writeback线索且无typed semantic/model consumer，必须pre-effect拒绝；field-valid但无kernel的family、未知地址/layout/endpoint；functional三worker结果不证明worker queue容量/occupancy、物理并行、packet或timing |
 | source vertical | Q20 formal/admitted、f16/bf16 formal、64³ f32 admitted、Q21 16-rank Direct DTE；全部直接比较固定source CPU expected | 未固定expected的shape stress不算numeric evidence |
 
 这张矩阵说明“支持多数据类型”由storage、engine legality、numeric selector、functional kernel和source evidence分层；不能把
@@ -961,11 +954,10 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 
 #### Q22.N numeric foundation
 
-- 从tasks/14唯一shared typed registry读取13种`LogicalFormatDescriptor`和有证据的target-profile×engine×format
+- 从tasks/14唯一shared typed registry读取13种`LogicalFormatDescriptor`和65个current engine×format
   `TargetFormatEncodingRecord`；穷举INT8/UINT8/BOOL、FP16/BF16 raw pattern和TF32 canonical encoding，并以
   classification/boundary/random覆盖FP32、宽整数及noncanonical TF32。tasks/08独立验证BOOL physical bit ordinal、
-  Cx/NCx block/tail/footprint；byte内LSB0/MSB0只由显式encoding/model policy选择，无证据UINT/64-bit
-  DMA row和f64在target preflight拒绝；
+  Cx/NCx block/tail/footprint；byte内LSB0/MSB0只由显式encoding/model policy选择，f64在target preflight拒绝；
 - 36条convert route、四种确定性rounding、zero-point/stochastic命名候选及float special-result逐项区分；formal kernel覆盖
   f32、f16/bf16窄/宽累加、TF32-to-f32和i8-to-s32 component，逐family使用independent oracle或trusted-TCB gate；
 - type-generic elementwise/GEMM/reduce覆盖operand/product/accumulator/intermediate/destination、FMA、reduction order和
@@ -991,15 +983,14 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 #### Q22.L target LLVM module bundle
 
 - Q0.L prepared target LLVM/ABI artifact形成owner-backed、move-only、不可序列化的all-rank bundle；逐rank readback logical rank、
-  entry、profile/target identity/Kernel Runtime ABI、ordered typed slots和module identity，任一late failure均不形成bundle；
+  entry、target identity/Kernel Runtime ABI、ordered typed slots和module identity，任一late failure均不形成bundle；
 - direct shim只消费该bundle检查symbol、signature、control flow、typed slot和基本address formation，结果仅标ABI smoke；
   bundle不调用Host CRT、构造packet、链接SystemC或替代Q17/Q18 artifact。
 
 #### Q22.H repo-owned target-call frontend
 
 - Q22.L同一target LLVM经过owner-safe clone/native retarget和动态slot thunk；稳定Target层shared typed registry同时拥有
-  lowering和frontend需要的symbol/signature/call family/field decoder；global 217项descriptor先按module
-  target profile过滤，再对每个reachable row形成对应typed payload，
+  lowering和frontend需要的symbol/signature/call family/field decoder；112项current descriptor对每个reachable row形成对应typed payload，
   不能在JIT/SystemC/test复制字符串表；
 - frontend在sink begin前交付完整ordered typed slot metadata/value bindings；per-rank exact-signature bridge显式绑定invocation/rank context并形成
   typed transaction。rank防yield重入，prepare-commit失败仍可abort，unknown symbol/signature、wrong ABI slot和
@@ -1033,13 +1024,13 @@ unsupported-reason closure只是各row必要条件，不能替代相应positive 
 
 ### 8.2 Q22 Current Gate 与 Q32.V Typed Target-Capability/Package Extension
 
-既有Q22 v1 typed target-call/memory gate已经完成。Q32.I/R/B先在新的production compile结果上fresh重放该gate：
+既有Q22 typed target-call/memory gate已经完成。Q32.I/R/B先在新的production compile结果上fresh重放该gate：
 
 - CT/NE/RDMA/WDMA/TDMA的现有typed args、descriptor、address/end、model error latch和target ABI可观察status逐family覆盖；
 - SPM/DDR bounds、reserved region、Cx/NCx、bitpacked i1及当前subview/strided descriptor由独立slow oracle验证；
 - target-call/SystemC positive来自compiler-generated target LLVM，并把exact-signature bridge实际形成的typed transaction
   作为functional-event输入；
-- preflight从current reachable target calls检查当前v1 model admission。结果只决定本次model consumer接受或拒绝
+- preflight从current reachable target calls检查current model admission。结果只决定本次model consumer接受或拒绝
   已选程序，不进入planner、不生成候选，也不改变compiler legality。
 
 下列compiler与repo-owned model项目已由Q32.V独立闭合，不改变Q22 done状态；Q32.M/S可在共同owner中消费相应typed row：
@@ -1097,7 +1088,7 @@ row/contracting SPMD产生的local GEMM+all-reduce、Q32 current production winn
 
 1. 13种storage format的movement/fill/boolean/guard、layout tail和未写区域byte/bit exact；Q32.V mapped
    RDMA/WDMA再按direction、非零local offset、多descriptor和canary隔离校准；
-2. 七种compute/convert format的generated single-op vectors，覆盖36条convert route、四种确定性rounding及已实现
+2. model已实现compute/convert tuple的generated single-op vectors，覆盖36条convert route、四种确定性rounding及已实现
    f16/bf16/f32/TF32/integer arithmetic和GEMM/reduce candidate；Q32.V oriented GEMM按每个
    ABI/format/orientation tuple独立row；
 3. rank-count=1 f32 GEMM、add、tanh及完整MLP；
@@ -1319,8 +1310,8 @@ target-call frontend和Q22.S functional-event model；Q22.K才等待合法vendor
 
 ### 10.1 Capability和依赖收敛
 
-- Q0.L已完成：production `CompilationRequest`贯穿typed `TargetProfileId`；debug named target pipeline只用同一registry
-  显式解析required option。tasks/14单一拥有engine×format ABI/register legality，source reduce按init-first canonical-order
+- Q0.L已完成：production compiler固定current target identity；debug named target pipeline使用同一current定义。
+  tasks/14单一拥有engine×format ABI/register legality，source reduce按init-first canonical-order
   composite展开，elementwise map不再静默丢义；Q22.N/L只消费这些已验证事实，CModel不得补救compiler已丢失或未证明
   合法的command语义；
 - 当前不追索或逆向实现封闭vendor CModel package。只有项目owner以后主动提供可用host development package或独立公开规范，
@@ -1344,8 +1335,8 @@ target-call frontend和Q22.S functional-event model；Q22.K才等待合法vendor
   dispatcher、caller-worker环境、host platform digest和静态binary identity，MPFR/GMP的LGPL交付义务仍由发布配置承担。
   基础compiler
   不依赖oneDNN，但完整Q22 profile缺oneDNN时必须标记bulk execution unavailable、正式大GEMM gate未完成；
-- 消费Q0.L在tasks/11/14 owner中闭合的shared typed logical-format/physical-encoding registry和typed target
-  profile/target identity/Kernel Runtime ABI，供verifier、target lowering、CRT conformance与model共同使用；
+- 消费Q0.L在tasks/11/14 owner中闭合的shared typed logical-format/physical-encoding registry和current target
+  identity/Kernel Runtime ABI，供verifier、target lowering、CRT conformance与model共同使用；
 - plain C++ kernel/property tests不链接SystemC；SystemC test executable使用唯一`sc_main`入口并实际运行，不能只编译、
   skip或用`gtest_main`替代；
 - external授权/事实源gate通过后才形成同一repo CRT wrapper的device/host platform contract，移除源码内强制
@@ -1359,7 +1350,7 @@ target-call frontend和Q22.S functional-event model；Q22.K才等待合法vendor
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  Q0.L已提交并验证的TargetProfile、LogicalFormatDescriptor、TargetDataFormatCodeRecord、
+  Q0.L已提交并验证的current target identity、LogicalFormatDescriptor、TargetDataFormatCodeRecord、
   TargetFormatEncodingRecord和TargetConvertRoute registries，tasks/08唯一layout helper，以及tasks/11当前typed
   instruction command surface；不依赖Q22.L target LLVM bundle、ELF或package。
 - Current stage responsibility:
@@ -1382,7 +1373,7 @@ Pipeline position:
   capability closure及unsupported审计全部实际执行；required test不得unsupported/skipped。
 ```
 
-- 消费Q0.L在tasks/14建立的唯一`LogicalFormatDescriptor`和按target profile×engine×format分派的
+- 消费Q0.L在tasks/14建立的唯一`LogicalFormatDescriptor`和按current engine×format分派的
   `TargetFormatEncodingRecord`，实现由descriptor索引的13种raw codec与TF32 container/semantic-width处理；Q22.N不复制
   registry。tasks/14 encoding只拥有ABI/register code、engine legality与format-specific constraint；exact command的
   typed layout另行由tasks/08唯一helper验证并与constraint交叉，Cx/NCx/BOOL几何不进入numeric
@@ -1403,7 +1394,7 @@ Pipeline position:
 - 执行第8.1节Q22.N子项的exhaustive、boundary、property、metamorphic、independent-oracle和capability closure tests；生成的matrix
   必须区分model-implemented、compiler-emittable和hardware evidence，不能以f32 workload代替。
 
-完成：13种logical storage codec和有证据的physical engine/layout row闭合，当前七种compute/convert format及36条convert
+完成：13种logical storage codec和有证据的physical engine/layout row闭合，model已实现compute/convert tuple及36条convert
 route无missing/duplicate；每个published `(ModelProfileId, NumericCommandKey)`有唯一semantic profile/formal kernel/comparator
 或静态unsupported reason；formal backend逐family independent/trusted-TCB gate和execution-context isolation通过。该阶段
 不产生oneDNN admission，也不声明任一未知edge policy为hardware事实。
@@ -1511,8 +1502,7 @@ Q22.H现已从该bundle解锁并按repo-owned target-call frontend推进。
 - 只消费Q22.L `TargetLLVMModuleBundle`；host clone/JIT执行same fully legal target LLVM，不形成另一份instruction lowering或
   改写bundle；host retarget前拒绝target intrinsic、inline asm、未知address space和非registry external call；
 - 稳定Target层的shared typed target-call registry由lowering和frontend共同消费，拥有symbol、exact signature、call
-  family和field decoder；global 217项descriptor中只有module target profile可用的rows进入all-and-only
-  signature/payload gate（V1/V2/V3分别111/112/113项）。完整symbol只允许exact ABI-key
+  family和field decoder；112项current descriptor进入all-and-only signature/payload gate。完整symbol只允许exact ABI-key
   lookup，不能在JIT/SystemC/test复制字符串表，也不能从前后缀、参数数量或任意字符串启发式恢复语义；
 - 每rank生成`void(const uint64_t *slots)` fixed thunk和exact-signature bridge；bridge显式携带invocation/rank context，
   实际动态call形成typed transaction并同步投递transaction-local sink，Direct DTE返回invocation-local opaque identity；
@@ -1531,10 +1521,10 @@ failure无partial result。该gate不编译repo CRT、不构造Tsm packet，不�
 - 消费Q22.H实际typed transaction，建立rank-local virtual SPM/DDR、typed slots、checked address、invocation error latch、
   三个typed NCC worker pending watermark、participant join及独立Direct DTE/FSM event；不声明worker window容量、
   `3×5`物理queue、仲裁或engine复制。join只完成mask覆盖的NCC worker，绝不能按rank ordinal前缀顺带完成DTE；
-- shared decoder对global 217项descriptor做profile availability和exact ABI检查，并对reachable rows逐字段形成
+- shared decoder对112项current descriptor做exact ABI检查，并对reachable rows逐字段形成
   typed payload，所有payload family进入统一field-valid validator；
   RDMA/WDMA、gather/scatter、memset、elementwise、convert、GEMM和Direct DTE control
-  具有checked functional effect，其它field-valid family保持结构化unsupported。首个profile的DDR/SPM都在invocation-private
+  具有checked functional effect，其它field-valid family保持结构化unsupported。current target的DDR/SPM都在invocation-private
   registry内完成，不建立没有consumer的TLM socket；future ISS/interconnect只能通过另行设计的受限TLM边界接入，packet/MMIO
   correlation仍是Q22.K可选provenance gate；
 - numeric effect只调用Q22.N formal profile；Q22.B bulk在本stage不是完成前置。plain C++ kernel component tests不链接SystemC；
@@ -1751,22 +1741,16 @@ cycle证据时cycle-accurate保持非目标。
 Q22 target-call/SystemC model-only实现已经完成。后续exact provider、board numeric、packet provenance或timing施工前仍应
 建立独立实施计划；本文不表示这些更高gate已经完成。
 
-## 13. 规划中的 V3-only Model Cutover
+## 13. Current Model ABI Closure
 
-`target-abi-retirement`只迁移现有model consumer，不改变Q22已闭合的numeric/bulk/SystemC职责或宣称新的hardware
-correlation。当前V1/V2/V3与LocalFence/NCCJoin并存的实现事实保持有效，直到以下迁移完整完成：
+TargetCall frontend、typed transaction、SystemC dispatcher、model launch/config和fixtures只接受112项current registry；
+没有old ordinary decoder、LocalFence transaction/site kind或availability分支。model只执行typed NCCJoin participants语义，
+并从tasks/14同源TargetLLVM/typed TargetCall恢复transaction；不得按symbol suffix恢复semantic kind。
 
-- TargetCall frontend、typed transaction variant、SystemC dispatcher、model launch/config和fixtures只接受V3 closed
-  registry；删除104个legacy ordinary decoder row、LocalFence transaction/site kind和profile availability分支。
-- LocalFence producer迁移后，model只执行typed NCCJoin participants语义。host model的worker0行为只能作为正负例，
-  不能证明`TsmWaitfinish()`与`TsmWaitfinish_bywork(0)`在真实硬件上等价；该结论由16的fresh board gate拥有。
-- format/numeric/model policy registry直接以V3为current key。因key或internal representation变化而重建的qualification/
-  digest fixture只证明model identity闭合，不升级package schema，也不与后续compiler proof共享浮点政策。
-- model仍从14同源TargetLLVM/typed TargetCall恢复transaction；不得保留V1/V2 translator、LocalFence fallback或按symbol
-  suffix恢复semantic kind。
-
-Q47完成证明是V3 source→package→TargetCall/SystemC/no-card及板端纵向，不重开Q22.C numeric correlation、Q22.E exact
-package provider或Q22.P timing calibration。
+numeric/bulk/SystemC model职责与target legality分离：formal model尚未覆盖的op×dtype不缩窄compiler支持面，model-only F32
+GEMM oracle也不绕过current target的GEMM/F32拒绝。qualification/digest fixture只证明model identity闭合，不与package
+共享schema编号，也不与compiler proof共享浮点政策。Q47板端纵向不重开Q22.C numeric correlation、Q22.E exact package
+provider或Q22.P timing calibration。
 
 ## 14. 规划中的 Superoptimizer Model 证据边界
 

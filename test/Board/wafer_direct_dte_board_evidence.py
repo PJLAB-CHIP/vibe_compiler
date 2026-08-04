@@ -117,7 +117,7 @@ def _records_by_dense_rank(
 def validate_direct_dte_manifest(
     manifest: Mapping[str, object],
 ) -> DirectDTEManifestEvidence:
-    """Validate the status-v2/watchdog/completion slice of schema-v6."""
+    """Validate the current status/watchdog/completion package slice."""
 
     target = manifest.get("target")
     runtime_launch.require_manifest_launch(
@@ -130,7 +130,7 @@ def validate_direct_dte_manifest(
         or not isinstance(target, Mapping)
     ):
         raise RuntimeError(
-            "Direct-DTE package does not use the closed schema-v6 "
+            "Direct-DTE package does not use the current schema-v7 "
             "16-rank cluster launch contract"
         )
 

@@ -222,7 +222,6 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     schedulingConfig.candidateParallelism = candidateEvaluationWorkerLimit;
     schedulingConfig.requestShardIndex = result.requestShardIndex;
     schedulingConfig.requestShardCount = requestShardCount;
-    schedulingConfig.targetProfile = executionConfig.getTargetProfileId();
     schedulingConfig.optimizations = optimizations;
     mlir::FailureOr<std::vector<wafer::ScheduledRankCandidate>> frontier =
         wafer::buildScheduledRankCandidateFrontier(*sourceModule,
@@ -336,7 +335,7 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
         });
     mlir::FailureOr<std::vector<detail::FinalizedRankCandidate>> finalized =
         detail::finalizeScheduledRankCandidateFrontier(
-            std::move(result.candidates), executionConfig.getTargetProfileId(),
+            std::move(result.candidates),
             /*requireReservedBaseline=*/false);
     if (mlir::failed(finalized))
       return;

@@ -2,6 +2,8 @@
 
 #include "BulkQualificationInternal.h"
 
+#include "Wafer/Target/PhysicalTensorCodec.h"
+
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
@@ -107,9 +109,16 @@ llvm::Expected<QualificationRun> runQualification(
       compareOutputs(*formal, backend->destination);
   if (!comparison)
     return comparison.takeError();
-  llvm::Expected<BulkTensorStorage> formalStorage =
-      packBulkTensorLogicalValues(testCase.getDestinationTemplate().getKey(),
-                                  formal->values, UINT8_C(0x5a));
+  const BulkTensorStorage &destinationTemplate =
+      testCase.getDestinationTemplate();
+  llvm::Expected<std::vector<uint8_t>> formalPhysical =
+      packPhysicalTensorLogicalValues(destinationTemplate.getKey(),
+                                      formal->values,
+                                      destinationTemplate.getStorage());
+  if (!formalPhysical)
+    return formalPhysical.takeError();
+  llvm::Expected<BulkTensorStorage> formalStorage = BulkTensorStorage::create(
+      destinationTemplate.getKey(), std::move(*formalPhysical));
   if (!formalStorage)
     return formalStorage.takeError();
   return QualificationRun{std::move(testCase), std::move(*formal),

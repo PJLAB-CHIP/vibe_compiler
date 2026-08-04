@@ -103,7 +103,7 @@ static void wafer_tx81_probe_publish_output(uint64_t output_ddr) {
   mode = (mode >> 30) & 3U;
   for (uintptr_t address = output_ddr;
        address < output_ddr + WAFER_TX81_PROBE_WORD_COUNT * sizeof(uint64_t);
-       address += WAFER_TX81_DIRECT_DTE_STATUS_V2_CACHE_LINE_BYTES) {
+       address += WAFER_TX81_DIRECT_DTE_STATUS_CACHE_LINE_BYTES) {
     if (mode == WAFER_TX81_MACHINE_MODE)
       __asm__ volatile("dcache.cipa %0" : : "r"(address) : "memory");
     else if (mode == WAFER_TX81_SUPERVISOR_MODE)

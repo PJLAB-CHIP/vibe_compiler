@@ -52,8 +52,7 @@ makeCost(uint64_t ddrReadBytes, uint64_t ddrWriteBytes,
 }
 
 static TargetScheduleCostPolicy defaultPolicy() {
-  return wafer::analysis::getTargetScheduleCostPolicy(
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  return wafer::analysis::getTargetScheduleCostPolicy();
 }
 
 TEST(NoCProfitabilityAnalysisTest, UsesOneSharedWholeCardDDRRate) {

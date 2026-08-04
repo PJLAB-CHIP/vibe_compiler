@@ -1,38 +1,31 @@
-# RUN: not wafer-compile --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=MISSING-INPUT
-# RUN: not wafer-compile --input-program-dir %t.input --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=MISSING-OUTPUT
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=MISSING-RANKS
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=not-an-integer --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=INVALID-RANKS
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=18446744073709551616 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=OVERFLOW-RANKS
-# RUN: not wafer-compile --input-program-dir %t.input --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE-INPUT
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --compile-timing --compile-timing 2>&1 | FileCheck %s --check-prefix=DUPLICATE-TIMING
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE-OUTPUT
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE-RANKS
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --profile --profile 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PROFILE-PRODUCT
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.profile-rank1 --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --profile 2>&1 | FileCheck %s --check-prefix=PROFILE-RANK1
+# RUN: not wafer-compile --output-program-dir %t.output --execution-ranks=16 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=MISSING-INPUT
+# RUN: not wafer-compile --input-program-dir %t.input --execution-ranks=16 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=MISSING-OUTPUT
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=MISSING-RANKS
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=not-an-integer --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=INVALID-RANKS
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=18446744073709551616 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=OVERFLOW-RANKS
+# RUN: not wafer-compile --input-program-dir %t.input --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE-INPUT
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --launch-kind=kernel --compile-timing --compile-timing 2>&1 | FileCheck %s --check-prefix=DUPLICATE-TIMING
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --output-program-dir %t.output --execution-ranks=16 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE-OUTPUT
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --execution-ranks=16 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE-RANKS
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --launch-kind=kernel --profile --profile 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PROFILE-PRODUCT
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.profile-rank1 --execution-ranks=1 --launch-kind=kernel --profile 2>&1 | FileCheck %s --check-prefix=PROFILE-RANK1
 # RUN: test ! -e %t.profile-rank1
 # RUN: test ! -e %t.profile-rank1.profile
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.profile-model --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --profile --target-model 2>&1 | FileCheck %s --check-prefix=PROFILE-MODEL
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.profile-model --execution-ranks=16 --launch-kind=kernel --profile --target-model 2>&1 | FileCheck %s --check-prefix=PROFILE-MODEL
 # RUN: test ! -e %t.profile-model
 # RUN: test ! -e %t.profile-model.profile
-# RUN: rm -rf %t.missing-profile-output %t.unknown-profile-output %t.duplicate-profile-output
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.missing-profile-output --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=MISSING-PROFILE
-# RUN: test ! -e %t.missing-profile-output
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.unknown-profile-output --execution-ranks=16 --target-profile=not-a-registered-profile --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=UNKNOWN-PROFILE
-# RUN: test ! -e %t.unknown-profile-output
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.duplicate-profile-output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PROFILE
-# RUN: test ! -e %t.duplicate-profile-output
 # RUN: rm -rf %t.missing-launch-output %t.unknown-launch-output %t.duplicate-launch-output %t.rank1-model-output
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.missing-launch-output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=MISSING-LAUNCH
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.missing-launch-output --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=MISSING-LAUNCH
 # RUN: test ! -e %t.missing-launch-output
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.unknown-launch-output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=not-a-launch-kind 2>&1 | FileCheck %s --check-prefix=UNKNOWN-LAUNCH
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.unknown-launch-output --execution-ranks=16 --launch-kind=not-a-launch-kind 2>&1 | FileCheck %s --check-prefix=UNKNOWN-LAUNCH
 # RUN: test ! -e %t.unknown-launch-output
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.duplicate-launch-output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE-LAUNCH
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.duplicate-launch-output --execution-ranks=16 --launch-kind=kernel --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE-LAUNCH
 # RUN: test ! -e %t.duplicate-launch-output
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.rank1-model-output --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=model 2>&1 | FileCheck %s --check-prefix=RANK1-MODEL
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.rank1-model-output --execution-ranks=1 --launch-kind=model 2>&1 | FileCheck %s --check-prefix=RANK1-MODEL
 # RUN: test ! -e %t.rank1-model-output
 # RUN: rm -rf %t.input %t.no-helper-output
 # RUN: mkdir -p %t.input
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER= %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.no-helper-output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=NO-HELPER
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER= %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.no-helper-output --execution-ranks=16 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=NO-HELPER
 # RUN: test ! -e %t.no-helper-output
 # RUN: not wafer-compile --execution-mesh-ranks=16 2>&1 | FileCheck %s --check-prefix=OLD-MESH-RANKS
 # RUN: not wafer-compile --xla-spmd-partitioner-helper=%t.helper 2>&1 | FileCheck %s --check-prefix=OLD-HELPER
@@ -40,7 +33,7 @@
 # RUN: not wafer-compile --partition-stablehlo-program 2>&1 | FileCheck %s --check-prefix=OLD-PARTITION
 # RUN: not wafer-compile --reference-input 0=%t.input.npy 2>&1 | FileCheck %s --check-prefix=OLD-REFERENCE-INPUT
 # RUN: not wafer-compile --target-model-oracle=reference 2>&1 | FileCheck %s --check-prefix=OLD-MODEL-ORACLE
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.model-without-target --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel --model-input 0=%t.input.npy --model-expected 0=%t.expected.npy 2>&1 | FileCheck %s --check-prefix=MODEL-WITHOUT-TARGET
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.model-without-target --execution-ranks=1 --launch-kind=kernel --model-input 0=%t.input.npy --model-expected 0=%t.expected.npy 2>&1 | FileCheck %s --check-prefix=MODEL-WITHOUT-TARGET
 # RUN: test ! -e %t.model-without-target
 
 # MISSING-INPUT: wafer-compile: missing required --input-program-dir
@@ -55,9 +48,6 @@
 # DUPLICATE-PROFILE-PRODUCT: wafer-compile: duplicate option: --profile
 # PROFILE-RANK1: wafer-compile: profile compilation requires a 16-rank kernel launch
 # PROFILE-MODEL: wafer-compile: --profile cannot be combined with --target-model
-# MISSING-PROFILE: wafer-compile: missing required --target-profile
-# UNKNOWN-PROFILE: wafer-compile: unknown target profile 'not-a-registered-profile'
-# DUPLICATE-PROFILE: wafer-compile: duplicate option: --target-profile
 # MISSING-LAUNCH: wafer-compile: missing required --launch-kind
 # UNKNOWN-LAUNCH: wafer-compile: unknown runtime launch kind 'not-a-launch-kind'
 # DUPLICATE-LAUNCH: wafer-compile: duplicate option: --launch-kind

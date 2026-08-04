@@ -58,7 +58,6 @@ public:
 
   int64_t getLogicalRank() const { return logicalRank; }
   llvm::StringRef getEntrySymbol() const { return entrySymbol; }
-  TargetProfileId getTargetProfileId() const { return targetProfile; }
   TargetIdentityId getTargetIdentityId() const { return targetIdentity; }
   KernelRuntimeABIId getKernelRuntimeABIId() const { return kernelRuntimeABI; }
   llvm::StringRef getModuleFormat() const { return moduleFormat; }
@@ -73,7 +72,6 @@ private:
   friend struct TargetLLVMModuleBundleBuilder;
 
   TargetLLVMModule(int64_t logicalRank, llvm::StringRef entrySymbol,
-                   TargetProfileId targetProfile,
                    TargetIdentityId targetIdentity,
                    KernelRuntimeABIId kernelRuntimeABI,
                    llvm::StringRef moduleFormat,
@@ -83,7 +81,6 @@ private:
 
   int64_t logicalRank;
   std::string entrySymbol;
-  TargetProfileId targetProfile;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId kernelRuntimeABI;
   std::string moduleFormat;
@@ -336,7 +333,6 @@ public:
   TargetArtifactModuleId getId() const { return id; }
   llvm::StringRef getRelativePath() const { return relativePath; }
   llvm::StringRef getContentDigest() const { return contentDigest; }
-  TargetProfileId getTargetProfileId() const { return targetProfile; }
   TargetIdentityId getTargetIdentityId() const { return targetIdentity; }
   KernelRuntimeABIId getKernelRuntimeABIId() const { return kernelRuntimeABI; }
   llvm::StringRef getModuleFormat() const { return moduleFormat; }
@@ -349,20 +345,18 @@ private:
 
   VerifiedTargetModule(TargetArtifactModuleId id, llvm::StringRef relativePath,
                        llvm::StringRef contentDigest,
-                       TargetProfileId targetProfile,
                        TargetIdentityId targetIdentity,
                        KernelRuntimeABIId kernelRuntimeABI,
                        llvm::StringRef moduleFormat,
                        std::vector<VerifiedTargetExport> exports)
       : id(id), relativePath(relativePath.str()),
-        contentDigest(contentDigest.str()), targetProfile(targetProfile),
-        targetIdentity(targetIdentity), kernelRuntimeABI(kernelRuntimeABI),
+        contentDigest(contentDigest.str()), targetIdentity(targetIdentity),
+        kernelRuntimeABI(kernelRuntimeABI),
         moduleFormat(moduleFormat.str()), exports(std::move(exports)) {}
 
   TargetArtifactModuleId id;
   std::string relativePath;
   std::string contentDigest;
-  TargetProfileId targetProfile;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId kernelRuntimeABI;
   std::string moduleFormat;

@@ -29,7 +29,7 @@ GEMM_CASE_SHAPES = {
 }
 M, K, N = GEMM_CASE_SHAPES["single-tile"]
 F16_BYTES = 2
-TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
+TARGET_IDENTITY = "wafer-tx81-single-card"
 LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 PROCESS_TIMEOUT_MARGIN_SECONDS = 30
 PYTORCH_SEED = 20260803
@@ -170,9 +170,9 @@ def validate_manifest(package: pathlib.Path) -> tuple[dict[tuple[str, int], int]
     if (
         manifest.get("rank_count") != 1
         or not isinstance(target, dict)
-        or target.get("profile") != TARGET_PROFILE
+        or target.get("identity") != TARGET_IDENTITY
     ):
-        raise RuntimeError("standalone GEMM package target contract is invalid")
+        raise RuntimeError("standalone GEMM package target fields are invalid")
 
     modules = manifest.get("modules")
     entries = manifest.get("entries")
@@ -288,7 +288,7 @@ def write_payloads(
 
 def verify_no_card_evidence(stdout: str) -> None:
     required = {
-        "package: id=0 schema=6 ranks=1",
+        "package: id=0 schema=7 ranks=1",
         "entry: 0 rank=0",
         "launch_phase: role=main symbol=main",
         "board_execution: false",
@@ -354,7 +354,6 @@ def main() -> int:
             "--output-program-dir",
             str(package),
             "--execution-ranks=1",
-            f"--target-profile={TARGET_PROFILE}",
             f"--launch-kind={LAUNCH_KIND}",
         ]
     )

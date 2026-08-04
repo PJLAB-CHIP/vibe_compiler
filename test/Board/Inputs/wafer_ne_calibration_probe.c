@@ -681,21 +681,21 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
     record[WAFER_NEC_REC_LHS_BATCH] = selected.lhs_batch;
     record[WAFER_NEC_REC_RHS_BATCH] = selected.rhs_batch;
 
-    wafer_tx81_rdma(payload_ddr, WAFER_NEC_SPM_A,
+    wafer_tx81_rdma_v3(payload_ddr, WAFER_NEC_SPM_A,
                     WAFER_NEC_SLOT_BYTES, WAFER_NEC_SLOT_BYTES,
-                    0, 0, 0, 1, 1, 1, Fmt_UINT8);
-    wafer_tx81_rdma(payload_ddr + WAFER_NEC_SLOT_BYTES,
+                    0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
+    wafer_tx81_rdma_v3(payload_ddr + WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SPM_B, WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SLOT_BYTES, 0, 0, 0, 1, 1, 1,
-                    Fmt_UINT8);
-    wafer_tx81_rdma(payload_ddr + 2U * WAFER_NEC_SLOT_BYTES,
+                    Fmt_UINT8, 0U);
+    wafer_tx81_rdma_v3(payload_ddr + 2U * WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SPM_OUTPUT, WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SLOT_BYTES, 0, 0, 0, 1, 1, 1,
-                    Fmt_UINT8);
-    wafer_tx81_rdma(payload_ddr + 3U * WAFER_NEC_SLOT_BYTES,
+                    Fmt_UINT8, 0U);
+    wafer_tx81_rdma_v3(payload_ddr + 3U * WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SPM_AUX, WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SLOT_BYTES, 0, 0, 0, 1, 1, 1,
-                    Fmt_UINT8);
+                    Fmt_UINT8, 0U);
     WaferNECPMU before = wafer_nec_read_pmu();
     uint64_t execute_result = 0U;
     if (selected.kind == WAFER_NEC_GEMM)
@@ -710,11 +710,11 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
     if (execute_result == 0U) {
       status = WAFER_NEC_STATUS_EXECUTE_FAILED;
     } else {
-      wafer_tx81_wdma(WAFER_NEC_SPM_OUTPUT,
+      wafer_tx81_wdma_v3(WAFER_NEC_SPM_OUTPUT,
                       output_ddr + WAFER_NEC_OUTPUT_DDR_OFFSET,
                       WAFER_NEC_SLOT_BYTES, WAFER_NEC_SLOT_BYTES,
-                      0, 0, 0, 1, 1, 1, Fmt_UINT8);
-      wafer_tx81_local_fence();
+                      0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
+      wafer_tx81_ncc_join(1U);
       WaferNECPMU after = wafer_nec_read_pmu();
       record[WAFER_NEC_REC_PMU_ENABLE] = after.enable;
       record[WAFER_NEC_REC_NE_INST_DELTA] =

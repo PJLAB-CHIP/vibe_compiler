@@ -3,7 +3,7 @@
 #ifndef WAFER_PIPELINES_PIPELINES_H
 #define WAFER_PIPELINES_PIPELINES_H
 
-#include "Wafer/Target/TargetProfile.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include <cstdint>
 

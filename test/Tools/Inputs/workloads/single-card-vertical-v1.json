@@ -70,6 +70,17 @@
         "n": 16,
         "model_semantics_revision": "wafer-simple-gemm-v1"
       },
+      "bulk_qualification": {
+        "format": "f16",
+        "m": 4,
+        "k": 16,
+        "n": 16,
+        "batch_count": 1,
+        "calibration_seed": 101,
+        "held_out_seed": 20260713,
+        "held_out_lhs": "input:0",
+        "held_out_rhs": "input:1"
+      },
       "digests": {
         "source_config": "sha256:e55ad1873602b77fe8b51f35e741169e455f17fdabe875eb06609773f2cf401c",
         "input": "sha256:398f605bd3503fbb6c6249057155b97e4a654af392f60955c66bb9993744e7e8",
@@ -145,6 +156,44 @@
       },
       "reference": {
         "implementation": "independent increasing-K float32 accumulation",
+        "atol": 0.0,
+        "rtol": 0.0,
+        "digest_quantization_decimals": 6
+      }
+    },
+    {
+      "id": "large-gemm-f16",
+      "kind": "simple_gemm",
+      "source_revision": "sha256:a6125f3287676f3d2cbfa2382b0b0b75103a818b270dc3b070fda6c75862870b",
+      "seed": 20260715,
+      "dtype": "float16",
+      "config": {
+        "m": 64,
+        "k": 64,
+        "n": 64,
+        "model_semantics_revision": "wafer-simple-gemm-v1"
+      },
+      "bulk_qualification": {
+        "format": "f16",
+        "m": 64,
+        "k": 64,
+        "n": 64,
+        "batch_count": 1,
+        "calibration_seed": 101,
+        "held_out_seed": 20260715,
+        "held_out_lhs": "input:0",
+        "held_out_rhs": "input:1"
+      },
+      "digests": {
+        "source_config": "sha256:a6125f3287676f3d2cbfa2382b0b0b75103a818b270dc3b070fda6c75862870b",
+        "input": "sha256:efcb1bab51984c93391782c297e5e3015d16c2a2ea7a9b683047e5e130b56c85",
+        "parameters": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "reference_output": "sha256:f1b1847347be627eca4de3bda4f8ad0f5bfc4316a083187548afa83bc464fcc4",
+        "reference_output_quantized": "sha256:f1b1847347be627eca4de3bda4f8ad0f5bfc4316a083187548afa83bc464fcc4",
+        "exported_program": "sha256:e285118a229fa8f27ce8104ba3f51e650549ae088d4c5ae123659291885a458d"
+      },
+      "reference": {
+        "implementation": "independent increasing-K float32 accumulation with f16 destination rounding",
         "atol": 0.0,
         "rtol": 0.0,
         "digest_quantization_decimals": 6

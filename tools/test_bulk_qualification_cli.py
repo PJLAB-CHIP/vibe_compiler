@@ -51,7 +51,7 @@ def main() -> int:
     )
     try:
         base = {
-            "schema": "wafer-bulk-qualification-spec-v1",
+            "schema": "wafer-bulk-qualification-spec-v2",
             "format": "bf16",
             "m": 4,
             "k": 8,

@@ -165,12 +165,6 @@ resolveNumeric(NumericCommandKey command) {
   return resolved;
 }
 
-TargetProfileId
-getNumericCompatibilityProfile(const InvocationMemoryRegistry &memory) {
-  return getTargetProfileRecord(memory.getAddressPlan().getTargetProfile())
-      .numericCompatibilityProfile;
-}
-
 struct ManagedReferenceInput {
   uint64_t address;
   const NumericTensorKey *key;
@@ -290,7 +284,7 @@ executeElementwise(const compiler::TargetTransaction &transaction,
     inputKeys.push_back(*inputKey);
   llvm::Expected<NumericCommandKey> command =
       NumericCommandKey::createCTElementwise(
-          getNumericCompatibilityProfile(memory), *operation,
+          *operation,
           std::move(inputKeys), *destinationKey);
   if (!command)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
@@ -362,11 +356,10 @@ executeConvert(const compiler::TargetTransaction &transaction,
                TargetModelKernelBudget budget,
                TargetModelExecutionPolicy policy) {
   const uint16_t opcode = static_cast<uint16_t>(value.kind);
-  const TargetConvertRoute *route = findTargetConvertRoute(
-      memory.getAddressPlan().getTargetProfile(), opcode);
+  const TargetConvertRoute *route = findTargetConvertRoute(opcode);
   if (!route)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
-                       "convert route is not registered for target profile");
+                       "convert route is not registered for the current target");
   llvm::Expected<NumericTensorKey> sourceKey =
       makeTensor(route->source, {value.elementCount});
   llvm::Expected<NumericTensorKey> destinationKey =
@@ -387,8 +380,7 @@ executeConvert(const compiler::TargetTransaction &transaction,
     parameter = NumericConvertParameter::roundingMode(*mode);
   }
   llvm::Expected<NumericCommandKey> command =
-      NumericCommandKey::createCTConvert(getNumericCompatibilityProfile(memory),
-                                         opcode, *sourceKey, *destinationKey,
+      NumericCommandKey::createCTConvert(opcode, *sourceKey, *destinationKey,
                                          parameter);
   if (!command)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
@@ -471,7 +463,7 @@ executeReduce(const compiler::TargetTransaction &transaction,
   }
   llvm::Expected<NumericCommandKey> command =
       NumericCommandKey::createNativeCTReduce(
-          getNumericCompatibilityProfile(memory), *operation, *inputKey,
+          *operation, *inputKey,
           *destinationKey, dimension);
   if (!command)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
@@ -567,7 +559,7 @@ executeGemm(const compiler::TargetTransaction &transaction,
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
                        llvm::toString(axes.takeError()));
   llvm::Expected<NumericCommandKey> command = NumericCommandKey::createNEGemm(
-      getNumericCompatibilityProfile(memory), *lhsKey, *rhsKey, *destinationKey,
+      *lhsKey, *rhsKey, *destinationKey,
       value.m, value.k, value.n, value.batchCount, *axes, value.lhsOrientation,
       value.rhsOrientation);
   if (!command)

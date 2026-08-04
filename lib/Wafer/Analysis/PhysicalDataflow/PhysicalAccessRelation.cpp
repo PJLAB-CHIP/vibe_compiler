@@ -152,6 +152,17 @@ PhysicalAccessRelation::getLogicalPoint(
   if (!isPointInShape(iterationPoint, iterationShape))
     return mlir::failure();
 
+  // A rank-zero endpoint has exactly one logical point.  Preserve the
+  // relation membership check, but do not route the empty coordinate through
+  // affine-map recovery or Presburger sample projection: both representations
+  // legitimately contain zero result variables, which is otherwise
+  // indistinguishable from a missing projection in their convenience APIs.
+  if (endpointType.getRank() == 0) {
+    if (!iterationToLogical.contains(iterationPoint, {}))
+      return mlir::failure();
+    return llvm::SmallVector<int64_t, 4>{};
+  }
+
   if (projectedAffineMap) {
     mlir::IndexType indexType = mlir::IndexType::get(endpointType.getContext());
     llvm::SmallVector<mlir::Attribute, 4> operands;

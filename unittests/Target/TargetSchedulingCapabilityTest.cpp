@@ -38,13 +38,6 @@ using wafer::TargetSchedulingWindowPredicate;
 using wafer::TargetSchedulingWindowQuery;
 using wafer::TargetSchedulingWorkerRelation;
 
-constexpr wafer::TargetProfileId kV1 =
-    wafer::TargetProfileId::waferTx81SingleCardKernelV1();
-constexpr wafer::TargetProfileId kV2 =
-    wafer::TargetProfileId::waferTx81SingleCardKernelV2();
-constexpr wafer::TargetProfileId kV3 =
-    wafer::TargetProfileId::waferTx81SingleCardKernelV3();
-
 constexpr TargetSchedulingEngineMask engine(TargetSchedulingEngine value) {
   return wafer::targetSchedulingEngineBit(value);
 }
@@ -80,12 +73,12 @@ static TargetSchedulingWindowPredicate makeSameWorkerFixed(
 }
 
 static TargetSchedulingWindowQuery
-makeQuery(wafer::TargetProfileId profile, TargetSchedulingMechanism mechanism,
+makeQuery(TargetSchedulingMechanism mechanism,
           TargetSchedulingEngineMask engines,
           TargetSchedulingWorkerRelation workerRelation,
           TargetSchedulingCompletionKind completion,
           uint64_t payloadBytes = 16) {
-  TargetSchedulingWindowQuery query(profile, mechanism);
+  TargetSchedulingWindowQuery query(mechanism);
   query.engines = engines;
   query.workerRelation = workerRelation;
   query.completion = completion;
@@ -105,63 +98,36 @@ static std::string takeExpectedError(llvm::Expected<T> value) {
 }
 
 TEST(TargetSchedulingCapabilityTest,
-     CompilerShippedProfilesAreVersionedAndKeepUnknownNonIllegal) {
-  auto v1 = wafer::getTargetSchedulingCapabilityRegistry(kV1);
-  ASSERT_TRUE(static_cast<bool>(v1)) << llvm::toString(v1.takeError());
-  auto v2 = wafer::getTargetSchedulingCapabilityRegistry(kV2);
-  ASSERT_TRUE(static_cast<bool>(v2)) << llvm::toString(v2.takeError());
-  auto v3 = wafer::getTargetSchedulingCapabilityRegistry(kV3);
-  ASSERT_TRUE(static_cast<bool>(v3)) << llvm::toString(v3.takeError());
-  EXPECT_EQ(v1->getContractVersion(), 1u);
-  EXPECT_EQ(v2->getContractVersion(), 1u);
-  EXPECT_EQ(v3->getContractVersion(), 3u);
-  EXPECT_EQ(v1->getTargetProfile(), kV1);
-  EXPECT_EQ(v2->getTargetProfile(), kV2);
-  EXPECT_EQ(v3->getTargetProfile(), kV3);
+     CompilerShippedRegistryKeepsUnknownNonIllegal) {
+  auto registry = wafer::getTargetSchedulingCapabilityRegistry();
+  ASSERT_TRUE(static_cast<bool>(registry))
+      << llvm::toString(registry.takeError());
 
   auto sameWorker =
-      makeQuery(kV1, TargetSchedulingMechanism::StaticFixedSlot, kCTRdma,
+      makeQuery(TargetSchedulingMechanism::StaticFixedSlot, kCTRdma,
                 TargetSchedulingWorkerRelation::SameNCCWorker,
                 TargetSchedulingCompletionKind::SameWorkerIssueOrder);
-  auto sameDecision = v1->query(sameWorker);
+  auto sameDecision = registry->query(sameWorker);
   ASSERT_TRUE(static_cast<bool>(sameDecision))
       << llvm::toString(sameDecision.takeError());
   EXPECT_EQ(sameDecision->legality, TargetSchedulingCapabilityState::Supported);
   EXPECT_EQ(sameDecision->profitability.overlap,
             TargetSchedulingOverlapEvidence::QualifiedOverlap);
 
-  auto crossV1 =
-      makeQuery(kV1, TargetSchedulingMechanism::StaticFixedSlot, kCTRdma,
+  auto crossWorker =
+      makeQuery(TargetSchedulingMechanism::StaticFixedSlot, kCTRdma,
                 TargetSchedulingWorkerRelation::CrossNCCWorkers,
                 TargetSchedulingCompletionKind::ParticipantJoin);
-  auto crossV1Decision = v1->query(crossV1);
-  ASSERT_TRUE(static_cast<bool>(crossV1Decision))
-      << llvm::toString(crossV1Decision.takeError());
-  EXPECT_EQ(crossV1Decision->legality,
-            TargetSchedulingCapabilityState::Unknown);
-  EXPECT_TRUE(crossV1Decision->profitability.isEntirelyUnknown());
-
-  auto crossV2 = crossV1;
-  crossV2.targetProfile = kV2;
-  auto crossV2Decision = v2->query(crossV2);
-  ASSERT_TRUE(static_cast<bool>(crossV2Decision))
-      << llvm::toString(crossV2Decision.takeError());
-  EXPECT_EQ(crossV2Decision->legality,
-            TargetSchedulingCapabilityState::Unknown);
-  EXPECT_TRUE(crossV2Decision->profitability.isEntirelyUnknown());
-
-  auto crossV3 = crossV1;
-  crossV3.targetProfile = kV3;
-  auto crossV3Decision = v3->query(crossV3);
-  ASSERT_TRUE(static_cast<bool>(crossV3Decision))
-      << llvm::toString(crossV3Decision.takeError());
-  EXPECT_EQ(crossV3Decision->legality,
+  auto crossDecision = registry->query(crossWorker);
+  ASSERT_TRUE(static_cast<bool>(crossDecision))
+      << llvm::toString(crossDecision.takeError());
+  EXPECT_EQ(crossDecision->legality,
             TargetSchedulingCapabilityState::Supported);
   // A supported legality row does not manufacture profitability evidence.
-  EXPECT_TRUE(crossV3Decision->profitability.isEntirelyUnknown());
+  EXPECT_TRUE(crossDecision->profitability.isEntirelyUnknown());
 
   sameWorker.geometryKnown = false;
-  auto unknownGeometry = v1->query(sameWorker);
+  auto unknownGeometry = registry->query(sameWorker);
   ASSERT_TRUE(static_cast<bool>(unknownGeometry))
       << llvm::toString(unknownGeometry.takeError());
   EXPECT_EQ(unknownGeometry->legality,
@@ -170,12 +136,12 @@ TEST(TargetSchedulingCapabilityTest,
 
 TEST(TargetSchedulingCapabilityTest,
      ExactPairEvidenceDoesNotLeakIntoExactGroups) {
-  auto registry = wafer::getTargetSchedulingCapabilityRegistry(kV1);
+  auto registry = wafer::getTargetSchedulingCapabilityRegistry();
   ASSERT_TRUE(static_cast<bool>(registry))
       << llvm::toString(registry.takeError());
 
   auto pair = registry->query(
-      makeQuery(kV1, TargetSchedulingMechanism::StaticFixedSlot, kCTRdma,
+      makeQuery(TargetSchedulingMechanism::StaticFixedSlot, kCTRdma,
                 TargetSchedulingWorkerRelation::SameNCCWorker,
                 TargetSchedulingCompletionKind::SameWorkerIssueOrder));
   ASSERT_TRUE(static_cast<bool>(pair)) << llvm::toString(pair.takeError());
@@ -185,7 +151,7 @@ TEST(TargetSchedulingCapabilityTest,
             TargetSchedulingDrainEvidence::QualifiedDrainElision);
 
   auto group = registry->query(
-      makeQuery(kV1, TargetSchedulingMechanism::StaticFixedSlot, kCTRdmaWdma,
+      makeQuery(TargetSchedulingMechanism::StaticFixedSlot, kCTRdmaWdma,
                 TargetSchedulingWorkerRelation::SameNCCWorker,
                 TargetSchedulingCompletionKind::SameWorkerIssueOrder));
   ASSERT_TRUE(static_cast<bool>(group)) << llvm::toString(group.takeError());
@@ -202,56 +168,38 @@ TEST(TargetSchedulingCapabilityTest,
     pairRows += row.scope == TargetSchedulingProfitabilityScope::ExactPair;
     groupRows += row.scope == TargetSchedulingProfitabilityScope::ExactGroup;
   }
-  EXPECT_EQ(pairRows, 10u);
+  EXPECT_EQ(pairRows, 11u);
   EXPECT_EQ(groupRows, 16u);
 }
 
 TEST(TargetSchedulingCapabilityTest,
-     MixedDTEFamiliesRequireV3AndRemainProfitabilityUnknown) {
-  auto v1 = wafer::getTargetSchedulingCapabilityRegistry(kV1);
-  auto v2 = wafer::getTargetSchedulingCapabilityRegistry(kV2);
-  auto v3 = wafer::getTargetSchedulingCapabilityRegistry(kV3);
-  ASSERT_TRUE(static_cast<bool>(v1)) << llvm::toString(v1.takeError());
-  ASSERT_TRUE(static_cast<bool>(v2)) << llvm::toString(v2.takeError());
-  ASSERT_TRUE(static_cast<bool>(v3)) << llvm::toString(v3.takeError());
+     MixedDTEFamiliesAreCurrentAndRemainProfitabilityUnknown) {
+  auto registry = wafer::getTargetSchedulingCapabilityRegistry();
+  ASSERT_TRUE(static_cast<bool>(registry))
+      << llvm::toString(registry.takeError());
 
   for (TargetSchedulingMechanism mechanism :
        {TargetSchedulingMechanism::StaticFixedSlot,
         TargetSchedulingMechanism::DirectDTEOverlap}) {
-    auto v1Query = makeQuery(
-        kV1, mechanism, kCTDTE, TargetSchedulingWorkerRelation::MixedNCCAndDTE,
+    auto query = makeQuery(
+        mechanism, kCTDTE, TargetSchedulingWorkerRelation::MixedNCCAndDTE,
         TargetSchedulingCompletionKind::ParticipantJoinAndExactEvent);
-    auto v1Decision = v1->query(v1Query);
-    ASSERT_TRUE(static_cast<bool>(v1Decision))
-        << llvm::toString(v1Decision.takeError());
-    EXPECT_EQ(v1Decision->legality, TargetSchedulingCapabilityState::Unknown);
-
-    auto v2Query = v1Query;
-    v2Query.targetProfile = kV2;
-    auto v2Decision = v2->query(v2Query);
-    ASSERT_TRUE(static_cast<bool>(v2Decision))
-        << llvm::toString(v2Decision.takeError());
-    EXPECT_EQ(v2Decision->legality, TargetSchedulingCapabilityState::Unknown);
-    EXPECT_TRUE(v2Decision->profitability.isEntirelyUnknown());
-
-    auto v3Query = v1Query;
-    v3Query.targetProfile = kV3;
-    auto v3Decision = v3->query(v3Query);
-    ASSERT_TRUE(static_cast<bool>(v3Decision))
-        << llvm::toString(v3Decision.takeError());
-    EXPECT_EQ(v3Decision->legality, TargetSchedulingCapabilityState::Supported);
-    EXPECT_TRUE(v3Decision->profitability.isEntirelyUnknown());
+    auto decision = registry->query(query);
+    ASSERT_TRUE(static_cast<bool>(decision))
+        << llvm::toString(decision.takeError());
+    EXPECT_EQ(decision->legality, TargetSchedulingCapabilityState::Supported);
+    EXPECT_TRUE(decision->profitability.isEntirelyUnknown());
   }
 }
 
 TEST(TargetSchedulingCapabilityTest,
-     WorkerPlacementUsesExactV3PairEvidenceWithoutGeneralizing) {
-  auto registry = wafer::getTargetSchedulingCapabilityRegistry(kV3);
+     WorkerPlacementUsesExactCurrentPairEvidenceWithoutGeneralizing) {
+  auto registry = wafer::getTargetSchedulingCapabilityRegistry();
   ASSERT_TRUE(static_cast<bool>(registry))
       << llvm::toString(registry.takeError());
 
   auto qualifiedPair = registry->query(
-      makeQuery(kV3, TargetSchedulingMechanism::WorkerPlacement, kCTRdma,
+      makeQuery(TargetSchedulingMechanism::WorkerPlacement, kCTRdma,
                 TargetSchedulingWorkerRelation::CrossNCCWorkers,
                 TargetSchedulingCompletionKind::ParticipantJoin));
   ASSERT_TRUE(static_cast<bool>(qualifiedPair))
@@ -264,7 +212,7 @@ TEST(TargetSchedulingCapabilityTest,
             TargetSchedulingDrainEvidence::Unknown);
 
   auto otherPair = registry->query(makeQuery(
-      kV3, TargetSchedulingMechanism::WorkerPlacement,
+      TargetSchedulingMechanism::WorkerPlacement,
       engine(TargetSchedulingEngine::NE) | engine(TargetSchedulingEngine::RDMA),
       TargetSchedulingWorkerRelation::CrossNCCWorkers,
       TargetSchedulingCompletionKind::ParticipantJoin));
@@ -272,28 +220,6 @@ TEST(TargetSchedulingCapabilityTest,
       << llvm::toString(otherPair.takeError());
   EXPECT_EQ(otherPair->legality, TargetSchedulingCapabilityState::Supported);
   EXPECT_TRUE(otherPair->profitability.isEntirelyUnknown());
-
-  auto v1Pair =
-      makeQuery(kV1, TargetSchedulingMechanism::WorkerPlacement, kCTRdma,
-                TargetSchedulingWorkerRelation::CrossNCCWorkers,
-                TargetSchedulingCompletionKind::ParticipantJoin);
-  auto v1Registry = wafer::getTargetSchedulingCapabilityRegistry(kV1);
-  ASSERT_TRUE(static_cast<bool>(v1Registry))
-      << llvm::toString(v1Registry.takeError());
-  auto v1Decision = v1Registry->query(v1Pair);
-  ASSERT_TRUE(static_cast<bool>(v1Decision))
-      << llvm::toString(v1Decision.takeError());
-  EXPECT_EQ(v1Decision->legality, TargetSchedulingCapabilityState::Unknown);
-
-  auto v2Pair = v1Pair;
-  v2Pair.targetProfile = kV2;
-  auto v2Registry = wafer::getTargetSchedulingCapabilityRegistry(kV2);
-  ASSERT_TRUE(static_cast<bool>(v2Registry))
-      << llvm::toString(v2Registry.takeError());
-  auto v2Decision = v2Registry->query(v2Pair);
-  ASSERT_TRUE(static_cast<bool>(v2Decision))
-      << llvm::toString(v2Decision.takeError());
-  EXPECT_EQ(v2Decision->legality, TargetSchedulingCapabilityState::Unknown);
 }
 
 TEST(TargetSchedulingCapabilityTest,
@@ -301,8 +227,7 @@ TEST(TargetSchedulingCapabilityTest,
   const TargetSchedulingLegalityRow supported{
       makeSameWorkerFixed(kCTRdma), TargetSchedulingCapabilityState::Supported};
 
-  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create(
-                                  kV1, 1, {supported, supported}, {}))
+  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create({supported, supported}, {}))
                 .find("duplicate or overlapping"),
             std::string::npos);
 
@@ -312,8 +237,7 @@ TEST(TargetSchedulingCapabilityTest,
   const TargetSchedulingLegalityRow overlappingRange{
       makeSameWorkerFixed(kCTRdma, 16, 32),
       TargetSchedulingCapabilityState::Supported};
-  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create(
-                                  kV1, 1, {firstRange, overlappingRange}, {}))
+  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create({firstRange, overlappingRange}, {}))
                 .find("duplicate or overlapping"),
             std::string::npos);
 
@@ -322,8 +246,7 @@ TEST(TargetSchedulingCapabilityTest,
                     TargetSchedulingWorkerRelation::SameNCCWorker,
                     TargetSchedulingCompletionKind::ParticipantJoin),
       TargetSchedulingCapabilityState::Supported};
-  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create(
-                                  kV1, 1, {mismatched}, {}))
+  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create({mismatched}, {}))
                 .find("mismatched"),
             std::string::npos);
 }
@@ -341,8 +264,7 @@ TEST(TargetSchedulingCapabilityTest,
       TargetSchedulingOverlapEvidence::QualifiedOverlap,
       TargetSchedulingDrainEvidence::Unknown};
   EXPECT_NE(
-      takeExpectedError(TargetSchedulingCapabilityRegistry::create(
-                            kV1, 1, {groupLegality}, {pairWithGroupEngines}))
+      takeExpectedError(TargetSchedulingCapabilityRegistry::create({groupLegality}, {pairWithGroupEngines}))
           .find("scope does not match"),
       std::string::npos);
 
@@ -351,8 +273,7 @@ TEST(TargetSchedulingCapabilityTest,
       TargetSchedulingOverlapEvidence::QualifiedOverlap,
       TargetSchedulingDrainEvidence::Unknown};
   EXPECT_NE(
-      takeExpectedError(TargetSchedulingCapabilityRegistry::create(
-                            kV1, 1, {pairLegality}, {groupWithPairEngines}))
+      takeExpectedError(TargetSchedulingCapabilityRegistry::create({pairLegality}, {groupWithPairEngines}))
           .find("scope does not match"),
       std::string::npos);
 
@@ -360,8 +281,7 @@ TEST(TargetSchedulingCapabilityTest,
       pairLegality.predicate, TargetSchedulingProfitabilityScope::ExactPair,
       TargetSchedulingOverlapEvidence::Unknown,
       TargetSchedulingDrainEvidence::Unknown};
-  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create(
-                                  kV1, 1, {pairLegality}, {noEvidence}))
+  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create({pairLegality}, {noEvidence}))
                 .find("no qualified evidence"),
             std::string::npos);
 
@@ -371,8 +291,7 @@ TEST(TargetSchedulingCapabilityTest,
       TargetSchedulingProfitabilityScope::ExactPair,
       TargetSchedulingOverlapEvidence::QualifiedOverlap,
       TargetSchedulingDrainEvidence::Unknown};
-  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create(
-                                  kV1, 1, {pairLegality}, {uncovered}))
+  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create({pairLegality}, {uncovered}))
                 .find("lacks one supported covering legality"),
             std::string::npos);
 
@@ -382,24 +301,23 @@ TEST(TargetSchedulingCapabilityTest,
       pairLegality.predicate, TargetSchedulingProfitabilityScope::ExactPair,
       TargetSchedulingOverlapEvidence::QualifiedOverlap,
       TargetSchedulingDrainEvidence::Unknown};
-  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create(
-                                  kV1, 1, {unsupported}, {falselyQualified}))
+  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create({unsupported}, {falselyQualified}))
                 .find("lacks one supported covering legality"),
             std::string::npos);
 }
 
 TEST(TargetSchedulingCapabilityTest,
-     QueryKeepsUnsupportedUnknownAndProfileMismatchDistinct) {
+     QueryKeepsUnsupportedAndUnknownDistinct) {
   const TargetSchedulingLegalityRow unsupported{
       makeSameWorkerFixed(kCTRdma),
       TargetSchedulingCapabilityState::Unsupported};
   auto registry =
-      TargetSchedulingCapabilityRegistry::create(kV1, 9, {unsupported}, {});
+      TargetSchedulingCapabilityRegistry::create({unsupported}, {});
   ASSERT_TRUE(static_cast<bool>(registry))
       << llvm::toString(registry.takeError());
 
   auto unsupportedDecision = registry->query(
-      makeQuery(kV1, TargetSchedulingMechanism::StaticFixedSlot, kCTRdma,
+      makeQuery(TargetSchedulingMechanism::StaticFixedSlot, kCTRdma,
                 TargetSchedulingWorkerRelation::SameNCCWorker,
                 TargetSchedulingCompletionKind::SameWorkerIssueOrder));
   ASSERT_TRUE(static_cast<bool>(unsupportedDecision))
@@ -409,7 +327,7 @@ TEST(TargetSchedulingCapabilityTest,
   EXPECT_TRUE(unsupportedDecision->profitability.isEntirelyUnknown());
 
   auto missingDecision = registry->query(
-      makeQuery(kV1, TargetSchedulingMechanism::StaticFixedSlot,
+      makeQuery(TargetSchedulingMechanism::StaticFixedSlot,
                 engine(TargetSchedulingEngine::NE),
                 TargetSchedulingWorkerRelation::SameNCCWorker,
                 TargetSchedulingCompletionKind::SameWorkerIssueOrder));
@@ -418,16 +336,8 @@ TEST(TargetSchedulingCapabilityTest,
   EXPECT_EQ(missingDecision->legality,
             TargetSchedulingCapabilityState::Unknown);
 
-  auto wrongProfile =
-      makeQuery(kV2, TargetSchedulingMechanism::StaticFixedSlot, kCTRdma,
-                TargetSchedulingWorkerRelation::SameNCCWorker,
-                TargetSchedulingCompletionKind::SameWorkerIssueOrder);
-  EXPECT_NE(takeExpectedError(registry->query(wrongProfile))
-                .find("query/profile mismatch"),
-            std::string::npos);
-
   auto mismatchedQuery =
-      makeQuery(kV1, TargetSchedulingMechanism::StaticFixedSlot, kCTRdma,
+      makeQuery(TargetSchedulingMechanism::StaticFixedSlot, kCTRdma,
                 TargetSchedulingWorkerRelation::SameNCCWorker,
                 TargetSchedulingCompletionKind::ParticipantJoin);
   EXPECT_NE(
@@ -474,7 +384,7 @@ module {
   ASSERT_TRUE(module);
 
   auto query = wafer::analyzeTargetSchedulingWindow(
-      *module, kV3, TargetSchedulingMechanism::DirectDTEOverlap);
+      *module, TargetSchedulingMechanism::DirectDTEOverlap);
   ASSERT_TRUE(static_cast<bool>(query)) << llvm::toString(query.takeError());
   EXPECT_EQ(query->engines, engine(TargetSchedulingEngine::TDMA) |
                                 engine(TargetSchedulingEngine::RDMA) |
@@ -524,14 +434,14 @@ module {
   EXPECT_FALSE(windows.hasCrossWorkerWindow);
 
   auto query = wafer::analyzeTargetSchedulingWindow(
-      *module, kV3, TargetSchedulingMechanism::WorkerPlacement);
+      *module, TargetSchedulingMechanism::WorkerPlacement);
   ASSERT_TRUE(static_cast<bool>(query)) << llvm::toString(query.takeError());
   EXPECT_EQ(query->workerRelation,
             TargetSchedulingWorkerRelation::SameNCCWorker);
   EXPECT_EQ(query->completion,
             TargetSchedulingCompletionKind::SameWorkerIssueOrder);
 
-  auto registry = wafer::getTargetSchedulingCapabilityRegistry(kV3);
+  auto registry = wafer::getTargetSchedulingCapabilityRegistry();
   ASSERT_TRUE(static_cast<bool>(registry))
       << llvm::toString(registry.takeError());
   auto decision = registry->query(*query);

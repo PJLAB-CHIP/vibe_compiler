@@ -8,7 +8,6 @@
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
-#include "Wafer/Target/TargetNumericCapability.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -66,8 +65,7 @@ bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
 }
 
 bool isWaferInstruction(mlir::Operation *op) {
-  return mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp,
-                   SyncNCCJoinOp>(op);
+  return mlir::isa<WaferInstructionOpInterface, SyncNCCJoinOp>(op);
 }
 
 mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
@@ -214,26 +212,25 @@ mlir::FailureOr<int64_t> getStaticViewOffsetBytes(mlir::Operation *op,
 }
 
 mlir::FailureOr<DynamicSubviewAddressPlan>
-analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
+analyzeDynamicTensorSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
   mlir::MemRefType sourceType = subviewOp.getSourceType();
   mlir::MemRefType resultType = subviewOp.getType();
   MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
   MemoryAttr resultMemory = getWaferMemoryAttr(resultType);
   if (!sourceMemory || !resultMemory ||
-      sourceMemory.getSpace() != MemorySpace::DDR ||
-      resultMemory.getSpace() != MemorySpace::DDR ||
+      sourceMemory.getSpace() != resultMemory.getSpace() ||
       sourceMemory.getLayout() != MemLayout::Tensor ||
       resultMemory.getLayout() != MemLayout::Tensor)
     return subviewOp.emitError()
            << "unsupported_target_address: dynamic subview requires matching "
-              "#wafer.memory<ddr, tensor> source and result types";
+              "tensor-layout source and result memory spaces";
   if (sourceType.getElementType() != resultType.getElementType())
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview must "
+           << "unsupported_target_address: dynamic tensor subview must "
               "preserve the element type";
   if (!sourceType.hasStaticShape() || !resultType.hasStaticShape())
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview "
+           << "unsupported_target_address: dynamic tensor subview "
               "requires static source and result shapes";
 
   llvm::ArrayRef<int64_t> staticOffsets = subviewOp.getStaticOffsets();
@@ -243,7 +240,7 @@ analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
       staticSizes.size() != staticOffsets.size() ||
       staticStrides.size() != staticOffsets.size())
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview rank "
+           << "unsupported_target_address: dynamic tensor subview rank "
               "does not match its offset/size/stride lists";
   if (llvm::any_of(staticSizes,
                    [](int64_t value) {
@@ -253,7 +250,7 @@ analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
         return mlir::ShapedType::isDynamic(value) || value <= 0;
       }))
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview "
+           << "unsupported_target_address: dynamic tensor subview "
               "requires static non-negative sizes and positive strides";
 
   llvm::SmallVector<int64_t, 4> sourceStrides;
@@ -265,7 +262,7 @@ analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
         return mlir::ShapedType::isDynamic(value) || value < 0;
       }))
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview source "
+           << "unsupported_target_address: dynamic tensor subview source "
               "requires static non-negative memref strides";
 
   std::optional<WaferPhysicalTensorInfo> sourceInfo =
@@ -273,7 +270,7 @@ analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
   if (!sourceInfo || sourceInfo->bitPackedElement ||
       sourceInfo->elementBytes <= 0)
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview "
+           << "unsupported_target_address: dynamic tensor subview "
               "requires a byte-addressable element type";
 
   DynamicSubviewAddressPlan plan;
@@ -282,7 +279,7 @@ analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
     int64_t byteStride = 0;
     if (!checkedMul(sourceStride, sourceInfo->elementBytes, byteStride))
       return subviewOp.emitError()
-             << "target_address_overflow: dynamic DDR tensor subview byte "
+             << "target_address_overflow: dynamic tensor subview byte "
                 "stride overflows int64";
     if (mlir::ShapedType::isDynamic(offset)) {
       plan.dynamicByteStrides.push_back(byteStride);
@@ -292,16 +289,16 @@ analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
     if (!checkedMul(offset, byteStride, byteOffset) ||
         !checkedAdd(plan.staticByteOffset, byteOffset, plan.staticByteOffset))
       return subviewOp.emitError()
-             << "target_address_overflow: dynamic DDR tensor subview static "
+             << "target_address_overflow: dynamic tensor subview static "
                 "byte offset overflows int64";
   }
   if (plan.dynamicByteStrides.empty())
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview "
+           << "unsupported_target_address: dynamic tensor subview "
               "addressing requires at least one dynamic offset";
   if (plan.dynamicByteStrides.size() != subviewOp.getOffsets().size())
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview offset "
+           << "unsupported_target_address: dynamic tensor subview offset "
               "operand count does not match its layout";
   return plan;
 }
@@ -321,43 +318,43 @@ getStaticIndexRange(mlir::memref::SubViewOp subviewOp,
     return result.range;
   case Failure::DynamicLoopBounds:
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview "
+           << "unsupported_target_address: dynamic tensor subview "
               "offset #"
            << dynamicIndex
            << " requires constant non-negative scf.for bounds and a positive "
               "constant step";
   case Failure::InvalidLoopBounds:
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview "
+           << "unsupported_target_address: dynamic tensor subview "
               "offset #"
            << dynamicIndex
            << " requires non-negative scf.for bounds and a positive constant "
               "step";
   case Failure::NonSingletonMultiplication:
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview "
+           << "unsupported_target_address: dynamic tensor subview "
               "offset #"
            << dynamicIndex
            << " multiplication requires one statically bounded singleton "
               "operand";
   case Failure::InvalidUnsignedDivision:
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview "
+           << "unsupported_target_address: dynamic tensor subview "
               "offset #"
            << dynamicIndex
            << " unsigned division requires non-negative static operands and "
               "a positive divisor";
   case Failure::ArithmeticOverflow:
     return subviewOp.emitError()
-           << "target_address_overflow: dynamic DDR tensor subview offset #"
+           << "target_address_overflow: dynamic tensor subview offset #"
            << dynamicIndex << " expression overflows int64";
   case Failure::NegativeRange:
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview offset #"
+           << "unsupported_target_address: dynamic tensor subview offset #"
            << dynamicIndex << " range must be non-negative";
   case Failure::UnsupportedExpression:
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview offset #"
+           << "unsupported_target_address: dynamic tensor subview offset #"
            << dynamicIndex
            << " must be a supported statically bounded index expression";
   }
@@ -365,9 +362,9 @@ getStaticIndexRange(mlir::memref::SubViewOp subviewOp,
 }
 
 static mlir::LogicalResult
-preflightDynamicDDRSubview(mlir::memref::SubViewOp subviewOp) {
+preflightDynamicTensorSubview(mlir::memref::SubViewOp subviewOp) {
   mlir::FailureOr<DynamicSubviewAddressPlan> plan =
-      analyzeDynamicDDRSubviewAddressing(subviewOp);
+      analyzeDynamicTensorSubviewAddressing(subviewOp);
   if (mlir::failed(plan))
     return mlir::failure();
 
@@ -404,7 +401,7 @@ preflightDynamicDDRSubview(mlir::memref::SubViewOp subviewOp) {
           !checkedAdd(maximumDynamicByteOffset, dynamicByteOffset,
                       maximumDynamicByteOffset))
         return subviewOp.emitError()
-               << "target_address_overflow: dynamic DDR tensor subview "
+               << "target_address_overflow: dynamic tensor subview "
                   "maximum byte offset overflows int64";
       ++dynamicIndex;
     }
@@ -416,11 +413,11 @@ preflightDynamicDDRSubview(mlir::memref::SubViewOp subviewOp) {
     if (!checkedMul(sizes[dim] - 1, strides[dim], span) ||
         !checkedAdd(maximum, span, last))
       return subviewOp.emitError()
-             << "target_address_overflow: dynamic DDR tensor subview source "
+             << "target_address_overflow: dynamic tensor subview source "
                 "coordinate overflows int64";
     if (minimum < 0 || last >= sourceShape[dim])
       return subviewOp.emitError()
-             << "target_geometry_mismatch: dynamic DDR tensor subview "
+             << "target_geometry_mismatch: dynamic tensor subview "
                 "dimension #"
              << dim << " may access source coordinate " << last
              << " outside static extent " << sourceShape[dim];
@@ -645,20 +642,6 @@ bool isTargetRelationElementwiseKind(InstrElementwiseKind kind) {
   }
 }
 
-static bool isTargetBoolElementwiseKind(InstrElementwiseKind kind) {
-  if (isTargetRelationElementwiseKind(kind))
-    return true;
-  switch (kind) {
-  case InstrElementwiseKind::LogicNot:
-  case InstrElementwiseKind::LogicAnd:
-  case InstrElementwiseKind::LogicOr:
-  case InstrElementwiseKind::LogicXor:
-    return true;
-  default:
-    return false;
-  }
-}
-
 static mlir::LogicalResult verifyBitpackedFormatValue(mlir::Operation *op,
                                                       mlir::Value value,
                                                       llvm::StringRef role) {
@@ -687,7 +670,9 @@ verifyTargetFormatConstraint(mlir::Operation *op, mlir::Value value,
   switch (record.constraint) {
   case TargetFormatConstraint::None:
     return mlir::success();
-  case TargetFormatConstraint::BitpackedLayoutAndCheckedElementCount: {
+  case TargetFormatConstraint::BitpackedLayout:
+    return verifyBitpackedFormatValue(op, value, role);
+  case TargetFormatConstraint::BitpackedDMA: {
     if (mlir::failed(verifyBitpackedFormatValue(op, value, role)))
       return mlir::failure();
     mlir::IntegerAttr innerBytes;
@@ -708,31 +693,13 @@ verifyTargetFormatConstraint(mlir::Operation *op, mlir::Value value,
                 "fit uint32_t logical element count";
     return mlir::success();
   }
-  case TargetFormatConstraint::BoolSpecificCTOpKindAndBitpackedLayout: {
-    auto elementwise = mlir::dyn_cast<InstrElementwiseOp>(op);
-    if (!elementwise || !isTargetBoolElementwiseKind(elementwise.getKind()))
-      return op->emitError()
-             << "unsupported_target_format: CT BOOL is restricted to the "
-                "registered relation/logic elementwise kinds";
-    return verifyBitpackedFormatValue(op, value, role);
-  }
-  case TargetFormatConstraint::BitpackedPhysicalFootprintFill: {
-    auto fill = mlir::dyn_cast<InstrFillOp>(op);
-    if (!fill || fill.getFillDomain().value_or(FillDomain::LogicalValid) !=
-                     FillDomain::PhysicalFootprint)
-      return op->emitError()
-             << "unsupported_target_format: TDMA BOOL is restricted to "
-                "physical_footprint fill";
-    return verifyBitpackedFormatValue(op, value, role);
-  }
   }
   llvm_unreachable("unknown target format constraint");
 }
 
 mlir::FailureOr<int64_t> getDataFormatCode(mlir::Operation *op,
                                            mlir::Value value,
-                                           llvm::StringRef role,
-                                           TargetProfileId targetProfile) {
+                                           llvm::StringRef role) {
   mlir::FailureOr<LogicalFormat> format = getLogicalFormat(op, value, role);
   mlir::FailureOr<TargetFormatEngine> engine = getTargetFormatEngine(op);
   if (mlir::failed(format) || mlir::failed(engine))
@@ -741,30 +708,15 @@ mlir::FailureOr<int64_t> getDataFormatCode(mlir::Operation *op,
   const LogicalFormatDescriptor *descriptor =
       findLogicalFormatDescriptor(*format);
   const TargetFormatEncodingRecord *record =
-      findTargetFormatEncoding(targetProfile, *engine, *format);
+      findTargetFormatEncoding(*engine, *format);
   if (!descriptor || !record)
-    return op->emitError() << "unsupported_target_format: profile '"
-                           << stringifyTargetProfileId(targetProfile)
-                           << "', engine '"
+    return op->emitError() << "unsupported_target_format: engine '"
                            << stringifyTargetFormatEngine(*engine)
                            << "', format '" << stringifyLogicalFormat(*format)
                            << "' has no closed target-format registry row";
-  if (!record->isSupported())
-    return op->emitError() << "unsupported_target_format: profile '"
-                           << stringifyTargetProfileId(targetProfile)
-                           << "', engine '"
-                           << stringifyTargetFormatEngine(*engine)
-                           << "', format '" << stringifyLogicalFormat(*format)
-                           << "' is unsupported: "
-                           << stringifyTargetFormatUnsupportedReason(
-                                  record->unsupportedReason);
   if (mlir::failed(verifyTargetFormatConstraint(op, value, role, *record)))
     return mlir::failure();
-  if (!record->dataFormatCode)
-    return op->emitError()
-           << "target_format_registry_error: supported profile/engine/format "
-              "row has no ABI/register code";
-  return *record->dataFormatCode;
+  return record->dataFormatCode;
 }
 
 static TargetConvertParameterKind
@@ -780,20 +732,17 @@ toTargetConvertParameterKind(InstrConvertParameterKind kind) {
   llvm_unreachable("unknown instruction convert parameter kind");
 }
 
-static mlir::LogicalResult
-verifyTargetConvertRoute(InstrConvertOp op, TargetProfileId targetProfile) {
+static mlir::LogicalResult verifyTargetConvertRoute(InstrConvertOp op) {
   auto instruction = mlir::cast<WaferInstructionOpInterface>(op.getOperation());
   if (instruction.getInstructionFamily() != InstrFamily::CT)
     return op.emitError()
            << "unsupported_target_convert: convert must report CT family";
 
   uint16_t opcode = static_cast<uint16_t>(op.getKind());
-  const TargetConvertRoute *route =
-      findTargetConvertRoute(targetProfile, opcode);
+  const TargetConvertRoute *route = findTargetConvertRoute(opcode);
   if (!route)
     return op.emitError() << "unsupported_target_convert: opcode " << opcode
-                          << " is not registered for profile '"
-                          << stringifyTargetProfileId(targetProfile) << "'";
+                          << " is not registered for the current target";
 
   mlir::FailureOr<LogicalFormat> source =
       getLogicalFormat(op, op.getSource(), "convert source");
@@ -818,7 +767,7 @@ verifyTargetConvertRoute(InstrConvertOp op, TargetProfileId targetProfile) {
            << "unsupported_target_convert: kind, opcode, source/destination "
               "type and registry route do not conform";
   const TargetConvertRoute *typedRoute =
-      findTargetConvertRoute(targetProfile, *source, *destination);
+      findTargetConvertRoute(*source, *destination);
   if (typedRoute != route)
     return op.emitError()
            << "unsupported_target_convert: opcode and typed route registry "
@@ -924,30 +873,14 @@ verifyTargetCTPhysicalTraversal(mlir::Operation *op) {
       .Default([](mlir::Operation *) { return mlir::success(); });
 }
 
-static mlir::LogicalResult
-verifyTargetInstructionFormat(mlir::Operation *op,
-                              TargetProfileId targetProfile) {
+static mlir::LogicalResult verifyTargetInstructionFormat(mlir::Operation *op) {
   if (mlir::failed(verifyTargetCTPhysicalTraversal(op)))
     return mlir::failure();
   auto verify = [&](mlir::Value value,
                     llvm::StringRef role) -> mlir::LogicalResult {
-    return mlir::succeeded(getDataFormatCode(op, value, role, targetProfile))
+    return mlir::succeeded(getDataFormatCode(op, value, role))
                ? mlir::success()
                : mlir::failure();
-  };
-  auto verifyQualifiedCTTuple =
-      [&](mlir::Value value, llvm::StringRef role, bool qualified,
-          llvm::StringRef family) -> mlir::LogicalResult {
-    mlir::FailureOr<LogicalFormat> format = getLogicalFormat(op, value, role);
-    if (mlir::failed(format) ||
-        mlir::failed(getDataFormatCode(op, value, role, targetProfile)))
-      return mlir::failure();
-    if (!qualified)
-      return op->emitError()
-             << "unsupported_target_instr_profile: " << family << " format '"
-             << stringifyLogicalFormat(*format)
-             << "' has no closed opcode/kind/format board-evidence tuple";
-    return mlir::success();
   };
 
   return llvm::TypeSwitch<mlir::Operation *, mlir::LogicalResult>(op)
@@ -957,46 +890,17 @@ verifyTargetInstructionFormat(mlir::Operation *op,
         return verify(typedOp.getSource(), "wdma source");
       })
       .Case<InstrGatherScatterOp, InstrDTESendOp, InstrDTERecvOp,
-            InstrDTEWaitOp, SyncLocalFenceOp, SyncNCCJoinOp>(
+            InstrDTEWaitOp, SyncNCCJoinOp>(
           [&](auto) { return mlir::success(); })
       .Case<InstrFillOp>(
           [&](auto typedOp) { return verify(typedOp.getDest(), "fill dest"); })
       .Case<InstrElementwiseOp>([&](auto typedOp) -> mlir::LogicalResult {
         mlir::Value input = typedOp.getInputs().front();
-        mlir::FailureOr<LogicalFormat> inputFormat =
-            getLogicalFormat(op, input, "elementwise input");
-        if (mlir::failed(inputFormat))
-          return mlir::failure();
         mlir::Value encoded = isTargetRelationElementwiseKind(typedOp.getKind())
                                   ? input
                                   : typedOp.getDest();
         if (mlir::failed(verify(encoded, "elementwise format")))
           return mlir::failure();
-        constexpr TargetNumericSemanticRequirement requirement =
-            TargetNumericSemanticRequirement::SourceExact;
-        const TargetCTElementwiseNumericCapabilityRecord *numeric =
-            findTargetCTElementwiseNumericCapability(
-                targetProfile, typedOp.getKind(), *inputFormat, requirement);
-        if (!numeric)
-          return op->emitError()
-                 << "unsupported_target_numeric: profile '"
-                 << stringifyTargetProfileId(targetProfile)
-                 << "', elementwise kind '" << stringifyEnum(typedOp.getKind())
-                 << "', format '" << stringifyLogicalFormat(*inputFormat)
-                 << "', requirement '"
-                 << stringifyTargetNumericSemanticRequirement(requirement)
-                 << "' has no closed numeric capability row";
-        if (!numeric->isSupported())
-          return op->emitError()
-                 << "unsupported_target_numeric: profile '"
-                 << stringifyTargetProfileId(targetProfile)
-                 << "', elementwise kind '" << stringifyEnum(typedOp.getKind())
-                 << "', format '" << stringifyLogicalFormat(*inputFormat)
-                 << "', requirement '"
-                 << stringifyTargetNumericSemanticRequirement(requirement)
-                 << "' is unsupported: "
-                 << stringifyTargetNumericUnsupportedReason(
-                        numeric->unsupportedReason);
         if (typedOp.getDest() != encoded &&
             mlir::cast<mlir::MemRefType>(typedOp.getDest().getType())
                 .getElementType()
@@ -1017,52 +921,27 @@ verifyTargetInstructionFormat(mlir::Operation *op,
                  "initialization after instruction legalization";
           return mlir::failure();
         }
+        return verify(typedOp.getInput(), "reduce input");
+      })
+      .Case<InstrConvertOp>(
+          [&](auto typedOp) { return verifyTargetConvertRoute(typedOp); })
+      .Case<InstrGemmOp>([&](auto typedOp) -> mlir::LogicalResult {
         mlir::FailureOr<LogicalFormat> format =
-            getLogicalFormat(op, typedOp.getInput(), "reduce input");
+            getLogicalFormat(op, typedOp.getDest(), "gemm destination");
         if (mlir::failed(format))
           return mlir::failure();
-        return verifyQualifiedCTTuple(
-            typedOp.getInput(), "reduce input",
-            isTargetReduceFormatTupleAvailable(targetProfile, typedOp.getKind(),
-                                               *format),
-            "reduce");
-      })
-      .Case<InstrConvertOp>([&](auto typedOp) {
-        return verifyTargetConvertRoute(typedOp, targetProfile);
-      })
-      .Case<InstrGemmOp>([&](auto typedOp) -> mlir::LogicalResult {
-        if (typedOp.getLhsOrientationAttr()) {
-          KernelRuntimeABIId runtimeABI =
-              getTargetProfileRecord(targetProfile).kernelRuntimeABI;
-          if (runtimeABI != KernelRuntimeABIId::waferTx81KernelV2() &&
-              runtimeABI != KernelRuntimeABIId::waferTx81KernelV3())
-            return typedOp.emitError()
-                   << "unsupported_target_abi: explicit GEMM orientations "
-                      "require wafer-tx81-kernel-v2 or "
-                      "wafer-tx81-kernel-v3";
-        }
+        if (*format == LogicalFormat::F32)
+          return typedOp.emitError()
+                 << "unsupported_target_instr: GEMM does not support f32";
         return verify(typedOp.getDest(), "gemm dest");
       })
       .Case<InstrConvOp>(
           [&](auto typedOp) { return verify(typedOp.getDest(), "conv dest"); })
       .Case<InstrPoolOp>([&](auto typedOp) {
-        mlir::FailureOr<LogicalFormat> format =
-            getLogicalFormat(op, typedOp.getInput(), "pool input");
-        if (mlir::failed(format))
-          return mlir::failure();
-        bool qualified = *format == LogicalFormat::F16;
-        if (typedOp.getKind() == InstrPoolKind::Max)
-          qualified |= *format == LogicalFormat::BF16;
-        return verifyQualifiedCTTuple(typedOp.getInput(), "pool input",
-                                      qualified, "pool");
+        return verify(typedOp.getInput(), "pool input");
       })
       .Case<InstrUnpoolOp>([&](auto typedOp) {
-        mlir::FailureOr<LogicalFormat> format =
-            getLogicalFormat(op, typedOp.getInput(), "unpool input");
-        if (mlir::failed(format))
-          return mlir::failure();
-        return verifyQualifiedCTTuple(typedOp.getInput(), "unpool input",
-                                      *format == LogicalFormat::F16, "unpool");
+        return verify(typedOp.getInput(), "unpool input");
       })
       .Case<InstrTDMADataMoveOp>([&](auto typedOp) {
         return verify(typedOp.getDest(), "tdma_data_move dest");
@@ -1077,29 +956,17 @@ verifyTargetInstructionFormat(mlir::Operation *op,
       });
 }
 
-mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp,
-                                           TargetProfileId targetProfile) {
+mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp) {
   bool failed = false;
-  moduleOp.walk(
-      [&](mlir::Operation *op) {
-        if (!isWaferInstruction(op))
-          return mlir::WalkResult::advance();
-        if (targetProfile != TargetProfileId::waferTx81SingleCardKernelV3()) {
-          std::optional<NCCWorker> worker = getNCCIssueWorker(op);
-          if (worker && *worker != NCCWorker::Worker0) {
-            op->emitError()
-                << "unsupported_target_abi: nonzero NCC workers require "
-                   "wafer-tx81-kernel-v3";
-            failed = true;
-            return mlir::WalkResult::interrupt();
-          }
-        }
-        if (mlir::failed(verifyTargetInstructionFormat(op, targetProfile))) {
-          failed = true;
-          return mlir::WalkResult::interrupt();
-        }
-        return mlir::WalkResult::advance();
-      });
+  moduleOp.walk([&](mlir::Operation *op) {
+    if (!isWaferInstruction(op))
+      return mlir::WalkResult::advance();
+    if (mlir::failed(verifyTargetInstructionFormat(op))) {
+      failed = true;
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
+  });
   return failed ? mlir::failure() : mlir::success();
 }
 
@@ -1108,7 +975,7 @@ mlir::LogicalResult preflightTargetAddresses(mlir::ModuleOp moduleOp) {
       moduleOp.walk([&](mlir::memref::SubViewOp subviewOp) {
         if (subviewOp.getOffsets().empty())
           return mlir::WalkResult::advance();
-        if (mlir::failed(preflightDynamicDDRSubview(subviewOp)))
+        if (mlir::failed(preflightDynamicTensorSubview(subviewOp)))
           return mlir::WalkResult::interrupt();
         return mlir::WalkResult::advance();
       });

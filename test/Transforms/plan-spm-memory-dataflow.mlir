@@ -14,13 +14,13 @@ func.func @if_branch_results_reuse(%output: memref<128xf16, #wafer.memory<ddr, t
       %then_buf = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
       wafer.instr.fill %then_buf, %zero
           : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       scf.yield %then_buf : memref<128xf16, #wafer.memory<spm, tensor>>
     } else {
       %else_buf = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
       wafer.instr.fill %else_buf, %zero
           : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       scf.yield %else_buf : memref<128xf16, #wafer.memory<spm, tensor>>
     }
     wafer.instr.wdma %selected to %out
@@ -28,7 +28,7 @@ func.func @if_branch_results_reuse(%output: memref<128xf16, #wafer.memory<ddr, t
          dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
         : memref<128xf16, #wafer.memory<spm, tensor>>
        to memref<128xf16, #wafer.memory<ddr, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %out : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
@@ -45,12 +45,12 @@ func.func @loop_body_temp_reuses_after_loop(%boundary: memref<128xf16, #wafer.me
       %loop_tmp = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
       wafer.instr.fill %loop_tmp, %zero
           : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     }
     %after = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %after, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
@@ -67,7 +67,7 @@ func.func @loop_carried_result_conflicts_with_body_use(
     %init = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %init, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %next = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     %looped = scf.for %i = %l to %u step %s iter_args(%iter = %init)
         -> (memref<128xf16, #wafer.memory<spm, tensor>>) {
@@ -75,7 +75,7 @@ func.func @loop_carried_result_conflicts_with_body_use(
           : memref<128xf16, #wafer.memory<spm, tensor>>,
           memref<128xf16, #wafer.memory<spm, tensor>>
         into memref<128xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       scf.yield %next : memref<128xf16, #wafer.memory<spm, tensor>>
     }
     wafer.instr.wdma %looped to %arg0
@@ -83,7 +83,7 @@ func.func @loop_carried_result_conflicts_with_body_use(
          dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
         : memref<128xf16, #wafer.memory<spm, tensor>>
        to memref<128xf16, #wafer.memory<ddr, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
@@ -98,19 +98,19 @@ func.func @async_token_extends_source_until_wait(%boundary: memref<128xf16, #waf
     %source = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %source, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     %token = wafer.instr.dte_send %source {peer = 1 : i64, bytes = 256 : i64,
         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
     %before_wait = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %before_wait, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.instr.dte_wait %token : !async.token
     %after_wait = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %after_wait, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return

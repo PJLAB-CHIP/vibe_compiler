@@ -215,8 +215,7 @@ collectProfileStaticCostModel(const ExecutableBundle &bundle) {
   }
 
   const analysis::TargetScheduleCostPolicy policy =
-      analysis::getTargetScheduleCostPolicy(
-          bundle.getExecutionConfig().getTargetProfileId());
+      analysis::getTargetScheduleCostPolicy();
   analysis::WholeCardInstructionProgramCost cost =
       analysis::analyzeWholeCardInstructionProgramCost(rankRoots, policy);
   if (cost.rankCosts.size() != rankExecutables.size())
@@ -316,8 +315,7 @@ collectTargetCallSites(llvm::StringRef variantId,
           "profile site-map rank domain is not canonical");
     llvm::Expected<std::vector<ProfileTargetCallSite>> sites =
         collectProfileTargetCallSites(rankModule.getModule(),
-                                      rankModule.getEntrySymbol(),
-                                      rankModule.getTargetProfileId());
+                                      rankModule.getEntrySymbol());
     if (!sites)
       return sites.takeError();
     for (auto [expectedSite, site] : llvm::enumerate(*sites))
@@ -455,8 +453,7 @@ static mlir::LogicalResult writeProfileCompanion(
     }
     if (llvm::Error error = verifyProfileTargetCallSiteIdentity(
             finalRank.getModule(), finalRank.getEntrySymbol(),
-            traceRank.getModule(), traceRank.getEntrySymbol(),
-            finalRank.getTargetProfileId())) {
+            traceRank.getModule(), traceRank.getEntrySymbol())) {
       reject(diagnostics, llvm::toString(std::move(error)));
       return mlir::failure();
     }

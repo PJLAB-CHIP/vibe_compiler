@@ -31,8 +31,7 @@ static mlir::Value getAccessBase(mlir::Value value) {
 }
 
 static bool isReadyOrderOperation(mlir::Operation *operation) {
-  return mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp,
-                   SyncNCCJoinOp>(operation);
+  return mlir::isa<WaferInstructionOpInterface, SyncNCCJoinOp>(operation);
 }
 
 static bool isFailClosedCompletionBoundary(mlir::Operation *operation) {
@@ -52,7 +51,7 @@ static bool waitMayReleaseDTESender(mlir::Operation *operation) {
 
 static bool canReorderCompletionDomains(mlir::Operation *lhs,
                                         mlir::Operation *rhs) {
-  // The normal Direct-DTE target profile owns one sender slot. A send's exact
+  // The current Direct-DTE ABI owns one sender slot. A send's exact
   // wait is therefore also a typed resource release: another send may not
   // move above it even when the two payload buffers are disjoint.
   if ((waitMayReleaseDTESender(lhs) && mlir::isa<InstrDTESendOp>(rhs)) ||
@@ -135,7 +134,7 @@ static unsigned getReadyPriority(mlir::Operation *operation) {
   // token edge still prevent consumers or reuse from crossing the wait.
   if (mlir::isa<InstrDTEWaitOp>(operation))
     return 3;
-  if (mlir::isa<SyncLocalFenceOp, SyncNCCJoinOp>(operation))
+  if (mlir::isa<SyncNCCJoinOp>(operation))
     return 4;
   auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(operation);
   if (!instruction)

@@ -1,5 +1,5 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v1 transport-prepared-before-entry=true logical-rank=15 transport-status-argument-index=0})' %s | FileCheck --check-prefix=CLUSTER %s
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v1 logical-rank=15 transport-status-argument-index=0})' %s | FileCheck --check-prefix=STANDALONE %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{transport-prepared-before-entry=true logical-rank=15 transport-status-argument-index=0})' %s | FileCheck --check-prefix=CLUSTER %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{logical-rank=15 transport-status-argument-index=0})' %s | FileCheck --check-prefix=STANDALONE %s
 
 module {
   wafer.target.topology @default

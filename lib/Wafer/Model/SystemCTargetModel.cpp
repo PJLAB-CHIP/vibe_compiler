@@ -137,8 +137,8 @@ public:
     if (begun)
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                           "sink begin was called more than once");
-    if (invocation.targetProfile !=
-            memory.getAddressPlan().getTargetProfile() ||
+    if (invocation.targetIdentity !=
+            memory.getAddressPlan().getTargetIdentity() ||
         invocation.ranks.size() != rankStates.size())
       return systemCError(
           SystemCTargetModelErrorCode::InvalidLifecycle,
@@ -340,7 +340,7 @@ public:
                          std::move(*bytes)});
     }
     stagedResult.emplace(
-        TargetModelResult{memory.getAddressPlan().getTargetProfile(),
+        TargetModelResult{memory.getAddressPlan().getTargetIdentity(),
                           ModelProfileId::formalDeterministicV1(),
                           static_cast<int64_t>(terminalRanks.size()),
                           issuedTransactionCount,
@@ -391,8 +391,8 @@ private:
     EndpointKind kind = EndpointKind::Send;
     int64_t ownerRank = -1;
     /// The endpoint-producing transaction whose asynchronous effect completes
-    /// when the transfer becomes visible. Legacy send wait auto-issue has no
-    /// separate transaction and therefore carries no effect ordinal.
+    /// when the transfer becomes visible. A prepared send has no effect
+    /// ordinal until its explicit issue transaction executes.
     std::optional<uint64_t> effectOrdinal;
     std::optional<compiler::TargetDirectDTESendTransaction> send;
     std::optional<compiler::TargetDirectDTEReceiveTransaction> receive;
@@ -553,8 +553,8 @@ private:
         memory.getAddressPlan().resolve(
             rank, TargetModelAddressSpace::CardDDR,
             TargetModelAccess::ReadWrite, begin.statusAddress,
-            WAFER_TX81_DIRECT_DTE_STATUS_V2_VALUE_BYTES,
-            WAFER_TX81_DIRECT_DTE_STATUS_V2_VALUE_BYTES);
+            WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES,
+            WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES);
     if (!status || !status->slotOrdinal) {
       const std::string diagnostic = status
                                          ? "status address has no ABI slot"
@@ -614,13 +614,6 @@ private:
   llvm::Expected<uint64_t>
   processDTESendIssue(const compiler::TargetTransaction &transaction) {
     const int64_t rank = transaction.logicalRank;
-    if (!usesExplicitDTESendIssue()) {
-      latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                   "dte-send-issue", rank, transaction.issueOrdinal,
-                   "explicit Direct DTE send issue is unavailable for the "
-                   "legacy target profile");
-      return currentFailureOrLifecycle("Direct DTE send issue failed");
-    }
     if (dteStates[static_cast<size_t>(rank)] != DTEState::Active) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
                    "dte-send-issue", rank, transaction.issueOrdinal,
@@ -720,17 +713,11 @@ private:
     PreparedDTESend *prepared = findPreparedSend(wait.event);
     if (prepared && prepared->ownerRank == transaction.logicalRank &&
         !prepared->issued) {
-      if (usesExplicitDTESendIssue()) {
-        latchFailure(
-            SystemCTargetModelErrorCode::InvocationFailure, "dte-wait",
-            transaction.logicalRank, transaction.issueOrdinal,
-            "V3 Direct DTE wait names a prepared send that was not issued");
-        return currentFailureOrLifecycle("Direct DTE wait failed");
-      }
-      llvm::Expected<DTEEndpoint *> endpoint = issuePreparedDTESend(
-          *prepared, std::nullopt, transaction, "dte-wait-auto-issue");
-      if (!endpoint)
-        return endpoint.takeError();
+      latchFailure(
+          SystemCTargetModelErrorCode::InvocationFailure, "dte-wait",
+          transaction.logicalRank, transaction.issueOrdinal,
+          "Direct DTE wait names a prepared send that was not issued");
+      return currentFailureOrLifecycle("Direct DTE wait failed");
     }
     DTEEndpoint *endpoint = findEndpoint(wait.event);
     if (!endpoint || endpoint->ownerRank != transaction.logicalRank ||
@@ -806,11 +793,6 @@ private:
       if (prepared.event == event)
         return &prepared;
     return nullptr;
-  }
-
-  bool usesExplicitDTESendIssue() const {
-    return memory.getAddressPlan().getTargetProfile() ==
-           TargetProfileId::waferTx81SingleCardKernelV3();
   }
 
   bool bindRankTile(int64_t logicalRank, uint32_t physicalTile,

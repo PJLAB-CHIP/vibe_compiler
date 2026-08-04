@@ -79,7 +79,7 @@ def require_calibration_session(
 def board_qualification(args: argparse.Namespace) -> dict[str, object]:
     digest = str(args.expected_runtime_library_sha256).lower()
     qualification = {
-        "target_profile": ne_driver.package_support.TARGET_PROFILE,
+        "target_identity": ne_driver.package_support.TARGET_IDENTITY,
         "launch": runtime_launch.RANK_ONE_KERNEL_LAUNCH,
         "device_id": args.device_id,
         "expected_runtime_version": args.expected_runtime_version,
@@ -143,7 +143,7 @@ def rank_one_terminal_completion(package: pathlib.Path) -> int:
     entries = manifest.get("entries")
     completions = manifest.get("completions")
     if (
-        manifest.get("schema_version") != 6
+        manifest.get("schema_version") != 7
         or manifest.get("rank_count") != 1
         or not isinstance(entries, list)
         or len(entries) != 1

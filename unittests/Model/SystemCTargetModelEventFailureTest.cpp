@@ -25,8 +25,7 @@ using namespace wafer::model;
 
 llvm::CallInst *findWaitCall(llvm::Module &module) {
   const llvm::StringRef symbol =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait,
-                              TargetProfileId::waferTx81SingleCardKernelV1())
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait)
           .symbol;
   for (llvm::Function &function : module)
     for (llvm::BasicBlock &block : function)

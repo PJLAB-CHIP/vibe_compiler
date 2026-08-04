@@ -89,8 +89,6 @@ validateElementwiseResolvedCommand(const ResolvedNumericCommand &command) {
       semantics.getCTElementwiseIdentity();
   if (!elementwise || !identity ||
       semantics.getModelProfile() != command.getPattern().getModelProfile() ||
-      identity->getTargetProfile() !=
-          command.getCommandKey().getTargetProfile() ||
       identity->getOperation() != elementwise->operation ||
       !isLLVMElementwiseOperation(elementwise->operation) ||
       elementwise->inputs.empty() ||
@@ -192,8 +190,6 @@ llvm::Error validateGemmResolvedCommand(const ResolvedNumericCommand &command) {
       semantics.getNEGemmIdentity();
   if (!gemm || !identity ||
       semantics.getModelProfile() != command.getPattern().getModelProfile() ||
-      identity->getTargetProfile() !=
-          command.getCommandKey().getTargetProfile() ||
       identity->getFormat() != gemm->lhs.getFormat() ||
       gemm->rhs.getFormat() != identity->getFormat() ||
       gemm->destination.getFormat() != identity->getFormat() ||
@@ -248,8 +244,6 @@ validateReduceResolvedCommand(const ResolvedNumericCommand &command) {
       semantics.getNativeCTReduceIdentity();
   if (!reduce || !identity ||
       semantics.getModelProfile() != command.getPattern().getModelProfile() ||
-      identity->getTargetProfile() !=
-          command.getCommandKey().getTargetProfile() ||
       identity->getOperation() != NumericReduceOperation::Sum ||
       reduce->operation != identity->getOperation() ||
       identity->getFormat() != LogicalFormat::F32 ||

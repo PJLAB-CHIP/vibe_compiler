@@ -193,7 +193,7 @@ resource effect；这些继续由current IR和标准interface拥有。若将来M
 - existing materializer先在disposable clone物化该kind；Q46再从actual typed op/subgraph的external DPS/indexing/memref ports
   生成有限Tensor/NTensor/Cx/NCx tuple，使用existing builders重建并运行concrete verifiers、physical-access和lowerability preflight。
   只有通过的probe ordinal进入invocation-local PBQP，probe clone随即销毁；不得保存兼容性矩阵或把probe结果写回candidate。
-- current Cx/NCx fixed packing identity只由selected memref encoding及其memref type派生的physical map决定；target profile
+- current Cx/NCx fixed packing identity只由selected memref encoding及其memref type派生的physical map决定；current target helpers
   只约束implementation/instruction是否支持该encoding。candidate不得复制
   `vector_width`、packing mode/factor或其它当前target不存在的参数。
 - tile geometry、alignment/tail、accumulator、temporary、engine、instruction family、completion和resource/cost不复制进candidate；
@@ -216,7 +216,7 @@ resource effect；这些继续由current IR和标准interface拥有。若将来M
 
 ### 3.4 Target Capability Facts
 
-driver从ExecutionConfig的TargetProfileId构造一个immutable WaferTargetCapabilities实例，并在一次
+driver使用compiler固定的immutable current target capabilities，并在一次
 compile中共享。它只包含compiler可发射且verifier可检查的事实：
 
 - instruction kind、typed parameter domain和field width；
@@ -399,7 +399,7 @@ pattern/helper实现。Q32.I首先审计现有接口并记录每个保留项的�
 ### 6.2 Compute 与 Movement
 
 selected compute implementation由具体`wafer.tile.*` op kind和typed fields表达；结构合法性归ODS/op
-verifier，target legality归带明确TargetProfileId的conversion target或preflight。共同的shape/rank/type
+verifier，target legality归current conversion target或preflight。共同的shape/rank/type
 关系复用InferType、DestinationStyle、Tiling和ValueBounds；共同的改写行为放typed pattern/helper，不返回
 另一份compute descriptor。
 
@@ -449,7 +449,7 @@ family的最小marker/interface；`verifyInstructionContract`不能与op verifie
 
 Q32.M审计后只保留`WaferInstructionOpInterface::getInstructionFamily()`供generic instruction traversal和
 cost/order consumer使用；重复调用op verifier的`verifyInstructionContract`已删除。target LLVM conversion只消费
-current instruction op、typed target profile、accepted offsets和transport binding。
+current instruction op、typed target facts、accepted offsets和transport binding。
 
 ## 7. Lowering、Verifier 与 Completion
 

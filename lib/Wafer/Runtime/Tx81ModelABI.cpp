@@ -143,7 +143,7 @@ llvm::Expected<Tx81ModelBootParamImage> buildTx81ModelBootParam(
       return invalid(
           "TX81 model tensor has a zero/misaligned address or byte count");
     if (tensor.dtype != "f32")
-      return invalid("TX81 model BootParam v1 accepts only f32 tensors");
+      return invalid("TX81 model BootParam accepts only f32 tensors");
     if (tensor.shape.empty() || tensor.shape.size() > 6)
       return invalid("TX81 model tensor rank must be between one and six");
     uint64_t elementCount = 1;
@@ -172,10 +172,10 @@ llvm::Expected<Tx81ModelBootParamImage> buildTx81ModelBootParam(
   }
   if (inputCount == 0 || outputCount == 0)
     return invalid("TX81 model BootParam requires input and output tensors");
-  // The only exact MaxLen constructor currently qualified is the legacy
-  // parameter-free form, which reserves one trailing 72-byte record.
+  // The qualified MaxLen constructor is parameter-free and reserves one
+  // trailing 72-byte record.
   if (parameterCount != 0)
-    return invalid("TX81 model BootParam v1 has no qualified parameter layout");
+    return invalid("TX81 model BootParam has no qualified parameter layout");
   if (inputCount > std::numeric_limits<uint32_t>::max() ||
       outputCount > std::numeric_limits<uint32_t>::max())
     return invalid("TX81 model tensor count exceeds uint32");

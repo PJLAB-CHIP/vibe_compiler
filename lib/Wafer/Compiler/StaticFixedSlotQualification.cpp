@@ -10,7 +10,7 @@
 #include "Wafer/IR/WaferInterfaces.h"
 #include "Wafer/Runtime/PackageManifest.h"
 #include "Wafer/Support/TargetPolicy.h"
-#include "Wafer/Target/TargetProfile.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -855,8 +855,7 @@ verifyStaticFixedSlotIRWitness(const AcceptedCallClosure &closure) {
       "loop with current effect/issue consumption");
 }
 
-static llvm::Expected<RankSummary>
-deriveRankSummary(const RankExecutable &rank, TargetProfileId targetProfile) {
+static llvm::Expected<RankSummary> deriveRankSummary(const RankExecutable &rank) {
   RankSummary summary;
   summary.logicalRank = rank.getLogicalRank();
 
@@ -889,12 +888,6 @@ deriveRankSummary(const RankExecutable &rank, TargetProfileId targetProfile) {
     function.walk([&](mlir::Operation *operation) {
       if (error)
         return mlir::WalkResult::interrupt();
-
-      if (mlir::isa<SyncLocalFenceOp>(operation)) {
-        error = invalid(
-            "fixed-slot qualification requires typed participant joins");
-        return mlir::WalkResult::interrupt();
-      }
 
       NCCCompletionContract completion = getNCCCompletionContract(operation);
       switch (completion.behavior) {
@@ -1026,7 +1019,7 @@ deriveRankSummary(const RankExecutable &rank, TargetProfileId targetProfile) {
   analysis::InstructionProgramCost cost =
       analysis::analyzeInstructionProgramCost(
           rank.getModule(),
-          analysis::getTargetScheduleCostPolicy(targetProfile));
+          analysis::getTargetScheduleCostPolicy());
   if (cost.directDTEComputeOverlapWindowCount.isKnown())
     summary.directDTEComputeOverlapWindowCount =
         cost.directDTEComputeOverlapWindowCount.value;
@@ -1145,9 +1138,9 @@ static std::string serializeAttestation(llvm::StringRef manifestDigest,
       json.attribute("accepted_instr_digest_basis",
                      "final-accepted-instr-module-text-v1");
       json.attributeObject("target", [&] {
-        json.attribute("profile",
-                       stringifyTargetProfileId(
-                           bundle.getExecutionConfig().getTargetProfileId()));
+        json.attribute("identity",
+                       stringifyTargetIdentityId(
+                           bundle.getExecutionConfig().getTargetIdentityId()));
         json.attribute("rank_count",
                        bundle.getExecutionConfig().getRankCount());
         json.attributeArray("logical_ranks", [&] {
@@ -1206,8 +1199,7 @@ bool hasStaticFixedSlotQualificationEvidence(const RankExecutable &rank) {
 }
 
 llvm::Error verifyStaticFixedSlotCompanionEvidence(const RankExecutable &rank) {
-  llvm::Expected<RankSummary> summary =
-      deriveRankSummary(rank, TargetProfileId::waferTx81SingleCardKernelV3());
+  llvm::Expected<RankSummary> summary = deriveRankSummary(rank);
   if (!summary)
     return summary.takeError();
   return llvm::Error::success();
@@ -1227,16 +1219,13 @@ mlir::LogicalResult stageStaticFixedSlotQualificationCompanion(
 
   std::vector<RankSummary> ranks;
   ranks.reserve(rankExecutables.size());
-  const TargetProfileId targetProfile =
-      bundle.getExecutionConfig().getTargetProfileId();
   for (auto [expectedRank, rank] : llvm::enumerate(rankExecutables)) {
     if (rank.getLogicalRank() != static_cast<int64_t>(expectedRank)) {
       reject(diagnostics,
              "fixed-slot qualification rank domain is not canonical");
       return mlir::failure();
     }
-    llvm::Expected<RankSummary> summary =
-        deriveRankSummary(rank, targetProfile);
+    llvm::Expected<RankSummary> summary = deriveRankSummary(rank);
     if (!summary) {
       reject(diagnostics, llvm::toString(summary.takeError()));
       return mlir::failure();

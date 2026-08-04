@@ -27,14 +27,13 @@ TEST(SystemCTargetModelDTEPreIssueTest,
   std::string diagnostics;
   llvm::Expected<TargetLLVMModuleBundle> bundle =
       test::buildDirectDTETargetBundle(
-          diagnostics, TargetProfileId::waferTx81SingleCardKernelV3());
+          diagnostics, TargetIdentityId::waferTx81SingleCard());
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
 
   const llvm::StringRef issueSymbol =
       getTargetCallDescriptor(
-          TargetCallBuiltin::DirectDTESendIssue,
-          TargetProfileId::waferTx81SingleCardKernelV3())
+          TargetCallBuiltin::DirectDTESendIssue)
           .symbol;
   size_t erasedIssueCount = 0;
   for (const TargetLLVMModule &targetModule : bundle->getModules()) {

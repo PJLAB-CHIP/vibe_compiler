@@ -244,10 +244,10 @@ def _validate_launch(value: object, path: str) -> Mapping[str, Any]:
             )
         )
         contracts = {
-            "per-rank": ("rank-local-pointer-block-v1", ("main",)),
-            "grid": ("rank-major-pointer-table-v1", ("main",)),
+            "per-rank": ("rank-local-pointer-block", ("main",)),
+            "grid": ("rank-major-pointer-table", ("main",)),
             "cluster": (
-                "rank-major-pointer-table-v1",
+                "rank-major-pointer-table",
                 ("prepare", "main"),
             ),
         }
@@ -263,7 +263,7 @@ def _validate_launch(value: object, path: str) -> Mapping[str, Any]:
                 _sequence(launch["phases"], f"{path}.phases")
             )
         )
-        if (entry_abi, phases) != ("tx81-model-bootparam-v1", ("main",)):
+        if (entry_abi, phases) != ("tx81-model-bootparam", ("main",)):
             _fail(path, "model entry ABI and phases are incompatible")
         return launch
     _fail(f"{path}.kind", "must be 'kernel' or 'model'")
@@ -287,7 +287,7 @@ def _validate_identity(evidence: Mapping[str, Any]) -> None:
         {
             "production_manifest_sha256",
             "profile_companion_schema_version",
-            "target_profile",
+            "target_identity",
             "launch",
             "execution_ranks",
             "site_correlation_basis",
@@ -308,7 +308,7 @@ def _validate_identity(evidence: Mapping[str, Any]) -> None:
             "identity.profile_companion_schema_version",
             f"must be {COMPANION_SCHEMA_VERSION}",
         )
-    _string(identity["target_profile"], "identity.target_profile")
+    _string(identity["target_identity"], "identity.target_identity")
     _validate_launch(identity["launch"], "identity.launch")
     if _integer(identity["execution_ranks"], "identity.execution_ranks") != 16:
         _fail("identity.execution_ranks", "must be 16")
@@ -316,7 +316,7 @@ def _validate_identity(evidence: Mapping[str, Any]) -> None:
         identity["site_correlation_basis"],
         "identity.site_correlation_basis",
     )
-    if basis != "typed-target-call-ordinal-ssa-identity-occurrence-v1":
+    if basis != "typed-target-call-ordinal-ssa-identity-occurrence-v2":
         _fail("identity.site_correlation_basis", "unknown correlation basis")
     if _string(identity["record_abi"], "identity.record_abi") != RECORD_ABI:
         _fail("identity.record_abi", f"must be {RECORD_ABI!r}")
@@ -554,11 +554,11 @@ def _validate_experiment(
     artifact = _mapping(experiment["artifact"], "experiment.artifact")
     _exact_keys(
         artifact,
-        {"digest", "target_profile", "launch", "execution_ranks"},
+        {"digest", "target_identity", "launch", "execution_ranks"},
         "experiment.artifact",
     )
     _sha256(artifact["digest"], "experiment.artifact.digest")
-    _string(artifact["target_profile"], "experiment.artifact.target_profile")
+    _string(artifact["target_identity"], "experiment.artifact.target_identity")
     _validate_launch(artifact["launch"], "experiment.artifact.launch")
     if _integer(
         artifact["execution_ranks"], "experiment.artifact.execution_ranks"
@@ -1184,7 +1184,7 @@ def validate_evidence(value: object) -> Mapping[str, Any]:
             identity["production_manifest_sha256"],
             artifact["digest"],
         ),
-        ("target_profile", identity["target_profile"], artifact["target_profile"]),
+        ("target_identity", identity["target_identity"], artifact["target_identity"]),
         ("launch", identity["launch"], artifact["launch"]),
         (
             "execution_ranks",
@@ -3034,7 +3034,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         "validity": validity,
         "final_artifact": {
             "artifact_digest": experiment["artifact"]["digest"],
-            "target_profile": experiment["artifact"]["target_profile"],
+            "target_identity": experiment["artifact"]["target_identity"],
             "duration": {
                 "sample_id": "primary",
                 "sample_index": 0,

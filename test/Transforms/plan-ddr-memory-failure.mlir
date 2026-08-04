@@ -20,7 +20,7 @@ func.func @descriptor_payload_mismatch(
          src_strides = array<i64: 6, 0, 0>}
         : memref<2x3xf16, #wafer.memory<ddr, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %out : memref<2x3xf16, #wafer.memory<ddr, tensor>>
   }
   return
@@ -46,7 +46,7 @@ func.func @descriptor_exceeds_root_range(
          src_strides = array<i64: 64, 0, 0>}
         : memref<2x3xf16, #wafer.memory<ddr, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %out : memref<2x3xf16, #wafer.memory<ddr, tensor>>
   }
   return
@@ -76,7 +76,7 @@ func.func @dynamic_subview_is_not_accepted(
          src_strides = array<i64: 16, 0, 0>}
         : memref<2x3xf16, strided<[8, 1], offset: ?>, #wafer.memory<ddr, tensor>>
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %out : memref<4x8xf16, #wafer.memory<ddr, tensor>>
   }
   return

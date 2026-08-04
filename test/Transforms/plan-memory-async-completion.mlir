@@ -299,7 +299,7 @@ func.func @async_value_keeps_root_live() {
        src_strides = array<i64: 0, 0, 0>}
       : memref<64xf16, #wafer.memory<ddr, tensor>>
      to memref<64xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   %ready = async.await %value : !async.value<i32>
   return
 }
@@ -335,7 +335,7 @@ func.func @direct_group_keeps_root_live() {
        src_strides = array<i64: 0, 0, 0>}
       : memref<64xf16, #wafer.memory<ddr, tensor>>
      to memref<64xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   async.await_all %group
   return
 }

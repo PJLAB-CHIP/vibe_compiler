@@ -679,6 +679,28 @@ public:
       sourceResults.push_back(
           mlir::getAffineDimExpr(resultDim, rewriter.getContext()));
     }
+
+    // A broadcast that only inserts unit dimensions is an exact reshape. Keep
+    // it as a metadata view when both physical layouts describe the same
+    // storage instead of manufacturing a gather/scatter movement.
+    if (sourceType.getNumElements() == resultType.getNumElements() &&
+        mlir::succeeded(
+            analysis::TransferRealizability::proveStaticReshapeMetadataView(
+                sourceType, resultType,
+                /*destinationMayWrite=*/true))) {
+      llvm::SmallVector<int64_t> sizes(resultType.getShape().begin(),
+                                       resultType.getShape().end());
+      mlir::FailureOr<llvm::SmallVector<int64_t>> strides =
+          getStaticCompactStrides(rewriter, op, resultType, failureReason);
+      if (mlir::failed(strides))
+        return mlir::failure();
+      auto view = rewriter.create<mlir::memref::ReinterpretCastOp>(
+          op.getLoc(), resultType, op.getSource(), /*offset=*/0, sizes,
+          *strides);
+      rewriter.replaceOp(op, view.getResult());
+      return mlir::success();
+    }
+
     analysis::IndexRelationResult sourceRelation =
         analysis::IndexRelation::fromAffineMap(
             mlir::AffineMap::get(resultType.getRank(), 0, sourceResults,

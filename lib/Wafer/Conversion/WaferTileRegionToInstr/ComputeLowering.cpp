@@ -502,10 +502,9 @@ private:
 
 class ReduceLowering : public mlir::OpRewritePattern<ComputeReduceOp> {
 public:
-  ReduceLowering(mlir::MLIRContext *context, std::string *failureReason,
-                 std::optional<TargetProfileId> targetProfile)
+  ReduceLowering(mlir::MLIRContext *context, std::string *failureReason)
       : mlir::OpRewritePattern<ComputeReduceOp>(context),
-        failureReason(failureReason), targetProfile(targetProfile) {}
+        failureReason(failureReason) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeReduceOp op,
@@ -688,13 +687,14 @@ public:
         logicalFormat = LogicalFormat::BF16;
       else if (mlir::isa<mlir::Float32Type>(elementType))
         logicalFormat = LogicalFormat::F32;
-      const bool profileAllowsNativeReduce =
-          !targetProfile ||
-          (logicalFormat &&
-           isTargetReduceFormatTupleAvailable(
-               *targetProfile, InstrReduceKind::Sum, *logicalFormat));
+      const TargetFormatEncodingRecord *reduceFormat =
+          logicalFormat
+              ? findTargetFormatEncoding(TargetFormatEngine::CT,
+                                         *logicalFormat)
+              : nullptr;
+      const bool targetAllowsNativeReduce = reduceFormat != nullptr;
       if (op.getKind() == ComputeReduceKind::Sum && isPositiveZeroIdentity &&
-          targetDim && profileAllowsNativeReduce && inputMemory &&
+          targetDim && targetAllowsNativeReduce && inputMemory &&
           inputMemory.getLayout() == expectedInputLayout && resultMemory &&
           resultMemory.getLayout() == expectedResultLayout) {
         mlir::FailureOr<mlir::Value> dest = createDestAlloc(
@@ -838,7 +838,6 @@ public:
 
 private:
   std::string *failureReason;
-  std::optional<TargetProfileId> targetProfile;
 };
 
 class GemmLowering : public mlir::OpRewritePattern<ComputeGemmOp> {
@@ -998,7 +997,7 @@ void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
   mlir::MLIRContext *context = patterns.getContext();
   patterns.add<ConvertLowering, ElementwiseLowering, GemmLowering>(
       context, failureReason);
-  patterns.add<ReduceLowering>(context, failureReason, options.targetProfile);
+  patterns.add<ReduceLowering>(context, failureReason);
 }
 
 void wafer::tile_region_to_instr::populateFillLoweringPattern(

@@ -49,10 +49,10 @@ verified structured MLIR
    Q32完成时必须实际覆盖全部当前支持轴，而不是只把两个固定rewrite包装成planner。
 6. **合法 baseline 永远保留。** 优化预算只限制新增候选，不得把合法输入变成编译失败；baseline 自身失败仍按真实
    pipeline failure 报告。
-7. **不伪造硬件性能。** 板端校准前只比较final IR可证明的静态量；先做exact Pareto pruning，再由target profile显式拥有的
+7. **不伪造硬件性能。** 板端校准前只比较final IR可证明的静态量；先做exact Pareto pruning，再由current target policy拥有的
    static selection policy处理已知tradeoff。该policy是编译器取舍，不称为硬件时间；缺少policy或关键量Unknown时回到baseline。
    Q9才拥有hardware-calibrated ranking。
-8. **目标能力与运行资格分离。** compilation 只接收明确的 `TargetProfileId`/target capabilities。model 或 board
+8. **目标能力与运行资格分离。** compilation只消费compiler固定的current target capabilities。model或board
    qualification 是 downstream admission/evidence，不进入候选生成、过滤或排序。
 
 ### 1.1 功能目标保留矩阵
@@ -116,7 +116,7 @@ Pipeline position:
 - Upstream artifact / IR:
   Shardy/XLA SPMD 之后按 logical rank 静态 specialize、通过当前 verifier 的
   Linalg/Tensor/SCF/Arith/Math structured tensor program；logical collective、native MLIR numeric/effect/control semantics、
-  ExecutionConfig 和 TargetProfileId 均已显式。
+  ExecutionConfig已显式；current target capabilities由compiler固定提供。
 - Current stage responsibility:
   直接通过structured op interfaces、SSA use-def、type/shape、indexing map、effect、native numeric permissions/semantics及
   transformation-local integer-domain exact/modular proof识别有界analysis scope；从当前IR重算IndexRelation、alias/root、liveness和resource
@@ -142,7 +142,7 @@ Pipeline position:
 - Explicit non-goals:
   不创建detached semantic descriptor、provider/query/key/registry、canonical frontier/candidate serializer、版本化
   诊断统计协议或Transform control plane；不做whole-model equality saturation、全维Cartesian product、名字驱动优化，
-  不使用生产穷举、ILP/MIP/SAT或external solver，不改变physical encoding query签名或向其增加TargetProfileId，
+  不使用生产穷举、ILP/MIP/SAT或external solver，不改变physical encoding query签名或向其增加target identity参数，
   不让allocator反向修改candidate，也不让model/board qualification参与compile-time choice；不承诺dynamic shape、
   多实例dynamic loop、未经event证明的ping-pong、persistent prepack、cycle timing或board性能。mapped DMA、physical fill、
   oriented GEMM由Q32.V独立typed target纵向实现，winner capability projection仅在真实
@@ -190,7 +190,7 @@ materializer key、registry digest或cache identity。候选被选择后立即�
 合法性由current IR、typed op/attrs、ODS verifier、适用的标准MLIR interface和conversion legality验证。Q46的layout domain
 只由§5.2 disposable actual-op probe派生，不扩展该接口。
 
-当前 target profile 是 closed registry。没有第二个 target 实现时，普通 typed helper也足够；只有出现多个 dialect/target
+当前只有一个compiler target，普通typed helper即可；只有出现多个dialect/target
 实现且确有共同 consumer 时，才评估 `DialectInterface`。不得为了未来插件化先建立动态 provider registry。
 
 Q32.I已完成首轮native-interface reuse audit：只重新枚举DPS inputs/outs/results的
@@ -496,7 +496,7 @@ target ABI、device link、package publication与readback。上述正确性stage
 
 配置从`CompilationOptions`沿rank frontier、accepted-rank siblings与all-rank siblings传递，不进入source/selected IR或
 package schema；ordinary与profile compile消费同一配置并选择同一未插桩production artifact。编译诊断输出canonical
-enabled/disabled集合，使A/B记录可与相同source snapshot、ExecutionConfig、TargetProfileId、launch ABI和最终linked
+enabled/disabled集合，使A/B记录可与相同source snapshot、ExecutionConfig、current target identity、launch ABI和最终linked
 artifact共同核对。Q32.T仍只表示未来可选的rank-local Transform IR adapter，不等于本节候选域配置，也不因此提前冻结
 Transform dialect协议。
 
@@ -636,7 +636,7 @@ NoC-resident扩展只负责创造上述actual dataflow；跨DTE、NCC/Kcore和mo
 generic multi-engine software pipeline从current instruction SSA/effect/token重建。在进入fixed-slot前，独立
 post-Instr worker-placement维度从canonical/unplaced current IR原子派生actual worker attrs和minimum joins；
 fixed-slot只在保留该assignment的siblings上继续派生。V3已经具有真实Direct-DTE
-prepare/explicit-issue/exact-wait-release，V1/V2只保留wait-auto-issue兼容；fixed-slot和typed worker+DTE
+prepare/explicit-issue/exact-wait-release，不保留wait-auto-issue兼容；fixed-slot和typed worker+DTE
 各自已有host legality closure，同候选source/package/model/no-card纵向也已由独立qualification闭合；
 configured-board correctness保持external gate。
 这些mechanism只对通过current IR dependency、range、completion和target capability gate的actual candidate
@@ -701,7 +701,7 @@ communication的whole-variant metric还必须消费current `wafer.target.topolog
 physical endpoint，这一维只能在完整rank domain的late analysis中重算。
 
 这些字段不需要17维registry、canonical wire vector或完整IR signature。字段方向、聚合和static preference由closed typed
-target profile/C++ policy定义；新增维度必须有final-IR collector和测试，而不是只增加诊断名。
+current target C++ policy定义；新增维度必须有final-IR collector和测试，而不是只增加诊断名。
 
 具体变换的收益和代价只能从其final IR反映：recompute必须增加`compute logical work`并同时反映减少的movement/live range；
 loop hoist必须反映动态执行multiplicity变化以及延长后的lifetime/high-water；relation-guided physical-version assignment必须反映消失的layout/GS
@@ -714,7 +714,7 @@ numeric variant先过独立numeric gate，
 
 1. baseline非法时按真实编译错误处理，不能由优化候选掩盖pipeline invariant；
 2. 先在observable semantics、transport domain和exact-gate scope一致的候选间做componentwise Pareto dominance；
-3. 对Pareto-incomparable survivors，只有当前target profile显式提供static priority/lexicographic policy且所需维度全部Known时
+3. 对Pareto-incomparable survivors，只有current target policy显式提供static priority/lexicographic policy且所需维度全部Known时
    才排序；该policy只表达编译器静态取舍，不叫estimated hardware time；
 4. policy缺失、关键维度Unknown或checked aggregation overflow时保留baseline；完全相同的metrics优先baseline，再按stable
    generation ordinal确定诊断顺序；
@@ -724,7 +724,7 @@ numeric variant先过独立numeric gate，
 Q9获得validated PMU/timing evidence后，可以新增calibrated ranking policy，但只能重排已经通过同一exact legality的候选，不能
 改变semantic、numeric、capacity、descriptor或ABI合法性。
 
-当前closed target profile的未校准static policy按resource class显式排序：DDR read/write、NoC payload aggregate/
+current target的未校准static policy按resource class显式排序：DDR read/write、NoC payload aggregate/
 collective与minimum-hop demand、SPM movement、instruction/event、compute logical work、最后是
 data-dependency depth/ready-order inversion。每一class内部只接受
 componentwise strict reduction；同一class出现双向tradeoff、任何所需量Unknown或overflow时保持当前winner，最终无法证明优于
@@ -744,7 +744,7 @@ production package单独通过数值板测，只能证明当前winner在该输�
 也不能证明它相对保守候选更优。compiler-wide资格因此复用coordinator已经保留并通过完整whole-variant gate的唯一
 reserved baseline，与默认production winner形成同源成对输入：
 
-- baseline与winner必须来自同一verified source snapshot、ExecutionConfig、TargetProfileId和host-visible ABI；二者分别从各自
+- baseline与winner必须来自同一verified source snapshot、ExecutionConfig、current target identity和host-visible ABI；二者分别从各自
   accepted Instr IR继续经过target translation、device link、manifest publication和readback，不能通过改source、跳pass或编译
   两个不同版本伪造对照；
 - 普通baseline/winner对照分别使用公开`none`与`production`preset；单机制归因可使用
@@ -832,19 +832,19 @@ compatibility facts，它们必须能从current IR重算、只活在coordinator 
 
 ## 10. Target Capability 和 Downstream Admission
 
-编译阶段只接收明确解析的 `TargetProfileId`及其immutable target capabilities，例如engine、dtype、tile geometry、encoding support、
-DMA/GS、SPM和event限制。它们可以由closed target registry或小型typed target model提供，不携带
+编译阶段只消费current target capabilities，例如engine、dtype、tile geometry、encoding support、DMA/GS、SPM和event限制。
+它们由小型typed target helpers提供，不携带
 `ModelProfileId`、`BoardEnvironmentId`或qualification floor。
 
 `statically representable`、`compiler emittable`、`model executable`和`board supported`是不同边界：
 
-- Q32要求所选op对当前compiler target profile可表示、可lower，并通过repo-owned TargetCall/formal/SystemC纵向；
+- Q32要求所选op对current compiler target可表示、可lower，并通过repo-owned TargetCall/formal/SystemC纵向；
 - external functional model admission由17的model profile拥有；
 - board admission由configured board environment拥有；
 - 板端缺失不阻塞compiler结构优化，也不能被compiler结果冒充为board证据。
 
 Q32.V已完成独立typed target纵向：mapped DMA/WDMA两端offset与descriptor、physical-footprint fill/invalid-lane初始化、
-oriented GEMM的source/ODS/interface/verifier、Instr/TargetCall、v2 ABI revision和SystemC/formal consumer均已闭合。
+oriented GEMM的source/ODS/interface/verifier、Instr/TargetCall、current worker-aware ABI和SystemC/formal consumer均已闭合。
 Q32.M起由§5同一通用candidate owner消费，不新增feature-specific planner。
 
 Count仍由独立Q3.6拥有，因为当前缺少稳定source predicate和model证据。若Q32.V扩展command的package/runtime consumer需要逐row

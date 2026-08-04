@@ -490,7 +490,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       allocationBytes += resource.bytes;
     }
   if (kernelLaunch &&
-      kernelLaunch->entryABI == KernelEntryABI::RankRowPointerTableV1) {
+      kernelLaunch->entryABI == KernelEntryABI::RankRowPointerTable) {
     for (const RuntimeSessionPlan &rank : capacityPlan->ranks) {
       const uint64_t rowBytes =
           static_cast<uint64_t>(rank.launchOrder.size()) * sizeof(uint64_t);
@@ -625,7 +625,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       memoryByResource[resource->id.getValue()] = *memory;
     }
   if (kernelLaunch &&
-      kernelLaunch->entryABI == KernelEntryABI::RankRowPointerTableV1) {
+      kernelLaunch->entryABI == KernelEntryABI::RankRowPointerTable) {
     rankArgumentRows.reserve(capacityPlan->ranks.size());
     for (const RuntimeSessionPlan &rank : capacityPlan->ranks) {
       const uint64_t rowBytes =
@@ -748,7 +748,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     launch.logicalRank = rank.logicalRank;
     launch.entry = rank.entry;
     if (kernelLaunch &&
-        kernelLaunch->entryABI == KernelEntryABI::RankRowPointerTableV1) {
+        kernelLaunch->entryABI == KernelEntryABI::RankRowPointerTable) {
       if (rankIndex >= rankArgumentRows.size())
         return fail(BoardRuntimeStage::Launch, rank.logicalRank, rank.entry,
                     detail::invalid("rank-row launch storage is missing"));
@@ -1148,7 +1148,7 @@ executeBoardEntry(const VerifiedPackageManifest &package,
       manifest.entries.front().id != request.entry)
     return boardError(
         BoardRuntimeStage::Preflight, -1, request.entry,
-        "single-entry compatibility execution requires the unique entry of a "
+        "rank-one entry execution requires the unique entry of a "
         "rank-count=1 package");
 
   BoardRuntimeInvocationRequest invocation;

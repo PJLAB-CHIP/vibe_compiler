@@ -214,17 +214,17 @@ def main() -> int:
     pair_end = probe.index("} else {", pair_begin)
     pair_path = probe[pair_begin:pair_end]
     assert "get_spm_memory_mapping" not in pair_path
-    assert pair_path.count("wafer_tx81_local_fence();") == 1
+    assert pair_path.count("wafer_tx81_ncc_join(1U);") == 1
     assert (
         pair_path.index("wafer_cch_seed_bank_slots")
         < pair_path.index("wafer_cch_issue_bank_pair")
         < pair_path.index("wafer_cch_readback_bank_slots")
-        < pair_path.index("wafer_tx81_local_fence();")
+        < pair_path.index("wafer_tx81_ncc_join(1U);")
     )
     issue_begin = probe.index("static void wafer_cch_issue_bank_pair")
     issue_end = probe.index("static void wafer_cch_seed_bank_slots")
     assert (
-        probe[issue_begin:issue_end].count("wafer_tx81_local_fence();")
+        probe[issue_begin:issue_end].count("wafer_tx81_ncc_join(1U);")
         == 3
     )
     seed_begin = issue_end
@@ -234,10 +234,10 @@ def main() -> int:
     conflict_cycle_begin = probe.index(
         "static uint64_t wafer_cch_cycle", readback_begin
     )
-    assert "wafer_tx81_local_fence();" not in probe[
+    assert "wafer_tx81_ncc_join(1U);" not in probe[
         seed_begin:readback_begin
     ]
-    assert "wafer_tx81_local_fence();" not in probe[
+    assert "wafer_tx81_ncc_join(1U);" not in probe[
         readback_begin:conflict_cycle_begin
     ]
 
@@ -249,10 +249,10 @@ def main() -> int:
         conflict_issue_begin,
     )
     conflict_issue = probe[conflict_issue_begin:conflict_issue_end]
-    assert conflict_issue.count("wafer_tx81_local_fence();") == 2
+    assert conflict_issue.count("wafer_tx81_ncc_join(1U);") == 2
     assert (
         "if (schedule == 1U && ordinal == 0U)\n"
-        "      wafer_tx81_local_fence();"
+        "      wafer_tx81_ncc_join(1U);"
     ) in conflict_issue
 
     conflict_execute_begin = probe.index(
@@ -266,7 +266,7 @@ def main() -> int:
         conflict_execute_begin:conflict_execute_end
     ]
     seed_fence = conflict_execute.index(
-        "wafer_tx81_local_fence();",
+        "wafer_tx81_ncc_join(1U);",
         conflict_execute.index("seed_b - WAFER_CCH_SPM_GUARD_BYTES"),
     )
     pair_before = conflict_execute.index(

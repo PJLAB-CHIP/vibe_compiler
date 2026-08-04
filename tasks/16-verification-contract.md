@@ -31,7 +31,7 @@ Pipeline position:
 - Downstream consumer:
   tasks/progress completion判断、regression CI、target-model correlation、board bring-up和后续性能校准。
 - User-level driver / named pipeline:
-  compiler/source-backed producer、target-call/SystemC gate只经显式registered target profile的
+  compiler/source-backed producer、target-call/SystemC gate只经current target identity的
   wafer-compile；exact-module target model和board
   provider由wafer-run重放同一verified package。wafer-opt/pass tests只补局部覆盖。
 - Explicit non-goals:
@@ -80,8 +80,8 @@ runtime可以从不同上游并行取得，只有明确列出的consumer才能�
 4. **Target artifact**：compiler-generated LLVM/object/module通过CRT/device-link/ABI/digest gate。
 5. **Direct target-call ABI smoke**：同一fully legal target LLVM通过direct host symbol shim执行，只证明lowering、fixed
    signature、control flow、typed slots和基本地址形成；不证明repo CRT、packet或event。
-6. **Numeric foundation conformance（Q22.N）**：13种logical storage codec、有证据的target-profile×engine×format encoding、当前七种
-   compute/convert format、36条convert route和完整`NumericSemanticsProfile`通过exhaustive/boundary/property及逐family
+6. **Numeric foundation conformance（Q22.N）**：13种logical storage codec、65个current engine×format encoding、当前typed
+   compute/convert语义、36条convert route和完整`NumericSemanticsProfile`通过exhaustive/boundary/property及逐family
    independent differential或显式trusted-TCB conformance；SoftFloat/TestFloat或production MPFR不得自计双oracle；
    model capability不扩大compiler legality。
 7. **Bulk backend qualification（Q22.B）**：oneDNN大GEMM按完整semantic/domain/environment profile进入
@@ -222,15 +222,15 @@ transport/address/shape和任何late failure都必须保持source byte-identical
 
 ### 4.3 Geometry And ABI
 
-已完成Q0/Q0.L证据固定v1 compact DMA和normal/normal GEMM。Q32.I/R/B重放current v1 geometry并增加真实
+已完成Q0/Q0.L证据固定compact DMA和normal/normal GEMM。Q32.I/R/B重放current geometry并增加真实
 rewrite所需的invalid-lane、view和staged-movement覆盖；Q32.V另行完成mapped DMA、physical-footprint fill和
-oriented GEMM ABI。两组证据分开记录，v2不反向改变v1合同。
+oriented GEMM ABI。两组证据分开记录，但都消费唯一current worker-aware ABI，不保留旧revision分支。
 
-- current v1 RDMA/WDMA/gather descriptor payload mismatch、stride range和两端OOB；current GS/staged movement中已经显式
+- current RDMA/WDMA/gather descriptor payload mismatch、stride range和两端OOB；current GS/staged movement中已经显式
   物化的local offset、slice和view必须覆盖exact-end/overflow/all-and-only正负例；
 - DTE instruction bytes OOB，以及在physical peer/slot/CRT未闭合时production target整体拒绝；
 - convert source/dest count mismatch；
-- current v1 GEMM normal/normal的M/K/N/batch/stored-shape mapping mismatch；
+- current GEMM normal/normal的M/K/N/batch/stored-shape mapping mismatch；
 - conv/pool/unpool/TDMA/peripheral shape relation；
 - unsupported depthwise/backward conv等未定义shape profile在production target fail closed；
 - int64 overflow、uint32 max+1、Data_Shape uint16 max+1；
@@ -239,8 +239,8 @@ oriented GEMM ABI。两组证据分开记录，v2不反向改变v1合同。
   未初始化、full-physical错误读取、Cx retained-tail和bitpacked tail-bit均有negative。
 
 Q32.V已覆盖：mapped RDMA/WDMA两端root-relative offset（包括0）的exact-end/overflow/all-and-only及非法双侧
-stride；GEMM NN/NT/TN/TT typed orientation与versioned ABI/profile混用negative；physical-footprint fill的checked
-elem-count、canonical raw scalar mapping和fill→segmented不可观察ordering到TargetCall/SystemC的完整纵向。current v1
+stride；GEMM NN/NT/TN/TT typed orientation与current ABI字段negative；physical-footprint fill的checked
+elem-count、canonical raw scalar mapping和fill→segmented不可观察ordering到TargetCall/SystemC的完整纵向。current
 Tensor logical-fill不能替代这些扩展gate。
 
 同一negative必须在最早能解释它的verifier失败，不能等CRT截断或board fault。
@@ -260,17 +260,17 @@ Tensor logical-fill不能替代这些扩展gate。
 
 ### 4.5 Q0.L Target Command Legality Closure
 
-Q0历史完成结果不覆盖本轮review发现的target profile、engine×format encoding、reduce init和elementwise map缺口。Q0.L必须
+Q0历史完成结果不覆盖本轮review发现的target identity、engine×format encoding、reduce init和elementwise map缺口。Q0.L必须
 沿真实production driver新增以下证据，不能由Q22 CModel测试代替；debug named pipeline只补同一registry/conversion局部覆盖：
 
-- tasks/14 registry拥有typed `TargetProfileId`；显式CLI selection经request/config进入profile-bearing ExecutableBundle、
+- tasks/14拥有current target identity；compiler固定值进入ExecutableBundle、
   target conversion、transaction-local prepared target LLVM/ABI artifact、`TargetArtifactBundle`和PackageManifest，逐层
   positive/readback。缺失、冲突、自由字符串保存、default以及late-rank不一致均在publication前失败且无partial output；
   tasks/14 profile到typed `TargetIdentityId`/`KernelRuntimeABIId`的唯一映射和Q18 full-config join同样全枚举；Q22后续
   target LLVM bundle消费该proof，不是本gate提前创建的artifact。focused target-conversion tests必须经同一registry
   立即解析typed `TargetConversionRequest`；missing/unknown negative失败，不写module attr、不保留自由字符串、
   不提供default；
-- tasks/14 registry全枚举每个target-profile×engine×logical-format row，和tasks/08 physical encoding interface、target verifier、format
+- tasks/14 registry全枚举每个current engine×logical-format row，和tasks/08 physical encoding interface、target verifier、format
   encoder及CRT参数逐项conformance；无证据UINT/64-bit/TF32 format-bearing row为negative，现有i64 positive相应修正；
 - elementwise identity/permutation/broadcast都在tile→instruction物化或strip；terminal instruction positive无map且same-shape，
   任一残留`indexing_maps` attr在instruction verifier/full conversion中illegal；target LLVM/CRT与CModel都不能忽略后继续；
@@ -358,7 +358,7 @@ Q29数字保留为历史实现基线，不能替代Q32 fresh gate。
 - option gate至少包含一个真实source的四路source-to-package A/B：
   default production、`none`、`production + disable-one`和`none + enable-one`。后两者必须分别与对应expected artifact
   byte-identical，production与baseline的最终linked ELF必须呈现被测语义轴的结构差异；四路source、rank domain、
-  TargetProfileId、launch contract、manifest ABI和全部correctness gate保持一致。另以`none`的rank-frontier unit证明只有
+  current target identity、launch contract、manifest ABI和全部correctness gate保持一致。另以`none`的rank-frontier unit证明只有
   唯一fully gated reserved baseline，并以model-scale ordinary/profile package与no-card证明默认production不回归；
 - canonicalization、verifier、SPM/DDR placement、completion normalization、Direct-DTE acceptance、whole-card
   resource、target ABI、device link、publication及readback属于mandatory correctness pipeline，不能进入disable列表。
@@ -431,7 +431,7 @@ Q29数字保留为历史实现基线，不能替代Q32 fresh gate。
   coordinator调用内的pre-target variant。reserved baseline立即运行ABI/target emission eligibility；optimized variant按下述
   exact retention gate延迟运行同一target gate，winning artifact仍继续由正式下游完成package publication/readback。所有判断只消费
   current IR和对应owner的typed target facts；
-- selection先做strict Pareto dominance。incomparable candidate只有在target profile显式static policy存在且所需final-IR
+- selection先做strict Pareto dominance。incomparable candidate只有在current target static policy存在且所需final-IR
   metrics全部Known时才排序；缺policy、Unknown或overflow回baseline。不得把估计时间、发现顺序、线程完成顺序或单一内存
   高水位冒充hardware性能；
 - optimized pre-target variant只相对已经完整target-gated的optimized frontier模拟正式`insertParetoCandidate`，必须包含
@@ -514,18 +514,18 @@ Q38的fixed-slot和Direct-DTE细粒度issue必须在同一个source-backed、ful
 
 - compiler testing seam只从普通rank frontier选择all-rank static-fixed-slot tuple，重放Instr、SPM/DDR、
   target、package和readback gate；normal production selection及public CLI不读取该seam；
-- schema-v6 package与相邻qualification sibling作为一个no-replace transaction发布。activation精确绑定
+- schema-v7 package与相邻qualification sibling作为一个no-replace transaction发布。activation精确绑定
   manifest和attestation bytes；attestation从final accepted rank IR派生module digest、placed SPM roots、
   static loop/root rotation、engine×worker issue、DTE send/recv token与exact wait、participant join和
   completion behavior。host preparation gate独立重验closed fields、digest、arena/alignment/non-overlap及
   all-and-only关系，不从module symbol或case名恢复；
-- V3 all-rank qualification必须在每rank同时出现非零DTE issue和all-and-only wait，package transport为
+- current all-rank qualification必须在每rank同时出现非零DTE issue和all-and-only wait，package transport为
   Direct DTE；同一retained TargetLLVMModuleBundle直接进入SystemC并与独立CPU expected比较，不能重新lower、
   重编或用另一份package替代。普通package另经显式status-v2/watchdog capability完成no-card preflight；
-- V3 target module对每个accepted `dte_send`发射
-  `send_prepare -> direct_dte_send_issue_v3`，matching wait只负责completion/release；V1/V2不得引用V3-only
+- current target module对每个accepted `dte_send`发射
+  `send_prepare -> direct_dte_send_issue_v3`，matching wait只负责completion/release；old ABI不得引用current-only
   issue symbol，并保留wait内auto-issue兼容。strict compile-only probe必须让同一module中的普通RDMA/WDMA/
-  compute也使用V3 typed worker ABI，避免混用profile；
+  compute也使用current typed worker ABI，避免混用ABI；
 - SystemC按exact pending memory footprint区分DTE与ordinary NCC：DTE source只与overlap pending write冲突，
   DTE destination与overlap pending read/write冲突。matching participant join必须在DTE issue前清除hazard；
   至少以elementwise和GEMM同时覆盖disjoint成功、overlap在issue处确定失败及pre-issue join成功，并以source
@@ -557,7 +557,7 @@ artifact或metadata摘要拼接成组合证据：
 Q40无卡门禁必须证明同一个bounded whole-variant tuple同时具有fixed-slot和可重算的Direct-DTE/compute结构窗口，
 不能用“ELF中分别存在DTE与compute call”或不同transport/launch的reserved baseline代签：
 
-- qualification只接受每rank都有V3 bound issue、唯一same-block exact wait及二者之间独立FP16/BF16 CT/NE的
+- qualification只接受每rank都有current bound issue、唯一same-block exact wait及二者之间独立FP16/BF16 CT/NE的
   fixed-slot tuple；planned static range与operand-specific effect证明send-source read/read可共存，
   send-source write和receive-destination read/write冲突，unknown effect/range fail closed；
 - candidate companion绑定manifest、accepted Instr digest、all-and-only rank domain、每rank witness计数、
@@ -652,9 +652,9 @@ Q32.T保持later，不阻塞Q32。当前没有需要rank-local Transform control
 - target lowering与repo-local CRT header/source/checker共享fixed signature，required/allowed symbol、status/error和
   attach/send/wait/release lifecycle闭合；sender source和receiver FSM保持本地raw SPM offset，sender remote destination
   由CRT按target topology形成peer SPM base加accepted receiver offset，overflow或缺firmware symbol在effect前失败；
-- V3 Kernel Runtime ABI为sender增加唯一显式issue call：prepare只建立event，issue完成peer-ready、
-  attach和async submission，matching wait完成wait-done/release。V3 lowering、TargetCall decoder、SystemC和profiler
-  必须逐项消费该symbol；V3 wait-before-issue失败。V1/V2 module不得引用V3-only issue，legacy wait auto-issue只作
+- current Kernel Runtime ABI为sender增加唯一显式issue call：prepare只建立event，issue完成peer-ready、
+  attach和async submission，matching wait完成wait-done/release。lowering、TargetCall decoder、SystemC和profiler
+  必须逐项消费该symbol；wait-before-issue失败。old module不得引用current-only issue，obsolete wait auto-issue只作
   ABI兼容，不能被计作独立overlap window；
 - Q18 manifest只投影launch/runtime可观察的transport capability、control/status resource和completion requirement，
   不复制DTE p2p body或per-op binding；no-card preflight验证requirements但不重新分配channel/FSM；
@@ -668,7 +668,7 @@ Q32.T保持later，不阻塞Q32。当前没有需要rank-local Transform control
 
 ### 8.1 Typed Manifest
 
-当前Q18 wire form迁移为schema v6：删除错误四值`launch_abi`，改用top-level kind仅为kernel/model的tagged
+当前Q18 wire form为schema v7：使用top-level kind仅为kernel/model的tagged
 RuntimeLaunchContract；kernel form、entry ABI和ordered phases为其正交typed字段，module exports只做phase role到
 ELF symbol的绑定，Direct DTE保持独立transport union。Q32 candidate cutover本身不改变package schema；
 v2-v5输入均作为legacy明确拒绝，不能静默补字段或保留旧spelling alias。
@@ -683,7 +683,7 @@ v2-v5输入均作为legacy明确拒绝，不能静默补字段或保留旧spelli
 - missing/extra payload和digest mismatch；
 - completion missing、rank mismatch或unsupported terminal；
 - production JSON含`instructions`直接拒绝。
-- target profile、identity、runtime ABI、完整runtime launch contract和module format五项exact；missing/unknown/unqualified
+- target identity、runtime ABI、完整runtime launch contract和module format四项exact；missing/unknown/unqualified
   kind/form/entry-ABI/phase或旧`launch_abi`拒绝；
 - 16-rank grid/cluster kernel完整rank domain、共享aggregate module/slot schema及各自`0x7dc`/`0x7d0` packet上限；model完整16-rank、
   共享symbol、tile modules、parameter-free aligned f32 rank-1..6 shape/bytes、export record/relocation与BootParam pre-effect验证；
@@ -698,7 +698,7 @@ Python wrapper和C++必须走同一verifier；不能再有不同acceptance。
 
 - entry selection和invocation binding all-and-only；
 - module/resource/completion resolution确定性；
-- schema-v6 target profile、runtime ABI、runtime launch contract、typed module exports、transport requirement和environment capability在任何side effect前精确匹配；
+- schema-v7 target identity、runtime ABI、runtime launch contract、typed module exports、transport requirement和environment capability在任何side effect前精确匹配；
 - repeated preflight相同输入产生相同plan；
 - metadata buffer释放后verified typed value仍可安全使用；
 - no-card输出明确标记未执行board。
@@ -710,7 +710,7 @@ projection，其结构和package readback由8.1验证，真正的model/board逐�
 
 Q6.B已materialize TX kernel与model两个runtime launch kind。kernel内由typed form/entry ABI/ordered phases表达
 rank-one、grid16及cluster prepare/main；Direct DTE由独立transport requirement选择其status/readiness gate，不再命名
-launch kind。既有typed artifact/provider/static/fake/no-card和真实板端重复gate提供历史证据，迁移后必须由schema-v6
+launch kind。既有typed artifact/provider/static/fake/no-card和真实板端重复gate提供历史证据，迁移后必须由schema-v7
 fresh replay保持。Q22.E exact-module provider
 仍是独立later gate。
 以下验证不属于Q18 no-card完成条件，provider/board推进时必须实际执行，不能用打印trace替代：
@@ -821,13 +821,13 @@ event正负gate和后续board result共同证明；不使用另一个logical sch
 ## 11. Q22 Target Execution Model Gates
 
 具体模型边界、SystemC主架构、exact ELF缺口和板端numeric corpus由tasks/17拥有。本节只定义证据口径。Q0.L已经闭合
-target profile、engine×format legality以及reduce/indexing-map语义，Q22.N/L/B随后分别闭合formal numeric foundation、
+target identity、engine×format legality以及reduce/indexing-map语义，Q22.N/L/B随后分别闭合formal numeric foundation、
 owner-backed target LLVM bundle和oneDNN bulk qualification；以下各gate仍必须以自己的实现和
 新鲜测试完成，不能因文档或Q0.L通过而标记完成。
 
 ### 11.1 Q22.N Multi-Dtype Numeric Foundation Gate
 
-- 从tasks/14单一拥有的shared registry读取13种logical format和target-profile×engine×format encoding；
+- 从tasks/14单一拥有的shared registry读取13种logical format和65个current engine×format encoding；
   `Fmt_UNUSED`与target f64拒绝，UINT/64-bit DMA及TF32 format-bearing op等无证据row不能由enum或host type兜底；
 - codec conformance穷举INT8/UINT8/BOOL、FP16/BF16全部raw pattern和TF32 canonical semantic encoding；FP32、宽整数、
   TF32 noncanonical按classification/boundary/stratified random覆盖。logical codec检查endianness、NaN/Inf/±0/subnormal与
@@ -1014,15 +1014,15 @@ Pipeline position:
 - SystemC是正式untimed functional-event容器；rank/tile SPM/DDR、typed slots、checked address、conservative issue、local completion和
   Direct DTE/FSM均为invocation-local对象。首个private-memory profile不建立无consumer的TLM socket；未来ISS/MMIO consumer只可
   通过另行验证的受限TLM边界接入，且不改变transaction、kernel或acceptance；
-- V1/V2 target-call ABI没有worker identity，只能把CT/NE/RDMA/WDMA/TDMA放在单一保守logical issue domain；
-  V3为ordinary NCC call携带typed `NCCWorker`并由participant mask精确完成对应worker。这个字段只表达compiler已选的
+- current target-call ABI显式携带worker identity，把CT/NE/RDMA/WDMA/TDMA放入对应logical issue domain；
+  current ordinary NCC call携带typed `NCCWorker`并由participant mask精确完成对应worker。这个字段只表达compiler已选的
   issue domain，不声明worker window、`3×5`物理queue实例、容量或engine复制关系，model也不得从profile名补猜这些事实；
 - target-call issue、local drain、Direct DTE completion、destination visible和multi-rank arrival保持不同event domain；
   SystemC process阻塞wait必须yield，rank identity不得仅由TLS或OS thread恢复；
 - 每个ordered-pending ordinary command同时保留typed read和write byte footprint直到matching participant join。
   DTE issue的source不得与pending write重叠，destination不得与pending read/write重叠；matching join必须先于
   issue，late join不能追认已经发出的传输。strided descriptor可用conservative bounding interval，无法形成
-  有界range时fail closed。仅因同rank还有任意pending NCC而阻塞全部DTE会制造假deadlock，也会掩盖V3多部件
+  有界range时fail closed。仅因同rank还有任意pending NCC而阻塞全部DTE会制造假deadlock，也会掩盖多部件
   并行，必须由disjoint、pre-issue join和post-issue late-join负例共同防止；
 - 16-rank Direct DTE component覆盖receiver-ready、source lifetime至send completion、send/recv/wait/release、receiver
   completion后的destination visibility、duplicate/missing/mismatch和deterministic no-progress诊断；source读取时刻只属于
@@ -1320,13 +1320,13 @@ kernel结果不能替代model gate。
 `model-type6-type7`/`graph-tile-module-map-and-exact-rank-slices`，均只声明logical domain `0..15`和
 `physical_execution_claim: none`。执行前、两项之间及执行后SMI memory均为`9248M / 65536M`、NPU utilization为0、无运行进程，
 device online且heartbeat持续推进；没有调用retry/reset/power。对应非hardware production纵向已迁移到当前wire form，
-`wafer-runtime-kernel-grid-add-no-card`与`wafer-runtime-model-add-no-card`实际编译fresh source；迁移后验证schema-v6/16-rank
+`wafer-runtime-kernel-grid-add-no-card`与`wafer-runtime-model-add-no-card`实际编译fresh source；验证schema-v7/16-rank
 entry-completion domain并进入`wafer-run --all-ranks --no-card`，不依赖hardware arm或skip；收尾fresh package与live package逐文件
 byte-identical。
 
 两条真实SPMD gate本身不关闭Direct DTE真实receiver readiness、timeout和board completion要求；Q6.B还必须满足下述独立gate。
 
-Direct DTE board gate使用schema-v6 kernel contract：`kind=kernel`、`form=cluster`、rank-major entry ABI和
+Direct DTE board gate使用schema-v7 kernel contract：`kind=kernel`、`form=cluster`、rank-major entry ABI和
 `prepare→main` ordered phases；Direct DTE只存在于独立transport requirement。独立host/static suite拥有以下证明，
 board case只消费当前normal verifier接受的package，不把它们作为每轮launch前的no-card或manifest重审：
 16个rank-specialized target body被确定性聚合成一个ELF；16个
@@ -1359,7 +1359,7 @@ board子进程还须由大于provider共同deadline的外层deadline约束：外
 
 2026-07-22 fresh Direct DTE evidence是旧schema-v5生命周期的历史板端证据：在与当时kernel/model gate相同的
 driver、runtime、device和钉死library digest下，`wafer-board-cluster-direct-dte`实际注册并执行，未skip/unsupported。
-该结果保留硬件行为参考，但不能代签当前schema-v6两值launch contract；迁移后的下一次合格板端会话必须重放同一gate。
+该结果保留硬件行为参考，但不能代签当前schema-v7两值launch contract；下一次合格板端会话必须重放同一gate。
 production pre-SPMD
 StableHLO source经默认compiler链生成16-rank tree reduction+broadcast package；每rank payload为64个f32（256 bytes），每个
 transport status resource为`u32[1]`、64-byte storage/alignment。两次fresh invocation中，16个rank的transport
@@ -1383,7 +1383,7 @@ rank partial与all-reduce边界；M/N traversal必须覆盖全部4096x4096 outpu
 本case每rank的2 MiB lhs shard与2 MiB rhs shard不能同时作为完整SPM resident工作集，32 MiB output也不能作为完整
 SPM resident buffer；compiler成功只在complete traversal、fixed-capacity SPM planning和post-memory Direct DTE
 acceptance均通过时成立。验证必须从current
-StableHLO program directory经`wafer-compile`完整形成schema-v6/status-v2、one-shared-ELF kernel package，并证明：
+StableHLO program directory经`wafer-compile`完整形成schema-v7/current-status、one-shared-ELF kernel package，并证明：
 
 - 16个K slice无重叠、无缺口且完整覆盖global K；output boundary为16份replicated完整tensor；
 - terminal all-reduce由其`TilingInterface`产生与local GEMM output一致的M/N tile；complete compact traversal覆盖
@@ -1429,7 +1429,7 @@ TX81 `ConfigStrideIteration` element-unit API的CRT边界现同时checked-conver
 
 Q36是compiler/no-card correctness与selection gate，不以板卡、PMU或固定TX81坐标作为完成前置。必须证明：
 
-- topology analysis从current typed topology/mesh而非target profile名或logical rank算术解析placement；覆盖规则
+- topology analysis从current typed topology/mesh而非target identity名或logical rank算术解析placement；覆盖规则
   mesh/torus、all-available、explicit permutation、unavailable detour、unreachable/overflow失败；
 - All-Reduce Ring对`P`个rank的静态整分payload实际产生`P-1`轮reduce-scatter和`P-1`轮all-gather，每消息只含
   一个chunk，全卡payload为`2*(P-1)*B`；不得把旧full-buffer circulate仅重命名；
@@ -1471,7 +1471,7 @@ p2p/local accumulation、chunk、topology和completion。Q36的静态minimum-hop
   eligibility gate的唯一all-baseline tuple。普通成对资格由公开`none`与`production`preset从同一driver提交；单轴对照可用
   `disable-one`或`enable-one`组合。compiler-private selector只用于公开语义轴不能表达的accepted算法参数/结构资格，
   不作为通用baseline入口；package schema仍不保存配置或candidate policy；
-- 两份package来自同一source snapshot、payload、rank domain、ExecutionConfig和TargetProfileId。manifest schema、
+- 两份package来自同一source snapshot、payload、rank domain、ExecutionConfig和current target identity。manifest schema、
   entry/completion domain、resource role/type/shape/bytes/alignment和host binding必须一致；module digest及与目标优化对应的
   target call结构允许不同；
 - 结构oracle读取最终linked ELF，并只声明对应case机器检查到的静态callsite种类/数量、workspace、
@@ -1566,7 +1566,7 @@ host完成门禁为真实export、program verifier、production compile、完整
 K-sharded GEMM/AllReduce和HuggingFace Llama-2 7B Megatron TP16 block；
 每项都必须使用本轮fresh package、完整capture和PyTorch eager comparison，未执行、skip或unsupported均不能标`done`。
 实际Llama block每rank有18个typed launch slot，超过packet内rank-major direct table容量，因而package显式使用
-`rank-row-pointer-table-v1`。no-card和runtime unit必须验证packet只携带16个device row pointer、每个row按manifest
+`rank-row-pointer-table`。no-card和runtime unit必须验证packet只携带16个device row pointer、每个row按manifest
 slot order包含全部resource device address；不能通过删parameter、合并slot或从名字恢复binding来适配窄packet。
 
 ### 12.5 16-Tile TSM Profiler Gate
@@ -1579,7 +1579,7 @@ ordinary package做逐字节比较；Primary自身不得出现profile branch、s
 
 host/no-card gate至少覆盖：
 
-- 同一verified source、ExecutionConfig、target profile与完整runtime launch contract只产生一个未插桩final production artifact，
+- 同一verified source、ExecutionConfig、current target identity与完整runtime launch contract只产生一个未插桩final production artifact，
   并经过完整normal target verifier/publication；不生成第二个ordinary artifact作对照。`activation.json`必须最后写入，
   精确绑定production manifest SHA-256以及`plan.json`、`variants.json`、`site-map.json`各自SHA-256；
   missing/stale/partial、unknown/missing metadata key、digest mismatch和late-failure负例闭合；
@@ -1589,10 +1589,10 @@ host/no-card gate至少覆盖：
   或新的input contract；
 - 五类CRT helper每个真实`TsmExecute`调用各产生一条固定版本`ncc-command` record，同时保存typed site envelope、
   紧贴调用的submit span、严格sample bound、observation count和execution-counter delta。completion wait与Direct-DTE
-  issue/wait/phase使用独立typed event kind；V3 `send_issue_v3` site包围peer-ready与setup/async submission，
-  matching wait site只包围completion/cleanup。V1/V2没有V3-only issue site，legacy wait内auto-issue不得伪造一条
+  issue/wait/phase使用独立typed event kind；`send_issue_v3` site包围peer-ready与setup/async submission，
+  matching wait site只包围completion/cleanup。old ABI没有current issue site，obsolete wait内auto-issue不得伪造一条
   issue记录；one-to-many site使用`sub_index`，rank-local `site_id`和`sequence`连续；
-  site map只按typed semantic/registry ordinal解释NCC command、LocalFence/NCCJoin completion及Direct-DTE
+  site map只按typed semantic/registry ordinal解释NCC command、NCCJoin completion及Direct-DTE
   control/issue/wait，不从名字恢复语义；
 - all-and-only 16个header与bounded DDR record buffer的magic/schema/logical-tile/count/capacity/overflow/
   guard/readback验证；evidence必须保留count preflight、trace `next_sequence`、`dropped_event_count`、raw flags和terminal
@@ -1636,9 +1636,9 @@ CPU cycles，只接受cumulative hardware execution counter的严格bounded采�
 zero-delta必须保留为counter-no-change，same-engine outstanding必须标attribution-ambiguous。interval补集必须形成
 带reason、cycles/share和优化入口的residual，不能再显示无来源空白、推断idle或声明单指令零误差起止。
 `statistics_window`只能作为raw ticks，`tile_clock`只能作为identity/environment metadata，二者均不得用于把
-`rdcycle`或其它raw counter换算成nanoseconds。V3 Direct-DTE必须分别记录真实
+`rdcycle`或其它raw counter换算成nanoseconds。current Direct-DTE必须分别记录真实
 `direct_dte_send_issue_v3`及其peer-ready/setup窗口、matching `direct_dte_wait`及其completion/cleanup窗口，并读取
-DTE channel 0/1 PMU；V1/V2只保留legacy wait窗口。即使raw delta为零也保留已验证的issue/wait窗口，raw delta只作为
+DTE channel 0/1 PMU；old capture只作为拒绝fixture。即使raw delta为零也保留已验证的issue/wait窗口，raw delta只作为
 未校准活动量，不能命名为busy duration。未来可增加带
 uncertainty的qualified affine mapping，但它是可选增强。finding必须区分`Measured`、`Sampled`、`Bounded`、
 `Derived`、`Unavailable`、`Incomplete`和`Invalid`。
@@ -1701,18 +1701,18 @@ Pipeline position:
 `target-abi-retirement`是独立于后续superoptimizer的migration gate。无卡阶段必须推进到`board-ready`，真实板端通过后
 才能`done`：
 
-- registry/parse gate：V3是唯一profile和Kernel Runtime ABI；V1/V2 CLI、manifest、module metadata在pre-effect拒绝；
+- registry/parse gate：current target identity和Kernel Runtime ABI唯一；old CLI、manifest、module metadata在pre-effect拒绝；
   exact registry为112项且symbol/signature/semantic唯一，无legacy ordinary、LocalFence或profile availability。
 - conversion/artifact gate：ordinary worker0、worker1/2、oriented GEMM、NCCJoin和Direct-DTE begin/prepare/issue/wait/
-  finish都经同一V3 preflight；schema-v6 V3 package roundtrip，profile companion v7/basis v2与registry size 112 exact join，
+  finish都经同一current preflight；schema-v7 package roundtrip，profile companion v7/basis v2与registry size 112 exact join，
   旧companion明确unsupported。
-- consumer gate：TargetCall decoder、SystemC/TargetModel、profiler、no-card、TX provider和conformance checker只消费V3；
-  rank-count 1/16 FP16/BF16完整package、guard、entry/slot/profile/ABI join fresh通过。
+- consumer gate：TargetCall decoder、SystemC/TargetModel、profiler、no-card、TX provider和conformance checker只消费current ABI；
+  rank-count 1/16 FP16/BF16完整package、guard、entry/slot/target identity/runtime ABI join fresh通过。
 - board gate：同一次qualified session内串行执行fresh FP16/BF16 ordinary worker0 completion，并执行至少一个nonzero worker
-  或Direct-DTE隔离case，校验output、guard、completion与lifecycle。LocalFence与NCCJoin CRT入口不同，因此host decoder
+  或Direct-DTE隔离case，校验output、guard、completion与lifecycle。旧LocalFence输入必须在pre-effect拒绝，因此host decoder
   等价、旧raw或历史日志均不能代签该结论。
 
-只把driver默认值改为V3、只验证112这个计数、只过host decoder或只生成no-card package均不算完成。板不可用时保留
+只验证112这个计数、只过host decoder或只生成no-card package均不算完成。板不可用时保留
 `board-ready`，不得标`done`或自动retry/reset设备。
 
 ## 15. 规划中的 Semantic Superoptimization Gate

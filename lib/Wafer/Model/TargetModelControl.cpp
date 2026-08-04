@@ -45,8 +45,8 @@ validateControlAddresses(const compiler::TargetTransaction &transaction,
     llvm::Expected<TargetModelResolvedRange> status =
         plan.resolve(transaction.logicalRank, TargetModelAddressSpace::CardDDR,
                      TargetModelAccess::ReadWrite, begin->statusAddress,
-                     WAFER_TX81_DIRECT_DTE_STATUS_V2_VALUE_BYTES,
-                     WAFER_TX81_DIRECT_DTE_STATUS_V2_VALUE_BYTES);
+                     WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES,
+                     WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES);
     if (!status)
       return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
                          llvm::toString(status.takeError()));

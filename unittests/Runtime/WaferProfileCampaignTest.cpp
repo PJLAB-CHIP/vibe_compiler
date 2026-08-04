@@ -89,15 +89,13 @@ protected:
 
   PackageManifest manifest(uint64_t firstId, uint64_t secondId,
                            llvm::StringRef namePrefix) const {
-    const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
-        wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     PackageManifest package(
-        target.id, target.targetIdentity, target.kernelRuntimeABI,
+        wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
         llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
             wafer::KernelLaunchForm::PerRank,
-            wafer::KernelEntryABI::RankLocalPointerBlockV1,
+            wafer::KernelEntryABI::RankLocalPointerBlock,
             {wafer::RuntimeLaunchPhaseRole::Main})),
-        target.moduleFormat);
+        wafer::kCurrentTargetModuleFormat);
     package.rankCount = 2;
     // Deliberately non-canonical manifest order.
     package.resources = {

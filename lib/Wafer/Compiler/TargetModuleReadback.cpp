@@ -220,15 +220,14 @@ llvm::Error verifyExportedFunction(const llvm::object::ObjectFile &object,
 llvm::Expected<TargetModuleReadback>
 verifyTargetModule(llvm::StringRef path,
                    llvm::ArrayRef<VerifiedTargetExport> expectedExports,
-                   TargetProfileId expectedProfile,
+                   TargetIdentityId expectedTarget,
                    const RuntimeLaunchContract &expectedLaunch) {
-  const TargetProfileRecord &profile = getTargetProfileRecord(expectedProfile);
   constexpr llvm::StringLiteral kDetectedRiscv64ELF = "elf-riscv64";
-  if (profile.moduleFormat != kDetectedRiscv64ELF)
+  if (expectedTarget != TargetIdentityId::waferTx81SingleCard() ||
+      kCurrentTargetModuleFormat != kDetectedRiscv64ELF)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "target profile module format '%s' has no ELF readback verifier",
-        profile.moduleFormat.str().c_str());
+        "target identity has no ELF readback verifier");
   if (!isRegularTargetFile(path))
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "target module is not a regular file");
@@ -297,20 +296,20 @@ verifyTargetModule(llvm::StringRef path,
 
 llvm::Expected<VerifiedTargetModule> verifyLinkedTargetModuleForTesting(
     llvm::StringRef path, llvm::StringRef entrySymbol,
-    TargetProfileId targetProfile,
+    TargetIdentityId targetIdentity,
     const RuntimeLaunchContract &runtimeLaunchContract) {
   std::vector<VerifiedTargetExport> exports;
   exports.push_back(TargetArtifactBundleBuilder::makeExport(
       TargetExportRole::Main, entrySymbol));
   llvm::Expected<TargetModuleReadback> readback =
-      verifyTargetModule(path, exports, targetProfile, runtimeLaunchContract);
+      verifyTargetModule(path, exports, targetIdentity, runtimeLaunchContract);
   if (!readback)
     return readback.takeError();
-  const TargetProfileRecord &profile = getTargetProfileRecord(targetProfile);
   return TargetArtifactBundleBuilder::makeModule(
       TargetArtifactModuleId(0), llvm::sys::path::filename(path),
-      readback->contentDigest, targetProfile, profile.targetIdentity,
-      profile.kernelRuntimeABI, readback->moduleFormat, std::move(exports));
+      readback->contentDigest, targetIdentity,
+      KernelRuntimeABIId::waferTx81Kernel(), readback->moduleFormat,
+      std::move(exports));
 }
 
 } // namespace wafer::compiler::detail

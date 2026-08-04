@@ -37,7 +37,7 @@ add_mlir_library(WaferCompiler
   TargetLLVMTranslation.cpp
   TargetModuleReadback.cpp
   TargetPackagePublication.cpp
-  TargetProfileInstrumentation.cpp
+  TargetInstrumentation.cpp
   TargetRankPreflight.cpp
   TargetCallFrontend.cpp
   WholeVariantAttemptPlan.cpp

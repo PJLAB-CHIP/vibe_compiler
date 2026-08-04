@@ -36,8 +36,7 @@ acceptWholeVariantResources(llvm::ArrayRef<mlir::ModuleOp> rankModules,
            << executionConfig.getRankCount();
 
   const analysis::TargetScheduleCostPolicy policy =
-      analysis::getTargetScheduleCostPolicy(
-          executionConfig.getTargetProfileId());
+      analysis::getTargetScheduleCostPolicy();
   mlir::ModuleOp diagnosticAnchor = rankModules.front();
   if (policy.spmAddressLimit < policy.spmAddressBase)
     return diagnosticAnchor.emitOpError(

@@ -437,7 +437,7 @@ TEST(BulkQualificationTest,
       "{ \"batch_count\":1,\"destination_layout\":\"cx\","
       "\"format\":\"f32\",\"k\":3,\"lhs_layout\":\"cx\","
       "\"m\":2,\"n\":4,\"rhs_layout\":\"cx\","
-      "\"schema\":\"wafer-bulk-qualification-spec-v1\",\"seed\":7}\n")));
+      "\"schema\":\"wafer-bulk-qualification-spec-v2\",\"seed\":7}\n")));
   EXPECT_NE(expectError(loadBulkQualificationSpec(noncanonicalPath))
                 .find("not in canonical form"),
             std::string::npos);
@@ -447,7 +447,7 @@ TEST(BulkQualificationTest,
       unknownPath, "{\"batch_count\":1,\"destination_layout\":\"cx\","
                    "\"format\":\"f32\",\"k\":3,\"lhs_layout\":\"cx\","
                    "\"m\":2,\"n\":4,\"rhs_layout\":\"cx\","
-                   "\"schema\":\"wafer-bulk-qualification-spec-v1\",\"seed\":7,"
+                   "\"schema\":\"wafer-bulk-qualification-spec-v2\",\"seed\":7,"
                    "\"unknown\":false}\n")));
   EXPECT_NE(expectError(loadBulkQualificationSpec(unknownPath))
                 .find("unknown, missing or duplicate fields"),
@@ -458,13 +458,24 @@ TEST(BulkQualificationTest,
       malformedPath, "{\"batch_count\":\"bad\",\"destination_layout\":\"bad\","
                      "\"format\":\"bad\",\"k\":\"bad\",\"lhs_layout\":\"bad\","
                      "\"m\":\"bad\",\"n\":\"bad\",\"rhs_layout\":\"bad\","
-                     "\"schema\":\"wafer-bulk-qualification-spec-v1\","
+                     "\"schema\":\"wafer-bulk-qualification-spec-v2\","
                      "\"seed\":\"bad\"}\n")));
   std::string malformedError =
       expectError(loadBulkQualificationSpec(malformedPath));
   EXPECT_NE(malformedError.find("batch_count"), std::string::npos);
   EXPECT_NE(malformedError.find("field k"), std::string::npos);
   EXPECT_NE(malformedError.find("seed"), std::string::npos);
+
+  const std::string obsoleteSchemaPath = files.getPath("obsolete-schema.json");
+  ASSERT_FALSE(static_cast<bool>(writeText(
+      obsoleteSchemaPath,
+      "{\"batch_count\":1,\"destination_layout\":\"cx\","
+      "\"format\":\"f32\",\"k\":3,\"lhs_layout\":\"cx\","
+      "\"m\":2,\"n\":4,\"rhs_layout\":\"cx\","
+      "\"schema\":\"wafer-bulk-qualification-spec-v1\",\"seed\":7}\n")));
+  EXPECT_NE(expectError(loadBulkQualificationSpec(obsoleteSchemaPath))
+                .find("schema mismatch"),
+            std::string::npos);
 }
 
 TEST(BulkQualificationTest,

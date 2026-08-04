@@ -60,7 +60,7 @@ mlir::LogicalResult FunctionLowering::lowerPeripheral(InstrPeripheralOp op) {
     args.push_back(*address);
   }
   mlir::FailureOr<int64_t> fmt = getDataFormatCode(
-      op, op.getInputs().front(), "peripheral input", targetProfile);
+      op, op.getInputs().front(), "peripheral input");
   if (mlir::failed(fmt))
     return mlir::failure();
   appendI32(op.getLoc(), args, static_cast<int64_t>(op.getKind()));
@@ -79,7 +79,7 @@ mlir::LogicalResult FunctionLowering::lowerPeripheral(InstrPeripheralOp op) {
   appendI32(op.getLoc(), args,
             getOptionalIntegerAttrValue(op.getRoundingModeAttr(), -1));
 
-  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()),
               args, op.getWorker());
   return mlir::success();
 }

@@ -19,7 +19,7 @@ add_executable(WaferUnitTests
   Compiler/TargetABIPreparationTest.cpp
   Compiler/TargetArtifactTest.cpp
   Compiler/TargetCallFrontendTest.cpp
-  Compiler/TargetProfileTest.cpp
+  Compiler/TargetIdentityTest.cpp
   Compiler/WholeVariantAttemptPlanTest.cpp
   Compiler/WholeVariantCoordinatorTest.cpp
   Compiler/WholeVariantResourceAcceptanceTest.cpp
@@ -45,7 +45,6 @@ add_executable(WaferUnitTests
   Target/NumericSemanticsTest.cpp
   Target/PhysicalTensorCodecTest.cpp
   Target/TargetFormatTest.cpp
-  Target/TargetNumericCapabilityTest.cpp
   Target/TargetSchedulingCapabilityTest.cpp
   Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp
   Transforms/MemoryPlanning/MiniMallocPackingTest.cpp

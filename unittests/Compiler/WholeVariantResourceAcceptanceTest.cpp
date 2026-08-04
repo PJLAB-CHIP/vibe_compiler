@@ -29,8 +29,7 @@ protected:
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
     auto created = wafer::compiler::ExecutionConfig::createForSingleCard(
-        1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-        wafer::RuntimeLaunchKind::Kernel);
+        1, wafer::RuntimeLaunchKind::Kernel);
     EXPECT_TRUE(static_cast<bool>(created));
     if (created)
       config = std::make_unique<wafer::compiler::ExecutionConfig>(*created);
@@ -96,7 +95,7 @@ module {
            src_iterations = array<i64: 1, 1, 1>}
           : memref<4xf16, #wafer.memory<ddr, tensor>>
          to memref<4xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %buffer
           : memref<4xf16, #wafer.memory<spm, tensor>>
     }
@@ -112,7 +111,7 @@ module {
            dst_iterations = array<i64: 1, 1, 1>}
           : memref<4xf16, #wafer.memory<spm, tensor>>
          to memref<4xf16, #wafer.memory<ddr, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
       wafer.tile.yield %destination
           : memref<4xf16, #wafer.memory<ddr, tensor>>
     }
@@ -236,8 +235,7 @@ module {
 }
 )mlir";
   auto cardConfig = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(cardConfig));
 
   llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;
@@ -293,8 +291,7 @@ module {
 }
 )mlir";
   auto cardConfig = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(cardConfig));
 
   llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;

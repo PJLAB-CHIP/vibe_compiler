@@ -602,8 +602,7 @@ TEST_F(FixedSlotPipelineTest,
   ASSERT_TRUE(mlir::succeeded(candidate)) << failureReason;
   auto cost = wafer::analysis::analyzeInstructionProgramCost(
       candidate->module->getOperation(),
-      wafer::analysis::getTargetScheduleCostPolicy(
-          wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+      wafer::analysis::getTargetScheduleCostPolicy());
 
   ASSERT_TRUE(cost.instructionCount.isKnown());
   EXPECT_EQ(cost.instructionCount.value, 16u);

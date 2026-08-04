@@ -1,7 +1,5 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v1 logical-rank=0 transport-status-argument-index=0})' %s | FileCheck --check-prefix=V1 %s
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v2 logical-rank=0 transport-status-argument-index=0})' %s | FileCheck --check-prefix=V2 %s
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v3 logical-rank=0 transport-status-argument-index=0})' %s | FileCheck --check-prefix=V3 %s
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v3 logical-rank=0 transport-status-argument-index=0})' %s | mlir-translate --mlir-to-llvmir | FileCheck --check-prefix=LLVMIR %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{logical-rank=0 transport-status-argument-index=0})' %s | FileCheck --check-prefix=CURRENT %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{logical-rank=0 transport-status-argument-index=0})' %s | mlir-translate --mlir-to-llvmir | FileCheck --check-prefix=LLVMIR %s
 
 module {
   wafer.target.topology @default
@@ -32,33 +30,21 @@ module {
   }
 }
 
-// V1-LABEL: llvm.func @main
-// V1: %[[V1_SEND:.*]] = llvm.call @wafer_tx81_direct_dte_send_prepare
-// V1-NOT: llvm.call @wafer_tx81_direct_dte_send_issue_v3
-// V1: llvm.call @wafer_tx81_direct_dte_wait(%[[V1_SEND]])
-// V1: llvm.return
-
-// V2-LABEL: llvm.func @main
-// V2: %[[V2_SEND:.*]] = llvm.call @wafer_tx81_direct_dte_send_prepare
-// V2-NOT: llvm.call @wafer_tx81_direct_dte_send_issue_v3
-// V2: llvm.call @wafer_tx81_direct_dte_wait(%[[V2_SEND]])
-// V2: llvm.return
-
-// V3-LABEL: llvm.func @main
-// V3: llvm.call @wafer_tx81_direct_dte_begin
-// V3: %[[V3_RECV:.*]] = llvm.call @wafer_tx81_direct_dte_recv_prepare
-// V3-SAME: : (i64, i32, i32, i32, i32) -> i64
-// V3: llvm.urem
-// V3: llvm.icmp "eq"
-// V3: llvm.select
-// V3: llvm.select
-// V3: %[[V3_SEND:.*]] = llvm.call @wafer_tx81_direct_dte_send_prepare
-// V3-SAME: : (i64, i64, i32, i32, i32, i32, i32) -> i64
-// V3-NEXT: llvm.call @wafer_tx81_direct_dte_send_issue_v3(%[[V3_SEND]])
-// V3: llvm.call @wafer_tx81_direct_dte_wait(%[[V3_SEND]])
-// V3: llvm.call @wafer_tx81_direct_dte_wait(%[[V3_RECV]])
-// V3: llvm.call @wafer_tx81_direct_dte_finish
-// V3: llvm.return
+// CURRENT-LABEL: llvm.func @main
+// CURRENT: llvm.call @wafer_tx81_direct_dte_begin
+// CURRENT: %[[RECV:.*]] = llvm.call @wafer_tx81_direct_dte_recv_prepare
+// CURRENT-SAME: : (i64, i32, i32, i32, i32) -> i64
+// CURRENT: llvm.urem
+// CURRENT: llvm.icmp "eq"
+// CURRENT: llvm.select
+// CURRENT: llvm.select
+// CURRENT: %[[SEND:.*]] = llvm.call @wafer_tx81_direct_dte_send_prepare
+// CURRENT-SAME: : (i64, i64, i32, i32, i32, i32, i32) -> i64
+// CURRENT-NEXT: llvm.call @wafer_tx81_direct_dte_send_issue_v3(%[[SEND]])
+// CURRENT: llvm.call @wafer_tx81_direct_dte_wait(%[[SEND]])
+// CURRENT: llvm.call @wafer_tx81_direct_dte_wait(%[[RECV]])
+// CURRENT: llvm.call @wafer_tx81_direct_dte_finish
+// CURRENT: llvm.return
 
 // LLVMIR: call void @wafer_tx81_direct_dte_begin
 // LLVMIR: call i64 @wafer_tx81_direct_dte_recv_prepare

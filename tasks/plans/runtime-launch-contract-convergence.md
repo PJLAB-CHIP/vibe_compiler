@@ -6,14 +6,14 @@
 ## Pipeline position
 
 - Upstream artifact / IR:
-  带 `TargetProfileId`、两值 `RuntimeLaunchKind`、完整 rank domain、typed ABI slots、
+  带current target identity、两值`RuntimeLaunchKind`、完整rank domain、typed ABI slots、
   module exports 和 transport requirements 的 `ExecutableBundle` / `TargetArtifactBundle`。
 - Current stage responsibility:
-  compiler 一次性形成 tagged `RuntimeLaunchContract`；package schema v6 精确序列化并验证；
+  compiler一次性形成tagged `RuntimeLaunchContract`；package schema v7精确序列化并验证；
   `wafer-run` 只按 kernel 或 model 顶层分派，provider 在 kernel 内部执行已验证的 form 和
   ordered phases。
 - Output artifact / IR:
-  不含旧 `TargetLaunchABIId` 的 compiler/runtime API、schema-v6 package、no-card plan 和
+  不含旧`TargetLaunchABIId`的compiler/runtime API、schema-v7 package、no-card plan和
   board submission lifecycle。
 - Downstream consumer:
   package loader、RuntimeSession、BoardRuntime、TX provider、profiling evidence 和板端 case。
@@ -33,7 +33,7 @@
 2. 将 compiler request、target publication 与 `wafer-compile` 迁移到 `--launch-kind`；在完整
    accepted IR/rank domain仍可检查时形成唯一 resolved contract并由 `ExecutableBundle` 持有，
    transport acceptance作为并列事实而不成为runtime launch选择器。
-3. 将 package、profile companion、RuntimeSession 和 JSON wire form 升级到 schema v6
+3. 将package、profile companion、RuntimeSession和JSON wire form收口到current schema v7
    `target.launch`，明确拒绝 schema v5、`launch_abi` 和四个旧 spelling。
 4. 将 BoardRuntime/driver/provider 收口到 kernel phase 与 model 两个 submit 面；同一绝对 deadline
    串行完成 ordered phases，transport status 只由 entry transport 决定。

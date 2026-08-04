@@ -88,8 +88,8 @@ materializeBulkQualificationCase(BulkQualificationSpec spec,
   if (!axes)
     return axes.takeError();
   llvm::Expected<NumericCommandKey> key = NumericCommandKey::createNEGemm(
-      TargetProfileId::waferTx81SingleCardKernelV1(), *lhs, *rhs, *destination,
-      spec.getM(), spec.getK(), spec.getN(), spec.getBatchCount(), *axes);
+      *lhs, *rhs, *destination, spec.getM(), spec.getK(), spec.getN(),
+      spec.getBatchCount(), *axes);
   if (!key)
     return key.takeError();
   llvm::Expected<ResolvedNumericCommand> command = resolveNumericCommand(

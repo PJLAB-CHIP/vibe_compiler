@@ -64,9 +64,9 @@ Pipeline position:
 - 正常configured-board实例使用已有FP16 HuggingFace config，属于板测默认dtype的case参数；公共raw读写和比较
   仍不固定dtype。Llama case复用Q28已冻结的`atol=0.004, rtol=0.002`全张量比较policy，不能转换actual或
   参考结果dtype。
-- fresh production compile transaction为`493.374 s`，peak RSS为`3,015,048 KiB`；发布schema-v6、16-rank
+- fresh production compile transaction为`493.374 s`，peak RSS为`3,015,048 KiB`；发布schema-v7、16-rank
   cluster prepare/main package和一个aggregate ELF。每rank 18个typed launch slot，manifest选择
-  `rank-row-pointer-table-v1`，runtime packet只携带16个device row pointer；完整288-resource no-card preflight通过。
+  `rank-row-pointer-table`，runtime packet只携带16个device row pointer；完整288-resource no-card preflight通过。
   这些只证明board-ready artifact/runtime闭合，不代签真实board output与PyTorch eager比较。
 
 ## 实施顺序

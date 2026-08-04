@@ -934,8 +934,7 @@ TEST_F(NoCPartialDataflowTest,
          wafer::RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0});
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      rankCount, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      rankCount, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   ASSERT_TRUE(
       mlir::succeeded(wafer::compiler::detail::acceptWholeVariantResources(
@@ -1011,8 +1010,7 @@ TEST_F(NoCPartialDataflowTest,
   program.distributedInputs.push_back(std::move(unrelatedInput));
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      rankCount, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      rankCount, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   std::string failure;
   ASSERT_TRUE(mlir::succeeded(

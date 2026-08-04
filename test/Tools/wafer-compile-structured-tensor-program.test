@@ -2,7 +2,7 @@
 
 # RUN: rm -rf %t.input.program %t.package
 # RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy column --size 32 --output-program-dir %t.input.program
-# RUN: wafer-compile --input-program-dir %t.input.program --output-program-dir %t.package --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel | FileCheck %s --check-prefix=PIPELINE
+# RUN: wafer-compile --input-program-dir %t.input.program --output-program-dir %t.package --execution-ranks=16 --launch-kind=kernel | FileCheck %s --check-prefix=PIPELINE
 # RUN: FileCheck %s --input-file=%t.package/functions/forward.mlir --check-prefix=STRUCTURED-MLIR
 
 # PIPELINE: wafer-compile: published verified package with execution-ranks=16:

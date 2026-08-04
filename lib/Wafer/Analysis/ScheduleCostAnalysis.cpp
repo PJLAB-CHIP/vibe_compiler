@@ -108,28 +108,19 @@ void add(ScheduleCostMetric &metric, Quantity quantity) {
 
 } // namespace detail
 
-TargetScheduleCostPolicy
-getTargetScheduleCostPolicy(TargetProfileId targetProfile) {
-  TargetScheduleCostPolicy policy(targetProfile);
-  if (targetProfile == TargetProfileId::waferTx81SingleCardKernelV1() ||
-      targetProfile == TargetProfileId::waferTx81SingleCardKernelV2() ||
-      targetProfile == TargetProfileId::waferTx81SingleCardKernelV3()) {
-    policy.qualifiedOverlapFamilyMask =
-        (uint32_t{1} << static_cast<uint32_t>(InstrFamily::CT)) |
-        (uint32_t{1} << static_cast<uint32_t>(InstrFamily::RDMA)) |
-        (uint32_t{1} << static_cast<uint32_t>(InstrFamily::WDMA));
-    policy.qualifiedOverlapWorker = static_cast<uint32_t>(NCCWorker::Worker0);
-  }
-  if (targetProfile == TargetProfileId::waferTx81SingleCardKernelV3()) {
-    // Only V3 has a real prepare/explicit-issue/exact-wait target contract.
-    // This mask recognizes an auditable structural opportunity. The separate
-    // target scheduling profitability registry intentionally remains Unknown
-    // until matched board evidence exists.
-    policy.qualifiedDirectDTEOverlapFamilyMask =
-        (uint32_t{1} << static_cast<uint32_t>(InstrFamily::DTE)) |
-        (uint32_t{1} << static_cast<uint32_t>(InstrFamily::CT)) |
-        (uint32_t{1} << static_cast<uint32_t>(InstrFamily::NE));
-  }
+TargetScheduleCostPolicy getTargetScheduleCostPolicy() {
+  TargetScheduleCostPolicy policy;
+  policy.qualifiedOverlapFamilyMask =
+      (uint32_t{1} << static_cast<uint32_t>(InstrFamily::CT)) |
+      (uint32_t{1} << static_cast<uint32_t>(InstrFamily::RDMA)) |
+      (uint32_t{1} << static_cast<uint32_t>(InstrFamily::WDMA));
+  policy.qualifiedOverlapWorker = static_cast<uint32_t>(NCCWorker::Worker0);
+  // This recognizes an auditable structural opportunity. Profitability stays
+  // Unknown until matched board evidence exists.
+  policy.qualifiedDirectDTEOverlapFamilyMask =
+      (uint32_t{1} << static_cast<uint32_t>(InstrFamily::DTE)) |
+      (uint32_t{1} << static_cast<uint32_t>(InstrFamily::CT)) |
+      (uint32_t{1} << static_cast<uint32_t>(InstrFamily::NE));
   return policy;
 }
 

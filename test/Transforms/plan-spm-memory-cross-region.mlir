@@ -23,7 +23,7 @@ func.func @share_across_sibling_regions(
         : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %produced, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %produced
         : memref<128xf16, #wafer.memory<spm, tensor>>
   }
@@ -48,7 +48,7 @@ func.func @share_across_sibling_regions(
          dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
         : memref<128xf16, #wafer.memory<spm, tensor>>
        to memref<128xf16, #wafer.memory<ddr, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %ddr
         : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
@@ -62,7 +62,7 @@ func.func @share_across_sibling_regions(
         : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %reusable, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %ddr
         : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
@@ -122,7 +122,7 @@ func.func @cross_region_same_worker_completion(
   ^bb0(%input: memref<128xf16, #wafer.memory<spm, tensor>>):
     // Pending NCC state is function-wide. This explicit later sibling
     // completion legitimately covers the same-worker producer stream.
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %input
         : memref<128xf16, #wafer.memory<spm, tensor>>
   }
@@ -131,7 +131,7 @@ func.func @cross_region_same_worker_completion(
 
 // CROSS-REGION-COMPLETION-LABEL: func.func @cross_region_same_worker_completion
 // CROSS-REGION-COMPLETION: wafer.instr.fill
-// CROSS-REGION-COMPLETION: wafer.instr.local_fence
+// CROSS-REGION-COMPLETION: wafer.instr.ncc_join [0]
 
 //--- live-across-direct-call.mlir
 func.func @independently_planned_callee(

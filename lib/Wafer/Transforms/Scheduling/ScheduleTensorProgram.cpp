@@ -587,10 +587,9 @@ static constexpr unsigned kFixedSlotNeighborLimit = 8;
 
 static void appendStaticFixedSlotNeighbors(
     mlir::ModuleOp source, unsigned promotedHandoffs, bool readyReordered,
-    TargetProfileId targetProfile,
     std::vector<RankArtifactAlternative> &alternatives) {
   llvm::Expected<TargetSchedulingCapabilityRegistry> registry =
-      getTargetSchedulingCapabilityRegistry(targetProfile);
+      getTargetSchedulingCapabilityRegistry();
   if (!registry) {
     llvm::consumeError(registry.takeError());
     return;
@@ -625,8 +624,7 @@ static void appendStaticFixedSlotNeighbors(
 
     llvm::Expected<TargetSchedulingWindowQuery> query =
         analyzeTargetSchedulingWindow(
-            *candidate->module, targetProfile,
-            TargetSchedulingMechanism::StaticFixedSlot);
+            *candidate->module, TargetSchedulingMechanism::StaticFixedSlot);
     if (!query) {
       llvm::consumeError(query.takeError());
       continue;
@@ -654,10 +652,9 @@ static void appendStaticFixedSlotNeighbors(
 static void appendWorkerPlacementNeighbor(
     mlir::ModuleOp source, unsigned promotedHandoffs, bool readyReordered,
     RankBufferingKind bufferingKind, uint32_t bufferingPlanOrdinal,
-    TargetProfileId targetProfile,
     std::vector<RankArtifactAlternative> &alternatives) {
   llvm::Expected<TargetSchedulingCapabilityRegistry> registry =
-      getTargetSchedulingCapabilityRegistry(targetProfile);
+      getTargetSchedulingCapabilityRegistry();
   if (!registry) {
     llvm::consumeError(registry.takeError());
     return;
@@ -680,8 +677,7 @@ static void appendWorkerPlacementNeighbor(
       : hasDirectDTE ? TargetSchedulingMechanism::DirectDTEOverlap
                      : TargetSchedulingMechanism::WorkerPlacement;
   llvm::Expected<TargetSchedulingWindowQuery> query =
-      analyzeTargetSchedulingWindow(*candidate->module, targetProfile,
-                                    mechanism);
+      analyzeTargetSchedulingWindow(*candidate->module, mechanism);
   if (!query) {
     llvm::consumeError(query.takeError());
     return;
@@ -1028,19 +1024,19 @@ static mlir::LogicalResult evaluateRankVariantImpl(
     if (spillNormalized)
       appendStaticFixedSlotNeighbors(
           *spillModule, /*promotedHandoffs=*/0,
-          /*readyReordered=*/false, config.targetProfile, pipelineAlternatives);
+          /*readyReordered=*/false, pipelineAlternatives);
     if (spillReadyModule)
       appendStaticFixedSlotNeighbors(
           *spillReadyModule, /*promotedHandoffs=*/0,
-          /*readyReordered=*/true, config.targetProfile, pipelineAlternatives);
+          /*readyReordered=*/true, pipelineAlternatives);
     if (residentModule)
       appendStaticFixedSlotNeighbors(
           *residentModule, promotedHandoffs,
-          /*readyReordered=*/false, config.targetProfile, pipelineAlternatives);
+          /*readyReordered=*/false, pipelineAlternatives);
     if (residentReadyModule)
       appendStaticFixedSlotNeighbors(
           *residentReadyModule, promotedHandoffs,
-          /*readyReordered=*/true, config.targetProfile, pipelineAlternatives);
+          /*readyReordered=*/true, pipelineAlternatives);
   }
 
   // Worker placement is an independent derivation dimension. Generate one
@@ -1058,27 +1054,27 @@ static mlir::LogicalResult evaluateRankVariantImpl(
       appendWorkerPlacementNeighbor(
           *spillModule, /*promotedHandoffs=*/0, /*readyReordered=*/false,
           RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
-          config.targetProfile, workerAlternatives);
+          workerAlternatives);
     if (spillReadyModule)
       appendWorkerPlacementNeighbor(
           *spillReadyModule, /*promotedHandoffs=*/0, /*readyReordered=*/true,
           RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
-          config.targetProfile, workerAlternatives);
+          workerAlternatives);
     if (residentModule)
       appendWorkerPlacementNeighbor(
           *residentModule, promotedHandoffs, /*readyReordered=*/false,
           RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
-          config.targetProfile, workerAlternatives);
+          workerAlternatives);
     if (residentReadyModule)
       appendWorkerPlacementNeighbor(
           *residentReadyModule, promotedHandoffs, /*readyReordered=*/true,
           RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
-          config.targetProfile, workerAlternatives);
+          workerAlternatives);
     for (const RankArtifactAlternative &pipeline : pipelineAlternatives)
       appendWorkerPlacementNeighbor(
           *pipeline.module, pipeline.promotedHandoffs, pipeline.readyReordered,
           pipeline.bufferingKind, pipeline.bufferingPlanOrdinal,
-          config.targetProfile, workerAlternatives);
+          workerAlternatives);
   }
   artifactDerivationTiming.reset();
 
@@ -1582,16 +1578,9 @@ buildScheduledRankCandidateFrontier(
            "index/count must name a non-empty in-range shard";
     return mlir::failure();
   }
-  if (!frontierConfig.targetProfile) {
-    sourceModule.emitError()
-        << "invalid_tensor_program_scheduling_config: target-profile must be "
-           "explicitly provided";
-    return mlir::failure();
-  }
-
   WaferTargetPolicy targetPolicy =
       getDefaultWaferTargetPolicy(TileSearchEffort::Default);
-  SelectionConfig config(targetPolicy, *frontierConfig.targetProfile);
+  SelectionConfig config(targetPolicy);
   config.logicalRank = frontierConfig.logicalRank;
   config.candidateParallelism = frontierConfig.candidateParallelism;
   config.optimizations = frontierConfig.optimizations;

@@ -27,7 +27,7 @@ func.func @external_if_results_keep_one_root(
        src_strides = array<i64: 0, 0, 0>}
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
 
   %second = scf.if %cond
       -> (memref<128xf16, #wafer.memory<ddr, tensor>>) {
@@ -43,7 +43,7 @@ func.func @external_if_results_keep_one_root(
        src_strides = array<i64: 0, 0, 0>}
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
@@ -63,7 +63,7 @@ func.func @external_for_result_keeps_boundary_root(
        src_strides = array<i64: 0, 0, 0>}
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
@@ -94,7 +94,7 @@ func.func @select_keeps_all_managed_ddr_roots_live(%cond: i1) {
        src_strides = array<i64: 0, 0, 0>}
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 
@@ -127,7 +127,7 @@ func.func @select_keeps_all_managed_spm_roots_live(
          dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
         : memref<128xf16, #wafer.memory<spm, tensor>>
        to memref<128xf16, #wafer.memory<ddr, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     wafer.tile.yield %output
         : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
@@ -159,7 +159,7 @@ func.func @loop_body_view_sees_all_carried_external_origins(
          src_strides = array<i64: 0, 0, 0>}
         : memref<128xf16, strided<[1]>, #wafer.memory<ddr, tensor>>
        to memref<128xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     scf.yield %b : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
@@ -191,7 +191,7 @@ func.func @repeatable_branch_origin_crosses_backedge(
            src_strides = array<i64: 0, 0, 0>}
           : memref<128xf16, #wafer.memory<ddr, tensor>>
          to memref<128xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.local_fence
+      wafer.instr.ncc_join [0]
     }
     %next = arith.xori %flag, %true : i1
     scf.yield %next, %b
@@ -232,7 +232,7 @@ func.func @positive_loop_result_uses_backedge_ddr_root() {
       : memref<128xf16, strided<[1], offset: ?>,
                #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 

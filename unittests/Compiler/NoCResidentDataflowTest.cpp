@@ -733,8 +733,6 @@ module {
 
   std::optional<ActualTraversalFrontiers> buildActualTraversalFrontiers(
       llvm::StringRef sourceText, bool duplicateBaselineLoad = false,
-      wafer::TargetProfileId targetProfile =
-          wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
       bool requireWorkerPlacedInterface = false) {
     mlir::OwningOpRef<mlir::ModuleOp> source =
         mlir::parseSourceString<mlir::ModuleOp>(
@@ -745,7 +743,6 @@ module {
     wafer::TensorProgramSchedulingConfig schedulingConfig;
     schedulingConfig.logicalRank = 0;
     schedulingConfig.candidateParallelism = 1;
-    schedulingConfig.targetProfile = targetProfile;
     mlir::FailureOr<std::vector<wafer::ScheduledRankCandidate>> scheduled =
         wafer::buildScheduledRankCandidateFrontier(*source, schedulingConfig);
     if (mlir::failed(scheduled))
@@ -754,7 +751,7 @@ module {
         std::vector<wafer::compiler::detail::FinalizedRankCandidate>>
         finalized =
             wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-                std::move(*scheduled), targetProfile);
+                std::move(*scheduled));
     if (mlir::failed(finalized))
       return std::nullopt;
 
@@ -973,8 +970,7 @@ TEST_F(NoCResidentDataflowTest,
          /*bufferingPlanOrdinal=*/0});
   }
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1127,8 +1123,7 @@ TEST_F(NoCResidentDataflowTest,
   ASSERT_EQ(parameter.parameters.front().argumentIndex, 0);
   ASSERT_EQ(parameter.parameters.front().rankSlices.size(), 16u);
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1209,8 +1204,7 @@ TEST_F(NoCResidentDataflowTest,
   ASSERT_EQ(invalid.parameters.size(), 1u);
   invalid.parameters.front().argumentIndex = 1;
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1240,8 +1234,7 @@ TEST_F(NoCResidentDataflowTest, KeepsBaselineOnReplicatedParameterCoverageGap) {
   ASSERT_EQ(invalid.parameters.size(), 1u);
   invalid.parameters.front().rankSlices.pop_back();
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1265,8 +1258,7 @@ TEST_F(NoCResidentDataflowTest, KeepsBaselineOnNonEquivalentRankSlices) {
   wafer::frontend::FrontendProgramVerificationResult invalid = program();
   invalid.distributedInputs.front().rankSlices.back().offsets = {1};
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1285,8 +1277,7 @@ TEST_F(NoCResidentDataflowTest, PartitionedBoundaryKeepsOneLoadPerUniqueShard) {
          /*reservedBaseline=*/true, wafer::RankBufferingKind::Single,
          /*bufferingPlanOrdinal=*/0});
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1321,8 +1312,7 @@ TEST_F(NoCResidentDataflowTest, KeepsBaselineOnReplicatedCoverageGap) {
   wafer::frontend::FrontendProgramVerificationResult invalid = program();
   invalid.distributedInputs.front().globalShape = {8};
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1346,8 +1336,7 @@ TEST_F(NoCResidentDataflowTest, KeepsBaselineOnPartitionedSliceOverlap) {
        invalid.distributedInputs.front().rankSlices)
     slice.offsets = {0};
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1366,8 +1355,7 @@ TEST_F(NoCResidentDataflowTest, KeepsBaselineOnMismatchedPhysicalPayload) {
          wafer::RankArtifactKind::Spill, /*reservedBaseline=*/true,
          wafer::RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0});
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1397,8 +1385,7 @@ TEST_F(NoCResidentDataflowTest,
          /*bufferingPlanOrdinal=*/0});
   }
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1420,8 +1407,7 @@ TEST_F(NoCResidentDataflowTest, KeepsBaselineOnNonRepresentableRelation) {
   wafer::frontend::FrontendProgramVerificationResult invalid = program();
   invalid.distributedInputs.front().rankSlices[5].strides = {0};
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1444,8 +1430,7 @@ TEST_F(NoCResidentDataflowTest, SingleRankDomainDoesNotInventPeerDataflow) {
   singleRank.distributedInputs.front().rankSlices.front().logicalRank = 0;
   singleRank.distributedInputs.front().rankSlices.front().replicaId = 0;
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1472,8 +1457,7 @@ TEST_F(NoCResidentDataflowTest,
          wafer::RankArtifactKind::Spill, /*reservedBaseline=*/true,
          wafer::RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0});
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1533,8 +1517,7 @@ TEST_F(NoCResidentDataflowTest,
 TEST_F(NoCResidentDataflowTest,
        PreparesNewPeerReceiveBeforeExistingDirectDTETraffic) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   // Discover the semantic owner without assuming a rank ordinal in the test.
@@ -1717,8 +1700,7 @@ TEST_F(NoCResidentDataflowTest,
   }
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   std::string failure;
   ASSERT_TRUE(mlir::succeeded(
@@ -1848,8 +1830,7 @@ TEST_F(NoCResidentDataflowTest,
          /*reservedBaseline=*/true, wafer::RankBufferingKind::Single,
          /*bufferingPlanOrdinal=*/0});
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
 
   std::string failure;
@@ -1982,8 +1963,7 @@ TEST_F(NoCResidentDataflowTest,
   }
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   std::string failure;
   ASSERT_TRUE(mlir::succeeded(
@@ -2080,8 +2060,7 @@ TEST_F(NoCResidentDataflowTest,
       originalSnapshots[rank].push_back(candidateSnapshot(candidate));
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   std::string failure;
   ASSERT_TRUE(mlir::succeeded(
@@ -2142,8 +2121,7 @@ TEST_F(NoCResidentDataflowTest,
       originalSnapshots[rank].push_back(candidateSnapshot(candidate));
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   for (auto *frontiers : {&first, &second}) {
     std::string failure;
@@ -2221,8 +2199,7 @@ TEST_F(NoCResidentDataflowTest,
   }
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   std::string failure;
   ASSERT_TRUE(mlir::succeeded(
@@ -2308,8 +2285,7 @@ TEST_F(NoCResidentDataflowTest,
   auto control = buildFrontiers(/*includeFailedSeeds=*/false);
   auto withFailures = buildFrontiers(/*includeFailedSeeds=*/true);
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   for (auto *frontiers : {&control, &withFailures}) {
     std::string failure;
@@ -2355,8 +2331,7 @@ TEST_F(NoCResidentDataflowTest,
       originalSnapshots[rank].push_back(candidateSnapshot(candidate));
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   std::string failure;
   EXPECT_TRUE(
@@ -2411,8 +2386,7 @@ module {
   }
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   wafer::frontend::FrontendProgramVerificationResult frontendProgram =
       replicatedProgram(/*inputShape=*/{4, 6}, /*outputShape=*/{4, 6});
@@ -2535,8 +2509,7 @@ module {
   ASSERT_GT(actual->interfaceOutputWriteCount, 0u);
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   wafer::frontend::FrontendProgramVerificationResult frontendProgram =
       replicatedProgram(/*inputShape=*/{4, 8}, /*outputShape=*/{4});
@@ -2602,13 +2575,11 @@ module {
 }
 )mlir",
           /*duplicateBaselineLoad=*/false,
-          wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
           /*requireWorkerPlacedInterface=*/true);
   ASSERT_TRUE(actual);
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   wafer::frontend::FrontendProgramVerificationResult frontendProgram =
       replicatedProgram(/*inputShape=*/{8, 1}, /*outputShape=*/{8});
@@ -2747,8 +2718,7 @@ module {
   // Distinct required output slices cannot be replaced by output publication.
   program.distributedOutputs.push_back(std::move(output));
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV3(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
@@ -2859,8 +2829,7 @@ module {
   program.distributedInputs.push_back(boundary);
   program.distributedOutputs.push_back(std::move(boundary));
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::RuntimeLaunchKind::Kernel);
+      16, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);

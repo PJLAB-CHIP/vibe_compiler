@@ -572,7 +572,7 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
         CandidateSpec candidate = queue[queueIndex + batchOffset].spec;
         ++visitedCount;
         if (std::optional<std::string> failure = getCheapTargetGeometryFailure(
-                task, candidate, *reductionRanges, config.targetProfile)) {
+                task, candidate, *reductionRanges)) {
           results[batchOffset].spec = candidate;
           results[batchOffset].failureReason = std::move(*failure);
           continue;
@@ -620,7 +620,7 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
     CandidateSpec candidate = queue[queueIndex++].spec;
     ++visitedCount;
     if (std::optional<std::string> failure = getCheapTargetGeometryFailure(
-            task, candidate, *reductionRanges, config.targetProfile)) {
+            task, candidate, *reductionRanges)) {
       rejectCandidate(candidate, *failure);
       continue;
     }

@@ -30,7 +30,7 @@ if str(PYTORCH_BOARD_DIR) not in sys.path:
 import wafer_pytorch_board_common as torch_reference  # noqa: E402
 
 
-TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
+TARGET_IDENTITY = "wafer-tx81-single-card"
 RANK_ONE_LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 CLUSTER_LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 DIRECT_DTE_STATUS_ABI = "wafer-direct-dte-status-v2"
@@ -747,7 +747,7 @@ def ready_order_oracle(
     )
     if winner_completion > baseline_completion:
         raise RuntimeError("ready-order winner added completion calls")
-    movement = ("wafer_tx81_rdma", "wafer_tx81_wdma")
+    movement = ("wafer_tx81_rdma_v3", "wafer_tx81_wdma_v3")
 
     def leading_movement(calls: tuple[str, ...]) -> int:
         count = 0
@@ -755,7 +755,7 @@ def ready_order_oracle(
             if any(fragment in call for fragment in movement):
                 count += 1
                 continue
-            if "local_fence" in call:
+            if "ncc_join" in call:
                 continue
             break
         return count
@@ -1209,7 +1209,6 @@ def compile_package(
         "--output-program-dir",
         str(output),
         f"--execution-ranks={case.rank_count}",
-        f"--target-profile={TARGET_PROFILE}",
         f"--launch-kind={case.launch_kind}",
     ]
     if reserved_baseline:
@@ -1305,7 +1304,7 @@ def validate_paired_packages(
     winner: pathlib.Path,
     case: CampaignCase,
     *,
-    target_profile: str = TARGET_PROFILE,
+    target_identity: str = TARGET_IDENTITY,
 ) -> tuple[
     dict[str, dict[tuple[int, str, int], int]],
     dict[str, set[int]],
@@ -1332,9 +1331,9 @@ def validate_paired_packages(
         )
         if (
             manifest.get("rank_count") != case.rank_count
-            or manifest.get("target", {}).get("profile") != target_profile
+            or manifest.get("target", {}).get("identity") != target_identity
         ):
-            raise RuntimeError("paired package target contract is invalid")
+            raise RuntimeError("paired package target fields are invalid")
         resources = manifest.get("resources")
         if not isinstance(resources, list):
             raise RuntimeError("package resources are not a list")
@@ -2098,7 +2097,7 @@ def main() -> int:
             ).hexdigest()
             for relative in SOURCE_SNAPSHOT_PATHS
         },
-        "target_profile": TARGET_PROFILE,
+        "target_identity": TARGET_IDENTITY,
         "launch": case.launch_contract,
         "rank_count": case.rank_count,
         "module_digests": {

@@ -85,7 +85,7 @@ func.func @select_row_broadcast() {
 // CHECK: wafer.instr.mask_move %[[TRUE]], %[[MASK]] into %[[DEST]]
 // CHECK: wafer.instr.ncc_join [0]
 // CHECK-NOT: indexing_maps
-// CHECK-NOT: wafer.instr.local_fence
+// CHECK-NOT: wafer.instr.ncc_join [0]
 
 func.func @constant_true_select_to_fresh_copy(
     %true_value: memref<2x3xf32, #wafer.memory<spm, tensor>>,

@@ -237,11 +237,8 @@ static void recordMemrefGeometry(mlir::Value value,
 
 llvm::Expected<TargetSchedulingCapabilityRegistry>
 TargetSchedulingCapabilityRegistry::create(
-    TargetProfileId targetProfile, uint32_t contractVersion,
     llvm::ArrayRef<TargetSchedulingLegalityRow> legalityRows,
     llvm::ArrayRef<TargetSchedulingProfitabilityRow> profitabilityRows) {
-  if (contractVersion == 0)
-    return invalid("target scheduling contract version must be nonzero");
   if (legalityRows.empty())
     return invalid("target scheduling legality registry must not be empty");
   if (llvm::Error error =
@@ -282,7 +279,6 @@ TargetSchedulingCapabilityRegistry::create(
   }
 
   return TargetSchedulingCapabilityRegistry(
-      targetProfile, contractVersion,
       std::vector<TargetSchedulingLegalityRow>(legalityRows.begin(),
                                                legalityRows.end()),
       std::vector<TargetSchedulingProfitabilityRow>(profitabilityRows.begin(),
@@ -292,8 +288,6 @@ TargetSchedulingCapabilityRegistry::create(
 llvm::Expected<TargetSchedulingWindowDecision>
 TargetSchedulingCapabilityRegistry::query(
     const TargetSchedulingWindowQuery &query) const {
-  if (query.targetProfile != targetProfile)
-    return invalid("target scheduling query/profile mismatch");
   if (query.engines == 0 ||
       (query.engines & ~kAllTargetSchedulingEngineMask) != 0)
     return invalid("target scheduling query has an invalid engine set");
@@ -335,48 +329,40 @@ TargetSchedulingCapabilityRegistry::query(
 }
 
 llvm::Expected<TargetSchedulingCapabilityRegistry>
-getTargetSchedulingCapabilityRegistry(TargetProfileId targetProfile) {
+getTargetSchedulingCapabilityRegistry() {
   std::vector<TargetSchedulingLegalityRow> legality;
   std::vector<TargetSchedulingProfitabilityRow> profitability;
 
-  const bool nonzeroWorkers =
-      targetProfile == TargetProfileId::waferTx81SingleCardKernelV3();
   appendNCCLegalityRows(legality, TargetSchedulingMechanism::StaticFixedSlot,
-                        nonzeroWorkers);
-  if (nonzeroWorkers) {
-    appendNCCLegalityRows(legality, TargetSchedulingMechanism::WorkerPlacement,
-                          /*allowCrossWorker=*/true);
-    appendMixedDTEAndNCCLegalityRows(
-        legality, TargetSchedulingMechanism::StaticFixedSlot);
-    appendMixedDTEAndNCCLegalityRows(
-        legality, TargetSchedulingMechanism::DirectDTEOverlap);
-  }
+                        /*allowCrossWorker=*/true);
+  appendNCCLegalityRows(legality, TargetSchedulingMechanism::WorkerPlacement,
+                        /*allowCrossWorker=*/true);
+  appendMixedDTEAndNCCLegalityRows(
+      legality, TargetSchedulingMechanism::StaticFixedSlot);
+  appendMixedDTEAndNCCLegalityRows(
+      legality, TargetSchedulingMechanism::DirectDTEOverlap);
   appendFixedSlotProfitabilityRows(profitability);
-  if (nonzeroWorkers) {
-    const TargetSchedulingEngineMask ctRdma =
-        targetSchedulingEngineBit(TargetSchedulingEngine::CT) |
-        targetSchedulingEngineBit(TargetSchedulingEngine::RDMA);
-    profitability.push_back(
-        {makePredicate(TargetSchedulingMechanism::WorkerPlacement, ctRdma,
-                       TargetSchedulingWorkerRelation::CrossNCCWorkers,
-                       TargetSchedulingCompletionKind::ParticipantJoin),
-         TargetSchedulingProfitabilityScope::ExactPair,
-         TargetSchedulingOverlapEvidence::QualifiedOverlap,
-         TargetSchedulingDrainEvidence::Unknown});
-  }
+  const TargetSchedulingEngineMask ctRdma =
+      targetSchedulingEngineBit(TargetSchedulingEngine::CT) |
+      targetSchedulingEngineBit(TargetSchedulingEngine::RDMA);
+  profitability.push_back(
+      {makePredicate(TargetSchedulingMechanism::WorkerPlacement, ctRdma,
+                     TargetSchedulingWorkerRelation::CrossNCCWorkers,
+                     TargetSchedulingCompletionKind::ParticipantJoin),
+       TargetSchedulingProfitabilityScope::ExactPair,
+       TargetSchedulingOverlapEvidence::QualifiedOverlap,
+       TargetSchedulingDrainEvidence::Unknown});
 
-  return TargetSchedulingCapabilityRegistry::create(
-      targetProfile, nonzeroWorkers ? 3u : 1u, legality, profitability);
+  return TargetSchedulingCapabilityRegistry::create(legality, profitability);
 }
 
 llvm::Expected<TargetSchedulingWindowQuery>
 analyzeTargetSchedulingWindow(mlir::ModuleOp module,
-                              TargetProfileId targetProfile,
                               TargetSchedulingMechanism mechanism) {
   if (!module)
     return invalid("target scheduling analysis requires a module");
 
-  TargetSchedulingWindowQuery query(targetProfile, mechanism);
+  TargetSchedulingWindowQuery query(mechanism);
   llvm::DenseSet<mlir::Value> visibleBuffers;
   bool hasNCC = false;
   bool hasDTE = false;

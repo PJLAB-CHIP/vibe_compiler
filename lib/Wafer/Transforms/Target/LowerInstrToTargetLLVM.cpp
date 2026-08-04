@@ -26,7 +26,7 @@ struct LowerInstrToTargetLLVMPass
       LowerInstrToTargetLLVMPass>::LowerInstrToTargetLLVMPassBase;
 
   explicit LowerInstrToTargetLLVMPass(const TargetConversionRequest &request)
-      : typedTargetProfile(request.targetProfile) {
+      {
     defaultDDRArenaArgumentIndex = request.defaultDDRArenaArgumentIndex;
     logicalRank = request.logicalRank;
     transportStatusArgumentIndex = request.transportStatusArgumentIndex;
@@ -36,28 +36,8 @@ struct LowerInstrToTargetLLVMPass
 
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();
-    std::optional<TargetProfileId> resolvedProfile = typedTargetProfile;
-    if (!resolvedProfile) {
-      if (targetProfile.getValue().empty()) {
-        moduleOp.emitError()
-            << "missing required target-profile for target LLVM conversion";
-        signalPassFailure();
-        return;
-      }
-      llvm::Expected<TargetProfileId> parsed =
-          parseTargetProfileId(targetProfile.getValue());
-      if (!parsed) {
-        moduleOp.emitError()
-            << "invalid target-profile for target LLVM conversion: "
-            << llvm::toString(parsed.takeError());
-        signalPassFailure();
-        return;
-      }
-      resolvedProfile = *parsed;
-    }
     if (mlir::failed(target_llvm_detail::preflightTargetAddresses(moduleOp)) ||
-        mlir::failed(target_llvm_detail::preflightTargetFormats(
-            moduleOp, *resolvedProfile))) {
+        mlir::failed(target_llvm_detail::preflightTargetFormats(moduleOp))) {
       signalPassFailure();
       return;
     }
@@ -84,7 +64,7 @@ struct LowerInstrToTargetLLVMPass
       return;
     }
     if (mlir::failed(target_llvm_detail::lowerModuleInPlace(
-            *loweredModule, *resolvedProfile, transportPreparedBeforeEntry,
+            *loweredModule, transportPreparedBeforeEntry,
             defaultDDRArenaArgumentIndex, logicalRank,
             transportStatusArgumentIndex, profileRecordArgumentIndex))) {
       signalPassFailure();
@@ -95,7 +75,6 @@ struct LowerInstrToTargetLLVMPass
     moduleOp.getBodyRegion().takeBody(loweredModule->getBodyRegion());
   }
 
-  std::optional<TargetProfileId> typedTargetProfile;
   int64_t profileRecordArgumentIndex = -1;
 };
 

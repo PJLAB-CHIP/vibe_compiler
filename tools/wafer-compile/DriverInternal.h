@@ -23,8 +23,8 @@ struct CommandLineOptions {
   std::optional<std::string> inputProgramDirectory;
   std::optional<std::string> outputProgramDirectory;
   std::optional<std::string> executionRanks;
-  std::optional<std::string> targetProfile;
   std::optional<std::string> runtimeLaunchKind;
+  std::optional<std::string> compilerIRDumpDirectory;
   std::optional<std::string> optimizationPreset;
   std::vector<std::string> enabledOptimizations;
   std::vector<std::string> disabledOptimizations;
@@ -67,6 +67,13 @@ parseOptimizationConfig(const CommandLineOptions &options);
 std::optional<uint64_t>
 parsePositiveCount(const std::optional<std::string> &value,
                    llvm::StringRef option);
+
+/// Writes the accepted instruction modules and their exact Target LLVM
+/// translations for compiler inspection. The destination must not exist.
+bool dumpCompilerIR(
+    llvm::StringRef destination,
+    const wafer::compiler::TargetCompilationProduct &product,
+    llvm::raw_ostream &diagnostics);
 
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 bool runTargetModelGate(

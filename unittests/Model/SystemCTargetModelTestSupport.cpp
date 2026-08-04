@@ -106,7 +106,7 @@ std::vector<RawLogicalValue> makeRankValues(int64_t logicalRank) {
 
 llvm::Expected<compiler::TargetLLVMModuleBundle>
 buildDirectDTETargetBundle(std::string &diagnosticText,
-                           TargetProfileId targetProfile) {
+                           TargetIdentityId targetIdentity) {
   auto context = createCompilerContext();
   auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -136,8 +136,7 @@ module {
   program.distributedInputs = {partitionedBoundary(0)};
   program.distributedOutputs = {partitionedBoundary(0)};
   llvm::Expected<compiler::ExecutionConfig> config =
-      compiler::ExecutionConfig::createForSingleCard(16, targetProfile,
-                                                     RuntimeLaunchKind::Kernel);
+      compiler::ExecutionConfig::createForSingleCard(16, RuntimeLaunchKind::Kernel);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
@@ -208,14 +207,10 @@ buildDirectDTEInvocationData(const compiler::TargetLLVMModuleBundle &bundle) {
 llvm::Expected<NCCJoinRewriteResult>
 rewriteNCCJoinsAfter(compiler::TargetLLVMModuleBundle &bundle,
                      TargetCallBuiltin anchor) {
-  const TargetProfileId targetProfile =
-      bundle.getExecutionConfig().getTargetProfileId();
   const TargetCallDescriptor &anchorDescriptor =
-      getTargetCallDescriptor(anchor, targetProfile);
-  const TargetCallDescriptor &legacyFenceDescriptor =
-      getTargetCallDescriptor(TargetCallBuiltin::LocalFence, targetProfile);
+      getTargetCallDescriptor(anchor);
   const TargetCallDescriptor &joinDescriptor =
-      getTargetCallDescriptor(TargetCallBuiltin::NCCJoin, targetProfile);
+      getTargetCallDescriptor(TargetCallBuiltin::NCCJoin);
   NCCJoinRewriteResult result;
 
   for (const compiler::TargetLLVMModule &targetModule : bundle.getModules()) {
@@ -236,8 +231,7 @@ rewriteNCCJoinsAfter(compiler::TargetLLVMModuleBundle &bundle,
             continue;
           if (callee->getName() == anchorDescriptor.symbol)
             anchors.push_back(call);
-          if (callee->getName() == legacyFenceDescriptor.symbol ||
-              callee->getName() == joinDescriptor.symbol)
+          if (callee->getName() == joinDescriptor.symbol)
             joins.push_back(call);
         }
 
@@ -309,28 +303,23 @@ llvm::Function *getOrDeclareTargetCall(llvm::Module &module,
 llvm::Expected<PendingComputeDTERewriteResult>
 insertPendingComputeBeforeDTEReceive(compiler::TargetLLVMModuleBundle &bundle,
                                      PendingComputeDTEAccessMode accessMode) {
-  const TargetProfileId targetProfile =
-      bundle.getExecutionConfig().getTargetProfileId();
-  if (targetProfile != TargetProfileId::waferTx81SingleCardKernelV3())
-    return llvm::createStringError(
-        "pending-compute Direct-DTE rewrite requires the V3 target profile");
+  const TargetIdentityId targetIdentity =
+      bundle.getExecutionConfig().getTargetIdentityId();
   const TargetCallDescriptor &receiveDescriptor = getTargetCallDescriptor(
-      TargetCallBuiltin::DirectDTERecvPrepare, targetProfile);
+      TargetCallBuiltin::DirectDTERecvPrepare);
   const TargetCallDescriptor &elementwiseDescriptor =
-      getTargetCallDescriptor(InstrElementwiseKind::Add, targetProfile);
+      getTargetCallDescriptor(InstrElementwiseKind::Add);
   const TargetCallDescriptor &gemmDescriptor =
-      getTargetCallDescriptor(TargetCallBuiltin::Gemm, targetProfile);
+      getTargetCallDescriptor(TargetCallBuiltin::Gemm);
   const TargetCallDescriptor &joinDescriptor =
-      getTargetCallDescriptor(TargetCallBuiltin::NCCJoin, targetProfile);
-  const TargetCallDescriptor &fenceDescriptor =
-      getTargetCallDescriptor(TargetCallBuiltin::LocalFence, targetProfile);
+      getTargetCallDescriptor(TargetCallBuiltin::NCCJoin);
   const TargetCallDescriptor &waitDescriptor =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait, targetProfile);
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait);
   const TargetDataFormatCodeRecord *format =
-      findTargetDataFormatCode(targetProfile, LogicalFormat::F32);
+      findTargetDataFormatCode(LogicalFormat::F32);
   if (!format)
     return llvm::createStringError(
-        "V3 target profile has no F32 data-format code");
+        "current target has no F32 data-format code");
   if (elementwiseDescriptor.arguments.size() != 6 ||
       gemmDescriptor.arguments.size() != 9 ||
       joinDescriptor.arguments.size() != 1)
@@ -404,8 +393,7 @@ insertPendingComputeBeforeDTEReceive(compiler::TargetLLVMModuleBundle &bundle,
             foundWait = true;
             break;
           }
-          if (callee && (callee->getName() == joinDescriptor.symbol ||
-                         callee->getName() == fenceDescriptor.symbol)) {
+          if (callee && callee->getName() == joinDescriptor.symbol) {
             call->eraseFromParent();
             ++result.removedInterveningJoinCount;
           }
@@ -440,29 +428,24 @@ insertPendingComputeBeforeDTEReceive(compiler::TargetLLVMModuleBundle &bundle,
 llvm::Expected<LateJoinDTERewriteResult>
 insertPendingComputeWithLateJoin(compiler::TargetLLVMModuleBundle &bundle,
                                  LateJoinDTEAccessMode accessMode) {
-  const TargetProfileId targetProfile =
-      bundle.getExecutionConfig().getTargetProfileId();
-  if (targetProfile != TargetProfileId::waferTx81SingleCardKernelV3())
-    return llvm::createStringError(
-        "late-join Direct-DTE rewrite requires the V3 target profile");
+  const TargetIdentityId targetIdentity =
+      bundle.getExecutionConfig().getTargetIdentityId();
 
   const TargetCallDescriptor &sendPrepareDescriptor = getTargetCallDescriptor(
-      TargetCallBuiltin::DirectDTESendPrepare, targetProfile);
+      TargetCallBuiltin::DirectDTESendPrepare);
   const TargetCallDescriptor &sendIssueDescriptor = getTargetCallDescriptor(
-      TargetCallBuiltin::DirectDTESendIssue, targetProfile);
+      TargetCallBuiltin::DirectDTESendIssue);
   const TargetCallDescriptor &receiveDescriptor = getTargetCallDescriptor(
-      TargetCallBuiltin::DirectDTERecvPrepare, targetProfile);
+      TargetCallBuiltin::DirectDTERecvPrepare);
   const TargetCallDescriptor &elementwiseDescriptor =
-      getTargetCallDescriptor(InstrElementwiseKind::Add, targetProfile);
+      getTargetCallDescriptor(InstrElementwiseKind::Add);
   const TargetCallDescriptor &joinDescriptor =
-      getTargetCallDescriptor(TargetCallBuiltin::NCCJoin, targetProfile);
-  const TargetCallDescriptor &fenceDescriptor =
-      getTargetCallDescriptor(TargetCallBuiltin::LocalFence, targetProfile);
+      getTargetCallDescriptor(TargetCallBuiltin::NCCJoin);
   const TargetDataFormatCodeRecord *format =
-      findTargetDataFormatCode(targetProfile, LogicalFormat::F32);
+      findTargetDataFormatCode(LogicalFormat::F32);
   if (!format)
     return llvm::createStringError(
-        "V3 target profile has no F32 data-format code");
+        "current target has no F32 data-format code");
   if (elementwiseDescriptor.arguments.size() != 6 ||
       joinDescriptor.arguments.size() != 1)
     return llvm::createStringError(
@@ -553,8 +536,7 @@ insertPendingComputeWithLateJoin(compiler::TargetLLVMModuleBundle &bundle,
       }
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(cursor)) {
         llvm::Function *callee = call->getCalledFunction();
-        if (callee && (callee->getName() == joinDescriptor.symbol ||
-                       callee->getName() == fenceDescriptor.symbol)) {
+        if (callee && callee->getName() == joinDescriptor.symbol) {
           call->eraseFromParent();
           ++result.removedPreIssueJoinCount;
         }

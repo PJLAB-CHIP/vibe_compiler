@@ -24,10 +24,9 @@ using namespace wafer::compiler;
 using namespace wafer::model;
 
 llvm::CallInst *findSendPrepareCall(llvm::Module &module,
-                                    TargetProfileId targetProfile) {
+                                    TargetIdentityId targetIdentity) {
   const llvm::StringRef symbol =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare,
-                              targetProfile)
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare)
           .symbol;
   for (llvm::Function &function : module)
     for (llvm::BasicBlock &block : function)
@@ -50,7 +49,7 @@ TEST(SystemCTargetModelDTEMismatchTest,
   llvm::Module &rankZeroModule =
       const_cast<llvm::Module &>(bundle->getModules().front().getModule());
   llvm::CallInst *send = findSendPrepareCall(
-      rankZeroModule, bundle->getExecutionConfig().getTargetProfileId());
+      rankZeroModule, bundle->getExecutionConfig().getTargetIdentityId());
   ASSERT_NE(send, nullptr);
   ASSERT_EQ(send->arg_size(), 7u);
   auto *destination = llvm::dyn_cast<llvm::ConstantInt>(send->getArgOperand(1));

@@ -54,7 +54,7 @@ struct TargetModelOutput {
 /// Atomically published result. SystemC objects and private memory are not
 /// retained by this value.
 struct TargetModelResult {
-  TargetProfileId targetProfile;
+  TargetIdentityId targetIdentity;
   ModelProfileId modelProfile;
   int64_t completedRankCount = 0;
   uint64_t issuedTransactionCount = 0;

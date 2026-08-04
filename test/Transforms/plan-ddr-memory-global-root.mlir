@@ -15,7 +15,7 @@ func.func @read_static_constant_global() {
        src_strides = array<i64: 0, 0, 0>}
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
   return
 }
 

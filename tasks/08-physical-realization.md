@@ -5,7 +5,7 @@ proof和resident纵向，Q32.V已闭合mapped target纵向，Q32.M继续把这�
 实现状态只看`tasks/progress.md`。
 
 Q46（当前`next`）复用本文件现有relation、encoding、realizability和invalid-lane owner，实现跨op relation传播与联合
-physical-version选择；它不改变这些接口的事实边界，也不增加target profile参数。
+physical-version选择；它不改变这些接口的事实边界，也不增加target identity参数。
 
 本文不建立独立 layout planner，也不建立 encoding/route 查询层。implementation、tile、physical
 version、residency、spill 和执行顺序的联合选择归 `tasks/06-physical-dataflow-synthesis.md`；accepted
@@ -17,7 +17,7 @@ physical dataflow IR 的合同归 `tasks/07-tile-region.md`。本文只回答：
 4. 如何在 isolated candidate clone 中直接物化 typed view、movement、temporary 和 event IR；
 5. instruction lowering 如何从 accepted IR 重建 exact DMA/GS descriptor proof。
 
-硬件字段和限制以 target profile、typed instruction contract、
+硬件字段和限制以current target helpers、typed instruction contract、
 `docs/wafer-hardware-instruction-set-and-programming-model.md` 和
 `docs/wafer-register-level-instruction-spec.md` 为事实输入。planner 的历史选择、诊断摘要和成本估算不是
 physical realization 的语义输入。
@@ -33,7 +33,7 @@ physical realization 遵守以下 MLIR-native 边界：
 - **physical encoding 行为属于 attr/type interface**。footprint、logical-to-physical mapping、
   valid/padding domain、alignment 和 physical segments 由承载 encoding 的 typed attr/type 解释。
 - **transfer 是跨对象分析**。它同时读取 source、destination、`IndexRelation`、两端 encoding、
-  alias/effect 和 target profile，因此是普通 analysis/helper，不是某个 op 的隐藏状态。
+  alias/effect和current target limits，因此是普通analysis/helper，不是某个op的隐藏状态。
 - **候选就是 isolated clone**。选择一种实现方式时，直接在 clone 中创建 typed view、movement、
   temporary、fill/mask 和 event；成功后只保留 IR，失败则丢弃 clone。
 - **lowering 不重新规划**。下游可以从 typed IR 重证 descriptor cover，但不能改 route、换 encoding、
@@ -51,7 +51,7 @@ dispatch 协议。为了队列排序而临时计算的 bytes、command count 和
 Pipeline position:
 - Upstream artifact / IR:
   verifier-legal 的当前 structured tensor/tile-dataflow clone；其 op、indexing maps、view chain、SSA
-  def-use、shape/dtype、typed memory space/encoding、effect，以及本次编译解析出的 immutable target profile。
+  def-use、shape/dtype、typed memory space/encoding、effect，以及compiler固定的current target limits。
 - Current stage responsibility:
   从当前 IR 派生 IndexRelation、shape bounds、alias/root、valid/padding domain 和 physical map；
   证明 metadata view、当前GS/staged movement，以及Q32.V已启用mapped DMA/WDMA参数是否可实现；对已启用的direct
@@ -167,7 +167,7 @@ Pipeline position:
 | logical index relation | `IndexRelation` analysis | 当前 IR epoch |
 | symbolic shape/range | ValueBounds、Affine/Presburger analysis | 当前 IR epoch |
 | physical layout 行为 | physical encoding attr/type interface | IR 生命周期 |
-| target field width、alignment、engine limit | immutable target profile / typed instruction contract | 本次编译 |
+| target field width、alignment、engine limit | current target helpers / typed instruction contract | 本次编译 |
 | view、DMA、GS 可实现性 | 跨 source/destination/relation/encoding 的 helper | 单次证明 |
 | descriptor cover | 从当前 typed IR 重建的 proof value | 单次证明 |
 | physical version | 搜索时为当前 clone 的 SSA/root/view 状态；accepted 后仅为正式 SSA IR | 当前 clone |
@@ -495,8 +495,8 @@ alias and memory effects
 typed target instruction and descriptor limits
 ```
 
-这里的target profile只约束engine、descriptor和instruction capability；encoding几何查询始终只接收当前typed
-memref，不把profile或`TargetProfileId`转发给`WaferPhysicalEncodingAttrInterface`。
+这里的current target helpers只约束engine、descriptor和instruction capability；encoding几何查询始终只接收当前typed
+memref，不把target identity转发给`WaferPhysicalEncodingAttrInterface`。
 
 它可以提供几个普通入口：
 
@@ -754,7 +754,7 @@ analysis/helper 使用 `LogicalResult`、`FailureOr<T>` 和带 op location 的�
 
 - **InvalidIR**：输入 IR、type、attr 或 effect 违反 verifier；
 - **UnsupportedRepresentation**：当前 relation、dynamic bound 或 encoding 无法由已实现的精确分析表示；
-- **UnsupportedTarget**：typed target profile/instruction contract 不支持该 dtype、encoding、engine 或 field；
+- **UnsupportedTarget**：current target/instruction contract不支持该dtype、encoding、engine或field；
 - **Infeasible**：表示和 target 都支持，但当前 shape/tile/range/alignment/descriptor limit 无解；
 - **ResourceLimit**：本次符号证明超过明确的 compile-time work limit，不能据此断言 infeasible。
 
@@ -837,7 +837,7 @@ metadata-view proof 失败。另一个 clone 可以：
 - clone 先创建 fill，再用 segmented movement 覆盖所有 valid points。
 
 descriptor proof 检查 logical points 恰写一次，padding state 与 compute precondition 一致。具体block大小由typed
-encoding implementation和queried memref dtype/shape/tail唯一决定；target profile只验证instruction capability，不参与查询。
+encoding implementation和queried memref dtype/shape/tail唯一决定；current target helpers只验证instruction capability，不参与查询。
 
 ### 15.4 Reshape Metadata View
 
@@ -856,7 +856,7 @@ whole-rank/whole-variant gates；该later工作不属于Q32或本文当前完成
 本文边界完成至少要求：
 
 - 不存在平行查询/schema/cache identity 或 detached route payload；
-- `WaferPhysicalEncodingAttrInterface`保持只接收queried memref type的现有签名，不增加target profile或`TargetProfileId`；
+- `WaferPhysicalEncodingAttrInterface`保持只接收queried memref type的现有签名，不增加target identity参数；
 - `IndexRelation`明确从当前IR派生并在rewrite后重建，identity/permutation/broadcast/slice/reshape/concat及composition
   被tiling、view、propagation、transfer和reuse真实消费；
 - Cx/NCx/BOOL 等行为只有一个 attr/type-interface 事实源；

@@ -84,7 +84,7 @@ module {
 // CHECK: wafer.instr.dte_wait %[[RECV2]]
 // CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]
 // CHECK: wafer.instr.ncc_join [0]
-// CHECK-NOT: wafer.instr.local_fence
+// CHECK-NOT: wafer.instr.ncc_join [0]
 // CHECK-NOT: wafer.tile.reduce_scatter
 
 // SPM-LABEL: func.func @reduce_scatter_phases

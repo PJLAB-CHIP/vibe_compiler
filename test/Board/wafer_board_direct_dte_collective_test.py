@@ -22,13 +22,13 @@ import wafer_runtime_launch_contract as runtime_launch
 RANK_COUNT = 16
 LOCAL_ELEMENTS = 458752
 LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
-TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
+TARGET_IDENTITY = "wafer-tx81-single-card"
 STATUS_ABI = "wafer-direct-dte-status-v2"
 STATUS_STORAGE_BYTES = 64
 STATUS_STORAGE_ALIGNMENT = 64
 DIRECT_DTE_PROCESS_TIMEOUT_MARGIN_SECONDS = 30
 PROFILE_COMPANION_READY = (
-    "profile_companion: ready schema=6 ranks=16 variants=1 captures=2"
+    "profile_companion: ready schema=7 ranks=16 variants=1 captures=2"
 )
 PROFILE_CAMPAIGN_LAUNCH_COUNT = 3
 PROFILE_PRIMARY_EXECUTION_COUNT = 1
@@ -107,7 +107,6 @@ def compile_package(
         "--output-program-dir",
         str(package),
         f"--execution-ranks={RANK_COUNT}",
-        f"--target-profile={TARGET_PROFILE}",
         f"--launch-kind={LAUNCH_KIND}",
     ]
     if profile:
@@ -302,7 +301,7 @@ def validate_manifest(
         manifest.get("rank_count") != RANK_COUNT
     ):
         raise RuntimeError(
-            "Direct-DTE case did not produce the closed schema-v6 kernel launch"
+            "Direct-DTE case did not produce the closed schema-v7 kernel launch"
         )
     modules = manifest.get("modules")
     if not isinstance(modules, list) or len(modules) != 1:
@@ -439,7 +438,7 @@ def write_raw_files(
 
 def verify_no_card_evidence(stdout: str, *, companion_expected: bool) -> None:
     required = {
-        "package: id=0 schema=6 ranks=16",
+        "package: id=0 schema=7 ranks=16",
         f"invocation_ranks: {RANK_COUNT}",
         "board_execution: false",
     }

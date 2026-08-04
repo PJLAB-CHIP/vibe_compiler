@@ -10,7 +10,7 @@ boundary/shard result形成显式per-rank task/dataflow executable。实现状�
 Pipeline position:
 - Upstream artifact / IR:
   verified、尚未SPMD partition的StableHLO program directory；可选frontend mhlo.sharding；以及validated
-  single-card ExecutionConfig（execution-ranks显式为1或16，并携带tasks/14拥有的typed target profile；本stage不解释）。
+  single-card ExecutionConfig（execution-ranks显式为1或16；current target identity由tasks/14固定，本stage不解释）。
 - Current stage responsibility:
   在transaction-owned source snapshot上建立exact wafer.target.topology/wafer.execution.mesh，把pre-SPMD
   StableHLO和frontend sharding交给pinned XLA helper，由helper内部完成Shardy propagation与XLA SPMD；
@@ -25,8 +25,8 @@ Pipeline position:
   physical-dataflow synthesis在optimizer-ready structured program上按logical rank创建isolated static candidate clones。
 - User-level driver / named pipeline:
   正式入口为
-  `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`；
-  本stage只消费rank/mesh并原样传递typed profile，且target profile没有默认值。
+  `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --launch-kind={kernel|model}`；
+  本stage只消费rank/mesh，不携带target选择。
   wafer-opt和wafer-propagate-stablehlo-sharding只处理显式IR，不能作为program-directory入口。
 - Explicit non-goals:
   不实现MPMD、代表rank去重、dp/tp/pp/ep私有协议、distributed/parallel dialect、physical endpoint/DTE、
@@ -50,7 +50,7 @@ replicated partition；这对execution-ranks=1和16都语义正确，只是不�
 import/export会留下`sdy.constant`、`sdy.reshard`等helper不能消费的中间op。在完整、可验证的
 SDY→StableHLO bridge出现前，该路径不得进入production driver。
 
-`ExecutionConfig`的rank-count维度只接受显式1或16；Q0.L新增的typed target profile是正交字段，不改变以下mesh规则：
+`ExecutionConfig`的rank-count维度只接受显式1或16；current target identity不进入mesh IR，也不改变以下规则：
 
 - 两者使用同一个1×1 card、4×4 tile topology；
 - 16-rank mesh使用全部available endpoints；

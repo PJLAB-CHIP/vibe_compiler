@@ -77,15 +77,13 @@ protected:
   }
 
   PackageManifest manifest(std::vector<PackageResourceRecord> resources) const {
-    const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
-        wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     PackageManifest manifest(
-        target.id, target.targetIdentity, target.kernelRuntimeABI,
+        wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
         llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
             wafer::KernelLaunchForm::PerRank,
-            wafer::KernelEntryABI::RankLocalPointerBlockV1,
+            wafer::KernelEntryABI::RankLocalPointerBlock,
             {wafer::RuntimeLaunchPhaseRole::Main})),
-        target.moduleFormat);
+        wafer::kCurrentTargetModuleFormat);
     manifest.rankCount = 1;
     manifest.resources = std::move(resources);
     return manifest;

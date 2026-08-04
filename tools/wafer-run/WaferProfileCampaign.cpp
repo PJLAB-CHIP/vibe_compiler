@@ -528,12 +528,12 @@ void emitRuntimeLaunch(llvm::json::OStream &json,
 
 void emitCandidateEvidence(llvm::json::OStream &json,
                            const CandidateState &candidate,
-                           llvm::StringRef targetProfile,
+                           llvm::StringRef targetIdentity,
                            const RuntimeLaunchContract &launch) {
   json.object([&] {
     json.attributeObject("artifact", [&] {
       json.attribute("digest", candidate.variant->getManifestDigest());
-      json.attribute("target_profile", targetProfile);
+      json.attribute("target_identity", targetIdentity);
       json.attributeObject("launch", [&] { emitRuntimeLaunch(json, launch); });
       json.attribute("execution_ranks",
                      int64_t(WAFER_TX81_PROFILER_TILE_COUNT));
@@ -736,8 +736,8 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
     return invalid("profile evidence inputs are incomplete");
   const PackageManifest &productionManifest =
       candidate.variant->getPackage().getManifest();
-  const std::string targetProfile =
-      stringifyTargetProfileId(productionManifest.targetProfile).str();
+  const std::string targetIdentity =
+      stringifyTargetIdentityId(productionManifest.targetIdentity).str();
   std::string storage;
   llvm::raw_string_ostream output(storage);
   llvm::json::OStream json(output, 2);
@@ -751,7 +751,7 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
                      companion.getProductionManifestDigest());
       json.attribute("profile_companion_schema_version",
                      int64_t(companion.getSchemaVersion()));
-      json.attribute("target_profile", targetProfile);
+      json.attribute("target_identity", targetIdentity);
       json.attributeObject("launch", [&] {
         emitRuntimeLaunch(json, productionManifest.launch);
       });
@@ -849,7 +849,7 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
       json.attribute("measurement_basis", true);
     });
     json.attributeBegin("experiment");
-    emitCandidateEvidence(json, candidate, targetProfile,
+    emitCandidateEvidence(json, candidate, targetIdentity,
                           productionManifest.launch);
     json.attributeEnd();
   });

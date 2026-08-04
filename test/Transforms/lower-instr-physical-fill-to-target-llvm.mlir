@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %s | FileCheck %s
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %s | FileCheck %s
 
 module {
   wafer.target.topology @default
@@ -31,8 +31,10 @@ module {
 // CHECK: %[[HALF_RAW:.*]] = llvm.mlir.constant(13653 : i32) : i32
 // CHECK: %[[CX_COUNT:.*]] = llvm.mlir.constant(128 : i32) : i32
 // CHECK: %[[F16_FORMAT:.*]] = llvm.mlir.constant(2 : i32) : i32
-// CHECK: llvm.call @wafer_tx81_memset(%[[CX]], %[[HALF_RAW]], %[[CX_COUNT]], %[[F16_FORMAT]])
+// CHECK: %[[FIRST_WORKER:.*]] = llvm.mlir.constant(0 : i32) : i32
+// CHECK: llvm.call @wafer_tx81_memset_v3(%[[CX]], %[[HALF_RAW]], %[[CX_COUNT]], %[[F16_FORMAT]], %[[FIRST_WORKER]])
 // CHECK: %[[TRUE_RAW:.*]] = llvm.mlir.constant(1 : i32) : i32
 // CHECK: %[[BIT_COUNT:.*]] = llvm.mlir.constant(16 : i32) : i32
 // CHECK: %[[BOOL_FORMAT:.*]] = llvm.mlir.constant(7 : i32) : i32
-// CHECK: llvm.call @wafer_tx81_memset(%[[BITS]], %[[TRUE_RAW]], %[[BIT_COUNT]], %[[BOOL_FORMAT]])
+// CHECK: %[[SECOND_WORKER:.*]] = llvm.mlir.constant(0 : i32) : i32
+// CHECK: llvm.call @wafer_tx81_memset_v3(%[[BITS]], %[[TRUE_RAW]], %[[BIT_COUNT]], %[[BOOL_FORMAT]], %[[SECOND_WORKER]])

@@ -29,10 +29,8 @@ namespace {
 
 constexpr ModelProfileId kFormalDeterministicV1 =
     ModelProfileId::formalDeterministicV1();
-constexpr TargetProfileId kTargetProfile =
-    TargetProfileId::waferTx81SingleCardKernelV1();
 
-void writeSelector(llvm::raw_ostream &stream, TargetProfileId targetProfile,
+void writeSelector(llvm::raw_ostream &stream,
                    const NumericCapabilitySelector &selector) {
   std::visit(
       [&](const auto &typedSelector) {
@@ -40,7 +38,7 @@ void writeSelector(llvm::raw_ostream &stream, TargetProfileId targetProfile,
         if constexpr (std::is_same_v<Selector,
                                      NumericCTConvertPatternSelector>) {
           const TargetConvertRoute *route =
-              findTargetConvertRoute(targetProfile, typedSelector.opcode);
+              findTargetConvertRoute(typedSelector.opcode);
           if (!route)
             llvm::report_fatal_error("convert pattern lost its route");
           stream << "opcode=" << typedSelector.opcode << '\n'
@@ -80,7 +78,7 @@ void writeSelector(llvm::raw_ostream &stream, TargetProfileId targetProfile,
 
 std::string
 makePatternDigest(const ModelProfileRecord &model,
-                  TargetProfileId targetProfile, NumericCommandFamily family,
+                  NumericCommandFamily family,
                   const NumericCapabilitySelector &selector,
                   NumericModelImplementationCapability modelCapability,
                   NumericCompilerEmittabilityCapability compilerCapability,
@@ -91,11 +89,10 @@ makePatternDigest(const ModelProfileRecord &model,
                   std::optional<FormalNumericBackendKind> formalBackend) {
   std::string canonical;
   llvm::raw_string_ostream stream(canonical);
-  stream << "wafer-numeric-capability-pattern-v2\n"
+  stream << "wafer-numeric-capability-pattern\n"
          << "model-policy-digest=" << model.policyDigest << '\n'
-         << "target=" << stringifyTargetProfileId(targetProfile) << '\n'
          << "family=" << stringifyNumericCommandFamily(family) << '\n';
-  writeSelector(stream, targetProfile, selector);
+  writeSelector(stream, selector);
   stream << "model-status=" << static_cast<unsigned>(modelCapability.status)
          << '\n'
          << "model-reason="
@@ -145,16 +142,14 @@ std::string makeResolutionDigest(const ModelProfileRecord &model,
 }
 
 const NumericSemanticsProfile *
-findCTConvertSemantics(ModelProfileId modelProfile,
-                       TargetProfileId targetProfile, uint16_t opcode,
+findCTConvertSemantics(ModelProfileId modelProfile, uint16_t opcode,
                        NumericRoundingMode effectiveRounding) {
   const NumericSemanticsProfile *match = nullptr;
   for (const NumericSemanticsProfile &profile :
-       getRegisteredNumericSemanticsProfiles()) {
+       getRegisteredNumericCTConvertSemanticsProfiles()) {
     const NumericCTConvertSemanticsIdentity *identity =
         profile.getCTConvertIdentity();
     if (identity && profile.getModelProfile() == modelProfile &&
-        identity->getTargetProfile() == targetProfile &&
         identity->getCTConvertOpcode() == opcode &&
         identity->getEffectiveRoundingMode() == effectiveRounding) {
       if (match)
@@ -167,15 +162,14 @@ findCTConvertSemantics(ModelProfileId modelProfile,
 }
 
 const NumericSemanticsProfile *findCTElementwiseSemantics(
-    ModelProfileId modelProfile, TargetProfileId targetProfile,
-    NumericElementwiseOperation operation, LogicalFormat inputFormat) {
+    ModelProfileId modelProfile, NumericElementwiseOperation operation,
+    LogicalFormat inputFormat) {
   const NumericSemanticsProfile *match = nullptr;
   for (const NumericSemanticsProfile &profile :
        getRegisteredNumericCTElementwiseSemanticsProfiles()) {
     const NumericCTElementwiseSemanticsIdentity *identity =
         profile.getCTElementwiseIdentity();
     if (identity && profile.getModelProfile() == modelProfile &&
-        identity->getTargetProfile() == targetProfile &&
         identity->getOperation() == operation &&
         identity->getInputFormat() == inputFormat) {
       if (match)
@@ -188,15 +182,13 @@ const NumericSemanticsProfile *findCTElementwiseSemantics(
 }
 
 const NumericSemanticsProfile *
-findNEGemmSemantics(ModelProfileId modelProfile, TargetProfileId targetProfile,
-                    LogicalFormat format) {
+findNEGemmSemantics(ModelProfileId modelProfile, LogicalFormat format) {
   const NumericSemanticsProfile *match = nullptr;
   for (const NumericSemanticsProfile &profile :
        getRegisteredNumericNEGemmSemanticsProfiles()) {
     const NumericNEGemmSemanticsIdentity *identity =
         profile.getNEGemmIdentity();
     if (identity && profile.getModelProfile() == modelProfile &&
-        identity->getTargetProfile() == targetProfile &&
         identity->getFormat() == format) {
       if (match)
         llvm::report_fatal_error("duplicate reusable GEMM semantics identity");
@@ -207,15 +199,14 @@ findNEGemmSemantics(ModelProfileId modelProfile, TargetProfileId targetProfile,
 }
 
 const NumericSemanticsProfile *findNativeCTReduceSemantics(
-    ModelProfileId modelProfile, TargetProfileId targetProfile,
-    NumericReduceOperation operation, LogicalFormat format) {
+    ModelProfileId modelProfile, NumericReduceOperation operation,
+    LogicalFormat format) {
   const NumericSemanticsProfile *match = nullptr;
   for (const NumericSemanticsProfile &profile :
        getRegisteredNumericNativeCTReduceSemanticsProfiles()) {
     const NumericNativeCTReduceSemanticsIdentity *identity =
         profile.getNativeCTReduceIdentity();
     if (identity && profile.getModelProfile() == modelProfile &&
-        identity->getTargetProfile() == targetProfile &&
         identity->getOperation() == operation &&
         identity->getFormat() == format) {
       if (match)
@@ -230,7 +221,6 @@ const NumericSemanticsProfile *findNativeCTReduceSemantics(
 bool selectorsOverlap(const NumericCapabilityPattern &lhs,
                       const NumericCapabilityPattern &rhs) {
   if (lhs.getModelProfile() != rhs.getModelProfile() ||
-      lhs.getTargetProfile() != rhs.getTargetProfile() ||
       lhs.getFamily() != rhs.getFamily())
     return false;
   if (const auto *lhsConvert = lhs.getCTConvertSelector()) {
@@ -311,11 +301,10 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
 
   for (size_t index = 0; index < patterns.size(); ++index) {
     const NumericCapabilityPattern &pattern = patterns[index];
-    if (pattern.getModelProfile() != kFormalDeterministicV1 ||
-        pattern.getTargetProfile() != kTargetProfile)
+    if (pattern.getModelProfile() != kFormalDeterministicV1)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "numeric capability pattern has an unexpected model or target");
+          "numeric capability pattern has an unexpected model");
     if (!isValidDigest(pattern.getDigest()) ||
         !digests.insert(pattern.getDigest().str()).second)
       return llvm::createStringError(
@@ -357,8 +346,7 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
         if (selector->parameter.getKind() ==
             NumericCapabilityParameterPatternKind::NoParameter)
           expectedRounding = NumericRoundingMode::NearestEven;
-        if (!identity || identity->getTargetProfile() != kTargetProfile ||
-            identity->getCTConvertOpcode() != selector->opcode ||
+        if (!identity || identity->getCTConvertOpcode() != selector->opcode ||
             !expectedRounding ||
             identity->getEffectiveRoundingMode() != *expectedRounding ||
             pattern.getSemantics()->getRoundingModePolicy() !=
@@ -504,8 +492,7 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
           pattern.getSemantics()->getCTElementwiseIdentity();
       const LogicalFormat expectedDestination = getElementwiseDestinationFormat(
           selector->operation, selector->inputFormat);
-      if (!identity || identity->getTargetProfile() != kTargetProfile ||
-          identity->getOperation() != selector->operation ||
+      if (!identity || identity->getOperation() != selector->operation ||
           identity->getInputFormat() != selector->inputFormat ||
           identity->getDestinationFormat() != expectedDestination)
         return llvm::createStringError(
@@ -609,8 +596,7 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
         return error;
       const NumericNEGemmSemanticsIdentity *identity =
           pattern.getSemantics()->getNEGemmIdentity();
-      if (!identity || identity->getTargetProfile() != kTargetProfile ||
-          identity->getFormat() != selector->format ||
+      if (!identity || identity->getFormat() != selector->format ||
           pattern.getSemantics()->getRoundingModePolicy() !=
               NumericRoundingMode::NearestEven ||
           pattern.getSemantics()->getRoundingPointPolicy() !=
@@ -677,7 +663,7 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
           return error;
         const NumericNativeCTReduceSemanticsIdentity *identity =
             pattern.getSemantics()->getNativeCTReduceIdentity();
-        if (!identity || identity->getTargetProfile() != kTargetProfile ||
+        if (!identity ||
             identity->getOperation() != NumericReduceOperation::Sum ||
             identity->getFormat() != LogicalFormat::F32 ||
             pattern.getSemantics()->getRoundingModePolicy() !=
@@ -789,7 +775,7 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
             "pattern");
     return llvm::Error::success();
   };
-  if (getRegisteredNumericSemanticsProfiles().size() != 101 ||
+  if (getRegisteredNumericCTConvertSemanticsProfiles().size() != 101 ||
       getRegisteredNumericCTElementwiseSemanticsProfiles().size() != 88 ||
       getRegisteredNumericNEGemmSemanticsProfiles().size() != 3 ||
       getRegisteredNumericNativeCTReduceSemanticsProfiles().size() != 1 ||
@@ -798,7 +784,7 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
         llvm::errc::invalid_argument,
         "numeric semantics registry is missing or has an extra supported row");
   if (llvm::Error error = requireCompleteSemanticsRegistry(
-          getRegisteredNumericSemanticsProfiles(),
+          getRegisteredNumericCTConvertSemanticsProfiles(),
           NumericCommandFamily::CTConvert))
     return error;
   if (llvm::Error error = requireCompleteSemanticsRegistry(
@@ -895,9 +881,7 @@ NumericCapabilityPattern::getNativeCTReduceSelector() const {
 bool NumericCapabilityPattern::matches(
     ModelProfileId candidateModel,
     const NumericCommandKey &candidateKey) const {
-  if (modelProfile != candidateModel ||
-      targetProfile != candidateKey.getTargetProfile() ||
-      family != candidateKey.getFamily())
+  if (modelProfile != candidateModel || family != candidateKey.getFamily())
     return false;
   if (const auto *typedSelector = getCTConvertSelector()) {
     const NumericCTConvertCommand *command = candidateKey.getCTConvert();
@@ -949,11 +933,11 @@ getRegisteredNumericCapabilityPatterns() {
       if (modelAxis.status == NumericModelImplementationStatus::Implemented)
         comparator = NumericComparatorKind::RawExact;
       std::string digest =
-          makePatternDigest(model, kTargetProfile, family, selector, modelAxis,
+          makePatternDigest(model, family, selector, modelAxis,
                             compilerCapability, evidenceCapability, semantics,
                             kernel, comparator, backend);
       result.push_back(NumericCapabilityPattern(
-          kFormalDeterministicV1, kTargetProfile, family, std::move(selector),
+          kFormalDeterministicV1, family, std::move(selector),
           modelAxis, compilerCapability, evidenceCapability, semantics, kernel,
           comparator, backend, std::move(digest)));
     };
@@ -972,7 +956,7 @@ getRegisteredNumericCapabilityPatterns() {
         break;
       case TargetConvertParameterKind::None: {
         const NumericSemanticsProfile *semantics = findCTConvertSemantics(
-            kFormalDeterministicV1, route.profile, route.opcode,
+            kFormalDeterministicV1, route.opcode,
             NumericRoundingMode::NearestEven);
         if (!semantics)
           llvm::report_fatal_error(
@@ -1001,7 +985,7 @@ getRegisteredNumericCapabilityPatterns() {
             continue;
           }
           const NumericSemanticsProfile *semantics = findCTConvertSemantics(
-              kFormalDeterministicV1, route.profile, route.opcode, mode);
+              kFormalDeterministicV1, route.opcode, mode);
           if (!semantics)
             llvm::report_fatal_error(
                 "deterministic capability pattern has no reusable semantics");
@@ -1023,8 +1007,8 @@ getRegisteredNumericCapabilityPatterns() {
          getNumericElementwiseOperations()) {
       if (isNumericElementwiseLogic(operation)) {
         const NumericSemanticsProfile *semantics =
-            findCTElementwiseSemantics(kFormalDeterministicV1, kTargetProfile,
-                                       operation, LogicalFormat::Bool);
+            findCTElementwiseSemantics(kFormalDeterministicV1, operation,
+                                       LogicalFormat::Bool);
         if (!semantics)
           llvm::report_fatal_error(
               "BOOL logic capability pattern has no reusable semantics");
@@ -1048,7 +1032,7 @@ getRegisteredNumericCapabilityPatterns() {
           continue;
         }
         const NumericSemanticsProfile *semantics = findCTElementwiseSemantics(
-            kFormalDeterministicV1, kTargetProfile, operation, format);
+            kFormalDeterministicV1, operation, format);
         if (!semantics)
           llvm::report_fatal_error(
               "elementwise capability pattern has no reusable semantics");
@@ -1074,7 +1058,7 @@ getRegisteredNumericCapabilityPatterns() {
         continue;
       }
       const NumericSemanticsProfile *semantics =
-          findNEGemmSemantics(kFormalDeterministicV1, kTargetProfile, format);
+          findNEGemmSemantics(kFormalDeterministicV1, format);
       if (!semantics)
         llvm::report_fatal_error(
             "GEMM capability pattern has no reusable semantics");
@@ -1100,7 +1084,7 @@ getRegisteredNumericCapabilityPatterns() {
           continue;
         }
         const NumericSemanticsProfile *semantics = findNativeCTReduceSemantics(
-            kFormalDeterministicV1, kTargetProfile, operation, format);
+            kFormalDeterministicV1, operation, format);
         if (!semantics)
           llvm::report_fatal_error(
               "native reduction capability pattern has no reusable semantics");

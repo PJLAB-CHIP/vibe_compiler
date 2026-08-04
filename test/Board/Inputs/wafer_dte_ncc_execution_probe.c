@@ -91,7 +91,7 @@
 #endif
 
 #if WAFER_PROBE_HEADER_BYTES %                                                 \
-        WAFER_TX81_DIRECT_DTE_STATUS_V2_CACHE_LINE_BYTES !=                    \
+        WAFER_TX81_DIRECT_DTE_STATUS_CACHE_LINE_BYTES !=                    \
     0U
 #error "DTE/NCC probe header must own complete cache lines"
 #endif
@@ -446,7 +446,7 @@ static void wafer_probe_seed_regions(uint64_t input_ddr, uint64_t output_ddr,
    * Setup is deliberately outside the measured window.  This drain is the
    * real NCC-to-Kcore PMU boundary, not a mapped-SPM visibility workaround.
    */
-  wafer_tx81_local_fence();
+  wafer_tx81_ncc_join(1U);
 }
 
 static void wafer_probe_capture_region(uint64_t output_ddr, uint32_t slot,
@@ -649,7 +649,7 @@ wafer_probe_dte_sender_raw_async(uint32_t rank, uint32_t issue_window) {
         WAFER_PROBE_SPM_ASYNC_COMPUTE_INPUT,
         WAFER_PROBE_SPM_ASYNC_COMPUTE_OUTPUT,
         WAFER_PROBE_ASYNC_TRANSPORT_ELEMENTS, Fmt_FP16, 0U);
-  wafer_tx81_local_fence();
+  wafer_tx81_ncc_join(1U);
 
   if (result.send_result == 0 && result.wait_result == 0 &&
       result.release_result == 0)
@@ -1102,7 +1102,7 @@ static void wafer_probe_publish_header(uint64_t output_ddr, uint32_t rank,
   mode_bits = (mode_bits >> 30) & 3U;
   for (uintptr_t address = output_ddr;
        address < output_ddr + WAFER_PROBE_HEADER_BYTES;
-       address += WAFER_TX81_DIRECT_DTE_STATUS_V2_CACHE_LINE_BYTES) {
+       address += WAFER_TX81_DIRECT_DTE_STATUS_CACHE_LINE_BYTES) {
     if (mode_bits == WAFER_TX81_MACHINE_MODE)
       __asm__ volatile("dcache.cipa %0" : : "r"(address) : "memory");
     else if (mode_bits == WAFER_TX81_SUPERVISOR_MODE)
@@ -1190,19 +1190,19 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t rank, uint64_t input_ddr,
           WAFER_PROBE_SPM_INPUT, WAFER_PROBE_SPM_INPUT,
           WAFER_PROBE_SPM_PRODUCED,
           payload_bytes / (uint32_t)sizeof(uint16_t), Fmt_FP16, 0U);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_PRODUCED, payload_bytes);
       break;
 
     case WAFER_PROBE_DTE_NCC_CONSUMER:
       wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT, payload_bytes);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_INPUT, payload_bytes);
       wafer_tx81_elementwise_add_v3(
           WAFER_PROBE_SPM_DTE_RECV, WAFER_PROBE_SPM_DTE_RECV,
           WAFER_PROBE_SPM_PRODUCED, payload_bytes / (uint32_t)sizeof(uint16_t),
           Fmt_FP16, 0U);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       break;
 
     case WAFER_PROBE_DISJOINT_LOCAL_WAIT_FIRST:
@@ -1211,24 +1211,24 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t rank, uint64_t input_ddr,
       wafer_probe_dma_read(input_payload + WAFER_PROBE_MAX_PAYLOAD_BYTES,
                            WAFER_PROBE_SPM_DISJOINT_INPUT,
                            WAFER_PROBE_DISJOINT_BYTES);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       wafer_tx81_elementwise_add_v3(
           WAFER_PROBE_SPM_DISJOINT_INPUT, WAFER_PROBE_SPM_DISJOINT_INPUT,
           WAFER_PROBE_SPM_DISJOINT_OUTPUT, WAFER_PROBE_DISJOINT_ELEMENTS,
           Fmt_FP16, 0U);
       if (mode == WAFER_PROBE_DISJOINT_LOCAL_WAIT_FIRST) {
-        wafer_tx81_local_fence();
+        wafer_tx81_ncc_join(1U);
         wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_INPUT, payload_bytes);
       } else {
         wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_INPUT, payload_bytes);
-        wafer_tx81_local_fence();
+        wafer_tx81_ncc_join(1U);
       }
       break;
 
     case WAFER_PROBE_DTE_REUSE_AFTER_EVENTS: {
       wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT,
                            payload_bytes);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_INPUT, payload_bytes);
       wafer_probe_capture_region(output_ddr, 3, WAFER_PROBE_SPM_DTE_RECV,
                                  WAFER_PROBE_MAX_PAYLOAD_BYTES);
@@ -1236,7 +1236,7 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t rank, uint64_t input_ddr,
        * The capture must finish before Direct DTE reuses the same receive
        * slot.  This is a real NCC-to-DTE completion-domain boundary.
        */
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
 
       /*
        * Both send and receive events have completed before the same source
@@ -1244,7 +1244,7 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t rank, uint64_t input_ddr,
        */
       wafer_probe_dma_read(input_payload + WAFER_PROBE_MAX_PAYLOAD_BYTES,
                            WAFER_PROBE_SPM_INPUT, payload_bytes);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_INPUT, payload_bytes);
       break;
     }
@@ -1252,21 +1252,21 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t rank, uint64_t input_ddr,
     case WAFER_PROBE_DTE_TWO_DESTINATION_BROADCAST:
       wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT,
                            payload_bytes);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       wafer_probe_dte_two_destination_broadcast(
           rank, WAFER_PROBE_SPM_INPUT, payload_bytes);
       break;
 
     case WAFER_PROBE_DTE_REUSE_BEFORE_SEND_EVENT_ERROR:
       wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT, payload_bytes);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       contract_evidence = wafer_probe_dte_reuse_before_send_event(
           rank, WAFER_PROBE_SPM_INPUT, payload_bytes);
       break;
 
     case WAFER_PROBE_DTE_REUSE_BEFORE_RECV_EVENT_ERROR:
       wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT, payload_bytes);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       contract_evidence = wafer_probe_dte_reuse_before_recv_event(
           rank, WAFER_PROBE_SPM_INPUT, payload_bytes);
       break;
@@ -1291,7 +1291,7 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t rank, uint64_t input_ddr,
 
     case WAFER_PROBE_DTE_RECEIVER_UNPREPARED:
       wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT, payload_bytes);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
       wafer_probe_dte_receiver_unprepared(rank, WAFER_PROBE_SPM_INPUT,
                                           payload_bytes);
       break;
@@ -1310,7 +1310,7 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t rank, uint64_t input_ddr,
    * Readback is outside the measurement window.  One terminal drain publishes
    * all four guarded slots to host DDR before Kcore writes the result header.
    */
-  wafer_tx81_local_fence();
+  wafer_tx81_ncc_join(1U);
   wafer_tx81_direct_dte_finish();
   contract_status =
       *(const volatile uint32_t *)(uintptr_t)contract_status_ddr;

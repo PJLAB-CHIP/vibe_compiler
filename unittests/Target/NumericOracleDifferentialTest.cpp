@@ -22,15 +22,13 @@ namespace {
 
 using namespace wafer;
 
-constexpr TargetProfileId kTargetProfile =
-    TargetProfileId::waferTx81SingleCardKernelV1();
 constexpr ModelProfileId kModelProfile =
     ModelProfileId::formalDeterministicV1();
 
 ResolvedNumericCommand resolveConvert(uint16_t opcode,
                                       NumericRoundingMode rounding) {
   const TargetConvertRoute *route =
-      findTargetConvertRoute(kTargetProfile, opcode);
+      findTargetConvertRoute(opcode);
   EXPECT_NE(route, nullptr);
   std::optional<NumericConvertParameter> parameter;
   if (route && route->parameterKind == TargetConvertParameterKind::RoundingMode)
@@ -42,7 +40,7 @@ ResolvedNumericCommand resolveConvert(uint16_t opcode,
   NumericTensorKey destination = llvm::cantFail(
       NumericTensorKey::create(route->destination, MemLayout::Tensor, {1}));
   llvm::Expected<NumericCommandKey> key = NumericCommandKey::createCTConvert(
-      kTargetProfile, opcode, std::move(source), std::move(destination),
+      opcode, std::move(source), std::move(destination),
       parameter);
   EXPECT_TRUE(static_cast<bool>(key))
       << (key ? std::string() : llvm::toString(key.takeError()));

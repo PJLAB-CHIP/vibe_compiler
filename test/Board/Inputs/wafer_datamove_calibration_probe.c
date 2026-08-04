@@ -161,13 +161,13 @@ static void wafer_dmc_gather(uint32_t source_offset, uint32_t dest_offset,
                              uint32_t dest_stride1, uint32_t dest_stride2,
                              uint32_t dest_iteration0, uint32_t dest_iteration1,
                              uint32_t dest_iteration2) {
-  wafer_tx81_gather_scatter(
+  wafer_tx81_gather_scatter_v3(
       WAFER_DMC_SPM_INPUT + WAFER_DMC_BODY_OFFSET + source_offset,
       WAFER_DMC_SPM_OUTPUT + WAFER_DMC_BODY_OFFSET + dest_offset, byte_count,
       inner_bytes, source_stride0, source_stride1, source_stride2,
       source_iteration0, source_iteration1, source_iteration2, dest_stride0,
       dest_stride1, dest_stride2, dest_iteration0, dest_iteration1,
-      dest_iteration2);
+      dest_iteration2, 0U);
 }
 
 static void wafer_dmc_concat_materialized(uint32_t left_bytes,
@@ -295,14 +295,14 @@ static uint32_t wafer_dmc_issue(const WaferDMCCase *selected) {
     for (uint32_t column = 0; column < 53U; ++column) {
       wafer_dmc_gather(column * 2U, (52U - column) * 2U, 74U, 2U, 106U, 0U, 0U,
                        37U, 1U, 1U, 106U, 0U, 0U, 37U, 1U, 1U);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
     }
     return 1U;
   case 2U:
     for (uint32_t row = 0; row < 37U; ++row) {
       wafer_dmc_gather(row * 106U, (36U - row) * 2U, 106U, 2U, 2U, 0U, 0U, 53U,
                        1U, 1U, 74U, 0U, 0U, 53U, 1U, 1U);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
     }
     return 1U;
   case 3U:
@@ -312,14 +312,14 @@ static uint32_t wafer_dmc_issue(const WaferDMCCase *selected) {
         uint32_t dest = ((16U - row) * 19U + (18U - column)) * 2U;
         wafer_dmc_gather(source, dest, 2U, 2U, 0U, 0U, 0U, 1U, 1U, 1U, 0U, 0U,
                          0U, 1U, 1U, 1U);
-        wafer_tx81_local_fence();
+        wafer_tx81_ncc_join(1U);
       }
     return 1U;
   case 4U:
     for (uint32_t column = 0; column < 53U; ++column) {
       wafer_dmc_gather(column * 2U, (52U - column) * 74U, 74U, 2U, 106U, 0U, 0U,
                        37U, 1U, 1U, 2U, 0U, 0U, 37U, 1U, 1U);
-      wafer_tx81_local_fence();
+      wafer_tx81_ncc_join(1U);
     }
     return 1U;
   case 5U:
@@ -488,23 +488,23 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
     record[WAFER_DMC_REC_REQUEST_GUARD] = request[WAFER_DMC_REQ_GUARD];
 
     WaferDMCPMU before = wafer_dmc_read_pmu();
-    wafer_tx81_rdma(payload_ddr, WAFER_DMC_SPM_INPUT, WAFER_DMC_SLOT_BYTES,
-                    WAFER_DMC_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+    wafer_tx81_rdma_v3(payload_ddr, WAFER_DMC_SPM_INPUT, WAFER_DMC_SLOT_BYTES,
+                    WAFER_DMC_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
     /*
      * Keep setup in NCC: the request resource's second slot is all canary and
      * seeds the complete output before the tested TDMA sequence.
      */
-    wafer_tx81_rdma(request_ddr + WAFER_DMC_SLOT_BYTES,
+    wafer_tx81_rdma_v3(request_ddr + WAFER_DMC_SLOT_BYTES,
                     WAFER_DMC_SPM_OUTPUT, WAFER_DMC_SLOT_BYTES,
-                    WAFER_DMC_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+                    WAFER_DMC_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
     if (wafer_dmc_issue(&selected) == 0U) {
       status = WAFER_DMC_STATUS_EXECUTE_FAILED;
     } else {
-      wafer_tx81_wdma(WAFER_DMC_SPM_OUTPUT,
+      wafer_tx81_wdma_v3(WAFER_DMC_SPM_OUTPUT,
                       output_ddr + WAFER_DMC_OUTPUT_DDR_OFFSET,
                       WAFER_DMC_SLOT_BYTES, WAFER_DMC_SLOT_BYTES, 0, 0, 0, 1, 1,
-                      1, Fmt_UINT8);
-      wafer_tx81_local_fence();
+                      1, Fmt_UINT8, 0U);
+      wafer_tx81_ncc_join(1U);
       WaferDMCPMU after = wafer_dmc_read_pmu();
       record[WAFER_DMC_REC_TDMA_INST_DELTA] =
           (uint32_t)(after.instructions - before.instructions);

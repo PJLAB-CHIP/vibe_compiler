@@ -2,7 +2,7 @@
 
 // -----
 
-func.func @external_root_missing_local_fence(
+func.func @external_root_missing_ncc_join(
     %input: memref<128xf16, #wafer.memory<ddr, tensor>>) {
   %spm = memref.alloc()
       {wafer.spm.offset = #wafer.spm_offset<65536>}
@@ -31,7 +31,7 @@ func.func @only_one_branch_fences_prior_issue(
       : memref<128xf16, #wafer.memory<spm, tensor>>
      to memref<128xf16, #wafer.memory<ddr, tensor>>
   scf.if %cond {
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   } else {
   }
   return
@@ -53,7 +53,7 @@ func.func @pre_loop_issue_with_body_only_fence(
       : memref<128xf16, #wafer.memory<ddr, tensor>>
      to memref<128xf16, #wafer.memory<spm, tensor>>
   scf.for %i = %lb to %ub step %step {
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
   }
   return
 }

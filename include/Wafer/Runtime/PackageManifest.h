@@ -5,7 +5,7 @@
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 #include "Wafer/Target/RuntimeLaunchContract.h"
-#include "Wafer/Target/TargetProfile.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -20,14 +20,10 @@
 
 namespace wafer::runtime {
 
-inline constexpr uint32_t kPackageManifestSchemaVersion = 6;
+inline constexpr uint32_t kPackageManifestSchemaVersion = 7;
 inline constexpr llvm::StringLiteral kPackageManifestFileName = "manifest.json";
-inline constexpr llvm::StringLiteral kDirectDTEStatusABIV1 =
-    WAFER_TX81_DIRECT_DTE_STATUS_ABI_V1;
-inline constexpr llvm::StringLiteral kDirectDTEStatusABIV2 =
-    WAFER_TX81_DIRECT_DTE_STATUS_ABI_V2;
 inline constexpr llvm::StringLiteral kDirectDTEStatusABI =
-    WAFER_TX81_DIRECT_DTE_STATUS_ABI_V2;
+    WAFER_TX81_DIRECT_DTE_STATUS_ABI;
 enum class DirectDTEStatusValue : uint32_t {
   Pending = WAFER_TX81_DIRECT_DTE_STATUS_PENDING,
   Success = WAFER_TX81_DIRECT_DTE_STATUS_SUCCESS,
@@ -36,13 +32,13 @@ enum class DirectDTEStatusValue : uint32_t {
 inline constexpr uint32_t kDirectDTEStatusPoison =
     WAFER_TX81_DIRECT_DTE_STATUS_POISON;
 inline constexpr uint64_t kDirectDTEStatusValueOffset =
-    WAFER_TX81_DIRECT_DTE_STATUS_V2_VALUE_OFFSET;
+    WAFER_TX81_DIRECT_DTE_STATUS_VALUE_OFFSET;
 inline constexpr uint64_t kDirectDTEStatusValueBytes =
-    WAFER_TX81_DIRECT_DTE_STATUS_V2_VALUE_BYTES;
+    WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES;
 inline constexpr uint64_t kDirectDTEStatusStorageBytes =
-    WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_BYTES;
+    WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES;
 inline constexpr uint64_t kDirectDTEStatusStorageAlignment =
-    WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_ALIGNMENT;
+    WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT;
 static_assert(kDirectDTEStatusValueBytes == sizeof(uint32_t));
 static_assert(kDirectDTEStatusValueOffset + kDirectDTEStatusValueBytes <=
               kDirectDTEStatusStorageBytes);
@@ -155,17 +151,15 @@ struct PackageCompletionRecord {
 };
 
 struct PackageManifest {
-  PackageManifest(TargetProfileId targetProfile,
-                  TargetIdentityId targetIdentity,
+  PackageManifest(TargetIdentityId targetIdentity,
                   KernelRuntimeABIId runtimeABI, RuntimeLaunchContract launch,
                   llvm::StringRef moduleFormat)
-      : targetProfile(targetProfile), targetIdentity(targetIdentity),
+      : targetIdentity(targetIdentity),
         runtimeABI(runtimeABI), launch(std::move(launch)),
         moduleFormat(moduleFormat.str()) {}
 
   uint32_t schemaVersion = kPackageManifestSchemaVersion;
   ProgramId program;
-  TargetProfileId targetProfile;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId runtimeABI;
   RuntimeLaunchContract launch;
@@ -234,14 +228,13 @@ struct RuntimeInvocationBinding {
 
 struct RuntimeEnvironment {
   RuntimeEnvironment(
-      TargetProfileId targetProfile, TargetIdentityId targetIdentity,
+      TargetIdentityId targetIdentity,
       KernelRuntimeABIId runtimeABI, llvm::StringRef moduleFormat,
       uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max())
-      : targetProfile(targetProfile), targetIdentity(targetIdentity),
+      : targetIdentity(targetIdentity),
         runtimeABI(runtimeABI), moduleFormat(moduleFormat.str()),
         maxResourceBytes(maxResourceBytes) {}
 
-  TargetProfileId targetProfile;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId runtimeABI;
   std::string moduleFormat;

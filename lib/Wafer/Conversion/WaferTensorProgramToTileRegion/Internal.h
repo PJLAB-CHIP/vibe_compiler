@@ -342,11 +342,9 @@ private:
 
   mlir::LogicalResult requireSingleTensorCollective(mlir::Operation *op);
 
-  mlir::FailureOr<mlir::Value>
-  materializeCollectiveInputInResultType(mlir::Value input,
-                                         mlir::Type resultElementType,
-                                         mlir::Location loc,
-                                         mlir::OpBuilder &builder);
+  mlir::FailureOr<mlir::Value> materializeCollectiveInputInResultType(
+      mlir::Value input, mlir::Type resultElementType, mlir::Location loc,
+      mlir::OpBuilder &builder);
 
   mlir::LogicalResult convertAllGather(LinalgExtCollectiveAllGatherOp op,
                                        mlir::OpBuilder &builder);
@@ -407,8 +405,8 @@ private:
 
   bool allStatic(llvm::ArrayRef<int64_t> values) const;
 
-  mlir::FailureOr<mlir::Value> materializeDdrSubview(
-      mlir::Location loc, mlir::Value sourceDdr,
+  mlir::FailureOr<mlir::Value> materializeMemRefSubview(
+      mlir::Location loc, mlir::Value sourceMemRef,
       mlir::RankedTensorType tileTensorType,
       llvm::ArrayRef<mlir::OpFoldResult> offsets, llvm::ArrayRef<int64_t> sizes,
       llvm::ArrayRef<int64_t> strides, mlir::OpBuilder &builder);

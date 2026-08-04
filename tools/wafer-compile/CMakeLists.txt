@@ -1,4 +1,5 @@
 set(_wafer_compile_sources
+  CompilerIRDump.cpp
   DriverOptions.cpp
   TargetModelGate.cpp
   wafer-compile.cpp

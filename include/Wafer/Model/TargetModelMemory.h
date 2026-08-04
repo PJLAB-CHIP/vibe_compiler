@@ -96,7 +96,7 @@ public:
   create(const compiler::TargetCallInvocationDescriptor &invocation,
          llvm::ArrayRef<TargetModelInputBinding> inputBindings);
 
-  TargetProfileId getTargetProfile() const { return targetProfile; }
+  TargetIdentityId getTargetIdentity() const { return targetIdentity; }
   llvm::ArrayRef<int64_t> getLogicalRanks() const { return logicalRanks; }
   llvm::ArrayRef<TargetModelPlannedSlot> getSlots() const { return slots; }
   uint64_t getSPMBase() const { return spmBase; }
@@ -114,12 +114,12 @@ private:
     std::vector<uint8_t> bytes;
   };
 
-  InvocationAddressPlan(TargetProfileId targetProfile,
+  InvocationAddressPlan(TargetIdentityId targetIdentity,
                         std::vector<int64_t> logicalRanks,
                         std::vector<TargetModelPlannedSlot> slots,
                         std::vector<InitialSlotStorage> initialStorage,
                         uint64_t spmBase, uint64_t spmLimit)
-      : targetProfile(targetProfile), logicalRanks(std::move(logicalRanks)),
+      : targetIdentity(targetIdentity), logicalRanks(std::move(logicalRanks)),
         slots(std::move(slots)), initialStorage(std::move(initialStorage)),
         spmBase(spmBase), spmLimit(spmLimit) {}
 
@@ -128,7 +128,7 @@ private:
   const InitialSlotStorage *findInitialStorage(int64_t logicalRank,
                                                int64_t slotOrdinal) const;
 
-  TargetProfileId targetProfile;
+  TargetIdentityId targetIdentity;
   std::vector<int64_t> logicalRanks;
   std::vector<TargetModelPlannedSlot> slots;
   std::vector<InitialSlotStorage> initialStorage;

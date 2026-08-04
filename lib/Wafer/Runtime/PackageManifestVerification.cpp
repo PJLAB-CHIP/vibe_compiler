@@ -197,12 +197,12 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
     const uint64_t argumentBytesMax = cluster
                                           ? kTx81ClusterKernelArgumentBytesMax
                                           : kTx81KernelArgumentBytesMax;
-    if (kernel->entryABI == KernelEntryABI::RankMajorPointerTableV1) {
+    if (kernel->entryABI == KernelEntryABI::RankMajorPointerTable) {
       if (first.slots.size() > argumentBytesMax / sizeof(uint64_t) / 16)
         return invalid(
             "shared rank-major argument table exceeds the qualified V5.6 "
             "packet limit");
-    } else if (kernel->entryABI == KernelEntryABI::RankRowPointerTableV1) {
+    } else if (kernel->entryABI == KernelEntryABI::RankRowPointerTable) {
       if (16 > argumentBytesMax / sizeof(uint64_t))
         return invalid(
             "shared rank-row pointer table exceeds the qualified V5.6 "
@@ -347,17 +347,10 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
     return invalid("unsupported package manifest schema_version");
   if (!manifest.program.isValid() || manifest.program.getValue() != 0)
     return invalid("package program identity is invalid");
-  const TargetProfileRecord &targetProfile =
-      getTargetProfileRecord(manifest.targetProfile);
-  if (manifest.targetIdentity != targetProfile.targetIdentity ||
-      manifest.runtimeABI != targetProfile.kernelRuntimeABI ||
-      manifest.moduleFormat != targetProfile.moduleFormat)
-    return invalid("package target profile mapping is inconsistent");
-  if (!isRuntimeLaunchContractCompatible(manifest.launch,
-                                         manifest.targetProfile))
-    return invalid(
-        "package runtime launch contract is not qualified for its target "
-        "profile");
+  if (manifest.targetIdentity != TargetIdentityId::waferTx81SingleCard() ||
+      manifest.runtimeABI != KernelRuntimeABIId::waferTx81Kernel() ||
+      manifest.moduleFormat != kCurrentTargetModuleFormat)
+    return invalid("package target identity or runtime ABI is unsupported");
   if (manifest.rankCount != 1 && manifest.rankCount != 16)
     return invalid("package rank_count must be exactly 1 or 16");
   const KernelRuntimeLaunchContract *kernel = manifest.launch.getKernel();

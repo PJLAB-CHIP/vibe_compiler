@@ -203,22 +203,18 @@ buildManifest(const ExecutableBundle &executableBundle,
                 "package rank domain does not match executable and target "
                 "artifact bundles");
 
-  const TargetProfileRecord &targetProfile =
-      getTargetProfileRecord(config.getTargetProfileId());
   if (targetArtifacts.getModules().empty())
     return fail(diagnostics, "package target module domain is empty");
   const VerifiedTargetModule &firstTargetModule =
       targetArtifacts.getModules().front();
-  if (firstTargetModule.getTargetProfileId() != config.getTargetProfileId() ||
-      firstTargetModule.getTargetIdentityId() != targetProfile.targetIdentity ||
+  if (firstTargetModule.getTargetIdentityId() != config.getTargetIdentityId() ||
       firstTargetModule.getKernelRuntimeABIId() !=
-          targetProfile.kernelRuntimeABI ||
-      firstTargetModule.getModuleFormat() != targetProfile.moduleFormat)
+          KernelRuntimeABIId::waferTx81Kernel() ||
+      firstTargetModule.getModuleFormat() != kCurrentTargetModuleFormat)
     return fail(diagnostics,
                 "package target module facts do not match ExecutionConfig "
                 "and target registry");
-  runtime::PackageManifest manifest(firstTargetModule.getTargetProfileId(),
-                                    firstTargetModule.getTargetIdentityId(),
+  runtime::PackageManifest manifest(firstTargetModule.getTargetIdentityId(),
                                     firstTargetModule.getKernelRuntimeABIId(),
                                     targetArtifacts.getRuntimeLaunchContract(),
                                     firstTargetModule.getModuleFormat());
@@ -240,7 +236,6 @@ buildManifest(const ExecutableBundle &executableBundle,
   for (auto [expectedModuleId, target] :
        llvm::enumerate(targetArtifacts.getModules())) {
     if (target.getId().getValue() != expectedModuleId ||
-        target.getTargetProfileId() != firstTargetModule.getTargetProfileId() ||
         target.getTargetIdentityId() !=
             firstTargetModule.getTargetIdentityId() ||
         target.getKernelRuntimeABIId() !=
@@ -608,12 +603,11 @@ detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
   const VerifiedTargetModule &targetReadback =
       targetArtifacts.getModules().front();
   if (readbackManifest.rankCount != executionConfig.getRankCount() ||
-      readbackManifest.targetProfile != targetReadback.getTargetProfileId() ||
       readbackManifest.targetIdentity != targetReadback.getTargetIdentityId() ||
       readbackManifest.runtimeABI != targetReadback.getKernelRuntimeABIId() ||
       readbackManifest.launch != targetArtifacts.getRuntimeLaunchContract() ||
       readbackManifest.moduleFormat != targetReadback.getModuleFormat() ||
-      readbackManifest.targetProfile != executionConfig.getTargetProfileId())
+      readbackManifest.targetIdentity != executionConfig.getTargetIdentityId())
     return fail(diagnostics,
                 "package manifest readback does not match target module facts "
                 "and ExecutionConfig");

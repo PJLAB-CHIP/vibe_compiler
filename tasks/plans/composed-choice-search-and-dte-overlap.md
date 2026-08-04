@@ -32,7 +32,7 @@ Pipeline position:
   串行runner。
 - Explicit non-goals:
   本轮不运行真实板端，不用case、shape、op/buffer名或artifact path恢复窗口，不引入shadow plan/side
-  table，不把V1/V2 wait-auto-issue当成显式overlap，不从no-card、host elapsed、target model或既有
+  table，不把obsolete wait-auto-issue当成显式overlap，不从no-card、host elapsed、target model或既有
   Direct-DTE资格推导硬件收益，不修改Q39 NoC cost或Q41搜索上界。
 - Completion gate:
   host回归证明fixed-slot与Direct-DTE/compute witness来自同一个actual tuple，issue/wait token、顺序、
@@ -91,7 +91,7 @@ alternative又会保留相同overlap顺序。因此本资格使用同一个fully
 4. 重跑whole-card resource和accepted-rank verifier，并要求每rank witness计数精确变为Known zero；
 5. 通过与candidate相同的target/package gate。
 
-因此两包保持同一source snapshot、16-rank cluster launch、target profile、host-visible资源、transport status
+因此两包保持同一source snapshot、16-rank cluster launch、current target identity、host-visible资源、transport status
 ABI、Direct-DTE call inventory、message binding和CPU oracle；唯一预期结构差异是scheduler中compute相对exact wait
 的顺序。serialized seam是compiler-private测试入口，不进入public CLI或normal production selection。
 

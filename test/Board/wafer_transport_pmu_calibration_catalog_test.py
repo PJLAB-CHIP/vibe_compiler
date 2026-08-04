@@ -388,19 +388,18 @@ def main() -> int:
         / "wafer_board_dte_ncc_execution_probe_test.py"
     ).read_text()
     for legacy_ordinary_call in (
-        "wafer_tx81_rdma(",
-        "wafer_tx81_wdma(",
-        "wafer_tx81_elementwise_add(",
+        "wafer_tx81_rdma_v3(",
+        "wafer_tx81_wdma_v3(",
+        "wafer_tx81_elementwise_add_v3(",
     ):
         assert legacy_ordinary_call not in probe_source
     assert "wafer_tx81_rdma_v3(" in probe_source
     assert "wafer_tx81_wdma_v3(" in probe_source
     assert "wafer_tx81_elementwise_add_v3(" in probe_source
     assert 'parser.add_argument("--host-contract-only"' in host_driver_source
-    assert 'TARGET_PROFILE = "wafer-tx81-single-card-kernel-v3"' in (
+    assert 'TARGET_IDENTITY = "wafer-tx81-single-card"' in (
         host_driver_source
     )
-    assert "f\"--target-profile={TARGET_PROFILE}\"" in host_driver_source
     assert "mode not in (*ISOLATED_DTE_MODES, *PENDING_DTE_MODES)" in (
         host_driver_source
     )
@@ -431,7 +430,7 @@ def main() -> int:
     )
     assert reuse.index(
         "wafer_probe_capture_region(output_ddr, 3"
-    ) < reuse.index("wafer_tx81_local_fence();", reuse.index(
+    ) < reuse.index("wafer_tx81_ncc_join(1U);", reuse.index(
         "wafer_probe_capture_region(output_ddr, 3"
     ))
     broadcast = probe_source.split(
@@ -519,7 +518,7 @@ def main() -> int:
     )
     assert raw_async.index(
         "wafer_tx81_direct_dte_wait(receive)"
-    ) < raw_async.rindex("wafer_tx81_local_fence()")
+    ) < raw_async.rindex("wafer_tx81_ncc_join(1U)")
     assert raw_async.index(
         "wafer_tx81_direct_dte_wait(receive)"
     ) < raw_async.rindex("wafer_tx81_elementwise_add_v3(")

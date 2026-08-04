@@ -26,11 +26,10 @@ namespace wafer::compiler::detail {
 
 PreparedTargetRank::PreparedTargetRank(const ExecutionConfig &executionConfig,
                                        bool transportPreparedBeforeEntry)
-    : targetProfile(executionConfig.getTargetProfileId()),
+    : targetIdentity(executionConfig.getTargetIdentityId()),
       transportPreparedBeforeEntry(transportPreparedBeforeEntry),
-      targetIdentity(getTargetProfileRecord(targetProfile).targetIdentity),
-      kernelRuntimeABI(getTargetProfileRecord(targetProfile).kernelRuntimeABI),
-      moduleFormat(getTargetProfileRecord(targetProfile).moduleFormat.str()) {}
+      kernelRuntimeABI(KernelRuntimeABIId::waferTx81Kernel()),
+      moduleFormat(kCurrentTargetModuleFormat.str()) {}
 
 namespace {
 
@@ -306,8 +305,8 @@ prepareTargetABI(const RankExecutable &rankExecutable,
          "u32",
          MemLayout::Tensor,
          {1},
-         WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_BYTES,
-         WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_ALIGNMENT});
+         WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES,
+         WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT});
   }
 
   if (profileCapture != ProfileCaptureKind::None) {

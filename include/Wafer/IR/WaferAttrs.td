@@ -9,7 +9,7 @@ include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/EnumAttr.td"
 
 def Wafer_TargetWafer : I32EnumAttrCase<"Wafer", 0, "wafer">;
-def Wafer_Target : I32EnumAttr<"Target", "Wafer target profile", [
+def Wafer_Target : I32EnumAttr<"Target", "Wafer compilation target", [
   Wafer_TargetWafer
 ]> {
   let cppNamespace = "::wafer";

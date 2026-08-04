@@ -154,7 +154,7 @@ Compiler / target-model core <- functional model <- bulk/SystemC adapters
 ```
 
 - `WaferAnalysis` 中的 physical-dataflow sources 只能链接 `WaferIR`、必要的 MLIR IR/dialect/analysis
-  libraries，以及 `TransferRealizability` 明确消费 typed target-profile API 时的 `WaferTarget`；不得链接
+  libraries，以及`TransferRealizability`明确消费current target helper API时的`WaferTarget`；不得链接
   Conversion、Transforms、Pipelines 或 Compiler。若 target-independent 与 target-aware analysis 能自然拆开，
   前者保持在更低依赖层。
 - `WaferTransforms` 的 physical-dataflow sources 链接 `WaferAnalysis`、`WaferIR`、现有 Conversion

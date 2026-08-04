@@ -85,7 +85,7 @@ Pipeline position:
   post-commit target/package/runtime不得从raw instruction IR重新恢复resource语义。
 - User-level driver / named pipeline:
   Q16以后由同一
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=<registered-id>`
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --launch-kind={kernel|model}`
   的whole-variant
   candidate loop调用本stage；Q15只产出verified structured tensor program directory，不执行DDR planning；
   `wafer-opt`、局部`wafer-plan-ddr-memory`和从tile-region/instruction/SPM跑到DDR offset assignment的
