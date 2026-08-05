@@ -12,18 +12,21 @@ per-rank frontier、rank-local accepted module、attempt plan和digest companion
 Pipeline position:
 - Upstream artifact / IR:
   Q49 C3正在评估的complete all-rank actual variant；其中每个rank都是complete-entry canonical/unplaced Instr parent，
-  shared collective/peer parameter已在同一transaction中固定。Q38提供fixed-slot和typed worker mechanics，Q39提供
+  并已物化candidate-selected的一个或多个non-nested SPM residency regions。shared collective/peer parameter已在同一transaction中固定。
+  Q38提供fixed-slot和typed worker mechanics，Q39提供
   NoC/DDR cost terms，Q41的counter/bounded executor由Q49唯一work budget统一调用。
 - Current stage responsibility:
   作为C3 terminal mechanics，在canonical unplaced Instr parent上物化worker/fixed-slot/ready-order variant，删除旧join并
   fresh重建completion，然后在同一all-rank transaction中证明Direct-DTE issue -> FP16/BF16 CT/NE compute ->
-  matching exact wait的token、effect、range和control-flow witness。本stage不生成rank-local frontier、winner或accepted module。
+  matching exact wait的token、effect、range和control-flow witness。本stage不独立改变region partition；stage、wait或通信窗口
+  不机械切region，region boundary也不自动生成DDR movement或join。本stage不生成rank-local frontier、winner或accepted module。
 - Output artifact / IR:
   同一disposable all-rank actual variant中已物化的Instr/SSA/event/range事实，或结构化failure。witness只是
   invocation-local analysis/diagnostic，不是package companion、selection key或第二份schedule。
 - Downstream consumer:
-  C3的唯一terminal exact chain：每个terminal rank-entry Instr variant一次whole-entry SPM solve，每个complete
-  all-rank variant一次whole-variant DDR、Direct-DTE/message-resource、ABI和final recost；C4只从fully gated frontier选winner。
+  C3的terminal exact chain：从每个terminal rank-entry Instr variant的final roots、lifetime、control-flow coexistence派生
+  一个或多个fixed SPM allocation problems，再对complete all-rank variant执行whole-variant DDR、Direct-DTE/message-resource、
+  ABI和final recost；allocation problem/query数量只作work diagnostic，C4只从fully gated frontier选winner。
 - User-level driver / named pipeline:
   wafer-compile source-to-bundle production pipeline。历史wafer-compile-test qualification seam只保留Q40 board-ready证据，
   不成为Q49的public option、candidate wire format或另一条lowering pipeline。
@@ -32,16 +35,18 @@ Pipeline position:
   不维护rank correspondence key、attempt plan、shadow plan或digest companion作为production语义。
 - Completion gate:
   source/integration tests证明fixed-slot与Direct-DTE/compute witness来自同一actual all-rank variant，issue/wait token、
-  order、dtype、range、footprint和message matching错误均fail closed；候选继续经过Q49相同SPM/DDR/completion/
+  order、dtype、range、footprint和message matching错误均fail closed；一个或多个selected residency regions的data boundary
+  只允许DDR且不携带SPM root/alias，boundary只完成仍访问被释放roots的work；候选继续经过Q49相同SPM/DDR/completion/
   transport/ABI gates，不以Q40旧package companion或board-ready记录代签。
 ```
 
 ## 1. Q49 终态集成边界
 
-Q40不再组合多个已lowered rank-local frontiers。storage、region/tile、ready order、NoC、buffering和worker均由
+Q40不再组合多个已lowered rank-local frontiers。region partition、tile、storage、ready order、NoC、buffering和worker均由
 Q49同一coordinated frontier管理：
 
-- structured choices在C2的complete-rank actual Tile clones中联合物化；不用spill/resident/ready artifact kind
+- structured choices在C2的complete-rank actual Tile clones中联合物化；region merge/split与tile、residency、materialization、
+  communication共同选择，stage/traversal和collective不自动形成region cut；不用spill/resident/ready artifact kind
   组成rank correspondence seed；
 - C3只从terminal all-rank Tile variant派生worker/fixed-slot/order Instr variants，每个扩展都消耗Q49唯一
   tuple-level work budget；不存在per-rank cap、attempt Cartesian product或rank-local accept/commit；

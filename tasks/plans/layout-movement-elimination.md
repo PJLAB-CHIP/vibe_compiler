@@ -8,12 +8,11 @@ fanout版本共享和真实materialization位置。目标不是减少IR中所有
 SPM/DDR/NoC搬运、descriptor、等待和额外live storage。
 
 Q49集成说明：本文闭合的IndexRelation、PBQP projection和movement realization保留为proposal/action mechanics；
-layout proposal不再先形成局部winner，而是与tile/loop、resident/spill/recompute和internal materialization进入06的同一
-global frontier。当前complete static rank entry在没有typed opaque SPM clobber/device ownership handoff时恰好一个
-non-nested outer `wafer.tile.region`；不同traversal、tile shape和layout movement都在该SPM epoch内部表达，region
-partition不是搜索变量。内部view/movement/materialization边界不触发terminal completion；局部wait/join只由真实
-reuse/observer/domain dependency决定，最终在outer epoch exit验证。真实额外region只由typed epoch boundary产生，SPM
-data和pending completion不得跨界。本文原有固定Top-K只记录Q46
+layout proposal不再先形成局部winner，而是与region partition、tile/loop、resident/spill/recompute、materialization和
+communication进入06的同一global frontier。每个complete static rank entry可包含一个或多个non-nested
+`wafer.tile.region` SPM residency domains；layout/traversal边界不机械切region，region boundary本身也不自动产生DDR
+movement或join。若candidate选择跨region cut，所有跨界data必须通过显式DDR store、可信completion和matching load表达；
+SPM root/alias不得跨界，boundary只完成仍访问被释放roots的work。本文原有固定Top-K只记录Q46
 当时的机制gate，不是Q49分层搜索或IR语义上限。
 本文后续未显式标注Q49的Top-K、rank/whole frontier和candidate输出均是Q46历史完成记录，不是当前production协议。
 
@@ -27,15 +26,16 @@ Pipeline position:
 - Current stage responsibility:
   从当前IR重算IndexRelation、physical access、alias/lifetime和invalid-lane事实；传播并组合view relation；
   对现有candidate recipe先物化真实compute implementation，再从该typed clone联合选择
-  Tensor/NTensor/Cx/NCx、fanout共享版本和必要materialization；所有选择在现有outer epoch region内部改写traversal/
-  view/movement，不创建或拆分region；每个方案立即物化为actual clone并重跑现有exact gates。
+  Tensor/NTensor/Cx/NCx、fanout共享版本和必要materialization；这些layout mechanics由06与region merge/split、tile、
+  residency和communication共同物化到actual clone，不自行拥有partition policy。每个方案立即重跑现有exact gates；
+  任何layout改写都使旧root/lifetime/coexistence与SPM allocation结论失效。
 - Output artifact / IR:
   每个implementation recipe至多四个自包含layout optimized actual clones及独立baseline，并继续受现有rank/whole
   frontier hard cap约束。PBQP projection、assignment、relation proof和cost hint在clone进入现有frontier前销毁；
   最终只有现有candidate owner提交的typed winner IR进入bundle。
 - Downstream consumer:
-  complete-rank Tile/Dataflow到Instr conversion、whole-entry SPM/whole-variant DDR planning、epoch-exit
-  completion/resource/transport gate、target publication、
+  complete-rank Tile/Dataflow到Instr conversion、从final actual IR的roots/lifetime/control-flow coexistence派生的
+  SPM fixed allocation problems、whole-variant DDR planning、complete-rank completion/resource/transport gate、target publication、
   package、SystemC和板端执行。
 - User-level driver / named pipeline:
   现有wafer-compile source-to-bundle production pipeline；wafer-opt仅作局部replay/test。
@@ -82,8 +82,8 @@ Pipeline position:
 
 - 不扩展`TargetImplementationCandidate`，也不新增layout-demand/access-constraint接口。existing source interface仍只枚举
   implementation kind；scheduler以稳定recipe先物化该kind的isolated complete-rank actual clone，再从该clone重建layout PBQP；
-  Q49终态由06在一个outer epoch region内部联合选择tile/loop、layout/version、residency和materialization；
-  本计划原有PBQP只作为proposal reducer，不生成region partition，也不把不同traversal/tile shape变成region。
+  Q49终态由06联合选择region partition、tile/loop、layout/version、residency、materialization和communication；
+  本计划原有PBQP只作为proposal reducer，不独立决定region partition，也不把不同traversal/tile shape机械变成region。
   default implementation和每个non-default implementation分别交叉至多四个layout proposal，仍受12个semantic recipe、
   96次optimized rank evaluation及whole-variant hard cap约束。
 - PBQP node直接保存可由typed verifier与`provePhysicalTraversal`接受的`MemLayout`值，不再包装第二个layout enum、
@@ -163,9 +163,9 @@ PBQP只负责有界提案，不复制implementation、value、shape或legality�
 - Tree AllReduce在全部参与rank具有相同encoding与完整physical mapping时直接处理Cx/NCx physical footprint，
   包括tail/padding；AllReduce/ReduceScatter Ring仅在每个chunk都有exact、互斥physical-range证明时生成对应候选。
 - public input/output ABI继续保持compact Tensor。full-buffer resident handoff只有在pre-Instr owner已把
-  producer/consumer和兼容tile schedule物化进同一outer epoch内的可连接traversal时，才可在descriptor展开前转交
-  producer已有SPM version；不兼容fanout保留显式DDR materialization，epoch内selective spill保持显式，late transfer
-  elimination不创建region。若current IR存在typed epoch boundary，跨界data必须是DDR，不能发明SPM alias。
+  producer/consumer和兼容tile schedule物化进同一selected SPM residency domain内的可连接traversal时，才可在descriptor展开前转交
+  producer已有SPM version；不兼容fanout保留显式DDR materialization，region内selective spill保持显式。late transfer
+  elimination不独立创建region；region merge/split由06基于actual cost共同选择，跨界data必须是DDR，不能发明SPM alias。
 
 ## 实施 Checkpoints
 
@@ -188,10 +188,11 @@ PBQP只负责有界提案，不复制implementation、value、shape或legality�
 - physical：Tensor/NTensor/Cx/NCx full/tail、bitpacked relation/select、unknown padding、neutral reduce、跨dtype block mismatch；
 - solver：typed layout legality不扩接口、fixed-point/solver-work/search-expansion hard cap、deterministic Top-4、共享secondary
   只物化一次、双版本cap、失败不回填、baseline保留、无solver residue，以及implementation/layout actual recipe联合候选；
-- vertical：GEMM到pointwise/convert/reduce链、Tree AllReduce full footprint、exact Ring chunk正负例，以及同一outer
-  epoch内不同traversal/tile shape之间的resident handoff与selective DDR materialization；无typed epoch boundary时恰好
-  一个non-nested region，内部movement边界不生成completion；存在typed boundary时跨界data只走DDR且无SPM
-  memref/root/alias或pending completion；
+- vertical：GEMM到pointwise/convert/reduce链、Tree AllReduce full footprint、exact Ring chunk正负例，以及同一
+  residency region内不同traversal/tile shape之间的resident handoff与selective DDR materialization；同一source还覆盖
+  single-region resident与multi-region explicit materialization actual candidates。stage/layout/movement边界不自动切region或
+  生成completion；selected region boundary的data只走DDR且无SPM memref/root/alias，且只完成仍访问被释放roots的pending work；
+  SPM planner从final actual IR派生一个或多个fixed allocation problems，problem/query数量只作work diagnostic；
 - production：同源baseline/winner均经source-to-package、fresh no-card、output/guard验证；板端使用FP16/BF16，
   targeted winner必须减少final IR movement bytes/commands且matched性能不劣于baseline。
 
