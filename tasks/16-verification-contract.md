@@ -255,10 +255,13 @@ Tensor logical-fill不能替代这些扩展gate。
   DDR store、可信completion和后一region的DDR load。各region的distinct SPM roots进入同一whole-rank
   physical arena packing，重叠需求产生容量失败，non-overlap需求证明physical offset可复用；raw escape、
   无法解析provenance、nested/async/parallel scope为negative；
-- allocator bank-phase正例只比较同一hard-valid demand/lifetime、actual high-water、fragmentation和其它
-  candidate-visible primary cost下的offset选择，并从accepted offset重算`(offset / 256) mod 8`；
+- allocator relocation正例先比较同一hard-valid frozen demand/lifetime下的actual high-water，并只在high-water
+  相同的offset之间比较bank phase；phase从accepted offset重算`(offset / 256) mod 8`；
   同phase压力不得把Feasible变成failure，也不得改变spill/resident、region数量、
   DDR movement、worker/order或join。不存在bank/color attr，且测试不声称固定latency收益；
+- fixed-lifetime packing小图由仓库内exhaustive/property test验证MiniMalloc adapter、三态、alignment、
+  nonzero arena base、capacity-query单调性和independent validator；production build、link、test和pipeline不依赖
+  ILP/CP-SAT或常驻外部oracle。外部solver只允许真实捕获实例异常后的一次性诊断，结果不得成为fixture、cost或accepted offset；
 - resident SPM跨closed scalar direct callee可通过；可能执行tile-region的defined callee、external/unresolved和
   indirect call在缺少interprocedural arena/resource summary时fail closed；
 - missing/wrong-engine fence不能释放resource；

@@ -945,8 +945,8 @@ R3.2d 应实现为 MLIR DialectConversion：
 - illegal：`wafer.tile.load`、`wafer.tile.store`、`wafer.tile.materialize_layout`、
   `wafer.tile.fill/gemm/elementwise/reduce` 和 tile movement ops。
 - legal：`memref.alloc`、standard memref view ops、`wafer.instr.*`、
-  typed `wafer.instr.ncc_join`、`wafer.tile.region` container、
-  `scf.if` / `scf.for` container
+  typed `wafer.instr.ncc_join`、maximal SPM-residency `wafer.tile.region`、
+  `scf.if` / `scf.for`
   和必要 scalar/support op。
 - no type conversion for Wafer tagged memref values。
 - conversion failure 必须结构化返回给 planner；rejected instruction IR 不进入 committed 主线 IR。
@@ -1189,7 +1189,7 @@ representative rank或byte-identical module不能替代未验证entry。
 
 Instruction op-local lowering不分配physical address range、不选择SPM bank phase、不选择DDR arena
 placement，也不绑定runtime symbol、packet bit或worker window。Q49 SPM allocator只可在hard-valid且
-actual high-water/fragmentation/其它candidate-visible primary cost相同的placements之间，使用
+不提高best-known actual high-water的relocation placements之间，使用
 accepted-offset-derived bank phase作最后tie-break；它不得改变spill/resident、region、DDR movement、order或join。
 这些值属于SPM/DDR planning和late
 target binding；但所有 consumer 都必须在 whole-variant commit 前调用同一个 shared physical

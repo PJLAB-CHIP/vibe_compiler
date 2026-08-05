@@ -865,8 +865,8 @@ joint composition并退役late NoC-resident tuple decision owner：
 2. 每个参数点直接复用现有collective lowering pattern，不新增平行communication表示；
 3. logical/tile/instruction effect逐层由标准MemoryEffectOpInterface、SideEffects::Resource和SSA completion闭合；
    `WaferTilingInterface`、重复collective-info和Wafer resource-effect事实均已删除；
-4. 每个producer clone已经独立重算memory/verifier/cost；Q32.S只比较进入共同rank/whole-variant frontier后的
-   final exact metrics，并复用all-rank、target与atomic gates；
+4. 每个producer clone独立重算memory/verifier/cost；Q49的06 decision owner只比较进入共同rank/whole-variant
+   frontier后的final exact metrics，并复用all-rank、target与atomic gates；旧Q32.S frontier不再形成并行decision owner；
 5. 只保留typed IR-local conversion测试和production-shaped candidate集成测试，不恢复手动算法CLI入口。
 
 Q36已用共享execution-topology analysis替换logical-rank算术：规则mesh/torus、unavailable endpoint与explicit

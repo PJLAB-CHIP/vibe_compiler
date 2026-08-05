@@ -244,21 +244,20 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 7B block、GEMM/MLP、convolution、attention和branched workload只是通用算法与scale evidence；模型名、shape、parameter位置和
 最终fusion视图不进入IR协议、query key或rewrite规则。
 
-## 10. 当前发布基线与独立演进边界
+## 10. 稳定终态合同与当前实现差距
 
-| 维度 | 当前production事实 | 尚未并入当前基线 |
+| 维度 | 稳定终态合同 | 当前未闭合 / 后续 |
 | --- | --- | --- |
 | source boundary | static-ranked StableHLO program directory；rank-count显式1/16 | dynamic shape/state、MPMD、cross-card |
-| decision owner | actual-clone有界联合评估implementation、tile/relation、encoding/route、residency、share/recompute、hoist、numeric DAG、buffering/order和communication；全部current producer进入共同frontier | production multi-buffer prologue/steady/epilogue |
+| decision owner | actual-clone有界联合评估implementation、tile/relation、encoding/route、residency、share/recompute、hoist、numeric DAG、buffering/order和communication；全部current producer进入共同frontier | Q49 C1–C6 complete-rank cutover与旧per-task decision owner删除；production multi-buffer prologue/steady/epilogue |
 | numeric transformation | supported integer exact/modular变换，以及f16/bf16/f32 reassociation、tree、distribution/factorization、reduction/GEMM split与floating collective；统一typed comparator验收 | 任意fast-math、未证明FMA contraction、用容差掩盖special value/index/layout/guard错误 |
-| physical realization | typed Tensor/Cx/NCx、mapped/compact movement、physical-footprint fill、fixed-capacity SPM/DDR packing和oriented GEMM | Q49待实现offset-derived SPM bank-phase最后tie-break；bank attr、硬bank legality/color class、由bank phase反向产生spill/region/join，或无typed依据的route猜测均不进入基线 |
+| physical realization | typed Tensor/Cx/NCx、mapped/compact movement、physical-footprint fill、maximal SPM residency regions、fixed-capacity SPM/DDR packing和oriented GEMM | Q49待完成region/verifier cutover、MiniMalloc high-water tightening及offset-derived bank-phase最后tie-break；bank attr、硬bank legality/color class、由bank phase反向产生spill/region/join，或无typed依据的route猜测均不进入基线 |
 | communication | 不超过16 rank的topology-derived Direct/Ring/ordered-Tree，显式p2p/local work/completion和all-rank Direct DTE acceptance | ragged/segmented peer exchange、subgroup full-card barrier替代、cross-card transport |
 | artifact/runtime | all-and-only rank `ExecutableBundle`、same-lowering Target LLVM、schema-v7 verified package、no-card、TargetCall/SystemC和configured TX81 RuntimeProvider | exact-package ISS/vendor simulator |
 | hardware evidence | 当前profile的compiler-sensitive行为按supported/board-observed/unknown/excluded闭合；unknown采用保守compiler策略 | 通用model/board numeric correlation、packet/MMIO provenance、cycle-accurate timing |
 | performance evidence | compiler只消费final IR可证明的静态work；板端样本不自动回写candidate ranking | Q49删除历史SPM0/RAM_ACC `128 GB/s` per-tile flat-duration项；production-artifact profiler完成资格化，以及其后独立的hardware-informed ranking |
 
-当前队列先完成production-artifact profiler，随后才启动multi-engine software pipelining；二者在各自completion gate
-闭合前都不改变本表的production事实。动态状态和启动前置只读`tasks/progress.md`。
+本表固定长期边界，不记录施工顺序。当前实现状态、启动前置和外部板端门禁只读`tasks/progress.md`。
 
 ## 11. Owner 索引
 

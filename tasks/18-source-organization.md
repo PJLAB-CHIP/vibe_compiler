@@ -284,10 +284,10 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
   `wafer::memory_planning::detail`符号保持`WaferTransforms`私有，
   两个planner只保留各自memory-space legality、resource limit、SPM non-nested scope/DTE或DDR
   descriptor/planning-scope语义和offset commit。
-- Q32 不新增packing schema或memory-planning owner。每个rewritten clone继续调用同一
+- physical-dataflow synthesis不新增packing schema或memory-planning owner。每个rewritten clone继续调用同一
   `LifetimeAnalysis`、`StaticMemoryPacking`、`MiniMallocPacking` 和 SPM/DDR planner；它们只从当前 clone
-  重建timeline、root、conflict、lifetime和placement，返回validated high-water并原子应用typed offsets。Q32.S的
-  selection-sensitive capacity probes只是Scheduling在本次candidate evaluation内重复调用同一pure owner API，不新增packing
+  重建timeline、root、conflict、lifetime和placement，返回validated high-water并原子应用typed offsets。06 decision owner的
+  selection-sensitive capacity tightening只在本次terminal candidate evaluation内重复调用同一pure owner API，不新增packing
   implementation、proof/cache schema或repair接口。physical-dataflow analysis
   不复制 clique/lifetime 逻辑，MemoryPlanning 也不反向依赖 Scheduling。rewrite invocation 使用的 `IRMapping`
   在 clone 修改或 analysis 失效后立即销毁，不能成为下游 side table。

@@ -543,8 +543,8 @@
   provenance失败；没有SPM arena/effect的closed scalar direct callee可穿过live resident，可能执行tile-region的
   callee、external/unresolved或indirect call在缺少arena/resource summary时fail closed。DDR `wafer.ddr.offset`始终是arena-relative fact，没有typed
   arena base binding时target不得把它当absolute address。physical size、alignment和bank span统一从shared
-  geometry helper推导；Q49终态allocator可从accepted offset按`(offset / 256) mod 8`重算coarse bank phase，
-  但只在hard-valid且actual high-water/fragmentation/其它candidate-visible primary cost相同的placements间作
+  geometry helper推导；Q49终态allocator可从accepted offset按`(offset / 256) mod 8`重算coarse bank phase；
+  relocation先比较actual high-water，bank phase只在high-water相同的hard-valid placements间作
   最后tie-break，不得引入bank attr、spill、region或join；当前代码是否已迁移以`tasks/progress.md`为准。
   runtime object、physical address和packet字段不得写回planning IR。
 - reduction语义恢复不能只看yielded op class。使用`mlir::matchReduction`或等价结构匹配，证明单一combiner
@@ -830,6 +830,11 @@
   不使用短wall-clock timeout；只在`ResourceExhausted`时运行deterministic first-fit安全fallback。完整求解的
   `ProvenInfeasible`才能映射capacity failure，first-fit NoFit不是不可行证明。共享header保持owner library私有，
   不形成跨pass side table或新IR attr。
+- fixed lifetime/size/alignment/conflict冻结后，MiniMalloc是production packing的唯一backend；全局tile/fusion/layout/
+  residency仍由actual-IR frontier决定，不编码进ILP/SMT/CP-SAT。小图用仓库内exhaustive/property test，
+  不设常驻外部solver oracle。单次fixed-capacity feasible不证明high-water最优；确有selection需求时由decision owner
+  以确定性budget重复收紧arena end，任何quality-query耗尽都保留已验证可行placement。只有真实captured problem
+  持续耗尽或出现可量化质量问题时，才做一次性外部solver诊断，不回写IR或影响完成门禁。
 - compiler-managed allocation `RootRef`、caller-owned/external `ValueOriginRef`和async task identity是三类不同事实。
   async handle的root union只能延长lifetime；不能证明某个task已完成。external origin在最终semantic root上去重，未知
   tracked producer不得退化成external root。

@@ -122,6 +122,10 @@ rank-maxima为`658 Instr / 205 GS / 56 join / 24 DTE`，不是伪造的单一cri
 4. 含collective的actual clones不能rank-local误剪；coordinator可从current typed IR即时派生transient hash预筛，但每个tuple
    必须逐项fresh重证，hash不进入state、IR、schema或正确性判断；不用task/layout ordinal拼card-wide tuple。
 5. 在winner仍选conservative baseline的bring-up阶段，保持selected IR和package等价，先证明新的decision point没有语义漂移。
+6. C1允许先按旧structured scope发现顺序构造保守DDR边界，但该scope数量和region数量不是selected residency结果。
+   当前逐scope `clone→lower→import` helper只能作为施工中间态；C1完成前production decision point必须直接拥有
+   complete-rank current IR，不能让scope standalone module各自完成selection、placement或commit。新的Q49路径不得调用
+   旧full-buffer handoff promotion把DDR边界改写成跨sibling-region SPM SSA。
 
 Gate：
 
@@ -132,6 +136,8 @@ Gate：
   store→completion→load，不能保留SPM SSA；external input仍按storage semantics显式load，但不因此形成
   standalone lowering边界；
 - final `tile.region` inputs/results为variadic，chain、diamond、fanin/fanout和multi-root不受人为边数上限；
+- C1 conservative baseline的sibling region只由显式DDR边连接，Q49 path中的SPM region operand/result为零；
+  当前宽松ODS/verifier只作为待删除迁移面，不能让跨region SPM candidate进入frontier或winner；
 - source-observable ordering只阻断对应schedule/completion action；unsupported numeric reorder、不可表示control flow及其它
   未知legality也只阻断其对应维度，只有所有可用实现都无法跨越时才成为component separator；
 - production candidate construction不再调用单task独立Tile→Instr/SPM/DDR再import的路径；旧死代码统一在C6删除；
@@ -149,6 +155,8 @@ Gate：
    `IndexRelation`穿过view、slice、broadcast、permutation和reshape。
 2. 对pure producer生成actual alternatives：direct SSA tile、shared version、consumer-local recompute和loop-invariant
    materialize；对不能direct传播的edge保留显式movement baseline。
+   resident alternative必须原子删除对应intermediate DDR store/completion/load并重建maximal residency partition；
+   不得先创建跨sibling-region SPM handoff再等待late merge。
 3. fanout/fanin在同一live frontier内联合处理；shared input的load/layout placement随consumer loop construction决定，
    不在Instr层对effectful load做事后LICM。
 4. 第一条production vertical使用通用indexing semantics把transpose/view relation吸收到oriented contraction actual clone，
@@ -186,6 +194,14 @@ Gate：
 5. all-rank collective/peer alternatives共同物化；rank pruning保留可能组成whole-card winner的actual clones，tuple从current IR逐项重证。
 6. SPM movement bytes保持final-IR exact work/pressure维度；删除现存NoC profitability中的历史per-tile
    `128 GB/s` SPM flat-duration项。bank phase只作allocator最后tie-break，不产生candidate-level latency或收益。
+7. selected spill cut确定后按07的maximal residency partition算法沿structured control tree重建whole-function regions：
+   resident/alias/local-movement must-co-reside关系先合并，只有compiler-managed intermediate DDR
+   store→completion→load增加local segment；无cut的if/loop与resident state由共同外层region包含，有cut的
+   if/loop在branch/body内使用local region sequence且跨界data必须为DDR，无cut的independent roots和不同
+   traversal domain合入同一region。同步收紧TileRegion ODS/verifier与SPM provenance，禁止sibling region
+   operand/result携带SPM memref/root/alias，并删除旧region SPM argument/result lifetime映射。
+8. structured frontier只消费capacity lower bound/Unknown；09的MiniMalloc单backend、high-water quality和bank-phase
+   合同被冻结为terminal gate policy，不得提前在C3 proposal或PBQP factor中运行或近似复制。
 
 建议初始确定性预算（由C0 fresh work counters标定后冻结）：
 
@@ -203,6 +219,8 @@ Gate：
 - 三个consumer且存在多个互不兼容physical demands的held-out graph通过，不把初始primary+secondary覆盖写成通用上限；
 - 每个survivor都是actual clone，factor/search对象销毁后verifier和lowering结论不变；
 - packing failure不留下partial offsets，不使allocator修改tile/layout/order；
+- no-spill chain、diamond/fanout、collective和不同traversal domain在rebuild后进入同一maximal region；
+  explicit-spill正例只产生由store→completion→load分开的regions；final verifier拒绝全部sibling SPM边；
 - serial/parallel frontier和winner确定一致；
 - final cost不再包含SPM0/RAM_ACC 1024-bit接口外推的per-tile SPM flat duration；
 - 不出现“region/task数 × recipe数”的full lowering笛卡尔积，expanded states、terminal lowering次数和RSS保持显式bounded；
@@ -225,10 +243,13 @@ completion，再执行一次packing与独立alias验证。
    可安全coalesce的必须合并。地址复用只能生成bounded explicit siblings：separate slot、reorder、worker change、join或spill。
 5. 每个completion sibling按`lifetime/conflict → SPM packing → physical-alias verification`执行一次。worker/order/slot/join sibling
    从无offset Instr parent生成；需要retile/spill/layout改变时回到同一evaluation的actual Tile parent生成新structured sibling。
-   allocator不插join、不修改order，也不原地迭代到fixed point。它保持hard feasibility/exact verification owner，
-   只允许在hard-valid且actual high-water/fragmentation/其它candidate-visible primary cost相同的placements内，
-   使用offset-derived bank phase作最后tie-break；该偏好不得反馈或改变spill、region、
+   allocator不插join、不修改order，也不原地迭代到fixed point。它保持hard feasibility/exact verification owner；
+   同一次pure packing gate内部可按09对selection-sensitive shortlist做有界capacity tightening；hard-valid relocation
+   先比较actual high-water，只在high-water相同时使用offset-derived bank phase作最后tie-break。该偏好不得反馈或改变spill、region、
    DDR movement、worker/order或join。
+6. fixed lifetime后只使用受管MiniMalloc做production packing。先对完整3 MiB arena取得validated feasibility；quality
+   budget耗尽保留首份placement。生产不引入ILP/CP-SAT依赖或常驻oracle；小图只用仓库内exhaustive/property
+   test，外部solver只允许真实捕获实例异常后做一次性诊断。
 
 Gate：
 
@@ -237,6 +258,10 @@ Gate：
 - NCC→DTE/Kcore/external publication、cross-worker conflict、collective protocol和terminal observer保留精确completion；
 - 每个剩余join都能从current IR重算hazard witness，join不替代DTE wait或group barrier；
 - completion变化后的lifetime、SPM placement、physical range、descriptor和target gate全部fresh通过；
+- 同一packing problem的arena-end收紧保持单调三态；quality budget耗尽时仍接受首份validated
+  hardware-capacity placement，不误报capacity failure；
+- 仓库内exhaustive/property tests覆盖conflict、alignment、nonzero arena base、capacity tightening和validator；
+  production build/runtime/link surface没有ILP/CP-SAT依赖或调用；
 - late failure销毁完整clone，不恢复旧保守join pipeline。
 
 不算完成：只调用现有“保留已有join”的normalizer，或在packing后无条件批量删除join。
@@ -303,8 +328,8 @@ qualification选择仍可用compiler-private typed seam，但不是public optimi
 
 - redundant transfer、GS coalescing、view folding和local LICM只作policy-free generic canonicalization；
 - worker placement、fixed-slot、PBQP和NoC lowering保留为typed mechanics/action library；
-- SPM/DDR allocator继续作为hard exact gate；SPM allocator只在hard-valid placements内用可重算bank phase作
-  末级软偏好，不拥有candidate dataflow选择；
+- SPM/DDR allocator继续作为hard exact gate；SPM allocator按09先比较actual high-water，只在high-water相同的
+  hard-valid relocation间用可重算bank phase作末级软偏好，不拥有candidate dataflow选择；
 - `tile.region`继续表达maximal SPM residency、structured traversal和SSA containment，不因cutover删除。
 
 Gate：

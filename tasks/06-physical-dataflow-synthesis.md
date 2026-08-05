@@ -37,8 +37,8 @@ program的候选artifact；**all-rank/whole-variant**只表示把all-and-only lo
    ABI 各自只回答自己的可验证问题；只有本文 owner 生成邻居、排序候选和决定 fallback。
 6. **capacity failure 反馈给搜索，不让 allocator 修 IR。** allocator 返回 typed failure；搜索 owner 从未放置 parent 建立
    有界 structured sibling，例如缩小 tile、缩短 lifetime、改变 physical version或spill某条edge；terminal Instr层另行派生
-   worker/slot/latest-necessary-completion siblings。SPM1 bank phase只在hard-valid且actual high-water、
-   fragmentation及其它candidate-visible primary cost相同的placements之间作为allocator最后tie-break，
+   worker/slot/latest-necessary-completion siblings。SPM relocation先比较actual high-water，SPM1 bank phase只在
+   high-water相同的hard-valid placements之间作为allocator最后tie-break，
    不返回failure或repair，也不改变spill、region、DDR movement、worker/order或join。
 7. **completion 在最终执行结构上重建。** source-observable ordering 只在 schedule/completion 维度形成不可跨越的约束；
    它不自动切断 tile propagation、physical representation 或 storage 选择。compiler-derived join 只在 worker、slot、
@@ -314,7 +314,8 @@ loop 中一条 instruction 必须按 exact static trip count或保守 symbolic m
 - 大 component 优先在 articulation/separator 和真实 hard cut处分解，再对 separator interface 做有界组合；
 - layout PBQP只作为同一component/analysis epoch内的局部factor reducer，输入/输出仍受tile、fanout、residency和movement约束；
   proposal被保留后立即materialize到actual clone并销毁；
-- small component 可在测试中用 exhaustive/ILP/CP oracle 检查最优性，但 production 不依赖外部 solver；
+- small component只用仓库内exhaustive/property test检查有限domain的最优性、dominance和
+  baseline retention；production不依赖外部solver；
 - 每层有 stable hard cap 和 reserved conservative baseline。budget exhaustion只能停止扩展，不能把未证明 infeasible 伪装成
   capacity/legality failure。
 
@@ -322,7 +323,29 @@ loop 中一条 instruction 必须按 exact static trip count或保守 symbolic m
 dominance key不得含 task ID、op/value 名、candidate ordinal、模型角色或路径。相同 source、target facts 和 options 必须得到相同
 frontier 和 winner；并行评估只改变吞吐，不改变接受顺序。
 
-### 7.3 Capacity-aware siblings
+### 7.3 分层求解器边界
+
+whole-rank综合不是一个固定变量集的单次packing问题。tile、share/recompute、layout、resident/spill、
+movement、loop order和worker/completion的选择会真实改写op、SSA、effect、lifetime和conflict graph；把它们
+一次性编码进全局ILP/SMT/CP-SAT会复制dialect/interface/verifier语义，并在每次actual rewrite后立即失效。
+生产只保留下列分层求解：
+
+1. structured层由consumer-driven propagation生成有限typed actions，用component-local DP、Pareto beam和
+   separator decomposition选择actual Tile clones；
+2. terminal Instr层在worker/slot/order确定后fresh重建completion，由current IR得到固定lifetime与
+   pairwise conflict relation；
+3. packing层只对这个固定问题运行受管MiniMalloc fixed-capacity search和独立validator，
+   不选tile、不插spill/join、不返回repair recipe；
+4. accepted offsets回到同一actual clone后重跑range/descriptor/ABI和final recost，不存在solver sidecar。
+
+MiniMalloc是当前fixed-lifetime/fixed-capacity合同的唯一production backend；这是专用搜索、确定性、
+三态failure和轻量集成上的工程选择，不声称它对所有图都有通用运行时最优性。不建立常驻
+ILP/CP-SAT oracle或完成门禁：小图正确性由仓库内exhaustive tests证明；只当真实workload持续
+出现`ResourceExhausted`或可量化的packing质量问题时，才可导出该份actual
+`StaticPackingProblem`做一次性外部诊断；诊断结果不回写IR、不成为production输入。Q48的query-local
+SMT只证明semantic rewrite等价，与本层packing求解无关。
+
+### 7.4 Capacity-aware siblings
 
 structured frontier只消费从current Tile IR派生的capacity lower bound或`Unknown`；Instr-level SPM/DDR planner只对terminal
 siblings执行并保持pure fixed-capacity gate。terminal evaluation期间，actual Tile parent一直作为拥有IR的parent clone存在，不是
@@ -341,8 +364,8 @@ shadow schedule。若这些选择改变lifetime或packing feasibility，重新�
 每个sibling都从未写offset的parent clone产生。structured sibling只重跑本层relation、materialization、coverage/verifier和safe bounds；
 只有terminal survivor才执行bufferization、completion、lifetime、packing与全部exact late gates。Instr sibling从canonical unplaced
 Instr parent重跑completion、lifetime、packing和后续gate。allocator不返回repair recipe，不修改tile/layout/residency，也不把
-rejected offset带入sibling。SPM allocator必须保留capacity/range/alignment/lifetime-valid baseline，只可在同一hard-feasible
-集合内、且actual high-water/fragmentation及其它candidate-visible primary cost完全相同时，用
+rejected offset带入sibling。SPM allocator必须保留capacity/range/alignment/lifetime-valid baseline；relocation先比较
+actual high-water，只在high-water相同的hard-feasible集合内用
 accepted-offset-derived bank phase选择physical offset；该最后tie-break不进入structured frontier，也不产生新的region或join。
 
 ## 8. Layout、Movement 与 Residency 的共同选择
@@ -380,7 +403,8 @@ Tile→canonical Instr与worker/slot/ready-order完成后，对complete-rank Ins
 4. 在固定worker/order/effect frontier上，仅在跨worker/engine dependency、unsafe buffer reuse、协议要求或terminal external drain处
    构造latest-necessary participant completion，并合并所有可安全coalesce的join；
 5. 验证每条 exit path已 drain all-and-only observable/pending effects，且无 join被当作 DTE wait或group barrier；
-6. fresh重算lifetime/conflict后执行一次SPM placement，再用physical-alias verifier接受或拒绝offset；packing不得制造新的
+6. fresh重算lifetime/conflict后执行一次pure SPM planning evaluation；其内部可按09对selection-sensitive shortlist
+   做有界fixed-capacity quality queries，再用physical-alias verifier接受或拒绝最终offset；packing不得制造新的
    lifetime overlap。失败时销毁clone：worker/slot/ready-order/completion变化只能从canonical unplaced Instr parent生成并完整重跑；
    spill、retile、layout/physical-version或其它structured变化必须回到拥有完整语义的actual Tile parent生成新sibling，再重新lower。
 

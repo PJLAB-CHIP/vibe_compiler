@@ -56,7 +56,7 @@ structured-scope 边界，Q49 C1 负责按本合同迁移，不允许按旧 scop
   `wafer.tile.*` compute。
 - 物化 Wafer-tagged memref、standard/typed view、resident SSA edge、显式 movement、spill/reload、
   temporary、accumulator 和 staging。
-- 把 selected resident connected dataflow 物化为 maximal `wafer.tile.region`；一条 spill/reload 决定
+- 把同一selected SPM residency domain内的全部dataflow物化为maximal `wafer.tile.region`；一条spill/reload决定
   物化为两个驻留域之间的显式 DDR cut，不把 intermediate DDR round-trip 藏在单个 region 内。
 - 用 event SSA、typed wait/dependency、MemoryEffects和structured control flow表达issue、event completion、reuse及仍待下游
   完成的observable obligations；本层不物化compiler-derived participant join或terminal drain。
@@ -72,8 +72,9 @@ structured-scope 边界，Q49 C1 负责按本合同迁移，不允许按旧 scop
 - 不让单个region、component或旧task module独立执行Tile→Instr、SPM/DDR planning或terminal completion后再拼接rank。
 - 不按 task、shape、traversal domain、layout、GS、collective 或同步位置切 region，也不用
   region 数量代替 DDR bytes / materialization cut 的真实成本。
-- 不因SPM bank phase/conflict拆region或选择DDR spill；09的终态合同只允许在hard-valid且candidate-visible
-  primary cost相同的physical offsets之间使用可重算bank phase作最后tie-break，当前实现状态见Q49。
+- 不因SPM bank phase/conflict拆region或选择DDR spill；09的终态合同只允许在hard-valid relocation中先比较
+  actual high-water，并仅在high-water相同的physical offsets之间使用可重算bank phase作最后tie-break；
+  当前实现状态见Q49。
 - 不 lower raw packet、CRT、LLVM、runtime handle 或 package 字段。
 - 不通过 op/value/parameter 名、固定 shape、参数顺序或 workload topology 恢复语义。
 - 不把单个 region、representative tile、单个 rank 或局部 FileCheck 当成完整完成证据。
@@ -185,6 +186,35 @@ region不得表达：
 的lifetime确定不重叠时复用同一physical offset，但这是两个不同allocation root的放置结果，
 不是跨region resident handoff。region不分配独立arena；它只声明selected dataflow中哪些值在同一
 SPM residency lifetime内保持片上。
+
+### 4.1 Maximal Residency Partition
+
+region partition只在tile、layout/physical version、resident/spill和structured order已经选定后，从current
+whole-function Tile dataflow确定性重建，不沿用source scope或旧region边界：
+
+1. 为selected physical dataflow建立transient约束。resident SSA、SPM alias/view、SPM-local movement、
+   loop-carried resident state以及collective前后被选为resident的edge形成must-co-reside等价关系；
+2. compiler-managed intermediate DDR store、覆盖该store的可信completion和matching reload形成真实cut。
+   external input load和terminal output store只是rank boundary movement，不单独增加residency epoch；
+3. 对must-co-reside关系做union-find；同一等价类被真实DDR cut分开的candidate直接拒绝，不能生成跨region SPM；
+4. 沿current structured control tree递归求最小partition，而不是把loop展开成全局线性epoch：
+   - 在同一顺序block内，quotient graph的普通order edge不增加cut depth，真实DDR cut增加一个local segment；
+     independent roots放入最早合法segment，并合并所有无cut相邻segment；
+   - `scf.if`内部没有cut时，共同外层region可以包含整个if和resident branch result；任一branch存在local
+     cut时，if保持在tile-region之外，各branch物化自己的local region sequence，跨branch join的数据只能是
+     DDR value或non-data event。branch cut与跨if must-co-reside同时出现时拒绝；
+   - `scf.for`内部没有cut时，loop-carried resident state由共同外层region包含loop和backedge；body存在
+     显式DDR cut时，loop保持在tile-region之外，body内形成每iteration重复的local region sequence，所有
+     loop-carried data必须是DDR value或non-data event。body cut与resident backedge同时出现时拒绝；
+5. 对每个可结构化表示的segment物化maximal region。旧scope、shape、layout、GS、collective、worker或同步位置都不是cut；
+   若两个相邻region之间没有真实DDR cut，必须canonical merge；若无法在不移动observable effect的前提下表达，
+   则fail closed；
+6. 重建后验证每条resident edge完全位于一个region，每条sibling data edge都具有完整
+   store→completion→load，region operand/result不存在SPM memref/root/alias，region内部不存在
+   compiler-managed intermediate DDR spill/reload。
+
+该算法允许一个region包含多个structured loops和遍历域，也允许variadic DDR/event边界。不同region的distinct
+SPM roots仍由09在同一physical arena中联合packing；相同offset复用不改变region partition。
 
 ## 5. Buffer、View 与 Physical Version
 
@@ -298,8 +328,9 @@ range和effect事实，使下游能够证明并重建all-and-only external write
    relation rewrite；pattern只能按MLIR rewrite contract更新真实use-def。
 4. **物化complete traversal**：生成compact `scf.for`、static tail、branch和合法ordered reduction step，
    并验证每个logical output all-and-only一次。
-5. **物化SPM驻留partition与physical SSA graph**：把maximal resident connected dataflow收入同一
-   `tile.region`，对真实spill/reload创建sibling region和显式DDR cut；再创建各region-owned
+5. **物化SPM驻留partition与physical SSA graph**：把同一selected residency epoch内的全部dataflow收入同一
+   maximal `tile.region`；independent roots、不同traversal domain、fanout、layout movement、collective和同步点
+   都不自行切region。只对真实spill/reload创建sibling region和显式DDR cut；再创建各region-owned
    allocation roots、views、physical encodings、resident edges、temporary、accumulator和staging。
 6. **物化selected compute**：调用`WaferTargetImplementationOpInterface::materializeSelectedImplementation`，创建typed
    `wafer.tile.*` compute；hook失败时丢弃clone，不换另一implementation。
@@ -458,6 +489,10 @@ resident edge由`%mm_spm`的SSA use-def直接表达，没有中间spill。若lay
 gate拒绝该clone，clone整体丢弃；materializer不就地换实现。
 
 示例中的shape、tile、Cx和具体compute kind都是选择结果，不是协议。相同合同适用于一般structured graph。
+若同一函数还有与该chain独立的第二个root且两者之间没有intermediate DDR cut，它仍进入同一个maximal region；
+“图不连通”不产生第二个驻留域。反之，若selected candidate把`%mm_spm`显式store到compiler-managed DDR，
+在可信completion后reload成新的SPM root，则store前后必须属于两个sibling regions；这两个region可以在lifetime
+不重叠时由09分配相同physical offset，但IR中不存在跨region SPM SSA。
 
 ## 13. Completion Gate
 
@@ -492,7 +527,7 @@ complete traversal；不得把`InstructionSketch`、rewrite rule、solver AST、
 物化为TileRegion op/attr。
 
 - source clone仍经06选择后，以本文typed task/view/compute/movement/event/SSA合同物化；proof通过不等于selected。
-- target synthesis消费connected verified tile-region slice和baseline tile-to-Instr conversion，只输出disposable actual Instr
+- target synthesis消费complete verified Tile program和baseline complete-rank tile-to-Instr conversion，只输出disposable actual Instr
   clone；每个clone重新执行本文coverage、effect/completion及下游memory/ABI gates，失败不修改selected TileRegion。
 - Q46 actual-op probe在Q48中迁移为读取actual typed clones/current IR facts后，旧implementation materializer与
   selected/forced字段全部删除；本文不接收替代side table或新的候选IR。

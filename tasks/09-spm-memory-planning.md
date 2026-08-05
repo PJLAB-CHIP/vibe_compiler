@@ -9,7 +9,8 @@ relation仍可按显式SSA/control flow传播；真正跨region的数据只能�
 实现状态以`tasks/progress.md`为准。accepted fact为offset-only `wafer.spm.offset`；size、alignment和SPM1
 bank phase均由memref type、layout、accepted offset和target policy重算。allocator对candidate generator提交的
 每个完整clone使用同一exact gate，不识别spill/resident策略类别。当前production allocator尚未实现本文的
-bank-phase最后tie-break；该实现属于Q49，本文先固定其不得外溢到candidate dataflow的终态合同。
+selection-sensitive high-water tightening和bank-phase最后tie-break；该实现属于Q49，本文先固定其不得外溢到
+candidate dataflow的终态合同。
 
 本文定义Wafer SPM bufferization、rank-local allocation和storage verification。它服务于complete-rank
 tile-dataflow candidate的合法性搜索，并在完整static rank entry上统一验证所有`wafer.tile.region`、
@@ -122,8 +123,8 @@ Pipeline position:
   不依据presumed rank equivalence复用或跳过任何rank plan；allocator不决定哪些handoff应resident，不生成
   implementation/transfer/physical-version/per-edge frontier，也不通过给两个distinct roots分配同一offset来
   模拟copy消除，不把某个unsafe consumer拆成partial promotion；
-  bank phase preference只可在hard outcome、actual high-water、fragmentation及其它candidate-visible primary
-  cost均相同的placements之间作最后tie-break；不得把hard-valid placement变成failure，也不得改变
+  bank phase preference只可在hard outcome和actual high-water均相同的placements之间作最后tie-break；
+  不得把hard-valid placement变成failure，也不得改变
   resident/spill、region数量、DDR movement、worker/order或participant join；不新增bank/color attr或side table；
   allocator本身不拥有candidate objective、不生成IIS，不让solver trace或pressure witness成为accepted attr/side table。
   `Feasible`/`ProvenInfeasible`/`ResourceExhausted`、validated high-water和typed failure是唯一反馈；选择、
@@ -451,8 +452,8 @@ SPM1 bank placement事实与策略：
   `phase = (offset / 256) mod 8`，phase周期为2 KiB。该式只描述连续bank-line的起始相位；确切端口仲裁、
   stride访问分布、DIDT配置和冲突penalty尚未校准，不能把phase相同等价为必然stall。
 - allocator始终先保留满足capacity/range/alignment/lifetime的deterministic baseline。对issue window内可证明
-  并发访问的roots，可在与baseline具有相同actual high-water、fragmentation和其它candidate-visible primary
-  cost的hard-valid offset/padding候选中优先分散起始phase；256B alignment保持不变，不引入通用2 KiB或64 KiB对齐。
+  并发访问的roots，可在不提高baseline actual high-water的hard-valid 256B-aligned relocation候选中优先分散
+  起始phase；同一frozen IR的其它candidate cost不随offset改变。256B alignment保持不变，不引入通用2 KiB或64 KiB对齐。
 - bank phase只是等primary-cost placement的最后tie-break：没有更好phase时接受baseline；不得造成allocation failure，也不得改变
   resident/spill、`tile.region`数量、DDR movement、worker/order或join。accepted IR仍只保存offset，phase
   和soft score从offset及当前IR重算，不新增color attr。
@@ -510,8 +511,8 @@ Interval {
 6. typed outcome只允许：
 
 - `Feasible`：MiniMalloc返回完整placement且通过Wafer独立validator；直接采用，不调用first-fit。
-- `ProvenInfeasible`：在给定node budget内完成完整搜索并证明无解；只有该状态可映射
-  `capacity_overflow`。
+- `ProvenInfeasible`：在给定node budget内完成完整搜索并证明该query capacity无解；只有完整hardware
+  arena query的该状态可映射`capacity_overflow`，quality tightening中的该状态只提高不可行下界。
 - `ResourceExhausted`：全局work budget耗尽；此时才运行保留的deterministic first-fit安全fallback。fallback成功并复验后可
   继续，fallback失败仍是资源耗尽，不得误报capacity。
 - invalid input、checked arithmetic overflow或第三方invalid placement是typed contract/internal error，不运行fallback。
@@ -520,10 +521,14 @@ Interval {
    conflict pair不得byte overlap。
 
 8. 保留上述validated placement作为hard-valid baseline；若current IR能证明一组roots处于同一并发issue
-   window，则只在hard outcome、actual high-water、fragmentation和其它candidate-visible primary cost均与
-   baseline相同，且不改变root lifetime、range、alignment或byte-overlap legality的前提下，有限枚举等价
-   offset/padding候选，以`(offset / 256) mod 8`的起始phase分散作为deterministic最后tie-break。没有更好候选时
-   原样接受baseline；被选择的候选仍须重新通过步骤7的独立validator。本步不得返回新的failure状态。
+   window，则按stable root ordinal做一次relocation sweep，每个positive-size root按phase 0..7最多尝试8个
+   不提高baseline actual high-water、且不改变root lifetime、range、alignment或byte-overlap legality的
+   256B-aligned候选，总尝试数不超过`8 * positive_demand_count`。对每个issue window从current IR重算
+   8-phase histogram `h_w[b]`，以
+   `(actual_high_water, max_w,b h_w[b], sum_w,b h_w[b] * (h_w[b] - 1) / 2)`作为
+   字典序relocation key，只接受strict improvement。因而较低high-water永远优先，bank phase只在high-water
+   相同时影响选择。每个候选都重新通过步骤7的独立validator；没有改善时原样接受baseline。
+   本步不得返回新的failure状态，也不把score换算为latency。
 
 9. owner继续执行range/end verification：
 
@@ -537,7 +542,43 @@ Interval {
 固定硬件容量下的feasibility是本stage唯一hard legality primitive。实际high-water从已经接受的placement重算并返回candidate
 owner，作为IR-derived cost；09自身不运行candidate objective或改变IR。
 
-### 8.1 Candidate Evaluation Boundary
+### 8.1 Packing Backend 与 High-Water Quality
+
+fixed lifetime、physical size、absolute alignment、arena和pairwise conflict在进入本层前已经冻结。production packing
+backend只使用MiniMalloc：它只解决这份固定问题，不选择tile、layout、resident/spill、worker/order或completion，也不把
+packing结果反向改写成这些选择。未限制search budget时，当前受管core对adapter表达的fixed-capacity问题保持complete；
+production的有界budget必须保留`ResourceExhausted`，不能伪装成不可行。选择MiniMalloc是基于专用搜索、确定性、
+三态failure和轻量集成的工程结论，不声称它对所有实例都比通用solver更快。
+
+单次在完整3 MiB hardware arena上得到`Feasible`只证明能装下，不证明accepted placement的actual high-water
+全局最小。对确实以high-water区分winner的selection-sensitive terminal shortlist，06 decision owner可以在独立、
+确定性的query budget内复用同一个fixed-capacity primitive收紧quality：
+
+1. 先在完整hardware arena取得validated placement，以其actual high-water作为已知可行上界；
+2. 从最大single-demand footprint、absolute alignment和adapter已知conflict clique的同时bytes求保守下界；
+3. 固定arena begin，只收紧aligned arena end做单调query；`Feasible`更新best validated placement，
+   `ProvenInfeasible`提高已知不可行下界，`ResourceExhausted`停止收紧并保留已有best placement；
+4. 只有上下界在要求粒度上闭合才可在invocation-local diagnostic中称为最优；否则只称deterministic
+   best-known high-water，不新增optimality attr、status或schema；
+5. 选定best high-water placement后，才运行步骤8的bank-phase最后tie-break。
+
+收紧query只执行步骤1–7的hard packing与validator，不运行bank relocation；否则bank soft preference会污染
+capacity单调搜索并重复消耗局部枚举预算。步骤8在最终best placement上恰好运行一次。
+
+当前quality granularity固定为256B；每个packing evaluation最多执行8个收紧query，且全部收紧query累计
+MiniMalloc search nodes不得超过该problem的一份`defaultPackingSearchNodeBudget`。完整hardware-capacity
+feasibility query使用自己的正常budget，不与quality budget互相挤占。相同problem、budget和target policy必须产生
+相同query序列与best placement。
+
+这里的“每个completion sibling执行一次packing”是指allocator不修改IR并迭代到fixed point；一次candidate evaluation
+内部的有界fixed-capacity queries仍属于同一个pure packing gate。quality budget耗尽不影响hard feasibility，必须保留
+首份validated hardware-capacity placement。
+
+生产不引入ILP/CP-SAT，也不设置常驻外部oracle。小图使用仓库内exhaustive/property tests验证adapter、三态、
+alignment、validator和capacity-query单调性。只有真实捕获的problem持续资源耗尽，或best-known high-water已被
+可量化地证明影响candidate quality时，才允许一次性外部solver诊断；结果不进入依赖、fixture、cost、IR或acceptance。
+
+### 8.2 Candidate Evaluation Boundary
 
 每个完整clone至少对硬件arena容量调用一次本节fixed-capacity路径，得到：
 
@@ -546,8 +587,8 @@ owner，作为IR-derived cost；09自身不运行candidate objective或改变IR�
 - `ResourceExhausted`：按Q34既有合同尝试deterministic first-fit安全fallback；fallback失败仍保持资源耗尽；
 - invalid input、overflow或invalid solver result：contract/internal failure。
 
-`Feasible` placement的actual high-water从validated offsets重新计算，必须作为final IR-derived cost返回06。Q32.S对
-selection-sensitive shortlist可以在自己的hard cap内重复调用本primitive，以“已知不可行capacity / 已知可行high-water”收紧
+`Feasible` placement的actual high-water从validated offsets重新计算，必须作为final IR-derived cost返回06。06 decision owner对
+selection-sensitive shortlist可以按8.1的独立hard cap重复调用本primitive，以“已知不可行capacity / 已知可行high-water”收紧
 quality；probe placement只有原子apply到fresh rank evaluation clone，并重新运行全部offset-dependent descriptor/range及后续
 variant gate后，才能作为actual high-water/cost；否则只作safe bound。这些结果是candidate-local analysis，不写IR、不跨candidate
 缓存，也不是09发布的proof schema。无论是否probe，09都不能隐式改变implementation、tile、encoding、residency、route、
@@ -563,7 +604,7 @@ generation parent重新clone、改写并执行本stage。
 
 Current structured failure reasons包括：
 
-- `capacity_overflow`；
+- `capacity_overflow`（仅完整hardware arena已证明不可行）；
 - `packing_search_exhausted`；
 - `invalid_packing_result`；
 - `invalid_spm_range`；
@@ -728,8 +769,9 @@ SPM memory planning使用经典静态memory planning的离线模型，而不是�
   capacity不可行证明。
 
 solver和fallback的accepted placement均由Wafer独立validator复验。rejected/candidate offset、search work、fallback状态和
-conflict encoding都保持为analysis/debug统计，不写入`wafer.spm.offset`。后续若引入graph coloring、ILP或
-schedule-aware double buffering，必须保持same input/output IR contract和三态结果，只改变analysis/search。
+conflict encoding都保持为analysis/debug统计，不写入`wafer.spm.offset`。后续若评估其它graph-coloring/
+interval-coloring backend，必须保持same input/output IR contract和三态结果，只改变analysis/search；不建立常驻
+ILP/CP-SAT backend或oracle。
 SPM1 bank phase只属于allocator内部offset选择，永远不得升级为hard constraint或改变candidate dataflow。
 未来若硬件暴露新的独立legality事实，必须另立合同，不能把它追认成phase legality。
 
@@ -798,11 +840,12 @@ worker/effect/token合同处理；NCC completion只接受typed participant join�
 
 - 多 pool allocation：当 ordinary pool、communication staging、runtime-visible buffer 的 reserved
   range 和 lifetime 约束稳定后引入；在此之前用单 pool + reserved range 更容易验证。
-- linear scan allocator：当 `wafer.tile.region` 大多是线性 schedule，且 greedy arena 编译成本或
-  fragmentation 成为问题时引入。
+- linear scan allocator：当 `wafer.tile.region` 大多是线性schedule，且MiniMalloc compile work持续不可接受，
+  或accepted high-water相对validated lower bound持续过差时才评估。
 - 其它graph-coloring / interval-coloring backend：只有invocation-local统计证明当前fixed-capacity core在通用
   conflict graph上持续产生不可接受compile work或大量资源耗尽，且新backend保持相同三态和独立validator合同时才评估；
-  不能仅因单个case placement更紧凑而替换默认路径。
+  不能仅因单个case placement更紧凑而替换默认路径。ILP/CP-SAT也只在这个触发条件下用于真实捕获实例的一次性
+  诊断，不设常驻oracle。
 - allocator内部repair loop：只允许有限repair；如果repair开始改变tile shape或dataflow cut，
   应交还task scheduler，而不是让allocator变成隐藏scheduler。
 - PMU驱动bank penalty：当board profiling能稳定解释blocking time、port/stride和bank phase关系后，校准
