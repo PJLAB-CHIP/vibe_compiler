@@ -175,7 +175,8 @@ Pipeline position:
   现有wafer-compile production pipeline中的generic software-pipeline stage。
 - Explicit non-goals:
   本software-pipeline stage不重新选择tile owner、compute implementation、collective算法或physical layout；
-  独立post-Instr worker-placement stage已经把选择物化为actual attrs和minimum joins，本stage只在派生
+  独立post-Instr worker-placement stage已经把选择物化为actual attrs；统一completion owner重建fixed-frontier
+  latest-necessary joins，本stage只在派生
   fixed-slot时保留该assignment。不从paper公式、queue depth、Q9 profile或live card决定window；不让NCC join
   完成DTE，也不让DTE wait完成NCC。当前call-expanded proof
   只接受direct、acyclic、single-block function closure及常量正步长structured loop；无法静态证明的
@@ -262,7 +263,7 @@ fixture重造一条结构化schedule，而是闭合已有actual candidate的comp
   ring从final `(source,destination,phase,round,slice)` tuple验证reduce-scatter/all-gather、origin
   multiplicity及final exact cover；任一range gap、overlap、duplicate、错位view或publisher覆盖均保守拒绝；
 - peer op立即lower到Instr；typed worker sibling从该canonical/unplaced current IR的SSA、effects和ranges派生，
-  actual attrs与fresh minimum joins是唯一placement事实。worker-preserving fixed-slot siblings随后分别重跑
+  actual attrs与fixed-frontier fresh latest-necessary joins是唯一placement事实。worker-preserving fixed-slot siblings随后分别重跑
   completion、SPM/DDR、Direct-DTE、target capability和whole-variant resource gate，最后以fresh stable
   ordinal原子追加完整rank domain。
 
@@ -764,7 +765,8 @@ Softmax、LayerNorm和attention名字不进入generic opportunity discovery。�
    call-expand execution occurrence并构造whole-program wait graph。跨block无环组合可追加，cycle、无匹配、
    call/loop path错位、unused helper或无法证明的control整代拒绝，失败不写physical binding。
 6. **Actual physical composition**：worker placement从canonical/unplaced current Instr的SSA/effects/ranges
-   原子派生，直接物化actual attrs并fresh重建minimum joins；已有nonzero assignment不原地重写。fixed-slot
+   原子派生并直接物化actual attrs；统一completion owner fresh重建fixed-frontier latest-necessary joins；已有nonzero
+   assignment不原地重写。fixed-slot
    只从保留worker assignment的siblings继续派生；每个结果与Direct-DTE共同经过fresh completion、SPM/DDR、
    whole-variant resource和target capability gates。同候选qualification还从current IR检查boundary-only
    DDR、每rank实际DTE和多个含非零值的typed worker；旧frontier slot与baseline保持不变。

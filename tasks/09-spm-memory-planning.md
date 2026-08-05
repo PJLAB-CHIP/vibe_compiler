@@ -6,19 +6,18 @@ rank function中的non-nested sibling `wafer.tile.region`建立统一timeline/de
 不是completion boundary，pending NCC access可沿显式SSA/control flow跨region传播。nested/async/parallel scope和
 缺少arena/resource summary的调用保持fail closed。实现状态以`tasks/progress.md`为准。accepted fact 为
 offset-only `wafer.spm.offset`，size / bank span / alignment 由 memref type、layout 和 target policy 重算。
-当前coordinator仍产生spill baseline与deterministic maximal full-buffer-resident两类alternative；它是已实现迁移策略，
-不是allocator输入协议。allocator对candidate generator提交的每个完整clone使用同一exact gate。
+allocator对candidate generator提交的每个完整clone使用同一exact gate，不识别spill/resident策略类别。
 
-本文定义Wafer SPM bufferization、rank-local allocation和storage verification。它服务于whole-rank
-task/dataflow candidate的合法性搜索，并在完整static rank entry上统一验证所有`wafer.tile.region`、
-structured loop和task data edge的memory space、range、lifetime和completion effect。`wafer.tile.region`可作为
-task/traversal fragment，不是独立physical arena或自动completion边界；跨region SPM memref/event必须以显式
+本文定义Wafer SPM bufferization、rank-local allocation和storage verification。它服务于complete-rank
+tile-dataflow candidate的合法性搜索，并在完整static rank entry上统一验证所有`wafer.tile.region`、
+structured loop和SSA data edge的memory space、range、lifetime和completion effect。`wafer.tile.region`可作为
+structured traversal fragment，不是独立physical arena或自动completion边界；跨region SPM memref/event必须以显式
 operand/result或enclosing structured control flow表达，并在whole-rank lifetime中规划。
 SPM memory planning 的 instruction-level 输入合同由
 `tasks/11-instruction-ir.md` 定义；本文只消费该层暴露的
 Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op。
 
-本文只负责 `#wafer.memory<spm, *>` 的 tile-local allocation：
+本文只负责 `#wafer.memory<spm, *>` 的完整rank-local address-domain planning：
 
 - 消费 instruction-level `wafer.instr.*` IR 和 unplaced
   `memref<..., #wafer.memory<spm, layout>>`，并从 memref use-def、effects、queue 和 async policy
@@ -67,12 +66,14 @@ Pipeline position:
   legalization；对optimized sibling，08 的 relation-backed redundant-transfer normalization 已在该
   unplaced actual clone 上
   删除可由 same-root/standard view 表达的完整 movement、dead destination allocation，并把被合并
-  cross-encoding destination 的 alignment 要求提升到 compiler-owned source root。全部selected task
-  fragments已进入完整rank clone并完成candidate-local rewrite，相关 alias/effect/lifetime analysis已从
+  cross-encoding destination 的 alignment 要求提升到 compiler-owned source root。全部selected structured
+  fragments已进入同一个完整rank clone并完成candidate-local rewrite，相关 alias/effect/lifetime analysis已从
   改写后的当前IR失效重算；显式reserved spill baseline跳过可选coalescing但仍从自身IR走同一
   completion/lifetime/SPM gate。SPM planner
-  每次只接收candidate generator已经显式物化的一份完整whole-rank clone；candidate可以来自当前spill/resident基线，也可以
-  来自MLIR-native rewrite有界组合的implementation/encoding/physical-version/transfer/residency/buffering/order alternative。task/region/loop间的SPM value和event已由显式SSA/control-flow连接，包含actual DDR
+  每次只接收candidate generator已经显式物化的一份完整whole-rank clone；输入不得由多个已经独立placement的task artifact
+  拼接，所有offset、completion和lifetime facts必须从同一个完整rank clone fresh产生。candidate来自MLIR-native rewrite
+  有界组合的implementation/encoding/physical-version/transfer/residency/buffering/order alternative。region/loop间的SPM
+  value和event已由显式SSA/control-flow连接，包含actual DDR
   tile views、unplaced `memref<..., #wafer.memory<spm, layout>>` values，以及selected physical encodings、
   explicit materialization、effect/order 和 target SPM policy。
 - Current stage responsibility:
@@ -116,8 +117,9 @@ Pipeline position:
   implementation/transfer/physical-version/per-edge frontier，也不通过给两个distinct roots分配同一offset来
   模拟copy消除，不把某个unsafe consumer拆成partial promotion；
   allocator本身不拥有candidate objective、不生成IIS，不让solver trace或pressure witness成为accepted attr/side table。
-  Q32.S可以在独立optimization budget内以不同capacity调用同一owner-private pure primitive收紧shortlist quality区间，但
-  选择、邻居生成和stop policy仍由06拥有，09不返回repair或跨candidate state。
+  `Feasible`/`ProvenInfeasible`/`ResourceExhausted`、validated high-water和typed failure是唯一反馈；选择、
+  邻居生成和stop policy由06拥有。06可以从无offset parent产生edge-residency/tile/order或terminal
+  worker/slot sibling，09不返回或应用repair，也不保存跨candidate state。
 - Completion gate:
   对每个合法complete rank program给出 deterministic memory plan；planned storage的size、alignment、
   range/end、lifetime和alias relation能由rank-local IR/effect/verifier重算；generic `async.call`
@@ -547,7 +549,7 @@ SPM stage嵌入现有candidate transaction：
 complete rank candidate clone with selected typed IR
   -> instruction legalization and function-boundary bufferization
   -> relation-backed redundant physical transfer normalization
-  -> fresh completion / alias / effect / lifetime derivation
+  -> erase compiler-derived completion and fresh rebuild from final worker/effect/range facts
   -> fresh BufferDemand / lifetime / effect collection
   -> fixed-capacity SPM solve + independent placement validation
   -> atomic offset apply to this clone
@@ -556,9 +558,11 @@ complete rank candidate clone with selected typed IR
   -> all RankExecutable records and ExecutableBundle commit, or commit nothing
 ```
 
-当前spill baseline和maximal-resident alternative只是迁移candidate source；Q32切换后删除其decision-owner旁路，不把它们升级为
-allocator schema。candidate必须先把resident edge、spill、encoding、transfer和instruction sequence显式物化；SPM owner只从该
-IR重算demand。rewrite或bufferization改变root、alias、effect或lifetime后必须重新planning，旧offset和cost不得复用。
+candidate必须先把resident edge、spill、encoding、transfer和instruction sequence显式物化；SPM owner只从该IR重算demand。
+compiler-derived completion在完整worker assignment形成后fresh rebuild；rewrite、completion或bufferization改变root、alias、
+effect或lifetime后必须重新planning，旧offset和cost不得复用。packing只允许对lifetime/conflict证明为不冲突的roots复用range；
+accepted offsets形成后由独立physical-alias verifier复核。失败表示packing结果无效或上游proof不一致，evaluation clone被拒绝并由06
+从未放置parent产生有界sibling；offset本身不改变lifetime/completion，allocator不得就地插join、改slot或反复packing修复。
 
 rank frontier离开scheduler后，function-boundary bufferization可能新增或删除buffer/movement，因此每个candidate都独立重新运行
 SPM planning并从final instruction IR fresh recost。失败candidate从frontier移除；reserved baseline失败时直接拒绝该rank，
@@ -623,7 +627,7 @@ accepted range/arena relation；commit后package/runtime只消费
 接受的 offset/range fact。该 attr 挂在定义 SPM buffer value 的 `memref.alloc` 上，值为
 `#wafer.spm_offset<offset>`：
 
-- `offset` 是 tile-local SPM byte offset。
+- `offset` 是allocation root在当前logical rank SPM arena中的byte offset。
 
 以下事实不写入 attr，因为它们可由当前 IR 或 target policy 稳定重算：
 
@@ -636,11 +640,6 @@ accepted range/arena relation；commit后package/runtime只消费
 当前IR的SSA/control-flow/event显式表达；当前allocator对同一rank function内全部non-nested sibling regions的
 完整traversal统一规划和packing。region result必须alias显式input或region-owned SPM allocation，任意raw escape或
 无法解析的provenance结构化拒绝。输出仍保持offset-only，size/alignment/lifetime从accepted IR重算。
-
-7B rank-0结构重放从最终`wafer.spm.offset`和每个memref的physical bytes重算得出：可用window为
-3,014,656 bytes，whole-rank high-water为2,725,568 bytes，利用率90.411%。该值不是各region peak求和；
-planner沿`wafer.tile.yield -> wafer.tile.region result -> sibling operand`保留resident allocation root和lifetime，
-因此26条selected full-buffer handoff中跨region存活的buffer已经计入同一high-water。
 
 当前dataflow边界：
 

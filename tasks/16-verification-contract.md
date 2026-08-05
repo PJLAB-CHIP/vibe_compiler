@@ -1,6 +1,7 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-08-04补充Q46 relation-guided layout movement elimination future gate；2026-07-29同步Q37 hardware
+状态：2026-08-05补充whole-rank tile dataflow synthesis gate并收窄Q32历史边界；2026-08-04同步Q46
+relation-guided layout movement elimination gate；2026-07-29同步Q37 hardware
 characterization、轻量板端执行合同、production optimizer成对板测合同、
 Q40 Direct-DTE/compute无卡资格与默认测试减负边界；历史optimizer/collective/calibration资产由对应owner按需调用，
 不再进入默认CTest。
@@ -39,8 +40,8 @@ Pipeline position:
   compiler correctness；不把ordinary/profile双编译字节对照、旧manifest、固定resource数量、反汇编、重复环境状态或
   no-card oracle塞入默认板端gate。
 - Completion gate:
-  各owner独立验收：Q0闭合既有conversion/legality/formal traversal/completion/atomic negative；Q0.L另闭合typed target
-  profile、engine×format legality及reduce/indexing-map无丢义；Q15闭合typed
+  各owner独立验收：Q0闭合既有conversion/legality/formal traversal/completion/atomic negative；Q0.L的历史工作已迁移为
+  compiler-fixed current target capability、engine×format legality及reduce/indexing-map无丢义；Q15闭合typed
   request到verified rank-local structured tensor program；Q16闭合all-rank static executable bundle；Q17闭合all-rank target
   staging/publication；Q18闭合typed manifest/package/no-card runtime；Q16.T闭合Direct DTE transport activation；
   Q20/Q21固定rank-count=1/16 linear/MLP和16-rank tiny Llama的source CPU corpus及compiler/package纵向链，
@@ -50,14 +51,12 @@ Pipeline position:
   闭合完整输出。Q22只汇总该传递证据，不另建pipeline。
   Q29随后闭合rank-local tile-dataflow scheduling、complete traversal和TP16 7B compile/package结构gate；Q28再从同一
   production source入口闭合标准7B单block managed-reference SystemC执行及完整PyTorch eager output differential。
-  Q32闭合MLIR interface/rewrite驱动的bounded joint candidate evaluation：implementation、tile/relation、encoding/view/route、
-  storage/residency、share-vs-recompute、static loop-invariant hoist、existing Cx/NCx GEMM absorption、各current numeric variant、
-  buffering/resource-aware ready-order、direct/ring/tree communication、resource-aware selection和Q32.V typed target纵向中，
-  每个choice producer均完成production mutation→exact consumer→common selection→winner/atomic commit，required closure的
-  mutation保留在committed winner，并通过baseline、SPM→DDR→post-memory
-  transport→ABI/package的all-rank atomic bundle gate；Q32.T仍是没有
-  冻结schema的可选later控制面。Q46是在同一owner上的独立`next`扩展，其relation-guided assignment、PBQP和CT/reduce/
-  collective layout覆盖面只按本文独立Q46 gate验收，不能回写成Q32完成证据。later Q3.6只有在Count predicate、typed
+  Q32闭合MLIR interface/rewrite驱动的actual-clone、implementation/relation/layout/storage/order/communication机制、
+  bounded frontier和SPM→DDR→post-memory transport→ABI/package exact-gate基础；其历史per-task evaluation seam不构成
+  complete-rank pre-Instr composition已经闭合。Q46已在同一事实边界闭合relation-guided assignment、PBQP和CT/reduce/
+  collective layout compiler-side gate，板端外部门禁仍独立。Q49进一步要求完整rank structured SSA在Instr lowering前完成
+  consumer-driven tile composition，并退役旧per-task materialization/task-return join；Q32.T仍是没有冻结schema的可选later
+  控制面。later Q3.6只有在Count predicate、typed
   Instr/TargetCall、独立golden和实际model consumer存在后，才闭合11/14-17 mechanical writeback/ABI/event及numeric合同；
   Q22.C消费Q22、Q32 winner的verified package和Q6.B结果闭合板端numeric correlation；若Q32.V的真实consumer采用
   winner-derived RequiredCapabilitySet，则同一package还须先通过其独立readback gate；
@@ -348,164 +347,10 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 ### 6.1 Physical-Dataflow Synthesis Gate
 
 `tasks/06-physical-dataflow-synthesis.md`拥有联合physical-dataflow transformation合同；本文只固定可判定的跨stage证据。
-Q29数字保留为历史实现基线，不能替代Q32 fresh gate。
-
-- public optimization configuration必须从`wafer-compile`进入同一个source-to-package transaction，经typed
-  `CompilationOptions`传播到source producer、rank recipe、accepted-rank sibling和all-rank sibling owner。`production`
-  启用全部当前语义轴，`none`关闭全部可选producer但仍产生通过完整exact gate的conservative package；显式enable/disable
-  在preset上组合。支持名必须唯一、可round-trip并全部可独立置位；unknown、duplicate及同项enable/disable conflict必须在
-  compilation/publication前失败且不留下输出目录；
-- option gate至少包含一个真实source的四路source-to-package A/B：
-  default production、`none`、`production + disable-one`和`none + enable-one`。后两者必须分别与对应expected artifact
-  byte-identical，production与baseline的最终linked ELF必须呈现被测语义轴的结构差异；四路source、rank domain、
-  current target identity、launch contract、manifest ABI和全部correctness gate保持一致。另以`none`的rank-frontier unit证明只有
-  唯一fully gated reserved baseline，并以model-scale ordinary/profile package与no-card证明默认production不回归；
-- canonicalization、verifier、SPM/DDR placement、completion normalization、Direct-DTE acceptance、whole-card
-  resource、target ABI、device link、publication及readback属于mandatory correctness pipeline，不能进入disable列表。
-  配置不进入IR、candidate attrs、package schema或selection cost；compile diagnostics必须打印canonical enabled/disabled
-  集合。Q32.T的later Transform IR adapter仍是不同边界，不得把本配置解释为pass级控制面；
-- production直接消费Q15 verified program中的同一份rank-local structured tensor IR。每个source compute root必须实现
-  `WaferTargetImplementationOpInterface`；Wafer op直接实现，Linalg op通过Wafer dialect extension挂接external model。
-  interface只读取current operation、region、SSA、type、attribute以及Linalg、DPS、Tiling和MemoryEffect语义，并结合
-  immutable target facts返回有界typed implementation candidates。unsupported source在任何mutation前失败；至少一个真实source
-  必须选择非baseline implementation并形成不同typed IR；
-- native-interface audit证明custom interface只填补真实MLIR缺口：`WaferTilingInterface`已迁到DPS/Tiling，
-  layout/resource facts已迁到typed encoding/view/op verifier与MemoryEffect/SideEffects::Resource，
-  aggregate collective-info snapshot已删除；instruction interface只保留有generic consumer的family marker。
-  `wafer.tile.load`具有explicit DDR source和pre-created SPM destination、无隐式allocation/result；
-- `IndexRelation`是当前transformation内部的MLIR-backed analysis：从indexing maps、iteration domain、DPS tie、
-  tensor/view/subset op和SSA edge推导identity、permutation、broadcast、slice、reshape、concat/有限piece及所需composition。
-  Q32 completion必须证明tiling、view normalization、pointwise propagation、transfer cover和multi-use reuse均为真实consumer。
-  它不复制source scalar semantics，也不跨IR mutation持久化。小shape property tests逐点验证domain、image/preimage、
-  functional/injective/bijective、composition和exact cover；无法精确表示时拒绝对应rewrite；
-- Q32.R已闭合static domain交、image/preimage、inverse、concat piece、functional/injective/bijective、
-  equivalence/implication查询，以及current metadata view、compact DMA、GS/staged movement proof；canonical大shape
-  identity/reshape使用代数证明，不能因逐元素proof预算把合法7B route误判失败。relation-backed resident handoff在
-  production-shaped source中删除真实中间WDMA/RDMA，标准7B source选择26条handoff并fresh通过TP16
-  package/SystemC/PyTorch differential；详细证据见`tasks/archive/physical-relation-realization.md`；
-- 每个rank先构造一个走完整合法化链的reserved baseline clone，再按稳定IR/typed-interface顺序有界组合implementation、tile、
-  encoding/view、storage/route、residency、buffering/order和collective expansion alternatives。不展开全Cartesian product，
-  但不能只固定产生两条rewrite。baseline与alternative经过完全相同的materialization、conversion和exact gates；同一输入在
-  不同线程数下产生相同候选顺序和最终选择；
-- task selector只消费稳定passing顺序中的requested alternative；取得
-  `taskAlternativeOrdinal + 1`个完整gate通过项后必须停止扩展后续queue。并行路径允许已经提交的固定有界batch完成，但结果只按
-  submit order消费，overshoot受batch上界约束且不能改变selected module。rank-frontier invocation复用一个有界executor，
-  每个worker独占自己的`MLIRContext`并可复用同一standalone task的parse；不得共享context或按线程完成顺序选择；
-- parallel worker接受candidate后，将已经完成Tile→Instr、SPM、DDR、verify和cost gate的actual module以invocation-local
-  MLIR文本交还owner context。owner必须重新parse、verify并从导入IR fresh recost，不能再跑一次complete lowering；
-  serial/parallel回归同时比较selected spec、accepted module和前置failure，传输文本及计数不得进入IR、bundle或candidate identity；
-- 真正的candidate materialization必须在isolated clone上通过`PatternRewriter`、op builder和
-  `materializeSelectedImplementation`完成。成功rewrite直接改变current MLIR use-def graph，并创建typed
-  `wafer.tile.*`、Wafer-tagged memref/view、显式movement、temporary、effect和token；不能只修改报告或保存另一份计划。
-  pattern未匹配或失败时clone byte-identical，任何成功mutation后旧`IndexRelation`、alias、effect、liveness、resource和
-  cost observation立即失效，后续判断必须从current clone fresh重算；
-- mandatory mechanism gate覆盖relation/view normalization、dependent tiling/fusion、pointwise propagation、
-  implementation materialization/absorption、encoding/view/materialization、zero-copy/current DMA/GS/staged及Q32.V route、
-  partial-compatible fanout与immutable-input reuse、movement/resident-cut elimination、current static
-  buffering/resource-aware ready-order、direct/ring/tree collective expansion、whole-tensor share-vs-recompute、static
-  loop-invariant hoist、existing Cx/NCx GEMM absorption，以及reassociation、显式rank-local reduction tree、split和
-  supported algebraic variants各自proof-gated rewrite。floating进入既有numeric validation，integer另证exact/modular合法性；
-  每一row至少有一个通用source发生mutation并通过完整downstream gate；
-- 功能采用按三关独立取证：Q32.M要求shared candidate owner在Q32.B production-shaped seam从Q15 source发现机会、修改
-  actual clone并形成exact-gate passing candidate；Q32.S要求该producer进入同一rank frontier和whole-variant selection，并至少有一个
-  non-workload-specialized source成为winner；Q32.G要求默认`wafer-compile`在无隐藏feature flag、无testing-only callback、无手工
-  pass拼装时原子提交该winner。passing但从未进入frontier/winner、只在Q32.B seam或`wafer-opt`调用均不算采用；
-- share-vs-recompute分别覆盖share winner与dependent-region recompute winner，后者增加的logical work和减少的movement/live bytes
-  都从final IR收集；loop hoist覆盖winner中dominant loop-external SSA value及延长lifetime后的placement；existing Cx/NCx
-  absorption只覆盖GEMM/batched GEMM，证明compute/Instr直接消费existing encoding且显式layout/GS movement真实消失；
-  reassociation、显式rank-local reduction tree、split和supported algebraic variants逐项覆盖floating numeric acceptance/rejection及
-  integer exact/modular winner/no-wrap barrier，不能用单个numeric正例合并验收；
-- existing Cx/NCx GEMM differential由本集成gate构造两份分别通过完整downstream gate的artifact：direct winner与显式
-  materialization baseline分别交给tasks/17执行，再比较logical/numeric result及所有consumer-observable defined bytes。两者
-  各自的`InvalidLaneState`只需满足同一最终consumer precondition，无需相同；unobservable padding可以不同，只有consumer要求
-  padding可观察且defined时才逐byte比较，canary始终不变；
-- floating rank-local reassociation/reduction-tree和reduce split默认进入Q32.N既有数值验证，不要求source predicate或额外
-  fast-math attr；integer no-wrap barrier继续保留。generic online reduction、non-GEMM FMA contraction及尚未闭合的其它algebraic
-  contraction仍须先完成显式selected SSA/SCF或fused op、Tile→Instr→TargetCall/必要ABI→SystemC纵向；
-- selected tile IR通过MLIR `DialectConversion`和declared legality转换成complete-rank `wafer.instr.*`。
-  conversion必须显式物化instruction parameters、descriptor、temporary、async token与wait/fence；成功后没有被标为illegal的
-  source/tile op，失败时整份clone丢弃，lowering不得暗中改选implementation、layout或movement；
-- 每个clone依次重放现有exact gates：source/selected-op verifier、instruction与descriptor legality、memory/resource effect、
-  local completion、whole-rank SPM planning和range检查。完整all-rank组合随后重放whole-variant DDR planning、communication
-  binding、transport、runtime contract、accepted-rank/resource projection并从current IR收集final cost，形成只活在本次
-  coordinator调用内的pre-target variant。reserved baseline立即运行ABI/target emission eligibility；optimized variant按下述
-  exact retention gate延迟运行同一target gate，winning artifact仍继续由正式下游完成package publication/readback。所有判断只消费
-  current IR和对应owner的typed target facts；
-- selection先做strict Pareto dominance。incomparable candidate只有在current target static policy存在且所需final-IR
-  metrics全部Known时才排序；缺policy、Unknown或overflow回baseline。不得把估计时间、发现顺序、线程完成顺序或单一内存
-  高水位冒充hardware性能；
-- optimized pre-target variant只相对已经完整target-gated的optimized frontier模拟正式`insertParetoCandidate`，必须包含
-  Unknown/RightDominates拒绝、equivalent dataflow、stable static order及16-entry cap；不拿baseline提前剪枝。不会保留者跳过
-  ABI/LLVM，会保留者只有target gate通过后才能真实插入和淘汰。target失败保持原frontier并继续后续稳定candidate；
-- characterization先按current Instr IR逐rank phase精确匹配自己的候选域，再在该域执行同一retain→target-gate→insert顺序；
-  profile仍只保留各自完整gate通过的reserved baseline和production winner。invocation-local计数可以证明target gate调用数，
-  但不得进入IR、bundle、package或选择语义；
-- resource-aware gate证明06只从current IR的capacity/lifetime/descriptor/event pressure生成hard-capped邻居，每个邻居实际
-  改写clone并重新经过09/12/Q34。validated SPM/DDR high-water、movement、transport、compute、descriptor/instruction/event
-  进入final cost；selection-sensitive packing probes保持candidate-local，allocator不返回repair或改变choice；
-- communication gate证明13已有direct/ring/tree参数各自产生complete-rank p2p/staging/local-work/token/wait IR并进入同一frontier；
-  旧public option/hard-coded selector不再拥有production choice，all-rank correctness只从最终message/range/completion IR重证；
-- per-rank survivor只是未提交clone。coordinator只能对all-and-only logical ranks组成的完整variant执行whole-variant gates，
-  并在全部rank的instruction、SPM/DDR、completion、communication、transport和ABI都通过后一次提交
-  `ExecutableBundle`。任一late-rank或late-gate失败不发布partial rank、module、artifact或package；
-- rank并行结果进入bundle-owner context前，必须只用原slot metadata精确重放reserved baseline allowance、既有有界Cartesian
-  walk及coordinated correspondence walk，形成`WholeVariantAttemptPlan`。frontier slot、顺序、duplicate key和全部baseline
-  marker保持不变，只parse每rank reserved baseline及被完整correspondence attempt实际引用的module；rank-one退化为parse全部
-  实际attempt项。worker侧仍print全部candidate module，因此该优化只删除owner不可达parse，不压缩frontier、不改变attempt budget或exact gate；
-  metadata malformed时保守要求全部module并由原coordinator structural diagnostic拒绝；
-- Q32.B的bring-up seam要求每rank frontier恰有一个compiler-private reserved baseline entry；它是conservative scope policy在清除
-  task-local placement后的spill generation parent所产生的独立evaluation clone。resident evaluation clone不得覆盖或替换它。
-  coordinator必须先在optimization visit limit之外完整评估all-baseline tuple；baseline任一DDR、transport、resource、ABI gate失败时
-  整体失败，不得用optimized tuple掩盖。baseline ready后optimized tuple仍从各自disposable clones重跑whole-variant DDR及全部
-  pre-target exact gate；只有would-retain者延迟执行target ABI/LLVM，late failure不得修改fully-gated frontier。
-  strict execution-cost Pareto/static-policy不能读取producer预选结果；validated SPM high-water是capacity事实，在target提供显式排序
-  policy前不能按“越低越快”参与performance winner比较；
-- 通用source corpus覆盖chain、diamond、partial-fanout/fanin、shared-input contraction、reshape、transpose、broadcast、reduce、
-  residual和collective，并交叉多个dtype、整tile、tail以及允许和禁止reassociation的情况。每种声称启用的优化必须至少有
-  一个真实source触发非零`PatternRewriter` mutation、进入whole-variant selection并在对应case成为committed winner；required
-  normalization/closure的mutation效果必须保留在winner。每项另有不适用、非法relation、late conversion和all-clones-fail
-  negative；invocation-local计数只能定位证据，不能代替final IR/bundle readback；
-- fresh completion必须重放rank-count=1和16的source-to-bundle/package numerical cases，并从同一production入口运行冻结7B
-  source到package、SystemC和PyTorch differential。7B gate必须实际经过新的source external interface、各功能轴的accepted
-  evidence以及完整all-rank atomic path；完整输出按既有numeric contract比较。Q29/Q28/Q31历史结果只能作为
-  回归对照，不能替代本轮fresh数值执行；
-- 已退役的旁路调度表示、旧CLI选择器和旧consumer保持清零，并用source/IR组织检查及negative tombstone防止回归。
-
-Q29已完成时采用六个scope policies、每rank最多六个alternative和whole-variant最多71次exact gate；以下2026-07-16
-数字只证明该历史实现基线。它们不是Q32 candidate schema、固定cap或性能目标；新candidate owner必须保留
-Q29纵向证据并通过上述真实rewrite/有限候选gate后，才可替代当前迁移实现。
-
-2026-07-16的rank-0 7B compile-only重放选择26条full-buffer SPM handoff；显式DDR movement由8,798,792 bytes降为
-5,100,424 bytes，其中RDMA 4,892,168、WDMA 208,256。终态包含36个tile regions；反汇编全部16个
-current-binary modules后，每rank target call inventory均为gather/RDMA/WDMA/GEMM/local-fence=
-`362/30/10/9/220`，rank-0 pre-SPM-root历史对照为`341/94/59/13/277`，证明resident candidate进入最终module。
-whole-rank planner沿tile-region yield/result/operand SSA
-传播allocation root，SPM high-water为2,725,568 / 3,014,656 bytes，即90.411%。
-
-最终TP16 production用520.346秒wall、12,543.822秒user、15.246秒system time发布当时的schema-v3 package；manifest
-为`rank_count=16`，modules/entries/completions各16个、resources 288个。16个module均为328,456-byte RISC-V
-ELF64 DYN，SHA-256逐项readback且因rank-specific DTE metadata保持digest互异；pre-SPM-root历史module为
-332,552 bytes。对entry 0..15逐一运行
-`wafer-run --no-card`并显式提供Direct DTE status ABI与host-watchdog capability，16项exact preflight全部通过且均
-报告`board_execution: false`。rank-count=1/16 focused integrated gate也都经同一scheduler/finalization路径验证
-all-and-only artifact；no-card结果不属于board execution。
-
-上述证据不隐藏剩余spill：gate/up tiled outputs仍在SiLU/gate前落DDR，tiled projection result成为collective input前
-仍落DDR，因为当前producer没有暴露一个完整resident root；post-SiLU到down和collective result到residual已保持SPM。
-这属于延期的tiled-producer residency性能项。该轮没有运行7B target CModel，也没有与PyTorch `expected.npy`比较；
-不得把compile/package结构证据写成Q28数值完成。
-
-Q29 fresh full gate已完成：target-model配置223项lit中221 pass、2 unsupported，分别为
-`wafer-compile-stablehlo-disabled.test`和`wafer-compile-target-model-disabled.test`；base/numeric/bulk/SystemC
-unit分别235/235、48/48、18/18、5/5，CTest 22/22。development配置223项lit中220 pass、3 unsupported，分别为
-`wafer-compile-stablehlo-disabled.test`、`wafer-compile-target-model-bulk.test`和
-`wafer-compile-target-model-source.test`；base unit 235/235，CTest 12/12。该轮dependency checker、当时110项CRT symbol
-closure、CRT conformance（formats/encoding rows/convert routes=`13/65/36`，convert groups=`4/23/9`）、IR/source
-organization和diff检查全部通过。
-
-target-model配置还实际重放了已有source numeric vertical，transaction计数为linear 24、f16/bf16 10、large 10、
-tiny Llama TP16 12,656；这证明Q20/Q21 consumer没有因调度迁移回退，不是标准7B block的CModel或PyTorch差分。
-Q29据此完成；后续Q28已从同一source/config独立执行并完成7B managed-reference CModel/PyTorch gate。
+Q29/Q32旧per-task selector、standalone import、scope/artifact组合、independent flags与历史量化证据只保存在archive，
+不再出现在current verification contract。当前只复用它们已经闭合的MLIR-native机制基础：actual-clone transaction、
+`TilingInterface`/DPS、`IndexRelation`、唯一`MemLayout`/physical transfer proof、typed worker/event、fixed-capacity SPM/DDR、
+all-rank atomic commit和current ABI。详细历史证据见`tasks/archive/`；它不能替代下述fresh whole-rank gate。
 
 #### Q38 Static Fixed-Slot 与 Explicit Direct-DTE Host Gate
 
@@ -524,7 +369,7 @@ Q38的fixed-slot和Direct-DTE细粒度issue必须在同一个source-backed、ful
   重编或用另一份package替代。普通package另经显式status-v2/watchdog capability完成no-card preflight；
 - current target module对每个accepted `dte_send`发射
   `send_prepare -> direct_dte_send_issue_v3`，matching wait只负责completion/release；old ABI不得引用current-only
-  issue symbol，并保留wait内auto-issue兼容。strict compile-only probe必须让同一module中的普通RDMA/WDMA/
+  issue symbol，current decoder/lowering/model拒绝wait-before-issue且不存在wait内auto-issue compatibility path。strict compile-only probe必须让同一module中的普通RDMA/WDMA/
   compute也使用current typed worker ABI，避免混用ABI；
 - SystemC按exact pending memory footprint区分DTE与ordinary NCC：DTE source只与overlap pending write冲突，
   DTE destination与overlap pending read/write冲突。matching participant join必须在DTE issue前清除hazard；
@@ -540,12 +385,12 @@ Q39的多机制组合必须来自同一个compiler-owned current-IR候选，不�
 artifact或metadata摘要拼接成组合证据：
 
 - resident role materializer从typed global/local rank slice、standard tiling/reduction interface、SSA/effects和
-  complete-rank tuple物化owner load、peer movement、local compute/reduce及required publication；它不重新选择
+  all-rank actual tuple物化owner load、peer movement、local compute/reduce及required publication；它不重新选择
   compute implementation；
 - materialized canonical/unplaced current Instr先由all-rank atomic transaction按SSA、typed effects、exact或
   conservative static ranges及stable issue order派生`DisjointComponents` sibling。实际worker必须写入issue
-  attrs，minimum participant joins必须从改写后的current IR fresh重建；source和已有nonzero assignment均不原地
-  修改；
+  attrs；在固定worker/order/effect frontier上，latest-necessary participant joins必须从改写后的current IR fresh重建；
+  source和已有nonzero assignment均不原地修改；
 - fixed-slot只从保留各自worker assignment的siblings继续派生。每个结果fresh重跑completion、SPM/DDR、
   Direct-DTE matching/binding、whole-variant resource、target ABI/LLVM、package、SystemC/CPU expected和no-card；
 - 当前独立NoC role、worker及fixed-slot host gates已经闭合，NoC×fixed-slot×nonzero-worker同候选也已通过
@@ -585,7 +430,8 @@ Q46必须从同一个production source和complete-rank actual-clone owner证明l
   concrete verifier/physical-access/lowerability preflight，不能来自新增compatibility table或access-constraint接口；
 - PBQP projection在相同IR与配置上按stable state vector产生最多四个optimized proposals，另有独立baseline；覆盖32-state/op、
   1,048,576 solver-work、4096 search-expansion、继承父约束域的component Top-4、deterministic k-best merge、
-  Unknown command cost、materialization failure不回填和fanout最多primary加一个共享secondary。projection/assignment销毁后，
+  Unknown command cost、materialization failure不回填和fanout primary加一个共享secondary的首个机制覆盖；该覆盖不是Q49
+  fanout的IR语义上限，Q49按search-bounded K versions另行验收。projection/assignment销毁后，
   verifier、SPM/DDR、cost、package不得读取solver state；
 - CT relation/select/logic/convert/bitpacked交叉Tensor/Cx/NCx、rank 2/rank > 2、C block边界与tail，核对logical result、
   declared full physical span、padding/tail和allocation外canary；跨dtype block不兼容必须保留一次materialization；
@@ -594,13 +440,74 @@ Q46必须从同一个production source和complete-rank actual-clone owner证明l
 - Tree AllReduce覆盖全rank相同Tensor/Cx/NCx encoding与完整physical-footprint bytes，mixed encoding、compact-prefix、
   footprint mismatch为negative；AllReduce/ReduceScatter Ring覆盖exact contiguous physical chunk positive及logical可整分但
   physical relation有hole/overlap的negative。
-  collective-connected component必须由whole-variant coordinator用跨rank共享state一次提议并原子物化，禁止per-rank Top-4 Cartesian；
+  collective-connected component必须由whole-variant coordinator从all-rank actual IR一次派生transient proposal并原子物化，
+  proposal立即销毁且不成为shared state/sidecar，禁止per-rank Top-4 Cartesian；
 - full-buffer resident handoff在descriptor展开前复用producer已有SPM encoding；不兼容consumer保留DDR spill sibling，late
   transfer cleanup不从descriptor反推逻辑语义；
 - baseline与winner都沿`wafer-compile`完成source-to-package和fresh no-card。无卡通过后只能标`board-ready`；真实板端使用
   FP16/BF16串行执行matched baseline/winner，output/guard正确、targeted movement bytes/commands下降且性能不劣化后才可标`done`。
 
 production不实现穷举或external solver；这些gate验证的是actual IR及现有final-IR selection，而不是PBQP局部目标最优性。
+
+#### Whole-Rank Tile Dataflow Synthesis Gate
+
+Q49只接受默认`wafer-compile`产生的complete-rank actual clones和完整下游证据，验证三类问题必须一起改善：
+DDR往返、GS/layout movement和`NCCJoin`。不能用某一项下降而把work转移到未统计engine或额外recompute掩盖另一项。
+
+- **decision boundary**：post-SPMD完整rank structured SSA在任何Tile→Instr、SPM/DDR placement或compiler-derived join前
+  进入06；每条edge分别验证tile propagation、numeric、storage、completion和rank-coupling legality。`tile.region`、
+  shape变化、layout不兼容和collective均不自动切component或强制intermediate store/reload；external input仍有typed load。
+  source-observable ordering由control-flow、SSA event/token和typed effects表达，只约束schedule/completion维度；
+  unsupported control/numeric path按对应维度fail closed；
+- **actual-clone search**：每个frontier survivor是actual unplaced rank clone，factor proposal立即materialize后销毁；
+  每个带决定的state在进入frontier/cost/gate前已把view/movement/event obligation物化进clone。chain/tree只有未处理IR可观察的
+  current-IR frontier facts完全相同、且在有限枚举tile/action domain内才可作exact DP；一般DAG走bounded Pareto beam。
+  transient hash只预筛并fresh重证，不形成interface/key/schema。baseline保留，budget耗尽不伪装成capacity；
+  serial/parallel的work count、frontier、winner digest一致；
+- **generic graph**：chain、diamond、fanin/fanout、shared-input、multi-root、view/permutation、tail、loop-carried reduction、
+  structured control flow、effect barrier和collective各有source正负例。至少两个不同scalar body的generic op在搜索策略冻结后
+  通过，证明无模型名、参数名、shape或字符串op-name matcher；
+- **physical/dataflow**：oriented GEMM从structured indexing semantics吸收transpose relation；effect-proven read-only、原始逻辑
+  shape的weight可走exact composed Tensor DDR mapped transfer到Cx，不假定identity DMA或任意transpose DMA。shared LHS load/layout
+  不随N-loop multiplicity重复；resident edge无中间WDMA/RDMA；fanout允许search-bounded K个versions，K不是IR语义上限；
+  SPM failure只拒绝clone并由06从无offset parent产生有限sibling，allocator不修tile/layout/residency；
+- **completion/memory order**：只有terminal complete-rank Tile clone lower Instr，再派生worker/fixed-slot/ready-order siblings。
+  reconstruction入口删除全部`wafer.instr.ncc_join`；source-observable ordering由control-flow、SSA event/token和typed effects表达，
+  DTE wait与group barrier各用独立typed语义；再从final effects、
+  workers、event、alias/range、reuse和observer构造fixed-frontier latest-necessary completion。每个join有hazard/protocol/observable
+  witness，可安全coalesce的均合并。随后按`lifetime/conflict → SPM packing → physical-alias verify → whole-variant DDR →
+  post-memory Direct-DTE binding/resource → ABI`执行；packing失败从无offset parent生成有界sibling，不原地fixed-point修复；
+- **collective/reduction**：collective保留真实DTE/NCC completion和从actual IR fresh验证的all-rank matching，但前后SPM resident edge
+  不自动落DDR。reduction domain能由一个legal selected tile完整覆盖时可走native，不能完整覆盖时生成typed partial/two-pass，
+  最终仍由capacity、numeric legality与cost选择，不按序列长度分支。fused online attention必须闭合`has_value`与`(m,l,o)`
+  init、tile state、state-state merge、`y=o/l` finalize，以及scale/bias/typed boolean或additive mask顺序、broadcast、
+  accumulator/exp/rounding、NaN/Inf/signed-zero、tail、underflow/overflow、empty和fully-masked-row source policy；只有SSA证明
+  probability无额外observable use、dropout为identity且无dynamic RNG时才生成。standalone softmax完整probability必须显式
+  二次遍历re-read/recompute或保存并按global state重标定，全部SPM/DDR/work进入actual IR与cost，不能只靠`(m,l)`单遍输出。
+  这些candidate使用现有SCF + tile reduce/elementwise/GEMM lowering，不新增Instr/ABI；任一语义未闭合则fail closed；
+- **work counters**：分别报告static site、static-trip loop-expanded execution work、conditional path lower/upper bound、
+  symbolic/Unknown和Q9 runtime-measured count。只有terminal Instr完成worker/completion后才报告exact join/DTE/critical-rank work；
+  `Unknown`不当零。每rank、critical-rank、`max(per-rank critical path)`、aggregate DDR/NoC、SPM high-water、descriptor、expanded
+  states、actual clones、terminal lowerings、packing calls、peak RSS与Release wall同时可审计；
+- **workload matrix**：主case为当前Llama `(S_q, S_kv) = (16, 16)`、真实PyTorch-exported read-only cached-attention
+  `(1, 1024)`和prefill `(1024, 1024)`；held-out为`(1, 4096)`、`(512, 512)`、`(128, 2048)`。后两类是attention source，
+  不宣称完整7B block；长K/V只在一次invocation内逐tile消费显式external K/V。只改现有fixture为`S=1`不算decode；
+  current persistent KV-cache state未闭合时不得宣称true decode；
+- **online adoption**：至少一个上述真实PyTorch-exported cached-attention或prefill case由production winner实际选择partial或
+  online sibling；final IR与work counters证明没有完整score/probability tensor的DDR store→reload。仅有synthetic candidate
+  generation或未被选择的positive test不能代签；
+- **当前workload收益**：相对C0 fresh pre-Q49 optimized production baseline，`(16, 16)`的per-rank loop-expanded DDR bytes至少
+  下降50%、GS bytes至少下降80%、critical-rank loop-expanded join至少下降80%。这些是workload gate，不是算法常量；同时核对compute/recompute、
+  NoC/DTE、SPM capacity、numeric/output/guard和ABI/package，板端matched性能不得劣化；
+- **cutover**：per-task Tile→Instr/SPM/DDR、standalone task import/commit、task-return join、task/layout/artifact ordinal、
+  artifact-kind Cartesian product、all-or-nothing full-buffer residency和late NoC tuple decision owner均无production consumer并
+  删除。transfer/view/GS cleanup只作policy-free canonicalization；public optimization控制面收口为`production`/`none`，
+  旧scope/residency/NoC独立flag、隐藏flag或compatibility path不算删除。
+
+FP16/BF16 rank-count 1/16、完整package、CPU/PyTorch或repo-owned model oracle与fresh no-card通过后状态最多为
+`board-ready`。真实板端baseline/winner必须由cutover后同一fresh build和新pipeline生成，再按仓库规则串行执行当前Llama
+同源A/B exact output、guard、matched性能，以及一个
+read-only cached-attention representative后才能`done`。历史raw、旧package、unsupported/skipped或局部FileCheck不能代签。
 
 ### 6.2 Optional Rank-Local Transform Control-Plane Gate
 
@@ -654,8 +561,8 @@ Q32.T保持later，不阻塞Q32。当前没有需要rank-local Transform control
   由CRT按target topology形成peer SPM base加accepted receiver offset，overflow或缺firmware symbol在effect前失败；
 - current Kernel Runtime ABI为sender增加唯一显式issue call：prepare只建立event，issue完成peer-ready、
   attach和async submission，matching wait完成wait-done/release。lowering、TargetCall decoder、SystemC和profiler
-  必须逐项消费该symbol；wait-before-issue失败。old module不得引用current-only issue，obsolete wait auto-issue只作
-  ABI兼容，不能被计作独立overlap window；
+  必须逐项消费该symbol；wait-before-issue失败。old module不得引用current-only issue，obsolete wait auto-issue没有
+  reader、wrapper或fallback；历史输入只作为negative fixture并必须在effect前拒绝；
 - Q18 manifest只投影launch/runtime可观察的transport capability、control/status resource和completion requirement，
   不复制DTE p2p body或per-op binding；no-card preflight验证requirements但不重新分配channel/FSM；
 - rank-15 binding、target lowering、link、manifest assembly或readback late failure均无partial executable/target/
@@ -1388,11 +1295,12 @@ StableHLO program directory经`wafer-compile`完整形成schema-v7/current-statu
 - 16个K slice无重叠、无缺口且完整覆盖global K；output boundary为16份replicated完整tensor；
 - terminal all-reduce由其`TilingInterface`产生与local GEMM output一致的M/N tile；complete compact traversal覆盖
   all-and-only main tile及存在时的static tail并显式拼接完整output，不能把tiled GEMM重新汇入full-buffer collective；
-- selected program的全部SPM allocation落在`[65536, 3080192)`，local GEMM completion/fence支配DTE send source，
-  recv wait支配collective consumer和output writeback；16个rank的collective loop domain/order一致，任一tile的issue/wait/
-  local fence在下一dynamic communication instance前闭合；
+- selected program的全部SPM allocation落在`[65536, 3080192)`，local GEMM producer effect/range与post-worker重建的
+  participant completion支配DTE send source，recv wait支配collective consumer和output writeback；16个rank的collective
+  loop domain/order一致，任一tile的ordinary NCC participant completion与DTE issue/wait均在下一dynamic communication
+  instance复用相关range前闭合；
 - 实际GEMM instruction的lhs/rhs/result storage format均为F16，local K保持256且不发射F32 operand/result GEMM；
-  本case的raw exact依赖既有numeric semantic profile规定的F32 fused accumulator、positive-zero初始化、increasing-K
+  本case的raw exact依赖current typed numeric semantics规定的F32 fused accumulator、positive-zero初始化、increasing-K
   和最终F16 RNE写回，而不是假设逐步F16累加也相等；payload使用f16可精确表示的有界二进制缩放值域，
   `A=(rank+1+(m mod 17))/4096`、`B=1+(n mod 19)`；17/19与selected tile stride互素且周期大于对应
   tile数，使每个rank和tile起点都可区分，漏掉、重复或错配任一rank/tile必然改变output；
@@ -1459,7 +1367,7 @@ Q36是compiler/no-card correctness与selection gate，不以板卡、PMU或固�
 Tree与Ring都可直接用于支持的f16/bf16/f32 collective，不要求额外numeric attr；对应测试检查实际
 p2p/local accumulation、chunk、topology和completion。Q36的静态minimum-hop结果不是Q9 cost calibration
 或Q22.C板端numeric correlation，不能由二者反向替代。完整施工checkpoint见
-`tasks/plans/topology-aware-collective-lowering.md`。
+`tasks/archive/topology-aware-collective-lowering.md`。
 
 ### 12.3 Production Optimizer Paired Evidence Gate
 
@@ -1717,7 +1625,9 @@ Pipeline position:
 
 ## 15. 规划中的 Semantic Superoptimization Gate
 
-`semantic-superoptimization`只在Q46和Target ABI退役完成后启动。验证按两个pipeline位置共享同一失败原则：只有
+`semantic-superoptimization`只在Q49达到`board-ready`并完成C0–C6 compiler cutover、current Target ABI closure能消费final
+Instr/TargetCall后启动。
+验证按两个pipeline位置共享同一失败原则：只有
 `preconditions AND observable_difference`为UNSAT的actual clone可进入现有frontier；SAT、unknown、timeout、resource
 exhaustion和任何late gate失败都保留独立baseline且不提交partial mutation。
 
@@ -1730,8 +1640,9 @@ exhaustion和任何late gate失败都保留独立baseline且不提交partial mut
   baseline。variant只在request sharding前生成/证明一次，16个export/rank shards不得链接或运行Z3。
 - target closure遍历全部canonical Instr enum/op/transaction variant，要求exact/opaque/boundary/rejected唯一；新增值未分类
   时build/test fail。symbolic adapter须与formal evaluator/TargetModel在有界value/memory states做differential。
-- integration要求所有passing actual clones fresh重跑relation、liveness、physical realization、SPM/DDR、worker、completion、
-  target preflight、cost和whole-variant gates；source→package的rank 1/16 FP16/BF16 artifact与fresh no-card形成`board-ready`。
+- integration要求所有passing complete-rank canonical/unplaced Instr actual siblings fresh重跑relation/physical facts，再按
+  worker/slot/ready-order、fresh completion、liveness/SPM、whole-variant DDR、post-memory transport/resource、target preflight、
+  final cost和whole-variant gates重放；source→package的rank 1/16 FP16/BF16 artifact与fresh no-card形成`board-ready`。
 - build gate要求production/no-card配置实际链接受管Z3并执行proof tests；feature-off只验证core/显式`none()` link closure，
   production请求必须pre-mutation fail closed，不能把未运行两个新axis的结果称为production或Q48 evidence。
 - board只做本任务定向、串行、同源baseline/winner A/B，按现有正常数值容差比较output并校验guard/profile/completion/

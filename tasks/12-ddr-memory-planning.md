@@ -14,8 +14,7 @@ alias/lifetime；本stage不执行runtime allocation/import/query，也不重新
 compiler-managed DDR allocation 由 DDR `memref.alloc` 本身表达；DDR memory planning 只把 accepted
 offset 写入 IR，size、alignment、lifetime、read/write intent 和 external access-end 都从当前 IR 重算，
 不作为长期 attr 字段保存。
-当前candidate producer仍只实现Q29有限scope/residency策略；DDR planner可以接收MLIR rewrite产生的任意有限完整clone，
-但本stage始终只是exact resource gate，
+DDR planner可以接收MLIR rewrite产生的任意有限完整clone，但本stage始终只是exact resource gate，
 不生成、排序或修补这些选择。
 
 本文定义 `#wafer.memory<ddr, layout>` 在 Wafer 编译器中的语义、资源规划、verifier 和
@@ -31,7 +30,7 @@ compiler IR 合同。
   access demand 和 compiler-managed DDR allocation demand。
 - 对 external input/output DDR view 做 descriptor、view/root byte range和capacity validation，并输出exact movement bytes。
 - 对当前rank clone内compiler-managed workspace、resident constant、显式spill DDR temporary等non-external
-  allocation，在default arena中规划symbolic range/offset/size/alignment，并用跨task、完整rank-entry
+  allocation，在default arena中规划symbolic range/offset/size/alignment，并用完整rank-entry内跨region/SSA edge的
   lifetime/reuse证明互不冲突。
 - 给 candidate-selection 一个真实 candidate gate：成功表示当前 candidate 的 DDR view、accepted offset fact 和
   IR-derived demand 都可被下游直接消费；失败只返回typed infeasible reason给06 candidate owner，后者可用另一clone尝试
@@ -65,8 +64,10 @@ Pipeline position:
   `memref.alloc`、ViewLike/SelectLike/structured-control aliases、generic async handle和RDMA/WDMA descriptor
   表达external view与当前rank default-arena compiler-managed/resident/explicit-spill demand；selected
   implementation/physical version、mapped或staged transfer、resident/spill均已成为显式memref/view/instruction事实。
+  每个rank program必须来自完整rank tile-dataflow的一次统一lowering；不得把逐task已经决定spill/reload/offset的artifact
+  拼接后作为终态输入。
 - Current stage responsibility:
-  从完整variant clone逐rank重算DDR access demand、compiler-managed allocation demand和该rank完整entry内跨task lifetime；
+  从完整variant clone逐rank重算DDR access demand、compiler-managed allocation demand和该rank完整entry lifetime；
   验证external DDR descriptor与view/root range；为compiler-managed/resident/explicit-spill allocation在当前rank
   default arena内规划symbolic offset；验证range overlap、capacity、largest-contiguous和alignment
   和descriptor对planned allocation的覆盖；分别证明generic async task terminal wait和DDR typed NCC
@@ -118,7 +119,7 @@ component-local fixed prefix；共享policy使用宽松确定的全局node budge
 `ResourceExhausted`时允许first-fit fallback。typed outcome和独立placement validator也由该共享边界拥有。
 shared `MemoryPlanning` fixed-capacity primitive在类型上可复用同一owner-independent DDR problem，且不认识SPM/DDR、workload或
 op名。DDR在whole-variant后置stage至少证明完整arena legality并提交实际accepted high-water/`wafer.ddr.offset`；该high-water
-必须返回06作为final static cost。Q32.S可在独立hard cap内对selection-sensitive shortlist以不同capacity重复调用同一pure
+必须返回06作为final static cost。06可在独立hard cap内对selection-sensitive shortlist以不同capacity重复调用同一pure
 primitive收紧candidate-local quality区间；probe placement只有在fresh whole-variant evaluation clone上原子apply，并重新运行
 post-memory transport binding、range/ABI/package等全部offset-dependent gate后，才能成为actual high-water/final cost，否则只作
 safe bound。DDR owner不选择candidate、不返回repair、不发布proof schema或跨candidate cache，已写DDR offset的evaluation
@@ -458,19 +459,25 @@ Selected transfer realization may add DDR reads/writes or staging pressure. The 
 explicit DDR memref operands and descriptors so DDR memory planning can rederive demand. If a physical encoding change alters
 storage bytes, the corresponding memref type/encoding must make that visible.
 
+effect-proven read-only imported parameter仍是现有typed external root。pure transpose/view relation可以由08与consumer indexing
+semantics组合：例如先让oriented GEMM吸收transpose relation，再让原始逻辑shape的weight通过exact composed Tensor DDR mapped
+transfer进入所需physical version；这不需要identity DMA，也不需要
+新的DDR协议，也不表示任意transpose都能由DMA完成。只有package-time persistent prepack才需要未来typed resource/package
+合同，当前保持非目标。
+
 ### 9.3 Candidate Selection
 
-candidate selection由tasks/06拥有，通过MLIR interface/rewrite产生bounded complete-rank tile/implementation/physical-version/
-transfer/resident/ready-order alternatives。scope只采用root-local closure、complete shared-input closure、terminal cut和
-conservative partition四类semantic policy；spill/resident/ready-order分别形成显式physical artifact kind，并与semantic
-generation共同约束all-rank correspondence。它们都不是DDR输入schema或silent fallback。每个rank candidate先把DDR view、
-mapped/staged movement、explicit spill和instruction descriptor显式物化并过
-per-rank gate；lazy join后的每个complete variant再独立重跑whole-variant DDR exact gate。
+candidate selection由tasks/06拥有，可提交任意有界complete-rank actual clone。resident edge、explicit spill、
+mapped/staged movement、loop order与completion都必须已经在current IR显式；DDR owner不知道scope policy、artifact kind、
+candidate ordinal或生成历史，只执行exact demand、lifetime、range、capacity与offset gate。每个rank candidate先把DDR view、
+movement、spill和instruction descriptor显式物化并过per-rank gate；all-rank actual tuple形成后，每个whole variant独立重跑
+DDR exact gate。
 first/tail representative tiles只允许便宜地拒绝candidate，不能证明traversal coverage、descriptor closure、lifetime、
 capacity或completion。DDR planning拒绝candidate时不写主IR、不改变transfer/residency choice，并丢弃完整clone；
 其它candidate clone继续独立评估。reserved conservative spill拥有独立allowance，但仍执行同一complete late gates。
 SPM/DDR arena constraints是各自planning gate输入；DDR exact movement bytes是06 cost输入，不是candidate field或未校准
-bandwidth legality。
+bandwidth legality。12统计每个static descriptor site的exact bytes；static-trip loop-expanded multiplicity与conditional bounds由06
+从complete Instr IR计算，真正runtime-measured count由Q9拥有。12不能把一次site冒充整次workload流量。
 
 ### 9.4 Q16 Typed Rank-Record Handoff
 
@@ -576,6 +583,6 @@ Expected coverage:
 - Board-validated runtime allocation failure mapping and recovery policy。
 - PMU-calibrated DDR bandwidth model。
 
-跨task的显式spill DDR lifetime不是deferred work：只要producer/consumer relation已由当前SSA、view、region、
+跨region/SSA edge的显式spill DDR lifetime不是deferred work：只要producer/consumer relation已由当前SSA、view、region、
 explicit allocation或transport facts表达，它就是complete static rank entry / variant-set gate的mandatory
 输入。关系无法表达时candidate必须结构化失败或先扩IR，不能退回局部task planning。

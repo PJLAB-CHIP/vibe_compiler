@@ -1,21 +1,20 @@
 # Wafer Selected Tile-Dataflow IR 与原子物化
 
-状态：本文定义 Q32 中 selected tile/dataflow IR 的 MLIR-native 边界。实现状态只看
-`tasks/progress.md`；历史 task-dataflow scheduling 证据只作背景，不是当前合同。
-
-Q46将在同一actual-clone物化边界增加relation-guided physical-version assignment；该扩展当前为`next`，
-不会反写为Q32已完成证据。
+状态：本文定义 selected tile/dataflow IR 的 MLIR-native 边界。Q32/Q46已闭合现有typed materialization、
+relation和physical-version机制；Q49负责把production调用域收敛为complete-rank、pre-Instr联合综合。
+实现状态只看`tasks/progress.md`；历史 task-dataflow scheduling 证据只作背景，不是当前合同。
 
 source structured op 的数学语义始终存在于当前 operation、region、SSA、type、attribute 和标准
-MLIR interfaces 中。tasks/06 在 transformation 内选择 implementation、tile、physical encoding、
-residency、movement、share-vs-recompute、loop-invariant hoist、current numeric rewrite和ready order 后，本文负责在 isolated candidate clone 中用 `PatternRewriter` 和
+MLIR interfaces 中。tasks/06 在complete-rank transformation内选择 implementation、tile、physical encoding、
+residency、movement、share-vs-recompute、loop-invariant hoist、current numeric rewrite和structured traversal order后，本文负责在 isolated candidate clone 中用 `PatternRewriter` 和
 `DialectConversion` 直接物化真实 IR。物化完成后，选择过程中的临时对象可以销毁；下游只读取
 current IR。
 
 `wafer.tile.region` 是 complete-rank traversal 中的结构化 tile/dataflow scope。它可以组织
 Wafer-tagged memref、view、compute、movement、event 和 structured control flow，但不是 fusion group、
-独立 SPM arena、候选描述、executable 或提交单元。跨 region 的 value 和 completion relation必须通过
+独立 SPM arena、候选描述、executable、lowering或提交单元。跨 region 的 value 和 completion relation必须通过
 显式 SSA operand/result 传递；region 边界本身不隐含 store、reload、barrier 或资源释放。
+跨region exact SSA tile edge与同region内edge具有相同resident候选资格，region数量不作为融合质量指标。
 
 本文依赖：
 
@@ -48,7 +47,8 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
   `wafer.tile.*` compute。
 - 物化 Wafer-tagged memref、standard/typed view、resident SSA edge、显式 movement、spill/reload、
   temporary、accumulator 和 staging。
-- 用 event SSA、wait/fence op和structured control flow表达issue、completion、reuse和terminal drain。
+- 用 event SSA、typed wait/dependency、MemoryEffects和structured control flow表达issue、event completion、reuse及仍待下游
+  完成的observable obligations；本层不物化compiler-derived participant join或terminal drain。
 - 让 conversion legality、op/interface verifier 和 fresh analyses 能从 current clone 独立重建全部事实。
 - 任一 rewrite、conversion、coverage 或 verifier 失败时丢弃整个 clone，不污染 source 或其它 clone。
 
@@ -58,6 +58,7 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
 - 不因 materialization/lowering 失败改选另一实现，不插入临时 fallback，不切分新的搜索分支。
 - 不保存选择历史、评分、失败轨迹、影子调度图或其它 IR 外长期语义。
 - 不分配 SPM/DDR physical offset，不在 region 内单独证明 whole-rank capacity。
+- 不让单个region、component或旧task module独立执行Tile→Instr、SPM/DDR planning或terminal completion后再拼接rank。
 - 不 lower raw packet、CRT、LLVM、runtime handle 或 package 字段。
 - 不通过 op/value/parameter 名、固定 shape、参数顺序或 workload topology 恢复语义。
 - 不把单个 region、representative tile、单个 rank 或局部 FileCheck 当成完整完成证据。
@@ -66,7 +67,7 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
 
     Pipeline position:
     - Upstream artifact / IR:
-      verifier-legal rank-local structured tensor IR，以及同一次 transformation 内由
+      verifier-legal complete-rank structured tensor IR，以及同一次 transformation 内由
       WaferTargetImplementationOpInterface枚举并已经选中的TargetImplementationCandidate、
       tile domain、physical operand/result encoding、residency、movement、share/recompute、hoist、current numeric variant和
       execution order。所有选择都引用current op/value并可在mutation前重新验证；
@@ -84,9 +85,10 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
       或在无任何published mutation的情况下返回failure。成功IR只含typed operation/region/type/
       attribute、memref/view、compute、movement、event和SSA；不依赖任何外部解释对象。
     - Downstream consumer:
-      target-abstract legality和complete-rank instruction lowering；materialized canonical/unplaced Instr
-      随后先原子派生typed worker sibling，再在保留worker assignment的siblings上派生fixed-slot，最后进入
-      fresh whole-rank SPM、whole-variant DDR、communication/transport/ABI gates以及all-rank atomic commit。
+      target-abstract legality，并按terminal typed collective/peer algorithm参数逐点执行complete-rank instruction lowering；
+      materialized canonical/unplaced Instr随后派生typed worker/fixed-slot/ready-order siblings，进入fresh completion
+      reconstruction、whole-rank SPM、whole-variant DDR、post-memory communication/transport/resource、ABI gates以及
+      all-rank atomic commit。任何region/component不得单独经过这些不可逆stage。
     - User-level driver / named pipeline:
       wafer-compile source-to-bundle production pipeline。wafer-opt只可对同一op/interface/
       conversion做局部parser、verifier和rewrite测试，不形成第二条compile pipeline。
@@ -106,9 +108,11 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
       -> selected PatternRewriter mutations
       -> selected structured-to-tile DialectConversion
       -> verifier-legal tile/dataflow IR
-      -> tile-to-instruction DialectConversion
-      -> whole-rank instruction/SPM/completion gates
-      -> whole-variant DDR/communication/transport/ABI gates
+      -> per-parameter tile-to-instruction DialectConversion
+      -> worker/fixed-slot/ready-order siblings
+      -> erase and fresh-rebuild whole-rank completion
+      -> whole-rank SPM gates
+      -> whole-variant DDR then post-memory communication/transport/resource/ABI gates
       -> atomic commit of all ranks
 
 物化后的长期事实只有：
@@ -119,7 +123,8 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
 - selected `wafer.tile.*` op form及其typed implementation/numeric fields；
 - `memref<..., #wafer.memory<space, encoding>>`、allocation root和typed view；
 - explicit compute、movement、temporary、accumulator、staging和spill/reload；
-- MemoryEffectOpInterface、必要的MLIR custom SideEffects::Resource、async token、wait/fence和terminal drain；
+- MemoryEffectOpInterface、必要的MLIR custom SideEffects::Resource、async token、typed wait/dependency和可重建的
+  observable/pending-effect obligations；terminal drain尚未物化；
 - 下游规划接受后写入的physical offsets和transport/ABI-owned fields。
 
 如果某个selected decision不能从这些对象解释、验证或lower，必须先扩op、type、attribute或interface。
@@ -242,17 +247,19 @@ local compute和forward；没有typed target capability时不假设router multic
 
 ### 6.3 Event 与 Effects
 
-异步issue必须产生token或进入由明确local fence收口的pending set。依赖关系固定为：
+具有typed async-event语义的issue必须产生token并由matching typed wait消费；普通NCC-capable Tile op通过SSA、
+MemoryEffects、range和structured order留下pending obligation，不在本层借用local fence或`NCCJoin`收口。依赖关系固定为：
 
     issue
-      -> completion
+      -> typed event wait（仅对显式event domain）/ pending effect obligation
       -> all consumers
-      -> join of last-consumer completion
       -> next writer or allocation reuse
 
-block order、region exit、loop iteration和task顺序都不自动证明completion。source/destination、temporary和
-staging的lifetime延伸到真实wait/fence。rank entry的每条exit path必须terminally drain所有external write、
-communication和其它observable effects。
+block order、region exit、loop iteration和旧task顺序都不自动证明completion。source/destination、temporary和
+staging的lifetime必须保守覆盖到显式event wait或下游重建的participant completion。terminal drain只允许由post-worker
+completion owner在complete-rank entry的真实exit path或显式observer/capability要求的cut处重建；region yield、standalone
+function return和candidate commit不得自动生成`NCCJoin`。Tile层每条exit path必须保留足够的control-flow、SSA token、
+range和effect事实，使下游能够证明并重建all-and-only external write、communication和其它observable effects的drain。
 
 ## 7. 原子 Materialization Algorithm
 
@@ -269,9 +276,9 @@ communication和其它observable effects。
    temporary、accumulator和staging。
 6. **物化selected compute**：调用`WaferTargetImplementationOpInterface::materializeSelectedImplementation`，创建typed
    `wafer.tile.*` compute；hook失败时丢弃clone，不换另一implementation。
-7. **物化movement和events**：创建boundary/local/staged movement、spill/reload、tokens、wait/fence和
-   terminal drain；所有新value立即接入SSA。
-8. **运行structured-to-tile conversion**：用`ConversionTarget`、`TypeConverter`和rewrite patterns消除
+7. **物化movement和events**：在完整rank clone中创建boundary/local/staged movement、spill/reload、tokens和typed
+   dependency；region/task return不物化terminal drain。所有新value立即接入SSA。
+8. **运行一次complete-rank structured-to-tile conversion**：用`ConversionTarget`、`TypeConverter`和rewrite patterns消除
    本层声明illegal的source forms；成功后不能残留需要下游猜测的op。
 9. **fresh重算与局部canonicalization**：每次mutation后丢弃旧`IndexRelation`、alias、effect、liveness、
    completion和resource结果。canonicalization只能删除语义、storage和effect均等价的no-op。
@@ -334,10 +341,10 @@ tile/dataflow verifier至少检查：
 - selected compute/movement的operand/result、rank、shape、dtype和typed parameters合法；
 - 每个physical version的memory space、encoding、allocation root、view和valid domain可重算；
 - metadata view保持physical storage同构，不能用reshape逃避真实movement；
-- 每条跨task edge共享同一version或存在显式lowerable movement；
+- 每条跨region/component edge共享同一version或存在显式lowerable movement；
 - standard MemoryEffect直接关联实际SSA value或custom resource，bytes/footprint可从typed IR重算；
 - async producer在completion前不能被读取、覆盖或复用；
-- all exits完成terminal drain；
+- all exits保留可重建terminal drain所需的control-flow、event、range和effect obligations；
 - traversal、tail和reduction顺序符合source contract；
 - 输出不依赖任何IR外语义对象，不含opaque implementation payload或模型名matcher。
 
@@ -372,18 +379,18 @@ physical-traversal-compatible CT relation/select/logic/convert/bitpacked。若08
 `materialize_layout`/GS movement在本clone中消失；packing identity仍只存在于encoding，不增加vector-width或packing
 side attr。
 
-下列能力仍是独立later，不纳入当前Q32完成面：
+下列能力仍有独立前置，不能被当前机制存在误报为已支持：
 
 - immutable prepacked resource publication；
-- dynamic shape、复杂mask、advanced fusion和target-specific composite；
+- dynamic shape、复杂mask和target-specific composite。通用producer-consumer tile composition属于06当前合同；只有
+  需要新增target-specific composite instruction、复杂dynamic mask或尚无typed numeric semantics的实现才是later；
 - 需要新runtime/ABI/SystemC consumer的movement或completion形态。
-- NoC-resident属于独立pipeline扩展：result/operand/partial interface traversal、input/parameter owner
-  fanout、intermediate zero-DDR cut、tree/ring slice-precise partial、round-2 output publication、同clone
-  multi-role composition和call-expanded whole-program wait graph均已有实现与host legality gate。post-Instr
-  typed worker sibling从canonical/unplaced current IR原子派生，worker-preserving fixed-slot随后派生；
-  NoC×fixed-slot×typed-worker同候选的source/package/model/no-card纵向已经闭合，fresh configured-board
-  correctness仍不纳入Q32/Q39非板端证据。
-- generic online reduction、没有typed fused semantics的non-GEMM FMA contraction及尚未闭合的其它algebraic contraction；
+- Q39已经闭合NoC-resident result/operand/partial traversal、peer movement和Direct-DTE mechanics；Q49把其decision owner并入06的
+  whole-rank frontier，本文只物化selected peer/resident Tile IR，13继续拥有typed lowering与all-rank acceptance。pre-Q49 late
+  NoC tuple path只作历史资格证据，不再是终态独立pipeline。
+- online/streamed reduction只有在typed running state、combine公式、numeric policy、tail与lowering闭合后才进入同一
+  reduction candidate domain；未闭合时保留native/partial baseline。没有typed fused semantics的non-GEMM FMA contraction及
+  尚未闭合的其它algebraic contraction保持unsupported；
 
 只有target instruction、ABI和执行consumer具备typed合同后，才能启用其中一项。每项扩展必须同批增加
 source interface candidate、selected op fields、PatternRewriter/DialectConversion materialization、verifier、
@@ -412,7 +419,7 @@ planner在transformation内选择tile、target implementation、Cx encoding和re
           %act_spm = wafer.tile.elementwise %mm_spm
 
           wafer.tile.store %act_spm into %out_view
-          ... explicit completion wait/fence ...
+          ... explicit async wait/effect dependency when required ...
           wafer.tile.yield
         }
       }
@@ -444,8 +451,8 @@ gate拒绝该clone，clone整体丢弃；materializer不就地换实现。
     materializer消费；其它未实现target能力结构化拒绝。
 11. Q32 existing share/recompute、hoist、Cx/NCx GEMM absorption及每个current numeric variant分别有production actual-IR
     形态和negative；Q46 relation-guided absorption另按独立gate验收。floating reduction reorder/tree与integer exact/modular
-    均复用Q32.N的numeric validation，generic online reduction、non-GEMM FMA及超出current integer-domain子集的
-    distribution/factorization不能靠伪装attr准入。
+    均复用Q32.N的numeric validation；online reduction、non-GEMM FMA及超出current integer-domain子集的
+    distribution/factorization只有完整typed semantic/numeric/lowering纵向闭合后才能准入，不能靠伪装attr。
 
 ## 14. 规划中的 Actual Clone Handoff
 

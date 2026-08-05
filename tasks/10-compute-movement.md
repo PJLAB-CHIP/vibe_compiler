@@ -4,8 +4,8 @@
 compute/movement IR、instruction legality、effect 与 completion 合同。Q32.R已完成destination-style load及
 current route proof接入；其余实现状态只看tasks/progress.md。
 
-Q46（当前`next`）在本文既有typed op/verifier边界内开放physical-traversal-compatible CT、reduce和compound movement候选；
-layout联合选择仍归06，本文不增加layout demand或访问约束接口。
+Q46已在本文既有typed op/verifier边界内开放physical-traversal-compatible CT、reduce和compound movement候选；
+Q49把这些mechanics接入complete-rank consumer-driven owner。layout联合选择仍归06，本文不增加layout demand或访问约束接口。
 
 本文连接 rank-local normalized structured tensor IR、physical-dataflow synthesis 以及完整
 rank instruction program。source op 的数学语义始终由当前 MLIR operation、region、SSA、type、
@@ -88,20 +88,23 @@ runtime/package owner 负责。
 
     Pipeline position:
     - Upstream artifact / IR:
-      whole-rank candidate clone。每个tile-local scope已经包含selected wafer.tile.*
+      complete-rank selected tile-dataflow candidate clone。每个structured scope已经包含selected wafer.tile.*
       compute/movement、Wafer-tagged memref、typed implementation fields、view、explicit
-      movement、storage roots以及必要token/effect；communication schedule已展开为显式IR。
+      movement、storage roots以及必要token/effect；logical/tiled collective、physical payload relation和rank facts显式存在。
+      Direct/Ring/Tree只是terminal conversion的一次typed参数，展开后立即成为actual Instr sibling并销毁参数。
     - Current stage responsibility:
       通过typed op class、ODS/op verifier、DestinationStyle/Tiling/ViewLike或Subset语义、
       MemoryEffectOpInterface及conversion legality检查selected合同，再用DialectConversion/rewrite
       patterns生成complete-rank wafer.instr.*。lowering必须
       显式生成instruction kind/parameters、queue/effect、temporary/accumulator/staging、
-      descriptor、async token和completion relation。
+      descriptor、async token和completion relation。compiler-derived participant join不因region/task return在本conversion中
+      自动生成；它在terminal Instr clone的worker/slot/range已知后由11定义的completion owner fresh构造。
     - Output artifact / IR:
       覆盖每个static rank entry完整structured control flow的wafer.instr.* program，
       operand仍是未放置Wafer-tagged memref；或在任何effect前返回结构化failure。
     - Downstream consumer:
-      whole-entry SPM planning、whole-variant DDR planning、event/transport/ABI verification、
+      worker/fixed-slot sibling、fresh completion reconstruction、whole-entry SPM planning、whole-variant DDR planning、
+      event/transport/ABI verification、
       atomic bundle commit和target LLVM call emission。
     - User-level driver / named pipeline:
       wafer-compile source-to-bundle production pipeline。wafer-opt局部IR入口只用于
@@ -110,9 +113,10 @@ runtime/package owner 负责。
       不重新选择implementation/tile/encoding/route/residency，不从source op名字恢复语义，
       不在lowering失败时改走另一实现，不设置SPM/DDR physical offset，不生成runtime handle。
     - Completion gate:
-      每个selected op均生成verifier-legal instruction IR；每个issue都由SSA token、wait或
-      explicit local fence收口；每条function exit path的pending effect set为空；任一rank
-      失败丢弃整个candidate，不能形成partial committed program。
+      每个selected op均生成verifier-legal canonical/unplaced instruction IR；typed async event具有matching token/wait，
+      ordinary NCC issue的worker-independent effect/range/observer obligations保持可重建且不存在premature read/reuse；
+      conversion不插participant join，也不要求function exit的pending ordinary-NCC effect set为空。任一rank失败丢弃整个
+      candidate，不能形成partial committed program；terminal sibling后续必须经过worker/slot/order、fresh completion和memory gates。
 
 ## 3. Source MLIR Interface 与 Candidate 合同
 
@@ -266,7 +270,7 @@ selected wafer.tile.* compute/movement op必须满足：
 - selected implementation参数不能只存在于C++ candidate。
 - layout materialization是真实movement，不伪装成type metadata change。
 - temporary、accumulator、scratch和staging必须是显式SSA value。
-- read/write/issue/wait/fence effect完整，且被standard MLIR effects保守覆盖。
+- read/write/issue及typed event/wait effect完整，且被standard MLIR effects保守覆盖。
 - 可能异步的issue产生token或进入显式pending-effect set。
 - parser/printer round-trip后verifier和lowering结论不变。
 
@@ -370,8 +374,10 @@ scalar op family；integer仍检查overflow/wrap语义，float不要求额外标
 消费改写后的current op DAG：tree顺序由明确SSA combiner DAG/SCF loop-carried state表达，distribution/factorization的新增/删除
 compute也必须是普通typed ops。lowering不读取“已选择numeric mechanism”attr，也不重新选择另一代数形式。
 
-generic online reduction在有明确source pattern、state/update/finalize/finalize-order合同前保持unsupported；non-GEMM FMA
-contraction在有显式fused selected op/field及11/14/17 consumer前保持unsupported。二者由当前Q32.N gate拥有；target固定
+online reduction/softmax不是普通tiling自然产生的rewrite；在有明确typed source semantics、running state、
+update/finalize/order、numeric policy及11/14/17 lowering consumer前保持unsupported。合同闭合后它作为独立actual semantic
+candidate进入06同一owner，不建立专用pipeline。non-GEMM FMA contraction在有显式fused selected op/field及11/14/17 consumer前
+保持unsupported。target固定
 GEMM FMA profile和source `contract` fact都不能单独授权source mul+add contraction。
 
 floating reassociation/tree由Q32.N直接进入production candidate；f16/bf16正向测试不依赖手写fast-math属性。
@@ -386,7 +392,7 @@ selected compute/movement/instruction语义首先由下列MLIR对象直接承载
 - ODS constraint、op verifier和DialectConversion legality；
 - 适用时的DestinationStyleOpInterface、TilingInterface、ViewLike/Subset、InferType及
   MemoryEffectOpInterface；
-- SSA use-def、token/wait/fence和structured control flow。
+- SSA use-def、typed event/token/wait和structured control flow。
 
 conversion使用typed OpConversionPattern/RewritePattern分派具体op family；按concrete C++ op type写pattern是
 MLIR正常lowering，不是用OperationName字符串恢复语义。不得先为所有compute、movement或layout op发明一层
@@ -428,15 +434,15 @@ Communication和Sync可以继续作为MLIR SideEffects::Resource；Read/Write/Al
 | SPM/DDR read/write | 对对应value/resource的MemoryEffects::Read/Write |
 | allocation/free | 对allocation result/root的Allocate/Free |
 | Compute/Movement/Communication issue | 对相应custom SideEffects::Resource的Write，并由issue op产生SSA token |
-| wait/fence | 对被排序resource的conservative Read/Write，加显式token/wait/fence use-def |
+| typed event wait | 对被排序resource的conservative Read/Write，加显式token/wait use-def |
 
 bytes、descriptor数量和physical footprint由analysis从typed value/op fields重算，不塞进第二个effect payload。
 Q32.M已删除复制resource/access/value ordinal/bytes的Wafer resource-effect interface/record，并把
 SPM/DDR/lifetime/cost consumer迁到标准effect与typed analysis。迁移不能只把resource kind改名：lifetime必须通过
-value-associated EffectInstance或typed operand提取找到actual SSA allocation/root，issue产生的token及typed
-wait/fence必须继续表达pending access；DDR planner读取standard DDR effect，cost从descriptor/type/encoding
-重算bytes，local fence按typed op/token语义识别。completion必须从SSA token、wait/fence、path和terminal drain
-证明；effect本身不充当完成证据。
+value-associated EffectInstance或typed operand提取找到actual SSA allocation/root，具有async-event语义的issue所产生token及typed
+wait必须继续表达对应pending access；DDR planner读取standard DDR effect，cost从descriptor/type/encoding重算bytes。
+LocalFence已从current IR删除；ordinary NCC completion由post-worker owner从SSA、effect、range、control-flow path和observer
+obligation fresh重建，effect本身不充当完成证据。
 
 所有issue、wait、fence、communication和observable store均non-speculatable；Pure只用于无effect且不会产生
 UB的结构op。
@@ -461,8 +467,10 @@ current instruction op、typed target facts、accepted offsets和transport bindi
 | joint physical-dataflow selection | current structured IR + typed candidates + relation/encoding/route analyses | one selected proposal | 选择implementation/tile/encoding/residency/movement |
 | selected candidate materialization | isolated structured clone + selected proposal | selected wafer.tile.* + physical SSA graph | 通过source interface hook创建typed compute并显式物化movement |
 | target-abstract verification | complete-rank wafer.tile.* | same IR或failure | op/interface/effect/layout/numeric检查 |
-| instruction legalization | verified complete-rank tile IR | complete-rank unplaced wafer.instr.* | DialectConversion生成exact instruction、temp、descriptor、token和fence |
-| SPM planning | complete instruction IR | accepted SPM offsets | whole-entry lifetime、range、bank和completion gate |
+| instruction legalization | verified complete-rank tile IR | complete-rank canonical/unplaced wafer.instr.* | DialectConversion生成exact instruction、temp、descriptor和typed async token/wait；不插participant join |
+| execution sibling materialization | canonical/unplaced instruction actual clone | fixed worker/slot/ready-order sibling | 从actual SSA/effects/ranges生成有界execution mapping，不原地改写其它candidate |
+| completion reconstruction | fixed execution sibling | final instruction sibling with latest-necessary participant joins | 入口删除全部compiler-derived join，从current effects/events/ranges fresh重建并逐join验证witness |
+| SPM planning | completion-complete instruction sibling | accepted SPM offsets | whole-entry lifetime、range、bank和capacity gate |
 | DDR planning | SPM-planned whole variant | accepted DDR offsets | external/compiler-managed range、lifetime和capacity gate |
 | final rank/variant verification | placed instruction IR + transport binding | atomic executable proposal | 重算resource、completion、ABI和all-rank facts |
 | target LLVM emission | committed instruction IR | LLVM/target calls | checked派生address/range/descriptor/ABI字段 |
@@ -488,20 +496,23 @@ Instruction gate至少检查：
 - logical shape到physical footprint使用统一helper；禁止silent integer narrowing。
 - every memory/resource effect直接用standard MemoryEffectOpInterface关联actual value或custom
   SideEffects::Resource；bytes从typed descriptor/type重算。
-- issue/token/wait/fence use-def闭合，function exit没有pending local effect。
+- typed event issue/token/wait use-def闭合；ordinary NCC issue的effects/ranges在fixed worker/order sibling上可由下游completion
+  owner重建，conversion输出不要求pending set为空。
 - unsupported instruction form在effect前失败，不能回头选择另一implementation。
 
 ### 7.3 Issue 与 Completion
 
-target-abstract op从SSA语义看按program order执行；instruction lowering可以拆成issue和later
-wait/fence，但必须显式表达依赖：
+target-abstract op从SSA语义看按program order执行；instruction lowering可以把具有typed async-event语义的op拆成issue和later
+wait，但必须显式表达依赖：
 
-- async issue返回async.token或注册到由明确local fence收口的pending set。
+- typed async issue返回async.token并由matching typed wait消费；ordinary NCC issue留下effects/ranges/observer obligations，
+  不在conversion中借用local fence或participant join收口。
 - source/destination/temporary lifetime延伸到真实completion点。
 - tile.region、task boundary、loop iteration和block order都不自动完成pending issue。
-- DTE wait、communication barrier和local compute fence是不同resource边界，不能互相替代。
+- DTE wait、post-worker compiler-derived NCC participant join和group barrier是不同resource边界，不能互相替代。
 - queue capacity或busy-table只限制in-flight legality，不是event或completion proof。
-- 每条static rank exit path执行terminal drain，pending set必须为空。
+- canonical/unplaced conversion输出的每条static rank exit path保留可重建的pending ordinary-NCC obligations；只有post-worker
+  completion reconstruction后的terminal sibling才要求all-and-only observable/pending effects已在合法cut完成。
 
 ## 8. 通用 Case
 
@@ -624,8 +635,9 @@ legality；其它owner不得复制这些事实，也不得让本文重新承担�
 
 ## 12. 规划中的 Implementation 抽象退役
 
-`semantic-superoptimization`尚未实施。Q46先复用current `WaferTargetImplementationOpInterface`和actual-op probe闭合
-layout/compute joint assignment；Q48再把probe迁移到actual typed clones/current IR facts，并在同一任务中删除：
+`semantic-superoptimization`尚未实施。Q46已复用current `WaferTargetImplementationOpInterface`和actual-op probe闭合
+layout/compute joint assignment；Q49先完成complete-rank production cutover，Q48再把probe迁移到actual typed clones/current
+IR facts，并在同一任务中删除：
 
 - `WaferTargetImplementationOpInterface`及external models/registration；
 - `WaferTargetCapabilities`这层只有reciprocal/division两个默认true字段的constantized wrapper；

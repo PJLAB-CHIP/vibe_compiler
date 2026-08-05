@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-08-04
+更新时间：2026-08-05
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -29,22 +29,26 @@ Q42 + Q32.C -> Q41 compiler search scalability               [board-ready]
 Q42 + Q39 -> Q40 composed search and DTE overlap             [board-ready]
 Q15 + Q18 + Q35 -> Q44 PyTorch source board verticals        [board-ready]
 Q32 + Q37 -> Q46 layout movement elimination                 [board-ready]
-Q46 complete/paused -> Q47 target ABI retirement             [board-ready]
-Q46 + Q47 -> Q48 semantic superoptimization                  [later]
+Q46 compiler closure -> Q47 target ABI retirement            [board-ready]
+Q32 + Q38-Q41 + Q46/Q47 compiler closure
+  -> Q49 whole-rank tile-dataflow synthesis                  [doing]
+Q49 board-ready compiler cutover + Q47 compiler ABI closure
+  -> Q48 semantic superoptimization                          [later]
 Q45 compiler terminology and naming                           [later]
 ```
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q9 | `production-artifact-profiler` | `done` | Q32、Q6.B、configured board | 未插桩Primary TX stream launch-to-completion设备包络、分离的host diagnostics、Trace来源的五类NCC per-tile engine active ns/work-volume摘要、独立Direct-DTE cycles/raw activity、Count/Trace、逐次保留真实动态调用与rdcycle的16-tile timeline、exclusive语义成本与非加和Trace-only成本、final Instr静态work与硬件峰值下界对照、exact output、三文件专业UI和profile全树`0777`均闭合；不构造card-wide纯engine elapsed，静态cost不回灌ranking。Ranking feedback保留为后续独立门禁。 | 06、14-16；`tasks/archive/board-profiler.md` |
-| Q38 | `multi-engine-software-pipelining` | `done` | Q32、Q6.B、Q37 | complete-rank actual clone、真实fixed-slot multi-buffer、prologue/steady/epilogue、waitfinish normal form、V3 typed worker与Direct-DTE prepare/issue/exact wait-release、issue-time exact range hazard、package/no-card、TargetCall/SystemC、profiler和digest-bound qualification companion均闭合；worker0 rotating SPM FP16/BF16 RDMA+CT+WDMA普通production winner已经fresh板端exact correctness与matched资格。NoC-resident dataflow归Q39；全局choice组合与更广Direct-DTE/compute overlap归Q40。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
+| Q38 | `multi-engine-software-pipelining` | `done` | Q32、Q6.B、Q37 | complete-rank actual clone、真实fixed-slot multi-buffer、prologue/steady/epilogue、waitfinish normal form、current typed worker与Direct-DTE prepare/issue/exact wait-release、issue-time exact range hazard、package/no-card、TargetCall/SystemC、profiler和digest-bound qualification companion均闭合；worker0 rotating SPM FP16/BF16 RDMA+CT+WDMA普通production winner已经fresh板端exact correctness与matched资格。NoC-resident dataflow归Q39；全局choice组合与更广Direct-DTE/compute overlap归Q40。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
 | Q39 | `noc-resident-tile-dataflow` | `done` | Q38非板端Direct-DTE/fixed-slot合同闭合；Q38板端资格作为独立external gate | complete-rank NoC-resident candidate、静态profitability、package/no-card闭合；K-sharded `4096³`同源baseline/winner板端6/6 exact，winner profile保持16-rank exact并生成有效报告。高wait与未闭合overlap转交Q40，编译搜索耗时转交Q41。 | 02-13、16-17；`tasks/plans/noc-resident-tile-dataflow.md` |
 | Q43 | `compiler-collaboration-review-materials` | `done` | Q9、Q37-Q39完成证据 | 主汇报与同步/内存章节已合并为唯一168页PPTX/PDF：150页正文+A1–A18附录、168张独立主图、168份嵌入Notes和168张逐页PNG全部完成。可见正文使用逐页技术分析，speaker notes不再投影成“先讲/再看”式页面文案；116–132页覆盖worker、completion、cache publication与SPM/DDR mapping具体case。未重跑板端case，Q40/Q41保持`board-ready`。 | 01、06、16–17；`tasks/plans/vibe-compiler-collaboration-review.md` |
 | Q42 | `test-load-reduction` | `done` | 无 | 默认lit/unit/CTest和owner integration均只判直接合同；历史catalog、campaign、model-scale与重复package执行已退出默认入口，保留的source-to-package/no-card seam通过。 | 16；`tasks/plans/test-gate-scope-reduction.md` |
-| Q40 | `composed-choice-search-and-dte-overlap` | `board-ready` | Q39、Q42完成 | bounded whole-variant组合、V3 same-block Direct-DTE issue→FP16/BF16 CT/NE→exact wait结构witness、同tuple serialized baseline、16-rank replicated FP16 elementwise完整双package及fresh no-card已闭合；两包保持同source/cluster launch/transport ABI/binding/call inventory并以scheduler顺序区分。真实板端exact-output和matched A/B尚未执行，不得标`done`。 | 06、08-13、16；`tasks/plans/composed-choice-search-and-dte-overlap.md` |
-| Q41 | `compiler-search-scalability` | `board-ready` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 默认关闭的stage/pipeline/pass/analysis/candidate详细计时、active诊断、Markdown汇总、sharded低扰动聚合、symbolic movement descriptor及request-sharded finalization均已闭合；实际Llama-2 7B TP16 production compile为493.374秒，完整schema-v7 package与fresh no-card通过。当前真实热点已收敛到SPM planning、candidate commit、full-buffer proof和NoC tuple materialization，后续剪枝仍不得按shape/op/name恢复语义。真实板端exact-output及winner profile尚未执行，不得标`done`。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
+| Q40 | `composed-choice-search-and-dte-overlap` | `board-ready` | Q39、Q42完成 | bounded whole-variant组合、current same-block Direct-DTE issue→FP16/BF16 CT/NE→exact wait结构witness、同tuple serialized baseline、16-rank replicated FP16 elementwise完整双package及fresh no-card已闭合；两包保持同source/cluster launch/transport ABI/binding/call inventory并以scheduler顺序区分。真实板端exact-output和matched A/B尚未执行，不得标`done`。 | 06、08-13、16；`tasks/plans/composed-choice-search-and-dte-overlap.md` |
+| Q41 | `compiler-search-scalability` | `board-ready` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 默认关闭的stage/pipeline/pass/analysis/candidate详细计时、active诊断、Markdown汇总、sharded低扰动聚合、symbolic movement descriptor及request-sharded finalization均已闭合；实际Llama-2 7B TP16 production compile为493.374秒，完整schema-v7 package与fresh no-card通过。计时、bounded executor、RSS和diagnostics由Q49复用；pre-Q49独立optimization names在Q49 C6迁移为public `production`/`none` policy。后续剪枝仍不得按shape/op/name恢复语义。真实板端exact-output及winner profile尚未执行，不得标`done`。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
 | Q44 | `pytorch-source-board-verticals` | `board-ready` | Q15、Q18、Q35；Q41通用movement lowering与compile scalability | 集中的PyTorch source case、固定seed随机输入、case-owned dtype、同module/op eager参考结果、output-only capture及原dtype/shape `torch.testing`比较已经闭合；rank-one GEMM、`4096³` K-sharded GEMM/AllReduce和实际Llama-2 7B Megatron TP16均由真实PyTorch/XLA exporter完成production package与fresh no-card。Llama package为16-rank cluster prepare/main、每rank 18 slots及typed rank-row pointer ABI。三个case真实板端完整capture/eager comparison尚未执行，不得标`done`。 | 02、15-16；`tasks/plans/pytorch-source-board-verticals.md` |
 | Q46 | `layout-movement-elimination` | `board-ready` | Q32、Q37；复用Q41已闭合的compiler-side有界搜索与计时基础 | 唯一`MemLayout`事实源、exact unary relation motion与mutation barrier、typed layout PBQP/Top-4、implementation/layout actual recipe联合候选、fanout双版本共享、bitpacked blocked traversal、Tree AllReduce full-footprint及跨rank physical payload gate已闭合；FP16 `GEMM -> square -> GEMM`同源双package/fresh no-card通过，winner保持非layout call inventory并将gather/scatter从7降到4。真实板端exact output/guard和matched baseline/winner性能尚未执行，不得标`done`。 | 06-08、10-11、13-14、16-17；`tasks/plans/layout-movement-elimination.md` |
+| Q49 | `whole-rank-tile-dataflow-synthesis` | `doing` | Q32 actual-clone/relation/mechanism/exact-gate基础；Q38–Q40 execution/NoC/overlap机制；Q41计时、并发与配置基础；Q46/Q47 compiler-side current合同。Q40/Q41/Q46/Q47尚缺的板端外部门禁不阻塞本项施工 | 在complete-rank、pre-Instr structured SSA上以consumer-driven tile propagation联合选择tile/loop、share/recompute、唯一`MemLayout`、physical version、resident/spill、movement和collective relation；terminal Tile clone后才派生worker/slot/order并fresh重建有witness的`NCCJoin`，再运行SPM/DDR/all-rank/ABI exact gates。删除per-task先lower/placement/commit、task-return join、artifact-kind笛卡尔积和all-or-nothing resident decision owner。通用graph与Llama `(16, 16)`、read-only cached-attention、long prefill完成完整package/fresh no-card后为`board-ready`；真实板端matched correctness/performance后才能`done`。 | 01、06-13、16、18；`tasks/plans/whole-rank-tile-dataflow-synthesis.md` |
 
 ## Later / External Gates
 
@@ -59,9 +63,9 @@ Q45 compiler terminology and naming                           [later]
 | Q22.P | `target-model-timing-calibration` | `later` | Q32、Q22.C、validated PMU/timing environment | 校准LT/AT；没有RTL/vendor cycle证据不声明cycle accuracy。 | 16、17 |
 | Q32.T | `compiler-transform-control` | `later` | Q32、明确的external control-plane consumer | 复用现有rewrite/conversion；Transform IR不保存frontier、不替代all-rank coordinator。 | 01、05-08、10、16、18 |
 | Q45 | `compiler-terminology-and-naming` | `later` | Q41完成或暂停、明确独立迁移窗口 | 审计当前source、IR、analysis、transformation、conversion、diagnostic和设计文档中的长期命名；重点清理将执行范围、实现过程和临时产物混成概念的`rank-artifact-*`、`all-rank-*-synthesis`、`*-handoff`等命名。每个改名先确定pipeline contract与对应IR / analysis / transformation责任，不只换字符串，不改写archive历史。完成门禁是当前代码、文档、CLI/diagnostic与测试使用同一稳定术语，且名称能直接对应可验证的compiler对象。 | 01、18 |
-| Q47 | `target-abi-retirement` | `board-ready` | 用户明确将Q46后续验证与ABI收口合并推进 | TargetProfile和用户级profile选择已删除；current worker-aware TargetCall/CRT、runtime ABI与各artifact唯一current schema reader已经收口；LocalFence统一为typed NCCJoin；GEMM拒绝FP32，其余指令消费统一可编码dtype。完整source→package→model/no-card和实际Llama fresh compile已达到`board-ready`；fresh板端worker completion及普通/DTE路径通过后才能`done`。不包含SMT或superoptimizer。 | 11、14-17；`tasks/plans/target-abi-retirement.md` |
-| Q48 | `semantic-superoptimization` | `later` | Q46、Q47完成 | 从actual structured MLIR与current V3 typed Instr自动生成有界actual clones，以query-local SMT证明数学value及外部可观察memory/effect/completion等价，继续由现有exact gates、cost/Pareto owner选择；删除旧target implementation interface/materializer、重复numeric enums/status，不新增语义interface、sketch、rule registry或proof sidecar。current target-admitted deterministic typed surface形成exhaustive closure，FP16/BF16完整package/fresh no-card达到`board-ready`，fresh板端同源A/B通过后才能`done`。 | 05-08、10-11、16-18；`tasks/plans/semantic-superoptimization.md` |
-| Q38.W | `multi-worker-production-promotion` | `later` | V3 typed ABI、actual clone和host/model资格已闭合，且出现需要隔离等待域并可能受益的独立命令链 | 以configured-board matched correctness/performance证明非零worker相对worker0流水的明确收益后才允许normal production promotion；不得为使用worker1/2而拆分已能在worker0并行的流水。 | 08、11、14-17 |
+| Q47 | `target-abi-retirement` | `board-ready` | 用户明确将Q46后续验证与ABI收口合并推进 | TargetProfile和用户级profile选择已删除；current worker-aware TargetCall/CRT、runtime ABI与各artifact唯一current schema reader已经收口；LocalFence已删除，原compiler-derived ordinary completion sites统一使用typed NCCJoin；GEMM拒绝FP32，其余指令消费统一可编码dtype。完整source→package→model/no-card和实际Llama fresh compile已达到`board-ready`；fresh板端worker completion及普通/DTE路径通过后才能`done`。不包含SMT或superoptimizer。 | 11、14-17；`tasks/plans/target-abi-retirement.md` |
+| Q48 | `semantic-superoptimization` | `later` | Q49达到`board-ready`且C0–C6 compiler cutover完成；Q47 compiler ABI closure可消费final Instr/TargetCall | 从actual structured MLIR与current typed Instr自动生成有界actual clones，以query-local SMT证明数学value及外部可观察memory/effect/completion等价，继续由06唯一decision owner和现有exact gates选择；删除旧target implementation interface/materializer、重复numeric enums/status，不新增语义interface、sketch、rule registry或proof sidecar。current target-admitted deterministic typed surface形成exhaustive closure，FP16/BF16完整package/fresh no-card达到`board-ready`，fresh板端同源A/B通过后才能`done`。 | 05-08、10-11、16-18；`tasks/plans/semantic-superoptimization.md` |
+| Q38.W | `multi-worker-production-promotion` | `later` | current typed ABI、actual clone和host/model资格已闭合，且出现需要隔离等待域并可能受益的独立命令链 | 以configured-board matched correctness/performance证明非零worker相对worker0流水的明确收益后才允许normal production promotion；不得为使用worker1/2而拆分已能在worker0并行的流水。 | 08、11、14-17 |
 | Q3.6 | `crt-writeback-scalar` | `later` | 明确Count predicate及wrapper/target/model evidence | 独立闭合typed instruction、effect/completion、ABI/CRT、model和必要package readback。 | 11、14-17 |
 
 不在当前DAG中的model/distributed/executable dialect、MPMD/rank class、跨卡coherent variant、
@@ -111,7 +115,7 @@ WCRE/global registry、capability lease、跨model state migration、共享weigh
 | Q32.M | `physical-mechanism-choice-closure` | `done` | Recompute、LICM、numeric、residency、ready-order和communication choice闭合。 | `tasks/archive/physical-mechanism-choice-closure.md` |
 | Q32.S | `bounded-joint-physical-dataflow-selection` | `done` | Bounded actual-clone组合、whole-card Pareto和target-owned选择闭合。 | `tasks/archive/bounded-joint-physical-dataflow-selection.md` |
 | Q32.G | `physical-dataflow-production-cutover` | `done` | `wafer-compile`成为唯一production decision owner，旧旁路退役。 | `tasks/archive/physical-dataflow-production-cutover.md` |
-| Q32 | `physical-dataflow-synthesis` | `done` | Current implementation/relation/layout/storage/order/communication联合选择主线闭合。 | `tasks/archive/physical-dataflow-synthesis-completion-audit.md` |
+| Q32 | `physical-dataflow-synthesis` | `done` | MLIR-native actual-clone、implementation/relation/layout/storage/order/communication机制、bounded frontier与exact-gate基础闭合；完整rank在Instr前的联合composition与旧per-task物化退役由Q49负责。 | `tasks/archive/physical-dataflow-synthesis-completion-audit.md` |
 | Q32.C | `candidate-search-throughput` | `done` | Candidate search有界并发、parse复用和late-gate开销收口。 | `tasks/archive/whole-variant-search-throughput.md` |
 | Q32.N | `numeric-algebraic-extension` | `done` | Supported floating algebraic candidates、typed tolerance和整数负例闭合。 | `tasks/plans/numeric-algebraic-extension.md` |
 | Q36 | `topology-aware-collective-lowering` | `done` | Typed topology到Ring/ordered Tree lowering和correctness闭合。 | `tasks/archive/topology-aware-collective-lowering.md` |
@@ -128,6 +132,7 @@ WCRE/global registry、capability lease、跨model state migration、共享weigh
 
 - Q46实施计划：`tasks/plans/layout-movement-elimination.md`。
 - Q47 Target ABI退役计划：`tasks/plans/target-abi-retirement.md`。
+- Q49 whole-rank tile dataflow synthesis计划：`tasks/plans/whole-rank-tile-dataflow-synthesis.md`。
 - Q48语义驱动superoptimizer计划：`tasks/plans/semantic-superoptimization.md`。
 - 当前计划：`tasks/plans/noc-resident-tile-dataflow.md`与
   `tasks/plans/multi-engine-software-pipelining.md`分别记录Q39、Q38的configured-board external gate。

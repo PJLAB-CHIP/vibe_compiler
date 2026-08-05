@@ -1,9 +1,13 @@
 # Compiler Search Scalability
 
-状态：`board-ready`。typed optimization configuration、正式CLI、单轴source-to-package A/B、默认关闭的
+状态：`board-ready`。bounded search、production source-to-package、默认关闭的
 invocation-local详细编译计时、symbolic movement descriptor、模型规模ordinary/profile no-card及实际
-Llama-2 7B Megatron TP16 production package/no-card均已闭合。新增配置只约束哪些可选alternative进入
-candidate domain，不修改Q39 NoC-resident语义或Q40的Direct-DTE issue/wait合同。真实板端未运行。
+Llama-2 7B Megatron TP16 production package/no-card均已闭合。Q41曾用18个独立optimization names完成机制资格；
+它们是pre-Q49实现证据，不是终态public控制面。Q49 C6把decision owner与CLI收口为`production`/`none`两种policy，
+同时保留本文计时、bounded executor、RSS和diagnostics能力。真实板端未运行。
+
+下列pipeline contract只记录Q41已经闭合的计时、并发、descriptor与model-scale合同。Q49 C6未来控制面的说明单列在合同之后，
+不属于Q41完成门禁；在C6删除旧consumer前，旧独立names只算待迁移implementation，不可引用为长期public合同。
 
 ```text
 Pipeline position:
@@ -11,24 +15,20 @@ Pipeline position:
   verified rank programs、complete-rank current IR、typed candidate domain和ordinary/profile compile request。
 - Current stage responsibility:
   量化并优化candidate generation、attempt planning、analysis、late gate、clone/import/lowering和profile
-  capture construction，删除不改变candidate domain、winner或artifact的重复工作；同时把当前production
-  candidate owner中的可选语义优化机制收敛为typed、可组合的optimization configuration，使同一source、
-  target和launch可以选择production全集、全关baseline或任意显式子集；按显式请求观测stage、pipeline、pass、
+  capture construction，删除不改变candidate domain、winner或artifact的重复工作；按显式请求观测stage、pipeline、pass、
   analysis和candidate evaluation子阶段的wall/CPU时间，且长运行或超时时能看到仍在执行的边界；
   从typed logical relation和physical encoding直接构造RDMA、WDMA和TDMA/GS的多层loop descriptor，
   使host构造复杂度取决于rank、layout piece和最终command count，而不是logical element count。
 - Output artifact / IR:
-  由显式optimization configuration约束candidate domain后产生的accepted whole variant、package/profile
-  companion及包含canonical enabled/disabled set的稳定compile-time diagnostics。配置只决定允许生成哪些
-  alternative；最终选择仍由actual IR、exact gate和既有static policy完成。详细计时只产生invocation-local
+  保持既有candidate domain与winner语义的accepted whole variant、package/profile companion及稳定compile-time diagnostics。
+  最终选择仍由actual IR、exact gate和既有static policy完成。详细计时只产生invocation-local
   diagnostic event与汇总表，不成为IR、artifact、cache key或selection input；movement lowering
   输出只覆盖logical valid domain的typed instruction descriptor，不输出中间per-element segment列表或padding copy。
 - Downstream consumer:
   target/package/no-card/runtime、Q9 profiler和model-scale compile workflow。
 - User-level driver / named pipeline:
-  wafer-compile source-to-package production pipeline；`--optimization-preset`、
-  `--enable-optimization`和`--disable-optimization`共同构造typed configuration，`--profile`只请求同一
-  configuration winner的profile product；`--compile-timing`只打开详细计时诊断，默认关闭。
+  wafer-compile source-to-package production pipeline；`--profile`只请求同一winner的profile product；
+  `--compile-timing`只打开详细计时诊断，默认关闭。
 - Explicit non-goals:
   不把pass、测试case或catalog evidence key做成长期option；不允许关闭canonicalization、verifier、
   SPM/DDR placement、completion normalization、Direct-DTE acceptance、whole-card resource、target ABI或
@@ -38,9 +38,7 @@ Pipeline position:
   per-stage wall、peak RSS、candidate/attempt/late-gate/clone/lowering/capture计数完整；search work有显式上界；
   `--compile-timing`覆盖production named pipeline中的stage/pass/analysis及candidate evaluation子阶段，成功或
   失败均输出按累计wall time排序的汇总表，长运行时周期输出当前active边界；默认编译不输出详细计时；
-  production preset与此前default winner一致；none preset只保留fully gated conservative baseline；每个
-  public语义优化名都能独立enable/disable并可组合，unknown/duplicate/conflicting配置在编译前拒绝；至少一个
-  source-to-package A/B证明单轴关闭改变final target结构而source/launch/ABI保持一致；RDMA、WDMA、
+  source-to-package ordinary/profile证明winner target结构与source/launch/ABI身份一致；RDMA、WDMA、
   layout materialization、slice/insert、broadcast、transpose、reshape和transform-like TDMA的大shape回归证明
   descriptor数量与loop几何一致，Cx/NCx的dtype block、full/C0/folded tail和NCx per-N bank alignment均由
   统一encoding事实源推导，production路径不再按logical element枚举。M-sharded K=1024 case在
@@ -48,38 +46,25 @@ Pipeline position:
   exact-output和winner profile有效后完成。
 ```
 
-## Typed Optimization Configuration
+## Q49 Cutover 后的 Typed Optimization Policy（非Q41完成门禁）
 
-optimization configuration属于一次compiler invocation的typed orchestration input，不进入source IR，也不作为
-candidate attr、side table或selection cost。它只在各producer拥有的语义边界决定“这个alternative是否进入bounded
-candidate domain”：
-
-- source-expression：consumer-local recompute、loop-invariant code motion、algebraic reassociation、
-  reduction-tree balancing、algebraic distribution、algebraic factorization；
-- rank recipe：implementation selection、tile-search alternatives、scope composition、collective algorithm
-  selection、direct mapped boundary transfer、concurrent working-set selection；
-- accepted-rank sibling：full-buffer transfer elision、full-buffer residency、ready-order scheduling、
-  static fixed-slot buffering、disjoint worker placement；
-- all-rank sibling：NoC-resident dataflow。
-
-每个名字映射一个稳定的IR/alternative语义，不映射文件、pass或case。`production` preset启用全部当前支持项并保持
-既有默认行为；`none` preset关闭全部可选producer，但仍执行合法编译所必需的tiling、lowering、normalization、
-placement、binding、resource和ABI gate。显式enable/disable在preset之上应用，重复项、同项既enable又disable及未知
-名字全部拒绝，不按命令行先后覆盖。
+optimization policy属于一次compiler invocation的typed orchestration input，不进入source IR，也不作为candidate attr、side table
+或selection cost。`production`启用06统一owner的完整candidate domain；`none`只保留fully gated conservative baseline，仍执行合法
+编译所必需的tiling、lowering、normalization、placement、binding、resource和ABI gate。scope、layout、residency、NoC、worker等
+不再是public独立轴；需要固定实现的qualification使用compiler-private typed seam并重跑相同late gates。
 
 配置传播遵循单一typed value：
 
 ```text
 wafer-compile options
   -> CompilationOptions
-  -> tensor-program rank frontier
-  -> accepted-rank optional siblings
-  -> all-rank NoC optional siblings
+  -> whole-rank tile-dataflow decision owner
+  -> terminal Instr siblings
   -> unchanged whole-variant exact selection
 ```
 
-关闭producer只缩小候选域，不修改source，不让已有candidate变成“带disabled attr”的影子状态，也不绕过任何late gate。
-同一配置的ordinary和profile compile必须选择同一production artifact；对比工具以命令行的canonical配置、source
+`none`只缩小candidate domain，不修改source，不让candidate变成“带disabled attr”的影子状态，也不绕过任何late gate。
+同一policy的ordinary和profile compile必须选择同一production artifact；对比工具以canonical policy、source
 snapshot、target/launch和最终package结构共同建立A/B身份。
 
 ## 问题与边界
@@ -278,7 +263,7 @@ transport status及all-rank invocation preflight均通过，`board_execution: fa
 `board-ready`并使Q44的第三个PyTorch case达到board-ready；真实tensor capture/torch eager comparison仍须在
 configured board执行后才能标`done`。
 
-本轮typed configuration的fresh host证据包括：
+以下typed configuration条目是pre-Q49机制资格的fresh host历史证据；Q49 C6迁移后不再构成current public CLI合同：
 
 - layout hardening后201个physical relation、encoding、view/alias、memory planning、target/model相关unit与
   42个layout/mapped movement/SPM/DDR/target lit通过；16-rank M-sharded K=1024 ordinary/profile package再次

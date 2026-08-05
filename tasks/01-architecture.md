@@ -1,6 +1,7 @@
 # Wafer Compiler Stack Architecture
 
-状态：2026-07-27已同步当前single-card production baseline、topology-aware collective、board RuntimeProvider和
+状态：2026-08-05已同步complete-rank、pre-Instr tile-dataflow综合边界；2026-07-27已同步当前single-card
+production baseline、topology-aware collective、board RuntimeProvider和
 profile-scoped硬件能力边界。本文是compiler、target artifact、package/runtime与target-model分支的主架构入口，
 只拥有稳定pipeline spine、artifact DAG、跨层不变量和owner索引。动态状态、blocked-by与完成记录只看
 `tasks/progress.md`；专题IR、ABI、算法和验证细节由对应编号文档拥有。
@@ -48,8 +49,9 @@ Pipeline position:
 - Current stage responsibility:
   在transaction-owned source snapshot上完成frontend admission；调用pinned XLA helper完成Shardy/XLA SPMD并重新验证输出；
   normalization到rank-local Linalg/Tensor/SCF structured program，并形成经过显式required normalization的
-  optimizer-ready structured IR；为每rank在隔离clone中应用有限MLIR-native rewrite并物化完整task/dataflow与
-  instruction program，闭合SPM/DDR/completion/transport/target legality并原子形成ExecutableBundle；从同一bundle只做一次
+  optimizer-ready structured IR；为每rank在隔离complete-rank clone中以consumer-driven方式联合物化完整selected
+  tile/dataflow IR，只有terminal candidates才统一lower instruction并派生worker/slot/completion，随后闭合
+  SPM/DDR/transport/target legality并原子形成ExecutableBundle；从同一bundle只做一次
   target conversion形成TargetLLVMModuleBundle，分支给repo-owned CModel与device link；device-linked artifacts再与
   ExecutableBundle一起形成typed manifest/package并原子发布。
 - Output artifact / IR:
@@ -66,10 +68,12 @@ Pipeline position:
   runtime不重新做SPMD、candidate、layout、memory或transport planning；package不复制instruction/search schedule；本架构不
   承诺dynamic-shape/online scheduling、MPMD、多卡、persistent state/KV、streaming weight、vendor-exact packet或cycle accuracy。
 - Completion gate:
-  当前v1 production artifacts、rank-count=1/16、atomic publication、typed package/no-card、repo-owned CModel和
+  current production artifacts、rank-count=1/16、atomic publication、typed package/no-card、repo-owned CModel和
   configured board RuntimeProvider链保持有效。implementation、tile/relation、encoding/view/route、storage/residency、
   fixed-Cx/NCx absorption、share-vs-recompute、static loop-invariant hoist、supported integer/floating algebra、
-  buffering/order及Direct/Ring/ordered-Tree communication均由真实production mutation表达，经过共同frontier、
+  buffering/order以及collective tile/payload relation均在complete-rank、pre-Instr actual clones中由真实production
+  mutation表达；Direct/Ring/ordered-Tree参数只在terminal Tile→Instr transition中生成actual sibling并立即销毁；terminal
+  Instr siblings在worker/order确定后fresh重建completion，随后经过共同frontier、
   rank/whole-variant exact gate和默认driver原子提交；required closure的mutation保留在committed winner。
   winner capability projection只在真实package/runtime consumer需要时派生，model/board admission不参与candidate选择。
   新的profiling证据或multi-engine software pipeline只有通过自己的production vertical后才能扩展该基线。
@@ -126,7 +130,7 @@ manifest的move-only lifetime/container artifact，不是另一份program或pack
 | Execution configuration | factory-only `ExecutionConfig` | 显式1/16 rank domain；current target identity由compiler固定提供 | tensor sharding、topology IR、planner policy |
 | Topology/SPMD | `wafer.target.topology`、`wafer.execution.mesh`、post-SPMD StableHLO | compiler内部single-card endpoint与logical rank domain、rank-local partition | candidate、SPM/DDR、physical transport |
 | Structured tensor program | Linalg/Tensor/SCF/Arith/Math与typed logical collective | rank-local数学语义、iterator/indexing relation、effect/control及native numeric semantics/permissions | target implementation、physical encoding、offset |
-| Candidate analysis | transformation-local rewrite scopes、IndexRelation、complete clones与final static cost | 少量implementation/tile/encoding/route/residency alternatives；每个选择立即物化进clone | accepted事实、package字段、shadow schedule、长期side table |
+| Candidate analysis | transformation-local component/edge legality、IndexRelation、complete-rank actual clones、structured bounds与terminal final cost | consumer-driven tile/loop/layout/route/residency alternatives；每个frontier survivor的选择已物化进clone；worker/join/critical-path exact cost只在terminal Instr后Known | accepted事实、package字段、shadow schedule、长期side table |
 | Selected tile/dataflow IR（stage-internal） | `wafer.tile.region` fragments、Wafer memref/view、typed compute/movement/collective/event | 完整static traversal、selected implementation与physical versions；必须继续lower，不是accepted artifact | rejected candidates、独立arena、runtime launch |
 | Instruction/memory program | `wafer.instr.*`、accepted SPM/DDR offsets、completion/Direct DTE | target-abstract invocation、physical geometry、range/lifetime/effect | raw host handle、package schedule |
 | Executable bundle | move-only `RankExecutable[]`/`ExecutableBundle` | all-and-only rank modules、entry、program bindings、completion、transport、atomic acceptance | target object、runtime session、rejected choice |
@@ -151,12 +155,13 @@ OpInterface读取当前IR语义，跨value关系由可失效、可重算的`Inde
 1. source op interface/external model给出有界typed implementation参数；encoding行为属于attr/type interface；跨两端buffer的
    transfer route属于普通analysis/helper；
 2. PatternRewriter在隔离complete-rank clone中立即应用relation/view、dependent tiling/fusion、implementation、encoding/route、
-   physical-version reuse、movement/resident-cut、buffering/order或collective expansion；applied后旧relation/alias/effect/
+   physical-version reuse、movement/resident-cut、buffering/order或collective tile/payload relation selection；Direct/Ring/Tree参数只在
+   terminal Tile→Instr transition中逐点展开成actual Instr sibling并立即销毁；applied后旧relation/alias/effect/
    lifetime/resource/cost全部失效；
-3. generation worklist保留无owner-produced offset/binding的actual clone；独立rank evaluation clone通过DialectConversion
-   变成typed tile/instruction IR，不从side table读取隐含决策；
-4. rank evaluation只运行whole-rank SPM、descriptor/geometry和rank-local completion/resource gate；通过后进入rank frontier且
-   不再接受rewrite；
+3. generation worklist保留无owner-produced offset/binding的complete-rank actual Tile clones；只有terminal Tile survivors
+   才通过一次DialectConversion变成typed Instr IR，不接受standalone task module或side-table隐含决策；
+4. terminal Instr parent派生worker/fixed-slot siblings，从current effects/event/ranges fresh重建completion，再运行whole-rank
+   SPM、descriptor/geometry和rank-local resource gate；通过后进入rank frontier且不再接受structured rewrite；
 5. existing coordinator在complete rank tuple的独立variant clone上运行whole-variant DDR、post-memory transport/all-rank
    resource、ABI/package及final static cost gate，只在all-and-only ranks通过后选择并提交bundle。
 
@@ -177,12 +182,12 @@ baseline；driver/process cancellation在任意时点终止整个transaction且�
   fixed-capacity result决定legality；accepted placement的实际high-water必须进入final static cost。06可从current IR的capacity/
   lifetime/descriptor压力产生有界candidate邻居，并对selection-sensitive shortlist重复同一pure packing query收紧quality区间；
   allocator不产生、排序或修改implementation/residency choice，也不发布repair/proof协议。
-- async read/write resource必须活到typed completion；source order、同地址或local fence不能替代未证明的engine/DTE completion。
+- async read/write resource必须活到typed completion；source order、同地址或block/region边界不能替代未证明的engine/DTE completion。
 - logical collective先保留数学/mesh语义；Direct DTE只有all-rank peer/message/resource/receiver-offset/status合同闭合后才进入
   accepted instruction program。
 - Direct、Ring和ordered-Tree只作为complete-rank clone上的typed rewrite参数；Ring cycle和Tree edge/root从current
-  topology/placement推导。accepted IR只保留展开后的p2p、local work、token/wait/fence，不保存算法名或通信sidecar。
-- `wafer.tile.region`只是structured task/traversal fragment。跨region resident buffer与event通过SSA/structured control flow传递，
+  topology/placement推导。accepted IR只保留展开后的p2p、local work、token/wait/typed completion，不保存算法名或通信sidecar。
+- `wafer.tile.region`只是structured traversal container。跨region resident buffer与event通过SSA/structured control flow传递，
   region边界不自动切DDR、分配arena或提交candidate。
 
 ## 7. Target Conversion 与原子发布
@@ -191,7 +196,7 @@ target conversion只消费已经accepted、memory-planned的完整rank instructi
 
 - 在原SCF/CF/function控制流位置lower instruction leaf；
 - 在module clone上执行正式dialect conversion，失败保持source byte-identical；
-- 从typed profile registry解析target identity、Kernel Runtime ABI、format和exact call signature；
+- 从compiler-fixed current target identity、Kernel Runtime ABI、format和唯一call registry解析exact signature；
 - 在target字段写入前闭合physical geometry、address、alignment和integer narrowing；
 - 每rank只翻译一次，并让host CModel与device link共享同一`TargetLLVMModuleBundle`；
 - device link、symbol/entry/format/digest/all-rank readback全部成功后才形成`TargetArtifactBundle`。
@@ -262,7 +267,7 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | topology/execution mesh | 04 |
 | local structured tensor normalization与collective handoff | 05 |
 | physical-dataflow synthesis、bounded candidate selection与all-rank commit | 06 |
-| selected tile-region/task/dataflow IR materialization | 07 |
+| selected tile-region/dataflow IR materialization | 07 |
 | physical encoding attr/type语义、view、transfer realizability analysis与descriptor cover | 08 |
 | SPM lifetime、allocation与accepted offsets | 09 |
 | source implementation OpInterface/external model与selected compute/movement IR | 10 |

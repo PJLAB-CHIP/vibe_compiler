@@ -11,8 +11,8 @@ encoding 和 instruction legality 分别由其真实 owner 维护，不再由一
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  已完成 target-abstract 选择、TileRegion 到 Instr 转换、SPM/DDR planning、worker placement、completion
-  normalization 和 final rank verification 的 typed Instr IR。
+  已完成target-abstract选择、TileRegion到canonical Instr转换、worker/slot/ready-order、fresh completion、
+  SPM/DDR planning、post-memory transport/resource与final rank/whole-variant verification的selected typed Instr IR。
 - Current stage responsibility:
   按唯一 current TargetCall/CRT ABI 将 target-admitted Instr 转成 verified Target LLVM；format owner验证
   dtype 可编码性，instruction owner验证本指令的附加限制，artifact/runtime owner只接受当前 wire schema。
@@ -58,8 +58,10 @@ runtime API 不再接收一个恒定且无法改变行为的 target-profile 参�
 - 删除 legacy ordinary descriptor、CRT compatibility wrapper、header declaration、symbol checker row和测试；
   current worker-aware symbol的外部 spelling 保持 ABI 实际值，内部 builtin 使用稳定语义名。
 - 删除 `TargetCallProfileAvailability`、descriptor availability 字段和 lookup 的 profile 分支。
-- 删除 `instr.local_fence`、`TargetCallBuiltin::LocalFence` 和 `wafer_tx81_local_fence`；所有 producer 使用
-  `instr.ncc_join participants=[worker0]`，decoder/model/profiler只保留 typed participant join。
+- 删除 `instr.local_fence`、`TargetCallBuiltin::LocalFence` 和 `wafer_tx81_local_fence`；原先产生普通NCC completion的
+  compiler sites统一使用`instr.ncc_join participants=[worker0]`，decoder/model/profiler只保留typed participant join。
+  这些join始终是compiler-derived completion artifact，不承载source fence身份；source-observable ordering由structured
+  control-flow、SSA event/token与typed effects保存，Q49可据此删除并fresh重建全部join。
 - registry 只包含 current ordinary calls、NCC join 和 Direct-DTE lifecycle calls；测试锁定 exact
   symbol/signature/semantic 序列，不再按旧/new prefix 形成两套表。
 

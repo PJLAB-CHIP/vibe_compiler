@@ -1,11 +1,12 @@
 # Wafer Physical Realization：MLIR-native Encoding、Relation 与 Transfer
 
 状态：本文定义 physical realization 的终态边界；Q32.R已落地current encoding interface、relation/transfer
-proof和resident纵向，Q32.V已闭合mapped target纵向，Q32.M继续把这些mechanism接入共同candidate owner。
+proof和resident纵向，Q32.V已闭合mapped target纵向，Q46已闭合relation-guided layout movement机制；Q49把这些
+mechanism迁入complete-rank、pre-Instr共同candidate owner。
 实现状态只看`tasks/progress.md`。
 
-Q46（当前`next`）复用本文件现有relation、encoding、realizability和invalid-lane owner，实现跨op relation传播与联合
-physical-version选择；它不改变这些接口的事实边界，也不增加target identity参数。
+Q49复用本文件现有relation、encoding、realizability和invalid-lane owner，在完整rank selected Tile clone上实现跨op
+relation传播与联合physical-version选择；它不改变这些接口的事实边界，也不增加target identity参数。
 
 本文不建立独立 layout planner，也不建立 encoding/route 查询层。implementation、tile、physical
 version、residency、spill 和执行顺序的联合选择归 `tasks/06-physical-dataflow-synthesis.md`；accepted
@@ -79,7 +80,8 @@ Pipeline position:
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  rank-local isolated clone，以及candidate generator当前准备尝试的 implementation/tile/encoding/route strategy。
+  已形成完整rank selected tile-dataflow的isolated clone，以及candidate generator当前准备尝试的
+  implementation/tile/encoding/route transition。
   strategy 只是调用哪组 rewrite 的栈上控制信息；任何已应用决定都必须立即出现在 clone IR 中。
 - Current stage responsibility:
   使用 PatternRewriter、IRMapping 和需要时的 DialectConversion，在 clone 中创建 typed allocation/view、
@@ -89,8 +91,9 @@ Pipeline position:
   自包含的 candidate clone。route 由 IR 形态和必要 typed fields 唯一表达；clone 外不保留与它并行的
   selected physical-version、descriptor list 或重复 schedule。
 - Downstream consumer:
-  whole-rank SPM planning、whole-variant DDR planning、event/transport binding、tile-to-instruction
-  DialectConversion、ABI/artifact preflight 和 target conversion。
+  complete-rank Tile→Instr DialectConversion、worker/fixed-slot/ready-order sibling、compiler-derived completion fresh
+  reconstruction、whole-rank SPM planning、whole-variant DDR planning、post-memory transport/resource binding、
+  ABI/artifact preflight和target conversion。
 - User-level driver / named pipeline:
   与 relation/realizability analysis 相同，由 production named pipeline 驱动。
 - Explicit non-goals:
@@ -137,10 +140,10 @@ Pipeline position:
   verifier-legal 标准 view 表达，仍有语义作用的 movement 保持显式；不新增 relation attr、proof
   sidecar、route id 或 shadow allocation plan。
 - Downstream consumer:
-  fresh whole-rank completion normalization/verifier；canonical/unplaced current Instr先从SSA/effects/ranges
-  原子派生typed worker sibling并fresh重建minimum joins，再在保留worker assignment的siblings上派生
-  fixed-slot；随后进入whole-rank lifetime/SPM fixed-capacity planning、whole-variant DDR/Direct-DTE/resource、
-  fresh final-IR cost和target lowering。
+  typed worker/fixed-slot/ready-order sibling derivation与fresh whole-rank completion reconstruction/verifier；canonical/unplaced
+  current Instr从SSA/effects/ranges原子派生siblings，删除全部compiler-derived`wafer.instr.ncc_join`并从current facts
+  fresh重建fixed-frontier latest-necessary completion；随后进入whole-rank lifetime/SPM fixed-capacity planning、whole-variant DDR、
+  post-memory Direct-DTE binding/all-rank resource、fresh final-IR cost和target lowering。
 - User-level driver / named pipeline:
   现有 wafer-compile source-to-bundle production pipeline；局部测试调用同一 transformation library，
   不增加用户开关、operator-specific mode 或手工 pass 协议。
@@ -255,8 +258,9 @@ AnalysisManager 自动清理，因此首版宁可重算，也不能复用可能�
 4. relation组合为identity时删除相关view，单root非identity但physical access等价时形成metadata view，否则把每个source
    root的composed relation交给movement realization；concat保持per-input `staticConcatPiece`并证明pieces互斥且full-cover，
    只能合并为写同一destination的compound movement，不能成为跨root alias；
-5. effect、unknown alias、不可表达的control-flow join、非不变loop-carried relation、checked overflow或任一proof/worklist
-   预算耗尽均停止该component传播并保留baseline。
+5. exact relation可通过`tile.region` operand/result、yield和受支持SCF SSA继续组合；container boundary本身不停止传播。
+   effect、unknown alias、不可表达的control-flow join、非不变loop-carried relation、checked overflow或任一proof/worklist
+   预算耗尽只停止对应edge/dimension的传播并保留显式movement baseline，不把整个周围图误切为DDR component。
 
 传播状态只活在一次candidate proposal/materialization调用中。rewrite成功后只保留重索引后的typed op、standard view或
 explicit movement IR；不得保存coordinate-frame attr、VirtualTensor、relation graph或跨pass cache。
@@ -452,7 +456,7 @@ metadata view 必须证明没有 real data movement。给定 source view `S`、d
 - writable donation 下 source 在 copy 后没有独立观察或未完成异步访问，destination 的写不会破坏
   snapshot 语义；
 - Direct DTE buffer access 延长到 exact wait；storage rewrite后先从fresh current IR重建canonical completion，
-  独立post-Instr worker sibling再以actual worker attrs和fresh minimum joins建立typed worker DAG。已有nonzero
+  post-Instr worker sibling再以actual worker attrs进入统一latest-necessary completion reconstruction。已有nonzero
   assignment不原地重写；unknown escape、unsupported control flow或不能闭合的completion一律保留copy。
 - 只可沿保持base address的`memref.cast`、static collapse/expand、zero-offset subview/reinterpret/view
   provenance回溯compiler-owned root；dynamic或非零offset以及其它无法恢复exact transfer source的view
@@ -547,7 +551,10 @@ wafer.tile.store %spm_view into %ddr_view
 ```
 
 op 在两端 typed view 所定义的 logical coordinates 上工作，不隐式创建 storage。identity、slice、
-permutation 或 piecewise relation 由标准 view chain 和 SSA 表达；不能把 `IndexRelation`、descriptor list 或
+permutation 或 piecewise relation 由标准 view chain 和 SSA 表达；pure view/permutation chain可以与consumer indexing
+semantics组合后驱动mapped load，不要求先物化完整logical transpose。当前mapped descriptor仍必须由concrete
+TransferRealizability证明；例如transpose relation优先被oriented GEMM吸收，再对effect-proven read-only、原始逻辑shape的
+weight使用exact composed Tensor DDR mapped transfer，而不是假定DMA能表达任意transpose或identity DMA。不能把 `IndexRelation`、descriptor list 或
 planner trace 附到 op 上。
 
 因此合法路径可以直接是：
@@ -745,6 +752,9 @@ encoding、改变已经证明相同的logical-to-physical map、改route、插pr
 spill/buffering/order。允许删除physical-map等价且consumer可直接接受source encoding的冗余destination
 materialization；需要其它encoding或route变化时，必须从另一个isolated clone重新尝试并通过完整gates。
 
+cleanup只处理已经物化的精确冗余，不能成为producer-consumer fusion、materialization cut、resident edge或completion
+placement的主决策者。
+
 跨多个pure op移动view relation或选择新的conversion cut只由06的joint-assignment producer在独立clone中执行；本节cleanup
 不能通过descriptor archaeology或局部op顺序恢复该全图选择。
 
@@ -891,5 +901,5 @@ memory/effect/completion差异，并通过本文现有relation结果施加已证
 
 每个accepted source/Instr clone都使旧relation、alias和physical realization analysis失效并fresh重算。SAT、unknown、
 timeout或relation无法表达时只丢弃optimized clone；不能把solver当作descriptor、invalid-lane、capacity或target legality
-fallback。Q46现有layout assignment/probe先按其独立计划闭合，Q48随后只迁移输入并删除旧implementation抽象，不改写
+fallback。Q46 compiler-side layout assignment/probe已经闭合；Q49完成whole-rank cutover后，Q48只迁移输入并删除旧implementation抽象，不改写
 本文physical relation合同。

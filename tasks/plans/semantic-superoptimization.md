@@ -6,9 +6,10 @@
 候选与baseline等价，再把通过证明的actual clone交给既有cost/Pareto owner。它不照搬论文中的case、IR或
 目标ISA，也不为Wafer新增一套语义接口、规则表或候选sidecar。
 
-本任务启动前必须完成已排队的`layout-movement-elimination`和`target-abi-retirement`。前者先闭合actual-op
-probe/physical assignment证据，后者先把目标面收口到单一V3；本任务随后迁移并删除旧implementation interface，
-不能一边扩展旧接口一边建立新选择器。
+本任务启动前必须由`whole-rank-tile-dataflow-synthesis`达到`board-ready`并完成C0–C6 compiler cutover，同时
+`target-abi-retirement`完成compiler ABI closure。前者提供唯一complete-rank actual-clone decision owner，后者让目标面
+收口到单一current ABI；本任务只把证明通过的source clone交给该owner，并让target synthesis消费final Instr/TargetCall，
+随后迁移删除旧implementation interface，不能一边扩展旧接口一边建立新选择器。
 
 ## Pipeline Contracts
 
@@ -26,9 +27,9 @@ Pipeline position:
   baseline及至多现有source cap允许的verifier-clean structured MLIR clones；不携带proof、rule、solver AST、
   candidate metadata或新的semantic IR。
 - Downstream consumer:
-  现有physical-dataflow candidate generation、rank evaluation、whole-variant exact gate和Pareto/static policy。
+  06唯一complete-rank physical-dataflow decision owner、whole-variant exact gates和Pareto/static policy。
 - User-level driver / named pipeline:
-  现有wafer-compile production optimization pipeline和OptimizationConfig；wafer-opt只作定向IR replay。
+  wafer-compile production pipeline的typed `production`/`none` policy；wafer-opt只作定向IR replay。
 - Explicit non-goals:
   不建全图e-graph、νGraph、rewrite-rule registry、ValueSemanticEquivalence interface、proof certificate或
   exporter-shard内solver；不把单个代数case固化成协议。
@@ -42,38 +43,40 @@ Pipeline position:
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  verified、target-abstract的connected tile-region dataflow slice，显式V3 target facts，以及baseline
-  TileRegion到Instr conversion可生成的typed Instr IR。
+  terminal complete-rank canonical/unplaced Instr actual clone、compiler-fixed current target facts，以及从current clone
+  SSA/effect边界即时派生的query-local connected replacement window。window不是独立artifact或可提交slice。
 - Current stage responsibility:
   从canonical Instr ODS/op/enums、family-owned typed constructor/semantic adapters和current verifier/preflight构造
-  有界actual Instr序列，证明其外部可观察value、memory、effect和completion边界与baseline slice等价，并在
-  SPM planning前执行一次局部Instr fusion。
+  有界actual replacement序列，证明其外部可观察value、memory、effect和completion边界与baseline window等价；每个
+  replacement直接rewrite到一份完整complete-rank canonical/unplaced Instr sibling中，query/proposal随即销毁。
 - Output artifact / IR:
-  baseline及verifier-clean的actual Instr clones；每个clone重新进入liveness、SPM/DDR、worker、completion、
-  preflight和target lowering，不保存sketch或solver residue。
+  baseline及verifier-clean的complete-rank canonical/unplaced actual Instr siblings；每个sibling按worker/slot/ready-order、
+  fresh completion、lifetime/SPM、whole-variant DDR、post-memory transport/resource、target preflight、final recost/
+  whole-variant selection和atomic commit顺序进入06的terminal gates；只有winner随后进入target module/package publication。
+  不保存slice、sketch或solver residue。
 - Downstream consumer:
   现有rank/whole-variant candidate owner、memory planning、Target LLVM/package、TargetModel/no-card和板端执行。
 - User-level driver / named pipeline:
-  同一wafer-compile production pipeline中的instruction-synthesis optimization axis。
+  同一wafer-compile production pipeline的typed `production`/`none` policy；没有public instruction-synthesis axis。
 - Explicit non-goals:
   不改变Target ABI，不从TargetCall symbol恢复ISA语义，不合成DTE/NCC协议，不优化随机语义，不宣称覆盖
   当前typed compiler surface之外的硬件ISA。
 - Completion gate:
-  current V3 target-admitted deterministic typed Instr surface全部被exhaustive分类并具有可执行proof adapter或
+  current target-admitted deterministic typed Instr surface全部被exhaustive分类并具有可执行proof adapter或
   明确boundary/rejection；通过的actual clones完整通过下游并形成package/no-card/board纵向。
 ```
 
 ## 1. 对外控制面收口
 
-当前实现仍有18个`OptimizationKind`，本节是完成后的目标：
+Q49 C6完成后，public控制面只保留`OptimizationConfig::production()`与`OptimizationConfig::none()`两种typed policy：
 
-- 保留`OptimizationConfig`、`production()`、`none()`和逐项enable/disable。
-- 将`algebraic-reassociation`、`reduction-tree-balancing`、`algebraic-distribution`、
-  `algebraic-factorization`合并为`operator-propagation`。
-- 将`implementation-selection`一对一替换为`instruction-synthesis`。
-- 最终为15个axis；production启用全部，none全部关闭。五个旧spelling在迁移完成后直接报unknown，不保留alias。
+- `production`启用包含本任务候选生成在内的唯一完整优化pipeline；`none`只保留fully gated conservative baseline。
+- 不恢复逐项enable/disable、`operator-propagation`、`instruction-synthesis`或其它public axis/spelling；pre-Q49的18个
+  `OptimizationKind`只属历史实现证据，继续在parse/compile前拒绝。
+- compiler-private qualification seam可在定向测试中请求一个typed candidate family，但不进入public CLI、source IR、
+  candidate attr或artifact schema，也不形成第二个decision owner。
 - 不新增public `SearchBudget`、proof mode、float tolerance、explore preset或第二个selector。局部synthesis bound
-  是实现内hard cap，最终选择仍归现有candidate owner。
+  是实现内hard cap，最终选择仍归06唯一candidate owner。
 
 ## 2. 删除旧 Implementation 抽象而不造替代品
 
@@ -170,7 +173,7 @@ Pipeline position:
 - canonical typed Instr ODS/op classes和Instr enums只生成universe与exhaustive dispatch；它们不被宣称能推导operand或
   attribute。每个family在既有instruction owner内提供唯一私有typed semantic/constructor adapter，enum处理使用无
   `default`的switch或`std::visit` closure，使新增值在编译/closure test中暴露；这不是新的OpInterface或registry。
-- current V3 TargetCall registry只在最后验证可发射性；112个descriptor、symbol suffix和sparse ABI ordinal均不作为
+- current TargetCall registry只在最后验证可发射性；112个descriptor、symbol suffix和sparse ABI ordinal均不作为
   语义或候选生成源，也不建立手写“支持opcode列表”。
 - adapter的有限参数域只能从baseline slice与current target facts生成：value operands绑定slice boundary或较早合成结果；
   destinations绑定外部observable destination或有界fresh temporary；shape/range/layout从bound values与`IndexRelation`
@@ -190,7 +193,7 @@ closure test遍历所有canonical enum/op/`TargetTransactionPayload` variant；�
 3. `boundary`：结束local slice，由现有pipeline处理；
 4. `verifier-rejected`：current target并不接纳该实例，保存权威拒绝原因。
 
-目标覆盖不是八个示例op，而是current V3 target-admitted typed surface：
+目标覆盖不是八个示例op，而是current target-admitted typed surface：
 
 - 35个`InstrElementwiseKind`、4个`InstrReduceKind`、36个`InstrConvertKind`；缺参数的ExpLp、SatRelu、
   LeakyRelu实例保持verifier-rejected，不从grammar静默消失；
@@ -235,12 +238,13 @@ current target-admitted deterministic family在Q48完成时不能停留在“未
 ## 7. Search、Selection 与 Failure
 
 - baseline始终独立保留并先通过现有exact gates。SMT只决定候选是否有资格进入frontier，不提供cost、winner或硬件收益。
-- 继续使用现有全局边界：source clone 16、optimized rank evaluation 96、general rank frontier 256；加reserved baseline、
-  fixed-slot和worker siblings后的aggregate frontier上界273；whole attempt上界153；whole Pareto 16。
-- 不在本计划复制或改变Q41 request sharding、whole-variant coordinator和target late-gate ownership。新增的局部3-issue/
-  depth-1 bound与这些现有上界叠加。
-- 每个accepted clone重新计算IndexRelation、liveness、physical realization、SPM/DDR、worker、completion、target preflight
-  和cost；proof result不授权跳过任何gate。
+- 全局expanded-state、frontier、terminal-lowering与whole-variant attempt hard caps只由06/Q49 current budget owner提供；
+  pre-Q49的rank frontier 273、whole attempt 153等数值只属历史实现证据，本任务不冻结或复制。新增局部3-issue/depth-1
+  bound必须在current全局预算内计数，budget exhaustion稳定保留baseline。
+- 不在本计划复制或改变Q41 request sharding、Q49 whole-variant coordinator和target late-gate ownership。
+- 每个accepted complete-rank canonical/unplaced Instr sibling fresh重算relation/physical facts，再按worker/slot/ready-order、
+  fresh completion、liveness/SPM、whole-variant DDR、post-memory transport/resource、target preflight、final cost与whole-variant
+  gates重放；proof result不授权跳过或重排任何gate。
 - board/TargetModel结果不反馈compile-time selection。性能只由现有final-IR static policy选择；板端只资格化正确性与收益。
 
 ## 8. 实施 Checkpoints
@@ -261,13 +265,14 @@ current target-admitted deterministic family在Q48完成时不能停留在“未
 - source property：generic chain/diamond/fanout、effect/control boundary，以及reassociation、distribution/factorization、
   contraction和reduction tree witnesses；证明生产实现没有case matcher，并逐项命中4-op/16-node/depth-6/3-cut/
   256-expansion/16-clone hard-cap回退；
-- closure：遍历全部Instr enums、op families和V3 target transaction variants，每项exact/opaque/boundary/rejected唯一，
+- closure：遍历全部Instr enums、op families和current target transaction variants，每项exact/opaque/boundary/rejected唯一，
   新增值未分类时build/test失败；
 - differential：在有界整数/Bool/Real样本和memory states上对比symbolic adapter与concrete TargetModel/formal evaluator；
 - target witnesses：oriented GEMM、elementwise/reduce/convert、DMA/layout fusion、GatherScatter elimination、Bit2FP和
   MaskMove旧destination状态；这些只是测试参数，不是grammar whitelist；
-- integration：SAT/unknown/timeout/cap时baseline回退；source variants只生成一次；export shards无Z3；所有actual clones
-  重跑memory/worker/completion/preflight并进入source→package/fresh no-card；
+- integration：SAT/unknown/timeout/cap时baseline回退；source variants只生成一次；export shards无Z3；所有actual siblings
+  按worker/slot/order→fresh completion/liveness→SPM→DDR→post-memory transport/resource→preflight/final-cost顺序重放并进入
+  source→package/fresh no-card；
 - board：默认FP16/BF16，同源baseline/winner串行A/B，按现有正常数值容差比较并校验guard、profile、completion和
   lifecycle。F32只用于明确的格式/转换边界。
 

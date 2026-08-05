@@ -373,7 +373,7 @@ Pipeline position:
   rank-one和16-rank current source均发布manifest/attestation digest一致的完整双目录；16-rank case还必须
   具有Direct-DTE package transport、每rank非零send/recv token及all-and-only exact waits，并由同一retained
   target LLVM通过SystemC完整CPU expected。Q39组合资格已经从final accepted IR同时证明actual nonzero
-  worker attrs、fresh minimum joins、worker-preserving fixed-slot rotation和Direct-DTE，并通过同源
+  worker attrs、fixed-frontier fresh latest-necessary joins、worker-preserving fixed-slot rotation和Direct-DTE，并通过同源
   SystemC、package及no-card纵向；不由独立passing artifacts或metadata拼接代签。tamper、unknown field、
   stale digest、非法SPM range/rotation、
   token/wait缺口、已有目标或companion late failure都不留下partial package/sibling。

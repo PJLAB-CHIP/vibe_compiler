@@ -8,9 +8,9 @@ exchange、跨卡 route和raw non-unicast DTE仍是独立扩展，不能反向�
 intermediate、partial或output tile的NoC-resident peer movement是独立的physical-dataflow来源；它复用本层
 Direct-DTE instruction与acceptance合同，但不伪装成logical collective。
 
-Q46设计允许collective actual clone直接复用已选Tensor/NTensor/Cx/NCx physical version；layout仍由06联合选择，
-本层只从typed buffer、physical access、local reduction和all-rank matching证明通信实现是否合法。该扩展当前为`next`，
-不会反写为Q36现有完成证据。
+Q46已允许collective actual clone直接复用已选Tensor/NTensor/Cx/NCx physical version；layout仍由06联合选择，
+本层只从typed buffer、physical access、local reduction和all-rank matching证明通信实现是否合法。Q49把这些mechanics
+迁入complete-rank、pre-Instr共同candidate owner，不改写Q36/Q46历史证据。
 
 本文的核心原则只有一条：**通信语义、已展开执行和物理绑定分别由当前层的 typed IR 表达，不在 IR
 外复制另一份计划。**
@@ -19,7 +19,7 @@ Q46设计允许collective actual clone直接复用已选Tensor/NTensor/Cx/NCx ph
   interfaces和enclosing execution mesh表达；MLIR Mesh op能精确承载的部分优先复用Mesh语义；
 - direct/ring/tree 只是一小组 compiler-private typed rewrite 参数；
 - 每个参数点直接改写一个 isolated complete-rank clone，生成真实 p2p、local movement/compute、staging、
-  token、exact wait 和minimum participant join IR；
+  token和exact wait IR；compiler-derived participant join只在final worker/effect/range已知后fresh重建；
 - SPM/DDR/event analysis 从改写后的当前 IR fresh 重算；
 - all-rank coordinator 只读取 current memory-bound instruction IR，完成 message、range、completion 和 resource
   检查，然后原子写入 `DirectDTEBindingAttr`；
@@ -46,16 +46,16 @@ Pipeline position:
   的typed order/edge参数；对每个参数点使用
   PatternRewriter/DialectConversion在complete-rank clone内
   直接展开全部p2p、local movement/compute、communication staging、SSA token和exact wait；NCC issue只携带
-  typed worker，统一completion placement仅在真实NCC→DTE/Kcore/不同worker/host cut生成minimum participant join，并在
-  rewrite结束后fresh验证IR。不得产生独立于clone的执行图或可序列化候选记录。
+  typed dependency，rewrite结束后fresh验证IR。统一completion placement在terminal Instr clone的固定worker/order/effect
+  frontier上，为真实NCC→DTE/Kcore/不同worker/host cut生成latest-necessary participant completion；不得产生独立于clone的执行图或可序列化候选记录。
 - Output artifact / IR:
   verifier-legal、尚未分配物理transport resource的complete-rank instruction candidate。所有logical peer、
-  message identity、byte range、buffer slice、staging allocation、local compute、issue token、exact wait和
-  participant join均在
-  op/SSA/effect中；该candidate边界不允许残留未展开collective或算法选择attr。
+  message identity、byte range、buffer slice、staging allocation、local compute、issue token和exact wait均在
+  op/SSA/effect中；该candidate边界不允许残留未展开collective或算法选择attr。compiler-derived participant join由
+  downstream completion owner从current Instr重建。
 - Downstream consumer:
   instruction legality；materialized canonical/unplaced current Instr先从SSA/effects/ranges原子派生typed
-  worker sibling并fresh重建minimum joins，再从保留worker assignment的siblings派生fixed-slot；随后进入
+  worker/fixed-slot/ready-order sibling，再删除全部旧compiler-derived joins并fresh重建latest-necessary completion；随后进入
   SPM/DDR lifetime与offset planning、event-liveness、exact static cost/resource analysis，以及完整rank
   domain上的Direct DTE acceptance。memory planning与all-rank message matching后，
   whole-variant analysis从final send、canonical source rank和logical peer重算minimum-hop link-byte demand。
@@ -111,10 +111,10 @@ post-SPMD structured collective IR
   -> rank specialization / tiling / storage materialization
   -> clone complete rank candidate
   -> enumerate a few typed direct/ring/tree parameters
-  -> rewrite that clone to explicit p2p + local work + staging + token/exact wait/minimum participant join
+  -> rewrite that clone to explicit p2p + local work + staging + token/exact wait
   -> local verifier and fresh analyses
-  -> derive all-rank atomic typed worker sibling from canonical/unplaced current Instr
-  -> derive fixed-slot siblings while preserving each worker assignment
+  -> derive all-rank atomic typed worker/fixed-slot siblings from canonical/unplaced current Instr
+  -> erase compiler-derived joins and fresh rebuild fixed-frontier latest-necessary completion
   -> whole-entry SPM/DDR/event planning
   -> all-rank message/range/completion/resource acceptance
   -> atomic DirectDTEBindingAttr commit
@@ -295,8 +295,7 @@ helper的边界：
 1. clone当前完整rank candidate，而不是clone单个collective op；
 2. 在clone中定位对应logical/tile collective；
 3. 用`PatternRewriter`或`DialectConversion`直接创建真实staging alloc/view、local movement/compute、
-   `wafer.instr.dte_send`、`wafer.instr.dte_recv`、`wafer.instr.dte_wait`和真实domain cut上的typed
-   NCC participant join；
+   `wafer.instr.dte_send`、`wafer.instr.dte_recv`和`wafer.instr.dte_wait`；
 4. 生成由collective语义和algorithm phase/round/slice派生的`DTEMessageAttr`；
 5. replace/erase原collective，验证conversion legality、SSA dominance、effects和op verifier；
 6. 丢弃旧analysis，针对改写后的clone fresh重算lifetime、resource和cost；
@@ -405,8 +404,8 @@ logical view
   -> logical result view
 ```
 
-由此产生的staging alloc、subview、movement、exact wait和必要participant join全部留在clone中，SPM planner
-能看到真实容量和lifetime。
+由此产生的staging alloc、subview、movement、typed NCC effects和exact wait全部留在clone中，SPM planner能看到真实容量和
+lifetime；participant join不由staging/collective rewrite插入，而由post-worker统一completion owner fresh构造。
 DTE本身不承担gather/scatter、layout conversion或local visibility。
 
 ## 5. Collective Lowering
@@ -432,7 +431,7 @@ direct：
 
 ```text
 copy local shard to local result slot
-NCC join{producer worker} only if DTE first observes that slot
+record producer effect/range -> first DTE read dependency
 for distance in 1 .. group_size - 1 using semantic group indices:
   send local slot to peer
   recv peer shard into contiguous staging
@@ -445,7 +444,7 @@ ring：
 
 ```text
 copy local shard to local result slot
-NCC join{producer worker} only before the first DTE send of that slot
+record producer effect/range -> first DTE send dependency
 for round in 0 .. group_size - 2:
   send current carried shard to successor
   recv predecessor shard into contiguous staging
@@ -456,8 +455,9 @@ no round/backedge/final structural join
 ```
 
 `RingParams.rank_order`决定predecessor、successor与payload slice。每个round在IR中都有独立message、
-buffer view、token和wait；DTE读取由其前面覆盖producer worker的join保证，收到后的same-worker insert/consumer
-依赖保持issue order，只有Kcore、不同worker、host publication或unsafe reuse等真实外部观察才需要新的join。
+buffer view、token和wait；Tile→Instr conversion只保留producer effect/range到DTE read的typed dependency，不直接插join。
+post-worker completion owner在actual worker/order已固定后才为该跨engine观察构造latest-necessary participant join；收到后的
+same-worker insert/consumer依赖保持issue order，只有Kcore、不同worker、host publication或unsafe reuse等真实观察才形成其它witness。
 
 ### 5.3 Reduce-Scatter
 
@@ -471,7 +471,7 @@ for each remote contributor in deterministic peer order:
   wait send/recv
   local reduce staging into accumulator
   preserve same-worker issue order for the next reduction
-  join{accumulator worker} only before DTE/Kcore/different-worker visibility
+  record accumulator effect/range before DTE/Kcore/different-worker visibility
 ```
 
 scatter axis、slot shape和combiner来自logical collective。sum/max/min等local reduction由明确compute op表达，
@@ -496,7 +496,8 @@ ring必须复用同一chunk语义组合两段真实body：
 整除静态payload时，全卡注入bytes为`2 * (group_size - 1) * B`，而不是
 `group_size * (group_size - 1) * B`。不能整分时必须用typed ragged chunk及非零byte message明确实现；在该能力
 闭合前只拒绝ring候选并保留tree，不能回退为每轮发送full buffer却仍称为Ring。每次local compute、pack/unpack和
-final result发布都由same-worker issue order、显式token/exact wait及真实cut上的minimum participant join排序。
+final result发布都留下same-worker issue order、显式token/exact wait与typed effect/observer facts；真实cut上的participant
+completion由post-worker统一owner按fixed frontier重建。
 
 tree：`TreeParams`从current topology/placement和`rank_group`派生一棵有界、确定性的ordered binary tree。
 interval DP枚举每个连续group-index区间的合法root/左右子树，要求全树中序遍历严格等于`rank_group`；目标先
@@ -506,7 +507,8 @@ interval DP枚举每个连续group-index区间的合法root/左右子树，要�
 1. reduce phase由children向root发送partial；parent按left-subtree、local operand、right-subtree次序wait并显式local reduce；
 2. reverse broadcast phase由root沿同一tree发送最终accumulator；
 3. 非root rank wait final recv后发布result；
-4. 任何将被DTE/Kcore/不同worker读取的local-compute结果之前都有覆盖实际producer worker的participant join；
+4. 任何将被DTE/Kcore/不同worker读取的local-compute结果都留下可重建hazard的typed effect/range；Tile→Instr conversion
+   不插join，final completion owner只在worker/order固定后于latest-necessary cut构造覆盖实际producer worker的participant join；
    same-worker resident consumer保持issue order而不逐edge drain。
 
 Tree和Ring都接受支持的floating add/min/max，不要求额外numeric permission；二者区别完全体现在clone里的
@@ -522,9 +524,11 @@ layout与bytes由当前typed buffer唯一决定，不新增payload enum：
 - Ring只有在每个非零chunk都能由existing physical-access relation证明为exact、连续、互斥且完整cover时才生成Cx/NCx
   candidate；否则保留compact或显式pack/unpack candidate，不新增blocked-subview表示。
 
-上述layout选择必须由现有all-rank coordinator按semantic collective ordinal建立跨rank共享state；domain取各rank
-actual-op probe已接受encoding/mapping states的exact交集，PBQP一次提议并原子物化coordinated actual-clone tuple，不能组合
-per-rank Top-4。任一rank encoding、footprint、chunk cover或message bytes不一致都原子拒绝该whole variant。
+上述layout与algorithm参数组合由06的唯一decision owner从complete-rank terminal Tile actual parent生成。owner直接读取
+各rank current IR中的typed rank/group/payload relation、encoding、mapping、footprint与chunk cover，枚举有限all-rank参数点；
+每个参数点立即rewrite成一份actual Instr sibling并销毁proposal。all-rank matching随后从该sibling的显式peer/message IR
+fresh重证；不建立semantic collective ordinal、跨rank共享state或per-rank Top-4 Cartesian tuple。任一rank encoding、footprint、
+chunk cover或message bytes不一致都原子拒绝该whole variant。
 
 ### 5.5 Equal-Split All-to-All
 
@@ -600,7 +604,10 @@ unknown/external call保持conservative barrier。
 - recv result只有在wait支配后续read时才可见；
 - send source只有在wait后才可复用；
 - wait之后若还有same-worker local insert/reduce，由issue order保持依赖；若后续是Kcore、DTE、不同worker、
-  host publication或unsafe reuse，必须先有覆盖producer worker的participant join；
+  host publication或unsafe reuse，actual IR必须保留typed hazard witness，并由post-worker completion reconstruction在
+  final sibling中构造覆盖producer worker的latest-necessary participant join；
+- collective是rank-coupling与completion边界，不是DDR边界；其input/result只要current physical relation、lifetime和
+  capacity允许，就可以跨前后compute保持SPM resident；
 - local NCC drain、DTE/FSM completion和group barrier是三种不同事件；
 - `async.token`表示依赖完成，不等于target operation成功；success、transport error、timeout与peer failure由
   lower-level status/completion contract区分；
@@ -735,7 +742,8 @@ p2p instruction：
 
 ### 11.2 Cross-op 与 memory verifier
 
-- 覆盖actual producer worker的participant join支配DTE读取的local producer结果；
+- final completion sibling中，覆盖actual producer worker的participant join支配DTE读取的local producer结果，且该join可从
+  current effect/range/worker/order witness fresh重建；
 - wait支配recv buffer read和send buffer reuse；
 - wait后same-worker local insert/reduce保持issue order；跨worker/Kcore/DTE/host观察前有matching join；
 - staging root/view/alias关系可解析；
@@ -810,12 +818,13 @@ left-before-right children使全树中序遍历保持该rank group。非leaf par
 ```text
 recv child partial into staging -> wait
 explicit local reduce(accumulator, staging) -> accumulator'
-NCC join{accumulator worker} if accumulator' is sent or observed outside that worker
+record accumulator' effect/range if it is sent or observed outside that worker
 repeat for remaining children
 send reduced accumulator to parent -> wait
 ```
 
-root在reduce phase完成后沿reverse tree广播final accumulator。只有仍满足ordered-tree约束的root/edge set才是
+post-worker completion reconstruction在actual worker/order固定后，为上述跨engine/worker观察插入latest-necessary participant
+join；collective conversion本身不插join。root在reduce phase完成后沿reverse tree广播final accumulator。只有仍满足ordered-tree约束的root/edge set才是
 合法参数；更换它们会产生另一份完整clone，不会产生一个等待后续解释的tree描述。
 
 当accumulator为Cx/NCx时，input、staging、accumulator和result使用同一memref encoding，send/recv bytes为完整
@@ -848,7 +857,8 @@ send/recv、wait和insert；self slot只有local movement。任一slot的bytes�
 - current显式sender issue TargetCall、CRT symbol、profile site和SystemC readiness/completion语义；
   各层共享同一Instr token/wait合同。
 
-Q32.M已沿上述边界完成producer接入，Q32.S继续负责bounded joint composition：
+Q32.M/S已沿上述边界完成producer与bounded frontier机制；Q49负责把这些mechanics接入complete-rank、pre-Instr
+joint composition并退役late NoC-resident tuple decision owner：
 
 1. public schedule option与hard-coded selector已删除；shared candidate owner从同一parent建立complete-rank
    All-Gather Direct/Ring、Reduce-Scatter Direct/Ring与All-Reduce Ring/Tree actual clones；
@@ -868,18 +878,15 @@ cost从final sends计算minimum-hop link-byte demand并进入统一selection；A
 
 当前明确限制是：exact Ring cycle搜索和ordered-Tree interval DP都只覆盖不超过16 rank；pre-Q46 Ring只接受能形成非零、
 连续、等分compact typed chunk的静态payload，Tree也走compact buffer，其reduction element type可为integer或支持的floating type。
-Q46完成后才扩展为physical-access relation证明exact cover的Cx/NCx Ring chunk，以及全部参与rank encoding一致的Cx/NCx
-Tree full-physical-footprint payload；状态与完成证据只看`tasks/progress.md`和Q46独立gate。
+Q46 compiler-side已扩展为physical-access relation证明exact cover的Cx/NCx Ring chunk，以及全部参与rank encoding一致的Cx/NCx
+Tree full-physical-footprint payload；其未完成板端gate保持独立，不阻塞Q49施工。
 ragged/segmented路径尚未实现；equal-split All-to-All的网络payload已是direct exchange最小量，但
 现有`MoveInsertSlice` lowering仍会为每个slot复制完整累计result，这个local movement问题必须在后续独立任务
 通过可验证的in-place/subview表示消除，不能把它写成collective网络最优。
 
-NoC-resident input/intermediate/partial/output tile dataflow已经作为Q39 current extension从typed global/local
-rank slice与standard tiling/reduction interface生成physical peer movement，并复用本文“current
-tile/instruction IR → Direct-DTE acceptance”的后半段；resident role materializer不修改compute implementation
-或“logical collective → direct clone rewrite”的语义链。post-Instr worker sibling和worker-preserving
-fixed-slot进入同一current-IR pipeline；NoC×fixed-slot×nonzero-worker同候选的
-source/package/model/no-card纵向已经闭合。后续独立扩展只包括segmented peer exchange、cross-card collective、
+Q39已闭合NoC-resident input/intermediate/partial/output的typed peer-movement mechanics与host证据；Q49把其pre-Q49 late tuple
+decision并入06 whole-rank frontier。本文继续拥有selected peer movement的Tile→Instr展开、post-memory Direct-DTE acceptance与
+all-rank resource gate，不再拥有独立NoC winner。后续独立扩展只包括segmented peer exchange、cross-card collective、
 raw non-unicast DTE和经硬件证据校准的compute/communication overlap cost。
 
 ## 14. 与其它设计的关系

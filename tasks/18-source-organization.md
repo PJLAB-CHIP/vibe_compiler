@@ -62,6 +62,9 @@ lib/Wafer/Analysis/PhysicalDataflow/
   TransferRealizability.cpp
 lib/Wafer/Transforms/PhysicalDataflow/
   StructuredOpInterfaceModels.cpp
+  TileDataflowComponentAnalysis.cpp
+  ConsumerTilePropagation.cpp
+  PhysicalVersionMaterialization.cpp
   RelationViewNormalization.cpp
   DependentTilingRewrite.cpp
   PointwisePropagationRewrite.cpp
@@ -76,7 +79,9 @@ lib/Wafer/Conversion/WaferTensorProgramToTileRegion/
 lib/Wafer/Conversion/WaferTileRegionToInstr/
   ... existing tile-to-instruction conversion files ...
 lib/Wafer/Transforms/Scheduling/
-  ... existing candidate analysis/evaluation/selection/commit files ...
+  TileDataflowSearch.cpp
+  InstructionCompletionSynthesis.cpp
+  ... candidate evaluation/selection and pipeline orchestration files ...
 lib/Wafer/Compiler/
   ScheduledRankFinalization.cpp
   WholeVariantCoordinator.cpp
@@ -99,12 +104,12 @@ include/Wafer/IR/Target/
 `CollectiveTopologyAnalysis`只从这些距离与collective rank group派生invocation-local参数：Ring是有界exact
 minimum-total-hop cycle；Tree由interval DP求保持`rank_group`中序的minimum-total-shortest-hop ordered binary
 tree，而不是MST/center或固定root/binomial模板。
-`TopologyUtils`只负责在compiler建立isolated standalone module时复制typed topology/mesh op，不保存analysis结果、
+`TopologyUtils`只负责在compiler建立isolated complete-rank module时复制typed topology/mesh op，不保存analysis结果、
 algorithm choice或side table。
 
 `IndexRelation` 从当前 op、indexing map、view chain、shape bounds 和 SSA def-use 派生；
-`TransferRealizability` 从当前 source/destination、relation、typed physical encoding、alias/effect 和显式 target
-profile 派生 view/transfer realizability、descriptor cover 与资源摘要。这些结果不修改 IR，任何相关 rewrite
+`TransferRealizability` 从当前 source/destination、relation、typed physical encoding、alias/effect 和compiler-fixed
+current target capability facts派生 view/transfer realizability、descriptor cover 与资源摘要。这些结果不修改 IR，任何相关 rewrite
 后全部失效，不保存 selected route、physical version 或 candidate。
 
 `StructuredOpInterfaceModels.cpp` 只为不能直接修改的上游 structured op 注册 Wafer-owned source interface 的
@@ -114,9 +119,9 @@ rewrite 所需的 typed facts，不生成 detached semantic descriptor。
 `PatternRewriter` 和新鲜 analysis 协作。
 
 该文件不注册第二套tiling/layout/effect语义。Q32.I已把`WaferTilingInterface` consumer迁到
-`TilingInterface`+`DestinationStyleOpInterface`并删除该重复接口；Q32.M继续把layout要求迁到typed
+`TilingInterface`+`DestinationStyleOpInterface`并删除该重复接口；Q32.M已把layout要求迁到typed
 encoding/view/op verifier，把resource事实迁到`MemoryEffectOpInterface`+`SideEffects::Resource`和
-current-IR analysis，再删除相应只复制字段的interface、struct和boilerplate实现。Wafer-specific interface只有
+current-IR analysis，并删除相应只复制字段的interface、struct和boilerplate实现。Wafer-specific interface只有
 通过tasks/10 native reuse gate后才能留在`WaferInterfaces.td`。
 
 同批迁移`StorageLoadOp`的ODS与所有builder/conversion/test：load使用explicit DDR source和已创建SPM
@@ -127,11 +132,13 @@ destination、无隐式allocation/result。Q29迁移审计使用过的`Structure
 structured clone，tile-to-instruction conversion 消费 typed tile-dataflow IR。Conversion 不重新搜索
 implementation、tile、encoding 或 route。
 
-rank-local candidate 生命周期继续由现有 `lib/Wafer/Transforms/Scheduling/` 的 candidate
-analysis/evaluation/selection/commit 协调；whole-rank finalization、all-rank/whole-variant coordination 和
-原子 bundle commit 继续由现有 Compiler owner 承担。Q32 不新增 planner、transaction、candidate wire
-format或平行 coordinator。上述文件名是 owner 映射；实现时可按 translation-unit 规模合并同一职责，但不能
-跨层合并 analysis、rewrite、conversion 和 coordination。
+complete-rank candidate生命周期由`lib/Wafer/Transforms/Scheduling/`的component analysis、consumer-driven search、
+terminal evaluation和selection协调；它不接受standalone task、per-task lowered module或artifact ordinal。structured component/
+tile/physical-version materialization留在`Transforms/PhysicalDataflow`，Tile→Instr只在terminal complete-rank clone上调用；
+worker/slot完成后由`InstructionCompletionSynthesis`从current effects/ranges fresh重建。whole-rank finalization、all-rank/whole-variant
+coordination和原子bundle commit继续由现有Compiler owner承担，不新增candidate wire format或平行coordinator。
+上述文件名是稳定owner映射，不含任务号、checkpoint或case；实现时可按translation-unit规模合并同一职责，但不能跨层合并
+analysis、rewrite、conversion和coordination。
 
 tasks/13已有direct/ring/tree collective expansion/lowering语义继续位于`WaferTileRegionToInstr`/communication owner；
 无状态complete-clone producer由Scheduling candidate owner以compiler-private typed参数调用，public pass option、selector和
@@ -243,9 +250,10 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
 - instruction IR已按movement、compute、peripheral、DTE、sync family独立编译；共享op verifier和
   standard MemoryEffect/custom SideEffects::Resource helper留在`lib/Wafer/IR/Instr/`。Q32.M已删除
   Wafer resource-effect record/interface helper及其boilerplate，没有提升新的公共helper协议。
-- tile-region 到 instruction 的 facade 只保留legality、compiler-private typed options、终端fence和conversion orchestration；movement
+- tile-region 到 instruction 的 facade 只保留legality、compiler-private typed options和conversion orchestration；terminal
+  completion由post-worker统一owner fresh重建；movement
   support/lowering、compute lowering、collective lowering 通过同一 conversion library 的私有接口协作。
-- target numeric 已按 command/schema、profile registry、capability/resolution 和 internal canonical helper 独立编译；
+- target numeric 已按 current command/schema、capability/resolution 和 internal canonical helper 独立编译；
   `include/Wafer/Target/NumericSemantics.h` 的公共合同保持不变。
 - structured tensor program 到 tile-region 已分为 candidate support、单 tile materialization、complete traversal、
   body emitter、structured scope conversion 和 op-family lowering；public module/pass facade 共用同一原子

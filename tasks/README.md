@@ -17,7 +17,7 @@
 | 04 | `tasks/04-topology-execution-mesh.md` | 当前topology/execution mesh；current target identity不进入mesh IR |
 | 05 | `tasks/05-local-compute-normalization.md` | rank-local structured compute normalization与tensor collective handoff |
 | 06 | `tasks/06-physical-dataflow-synthesis.md` | MLIR-native physical-dataflow synthesis：implementation/tile/encoding/route/residency/buffering/order/communication的bounded actual-clone selection与atomic commit |
-| 07 | `tasks/07-tile-region.md` | selected proposal的typed task/traversal IR物化与完整coverage；不是planner或per-group SPM/DDR边界 |
+| 07 | `tasks/07-tile-region.md` | selected tile/dataflow actual IR物化与完整traversal；`tile.region`不是fusion、lowering、completion或memory-planning边界 |
 | 08 | `tasks/08-physical-realization.md` | physical encoding attr/type语义、valid domain、view、transfer realizability analysis、descriptor cover和selected physical realization |
 | 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/completion、fixed-capacity legality、validated high-water和accepted offsets；candidate choice仍由06拥有 |
 | 10 | `tasks/10-compute-movement.md` | 窄source implementation OpInterface/external model、typed target-abstract compute/movement、standard MLIR effects/interface reuse和issue/token/fence/wait |
@@ -57,11 +57,17 @@
 Q46 layout movement elimination当前计划见`tasks/plans/layout-movement-elimination.md`；它复用06-08、10-11、13-14、
 16-17的现有合同，动态状态和完成门禁只看`tasks/progress.md`。
 
-Q47 Target ABI退役计划见`tasks/plans/target-abi-retirement.md`。它在Q46完成或暂停并形成独立ABI迁移窗口后，
-按11、14-17的owner边界把TX81 target收口为唯一current ABI；它不包含SMT、候选生成或优化器改造，动态状态和
+Q47 Target ABI退役计划见`tasks/plans/target-abi-retirement.md`。它已在Q46 compiler-side closure后按独立ABI迁移窗口，
+沿11、14-17的owner边界把TX81 target收口为唯一current ABI；它不包含SMT、候选生成或优化器改造，动态状态和
 完成门禁只看`tasks/progress.md`。
 
-Q48语义驱动superoptimizer计划见`tasks/plans/semantic-superoptimization.md`。它必须在Q46、Q47完成后启动，
+Q49 whole-rank tile dataflow synthesis计划见`tasks/plans/whole-rank-tile-dataflow-synthesis.md`。它由06作为唯一
+联合决策设计owner，复用01、07-13、16、18的selected IR、physical realization、memory、completion、communication和验证合同；
+目标是在Instr lowering前完成whole-rank consumer-driven composition，并删除旧per-task提前物化路径。动态状态和完成门禁只看
+`tasks/progress.md`。
+
+Q48语义驱动superoptimizer计划见`tasks/plans/semantic-superoptimization.md`。它必须在Q49达到`board-ready`且C0–C6
+compiler cutover完成、Q47 current ABI可消费final Instr/TargetCall后启动，
 复用05-08、10-11、16-18的现有IR、candidate、proof consumer、model和源码ownership合同；目标是自动生成并证明
 actual MLIR clones，同时删除旧implementation抽象和重复numeric表示，不另建语义IR/interface/sidecar。动态状态和
 完成门禁只看`tasks/progress.md`。

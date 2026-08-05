@@ -1,6 +1,6 @@
 # Wafer Instruction IR Design
 
-状态：2026-07-28同步typed NCC issue worker、participant join及closed V3 worker-aware target ABI；当前合同覆盖instruction-level hardware invocation IR、
+状态：2026-07-28同步typed NCC issue worker、participant join及唯一current worker-aware target ABI；当前合同覆盖instruction-level hardware invocation IR、
 memref buffer和shared physical geometry/ABI legality。shared verifier 已闭合当前支持子集的静态 DMA descriptor payload/range/
 element-width relation、fill/elementwise/reduce/convert/GEMM element/shape relation、ordinary conv、pool/
 unpool、TDMA pad/img2col和peripheral kind-specific capacity，并在target字段写入前检查ABI narrowing。
@@ -15,7 +15,8 @@ tile-level IR，并在tile→instruction阶段完成movement/materialization、�
 当前ODS对compact RDMA/WDMA继续省略offset pair，对mapped transfer则要求两端root-relative offset同时显式存在（包括0）；
 plain GEMM继续表示implicit normal/normal，oriented GEMM必须显式携带两个closed orientation attrs并进入同一current worker-aware ABI。
 Q32.V已闭合mapped transfer、physical-footprint fill与versioned oriented GEMM的source/Tile/Instr/TargetCall/formal/SystemC纵向；
-Q32.M/S才负责让这些能力进入共同candidate owner，planner不能复制或猜测字段。实现状态以`tasks/progress.md`为准。
+Q32.M/S已把这些能力接入共同candidate基础，Q49负责让完整rank Tile clone只lower一次并在最终worker/effect/range上
+fresh重建completion；planner不能复制或猜测字段。实现状态以`tasks/progress.md`为准。
 
 本文定义 instruction-level Wafer IR。核心结论：
 
@@ -65,8 +66,9 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
   `dst_dtype` 表达任意转换。
 - `wafer.instr.*` op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset或raw
   packet field。普通NCC issue显式携带typed worker identity；instruction lowering先形成canonical worker0/
-  unplaced current Instr，独立post-Instr candidate stage再从SSA、effects和ranges原子派生
-  `DisjointComponents` sibling、写actual worker attrs并fresh重建minimum joins。已有nonzero assignment不原地
+  unplaced current Instr，post-Instr worker mechanics再从SSA、effects和ranges原子派生
+  `DisjointComponents` sibling并写actual worker attrs；统一completion owner随后删除全部`wafer.instr.ncc_join`并fresh重建fixed-frontier
+  latest-necessary completion。已有nonzero assignment不原地
   重写。current worker-aware ABI接受`worker0/worker1/worker2`，并lower到统一`_v3` ordinary symbols，
   exact ABI在末尾携带`i32 worker`；没有worker0 fallback或旧symbol。
 - Direct DTE instruction ops 已替代旧 tile-level p2p prototype，并在 SPM memory planning 前暴露
@@ -112,7 +114,8 @@ Pipeline position:
   `wafer.tile.materialize_layout`、`wafer.tile.fill/gemm/elementwise/reduce`、
   `wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast`、
   `wafer.tile.*` buffer-level collective、tile-region 内 `scf.if` / `scf.for`
-  structured control-flow和typed `wafer.instr.ncc_join`。
+  structured control-flow和显式tile-level async event/dependency。source-observable ordering由structured control-flow、
+  SSA event/token dependency和typed MemoryEffects表达；compiler-derived `wafer.instr.ncc_join`尚未物化。
 - Current stage responsibility:
   只做 Wafer instruction legalization / selection：递归覆盖所有 rank entries 的完整 traversal，验证candidate rewrite已
   物化到typed payload IR的implementation字段、operands、views和memory/layout types；boundary lowering从这些IR事实与
@@ -120,9 +123,12 @@ Pipeline position:
   把每个可执行 target-abstract op 改写成
   `wafer.instr.*`，把 tile-level `Compute*Kind` 选择成 instr-level target kind，并保留 memref SSA
   graph。对 `scf.if` / `scf.for` 递归转换其 region body并保留control-flow结构；loop backedge和
-  tile-region exit不是NCC completion boundary，不能仅因结构scope插入blocking join。same-worker
-  RAW/WAR/WAW由issue order和显式buffer lifetime证明；NCC到Kcore、Direct DTE、其它worker、host publication
-  或terminal的真实cut才生成覆盖实际pending worker的latest participant join。对 accepted
+  tile-region exit、standalone function return和candidate commit不是NCC completion boundary，本conversion不能仅因结构scope
+  插入blocking join。same-worker RAW/WAR/WAW先由issue order和显式buffer lifetime暴露给后续completion owner；
+  source-observable ordering继续由control-flow、SSA event/token与typed effects保持；当前没有source-authored Instr fence，
+  `wafer.instr.ncc_join`也不承载这类来源语义。若未来source fence无法由这些事实表达，必须先增加独立typed op/event及verifier，
+  不能借用join或provenance。NCC到Kcore、Direct DTE、其它worker、host publication或terminal的participant join只在最终
+  worker/slot/range sibling上fresh构造。对 accepted
   `wafer.tile.*` collective，生成 explicit
   `wafer.instr.dte_send` / `dte_recv` / `dte_wait` p2p schedule。instruction op 通过
   interface显式暴露current instruction family、memref read/write、descriptor attrs、issue effect和completion relation；
@@ -132,14 +138,14 @@ Pipeline position:
 - Output artifact / IR:
   candidate clone 中每个 static rank 一份完整 instruction-level structured program：
   control flow + tile-local `wafer.tile.region` scopes + memref values with
-  `#wafer.memory<space, layout>` + typed-worker `wafer.instr.*` + explicit token/wait/
-  participant join；或结构化
+  `#wafer.memory<space, layout>` + canonical/unplaced `wafer.instr.*` + explicit DTE/generic async token/wait；
+  compiler-derived participant join由下游fresh completion stage建立；或结构化
   legalization failure reason。单个 task/traversal fragment/tile 不是可提交 artifact。
 - Downstream consumer:
   08 relation-backed redundant physical transfer normalization先在complete-rank unplaced actual clone上
-  证明并删除可由same-root/standard view表达的完整movement，随后先运行fresh whole-rank completion
-  normalization/verifier；materialized canonical/unplaced current Instr先原子派生typed worker sibling，再从
-  保留worker assignment的siblings派生fixed-slot。每个sibling随后由whole-rank SPM planning、
+  证明并删除可由same-root/standard view表达的完整movement；materialized canonical/unplaced current Instr再原子派生
+  typed worker/fixed-slot siblings，删除全部compiler-derived`wafer.instr.ncc_join`并从current effects/ranges fresh重建latest-necessary
+  completion。每个sibling随后由whole-rank SPM planning、
   whole-variant DDR planning、event/physical-transport/all-rank transport/
   target-entry verification 和
   closed-loop whole-variant candidate driver；atomic commit 后才由 target LLVM、package 和 runtime 消费。
@@ -156,7 +162,7 @@ Pipeline position:
   descriptor。
   `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。这些局部/direct入口都不是用户
   stop-stage，也不能把
-  `DirectFullShape`、单 task 或单 tile-region 结果直接送入 committed target/package flow；用户级
+  `DirectFullShape`、单 task 或单 tile-region 结果独立lower后送入 committed target/package flow；用户级
   completion 必须经过 whole-variant candidate-selection/commit pipeline。
   instruction lowering与`wafer-plan-spm-memory`的focused tests继续覆盖pre-existing
   identity-preserving recurrence安全正例，以及loop body fresh allocation作为recurrence result的失败反例。
@@ -174,7 +180,7 @@ Pipeline position:
   或标准 memref view，并覆盖 nested `scf.if` / `scf.for` body 递归转换。unsupported hardware
   instruction form，包括当前无法证明的 slice/broadcast/transpose descriptor，必须结构化失败，
   不能让 SPM memory planning 从 target-abstract op 猜 demand。每个issue必须由explicit async
-  token/wait或typed worker ordered-pending/participant join合同闭合；generic async task identity、Direct DTE
+  token/wait或由下游fresh typed worker ordered-pending/participant join合同闭合；generic async task identity、Direct DTE
   completion和NCC worker pending set分别验证，每条function exit path在typed terminal completion后均为空；variant-set gate
   还要证明所有 transport 匹配和 shared physical geometry/range/narrowing contract。production elementwise必须
   不携带map且same-shape；reduce init必须在tile→instruction阶段显式分解或拒绝，terminal instruction op不携带init。
@@ -300,7 +306,6 @@ wafer.tile.materialize_layout
 wafer.tile.fill/gemm/elementwise/reduce
 wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast
 scf.if / scf.for
-typed wafer.instr.ncc_join
 ```
 
 R3.2d 后：
@@ -316,15 +321,17 @@ wafer.instr.pool / wafer.instr.unpool
 wafer.instr.tdma_data_move
 wafer.instr.peripheral
 scf.if / scf.for
-canonical typed worker identity + wafer.instr.ncc_join
+canonical/unplaced typed worker identity
+no compiler-derived wafer.instr.ncc_join
 ```
 
 R3.2d 不做 memref type conversion。它只把 executable target-abstract op 改写成 instruction op，
 并复用同一批 memref values。physical base address、SPM offset、end address、bank/color、
 raw worker register window、runtime pointer 和 packet word 都不属于 R3.2d；typed worker identity属于
-instruction placement语义。R3.2d本身不选择跨worker分解；后续独立candidate stage只从
-canonical/unplaced current Instr派生all-rank atomic typed worker sibling，并在clone中重写actual worker attrs和
-minimum joins。fixed-slot再从保留该assignment的siblings派生，不能用metadata或已有nonzero assignment原地改选。
+instruction placement语义。R3.2d本身不选择跨worker分解，也不构造participant join；后续worker mechanics只从
+canonical/unplaced current Instr派生all-rank atomic typed worker sibling并在clone中重写actual worker attrs；fixed-slot再从保留
+该assignment的siblings派生，统一completion owner随后删除全部`wafer.instr.ncc_join`并重建fixed-frontier latest-necessary joins。不能用metadata
+或已有nonzero assignment原地改选。
 R3.2d 后的 instruction IR 不允许 `#wafer.elementwise_kind` / `#wafer.reduce_kind`
 这类 tile-level semantic attr 出现在 `wafer.instr.*` op 上；这些语义必须在 lowering 时选择成
 instr-level target kind。
@@ -798,14 +805,14 @@ operands absent；axis scale在exact formula/indexing/table dtype证据形成新
 `wafer.instr.convert`的single-source zero-point不是该op的替代品。
 
 `wafer.instr.mxfp_decode`显式记录registered FP8 encoding、packed/scale/destination storage descriptor、element count、
-block shape/count、tail和NaN/Inf/subnormal/overflow policy；operands是packed source、E8M0或profile允许的typed scale、
+block shape/count、tail和NaN/Inf/subnormal/overflow policy；operands是packed source、E8M0或current capability允许的typed scale、
 BF16/FP16 destination和exact scratch memref。它的MemoryEffects必须包含source/scale/scratch read、scratch/destination
 write和composite issue/local-completion；decode completion支配任何destination consumer，scratch/destination在该
-completion前不可复用。TX81首发只允许profile证明的32-value block/software decode+scale组合；其它block/encoding
+completion前不可复用。TX81首发只允许current capability证明的32-value block/software decode+scale组合；其它block/encoding
 结构化失败。
 
-两种op都不得保存wrapper symbol或旧`__*` helper名。target LLVM只按typed profile选择Wafer-owned fixed ABI；在
-profile、geometry、SPM range、TargetCall/CRT conformance、device-link任一gate完成前，这些op可以用于
+两种op都不得保存wrapper symbol或旧`__*` helper名。target LLVM只消费compiler-fixed current target facts并发射唯一
+Wafer-owned ABI；在capability、geometry、SPM range、TargetCall/CRT conformance、device-link任一gate完成前，这些op可以用于
 parser/verifier negative/plan测试，但必须在production target legality中失败。
 
 ### 7.6 Conv / Pool / UnPool
@@ -946,9 +953,10 @@ R3.2d 应实现为 MLIR DialectConversion：
 当前V0与终态扩展的mapping边界：
 
 下表collective三行记录instruction-level materialization合同，不构成instruction层的算法选择合同。Q32.M已删除
-public pass schedule option/parser；production candidate owner从同一tile-region parent建立All-Gather Direct/Ring、
-Reduce-Scatter Direct/Ring和All-Reduce Ring/Tree完整clone并分别执行instruction/SPM/DDR/verifier/cost gate。
-IR-local conversion入口使用显式typed options重放单个参数点，不保存selector或algorithm attr。Q36把这些普通C++参数
+public pass schedule option/parser；production decision owner从complete-rank terminal Tile actual parent为All-Gather Direct/Ring、
+Reduce-Scatter Direct/Ring和All-Reduce Ring/Tree逐参数点建立完整all-rank actual Instr sibling，再依次执行
+worker/slot/order、fresh completion、SPM/DDR/all-rank/verifier/final-cost gates。IR-local conversion入口使用显式typed options
+重放单个参数点；rewrite后销毁参数/proposal，不保存selector或algorithm attr。Q36把这些普通C++参数
 改为从current topology/mesh派生的peer/rank order及Tree root/parent/left-right children；最终Instr IR仍只包含实际
 peer edge、message、local work和completion。
 
@@ -968,14 +976,14 @@ peer edge、message、local work和completion。
 | `wafer.tile.transpose` | create destination SPM memref; compose the inverse permutation with source/result physical encodings and directly materialize exact multi-loop descriptors; split only at Cx/NCx full/tail, field-width or three-level boundaries, and replace result with dest memref |
 | `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits packed `wafer.instr.gather_scatter` descriptors only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
-| `wafer.tile.all_gather` | requires matching `tensor/ntensor` SPM layouts and infers the unique gather axis from compact local/gather buffer shapes. `ring` copies the local chunk into the local gather slot, inserts a participant join only before the first DTE observation of its NCC producer, then forwards one slot per round around the topology-derived rank order; it has no round/backedge/final structural join. `direct` uses the deterministic cyclic order of semantic group indices to send the local slot to every other logical rank while receiving each peer chunk into its result slot；it does not invoke topology Ring search. |
-| `wafer.tile.all_reduce` | pre-Q46 current implementation要求matching compact `tensor` SPM buffer。Q46允许全rank相同Cx/NCx encoding的Tree使用完整physical footprint，也允许每个chunk具有exact contiguous physical-interval proof的Ring；其它blocked case保留compact或显式materialization。`ring`是chunked reduce-scatter+all-gather，`tree`使用topology-derived ordered binary tree；两者都显式物化local reduction、DTE token wait和必要participant join，并接受integer及支持的floating type。 |
+| `wafer.tile.all_gather` | requires matching `tensor/ntensor` SPM layouts and infers the unique gather axis from compact local/gather buffer shapes. `ring` copies the local chunk into the local gather slot and leaves typed NCC producer effects plus DTE token/exact wait before first DTE observation, then forwards one slot per round around the topology-derived rank order; conversion itself inserts no participant join or round/backedge/final structural join. `direct` uses the deterministic cyclic order of semantic group indices to send the local slot to every other logical rank while receiving each peer chunk into its result slot；it does not invoke topology Ring search. |
+| `wafer.tile.all_reduce` | pre-Q46 implementation要求matching compact `tensor` SPM buffer。Q46已允许全rank相同Cx/NCx encoding的Tree使用完整physical footprint，也允许每个chunk具有exact contiguous physical-interval proof的Ring；其它blocked case保留compact或显式materialization。`ring`是chunked reduce-scatter+all-gather，`tree`使用topology-derived ordered binary tree；两者显式物化local reduction、typed NCC effects和DTE token/exact wait，participant join只由post-worker统一completion owner fresh构造，并接受integer及支持的floating type。 |
 | `wafer.tile.reduce_scatter` | compact full `tensor` input保留为baseline；Q46允许full Cx/NCx input在每个owned chunk都有exact contiguous physical-interval proof时生成Ring。`direct`按owner累计，`ring`每轮只传输/归约一个typed chunk；无法证明连续、互斥和full cover时保留显式pack/unpack或拒绝该extra candidate。 |
 
 旧all-reduce ring曾每轮发送full buffer；它只能作为Q36修复前的实现事实，不能继续满足本表的Ring合同或用于
 算法优劣证明。equal-split all-to-all和collective-permute虽然在更早的structured→tile-region rewrite直接产生
-Instr DTE op，也遵守相同completion要求：remote insert/recv、local copy/fill与后续consumer之间必须有显式
-exact wait或matching participant join；same-worker RAW/WAR/WAW只保持issue order，不能依赖block order，
+Instr DTE op，也遵守相同completion要求：conversion显式留下remote insert/recv、local copy/fill、effect与DTE exact wait；
+需要participant completion的cut由post-worker统一owner重建。same-worker RAW/WAR/WAW只保持issue order，不能依赖block order，
 也不能因terminal region结构边界插join。
 
 R3.2d.4 已覆盖 static movement descriptor splitting / packing：
@@ -1321,7 +1329,7 @@ R3.2d.1 已完成：
    kind-specific wrapper signature 检查 required/forbidden attrs；当前live code仍因Count writeback未实现而结构化拒绝，
    Q3.6终态合同固定为7.7的single-element i32 SPM dest，不再留下result/ABI设计分支。
 
-R3.2d.2 已完成：
+R3.2d.2 当前 mechanics 与 Q49 gap：
 
 6. 实现 `--wafer-convert-tile-region-to-instr` DialectConversion，并提供
    `WaferTileRegionToInstr` conversion library API。
@@ -1330,11 +1338,13 @@ R3.2d.2 已完成：
    copy、metadata view lowered to standard memref view、`Cx/NCx` block-major reshape、
    tail-only metadata reshape、nested `scf.if`、tile communication structured failure，以及
    padding layout materialization structured failure。
-9. conversion不再在WDMA后、`scf.for` backedge或`wafer.tile.region` exit按结构插wait。普通NCC op
-   进入worker-aware ordered-pending frontier；统一completion placement只在value effect/root alias证明的
+9. conversion不在WDMA后、`scf.for` backedge、`wafer.tile.region` exit或standalone `func.return`按结构插wait/join。
+   普通NCC op进入worker-aware ordered-pending frontier；统一completion placement只在value effect/root alias证明的
    NCC→Direct DTE/Kcore/call/return cut插入覆盖实际pending worker的latest typed join，空join和相邻冗余
    join不进入accepted IR。same-worker RAW/WAR/WAW与loop-carried slot reuse由issue order和lifetime证明，
-   不逐edge drain；SPM仍独立按exact DTE token/wait跟踪communication lifetime。
+   不逐edge drain；SPM仍独立按exact DTE token/wait跟踪communication lifetime。当前production converter仍有
+   standalone task `func.return` terminal join遗留，随后被task commit复制；Q49 C4必须删除该builder路径并在完整rank
+   final worker/effect/range上fresh重建，完成前本条终态合同尚未闭合。
 
 R3.2d.3 当前边界：
 
