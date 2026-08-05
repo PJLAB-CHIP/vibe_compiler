@@ -207,16 +207,18 @@
   tensor、replica-id domain 完整且 payload 一致。当前 schema 无法表达 partial replication 时在 producer
   端失败，不把 subgroup 缺口降级成默认复制。
 
-## 2026-07-13 memory gate 必须看到 final function bufferization，但同一terminal variant不能重复packing
+## 2026-07-13 memory gate 必须看到 final function bufferization，placement不能跨IR变化复用
 
 - 现象：旧structured program在task/candidate-local SPM/DDR planning通过后，whole-function One-Shot Bufferize又产生
   untagged DDR allocation和bridge；早期offset无法覆盖final rank artifact。
 - 根因：把memory planning放在会改变buffer/movement/lifetime的function-boundary transformation之前，同时试图用
   早期placement帮助搜索并在后面再解一次。
 - 修复模式：Q49先在complete-rank Tile clone上完成Tile→Instr和function-boundary bufferization，再派生
-  final worker/slot/order并fresh重建completion。每个terminal rank-entry Instr variant对完整entry lifetime与3 MiB arena恰好执行
-  一次whole-entry SPM solve；每个complete all-rank variant恰好执行一次whole-variant DDR exact planning。后续任何
-  rewrite使原variant整体失效，新alternative从无placement parent物化，不在原variant上第二次solve。
+  final worker/slot/order并fresh重建completion。从每个terminal rank-entry的final actual Instr IR按rank-local 3 MiB
+  SPM resource、roots及liveness/coexistence/conflict关系派生一个或多个fixed SPM allocation problems，以MiniMalloc
+  逐problem求解，并验证problem集合all-and-only覆盖全部roots；调用数不是entry或region合同。
+  complete all-rank variant随后执行current-IR DDR exact planning。后续任何
+  rewrite使原variant及其placement整体失效，新alternative从无placement parent物化，不复用或局部保留旧offset。
 
 ## 2026-07-13 MLIR module 的失败路径必须由显式 context lifetime 覆盖
 
@@ -281,9 +283,10 @@
   lifetime因此被错误截断在isolated region出口。
 - 修复模式：处理完region body后，按result ordinal把对应yield DDR value的root refs传播到region result；后续SSA use
   再自然延长原DDR root lifetime。回归必须构造两个先后产生、随后被同一region共同消费的DDR result，并证明它们得到不同
-  arena range；不能通过executor为每个alloc私建storage掩盖planner错误。该经验不授权SPM root跨ownership epoch；
-  当前static rank entry的全部traversal位于同一outer `tile.region`，内部可以显式store到DDR后reload成新root。
-  未来若出现第二个typed epoch，region boundary仍禁止SPM data，live value必须在前一epoch完成DDR materialization。
+  arena range；不能通过executor为每个alloc私建storage掩盖planner错误。该经验只授权DDR root按显式SSA跨region延长；
+  SPM root/alias不得跨SPM residency-region边界。若data从一个region流向另一个，actual IR必须在前一个
+  region显式store到DDR并完成相关SPM access，在后一个region显式load并建立新SPM root；边界不会替IR自动生成这些动作。
+
 # DTE wait被canonicalizer删除
 
 - 现象：带`wafer.instr.dte_wait`的collective在selected pipeline进入SPM planning时报告
@@ -511,9 +514,11 @@
   实例唯一性；IR尚未提供可验证的动态instance/arena partition协议。
 - 修复模式：loop fixed point发布时去掉repeatable branch decision，禁止用loop-local相反分支证明全执行期packing互斥；
   fresh loop-body allocation跨backedge时以unsupported lifetime alias拒绝，SPM保守拒绝全部loop-carried async token。
-  nested tile-region SPM scope和同时含function/module compiler-managed allocation的DDR planning scope在缺少显式partition
-  语义时都fail closed。named memory-planned pipeline需同时保留pre-existing identity recurrence正例和fresh loop-body
-  recurrence反例，证明安全recurrence仍可通过而动态多实例不会被静态化。
+  不能把每个tile-region直接当成独立allocation scope；final actual IR必须按rank-local SPM resource及
+  liveness/coexistence/conflict关系派生一个或多个fixed allocation problems，无法证明scope独立时fail closed。
+  DDR同时含function/module compiler-managed allocation且
+  缺少显式partition语义时同样fail closed。named memory-planned pipeline需同时保留pre-existing identity recurrence正例和
+  fresh loop-body recurrence反例，证明安全recurrence仍可通过而动态多实例不会被静态化。
 
 ## 2026-07-15 静态memory-space和call签名不能自证storage provenance
 
@@ -661,10 +666,12 @@
 - 根因：把terminal evaluation实现成per-rank linear pipeline，并假设bufferization、completion、SPM/DDR与跨rank
   resource可以分开accept。
 - 修复模式：C2的all-rank coordinated frontier直接产生terminal Tile variants；C3在同一transaction中物化
-  all-and-only rank-entry Instr variants。每个rank-entry SPM solve失败或whole-variant DDR/transport/ABI gate失败都拒绝
-  该complete variant，但不影响global frontier中其它actual variants。没有rank-local survivor、artifact kind或commit。
+  all-and-only rank-entry Instr variants。任一rank-entry派生的任一fixed SPM allocation problem失败，或
+  complete-variant DDR/transport/ABI gate失败，都拒绝该complete variant，但不影响global frontier中其它actual variants。
+  没有rank-local survivor、artifact kind或commit。
 - 防复发：测试在同一coordinated frontier中放入一个确定SPM failure和一个合法all-rank variant，断言只有
-  完整合法variant进入fully gated frontier，cost从final IR重算，且每个terminal rank-entry只有一次SPM query。
+  完整合法variant进入fully gated frontier，cost从final IR重算，且SPM problem/query集合与final roots及
+  liveness/coexistence关系一致，不固定为每entry一次。
 
 ## 2026-07-16 source expected comparator不能按“只有F32是浮点”分流
 
@@ -1674,7 +1681,8 @@
 - 根因：候选域被分割成task/rank/artifact多层frontier，每层各有cap和ownership transfer，再企图从metadata
   恢复全局组合；这不仅重复工作，也会改变可见搜索域。
 - 修复模式：Q49在generation前建立唯一all-rank work budget和coordinated frontier。cheap proposal通过后才
-  materialize actual clone；只对terminal all-rank variants执行Tile→Instr、per-entry SPM和per-variant DDR exact gates。
+  materialize actual clone；只对terminal all-rank variants执行Tile→Instr、final-IR-derived SPM allocation problems和
+  complete-variant DDR exact gates。
   parallel只执行独立actual variants，按stable insertion order消费；cross-context交接只是ownership transfer，不形成
   attempt/correspondence protocol、不重跑已完成的solver query。
 - 防复发：同时锁定serial/parallel的proposal/clone/terminal-lowering/SPM/DDR work counts、frontier/winner/package
@@ -1885,9 +1893,9 @@
   nested loop可递归穿过，loop/alloc视作结构节点；same-worker冲突后继保持真实issue order并继续寻找现有join。
   disjoint worker stream互不要求join，冲突cross-worker、conditional observer、DTE/Kcore/host边界仍fail closed。
   pending access之后的Free和zero-region Unknown memory observer都要求先有matching participant join；region
-  container只对不携带resident data的completion frontier透明，其nested operation、branch path和join分别在各自
-  program point处理。SPM data/root/alias不得因该completion规则跨真实ownership epoch；current one-region rank entry内部
-  的不同traversal无需跨region。
+  container对与其SPM roots无关的completion frontier透明，其nested operation、branch path和join分别在各自
+  program point处理。region entry/exit本身不是全局observer或device-wide completion point，不能因partition自动插join；
+  但exit前必须由actual SSA/storage/effect证明所有仍访问本region SPM roots的work已完成，SPM value/root不能继续到sibling region。
   lit负例必须期待真正的terminal/domain-exit failure，不能继续锁定“body-local fence”这种旧实现条件。
 - 防复发：同时覆盖nested static loop正例、conditional loop负例、disjoint/conflicting multi-worker pair、
   multi-access issue不能由单一successor错误完成、跨普通nested structure的non-data pending frontier由后续
@@ -1924,7 +1932,7 @@
   allocation可合并。metadata-only `memref.cast`把静态offset放宽为dynamic以及cross-encoding destination
   的更强alignment要求，还会让本来合法的full-buffer alias被误拒绝；标准reinterpret cast也不能改变
   memref memory-space attr。
-- 修复模式：pre-Instr owner在既定outer `tile.region`内联合选择producer/consumer、兼容tile schedule和resident storage
+- 修复模式：pre-Instr owner必须联合选择producer/consumer、region partition、兼容tile schedule和resident storage
   realization后才能删除对应spill；未选择resident的edge必须保留显式DDR movement，selective spill仍保持显式并只结束
   目标root。随后在complete-rank
   unplaced actual clone上统一识别exact full descriptor，从current
@@ -2414,22 +2422,28 @@
 - 防复发：格式化命令显式列出同一语言文件，随后检查diff stat是否出现异常全文件重排。即使是临时代码和测试runner也遵守
   正常命名、语法和验证规则，不能以“后面会删”降低质量门槛。
 
-## 2026-08-05 Tile region不能代替traversal与materialization决策
+## 2026-08-05 Tile region是SPM驻留域，不能代替traversal与materialization决策
 
-- 现象：把`tile.region`当fusion cluster会让“融合后小tile”和“拆成sibling region后大tile”看似只能二选一；随后每个cut又
-  自动制造DDR round-trip、GS和completion。实际上同一region完全可以包含两套独立SCF loop nests、不同tile shape和内部DDR
-  materialization，region partition没有提供额外表达能力，反而人为放大边界数量。
-- 根因：混淆了SPM ownership/device-execution epoch与schedule/dataflow。`IsolatedFromAbove`只要求显式region inputs，single-block
-  只限制outer CFG；body可含多个structured traversal。Tile→Instr递归lower body，SPM planner也按whole function建立一次timeline
-  和arena packing。因此tile/loop、layout/version、resident/spill/recompute需要联合选择，但region本身不是这些变量之一。
-- 修复模式：当前没有typed SPM-clobber/host handoff/第二次launch的static rank entry恰好物化一个non-nested outer region；
-  producer/consumer在region内分别选择coupled或separated traversal，以及resident、local movement、internal DDR、streaming或
-  recompute。至少比较fused-small-tile、separated-large-tile和selective-spill；separation的收益包括独立retile和缩短并发root
-  lifetime，即使原方案可pack也要保留。terminal clone才lower worker/order、删除旧join并fresh重建completion；每个terminal
-  rank-entry Instr variant只运行一次whole-entry fixed-capacity MiniMalloc，每个complete all-rank variant只运行一次
-  DDR/transport/ABI exact gates。
-- 防复发：测试固定current entry的region数量为一，并在同一region内证明多loop/tile、resident root与单root spill共存；普通
-  effect、collective、retile、layout change或spill都不得创建region。只有未来IR显式不同ownership epoch才允许多个region，且
-  boundary禁止SPM data。direct comparison必须让DDR、GS、completion、compute/recompute、tile utilization、NoC、Instr、
+- 现象：把`tile.region`当fusion cluster或rank execution epoch，会在“每operator一个region”和“每entry固定一个region”之间
+  摆动；再把每次cut自动计成DDR round-trip、GS和completion，既压掉有价值的partition，也制造不存在的边界成本。实际上
+  同一region可以包含多套SCF loop nests和不同tile shape，多个region也可以表达不同的SPM co-residency/lifetime选择。
+- 根因：混淆了SPM residency domain、schedule/dataflow和materialization。`IsolatedFromAbove`只要求显式region inputs，
+  single-block只限制outer CFG；body可含多个structured traversal，输入/输出边数量也不是协议限制。region partition描述
+  co-residency选择，只有与actual SSA和materialization组合后才改变root集合与lifetime；边界本身不产生DDR movement、GS或
+  NCC completion。因此partition必须与tile/loop、
+  layout/version、residency、spill/recompute及materialization联合搜索，不能由op数固定，也不能固定为entry单例。
+- 修复模式：每个actual clone可物化一个或多个SPM residency regions，并比较
+  `single-region fused-small-tile`、`multi-region separated-large-tile`、`same-region separated traversal`和
+  `selective spill`，再对每种形态联合选择resident、local movement、explicit DDR、streaming和recompute。
+  schedule separation、切region与
+  selective spill彼此正交：spill可以发生在region内部；region boundary不自动生成store/reload或join，但任何
+  真实cross-region data edge都必须已在actual IR中显式store/completion/load。terminal lowering、bufferization
+  和completion rewrite结束后，从final actual Instr IR按rank-local SPM resource及
+  liveness/coexistence/conflict关系派生一个或多个fixed allocation problems，MiniMalloc仍是每个fixed problem的
+  production backend；bank-aware只在hard-valid placements之间作soft preference，
+  不改变feasible set，也不触发spill、切region或join。complete all-rank variant再通过DDR/transport/ABI exact gates。
+- 防复发：测试同时覆盖单region、多region、多loop/tile、resident root和selective spill，并证明region边界不自动增加
+  DDR/GS/NCC join；allocation problem必须覆盖final roots且数量由实际liveness/coexistence派生。direct comparison必须让DDR、
+  GS、completion、compute/recompute、tile utilization、NoC、Instr、
   SPM movement、descriptor/resource和critical-path全部selection-sensitive维度参与；`Unknown`不同则不可比，同一all-rank
   coordinator与global work ledger贯穿structured和terminal evaluation，不由实施checkpoint各自发布winner。

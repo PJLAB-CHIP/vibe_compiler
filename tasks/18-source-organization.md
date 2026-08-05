@@ -131,9 +131,10 @@ destination、无隐式allocation/result。Q29迁移审计使用过的`Structure
 
 层间语义变化继续由现有 Conversion libraries 拥有：source-to-tile rewrite library在06的每个frontier action
 通过便宜预筛后立即被调用，直接改写complete-rank actual clone；不消费跨pass保留的“已选定plan”，不生成
-standalone scope module再import。它始终维持current static rank entry恰好一个non-nested outer `wafer.tile.region`；
-多个traversal/loop nest、不同tile shape、逐root lifetime和internal DDR materialization由region body内的SCF/SSA/movement
-表达；region boundary禁止SPM root/value/alias，candidate generator与converter都不按traversal separation/spill创建sibling region。
+standalone scope module再import。它按selected action为current static rank entry物化一个或多个non-nested
+`wafer.tile.region` SPM residency domains；多个traversal/loop nest、不同tile shape、逐root lifetime、selective spill和
+cross-region materialization由SCF/SSA/movement表达。region boundary禁止SPM root/value/alias；candidate generator联合选择
+partition，converter只物化，不按旧scope或单个spill机械创建sibling region。
 tile-to-instruction conversion 只消费terminal
 complete-rank typed tile-dataflow IR，不重新搜索implementation、tile、encoding 或 route。
 
@@ -141,8 +142,9 @@ complete-rank candidate生命周期由`lib/Wafer/Transforms/Scheduling/`的compo
 all-rank coordination、terminal evaluation和hardware-cost selection协调；它不接受standalone task、per-task lowered module或artifact ordinal。
 structured component/tile/physical-version materialization留在`Transforms/PhysicalDataflow`，但必须在frontier action进入候选时立即改写
 actual clone，不作为final plan importer。Tile→Instr只在terminal complete-rank clone上调用；
-worker/slot完成后由`InstructionCompletionSynthesis`从current effects/ranges fresh重建，并只在真实outer-region/rank-entry
-epoch exit或其它typed observer cut闭合completion，不按内部traversal separation插join。whole-rank finalization、all-rank/whole-variant
+worker/slot完成后由`InstructionCompletionSynthesis`从current effects/ranges fresh重建：region root-release cut只闭合仍访问
+被释放SPM roots的work，typed observer和rank-entry terminal分别闭合相应observable obligations，与这些roots无关的
+typed event/control可继续传播；不按region容器或内部traversal separation插join。whole-rank finalization、all-rank/whole-variant
 coordination和原子bundle commit继续由现有Compiler owner承担，不新增candidate wire format或平行coordinator。
 上述文件名是稳定owner映射，不含任务号、checkpoint或case；实现时可按translation-unit规模合并同一职责，但不能跨层合并
 analysis、rewrite、conversion和coordination。
@@ -234,12 +236,12 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
 - tensor program到tile-region：candidate traversal与generation不再属于converter。Scheduling owner对proposal作便宜预筛后，
   立即调用physical-dataflow rewrite和source-to-tile conversion library改写complete-rank actual clone；body builder只消费
   当前自包含 structured IR 与当前action的compiler-private typed parameters，不遍历候选、不俙装scope module、不import；
-  每个current static rank entry只构造一个non-nested outer SPM-ownership/device-execution epoch region，内部schedule
-  cluster不物化成额外region。
+  按current action构造一个或多个non-nested SPM-residency regions；region partition与tile/residency/materialization一同物化，
+  但不形成跨pass plan或per-region artifact。
 - candidate selection：all-rank coordinator、唯一global work budget、actual clone frontier、terminal exact evaluation、
   hardware-cost comparison和atomic commit分离；不存在per-rank/component selected-candidate commit。每次rewrite后analysis从当前
-  clone重算，不能保留与clone重复的implementation/traversal-cut/tile/encoding/route/physical-version表；`tile.region`
-  partition不是candidate字段或搜索维度。
+  clone重算，不能保留与clone重复的implementation/region-partition/traversal-cut/tile/encoding/route/physical-version表；
+  partition的长期事实只存在于actual region/SSA/movement IR，不是sidecar字段。
 - instruction 到 target LLVM：typed target-call schema/preflight、movement/compute/communication lowering、结构化
   control lowering和 conversion legality/orchestration 分离；所有 lowering 继续消费同一 target registry，不复制 ABI 表。
 - numeric dependency conformance：canonical record parsing、受管 filesystem/provenance closure、loaded-object/runtime
@@ -261,7 +263,8 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
   standard MemoryEffect/custom SideEffects::Resource helper留在`lib/Wafer/IR/Instr/`。Q32.M已删除
   Wafer resource-effect record/interface helper及其boilerplate，没有提升新的公共helper协议。
 - tile-region 到 instruction 的 facade 只保留legality、compiler-private typed options和conversion orchestration；terminal
-  completion由post-worker统一owner在真实outer-region/rank-entry epoch exit fresh重建，不从内部traversal/loop边界推导；movement
+  completion由post-worker统一owner从final effects/ranges fresh重建；region root-release、typed observer与rank-entry terminal
+  各按自身witness验证，不从region容器或内部traversal/loop边界推导join；movement
   support/lowering、compute lowering、collective lowering 通过同一 conversion library 的私有接口协作。
 - target numeric 已按 current command/schema、capability/resolution 和 internal canonical helper 独立编译；
   `include/Wafer/Target/NumericSemantics.h` 的公共合同保持不变。
@@ -293,13 +296,15 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
   arena base，并适配到受管third-party core。任何third-party类型不得进入Wafer header。该typed core把compiler-managed `RootRef`、external
   `ValueOriginRef`和async task identity分开；该header与
   `wafer::memory_planning::detail`符号保持`WaferTransforms`私有，
-  两个planner只保留各自memory-space legality、resource limit、SPM sole-outer-epoch scope/DTE或DDR
+  两个planner只保留各自memory-space legality、resource limit、SPM residency-root/lifetime/coexistence/DTE或DDR
   descriptor/planning-scope语义和offset commit。
 - physical-dataflow synthesis不新增packing schema或memory-planning owner。每个rewritten clone继续调用同一
   `LifetimeAnalysis`、`StaticMemoryPacking`、`MiniMallocPacking` 和 SPM/DDR planner；它们只从当前 clone
   重建timeline、root、conflict、lifetime和placement，返回validated high-water并原子应用typed offsets。06 decision owner的
-  每个terminal rank-entry Instr variant只调用一次覆盖该entry唯一outer `tile.region`完整body的hardware-capacity
-  MiniMalloc owner API；不新增high-water tightening、bank relocation、
+  terminal rank-entry Instr variant必须从final actual IR的全部SPM roots、structured lifetime与control-flow coexistence
+  派生一个或多个fixed allocation problems，并由MiniMalloc owner API完成all-and-only root coverage、capacity与
+  pairwise-conflict验证；已证不重叠的region可复用3 MiB地址，可能并发的region必须合并考虑。problem/query数不是
+  协议。不新增high-water tightening、bank relocation、
   packing implementation、proof/cache schema或repair接口。physical-dataflow analysis
   不复制 clique/lifetime 逻辑，MemoryPlanning 也不反向依赖 Scheduling。rewrite invocation 使用的 `IRMapping`
   在 clone 修改或 analysis 失效后立即销毁，不能成为下游 side table。
@@ -339,7 +344,7 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
 
 本次审计同时确认instruction compute、LinalgExt collective、numeric capability/command、DDR planner与SPM planner仍是合理的
 单一family或单一planner，不因文件规模继续拆分。DDR/SPM的可重算lifetime mechanics已经收敛为同一typed analysis；
-SPM的whole-entry structured lifetime/sole outer ownership epoch/DTE/base-limit合同与DDR的whole-rank
+SPM的residency root/structured lifetime/coexistence/DTE/base-limit合同与DDR的whole-rank
 external-root/descriptor/resource-limit合同仍由各自planner拥有，
 没有把arena、diagnostic policy或accepted offset schema机械合并。组织检查器同时禁止两个planner重新引入timeline、root、
 conflict encoding、packing policy或first-fit的第二事实源。

@@ -540,8 +540,8 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
 - resource：至少两个真实slot、capacity刚好/超限、alignment/reservation、SPM/DDR planner重算；
   ordered-reuse共址在accepted offset后形成exact same-worker hazard，cross-worker/Unknown共址拒绝；
   queue depth不得改变slot count，SPM/DDR bank/color attr或candidate-level fixed-offset cost为negative；
-  SPM allocator内部可从accepted offset重算bank phase，只在由final IR派生的fixed allocation problems中自然遇到的
-  execution-equivalent hard-valid placements间作tie-break，不新增candidate/relocation，并验证它不改变
+  SPM allocator内部可从accepted offset重算bank phase，并在由final IR派生的fixed allocation problems的
+  既有单次搜索中，用它作deterministic offset ordering的末级soft preference；不新增candidate/relocation或额外query，并验证它不改变
   slot count、spill/resident、region partition、DDR movement、order或join；problem/query数量只作诊断。
 - frontier：baseline不可变，pipeline derivation不冒充ready-order，all-rank key一致，late rank失败原子淘汰，
   pre-target drain metric闭合后再Pareto，qualification-only Unknown candidate不泄漏到normal winner。

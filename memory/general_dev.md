@@ -313,7 +313,8 @@
   可分片计算，结果回到同一coordinated current-IR frontier后fresh重证。不形成per-rank shortlist、`N^R` tuple，
   不用ordinal/artifact kind恢复对应。parallel evaluation只并行已物化的独立all-rank variants，按stable insertion/
   hardware-cost/tie-break order消费；completion order不进selection。统计覆盖proposal、actual clone、terminal
-  Tile→Instr、per-entry SPM、per-variant DDR、wall和process peak RSS，仅作invocation-local观测。
+  Tile→Instr、从final actual IR派生的SPM allocation problem、DDR exact gate、wall和process peak RSS，仅作
+  invocation-local观测；problem/query数量是结果，不预设与entry或region一一对应。
 - optional dependency收口必须保留两个独立build：full-feature配置显式启用StableHLO/Shardy、source-built
   PyTorch/XLA、pinned-XLA helper、numeric、oneDNN和SystemC，要求对应required tests不再因dependency
   unavailable而unsupported；feature-off配置显式关闭这些feature并验证预期unsupported清单及core binary link closure。
@@ -535,21 +536,25 @@
   tile offsets/sizes candidate evaluation lowering 的 DDR `memref.subview` producer；instruction lowering
   仍不能根据 whole-boundary shape 自己恢复 subview，closed-loop traversal / tile-shape search 归
   candidate-selection。
-- SPM/DDR accepted offsets不属于layout本身。`wafer.tile.region`表达一个SPM ownership/device-execution epoch，不是
-  fusion cluster、tile schedule或搜索变量；当前static rank entry没有typed clobber/host handoff/第二次launch时恰好一个
-  non-nested outer region。不同traversal、tile shape、layout、root lifetime和internal DDR materialization都在其body内表达。
-  region boundary不得携带SPM memref/root/alias；只有未来显式不同epoch才允许多个region，且live data必须先store到DDR、
-  完成后在下一epoch load成新root。internal selective spill/streaming只结束目标root，matching reload建立新root，不结束
-  其它resident root。所有distinct roots由一个whole-function timeline/demand set在同一3 MiB physical arena内packing；
-  region exit不因容器本身插completion，但真实epoch exit必须证明pending external effects闭合。nested/async/parallel scope、raw escape和无法解析的
-  provenance失败；没有SPM arena/effect的closed scalar direct callee可穿过live resident，可能执行tile-region的
-  callee、external/unresolved或indirect call在缺少arena/resource summary时fail closed。DDR `wafer.ddr.offset`始终是arena-relative fact，没有typed
-  arena base binding时target不得把它当absolute address。physical size、alignment和bank span统一从shared
-  geometry helper推导；Q49终态每个terminal rank-entry Instr variant只做一次覆盖完整entry lifetime与3 MiB arena的
-  MiniMalloc query。actual high-water只报
-  capacity/headroom；coarse bank phase可从accepted offset按`(offset / 256) mod 8`重算，但只可打破solver自然遇到的
-  execution-equivalent hard-valid placement，不能新增query/search/relocation，更不得引入bank attr、spill、region或join；
-  当前代码是否已迁移以`tasks/progress.md`为准。
+- SPM/DDR accepted offsets不属于layout本身。`wafer.tile.region`表达SPM驻留域，不是rank execution epoch、fusion
+  cluster或固定单例容器；一个rank entry可以有一个或多个region，region的输入/输出边数量不构成协议限制。partition必须和
+  traversal、tile shape、layout/version、residency及materialization在同一actual-IR frontier中联合搜索。region边界本身
+  不插DDR store/reload、GS、join或completion；但SPM root/alias不得跨region，任何cross-region data必须在actual IR中
+  显式store到DDR、完成相关SPM access，再load为新SPM root。与被释放roots无关的typed pending work可继续；
+  是否需要其它同步由实际SSA/storage/effect与observer决定。selective spill/streaming只结束目标root，
+  matching reload建立新root，它与是否切region正交。
+  function-boundary bufferization和其它会改变root/lifetime的rewrite完成后，从final actual Instr IR的rank-local 3 MiB
+  SPM resource、roots及liveness/coexistence/conflict关系派生一个或多个fixed allocation problems；problem集合必须
+  all-and-only覆盖current roots，
+  每个root恰好归属一个problem，
+  可能共存且共享同一physical arena的roots不能被错误拆开。nested/async/parallel scope、raw escape和无法解析的provenance
+  仍fail closed；没有SPM arena/effect的closed scalar direct callee可以穿过live resident，可能执行tile-region的callee、
+  external/unresolved或indirect call在缺少arena/resource summary时fail closed。DDR `wafer.ddr.offset`始终是arena-relative
+  fact，没有typed arena base binding时target不得把它当absolute address。physical size、alignment和bank span统一从shared
+  geometry helper推导；MiniMalloc是每个fixed problem的production packing backend，problem/query数量由final IR决定，
+  不绑定entry或region数量。actual high-water只报capacity/headroom；coarse bank phase可从accepted offset按
+  `(offset / 256) mod 8`重算并作为hard-valid placement之间的soft preference，不能改变feasible set、capacity结论，
+  更不得触发spill、切region或join；当前代码是否已迁移以`tasks/progress.md`为准。
   runtime object、physical address和packet字段不得写回planning IR。
 - reduction语义恢复不能只看yielded op class。使用`mlir::matchReduction`或等价结构匹配，证明单一combiner
   的operands精确连接reduced value与accumulator。未拆分source reduction保持原合同；candidate把一个reduction
@@ -607,9 +612,11 @@
   tie-break，不再运行独立Q39 profitability gate。
 - all-rank correspondence只从current actual IR的logical rank、typed collective/peer parameters、SSA/effects、payload/range和
   control-flow instance fresh重证。ordinal、scope policy、`RankArtifactKind`、slot metadata和attempt plan均不是终态语义。
-- function-boundary bufferization必须在terminal memory gate前完成。每个terminal rank-entry Instr variant对其全部
-  `tile.region`恰好执行一次whole-entry SPM solve；每个complete all-rank variant恰好执行一次whole-variant
-  DDR exact planning。失败销毁整个variant；新候选从无placement parent物化，不在同一variant上重试packing。
+- function-boundary bufferization必须在terminal memory gate前完成。每个terminal rank-entry Instr variant从current
+  actual IR派生一个或多个liveness/coexistence fixed SPM allocation problems，以MiniMalloc逐problem求解，
+  并验证problem集合all-and-only覆盖全部roots；solver调用数不与entry或`tile.region`数量绑定。
+  complete all-rank variant随后通过current-IR DDR exact
+  planning。任一problem或下游gate失败都销毁整个variant；新候选从无placement parent物化，不复用stale placement。
 - structured lifetime path condition必须用sparse sorted decision set；固定宽度bitmask会把超过64个branch/loop的
   合法程序误判unsupported。decision id仍要checked分配，标识域或编译资源耗尽时结构化失败。
 - clone/rewire/erase operation后，不得继续使用从旧IR缓存的`mlir::Value`、boundary或root列表；应从当前clone重新
@@ -630,9 +637,9 @@
   blocking wait；后者可报告本地DTE错误。compiler/CRT不能伪造device timeout能力：本地status由target ABI写回，
   timeout必须由launch watchdog观察，跨rank peer failure由runtime completion DAG合成。
 - selected instruction handoff只有一条路径：C2 actual Tile clone在C3完成complete-entry Tile→Instr和
-  function-boundary bufferization，派生worker/slot/order variant，erase-all后fresh重建completion，再执行该terminal
-  rank-entry Instr variant唯一的whole-entry SPM solve。all-and-only ranks形成complete variant后执行唯一whole-variant
-  DDR/transport/ABI gate。不存在candidate-local早期placement、task commit清offset、rank-frontier replanning或debug
+  function-boundary bufferization，派生worker/slot/order variant，erase-all后fresh重建completion，再从该terminal
+  rank-entry Instr variant派生并求解一个或多个fixed SPM allocation problems。all-and-only ranks形成complete variant后执行
+  current-IR DDR/transport/ABI exact gate。不存在candidate-local早期placement、task commit清offset、rank-frontier replanning或debug
   direct lowering代替selector；typed materializer API的logical rank只是current IR语义，不是候选对应key。
 - structured materializer在DPS `outs`固定后会吸收task内部pure static support producers：`arith.constant`、
   `tensor.empty`、static `tensor.extract_slice` / `tensor.insert_slice`、`tensor.expand_shape` 和
@@ -648,8 +655,8 @@
   `split_count == rank_group.size()`，把每个 split slot 先 extract 成连续 SPM comm buffer，DTE 只收发
   连续 buffer，recv 后再 insert 到 concat result slot；当前没有 ring/blocked schedule selector、
   raw non-unicast DTE 或 cross-card route binding。
-- communication schedule不是public pass option或IR attr。production candidate owner从同一tile-region parent
-  独立clone并用typed conversion参数物化Direct/Ring all-gather、Direct/Ring reduce-scatter和Ring/Tree
+- communication schedule不是public pass option或IR attr。production candidate owner从同一unplaced actual parent
+  独立clone，并与region partition一起用typed conversion参数物化Direct/Ring all-gather、Direct/Ring reduce-scatter和Ring/Tree
   all-reduce；每个clone都要重新执行instruction、SPM/DDR、verifier与cost gate。IR-local replay可以显式传
   typed参数，但不能恢复用户selector。展开后只保留`wafer.instr.dte_*`/local compute body，不保存algorithm attr。
 - execution topology的rank mapping与hop事实只由共享`ExecutionTopologyAnalysis`从current module唯一
@@ -818,12 +825,13 @@
   不使用短wall-clock timeout；只在`ResourceExhausted`时运行deterministic first-fit安全fallback。完整求解的
   `ProvenInfeasible`才能映射capacity failure，first-fit NoFit不是不可行证明。共享header保持owner library私有，
   不形成跨pass side table或新IR attr。
-- fixed lifetime/size/alignment/conflict冻结后，MiniMalloc是production packing的唯一backend；traversal fusion/materialization、
-  tile/layout/residency仍由actual-IR frontier决定，不编码进ILP/SMT/CP-SAT。小图用仓库内
-  exhaustive/property test验证adapter和validator，不设离线小图solver oracle。每个terminal rank-entry Instr variant
-  只做一次覆盖完整entry lifetime与arena的capacity
-  query；single-query feasible不证明high-water最优，但也不因此反复收紧arena end。只有真实captured problem持续
-  `ResourceExhausted`时，才做一次性外部solver诊断，不回写IR或影响完成门禁。
+- final actual IR中的lifetime/size/alignment/conflict冻结后，按rank-local SPM resource与conflict connected
+  components派生一个或多个fixed allocation problems，MiniMalloc是每个problem的production packing backend；
+  traversal、region partition、
+  fusion/materialization、tile/layout/residency仍由actual-IR frontier决定，不编码进ILP/SMT/CP-SAT。小图用仓库内
+  exhaustive/property test验证adapter和validator，不设离线小图solver oracle。query数量由派生出的fixed problems决定；
+  feasible不证明high-water最优，但也不因此反复收紧arena end。只有真实captured problem持续`ResourceExhausted`时，
+  才做一次性外部solver诊断，不回写IR或影响完成门禁。
 - compiler-managed allocation `RootRef`、caller-owned/external `ValueOriginRef`和async task identity是三类不同事实。
   async handle的root union只能延长lifetime；不能证明某个task已完成。external origin在最终semantic root上去重，未知
   tracked producer不得退化成external root。
@@ -837,13 +845,18 @@
   loop动态task加入captured group、SelectLike distinct task和non-identity-preserving loop recurrence拒绝；if result只完成
   origin存在于对应branch path的task。未await task与unsupported identity flow必须用不同failure class。
 - loop body allocation或task一旦通过memref/async handle跨backedge携带，就不是单个静态instance；没有显式
-  multi-instance/ping-pong placement时fail closed。SPM root只存在于一个ownership epoch；当前rank entry的所有traversal
-  都位于同一outer region，selective spill只结束目标root并由reload建立新root。全部distinct roots在同一whole-function
-  timeline和physical arena中规划。nested tile-region仍可能覆盖outer live buffer，因而当前
-  结构化拒绝，同时保守拒绝全部loop-carried async token。
-- whole-rank SPM high-water必须从全部accepted allocation的`offset + physicalBytes`相对arena base重算，不能求和或取
-  per-loop/component局部peak；它只作capacity/headroom诊断。provenance closure只在ownership epoch内延长同一root；
-  region boundary上的任何SPM data都必须拒绝，不能为修补high-water而恢复隐藏resident handoff。
+  multi-instance/ping-pong placement时fail closed。rank entry可以包含一个或多个SPM residency regions。analysis不能看到
+  region就人为截断仍有use/pending access的root；这种IR应因SPM escape或missing completion被拒绝。合法selected boundary必须
+  已经结束本region的SPM roots，cross-region data显式materialize到DDR并在后region建立新root。selective spill只结束
+  目标root并由reload建立新root，
+  与region partition正交。final actual IR中的全部roots必须按rank-local SPM resource及
+  liveness/coexistence/conflict关系完整归入一个或多个fixed allocation problems；无法证明两个scope
+  可独立使用physical arena时不得拆成独立problem，同时保守拒绝全部
+  loop-carried async token。
+- whole-rank SPM high-water必须从共享同一physical arena的全部accepted allocation之`offset + physicalBytes`重算，不能求和或取
+  per-loop/component局部peak；它只作capacity/headroom诊断。provenance closure沿current SSA/effect延长同一root，但不得
+  穿过residency-region boundary恢复隐藏resident handoff。boundary也不是liveness的伪证；合法IR必须在边界前以实际
+  use/effect/completion结束SPM root，需跨界的data已显式DDR materialize。
 - DDR module同时含function planning scopes和function外compiler-managed allocation时没有单一timeline；必须拒绝mixed scope，
   不能因发现func.func就静默跳过top-level allocation。
 - static memory-space type不是storage provenance。`to_memref`、memory-space cast、ViewLike/control-flow result及
@@ -912,16 +925,18 @@
 ## Bounded actual-clone selection
 
 - 在任何candidate generation前建立all-rank coordinator、reserved baseline和唯一deterministic work budget。预算同时
-  限制proposal、actual clone、terminal Tile→Instr、per-entry SPM、per-variant DDR和peak live clones；不把cap拆到
+  限制proposal、actual clone、terminal Tile→Instr、SPM allocation problems、DDR exact gates和peak live clones；不把cap拆到
   rank/component/layout/worker后相乘，也不允许cap前无界生成。coordinator在generation前为baseline mandatory exact gates
   及有限repair预留credits；非baseline terminal action只有能预留其required terminal evaluation upper bound时才准入，
   generation不能挪用预留。coordinator必须跨structured与terminal evaluation持续拥有frontier和budget。
 - proposal只在clone前做typed legality和safe lower-bound rejection。一旦需要进入frontier/cost/gate，必须立即
-  在complete-rank actual clone的既定outer region内物化traversal、tile、layout/version、residency/movement和structured obligations，
+  在complete-rank actual clone内联合物化region partition、traversal、tile、layout/version、residency/movement和structured obligations，
   然后销毁proposal。PBQP/factor reducer只删除proven illegal，或future-interface、physical versions、SPM lifetime/capacity、
   DDR、GS、completion、compute/recompute、NoC、descriptor/resource与全部`Unknown` disposition完全等价的项。
-- 每条可连接relation至少在同一outer region内保留fused-small-tile、separated-large-tile和selective-spill三种相反形态
-  到terminal shortlist。schedule separation与DDR materialization正交；region数、spill数、tile大小和SPM high-water都不能单独作为winner key。
+- 每条可连接relation至少保留`single-region fused-small-tile`、`multi-region separated-large-tile`、
+  `same-region separated traversal`和`selective spill`到terminal shortlist。schedule separation、region partition、
+  selective spill与DDR materialization彼此正交；region数、spill数、
+  tile大小和SPM high-water都不能单独作为winner key。
 - direct dominance要求aggregate DDR、max-rank GS、max-rank completion、compute/recompute、tile utilization、NoC、Instr、
   SPM movement、descriptor/resource和critical-path等全部selection-sensitive维度不差且至少一项更好；不同`Unknown`
   disposition使states不可比较。final selection再由当前校准的hardware cost model对fully gated all-rank states排序。不能遇到第一个baseline
@@ -1085,10 +1100,11 @@
 - SCF流水会把原始index改写成`iv + stage displacement`等静态表达式。DDR planner、Target preflight和其它
   downstream consumer应共享一个overflow-safe、fail-closed的静态index range evaluator，支持constant-bounded
   induction variable及受限add/sub/mul/div；不能一个层接受而另一个层仍只认bare IV。
-- 不携带resident data的same-worker pending NCC completion frontier可跨statically non-empty nested loop和普通结构节点传播。
-  loop container、loop-local allocation和纯pointer permutation不是drain点；同一SPM root的后续same-worker issue在当前
-  ownership epoch内接管有序访问责任。真实epoch boundary前必须把live data显式DDR materialize并闭合pending effect，
-  不能靠region容器隐式完成。conditional region、Direct DTE/Kcore observer、cross-worker冲突、
+- same-worker pending NCC completion frontier可沿actual SSA/effect跨statically non-empty nested loop和普通结构节点传播；
+  若pending work不再访问被释放的SPM roots，其typed completion state也可跨`tile.region`边界。loop container、纯pointer
+  permutation和region边界都不是device-wide drain点；但同一SPM root及仍访问它的pending issue不得跨region。只有真实
+  root release/reuse、observer/publication和entry terminal按各自witness要求对应completion。region容器既不能隐式完成同步，也不能
+  隐式触发DDR materialization。conditional control flow、Direct DTE/Kcore observer、cross-worker冲突、
   root/range Unknown仍必须fail closed，不能为了让planner通过而补逐iteration waitfinish。
 - current target identity由compiler固定。候选生成必须离线确定，
   不得读取实卡身份、Q9 profiler、PMU、runtime历史或本地校准缓存；板端结果只能离线验证实现，若要改变静态

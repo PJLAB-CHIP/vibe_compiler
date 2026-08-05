@@ -1,32 +1,31 @@
 # Wafer SPM Memory Planning Design
 
-状态：2026-08-05同步SPM ownership/device-execution epoch和SPM1单次分配合同。本文覆盖instruction IR上的SPM
-lifetime/range planning；async issue的全部read/write resource必须活到可信completion。Q49/C1终态中，一个
-`wafer.tile.region`拥有一个完整SPM epoch，每个complete static rank entry恰好一个
-non-nested region。不同traversal、tile shape、融合/拆分、selective spill/recompute都在该epoch内部表达，region
-partition不是candidate变量。typed opaque SPM clobber/device ownership handoff和multi-region属于未来IR扩展，当前输入拒绝。
+状态：2026-08-05同步SPM residency-region和SPM1 fixed-problem分配合同。本文覆盖instruction IR上的SPM
+lifetime/range planning；async issue的全部read/write resource必须活到可信completion。Q49终态中，`wafer.tile.region`
+表达SPM residency domain，每个complete static rank entry可有一个或多个non-nested regions。region partition、traversal、
+tile shape、selective spill/recompute和cross-region materialization已由06物化进actual candidate；typed opaque SPM clobber仍拒绝。
 nested/async/parallel scope和缺少arena/resource summary的调用保持fail closed。
 实现状态以`tasks/progress.md`为准。accepted fact为offset-only `wafer.spm.offset`；size、alignment和SPM1
 bank phase均由memref type、layout、accepted offset和target policy重算。allocator对candidate generator提交的
-每个terminal complete-rank Instr variant使用一次覆盖该entry全部epoch roots的whole-entry 3 MiB fixed-capacity
-MiniMalloc query和独立validator；即使未来存在typed multi-epoch也不按region重复query。allocator不识别
-spill/resident策略类别；因此一个16-rank all-rank variant会有16个彼此独立但原子汇总的SPM solves。
+terminal complete-rank Instr variant，从全部roots、control-flow coexistence与pairwise conflict派生
+all-and-only fixed allocation problems，并用3 MiB MiniMalloc与独立validator求解。已证明不重叠的regions/roots可复用地址，
+可能重叠的regions必须联合满足容量；allocator不识别或改变spill/resident/partition策略。problem/query数量只作work diagnostic，
+不与rank entry或region数量绑定。
 actual high-water只作capacity/headroom诊断，不触发反复收紧query，也不作为06的主Pareto维度。bank phase只允许进入
-solver自身自然遇到的execution-equivalent、hard-valid同值选择顺序；不得新增query、relocation sweep或candidate分支。
+hard-valid placement间的soft preference；不得改变hard feasible set或新增candidate/relocation分支。
 
-当前实现与本文终态合同仍有明确缺口：MiniMalloc core已能对一个function timeline做单次packing，但production
+当前实现与本文终态合同仍有明确缺口：MiniMalloc core已能对一个function timeline做packing，但production
 仍会在standalone task候选上提前执行Tile→Instr/SPM/DDR，commit后清offset并再跑whole-rank SPM；当前
-`tile.region` ODS/verifier也尚未禁止SPM operand/result。C1负责切换complete-rank调用边界并收紧region合同，C3负责将
-terminal exact evaluation收口为每rank-entry variant一次whole-entry SPM和每all-rank variant一次DDR/transport/ABI。
-在这些checkpoint实现前，本文的“恰好一个region”“恰好一次”和“边界SPM为零”都是completion contract，
-不是对现行production的完成声明。
+`tile.region` ODS/verifier也尚未禁止SPM operand/result。C1负责切换complete-rank调用边界并收紧multi-region合同，C3负责
+从final current IR派生allocation problems并原子执行SPM/DDR/transport/ABI exact gates。在这些checkpoint实现前，本文的
+“all-and-only root coverage”和“边界SPM为零”是completion contract，不是对现行production的完成声明。
 
 本文定义Wafer SPM bufferization、rank-local allocation和storage verification。它服务于complete-rank
-tile-dataflow candidate的合法性搜索，并在完整static rank entry上统一验证SPM epoch、structured loop和SSA data edge的
-memory space、range、lifetime和completion effect。`wafer.tile.region`是SPM ownership/device-execution epoch，不是
-tile-scheduling cluster、独立physical arena或可搜索partition。whole-entry planner一次放置entry内全部roots，并只在
-lifetime不重叠时复用physical offset。region边界不得携带SPM memref/root/alias或pending event；所有data argument/result
-必须是DDR，epoch exit是terminal completion validation boundary。
+tile-dataflow candidate的合法性搜索，并在完整static rank entry上统一验证SPM residency regions、structured loop和SSA data
+edge的memory space、range、lifetime、coexistence和completion effect。`wafer.tile.region`不是私有physical arena、launch或
+solver query；planner从完整rank current IR派生allocation domains，只在证明lifetime不重叠时复用physical offset。region边界
+不得携带SPM memref/root/alias；所有data argument/result必须是DDR。边界本身不插movement或join，只验证没有仍访问被释放
+SPM roots的pending work，entry terminal另行闭合observable completion。
 SPM memory planning 的 instruction-level 输入合同由
 `tasks/11-instruction-ir.md` 定义；本文只消费该层暴露的
 Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op。
@@ -61,7 +60,8 @@ selected physical encoding / transfer materialization
   -> instruction-level IR with unplaced Wafer-tagged memref values
   -> storage requirement collection
   -> liveness/effect analysis
-  -> one whole-entry 3 MiB fixed-capacity SPM packing across all epoch roots + shared physical geometry/range verification
+  -> derive all-and-only fixed SPM allocation problems from roots/lifetime/coexistence
+  -> 3 MiB fixed-capacity packing + shared physical geometry/range verification
   -> candidate target-ABI address/range/narrowing preflight before commit
   -> target-codegen derivation from the same committed facts; runtime only binds verified manifest ABI slots
 ```
@@ -85,19 +85,20 @@ Pipeline position:
   改写后的当前IR失效重算。SPM planner
   每次只接收candidate generator已经显式物化的一份完整whole-rank clone；输入不得由多个已经独立placement的task artifact
   拼接，所有offset、completion和lifetime facts必须从同一个完整rank clone fresh产生。candidate来自MLIR-native rewrite
-  有界组合的tile schedule/implementation/encoding/physical-version/transfer/residency/spill/recompute/
-  buffering/order alternative；region partition不属于该组合。当前每个static rank entry必须恰好有一个non-nested
-  `tile.region`并拥有该entry epoch的全部SPM roots；额外/nested region或typed clobber/handoff输入当前直接拒绝。输入包含actual DDR
+  有界组合的region partition/tile schedule/implementation/encoding/physical-version/transfer/residency/spill/recompute/
+  buffering/order alternative。当前每个static rank entry含一个或多个non-nested `tile.region`；nested region、SPM root/alias
+  跨界或typed opaque clobber输入直接拒绝。输入包含actual DDR
   tile views、unplaced `memref<..., #wafer.memory<spm, layout>>` values，以及selected physical encodings、
   explicit materialization、effect/order 和 target SPM policy。
 - Current stage responsibility:
   在每个complete rank entry上对`#wafer.memory<spm, layout>` memref做SPM memory planning，
   计算offset/end、alignment、lifetime/reuse、must-alias/must-not-alias、reserved range和range-end
-  verification；对每个terminal complete-rank Instr variant（一个已固定worker/slot/order的完整rank entry）恰好运行
-  一次覆盖whole entry全部SPM roots的3 MiB fixed-capacity MiniMalloc query并独立验证；
+  verification；对每个terminal complete-rank Instr variant（一个已固定worker/slot/order的完整rank entry）从current
+  roots、control-flow coexistence与conflict派生all-and-only fixed allocation problems，使用3 MiB
+  fixed-capacity MiniMalloc并独立验证；
   用显式generic
   async wait、DTE exact token/wait、typed NCC ordered-pending/
-  participant join和epoch-exit terminal completion proof证明该rank所有issue completion，并在variant-set gate汇总所有rank的
+  participant join、root-release与entry-terminal completion proof验证相关issue completion，并在variant-set gate汇总所有rank的
   通过结果。返回validated placement和从该placement重算的actual high-water/headroom诊断。每个candidate clone独立规划、
   独立失败，任何候选的offset、alias或completion fact都不能成为其它候选的输入或fallback事实。
 - Output artifact / IR:
@@ -113,9 +114,9 @@ Pipeline position:
   whole-variant DDR exact evaluation、physical transport acceptance、all-rank transport verification和closed-loop
   whole-variant candidate driver及Q16 typed rank-record validation；atomic commit后target LLVM消费
   committed IR/resource bindings，package只消费committed executable + Q17 verified staged target module
-  records，runtime只消费validated manifest。function-boundary bufferization必须在本文唯一packing query之前完成；
-  终态production不存在先对rank frontier执行一次planner、后面再调用的两次路径。失败只拒绝该terminal rank-entry Instr
-  variant；新resource-aware alternative必须从无placement Tile/Instr parent重新物化，且作为新variant只执行它自己的一次query。
+  records，runtime只消费validated manifest。function-boundary bufferization必须在本文fresh allocation-problem derivation之前完成；
+  终态production不存在先对rank frontier写入placement、后面复用stale offsets的路径。失败只拒绝该terminal rank-entry Instr
+  variant；新resource-aware alternative必须从无placement Tile/Instr parent重新物化并fresh派生自己的problems。
 - User-level driver / named pipeline:
   Q16以后由同一
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --launch-kind={kernel|model}`
@@ -127,15 +128,15 @@ Pipeline position:
 - Explicit non-goals:
   不选择 instruction form、不改变selected implementation/encoding/transfer realization、不分配 DDR allocation、
   不生成 target CRT call 或 packet；
-  不把任一traversal/task/epoch的offset独立提交，也不把hardware `busytable`当作completion/lifetime语义；
-  full-shape initial candidate与其它tiled candidates运行同一whole-entry SPM planning和whole-variant gate，不设bypass；
+  不把任一traversal/task/region的offset独立提交，也不把hardware `busytable`当作completion/lifetime语义；
+  full-shape initial candidate与其它tiled candidates运行同一allocation-domain SPM planning和whole-variant gate，不设bypass；
   不依据presumed rank equivalence复用或跳过任何rank plan；allocator不决定哪些handoff应resident，不生成
   implementation/transfer/physical-version/per-edge frontier，也不通过给两个distinct roots分配同一offset来
   模拟copy消除，不把某个unsafe consumer拆成partial promotion；
-  bank phase只可作为MiniMalloc在单次query中自然遇到的、hard outcome与actual high-water均相同placement之间的
-  确定性末级顺序；不得新增solver query、relocation sweep或candidate branch，不得把hard-valid placement变成failure，
+  bank phase只可进入现有fixed-capacity search的deterministic offset ordering，作为hard-valid choices之间的末级
+  soft preference；不得把hard-valid placement变成failure，
   也不得改变
-  resident/spill、epoch数量、DDR movement、worker/order或participant join；不新增bank/color attr或side table；
+  resident/spill、region partition、DDR movement、worker/order或participant join；不新增bank/color attr或side table；
   allocator本身不拥有candidate objective、不生成IIS，不让solver trace或pressure witness成为accepted attr/side table。
   `Feasible`/`ProvenInfeasible`/`ResourceExhausted`、validated placement、high-water/headroom diagnostic和typed
   failure是唯一反馈；allocator不执行high-water bisection/quality probes。选择、邻居生成和stop policy由06拥有。
@@ -147,14 +148,14 @@ Pipeline position:
   token/value由identity-preserving handle flow上的`async.await`或direct group的`async.await_all`收口，DTE由
   exact token/`wafer.instr.dte_wait`收口；本地NCC issue按typed worker进入ordered-pending frontier，同worker
   RAW/WAR/WAW后继可接管访问责任，首个Kcore、DTE、不同worker、unsafe reuse、publication或terminal cut前必须有
-  覆盖实际participant的join。completion只在outer epoch exit验证，且所有exit path都没有pending event；普通
-  traversal/loop/spill点不形成terminal validation boundary。safe pre-existing loop recurrence可规划，
+  覆盖实际participant的join。completion在root释放/reuse、真实observer和entry terminal按witness验证；region boundary不自动
+  生成join，普通traversal/loop/spill点不形成terminal validation boundary。safe pre-existing loop recurrence可规划，
   loop-body allocation/task的动态实例或无法证明的async handle flow结构化拒绝。
-  单次fixed-capacity solver在alignment hole、disconnected component、empty/zero-byte和first-fit反例上保持三态结果与独立
+  fixed-capacity solver在alignment hole、disconnected component、empty/zero-byte和first-fit反例上保持三态结果与独立
   placement validator；resource exhaustion只按Q34既有安全fallback合同处理，不改写成capacity事实。
   任一task/rank失败都使该candidate所属的
   整个 variant clone 不可提交。即使 distributed 层认为 ranks 等价，也必须验证每个 static rank entry的
-  whole-entry epoch coverage和唯一packing query。
+  all-root/all-domain coverage；problem/query count只作预算审计。
 ```
 
 ### 1.2 Shared Recomputable Analysis Boundary
@@ -174,27 +175,27 @@ generic async合同以task identity传播pending completion：`async.call`产生
 `!async.value`必须由path-covering `async.await`完成；direct `async.create_group` handle可以通过
 `async.add_to_group`收集已存在task，再由`async.await_all`完成。mutable group alias、loop body动态创建task后加入
 captured group、选择不同task identity的`SelectLike`和非identity-preserving `scf.for`均无法仅凭handle root union
-证明完成，必须以`unsupported_async_completion_flow`拒绝；epoch exit仍有pending task则以
+证明完成，必须以`unsupported_async_completion_flow`拒绝；entry terminal仍有pending task则以
 `missing_async_completion`拒绝。`scf.if`只有在task origin本来只存在于对应branch path时，result wait才能完成它；
 在分支前已经发起的不同task不能靠if选择隐式取消未选task。
 
-SPM planning以terminal rank entry为scope，对whole entry的全部roots统一收集demand、path-aware lifetime和
-physical arena placement，并恰好运行一次3 MiB MiniMalloc query。entry必须恰好一个non-nested `wafer.tile.region`；
-不同traversal、tile shape、融合/拆分、selective spill/recompute全部留在该epoch内部。额外/nested region及typed
-clobber/handoff输入当前直接拒绝。
+SPM planning以terminal rank entry为scope，对完整current IR的全部roots统一收集demand、path-aware lifetime、coexistence和
+physical arena facts，再形成all-and-only fixed allocation problems。entry含一个或多个non-nested `wafer.tile.region`；nested
+region、SPM root/alias跨界及typed opaque clobber输入拒绝。region结构不预设problem/query数量。
 
-planner在outer epoch内部跟踪typed worker NCC frontier与Direct DTE token：same-worker exact RAW/WAR/WAW可在安全loop
-backedge保持ordered pending；internal spill只结束目标root，不改变其它root lifetime。为真实reuse、observer或worker-domain
-切换出现的typed join/wait会更新pending state，但terminal completion proof只在outer epoch exit执行；该exit必须完成全部generic
-async task、DTE token和NCC participant。共享generic async analysis不替代DTE
-origin/wait legality，也不能把DDR的whole-entry/external-root/resource-limit语义反向引入SPM。
+planner跨完整entry跟踪typed worker NCC frontier与Direct DTE token：same-worker exact RAW/WAR/WAW可在安全loop backedge保持
+ordered pending；selective spill只结束目标root，不改变其它root lifetime。为真实reuse、observer或worker-domain切换出现的typed
+join/wait会更新pending state；region exit只要求仍访问其SPM roots的work完成，entry terminal完成全部observable generic async task、
+DTE token和NCC participant。共享generic async analysis不替代DTE
+origin/wait legality，也不能把DDR的complete-variant/external-root/resource-limit语义反向引入SPM。
 
-终态实现的动态执行scope只接受由`func.func`、`scf.if`和`scf.for`顺序拥有的non-nested epoch region；当前
-production的region数量必须为一。额外typed clobber/handoff epoch属于未来IR扩展，当前输入直接拒绝；async/parallel/unknown region owner也拒绝。
+终态实现的dynamic ownership只接受由`func.func`、`scf.if`和`scf.for`结构化拥有的non-nested residency regions；
+一个entry可有一个或多个，typed opaque clobber和unknown region owner拒绝。若不同regions可能并发，其roots按真实coexistence
+联合规划，不能各自假设独占3 MiB。
 SPM value不得成为`func.func`或tile-region边界；tile-region的所有data I/O只允许DDR value/view（function external或
-compiler-managed spill），non-data control也不能携带pending completion。唯一的helper边界是defined
+compiler-managed materialization），non-data control不能携带SPM alias；与SPM无关的pending completion按typed合同传播。唯一的helper边界是defined
 `async.func`的SPM formal，由tile-local call site传入且callee body须独立提供可验证的DTE/local/generic async
-effect/token relation，最终pending completion仍由caller所在epoch exit统一验证。active/async/parallel SPM scope中的
+effect/token relation，最终pending completion由caller真实observer/root release/entry terminal验证。active/async/parallel SPM scope中的
 indirect、external/unresolved或call graph上可能执行另一tile-region的
 direct `func.call`拒绝；whole-rank lifetime证明某个SPM allocation在兼容路径上跨过顶层/structured
 `func.call`或`func.call_indirect`仍live时，callee可能执行tile-region、external/unresolved或indirect call也
@@ -218,9 +219,9 @@ live segment，不靠symbol名字判断callee行为，也不形成跨过程summa
 
 输入：
 
-- transformation-local whole-variant candidate clone 中的完整 static rank programs；每个rank entry恰好一个non-nested
-  `wafer.tile.region`，其中包含全部traversal、tile shape、融合/拆分、selective spill/recompute及SPM roots。
-  额外/nested region或typed clobber/handoff输入直接拒绝；rejected clone必须整体丢弃。
+- transformation-local whole-variant candidate clone 中的完整 static rank programs；每个rank entry含一个或多个non-nested
+  `wafer.tile.region` SPM residency domains，其中包含selected traversal、tile shape、residency与materialization。nested region、
+  SPM root/alias跨界或typed opaque clobber输入直接拒绝；rejected clone必须整体丢弃。
   SPM memory planning 不直接消费
   target-abstract tile-region IR，而消费instruction legalization生成的instruction-level IR with unplaced
   Wafer-tagged memref values。
@@ -230,9 +231,9 @@ live segment，不靠symbol名字判断callee行为，也不形成跨过程summa
 - `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
   token/wait 和 staging storage。
 - target policy：SPM range、reserved range、alignment和bank-phase soft preference。
-- outer epoch内的structured control-flow、SPM SSA/alias relation、op effect、token、participant join/exact wait/barrier，
-  以及其真实exit上的terminal completion boundary和variant中all-and-only rank coverage。普通
-  traversal/loop/spill点不是completion validation boundary；outer epoch exit必须清空全部pending state。
+- 完整entry内的structured control-flow、SPM SSA/alias relation、op effect、token、participant join/exact wait/barrier，
+  以及root release、真实observer、entry terminal和variant中all-and-only rank coverage。普通traversal/loop/spill/region
+  结构不是completion动作来源；region exit只检查仍访问其SPM roots的pending state。
 
 输出：
 
@@ -358,14 +359,15 @@ V0 规则：
   multi-instance/ping-pong placement，必须fail closed。
 - 非repeatable branch buffer只有在control-flow证明互斥时才能复用；`scf.for`内的分支每个动态iteration可重新选择，
   其相反branch path对packing仍按may-overlap处理。
-- epoch内的nested control-flow不自动截断lifetime；`wafer.tile.region` isolation禁止隐式capture，且SPM
-  operand/result不得形成epoch-boundary data edge。同一resident allocation root的yield/result/consumer链必须保留在
-  一个epoch；selected spill结束该root，matching reload仍在同一epoch建立新root，而其它live root不受影响。
-  typed clobber/handoff和额外/nested `wafer.tile.region`当前结构化拒绝，不能从
-  名字、task顺序或isolation trait恢复跨epoch SPM alias。
+- region内的nested control-flow不自动截断lifetime；`wafer.tile.region` isolation禁止隐式capture，且SPM operand/result
+  不得形成cross-region data edge。同一resident allocation root的yield/result/consumer链必须保留在一个region；selected
+  spill结束该root，matching reload建立新root；它们在同一region内时不影响其它live roots，在下一个region时则
+  要求selected cut已另行结束或materialize切口上的全部SPM roots。typed opaque clobber和
+  nested `wafer.tile.region`结构化拒绝，不能从名字、task顺序或isolation trait恢复跨region SPM alias。
 - 普通traversal、loop、spill或local materialization结束不验证terminal completion。为reuse或observer执行的typed
-  join/wait只更新epoch内pending set；outer epoch exit必须用typed participant join/exact wait收口所有path上的
-  pending NCC/DTE/generic async event，也不能用“后续package/runtime会等待”
+  join/wait只更新current pending set；region exit只验证仍访问其SPM roots的work已被显式typed completion收口，
+  region结构本身不插入或执行wait/join；entry terminal用typed participant join/exact
+  wait收口all-and-only observable pending NCC/DTE/generic async event，也不能用“后续package/runtime会等待”
   作为lifetime证明。
 
 reuse 分类：
@@ -377,7 +379,7 @@ reuse 分类：
 ## 6. Allocation Contract
 
 SPM allocation的职责是在一个complete static rank variant、指定final candidate physical-dataflow realization和
-selected instruction lowering下，对whole entry全部epoch roots的`#wafer.memory<spm, *>` memref做一次3 MiB放置。
+selected instruction lowering下，对全部SPM roots按真实lifetime/coexistence形成fixed problems并在3 MiB arena中放置。
 它不负责全局寻找最佳task/dataflow schedule，不选择compute/movement instruction form，也不把失败方案materialize
 到主 IR。
 
@@ -421,8 +423,8 @@ V0 event model：
 - loop backedge 让loop-carried value跨iteration live；body-local allocation/task被携带时拒绝静态单地址规划。
 - 非循环分支只有在control-flow可证明互斥时共享lifetime slot；loop-local repeatable branch不能证明全执行互斥。
 - dataflow/lifetime analysis在完整rank entry的统一timeline和demand set上运行；nested control-flow、普通traversal、
-  loop和spill点都不清空pending events。唯一outer epoch exit是terminal completion validation boundary，pending set必须
-  为空且SPM roots全部结束。额外/nested tile-region在analysis前拒绝，variant gate要求该entry全部roots均被唯一query覆盖。
+  loop、spill点和region结构都不自动清空pending events。region exit只要求访问其SPM roots的pending set为空，entry terminal
+  闭合observable pending work；nested tile-region在analysis前拒绝，variant gate要求全部roots被all-and-only accepted placement覆盖。
 
 这个 event model 只用于 analysis 和 verifier 可复核的 lowering；它不是新的 schedule attr。
 
@@ -464,11 +466,11 @@ SPM1 bank placement事实与策略：
 - 由256B bank宽度和LSB interleaving得到目标allocator的粗粒度bank-phase working inference：对256B对齐base，
   `phase = (offset / 256) mod 8`，phase周期为2 KiB。该式只描述连续bank-line的起始相位；确切端口仲裁、
   stride访问分布、DIDT配置和冲突penalty尚未校准，不能把phase相同等价为必然stall。
-- allocator只执行一次fixed-capacity solve并保留其validated placement。若MiniMalloc在该次canonical search中本来就
-  遇到多个hard outcome、actual high-water和search work等价的完整placement，稳定排序可以用current IR可重算的
-  coarse bank phase作最后一个确定性key；不能为了phase追加search node、solver query或post-solve relocation。
+- allocator只消费fixed-capacity problems并保留validated placements。MiniMalloc在现有单次搜索中遇到多个
+  hard-valid offset choices时，稳定排序可用current IR可重算的coarse bank phase作末级soft preference；
+  不能让phase改变hard feasible set、进行额外query，或建立独立candidate/post-solve relocation。
 - bank phase不进入06的fusion/spill/tiling cost，也不得造成allocation failure或改变resident/spill、
-  epoch边界、DDR movement、worker/order或join。256B alignment保持不变，不引入通用2 KiB或64 KiB对齐；
+  region partition、DDR movement、worker/order或join。256B alignment保持不变，不引入通用2 KiB或64 KiB对齐；
   accepted IR仍只保存offset，不新增color attr或bank side table。
 
 按本项目1 GHz、并额外假设每个bank每周期贡献一个2048-bit传输做粗略上界算术，raw service envelope为
@@ -533,8 +535,8 @@ Interval {
    conflict pair不得byte overlap。
 
 8. 接受步骤7验证后的唯一placement；从accepted offsets重算actual high-water/headroom和粗粒度bank phase。
-   若solver的既有canonical ordering在不增加search work的情况下需要打破完整placement同值关系，可以使用
-   bank phase作稳定末级key；不得执行post-solve relocation、额外query或以phase换算latency。
+   solver的既有canonical offset ordering可以用bank phase作稳定末级soft key；该key不删除hard-valid
+   choices，不执行post-solve relocation、额外query或以phase换算latency。
 
 9. owner继续执行range/end verification：
 
@@ -549,7 +551,7 @@ Interval {
 placement重算并返回owner作容量诊断；它们不替代06从actual IR重算的DDR、GS、compute、completion与tile-utilization成本，
 09自身不运行candidate objective或改变IR。
 
-### 8.1 Packing Backend 与单次 Query 边界
+### 8.1 Packing Backend 与 Fixed-Problem 边界
 
 fixed lifetime、physical size、absolute alignment、arena和pairwise conflict在进入本层前已经冻结。production packing
 backend只使用MiniMalloc：它只解决这份固定问题，不选择tile、layout、resident/spill、worker/order或completion，也不把
@@ -557,9 +559,9 @@ packing结果反向改写成这些选择。未限制search budget时，当前受
 production的有界budget必须保留`ResourceExhausted`，不能伪装成不可行。选择MiniMalloc是基于专用搜索、确定性、
 三态failure和轻量集成的工程结论，不声称它对所有实例都比通用solver更快。
 
-每个terminal complete-rank Instr variant只在完整3 MiB hardware arena上调用一次MiniMalloc；该whole-entry query
-联合覆盖该rank entry的全部epoch roots，即使typed boundary形成多个regions也不重复调用。`Feasible`证明当前固定
-lifetime/size/alignment/conflict问题能装下；accepted placement的actual high-water不是全局最优证明，也不是继续
+每个terminal complete-rank Instr variant从完整current IR派生一个或多个fixed allocation problems；每个root被all-and-only
+一个problem覆盖，可能并发的regions进入同一coexistence/conflict约束，已证明不重叠的roots可复用3 MiB地址范围。
+`Feasible`证明当前固定lifetime/size/alignment/conflict问题能装下；accepted placement的actual high-water不是全局最优证明，也不是继续
 二分arena end的理由。candidate间真正有意义的working-set差异已经由06选择的tile、buffering和
 resident/spill/recompute反映在demand graph与硬capacity结果中；allocator不再用最多8次quality probe放大终态成本。
 
@@ -569,7 +571,7 @@ validator和fixed-capacity结果；若真实捕获实例持续`ResourceExhausted
 
 ### 8.2 Candidate Evaluation Boundary
 
-只对terminal complete-rank Instr variant调用本节fixed-capacity路径，且每个variant恰好一次，得到：
+只对terminal complete-rank Instr variant调用本节fixed-capacity路径；每份fresh problem得到：
 
 - `Feasible`：完整placement经独立validator接受，offset可原子写入该clone；
 - `ProvenInfeasible`：在owner budget内完成搜索并证明硬件arena不可行；
@@ -579,12 +581,12 @@ validator和fixed-capacity结果；若真实捕获实例持续`ResourceExhausted
 `Feasible` placement的actual high-water/headroom从validated offsets重新计算并返回06作diagnostic与hard-capacity
 余量记录，不进入独立quality probe或主Pareto。placement必须原子apply到fresh rank evaluation clone，并重新运行全部
 offset-dependent descriptor/range及后续variant gate。这些结果是candidate-local analysis，不写IR、不跨candidate缓存，
-也不是09发布的proof schema。09不能隐式引入或改变epoch boundary、tile、implementation、encoding、residency、route、
+也不是09发布的proof schema。09不能隐式引入或改变region partition、tile、implementation、encoding、residency、route、
 buffering或执行顺序。
 
 candidate rewrite、bufferization或lifetime/effect变化后，旧placement和所有offset-dependent descriptor/range/cost结果均失效，
-因而原terminal variant必须丢弃，不能原地第二次solve。owner只能从无placement generation parent创建一个新variant，
-在它的final current IR上重建`StaticPackingProblem`并执行该新variant唯一的query；只在全部range/alignment/conflict
+因而原terminal variant必须丢弃，不能原地修补或复用solve结果。owner只能从无placement generation parent创建一个新variant，
+在它的final current IR上重建`StaticPackingProblem`集合；只在全部range/alignment/conflict
 gate通过后提交`wafer.spm.offset`。06的generation worklist不接收已写offset的evaluation clone。
 
 
@@ -614,12 +616,12 @@ SPM stage嵌入现有candidate transaction：
 complete rank candidate clone with selected typed IR
   -> instruction legalization and function-boundary bufferization
   -> relation-backed redundant physical transfer normalization
-  -> erase compiler-derived completion and fresh rebuild epoch-exit completion from final worker/effect/range facts
+  -> erase compiler-derived completion and fresh rebuild dependency-driven completion from final worker/effect/range facts
   -> fresh BufferDemand / lifetime / effect collection
   -> fixed-capacity SPM solve + independent placement validation
   -> atomic offset apply to this clone
   -> fresh range / descriptor / completion-consistency revalidation / cost gates
-  -> one whole-variant DDR exact evaluation / transport / ABI acceptance
+  -> derive and atomically validate DDR placement domains / transport / ABI acceptance
   -> all RankExecutable records and ExecutableBundle commit, or commit nothing
 ```
 
@@ -630,10 +632,10 @@ effect或lifetime后原terminal variant必须丢弃，由06从unplaced parent物
 accepted offsets形成后由独立physical-alias verifier复核。失败表示packing结果无效或上游proof不一致，evaluation clone被拒绝并由06
 从未放置parent产生有界sibling；offset本身不改变lifetime/completion，allocator不得就地插join、改slot或反复packing修复。
 
-function-boundary bufferization可能新增或删除buffer/movement，所以它在唯一SPM query之前完成。每个terminal
-rank-entry Instr variant独立运行这一次whole-entry planning并从final instruction IR fresh recost；失败会拒绝包含它的整个
-all-rank variant，不产生rank-local survivor/commit。all-rank coordinator对每个disposable complete variant只运行一次
-whole-variant DDR exact evaluation（内部每个rank default arena各一次solve并原子汇总），再从current placed/bound IR重算
+function-boundary bufferization可能新增或删除buffer/movement，所以它在fresh allocation-problem derivation之前完成。每个terminal
+rank-entry Instr variant从final instruction IR派生problems并fresh recost；失败会拒绝包含它的整个all-rank variant，不产生
+rank-local survivor/commit。all-rank coordinator对每个disposable complete variant从current explicit DDR arenas/domains派生并
+原子验证placement，再从current placed/bound IR重算
 transport/resource事实，不消费SPM-side compatibility signature。
 
 
@@ -704,11 +706,11 @@ accepted range/arena relation；commit后package/runtime只消费
 - bank-line span按256B粒度由`[offset / 256, ceil((offset + size) / 256))`重算；对256B对齐base的
   working bank phase按`(offset / 256) mod 8`重算。二者都不是accepted attr。
 
-每个logical rank的SPM window是rank-local physical arena。每个terminal rank entry的全部roots通过一次3 MiB
-whole-entry query统一规划和packing；当前恰好一个non-nested region。SPM memref/root/alias不得跨region boundary；
+每个logical rank的SPM window是rank-local physical arena。每个terminal rank entry的全部roots从current IR派生fixed
+allocation problems并在3 MiB window内all-and-only规划；entry含一个或多个non-nested regions。SPM memref/root/alias不得跨region boundary；
 region result若是data只能发布DDR value/view，其root可以是function
-external或compiler-managed spill。epoch内部的selective spill/store结束目标root，matching reload建立distinct root，且
-不影响其它live root。任意SPM raw escape、pending completion跨epoch或无法解析的provenance结构化拒绝。输出仍保持
+external或compiler-managed materialization。region内部的selective spill/store结束目标root，matching reload建立distinct root，且
+不影响其它live root。任意SPM raw escape、仍访问前一region roots的pending work或无法解析的provenance结构化拒绝。输出仍保持
 offset-only，size/alignment/lifetime/bank phase从accepted IR重算。
 
 当前dataflow边界：
@@ -735,9 +737,8 @@ offset-only，size/alignment/lifetime/bank phase从accepted IR重算。
   local issue集合，其全部SPM read/write effect按typed worker进入pending local access集合；matching
   participant join只清除覆盖的worker。same-worker exact RAW/WAR/WAW后继可接管同一root的有序访问，DTE wait
   不能消费NCC状态。
-- `wafer.tile.region` exit就是epoch terminal completion validation boundary：每条exit path存在未await generic task、
-  未等待DTE token、未join NCC participant或仍live的SPM root时规划失败，任何pending state都不能越过outer region。
-  普通traversal/loop/spill点不执行terminal validation；可能zero-trip的loop内completion不能覆盖loop外pending状态，
+- `wafer.tile.region` exit只验证没有仍访问其SPM roots的pending generic task、DTE token或NCC participant；与这些roots无关的
+  typed pending state可继续到真实observer或entry terminal。region结构本身不插wait/join。普通traversal/loop/spill点不执行terminal validation；可能zero-trip的loop内completion不能覆盖loop外pending状态，
   safe same-worker NCC frontier可跨backedge，但SPM仍拒绝loop-carried async token。
 - rejected/candidate offset、search trace、cost estimate 和 repair suggestion 仍是 analysis，不写入
   IR。
@@ -781,10 +782,11 @@ SPM / tile-region verifier 至少检查：
 - may-reuse buffers 的 lifetime 不重叠，或由明确 wait/barrier 收口。
 - async buffer在matching completion前不能复用；仅same-worker exact RAW/WAR/WAW ordered successor可接管访问。
 - host-visible writeback和communication boundary有明确participant join/exact wait/sync。
-- 完整static rank entry恰好一个non-nested `wafer.tile.region`；额外/nested region或typed clobber/handoff输入拒绝。
-- `wafer.tile.region`不得传递SPM buffer/root/alias或pending event；所有data I/O必须是DDR。epoch内selective spill必须
-  完整表达store/completion/load并只结束目标root；outer epoch exit的pending event set为空，variant coverage确保唯一
-  whole-entry query没有漏规划任何root。
+- 完整static rank entry包含一个或多个non-nested `wafer.tile.region`；nested region或typed opaque clobber输入拒绝。
+- `wafer.tile.region`不得传递SPM buffer/root/alias；所有data I/O必须是DDR。region内selective spill与cross-region cut必须
+  完整表达各自store/completion/load；region exit只验证仍访问其roots的pending work已由显式typed completion清空，
+  不因region结构插入或执行wait/join；variant coverage确保allocation problems
+  all-and-only覆盖每个root。
 - bank phase soft preference不参与verifier legality；verifier只重算accepted offset的range/alignment/
   overlap。任何因phase冲突拒绝hard-valid placement、插入spill/region/join或依赖bank attr的实现均违反本合同。
 - tile-region只允许sequential func/scf.if/scf.for ownership；active/async/parallel scope中的unknown/external/
@@ -820,8 +822,8 @@ isolated complete-rank clone
 ```
 
 candidate owner可以根据current IR的capacity/lifetime/descriptor压力从无placement parent生成另一份clone，原子尝试
-不同tile/loop order、implementation、encoding、transfer、resident/spill/recompute、buffering或order；current entry
-固定只有一个epoch，typed clobber/device ownership handoff输入直接拒绝。未来若扩展multi-epoch，boundary仍不是candidate变量。
+不同region merge/split、tile/loop order、implementation、encoding、transfer、resident/spill/recompute、buffering或order；
+typed opaque clobber输入直接拒绝。region partition由06物化，allocator不创建或修改boundary。
 allocator只评估已物化clone，不建议或修改这些选择，也不按名字或case恢复语义。
 NCC participant join、communication wait和DTE completion是不同event，lifetime analysis只能按各自typed
 worker/effect/token合同处理；NCC completion只接受typed participant join。

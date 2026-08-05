@@ -249,21 +249,23 @@ Tensor logical-fill不能替代这些扩展gate。
 - WDMA source在completion前不可复用，fence后可以；
 - RDMA destination、compute operands/results、DTE send/recv staging同理；
 - branch mutually-exclusive reuse与join后lifetime；
-- 每个current static rank entry恰好一个outer、non-nested `wafer.tile.region`，它覆盖该entry的真实execution/SPM
-  epoch，并在内部覆盖chain、diamond、fanin/fanout、不同traversal/tile schedule、loop-carried lifetime、selective
-  spill/reload或recompute及path-specific completion；多个outer region或nested `tile.region`为negative；
+- 每个current static rank entry含一个或多个non-nested `wafer.tile.region` SPM residency domains，覆盖chain、diamond、
+  fanin/fanout、不同traversal/tile schedule、loop-carried lifetime、selective spill/reload、cross-region materialization或
+  recompute及path-specific completion；sibling regions为positive，nested `tile.region`为negative；
 - `tile.region`边界的SPM data数量必须为零：SPM memref/root/alias不能成为region operand/result或raw escape。
-  DDR/non-SPM tensor data、scalar、event和control值可按语义进出且数量不设上限；region内部全部distinct SPM roots
-  进入同一whole-entry physical arena packing，重叠需求产生容量失败，non-overlap需求证明physical offset可复用；
+  data operand/result只能是DDR value/view且数量不设上限；scalar、event和control值只按各自typed语义进出，不得
+  携带SPM alias。完整entry全部distinct SPM roots
+  按真实lifetime/coexistence形成fixed allocation problems，重叠需求联合满足容量，non-overlap需求证明physical offset可复用；
   无法解析provenance及nested/async/parallel scope为negative；
-- allocator对每个terminal rank-entry Instr variant只执行一次覆盖该entry唯一outer `tile.region`及其全部roots的3 MiB
-  MiniMalloc query和independent validator；actual high-water/
-  headroom只从accepted placement重算。bank phase若参与，只能打破solver自然遇到且hard outcome/high-water/search work
-  完全相同的placement，不新增query/search node/relocation；phase从accepted offset重算`(offset / 256) mod 8`；
+- allocator对每个terminal rank-entry Instr variant从全部SPM roots、lifetime/coexistence/conflict派生fixed problems，
+  用3 MiB MiniMalloc和independent validator all-and-only覆盖；actual high-water/
+  headroom只从accepted placement重算。bank phase若参与，只能进入solver既有单次搜索的deterministic
+  offset ordering，作为hard-valid choices间的末级soft preference；phase从accepted offset重算
+  `(offset / 256) mod 8`；
   同phase压力不得把Feasible变成failure，也不得改变spill/resident、DDR movement、worker/order或join。
   不存在bank/color attr，且测试不声称固定latency收益；
 - fixed-lifetime packing小图由仓库内exhaustive/property test验证MiniMalloc adapter、三态、alignment、
-  nonzero arena base、single-query fixed capacity和independent validator；production build、link、test和pipeline不依赖
+  nonzero arena base、fixed-problem capacity和independent validator；production build、link、test和pipeline不依赖
   ILP/CP-SAT或离线小图oracle。外部solver只允许真实捕获实例持续资源耗尽后的一次性诊断，结果不得成为fixture、
   cost或accepted offset；
 - resident SPM跨closed scalar direct callee可通过；可能执行tile-region的defined callee、external/unresolved和
@@ -480,20 +482,20 @@ DDR往返、GS/layout movement和`NCCJoin`。不能用某一项下降而把work�
 
 - **decision boundary**：post-SPMD完整rank structured SSA在任何Tile→Instr、SPM/DDR placement或compiler-derived join前
   进入06；每条connection分别验证tile propagation、numeric、storage、completion和rank-coupling legality，并把tile
-  shape/loop order、layout/version、resident/spill/recompute和movement作为原子action联合搜索，不搜索region partition。
-  C1对每个current static rank entry只物化一个outer、non-nested `tile.region`；它不是候选cluster，而是该entry真实的
-  execution/SPM epoch。不同traversal domain、tile shape、loop order、耦合或解耦schedule，以及internal DDR
-  store/completion/load、selective spill/reload和recompute全部留在该region内，不通过sibling region表达。region operand/result
-  不得携带SPM memref/root/alias，多个outer region或nested `tile.region`直接拒绝；
+  shape/loop order、layout/version、resident/spill/recompute、movement和region partition作为原子action联合搜索。
+  C1允许每个current static rank entry物化一个或多个outer、non-nested `tile.region` SPM residency domains。不同traversal
+  domain、tile shape、loop order、耦合或解耦schedule、selective spill/reload和recompute可以在同一region内；selected
+  cross-region cut必须显式store/completion/load。region operand/result不得携带SPM memref/root/alias，nested或artificial
+  `tile.region`拒绝；
   source-observable ordering由control-flow、SSA event/token和typed effects表达，只约束schedule/completion维度；
   unsupported control/numeric path按对应维度fail closed；
 - **actual-clone search**：factor proposal只在clone前用typed legality/footprint做便宜预筛；一旦进入frontier就必须
   立即materialize到actual unplaced complete-rank clone并销毁proposal。每个带决定的state在进入frontier/cost/gate前已把
   view/movement/event obligation物化进clone。chain/tree只有未处理IR可观察的
   current-IR frontier facts完全相同、且在有限枚举tile/action domain内才可作exact DP；一般DAG走bounded Pareto beam。
-  transient hash只预筛并fresh重证，不形成interface/key/schema。同一唯一outer region内，每条可连接relation至少覆盖
-  coupled/resident small-tile、不同traversal/tile schedule经internal DDR materialization解耦，以及selective
-  spill/reload或recompute三类相反actual forms；spill更少或tile更大均不能单独支配。
+  transient hash只预筛并fresh重证，不形成interface/key/schema。每条可连接relation至少覆盖single-region
+  coupled/resident small-tile、multi-region materialized large-tile、same-region separated traversal，以及selective
+  spill/reload或recompute等相反actual forms；spill更少、region更少或tile更大均不能单独支配。
   all-rank coordinator和唯一deterministic global ledger在C2 generation前建立并贯穿C3 terminal evaluation；所有
   tile/layout/residency/movement/collective/worker action及late exact gate共享它，不按rank/component/layer或C2/C3
   分别设cap、选winner或构造`N^R` tuple。baseline保留，budget耗尽不伪装成capacity；serial/parallel的work count、
@@ -509,23 +511,23 @@ DDR往返、GS/layout movement和`NCCJoin`。不能用某一项下降而把work�
   shape的weight可走exact composed Tensor DDR mapped transfer到Cx，不假定identity DMA或任意transpose DMA。shared LHS load/layout
   不随N-loop multiplicity重复；resident edge无中间WDMA/RDMA；fanout允许search-bounded K个versions，K不是IR语义上限；
   SPM failure只拒绝clone并由06从无offset parent产生有限retile/selective-spill/recompute/layout/movement alternative，
-  allocator不修tile/layout/residency；所有独立root仍在同一outer region，实际schedule/lifetime决定是否同时live，不能按图
-  连通性或internal DDR有无拆成多个region；
+  allocator不修partition/tile/layout/residency；region cut由06按完整action选择，实际schedule/lifetime决定不同regions的roots
+  是否可能同时live，不能按图连通性或单个DDR op机械拆分；
 - **completion/memory order**：只有terminal all-rank Tile variant中的complete-rank Tile clones lower Instr，再派生
   worker/fixed-slot/ready-order rank-entry Instr variants。C3在启动这些昂贵工作前，必须从C2共用的global ledger为该
-  terminal candidate原子预留完整all-rank Tile→Instr、worker/order、各拟评估rank-entry Instr variant一次SPM exact solve，
-  以及整个complete all-rank variant一次DDR/transport/ABI exact evaluation；预留不足则不启动，不留下半评估winner或把它
+  terminal candidate原子预留完整all-rank Tile→Instr、worker/order、SPM/DDR fixed-problem derivation/solve、transport/ABI
+  exact evaluation的deterministic upper-bound work；预留不足则不启动，不留下半评估winner或把它
   记成`Unknown`/capacity failure。
   reconstruction入口删除全部`wafer.instr.ncc_join`；source-observable ordering由control-flow、SSA event/token和typed effects表达，
   DTE wait与group barrier各用独立typed语义；再从final effects、
   workers、event、alias/range、reuse和observer构造fixed-frontier latest-necessary completion。每个join有hazard/protocol/observable
   witness，可安全coalesce的均合并。随后每个terminal rank-entry Instr variant按
-  `lifetime/conflict → 一次whole-entry 3 MiB MiniMalloc → physical-alias verify`执行，该solve覆盖其唯一outer
-  `tile.region`内全部roots；每个complete all-rank variant再恰好一次执行`whole-variant DDR → post-memory Direct-DTE
-  binding/resource → ABI`，其中每个rank独立default DDR arena恰好一次solve并原子汇总。packing失败从无offset parent生成
-  新alternative；失败terminal candidate整体丢弃，同一variant不重复packing、probe或原地修复；
-  high-water只作capacity/headroom诊断，不运行arena-end tightening或quality probe；bank phase不新增solver query、search node
-  或relocation，也不反馈到region/spill/join；
+  `SPM roots/lifetime/coexistence/conflict → fixed-problem 3 MiB MiniMalloc → physical-alias verify`执行并all-and-only覆盖；
+  每个complete all-rank variant从current explicit DDR arenas/domains构造problems并原子执行post-memory Direct-DTE
+  binding/resource与ABI。packing失败从无offset parent生成
+  新alternative；失败terminal candidate整体丢弃，派生出的全部fixed problems各求解一次，不对同一problem
+  重做quality probe或原地修复；
+  high-water只作capacity/headroom诊断，不运行arena-end tightening或quality probe；bank phase不改变hard feasible set，也不反馈到region/spill/join；
 - **collective/reduction**：collective保留真实DTE/NCC completion和从actual IR fresh验证的all-rank matching，但前后SPM resident edge
   不自动落DDR。reduction domain能由一个legal selected tile完整覆盖时可走native，不能完整覆盖时生成typed partial/two-pass，
   最终仍由capacity、numeric legality与cost选择，不按序列长度分支。fused online attention必须闭合`has_value`与`(m,l,o)`

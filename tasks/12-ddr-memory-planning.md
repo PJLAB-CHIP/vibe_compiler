@@ -1,7 +1,7 @@
 # Wafer DDR Memory Planning Design
 
-状态：2026-08-05同步SPM ownership/device-execution epoch与typed NCC worker completion；当前合同覆盖default-arena
-DDR demand/range validation、epoch-exit completion和accepted offsets。
+状态：2026-08-05同步SPM residency-region与typed NCC worker completion；当前合同覆盖default-arena
+DDR demand/range validation、dependency-driven completion和accepted offsets。
 multi-arena、state/streaming weight和provider allocation model延后。实现状态以`tasks/progress.md`为准。
 它不能只是 DDR access validation；凡是会影响 candidate 是否成立的 DDR
 byte footprint、lifetime、capacity和largest-contiguous约束，都必须在DDR offset
@@ -31,7 +31,7 @@ compiler IR 合同。
 - 对 external input/output DDR view 做 descriptor、view/root byte range和capacity validation，并输出exact movement bytes。
 - 对当前rank clone内compiler-managed workspace、resident constant、显式spill DDR temporary等non-external
   allocation，在default arena中规划symbolic range/offset/size/alignment，并用完整rank-entry内selective
-  spill/materialization和SSA use-def的lifetime/reuse证明互不冲突；region data I/O必须是DDR，当前额外/nested region拒绝。
+  spill/materialization和SSA use-def的lifetime/reuse证明互不冲突；region data I/O必须是DDR，nested region与SPM跨界拒绝。
 - 给 candidate-selection 一个真实 candidate gate：成功表示当前 candidate 的 DDR view、accepted offset fact 和
   IR-derived demand 都可被下游直接消费；失败只返回typed infeasible reason给06 candidate owner，后者可用另一clone尝试
   implementation、tile、encoding、route、residency/buffering或order。allocator本身不修补候选，也不内置某个
@@ -59,9 +59,9 @@ compiler IR 合同。
 Pipeline position:
 - Upstream artifact / IR:
   SPM offset assignment之后的一份whole-variant candidate clone，包含每个static rank entry的完整
-  instruction-level structured program。SPM side 已有每terminal rank entry唯一whole-entry 3 MiB query产生的
-  accepted SPM offset facts；当前每个entry必须恰好一个non-nested `tile.region`，额外/nested region或typed
-  clobber/handoff输入直接拒绝。DDR side 已由
+  instruction-level structured program。SPM side 已有从complete current IR的allocation problems产生并all-and-only验证的
+  accepted SPM offset facts；当前每个entry含一个或多个non-nested `tile.region`，nested region、SPM root/alias跨界或typed
+  opaque clobber输入直接拒绝。DDR side 已由
   `#wafer.memory<ddr, layout>` memref、只承载DDR data/view（function external或compiler-managed spill）的
   tile-region block argument、
   `memref.alloc`、ViewLike/SelectLike/structured-control aliases、generic async handle和RDMA/WDMA descriptor
@@ -71,13 +71,12 @@ Pipeline position:
   每个rank program必须来自完整rank tile-dataflow的一次统一lowering；不得把逐task已经决定spill/reload/offset的artifact
   拼接后作为终态输入。
 - Current stage responsibility:
-  对一个complete all-rank terminal variant恰好执行一次whole-variant exact evaluation：从同一clone逐rank重算DDR
-  access demand、compiler-managed allocation demand和完整entry lifetime，并在每个rank独立default arena内恰好运行
-  一次fixed-capacity solve；
+  对complete all-rank terminal variant原子执行whole-variant exact evaluation：从同一clone逐rank重算DDR access demand、
+  compiler-managed allocation demand、explicit arenas/placement domains和完整entry lifetime，并形成all-and-only fixed-capacity problems；
   验证external DDR descriptor与view/root range；为compiler-managed/resident/explicit-spill allocation在当前rank
   default arena内规划symbolic offset；验证range overlap、capacity、largest-contiguous和alignment
   和descriptor对planned allocation的覆盖；分别证明generic async task wait和DDR typed NCC
-  ordered-pending/participant completion，并只在outer epoch exit验证pending set为空。
+  ordered-pending/participant completion，在真实observer/root reuse和entry terminal验证pending obligations。
   whole-variant只做all-and-only rank计划汇总与原子接受，不构造cross-rank shared arena/lifetime；streaming/state/multi-arena、
   cross-rank shared demand及无法形成单一timeline的mixed planning scope当前fail closed。
 - Output artifact / IR:
@@ -102,7 +101,7 @@ Pipeline position:
   commit pipeline 覆盖所有 static rank entries。
 - Explicit non-goals:
   不重新推DDR tile subview，不重做SPM memory planning，不选择tile shape/implementation/layout/transfer/residency，
-  不生成或改变epoch boundary，
+  不生成或改变region partition，
   不生成ABI call、packet、physical DDR address或runtime handle；不按task/rank部分提交，
   不以 `busytable` 或 runtime 隐式同步替代 lifetime/completion 事实；当前不实现streaming/state、multi-arena、
   artifact materialization或shared-resource placement。
@@ -110,7 +109,7 @@ Pipeline position:
   每个static rank entry的完整traversal中external input/output与imported immutable parameter views通过
   range/capacity/access验证，compiler-managed temporary/resident backing/explicit-spill demand都在当前rank
   default arena获得可验证planned offset；producer-to-last-consumer lifetime、
-  async task identity/completion、typed NCC worker issue/join、outer epoch exit空pending set、descriptor/root range和shared physical
+  async task identity/completion、typed NCC worker issue/join、region-root release与entry-terminal pending set、descriptor/root range和shared physical
   geometry/range/narrowing contract 全部通过。
   非法 dynamic view、payload/range、overlap/capacity/largest-contiguous/alignment failure 能结构化
   拒绝，任一失败时整个 clone 不提交。DDR facts 只为 whole-variant commit 决定最终 executable rank
@@ -125,8 +124,8 @@ canonical search。精确pairwise conflict graph通过已验证的deterministic 
 component-local fixed prefix；共享policy使用宽松确定的全局node budget且不设wall-clock timeout，只在
 `ResourceExhausted`时允许first-fit fallback。typed outcome和独立placement validator也由该共享边界拥有。
 shared `MemoryPlanning` fixed-capacity primitive在类型上可复用同一owner-independent DDR problem，且不认识SPM/DDR、workload或
-op名。DDR在whole-variant后置stage对每个complete all-rank terminal variant只进入一次exact evaluation；该evaluation从同一
-variant逐rank构造独立default-arena problem，并对每个rank恰好运行一次fixed-capacity query，再将all-and-only rank结果原子汇总，
+op名。DDR在whole-variant后置stage对complete all-rank terminal variant执行原子exact evaluation；该evaluation从同一
+variant逐rank构造current explicit arena/placement-domain problems并将all-and-only roots/ranks结果原子汇总，
 不构造cross-rank shared arena。每个validated placement提交该rank的`wafer.ddr.offset`；actual high-water/headroom从placement
 重算，作为capacity/resource diagnostic，不通过缩小capacity重复probe，也不替代06按all-rank aggregate movement
 bytes/executions计算的DDR主成本。placement只有在fresh
@@ -149,14 +148,14 @@ packing exclusion；loop body allocation通过memref或async handle跨backedge�
 generic `async.call`的token/value必须由path-covering `async.await`完成；direct `async.create_group` handle可以经
 `async.add_to_group`收集task并由`async.await_all`完成。mutable group alias、loop body动态task加入captured group、
 SelectLike合并不同task identity和非identity-preserving `scf.for`均以`unsupported_async_completion_flow`拒绝；
-epoch exit仍有pending task以`missing_async_completion`拒绝。`scf.if`只有task origin局限在对应branch path时，
+entry terminal仍有pending task以`missing_async_completion`拒绝。`scf.if`只有task origin局限在对应branch path时，
 result await才覆盖该task；分支前已发起的不同task不能靠选择其中一个handle完成另一个。
 
 DDR owner仍独占tile-region DDR boundary/root解析、external root与descriptor range、default-arena capacity、
 largest-contiguous、high-water和exact movement-byte统计，以及`wafer.ddr.offset`提交。任何带DDR read/write effect的异步
 local issue都必须在共享path/root analysis上把compiler-managed root lifetime延长到matching participant join，或
 延长到可证明接管该root的same-worker exact RAW/WAR/WAW后继；即使root由runtime外部绑定，也必须证明所有可达路径
-  在outer epoch exit前完成。region所有data I/O只允许DDR，且不能携带pending completion。DDR不能依赖SPM
+  在真实observer/root reuse或entry terminal前完成。region所有data I/O只允许DDR，且不能携带SPM alias；DDR不能依赖SPM
 pass已运行来间接获得这项证明。
 共享root/task dataflow不拥有SPM DTE token/wait legality；DDR function scope可接受identity-preserving generic async
 handle flow，SPM owner仍以exact DTE wait证明通信completion并保守拒绝所有loop-carried async token。
@@ -166,9 +165,9 @@ side effect，tracked或擦成tensor/generic的storage result必须能沿return/
 call result在caller timeline中保留原RootRef/ValueOriginRef；不能把callee formal或type-erased result升级成新external
 root。其它DDR-relevant direct call、module含DDR demand时的external/unresolved direct/async call，以及任何indirect call
 均因缺少interprocedural arena/resource summary而fail closed。defined `async.func`可以通过显式handle传播caller-owned
-root，但其body须独立提供可验证effect/token relation，最终pending completion由caller所在epoch exit验证；带Wafer DDR
+root，但其body须独立提供可验证effect/token relation，最终pending completion由caller真实observer/root release或entry terminal验证；带Wafer DDR
 descriptor/resource effect的async callee在没有call-aware
-descriptor/resource summary时拒绝。
+  descriptor/resource summary时拒绝。
 
 ## 3. Core Model
 
@@ -266,7 +265,7 @@ future extension约束，不是当前planner或Q16 typed fields。
 | persistent state resource | validate declared capacity、subview range、alias/update relation、read/write effect和跨invocation lifetime；runtime-owned root不分配physical offset | preserve `ResourceId`、create/attach/reset/update policy、page geometry和exact consistency enum |
 | compiler-managed workspace/temp | plan symbolic offset with lifetime/reuse | summarize workspace bytes/ranges and accepted offset contract |
 | non-parameter resident constant | plan read-only range or reject if residency/streaming choice is not explicit | summarize resident constant bytes/ranges and backing-data requirement |
-| explicit compiler-managed spill DDR value | plan range across producer-to-last-consumer lifetime when explicitly represented；当前唯一epoch内的selective spill/materialization使用同一DDR root/lifetime合同 | summarize producer/consumer-visible backing allocation requirement |
+| explicit compiler-managed spill DDR value | plan range across producer-to-last-consumer lifetime when explicitly represented；region内selective spill与cross-region materialization使用同一DDR root/lifetime合同 | summarize producer/consumer-visible backing allocation requirement |
 | executable/log/control metadata | not generic tensor DDR planning | launch/package internal resource requirement; runtime allocation is runtime adapter |
 
 ### 4.1 Streamed Immutable Window Contract
@@ -332,10 +331,11 @@ Rules:
 - view offset是从SSA view链重算的proof input；instruction offset已经是最终root-relative descriptor起点。recovery必须验证
   `descriptor_*_root_offset = view_root_offset + segment_relative_offset`，range公式只使用descriptor root offset一次，不能再把
   view offset重复相加。
-- tile-region data block arguments必须是DDR，并解析回对应region DDR operands；SPM data和pending event不能作为region I/O。
+- tile-region data block arguments必须是DDR，并解析回对应region DDR operands；SPM data/root/alias和仍访问它们的
+  pending event/control不能作为region I/O，与SPM无关的typed event/control按自身interface验证。
 - tile-region DDR results inherit the root relation of the corresponding `wafer.tile.yield` DDR value；result的后续SSA
   consumer必须把compiler-managed DDR root lifetime延长到region之外，不能因isolated boundary截断；
-  这不建立额外epoch，当前任何额外region/clobber/handoff输入均拒绝。
+  这不自动建立region cut；一个或多个sibling regions均可存在，但nested region与SPM跨界拒绝。
 - root/origin查询递归闭合`ViewLikeOpInterface`、`SelectLikeOpInterface`、`scf.if`和`scf.for`，并保留
   path condition；loop backedge union对body中已建立的view同样可见。
 - tracked DDR result必须来自`memref.alloc`或受支持alias/control-flow interface；其它producer结构化拒绝，
@@ -352,8 +352,8 @@ Rules:
 
 DDR memory planning is an analysis + transformation pair:
 
-调用边界固定为：每个complete all-rank terminal variant恰好一次whole-variant exact evaluation；下列步骤在该
-evaluation内部对每个static rank entry的独立default arena各执行一次，并恰好产生一次fixed-capacity solve。逐rank结果
+调用边界固定为：对每个complete all-rank terminal variant原子执行whole-variant exact evaluation；下列步骤按current
+explicit arenas/placement domains形成fixed-capacity problems。problem/query数量只作budget diagnostic，逐rank结果
 不形成survivor或commit，只有all-and-only rank全部通过才原子接受整个variant。
 
 1. 从DDR `memref.alloc`及SSA uses收集当前rank clone内compiler-managed workspace/temp、resident
@@ -366,8 +366,8 @@ evaluation内部对每个static rank entry的独立default arena各执行一次�
 5. Compute physical bytes and alignment from memref type, Wafer layout and target policy.
 6. Build lifetime intervals from SSA use-def, region/control-flow and explicit async token/typed NCC join/wait effects，
    covering every complete static rank entry and mandatory explicit-spill producer-to-last-consumer relations。
-   普通traversal、loop和spill点不截断lifetime；outer epoch的每条exit path在typed terminal completion后都必须没有pending
-   event。generic async handle同时传播root和独立task identity；`async.await`/direct-group
+   普通traversal、loop、spill点和region结构不自动截断lifetime；region exit只完成仍访问其SPM roots的work，entry terminal
+   必须没有observable pending event。generic async handle同时传播root和独立task identity；`async.await`/direct-group
    `async.await_all`只完成其path实际覆盖的task，NCC join仍只完成其participant worker。
 7. Build conflict edges for intervals that may overlap in time and require distinct DDR bytes.
 8. 在当前rank的default arena内用共享static packing规划offset；只有lifetime analysis证明不重叠时才复用range。
@@ -404,7 +404,7 @@ DDR memory planning verifies:
 - pass option resource limits are non-negative。
 - unsupported dynamic DDR alloc/view or uncomputable physical size is rejected。
 - unsupported tracked memref producer、loop-carried body allocation instance和无法证明task identity的async handle flow
-  结构化拒绝；未await generic task在epoch exit失败。
+  结构化拒绝；未await generic task在entry terminal失败。
 - `async.call` token/value接受direct `async.await`；direct create/add/await-all group接受。mutable group alias、
   loop-body dynamic task加入captured group、SelectLike distinct task和non-identity-preserving `scf.for`不接受。
 - `scf.if` completion只能覆盖task origin存在的branch path；branch前发起的其它task仍须各自await。
@@ -415,17 +415,17 @@ DDR memory planning verifies:
   DDR resource effect没有call-aware descriptor/resource summary时拒绝。
 - 每个tracked alias/control-flow result必须有可解析RootRef或ValueOriginRef；只有DDR function-entry tensor adapter
   是显式external-root例外。不能按结果静态memory-space、`to_memref`自身或generic-to-DDR cast自封external root。
-- 每个complete static rank entry恰好一个non-nested `wafer.tile.region`；额外/nested region或typed clobber/handoff输入
-  当前拒绝。region所有data argument/result必须解析为DDR root/view，SPM memref/root/alias和pending completion不得跨region，
-  outer epoch exit的pending set必须为空。
+- 每个complete static rank entry含一个或多个non-nested `wafer.tile.region`；nested region或typed opaque clobber输入拒绝。
+  region所有data argument/result必须解析为DDR root/view，SPM memref/root/alias不得跨region；region exit只要求仍访问其
+  SPM roots的pending work完成，entry terminal闭合observable pending set。
 - structured lifetime analysis只接受single-block function/tile-region与`scf.if` / `scf.for`；path condition
   使用按`uint64_t` decision id排序的sparse decision set，不存在64个decision point上限。未结构化、
   multi-block region、decision id域或编译资源耗尽必须结构化拒绝，不得退化为线性op顺序。
 - physical footprint、view/root/descriptor range、offset arithmetic 和 target ABI width narrowing 使用与
   layout、instruction、SPM planning 相同的 shared physical geometry/range/narrowing verifier；拒绝 silent
   truncation 或 consumer-local geometry divergence。
-- explicit-spill producer-to-last-consumer lifetime是mandatory gate；outer epoch的每条exit path在显式completion后都必须有空的
-  pending token/effect set，普通traversal/loop/spill点不单独执行terminal validation。
+- explicit-spill producer-to-last-consumer lifetime是mandatory gate；真实root reuse/observer与entry terminal在显式completion后
+  必须有对应空pending token/effect set，普通traversal/loop/spill/region结构不单独生成completion动作。
 
 DDR memory planning在physical base尚未materialize时只验证`arena_id + symbolic offset + span`、offset/span
 算术、arena capacity/alignment和ABI offset/size field width；这些是commit前gate。RuntimeSession取得actual
@@ -488,18 +488,18 @@ transfer进入所需physical version；这不需要identity DMA，也不需要
 
 ### 9.3 Candidate Selection
 
-candidate selection由tasks/06拥有，可提交任意有界complete all-rank actual variant。tile/loop、resident edge、
-explicit spill、mapped/staged movement与completion都必须已经在current IR显式；region partition不是candidate变量，
-current entry固定一个epoch，typed opaque SPM clobber/device ownership handoff输入拒绝。未来multi-epoch扩展也不得由DDR
-planner决定boundary。DDR owner不知道scope policy、artifact kind、
+candidate selection由tasks/06拥有，可提交任意有界complete all-rank actual variant。region partition、tile/loop、resident edge、
+explicit spill、mapped/staged movement与completion都必须已经在current IR显式；typed opaque SPM clobber输入拒绝，DDR
+planner不创建或改变boundary。DDR owner不知道scope policy、artifact kind、
 candidate ordinal或生成历史，只执行exact demand、lifetime、range、capacity与offset gate。逐rank只能对已物化的DDR
 view、movement、spill和instruction descriptor做structural/lower-bound cheap rejection，不形成per-rank DDR exact gate或survivor。
-all-and-only rank programs形成complete actual variant后，对该whole variant恰好运行一次DDR exact evaluation；evaluation内部
-每个rank default arena恰好一次solve，全部结果只作为一个原子gate接受或拒绝。
+all-and-only rank programs形成complete actual variant后，对current explicit DDR arenas/domains形成fixed problems并原子接受或拒绝；
+problem/query数量进入统一budget但不属于IR语义。
 first/tail representative tiles只允许便宜地拒绝candidate，不能证明traversal coverage、descriptor closure、lifetime、
 capacity或completion。DDR planning拒绝candidate时不写主IR、不改变transfer/residency choice，并丢弃完整clone；
 其它candidate clone继续独立评估。reserved conservative spill拥有独立allowance，但仍执行同一complete late gates。
-SPM/DDR arena constraints是各自planning gate输入；DDR exact movement bytes是06 cost输入，不是candidate field或未校准
+SPM的3 MiB fixed-problem constraints与DDR的explicit arena/placement-domain constraints分别是各自planning gate输入；
+DDR exact movement bytes是06 cost输入，不是candidate field或未校准
 bandwidth legality。12统计每个static descriptor site的exact bytes；static-trip loop-expanded multiplicity与conditional bounds由06
 从complete Instr IR计算，真正runtime-measured count由Q9拥有。12不能把一次site冒充整次workload流量。
 
@@ -609,6 +609,6 @@ Expected coverage:
 
 显式spill DDR lifetime不是deferred work：只要producer store、可信completion、consumer load及其relation已由
 当前SSA、view、region、explicit allocation或transport facts表达，它就是complete static rank entry / variant-set gate的
-  mandatory输入；epoch内selective spill只结束目标SPM root，并通过DDR store/completion/load连接matching reload。
-  未来若引入typed multi-epoch，跨界data仍必须走同一DDR合同；当前额外region直接拒绝。关系无法表达时candidate
+  mandatory输入；region内selective spill只结束目标SPM root，并通过DDR store/completion/load连接matching reload。
+  cross-region data同样必须走显式DDR合同；nested region或SPM root跨界拒绝。关系无法表达时candidate
 必须结构化失败或先扩IR，不能退回局部task planning。

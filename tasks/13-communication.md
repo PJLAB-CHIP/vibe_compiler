@@ -39,8 +39,8 @@ Pipeline position:
   post-SPMD structured tensor program中的`wafer.linalg_ext.collective.*`、显式logical rank group或
   source-target pairs、combiner region、axis/slice/channel identity、`wafer.execution.mesh`和
   `wafer.target.topology`；以及当前rank的isolated complete-rank candidate clone、已选tiling/layout/residency
-  与对应未放置SPM storage values。current static rank entry恰好一个non-nested outer `wafer.tile.region`，
-  collective前后traversal和communication staging均在同一SPM ownership/device-execution epoch内。
+  与对应未放置SPM storage values。current static rank entry含一个或多个non-nested `wafer.tile.region` SPM residency
+  domains；collective前后traversal可以由06选择same-region resident或cross-region materialized，communication staging显式存在。
 - Current stage responsibility:
   typed rewrite pattern直接读取current collective op、DPS/Tiling和execution mesh；从closed schedule enum枚举
   Direct/Ring/Tree小集合，并由无状态topology helper从current rank-to-endpoint placement与规则邻接派生Ring/Tree
@@ -94,7 +94,7 @@ Pipeline position:
   whole-variant validation、target ABI/LLVM lowering、target model、package transport requirement和runtime
   completion/error preflight。
 - User-level driver / named pipeline:
-  只由`wafer-compile`在whole-entry memory planning后内部调用，不暴露transport allocator、rank代表样本或
+  只由`wafer-compile`在allocation-domain memory planning后内部调用，不暴露transport allocator、rank代表样本或
   runtime reselection入口。
 - Explicit non-goals:
   不改变collective算法，不重新写p2p body，不从名字或遍历序号恢复消息，不让runtime搜索endpoint/FSM，
@@ -116,7 +116,7 @@ post-SPMD structured collective IR
   -> local verifier and fresh analyses
   -> derive all-rank atomic typed worker/fixed-slot siblings from canonical/unplaced current Instr
   -> erase compiler-derived joins and fresh rebuild fixed-frontier latest-necessary completion
-  -> once-per-terminal-rank-entry whole-entry SPM planning + whole-variant DDR/event planning
+  -> allocation-domain SPM/DDR planning + whole-variant event planning
   -> all-rank message/range/completion/resource acceptance
   -> atomic DirectDTEBindingAttr commit
   -> target LLVM / model / package / runtime completion surface
@@ -608,11 +608,11 @@ unknown/external call保持conservative barrier。
 - wait之后若还有same-worker local insert/reduce，由issue order保持依赖；若后续是Kcore、DTE、不同worker、
   host publication或unsafe reuse，actual IR必须保留typed hazard witness，并由post-worker completion reconstruction在
   final sibling中构造覆盖producer worker的latest-necessary participant join；
-- collective是rank-coupling点，但不是`tile.region`、DDR或terminal epoch-completion边界；matching token/wait只闭合其
+- collective是rank-coupling点，但不是自动的`tile.region`、DDR或terminal completion边界；matching token/wait只闭合其
   communication obligation。其input/result只要current physical relation、lifetime和capacity允许，就可以跨前后compute
   保持SPM resident；
-- 内部collective/traversal/schedule cut不拆region或插terminal join。SPM root/value/alias只能存在于current rank唯一outer
-  region内，不得跨真实epoch boundary；terminal completion只在outer region/rank-entry exit由final effects/events/ranges证明；
+- 内部collective/traversal/schedule cut不自动拆region或插terminal join；selected region cut必须显式materialize data。
+  SPM root/value/alias不得跨region；region exit只完成仍访问其roots的work，entry terminal由final effects/events/ranges闭合observable completion；
 - local NCC drain、DTE/FSM completion和group barrier是三种不同事件；
 - `async.token`表示依赖完成，不等于target operation成功；success、transport error、timeout与peer failure由
   lower-level status/completion contract区分；
