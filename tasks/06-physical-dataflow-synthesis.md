@@ -286,15 +286,16 @@ cost vector至少分别记录：
 - DDR read/write bytes 与 call/descriptor count；
 - local GS/pack/unpack bytes 与 call/descriptor count；
 - pre-Instr可证明的collective/peer bytes、effect/observer obligations与各engine work lower bound；
-- compute/recompute的static-trip expanded work、dependency lower bound；worker、Direct-DTE、`NCCJoin`和critical-rank exact work
+- compute/recompute的static-trip expanded work、dependency lower bound；worker、Direct-DTE和`NCCJoin` exact work
   在terminal Instr完成worker/order/completion后才Known；
 - SPM peak、DDR peak、buffer count 和 descriptor/resource pressure。
 
 pre-Instr的bytes只有在physical coverage已exact时才可`Known`；RDMA、WDMA、GS及pack/unpack的最终call/descriptor count会受
 Tile→Instr descriptor splitting/coalescing影响，没有同源exact proof时只能记safe bound或`Unknown`，不能参与exact dominance。
 terminal final-IR recost才产生这些exact counts并用于最终winner selection。这些量不能未校准地相加成伪时间，`Unknown`不能
-当作零，也不能dominates任何对应Known值。terminal recost同时报告
-`max(per-rank critical path)`和aggregate DDR/NoC/shared-resource demand；
+当作零，也不能dominates任何对应Known值。terminal recost同时逐rank报告，并单独报告各维度rank maxima、
+`max(per-rank dependency/critical-path lower bound)`和aggregate DDR/NoC/shared-resource demand；不同维度的最大值不能伪装成
+同一个真实critical rank。
 join数量只是结构指标，不能单独最小化。Pareto dominance先保留不可比较项；target cost只排序已经通过hard legality的states。
 loop 中一条 instruction 必须按 exact static trip count或保守 symbolic multiplicity计入，不能把 static call site 当作 dynamic count。
 

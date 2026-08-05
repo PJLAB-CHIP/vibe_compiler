@@ -1,60 +1,58 @@
-#!/ usr / bin / env python3
-""
-    "Export, compile, and execute PyTorch-owned board tensor cases."
-    ""
+#!/usr/bin/env python3
+"""Export, compile, and execute PyTorch-owned board tensor cases."""
 
-    from __future__ import annotations
+from __future__ import annotations
 
-        import argparse import json import os import pathlib import re import
-            shutil import subprocess import sys from collections.abc import
-                Sequence
+import argparse
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+from collections.abc import Sequence
 
-                    import torch
+import torch
 
-                        import wafer_pytorch_board_common as common import
-                            wafer_pytorch_board_cases as board_cases
+import wafer_pytorch_board_common as common
+import wafer_pytorch_board_cases as board_cases
 
-                                TARGET_IDENTITY =
-    "wafer-tx81-single-card" LAUNCH_KIND = "kernel" DIRECT_DTE_STATUS_ABI =
-        "wafer-direct-dte-status-v2" PROCESS_TIMEOUT_MARGIN_SECONDS =
-            60 COMPILE_TIMEOUT_SECONDS = 1800
 
-                                         def
-                                         parse_args() -> argparse.Namespace
-    : parser = argparse.ArgumentParser(description = __doc__) parser
-                   .add_argument("--case",
-                                 choices = tuple(board_cases.CASE_FACTORIES),
-                                 required = True) parser
-                   .add_argument("--dtype", default = "float16") parser
-                   .add_argument("--seed", type = int, default = 20260803)
-                       parser
-                   .add_argument("--wafer-compile", type = pathlib.Path,
-                                 required = True) parser
-                   .add_argument("--wafer-run", type = pathlib.Path,
-                                 required = True) parser
-                   .add_argument("--work-dir", type = pathlib.Path,
-                                 required = True) parser
-                   .add_argument("--dump-compiler-ir", type = pathlib.Path)
-                       parser
-                   .add_argument("--compile-timing", action = "store_true")
-                       parser
-                   .add_argument("--no-card", action = "store_true") parser
-                   .add_argument("--device-id", type = int, default = 0) parser
-                   .add_argument("--expected-runtime-version", type = int)
-                       parser.add_argument("--expected-device-name")
-                           parser.add_argument("--expected-pci-bus-id") parser
-                   .add_argument("--expected-tile-count", type = int) parser
-                   .add_argument("--expected-runtime-library-sha256") parser
-                   .add_argument("--completion-timeout-ms", type = int,
-                                 default = 60000) parser
-                   .add_argument("--repeat", type = int,
-                                 default = 1) return parser
-                   .parse_args()
+TARGET_IDENTITY = "wafer-tx81-single-card"
+LAUNCH_KIND = "kernel"
+DIRECT_DTE_STATUS_ABI = "wafer-direct-dte-status-v2"
+PROCESS_TIMEOUT_MARGIN_SECONDS = 60
+COMPILE_TIMEOUT_SECONDS = 1800
 
-                       def run(command : list[str], *,
-                               timeout_seconds : float | None = None)
-                   ->subprocess.CompletedProcess[str] : try
-    : result = subprocess.run(
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--case", choices=tuple(board_cases.CASE_FACTORIES), required=True)
+    parser.add_argument("--dtype", default="float16")
+    parser.add_argument("--seed", type=int, default=20260803)
+    parser.add_argument("--wafer-compile", type=pathlib.Path, required=True)
+    parser.add_argument("--wafer-run", type=pathlib.Path, required=True)
+    parser.add_argument("--work-dir", type=pathlib.Path, required=True)
+    parser.add_argument("--dump-compiler-ir", type=pathlib.Path)
+    parser.add_argument("--compile-timing", action="store_true")
+    parser.add_argument("--no-card", action="store_true")
+    parser.add_argument("--device-id", type=int, default=0)
+    parser.add_argument("--expected-runtime-version", type=int)
+    parser.add_argument("--expected-device-name")
+    parser.add_argument("--expected-pci-bus-id")
+    parser.add_argument("--expected-tile-count", type=int)
+    parser.add_argument("--expected-runtime-library-sha256")
+    parser.add_argument("--completion-timeout-ms", type=int, default=60000)
+    parser.add_argument("--repeat", type=int, default=1)
+    return parser.parse_args()
+
+
+def run(
+    command: list[str], *, timeout_seconds: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
             command,
             text=True,
             capture_output=True,
@@ -176,13 +174,15 @@ def _boundary_maps(
     boundary = metadata.get("distributed_boundary")
     if not isinstance(boundary, dict):
         if case.rank_count != 1:
-        raise RuntimeError("multi-rank PyTorch case has no distributed "
-                           "boundary") return (
-            { (0, index) : tensor for index, tensor in enumerate(case.inputs) },
+            raise RuntimeError("multi-rank PyTorch case has no distributed boundary")
+        return (
+            {(0, index): tensor for index, tensor in enumerate(case.inputs)},
             {
                 (0, index): tensor
                 for index, tensor in enumerate(case.expected_outputs)
-            }, ) if boundary.get("logical_rank_count") != case.rank_count:
+            },
+        )
+    if boundary.get("logical_rank_count") != case.rank_count:
         raise RuntimeError("distributed boundary rank count differs from the case")
     locations = metadata.get("input_locations")
     inputs = boundary.get("inputs")
@@ -204,8 +204,8 @@ def _boundary_maps(
         if not isinstance(position, int) or position >= len(case.inputs):
             raise RuntimeError("distributed input position is invalid")
         for rank in range(case.rank_count):
-#Manifest user_input.role_index preserves the function argument
-#identity even when earlier arguments are parameters.
+            # Manifest user_input.role_index preserves the function argument
+            # identity even when earlier arguments are parameters.
             key = (rank, argument_index)
             if key in local_inputs:
                 raise RuntimeError(f"duplicate distributed input binding: {key}")
@@ -355,8 +355,7 @@ def verify_board(
         stdout,
         re.MULTILINE,
     )
-    if len(matches) != len(output_ids) or {int(value) for value in matches
-        } != output_ids:
+    if len(matches) != len(output_ids) or {int(value) for value in matches} != output_ids:
         raise RuntimeError("board output did not capture every PyTorch output")
     for capture, expected in captures.items():
         common.assert_raw_capture_matches(
@@ -391,19 +390,19 @@ def main() -> int:
     dtype = board_cases.parse_torch_dtype(args.dtype)
     case = board_cases.make_case(args.case, dtype=dtype, seed=args.seed)
     if not args.no_card and args.expected_tile_count < case.rank_count:
-        raise
-            RuntimeError("PyTorch case exceeds the qualified tile count") source
-            ,
-            package = prepare_work_dir(args.work_dir) case
-                          .export_program(source) compile_command = [
-              str(args.wafer_compile),
-              "--input-program-dir",
-              str(source),
-              "--output-program-dir",
-              str(package),
-              f "--execution-ranks={case.rank_count}",
-              f "--launch-kind={LAUNCH_KIND}",
-            ] if args.compile_timing:
+        raise RuntimeError("PyTorch case exceeds the qualified tile count")
+    source, package = prepare_work_dir(args.work_dir)
+    case.export_program(source)
+    compile_command = [
+        str(args.wafer_compile),
+        "--input-program-dir",
+        str(source),
+        "--output-program-dir",
+        str(package),
+        f"--execution-ranks={case.rank_count}",
+        f"--launch-kind={LAUNCH_KIND}",
+    ]
+    if args.compile_timing:
         compile_command.append("--compile-timing")
     if args.dump_compiler_ir is not None:
         compile_command.extend(
@@ -441,10 +440,11 @@ def main() -> int:
 
     command = [str(args.wafer_run), "--package-dir", str(package)]
     if case.rank_count == 1:
-        command.extend([ "--entry-id", "0" ]) else
-            : command.extend(["--all-ranks"]) if args.no_card
-            : if case.rank_count
-            > 1:
+        command.extend(["--entry-id", "0"])
+    else:
+        command.extend(["--all-ranks"])
+    if args.no_card:
+        if case.rank_count > 1:
             command.extend(
                 [
                     "--direct-dte-status-abi",

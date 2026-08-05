@@ -7,6 +7,7 @@ add_mlir_library(WaferAnalysis
   PhysicalDataflow/TransferRealizability.cpp
   NoCProfitabilityAnalysis.cpp
   ScheduleCost/ExecutionCost.cpp
+  ScheduleCost/DDRHighWater.cpp
   ScheduleCost/SPMHighWater.cpp
   ScheduleCostAnalysis.cpp
   StaticBufferRange.cpp

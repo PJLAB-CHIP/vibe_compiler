@@ -5,6 +5,7 @@
 
 #include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Support/CompileWorkStatistics.h"
 
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
@@ -109,6 +110,21 @@ mlir::LogicalResult runCompilationTransaction(
   auto timingReport = llvm::make_scope_exit([&] {
     if (timingSession)
       timingSession->finishAndPrintSummary();
+  });
+  auto compileWorkSession =
+      std::make_shared<wafer::support::CompileWorkStatisticsSession>();
+  wafer::support::ScopedCompileWorkStatisticsActivation compileWorkActivation(
+      compileWorkSession);
+  auto compileWorkReport = llvm::make_scope_exit([&] {
+    wafer::support::CompileWorkStatistics work = compileWorkSession->snapshot();
+    diagnostics << "wafer-compile: compile-work"
+                << " candidate_expanded_states=" << work.candidateExpandedStates
+                << " terminal_candidate_clones=" << work.terminalCandidateClones
+                << " terminal_instr_lowerings="
+                << work.terminalInstructionLowerings
+                << " spm_planning_invocations=" << work.spmPlanningInvocations
+                << " ddr_planning_invocations=" << work.ddrPlanningInvocations
+                << "\n";
   });
   wafer::support::ScopedCompileTimingSpan transactionTiming(
       "stage", "source-to-package", "compile-transaction");

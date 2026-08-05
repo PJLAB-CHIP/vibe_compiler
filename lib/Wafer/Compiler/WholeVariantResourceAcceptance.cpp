@@ -81,6 +81,8 @@ acceptWholeVariantResources(llvm::ArrayRef<mlir::ModuleOp> rankModules,
                                     cost.aggregateDDRWriteBytes)) ||
       mlir::failed(requireAggregate("aggregate SPM movement bytes",
                                     cost.aggregateSPMMovementBytes)) ||
+      mlir::failed(requireAggregate("aggregate gather/scatter bytes",
+                                    cost.aggregateGatherScatterBytes)) ||
       mlir::failed(
           requireAggregate("aggregate NoC transmit bytes",
                            cost.aggregateNoC.aggregateTransmitBytes)) ||

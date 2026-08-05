@@ -174,6 +174,7 @@ static void collectResourceCost(mlir::Operation *op,
   }
   if (auto gatherScatter = mlir::dyn_cast<InstrGatherScatterOp>(op)) {
     addBytes(cost.spmMovementBytes, gatherScatter.getByteCount());
+    addBytes(cost.gatherScatterBytes, gatherScatter.getByteCount());
     return;
   }
   if (auto dataMove = mlir::dyn_cast<InstrTDMADataMoveOp>(op)) {
@@ -288,7 +289,6 @@ static void collectComputeCost(mlir::Operation *op,
 static void collectNoCCost(mlir::Operation *op, InstructionProgramCost &cost,
                            Quantity multiplicity) {
   if (auto send = mlir::dyn_cast<InstrDTESendOp>(op)) {
-    add(cost.noc.staticIssueSiteCount, Quantity{1});
     Quantity bytes =
         send.getBytes() < 0
             ? Quantity::unsupported(
@@ -296,7 +296,6 @@ static void collectNoCCost(mlir::Operation *op, InstructionProgramCost &cost,
             : Quantity{static_cast<uint64_t>(send.getBytes())};
     Quantity total = multiply(bytes, multiplicity);
     add(cost.noc.aggregateTransmitBytes, total);
-    add(cost.noc.transmitMessageCount, multiplicity);
     std::optional<NoCCollectiveKind> kind =
         classifyCollective(send.getMessage().getPhase());
     if (kind)
@@ -305,21 +304,17 @@ static void collectNoCCost(mlir::Operation *op, InstructionProgramCost &cost,
     return;
   }
   if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(op)) {
-    add(cost.noc.staticIssueSiteCount, Quantity{1});
     Quantity bytes =
         recv.getBytes() < 0
             ? Quantity::unsupported(
                   ScheduleCostReason::UnsupportedInstructionSemantics)
             : Quantity{static_cast<uint64_t>(recv.getBytes())};
     add(cost.noc.aggregateReceiveBytes, multiply(bytes, multiplicity));
-    add(cost.noc.receiveMessageCount, multiplicity);
     return;
   }
-  if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(op)) {
-    add(cost.noc.waitOperationCount, multiplicity);
+  if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(op))
     add(cost.noc.waitedEventCount,
         multiply(Quantity{wait.getTokens().size()}, multiplicity));
-  }
 }
 
 static uint64_t countParticipants(uint32_t participantMask) {
@@ -351,53 +346,129 @@ static bool hasFollowingExecutableWork(mlir::Operation *op) {
   return false;
 }
 
-static void collectNCCDrainCost(mlir::Operation *op,
-                                InstructionProgramCost &cost,
-                                Quantity multiplicity) {
+static void addExecutionCount(InstructionExecutionCount &count,
+                              ExecutionMultiplicity multiplicity,
+                              uint64_t weight = 1,
+                              bool countStaticSite = true) {
+  if (countStaticSite)
+    add(count.staticSites, Quantity{weight});
+  add(count.exactExecutions, multiply(multiplicity.exact, weight));
+  add(count.lowerBound, multiply(multiplicity.lowerBound, weight));
+  add(count.upperBound, multiply(multiplicity.upperBound, weight));
+}
+
+static void collectNCCDrainWork(mlir::Operation *op,
+                                InstructionProgramWork &work,
+                                ExecutionMultiplicity multiplicity,
+                                bool countStaticSite) {
   NCCCompletionContract contract = getNCCCompletionContract(op);
   bool isSteadyState =
       static_cast<bool>(op->getParentOfType<mlir::scf::ForOp>());
   bool isNonTerminal = hasFollowingExecutableWork(op);
-  Quantity participantWaits = multiply(
-      Quantity{countParticipants(contract.participantMask)}, multiplicity);
+  uint64_t participantWaits = countParticipants(contract.participantMask);
   if (contract.behavior == LocalInstructionCompletion::ParticipantJoin) {
-    add(cost.nccJoinCount, multiplicity);
+    addExecutionCount(work.nccJoins, multiplicity, 1, countStaticSite);
     if (isSteadyState)
-      add(cost.steadyStateNCCJoinCount, multiplicity);
+      addExecutionCount(work.steadyStateNCCJoins, multiplicity, 1,
+                        countStaticSite);
     if (isNonTerminal)
-      add(cost.nonTerminalNCCJoinCount, multiplicity);
-    add(cost.nccParticipantWaitCount, participantWaits);
+      addExecutionCount(work.nonTerminalNCCJoins, multiplicity, 1,
+                        countStaticSite);
+    addExecutionCount(work.nccParticipantWaits, multiplicity, participantWaits,
+                      countStaticSite);
     if (isSteadyState)
-      add(cost.steadyStateNCCParticipantWaitCount, participantWaits);
+      addExecutionCount(work.steadyStateNCCParticipantWaits, multiplicity,
+                        participantWaits, countStaticSite);
     if (isNonTerminal)
-      add(cost.nonTerminalNCCParticipantWaitCount, participantWaits);
+      addExecutionCount(work.nonTerminalNCCParticipantWaits, multiplicity,
+                        participantWaits, countStaticSite);
     return;
   }
   if (contract.behavior != LocalInstructionCompletion::SynchronousWriteback)
     return;
-  add(cost.intrinsicNCCDrainCount, multiplicity);
-  add(cost.nccParticipantWaitCount, participantWaits);
+  addExecutionCount(work.intrinsicNCCDrains, multiplicity, 1, countStaticSite);
+  addExecutionCount(work.nccParticipantWaits, multiplicity, participantWaits,
+                    countStaticSite);
   if (isSteadyState)
-    add(cost.steadyStateNCCParticipantWaitCount, participantWaits);
+    addExecutionCount(work.steadyStateNCCParticipantWaits, multiplicity,
+                      participantWaits, countStaticSite);
   if (isNonTerminal)
-    add(cost.nonTerminalNCCParticipantWaitCount, participantWaits);
+    addExecutionCount(work.nonTerminalNCCParticipantWaits, multiplicity,
+                      participantWaits, countStaticSite);
+}
+
+static void collectInstructionWork(mlir::Operation *op,
+                                   InstructionProgramWork &work,
+                                   ExecutionMultiplicity multiplicity,
+                                   bool countStaticSite) {
+  addExecutionCount(work.instructions, multiplicity, 1, countStaticSite);
+  for (mlir::Value result : op->getResults())
+    if (mlir::isa<mlir::async::TokenType>(result.getType()))
+      addExecutionCount(work.asynchronousEvents, multiplicity, 1,
+                        countStaticSite);
+
+  if (mlir::isa<InstrGatherScatterOp>(op))
+    addExecutionCount(work.gatherScatterOperations, multiplicity, 1,
+                      countStaticSite);
+  if (mlir::isa<InstrDTEWaitOp>(op))
+    addExecutionCount(work.dteWaitOperations, multiplicity, 1, countStaticSite);
+  if (mlir::isa<InstrDTESendOp>(op))
+    addExecutionCount(work.dteSendOperations, multiplicity, 1, countStaticSite);
+  if (mlir::isa<InstrDTERecvOp>(op))
+    addExecutionCount(work.dteReceiveOperations, multiplicity, 1,
+                      countStaticSite);
+  if (auto send = mlir::dyn_cast<InstrDTESendOp>(op)) {
+    if (classifyCollective(send.getMessage().getPhase()))
+      addExecutionCount(work.collectiveDTEIssues, multiplicity, 1,
+                        countStaticSite);
+    else
+      addExecutionCount(work.peerDTEIssues, multiplicity, 1, countStaticSite);
+  } else if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(op)) {
+    if (classifyCollective(recv.getMessage().getPhase()))
+      addExecutionCount(work.collectiveDTEIssues, multiplicity, 1,
+                        countStaticSite);
+    else
+      addExecutionCount(work.peerDTEIssues, multiplicity, 1, countStaticSite);
+  }
+
+  if (auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(op)) {
+    InstructionExecutionCount *family = nullptr;
+    switch (instruction.getInstructionFamily()) {
+    case InstrFamily::RDMA:
+      family = &work.rdmaIssues;
+      break;
+    case InstrFamily::WDMA:
+      family = &work.wdmaIssues;
+      break;
+    case InstrFamily::TDMA:
+      family = &work.tdmaIssues;
+      break;
+    case InstrFamily::CT:
+      family = &work.ctIssues;
+      break;
+    case InstrFamily::NE:
+      family = &work.neIssues;
+      break;
+    case InstrFamily::DTE:
+      family = &work.dteOperations;
+      break;
+    }
+    addExecutionCount(*family, multiplicity, 1, countStaticSite);
+  }
+  collectNCCDrainWork(op, work, multiplicity, countStaticSite);
 }
 
 static void collectInstructionCost(mlir::Operation *op,
                                    InstructionProgramCost &cost,
-                                   Quantity multiplicity) {
-  if (multiplicity.knowledge == ScheduleCostKnowledge::Known &&
-      multiplicity.value == 0)
+                                   ExecutionMultiplicity multiplicity,
+                                   bool countStaticSite) {
+  if (multiplicity.exact.knowledge == ScheduleCostKnowledge::Known &&
+      multiplicity.exact.value == 0)
     return;
-  add(cost.instructionCount, multiply(Quantity{1}, multiplicity));
-  for (mlir::Value result : op->getResults()) {
-    if (mlir::isa<mlir::async::TokenType>(result.getType()))
-      add(cost.eventCount, multiply(Quantity{1}, multiplicity));
-  }
-  collectResourceCost(op, cost, multiplicity);
-  collectComputeCost(op, cost, multiplicity);
-  collectNoCCost(op, cost, multiplicity);
-  collectNCCDrainCost(op, cost, multiplicity);
+  collectInstructionWork(op, cost.work, multiplicity, countStaticSite);
+  collectResourceCost(op, cost, multiplicity.exact);
+  collectComputeCost(op, cost, multiplicity.exact);
+  collectNoCCost(op, cost, multiplicity.exact);
 }
 
 enum class ConstantIndexKnowledge { Known, Unknown, Overflow };
@@ -487,36 +558,91 @@ static Quantity getTripCount(mlir::scf::ForOp loop) {
 class ProgramWalker {
 public:
   ProgramWalker(
-      llvm::function_ref<void(mlir::Operation *, Quantity)> onInstruction,
+      llvm::function_ref<void(mlir::Operation *, ExecutionMultiplicity)>
+          onInstruction,
       llvm::function_ref<void()> onUnsupportedControlFlow)
       : onInstruction(onInstruction),
         onUnsupportedControlFlow(onUnsupportedControlFlow) {}
 
   void walkRoot(mlir::Operation *root) {
+    if (auto module = mlir::dyn_cast<mlir::ModuleOp>(root)) {
+      for (mlir::func::FuncOp function : module.getOps<mlir::func::FuncOp>()) {
+        if (function.isPrivate())
+          continue;
+        activeFunctions.insert(function.getOperation());
+        walkOperation(function.getOperation(), ExecutionMultiplicity{});
+        activeFunctions.erase(function.getOperation());
+      }
+      return;
+    }
     if (mlir::isa<mlir::func::FuncOp>(root))
       activeFunctions.insert(root);
-    walkOperation(root, Quantity{1});
+    walkOperation(root, ExecutionMultiplicity{});
   }
 
 private:
-  void walkRegions(mlir::Operation *op, Quantity multiplicity) {
+  static ExecutionMultiplicity multiplyAll(ExecutionMultiplicity multiplicity,
+                                           Quantity factor) {
+    multiplicity.exact = multiply(multiplicity.exact, factor);
+    multiplicity.lowerBound = multiply(multiplicity.lowerBound, factor);
+    multiplicity.upperBound = multiply(multiplicity.upperBound, factor);
+    return multiplicity;
+  }
+
+  static ExecutionMultiplicity
+  enterIndeterminateLoop(ExecutionMultiplicity multiplicity,
+                         Quantity tripCount) {
+    multiplicity.exact = multiply(multiplicity.exact, tripCount);
+    multiplicity.lowerBound = Quantity{0};
+    multiplicity.upperBound = multiply(multiplicity.upperBound, tripCount);
+    return multiplicity;
+  }
+
+  static ExecutionMultiplicity
+  enterConditionalBranch(ExecutionMultiplicity multiplicity) {
+    multiplicity.exact =
+        multiply(multiplicity.exact,
+                 Quantity::unknown(ScheduleCostReason::ConditionalControlFlow));
+    multiplicity.lowerBound = Quantity{0};
+    // One branch cannot execute more often than its parent. Summing the two
+    // branch-local upper bounds later is conservative for every work kind.
+    return multiplicity;
+  }
+
+  static ExecutionMultiplicity
+  enterUnsupportedRegion(ExecutionMultiplicity multiplicity) {
+    Quantity unsupported =
+        Quantity::unsupported(ScheduleCostReason::UnsupportedControlFlow);
+    multiplicity.exact = multiply(multiplicity.exact, unsupported);
+    multiplicity.lowerBound = Quantity{0};
+    multiplicity.upperBound = multiply(multiplicity.upperBound, unsupported);
+    return multiplicity;
+  }
+
+  void walkRegions(mlir::Operation *op, ExecutionMultiplicity multiplicity) {
     for (mlir::Region &region : op->getRegions())
       walkRegion(region, multiplicity);
   }
 
-  void walkRegion(mlir::Region &region, Quantity multiplicity) {
+  void walkRegion(mlir::Region &region, ExecutionMultiplicity multiplicity) {
     if (!region.empty() && !region.hasOneBlock())
-      multiplicity = multiply(
-          multiplicity,
-          Quantity::unsupported(ScheduleCostReason::UnsupportedControlFlow));
+      multiplicity = enterUnsupportedRegion(multiplicity);
     for (mlir::Block &block : region)
       for (mlir::Operation &op : block)
         walkOperation(&op, multiplicity);
   }
 
-  void walkOperation(mlir::Operation *op, Quantity multiplicity) {
+  void walkOperation(mlir::Operation *op, ExecutionMultiplicity multiplicity) {
+    if (multiplicity.exact.knowledge == ScheduleCostKnowledge::Known &&
+        multiplicity.exact.value == 0)
+      return;
     if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
-      walkRegion(loop.getRegion(), multiply(multiplicity, getTripCount(loop)));
+      Quantity tripCount = getTripCount(loop);
+      if (tripCount.knowledge == ScheduleCostKnowledge::Known)
+        walkRegion(loop.getRegion(), multiplyAll(multiplicity, tripCount));
+      else
+        walkRegion(loop.getRegion(),
+                   enterIndeterminateLoop(multiplicity, tripCount));
       return;
     }
     if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(op)) {
@@ -527,10 +653,10 @@ private:
             *condition ? ifOp.getThenRegion() : ifOp.getElseRegion();
         walkRegion(selected, multiplicity);
       } else {
-        Quantity conditional =
-            Quantity::unknown(ScheduleCostReason::ConditionalControlFlow);
-        walkRegion(ifOp.getThenRegion(), multiply(multiplicity, conditional));
-        walkRegion(ifOp.getElseRegion(), multiply(multiplicity, conditional));
+        ExecutionMultiplicity conditional =
+            enterConditionalBranch(multiplicity);
+        walkRegion(ifOp.getThenRegion(), conditional);
+        walkRegion(ifOp.getElseRegion(), conditional);
       }
       return;
     }
@@ -559,28 +685,46 @@ private:
       return;
     }
 
-    walkRegions(op, multiply(multiplicity,
-                             Quantity::unsupported(
-                                 ScheduleCostReason::UnsupportedControlFlow)));
+    walkRegions(op, enterUnsupportedRegion(multiplicity));
   }
 
-  llvm::function_ref<void(mlir::Operation *, Quantity)> onInstruction;
+  llvm::function_ref<void(mlir::Operation *, ExecutionMultiplicity)>
+      onInstruction;
   llvm::function_ref<void()> onUnsupportedControlFlow;
   llvm::DenseSet<mlir::Operation *> activeFunctions;
 };
 
 } // namespace
 
-void walkInstructionProgram(
+void walkInstructionProgramWork(
     mlir::Operation *root,
-    llvm::function_ref<void(mlir::Operation *, Quantity)> onInstruction,
+    llvm::function_ref<void(mlir::Operation *, ExecutionMultiplicity)>
+        onInstruction,
     llvm::function_ref<void()> onUnsupportedControlFlow) {
   ProgramWalker(onInstruction, onUnsupportedControlFlow).walkRoot(root);
 }
 
+void walkInstructionProgram(
+    mlir::Operation *root,
+    llvm::function_ref<void(mlir::Operation *, Quantity)> onInstruction,
+    llvm::function_ref<void()> onUnsupportedControlFlow) {
+  auto adapt = [&](mlir::Operation *operation,
+                   ExecutionMultiplicity multiplicity) {
+    onInstruction(operation, multiplicity.exact);
+  };
+  walkInstructionProgramWork(root, adapt, onUnsupportedControlFlow);
+}
+
 void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
-  auto collect = [&](mlir::Operation *operation, Quantity multiplicity) {
-    collectInstructionCost(operation, cost, multiplicity);
+  llvm::DenseSet<mlir::Operation *> countedStaticSites;
+  auto collect = [&](mlir::Operation *operation,
+                     ExecutionMultiplicity multiplicity) {
+    bool executes =
+        multiplicity.exact.knowledge != ScheduleCostKnowledge::Known ||
+        multiplicity.exact.value != 0;
+    bool countStaticSite =
+        executes && countedStaticSites.insert(operation).second;
+    collectInstructionCost(operation, cost, multiplicity, countStaticSite);
   };
   auto markAllUnsupported = [&]() {
     auto mark = [](ScheduleCostMetric &metric) {
@@ -595,6 +739,7 @@ void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
     mark(cost.ddrReadBytes);
     mark(cost.ddrWriteBytes);
     mark(cost.spmMovementBytes);
+    mark(cost.gatherScatterBytes);
     mark(cost.noc.staticIssueSiteCount);
     mark(cost.noc.aggregateTransmitBytes);
     mark(cost.noc.aggregateReceiveBytes);
@@ -606,17 +751,39 @@ void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
       mark(metric);
     for (ScheduleCostMetric &metric : cost.noc.collectiveTransmitBytes)
       mark(metric);
-    mark(cost.instructionCount);
-    mark(cost.eventCount);
-    mark(cost.nccJoinCount);
-    mark(cost.steadyStateNCCJoinCount);
-    mark(cost.nonTerminalNCCJoinCount);
-    mark(cost.nccParticipantWaitCount);
-    mark(cost.steadyStateNCCParticipantWaitCount);
-    mark(cost.nonTerminalNCCParticipantWaitCount);
-    mark(cost.intrinsicNCCDrainCount);
+    auto markCount = [&](InstructionExecutionCount &count) {
+      mark(count.staticSites);
+      mark(count.exactExecutions);
+      mark(count.lowerBound);
+      mark(count.upperBound);
+    };
+    for (InstructionWorkCountMember member : kInstructionWorkCountMembers)
+      markCount(cost.work.*member);
   };
-  walkInstructionProgram(root, collect, markAllUnsupported);
+  walkInstructionProgramWork(root, collect, markAllUnsupported);
+
+  auto exact = [](const InstructionExecutionCount &count) {
+    return count.exactExecutions;
+  };
+  cost.instructionCount = exact(cost.work.instructions);
+  cost.eventCount = exact(cost.work.asynchronousEvents);
+  cost.nccJoinCount = exact(cost.work.nccJoins);
+  cost.steadyStateNCCJoinCount = exact(cost.work.steadyStateNCCJoins);
+  cost.nonTerminalNCCJoinCount = exact(cost.work.nonTerminalNCCJoins);
+  cost.nccParticipantWaitCount = exact(cost.work.nccParticipantWaits);
+  cost.steadyStateNCCParticipantWaitCount =
+      exact(cost.work.steadyStateNCCParticipantWaits);
+  cost.nonTerminalNCCParticipantWaitCount =
+      exact(cost.work.nonTerminalNCCParticipantWaits);
+  cost.intrinsicNCCDrainCount = exact(cost.work.intrinsicNCCDrains);
+  cost.noc.staticIssueSiteCount = cost.work.dteSendOperations.staticSites;
+  add(cost.noc.staticIssueSiteCount,
+      Quantity{cost.work.dteReceiveOperations.staticSites.value,
+               cost.work.dteReceiveOperations.staticSites.knowledge,
+               cost.work.dteReceiveOperations.staticSites.reason});
+  cost.noc.transmitMessageCount = exact(cost.work.dteSendOperations);
+  cost.noc.receiveMessageCount = exact(cost.work.dteReceiveOperations);
+  cost.noc.waitOperationCount = exact(cost.work.dteWaitOperations);
 }
 
 namespace {

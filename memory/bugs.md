@@ -2384,3 +2384,41 @@
   `src_stride=0`的单条gather/scatter广播。
 - 防复发：focused测试覆盖dynamic DDR/SPM subview正例、blocked layout负例、rank-zero到非单元素tensor广播；完成证明还要
   用真实model shape重放source→16-rank package→no-card，不能只依赖tiny或shape-only fixture。
+
+## 2026-08-05 后置placement事实不能成为前置candidate gate
+
+- 现象：给whole-card cost补充DDR arena high-water后，若把它直接加入候选资源准入，多个原本可用的NoC sibling在
+  DDR planner执行前被报告为missing accepted offset；相同source因而失去优化候选，而final package路径本身并没有
+  DDR容量或offset错误。
+- 根因：一个cost对象同时可在pre-placement和post-placement边界查询，但新字段只在accepted DDR offset已经存在时
+  才能成为exact事实。把终态exact closure机械复制到前置筛选，相当于用下游artifact要求拒绝上游artifact。
+- 修复模式：每个gate只要求当前pipeline位置已经存在且由其owner解释的字段。pre-DDR candidate gate继续检查当时可知的
+  movement/traffic等事实；DDR high-water在placement之后从current allocation type与accepted offset重新计算，并只进入
+  final diagnostics、post-placement acceptance或下游resource contract。
+- 防复发：新增cost字段时同时列出最早可知stage、Unknown reason和合法consumer；正向测试要覆盖pre-placement candidate
+  不被误拒、post-placement exact value与missing/invalid offset的typed失败，不能把“最终会有该字段”当作所有stage都应要求。
+
+## 2026-08-05 并发度不能改变候选批次和compiler work
+
+- 现象：同一完整Llama source的并行compile与单CPU compile选择相同winner和byte-identical package，但expanded state、
+  terminal clone/lowering及SPM/DDR planning次数明显不同。单CPU为24080/37680/37936/48980/36976，并行则为
+  37488/48784/49040/60084/46992。
+- 根因：candidate search把batch宽度直接设为worker数量。并行路径会在检查当前结果前预先评估固定一批candidate，串行路径
+  则每个candidate后立即停止；因此worker pool不只是执行服务，还隐式改变了实际搜索work和停止边界。request shard数量
+  只影响执行分配和context并发，固定为最大值反而把model-scale peak RSS从约3 GiB推到约5.36 GiB。
+- 修复模式：候选batch宽度属于稳定search policy，独立于worker数量；worker pool只并发执行同一批actual candidates。
+  host-aware request shard继续用于执行分配和内存控制，canonical merge保持不变。invocation-local原子计数显式传播到每个
+  worker，串行与并行用相同source比较work、winner和package，而不是只比较输出正确性。
+- 防复发：单测同时断言serial/parallel candidateCount、completeEvaluationCount和module相同；source-to-package gate在
+  CPU affinity为1和正常并发下核对expanded/clones/lowerings/packing counters及递归package bytes。wall允许不同，work和
+  artifact不允许随host concurrency变化；不得靠固定最大shard数换取表面确定性并制造context/RSS膨胀。
+
+## 2026-08-05 formatter必须按文件语言限定输入
+
+- 现象：板端PyTorch runner被C/C++ formatter处理后仍能进入提交，但出现大面积错误缩进、拼接token和不可执行语法；
+  直到fresh `py_compile`和runner入口才暴露`IndentationError`。
+- 根因：批量格式化命令没有按语言筛选文件，且收尾只构建C++ target，没有对被改Python入口做语法检查。
+- 修复模式：C/C++只交给clang-format，Python使用对应formatter或保持手工修改；任何Python runner变化至少执行当前解释器和
+  importer解释器的`py_compile`、`--help`及其定向unit。恢复时保留当前ABI/CLI语义，不从旧文件整份覆盖新合同。
+- 防复发：格式化命令显式列出同一语言文件，随后检查diff stat是否出现异常全文件重排。即使是临时代码和测试runner也遵守
+  正常命名、语法和验证规则，不能以“后面会删”降低质量门槛。

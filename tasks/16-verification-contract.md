@@ -486,9 +486,13 @@ DDR往返、GS/layout movement和`NCCJoin`。不能用某一项下降而把work�
   二次遍历re-read/recompute或保存并按global state重标定，全部SPM/DDR/work进入actual IR与cost，不能只靠`(m,l)`单遍输出。
   这些candidate使用现有SCF + tile reduce/elementwise/GEMM lowering，不新增Instr/ABI；任一语义未闭合则fail closed；
 - **work counters**：分别报告static site、static-trip loop-expanded execution work、conditional path lower/upper bound、
-  symbolic/Unknown和Q9 runtime-measured count。只有terminal Instr完成worker/completion后才报告exact join/DTE/critical-rank work；
-  `Unknown`不当零。每rank、critical-rank、`max(per-rank critical path)`、aggregate DDR/NoC、SPM high-water、descriptor、expanded
+  symbolic/Unknown和Q9 runtime-measured count。只有terminal Instr完成worker/completion后才报告exact join/DTE work；
+  `Unknown`不当零。逐rank事实与各维度`rank-maxima`分别报告，不把不同维度的最大值伪装成一个真实critical rank；另报
+  `max(per-rank dependency/critical-path lower bound)`、aggregate DDR/NoC、SPM high-water、descriptor、expanded
   states、actual clones、terminal lowerings、packing calls、peak RSS与Release wall同时可审计；
+- **IR evidence boundary**：C0从当前同一production compile直接保存post-SPMD structured IR与final Instr IR；旧per-task路径在
+  complete-rank selection前已经破坏性lower Tile candidate，因此不得用replay、影子clone或sidecar伪造selected Tile证据。
+  C1建立真实complete-rank decision point后，必须在该点保存同一次compile的selected Tile/Dataflow IR，并与前后两层直接关联；
 - **workload matrix**：主case为当前Llama `(S_q, S_kv) = (16, 16)`、真实PyTorch-exported read-only cached-attention
   `(1, 1024)`和prefill `(1024, 1024)`；held-out为`(1, 4096)`、`(512, 512)`、`(128, 2048)`。后两类是attention source，
   不宣称完整7B block；长K/V只在一次invocation内逐tile消费显式external K/V。只改现有fixture为`S=1`不算decode；
@@ -497,7 +501,7 @@ DDR往返、GS/layout movement和`NCCJoin`。不能用某一项下降而把work�
   online sibling；final IR与work counters证明没有完整score/probability tensor的DDR store→reload。仅有synthetic candidate
   generation或未被选择的positive test不能代签；
 - **当前workload收益**：相对C0 fresh pre-Q49 optimized production baseline，`(16, 16)`的per-rank loop-expanded DDR bytes至少
-  下降50%、GS bytes至少下降80%、critical-rank loop-expanded join至少下降80%。这些是workload gate，不是算法常量；同时核对compute/recompute、
+  下降50%、GS bytes至少下降80%、`rank-maxima` loop-expanded join至少下降80%。这些是workload gate，不是算法常量；同时核对compute/recompute、
   NoC/DTE、SPM capacity、numeric/output/guard和ABI/package，板端matched性能不得劣化；
 - **cutover**：per-task Tile→Instr/SPM/DDR、standalone task import/commit、task-return join、task/layout/artifact ordinal、
   artifact-kind Cartesian product、all-or-nothing full-buffer residency和late NoC tuple decision owner均无production consumer并

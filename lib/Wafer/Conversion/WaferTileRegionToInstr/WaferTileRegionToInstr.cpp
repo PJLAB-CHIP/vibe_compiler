@@ -4,6 +4,7 @@
 
 #include "Internal.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Support/CompileWorkStatistics.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -682,6 +683,8 @@ wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
 mlir::LogicalResult wafer::tile_region_to_instr::convertTileRegionToInstrModule(
     mlir::ModuleOp module, const TileRegionToInstrOptions &options,
     std::string *failureReason) {
+  wafer::support::recordCompileWork(
+      wafer::support::CompileWorkKind::TerminalInstructionLowering);
   wafer::support::ScopedCompileTimingSpan conversionTiming(
       "conversion", "tile-region-to-instr", "module-conversion");
   if (failureReason)

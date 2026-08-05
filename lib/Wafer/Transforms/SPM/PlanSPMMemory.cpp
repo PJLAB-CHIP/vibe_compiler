@@ -6,6 +6,7 @@
 #include "MemoryPlanning/StaticMemoryPacking.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Support/CompileWorkStatistics.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -943,6 +944,8 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
 mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t spmBase, int64_t spmLimit,
                                         int64_t spmAlignment) {
+  wafer::support::recordCompileWork(
+      wafer::support::CompileWorkKind::SPMPlanning);
   wafer::support::ScopedCompileTimingSpan timing(
       "transformation", "planSPMMemoryModule", "total");
   if (spmBase < 0 || spmLimit <= spmBase)

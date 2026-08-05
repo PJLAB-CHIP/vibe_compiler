@@ -10,6 +10,7 @@
 #include "WholeVariantCoordinator.h"
 
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Support/CompileWorkStatistics.h"
 #include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 
 #include "mlir/Bytecode/BytecodeWriter.h"
@@ -107,6 +108,151 @@ void detail::compactImportedRankVariantFrontiers(
     });
 }
 
+static void
+printInstructionWorkMetric(llvm::raw_ostream &os,
+                           const analysis::ScheduleCostMetric &metric) {
+  os << analysis::stringifyScheduleCostKnowledge(metric.knowledge) << ':';
+  if (metric.isKnown())
+    os << metric.value;
+  else
+    os << analysis::stringifyScheduleCostReason(metric.reason);
+}
+
+static void
+printInstructionExecutionCount(llvm::raw_ostream &os, llvm::StringRef name,
+                               const analysis::InstructionExecutionCount &count,
+                               bool alwaysPrintBounds = false) {
+  os << ' ' << name << "_sites=";
+  printInstructionWorkMetric(os, count.staticSites);
+  os << ' ' << name << "_exact=";
+  printInstructionWorkMetric(os, count.exactExecutions);
+  auto equal = [](const analysis::ScheduleCostMetric &left,
+                  const analysis::ScheduleCostMetric &right) {
+    return left.value == right.value && left.knowledge == right.knowledge &&
+           left.reason == right.reason;
+  };
+  if (!alwaysPrintBounds && equal(count.exactExecutions, count.lowerBound) &&
+      equal(count.exactExecutions, count.upperBound))
+    return;
+  os << ' ' << name << "_lower=";
+  printInstructionWorkMetric(os, count.lowerBound);
+  os << ' ' << name << "_upper=";
+  printInstructionWorkMetric(os, count.upperBound);
+}
+
+static void
+printInstructionProgramWork(llvm::raw_ostream &os,
+                            const analysis::InstructionProgramWork &work) {
+  printInstructionExecutionCount(os, "instructions", work.instructions,
+                                 /*alwaysPrintBounds=*/true);
+  printInstructionExecutionCount(os, "events", work.asynchronousEvents);
+  printInstructionExecutionCount(os, "rdma", work.rdmaIssues);
+  printInstructionExecutionCount(os, "wdma", work.wdmaIssues);
+  printInstructionExecutionCount(os, "tdma", work.tdmaIssues);
+  printInstructionExecutionCount(os, "ct", work.ctIssues);
+  printInstructionExecutionCount(os, "ne", work.neIssues);
+  printInstructionExecutionCount(os, "dte", work.dteOperations);
+  printInstructionExecutionCount(os, "gather_scatter",
+                                 work.gatherScatterOperations);
+  printInstructionExecutionCount(os, "dte_send", work.dteSendOperations);
+  printInstructionExecutionCount(os, "dte_receive", work.dteReceiveOperations);
+  printInstructionExecutionCount(os, "dte_wait", work.dteWaitOperations);
+  printInstructionExecutionCount(os, "collective_dte",
+                                 work.collectiveDTEIssues);
+  printInstructionExecutionCount(os, "peer_dte", work.peerDTEIssues);
+  printInstructionExecutionCount(os, "ncc_join", work.nccJoins,
+                                 /*alwaysPrintBounds=*/true);
+  printInstructionExecutionCount(os, "ncc_join_steady",
+                                 work.steadyStateNCCJoins);
+  printInstructionExecutionCount(os, "ncc_join_nonterminal",
+                                 work.nonTerminalNCCJoins);
+  printInstructionExecutionCount(os, "ncc_participant_wait",
+                                 work.nccParticipantWaits);
+  printInstructionExecutionCount(os, "ncc_participant_wait_steady",
+                                 work.steadyStateNCCParticipantWaits);
+  printInstructionExecutionCount(os, "ncc_participant_wait_nonterminal",
+                                 work.nonTerminalNCCParticipantWaits);
+  printInstructionExecutionCount(os, "intrinsic_ncc_drain",
+                                 work.intrinsicNCCDrains);
+}
+
+static void
+printInstructionProgramResources(llvm::raw_ostream &os,
+                                 const analysis::InstructionProgramCost &cost) {
+  auto print = [&](llvm::StringRef name,
+                   const analysis::ScheduleCostMetric &metric) {
+    os << ' ' << name << '=';
+    printInstructionWorkMetric(os, metric);
+  };
+  print("ddr_read_bytes", cost.ddrReadBytes);
+  print("ddr_write_bytes", cost.ddrWriteBytes);
+  print("spm_movement_bytes", cost.spmMovementBytes);
+  print("gather_scatter_bytes", cost.gatherScatterBytes);
+  print("compute_npu_f16_bf16_ops", cost.compute.npuF16Bf16LogicalOps);
+  print("compute_npu_other_ops", cost.compute.npuOtherLogicalOps);
+  print("compute_vector_f16_bf16_ops", cost.compute.vectorF16Bf16LogicalOps);
+  print("compute_vector_f32_ops", cost.compute.vectorF32LogicalOps);
+  print("compute_vector_other_ops", cost.compute.vectorOtherLogicalOps);
+  print("noc_transmit_bytes", cost.noc.aggregateTransmitBytes);
+  print("noc_receive_bytes", cost.noc.aggregateReceiveBytes);
+  print("dependency_depth", cost.dataDependencyDepth);
+  print("spm_high_water_bytes", cost.spmHighWaterBytes);
+  print("ddr_high_water_bytes", cost.ddrHighWaterBytes);
+  print("spm_buffers", cost.compilerOwnedSPMBufferCount);
+  print("ddr_buffers", cost.compilerOwnedDDRBufferCount);
+}
+
+static void
+printAcceptedInstructionWork(llvm::raw_ostream &diagnostics,
+                             const detail::AcceptedWholeVariant &accepted) {
+  const analysis::WholeCardInstructionProgramCost &cost = accepted.resourceCost;
+  for (auto [rank, rankCost] : llvm::enumerate(cost.rankCosts)) {
+    diagnostics << "wafer-compile: instruction-work scope=rank rank="
+                << accepted.ranks[rank].getLogicalRank();
+    printInstructionProgramWork(diagnostics, rankCost.work);
+    printInstructionProgramResources(diagnostics, rankCost);
+    diagnostics << '\n';
+  }
+  diagnostics << "wafer-compile: instruction-work scope=all-ranks";
+  printInstructionProgramWork(diagnostics, cost.aggregateWork);
+  auto printAggregate = [&](llvm::StringRef name,
+                            const analysis::ScheduleCostMetric &metric) {
+    diagnostics << ' ' << name << '=';
+    printInstructionWorkMetric(diagnostics, metric);
+  };
+  printAggregate("ddr_read_bytes", cost.aggregateDDRReadBytes);
+  printAggregate("ddr_write_bytes", cost.aggregateDDRWriteBytes);
+  printAggregate("spm_movement_bytes", cost.aggregateSPMMovementBytes);
+  printAggregate("gather_scatter_bytes", cost.aggregateGatherScatterBytes);
+  printAggregate("compute_npu_f16_bf16_ops",
+                 cost.aggregateCompute.npuF16Bf16LogicalOps);
+  printAggregate("compute_npu_other_ops",
+                 cost.aggregateCompute.npuOtherLogicalOps);
+  printAggregate("compute_vector_f16_bf16_ops",
+                 cost.aggregateCompute.vectorF16Bf16LogicalOps);
+  printAggregate("compute_vector_f32_ops",
+                 cost.aggregateCompute.vectorF32LogicalOps);
+  printAggregate("compute_vector_other_ops",
+                 cost.aggregateCompute.vectorOtherLogicalOps);
+  printAggregate("noc_transmit_bytes",
+                 cost.aggregateNoC.aggregateTransmitBytes);
+  printAggregate("noc_receive_bytes", cost.aggregateNoC.aggregateReceiveBytes);
+  printAggregate("spm_high_water_bytes", cost.summedRankSPMHighWaterBytes);
+  printAggregate("ddr_high_water_bytes", cost.summedRankDDRHighWaterBytes);
+  printAggregate("spm_buffers", cost.aggregateCompilerOwnedSPMBufferCount);
+  printAggregate("ddr_buffers", cost.aggregateCompilerOwnedDDRBufferCount);
+  diagnostics << '\n';
+
+  diagnostics << "wafer-compile: instruction-work scope=rank-maxima";
+  printInstructionProgramWork(diagnostics, cost.maximumRankWork);
+  printAggregate("dependency_depth", cost.maximumRankDataDependencyDepth);
+  printAggregate("spm_high_water_bytes", cost.maximumRankSPMHighWaterBytes);
+  printAggregate("ddr_high_water_bytes", cost.maximumRankDDRHighWaterBytes);
+  printAggregate("spm_buffers", cost.maximumRankCompilerOwnedSPMBufferCount);
+  printAggregate("ddr_buffers", cost.maximumRankCompilerOwnedDDRBufferCount);
+  diagnostics << '\n';
+}
+
 static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
@@ -117,7 +263,6 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
       detail::CompileClock::now();
   wafer::support::ScopedCompileTimingSpan executableBundleTiming(
       "stage", "tensor-program-to-executable", "executable-bundle");
-  constexpr int64_t candidateEvaluationWorkerLimit = 4;
   constexpr uint32_t rankRequestShardLimit = 16;
   auto fail = [&](llvm::StringRef message) -> llvm::Error {
     diagnostics << "wafer-compile: " << message << "\n";
@@ -154,6 +299,8 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
       rankInvariant ? 1 : executionConfig.getRankCount();
   const unsigned heavyweightThreadCount =
       llvm::heavyweight_hardware_concurrency().compute_thread_count();
+  const int64_t candidateEvaluationWorkerLimit =
+      std::max<unsigned>(1, std::min<unsigned>(4, heavyweightThreadCount));
   const uint32_t requestShardCount = std::min<uint32_t>(
       rankRequestShardLimit,
       std::max<uint32_t>(1,
@@ -183,9 +330,14 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
           "stage", "tensor-program-to-executable", "rank-candidate-generation");
   std::shared_ptr<wafer::support::CompileTimingSession> timingSession =
       wafer::support::getActiveCompileTimingSession();
+  std::shared_ptr<wafer::support::CompileWorkStatisticsSession>
+      workStatisticsSession =
+          wafer::support::getActiveCompileWorkStatisticsSession();
   llvm::parallelFor(0, searchShardResults.size(), [&](size_t index) {
     wafer::support::ScopedCompileTimingActivation timingActivation(
         timingSession);
+    wafer::support::ScopedCompileWorkStatisticsActivation
+        workStatisticsActivation(workStatisticsSession);
     RankSearchShardResult &result = searchShardResults[index];
     const detail::CompileClock::time_point shardStart =
         detail::CompileClock::now();
@@ -319,6 +471,8 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     RankSearchShardResult &result = searchShardResults[shardIndex];
     wafer::support::ScopedCompileTimingActivation timingActivation(
         timingSession);
+    wafer::support::ScopedCompileWorkStatisticsActivation
+        workStatisticsActivation(workStatisticsSession);
     std::string timingDetail;
     llvm::raw_string_ostream timingDetailStream(timingDetail);
     timingDetailStream << "generation-class=" << result.generationClass
@@ -556,6 +710,8 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
   const int64_t selectionWallMs =
       detail::elapsedCompileMilliseconds(selectionStart);
   selectionTiming.reset();
+
+  printAcceptedInstructionWork(diagnostics, *accepted);
 
   diagnostics << "wafer-compile: compile-stats stage=rank-candidate-generation"
               << " wall_ms=" << rankGenerationWallMs

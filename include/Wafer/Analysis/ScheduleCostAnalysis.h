@@ -39,6 +39,8 @@ enum class ScheduleCostReason {
   UnknownResourceBytes,
   MissingAcceptedSPMOffset,
   InvalidAcceptedSPMOffset,
+  MissingAcceptedDDROffset,
+  InvalidAcceptedDDROffset,
   UnsupportedSPMRoot,
   UnresolvedNoCRoute,
   InvalidExecutionTopology,
@@ -185,7 +187,51 @@ struct ScheduleNoCCost {
   const ScheduleCostMetric &collective(NoCCollectiveKind kind) const;
 };
 
+/// One kind of final instruction-program work under structured control flow.
+/// `staticSites` counts reachable work sites in the statically traversed entry
+/// closure. `exactExecutions` is populated only when every enclosing trip count
+/// and path is statically determined. The lower and upper bounds remain
+/// independently useful when exact execution is not known; an unbounded or
+/// unsupported upper bound is represented by its knowledge state, never zero.
+struct InstructionExecutionCount {
+  ScheduleCostMetric staticSites;
+  ScheduleCostMetric exactExecutions;
+  ScheduleCostMetric lowerBound;
+  ScheduleCostMetric upperBound;
+};
+
+/// Same-source execution counters for the final instruction IR. Engine-family
+/// counters describe issued work; operation-specific counters retain the
+/// distinctions needed to audit movement, transport, and completion. A gather
+/// or scatter therefore contributes to both `tdmaIssues` and
+/// `gatherScatterOperations`, while a Direct-DTE send/receive contributes to
+/// both `dteOperations` and exactly one protocol-class counter.
+struct InstructionProgramWork {
+  InstructionExecutionCount instructions;
+  InstructionExecutionCount asynchronousEvents;
+  InstructionExecutionCount rdmaIssues;
+  InstructionExecutionCount wdmaIssues;
+  InstructionExecutionCount tdmaIssues;
+  InstructionExecutionCount ctIssues;
+  InstructionExecutionCount neIssues;
+  InstructionExecutionCount dteOperations;
+  InstructionExecutionCount gatherScatterOperations;
+  InstructionExecutionCount dteSendOperations;
+  InstructionExecutionCount dteReceiveOperations;
+  InstructionExecutionCount dteWaitOperations;
+  InstructionExecutionCount collectiveDTEIssues;
+  InstructionExecutionCount peerDTEIssues;
+  InstructionExecutionCount nccJoins;
+  InstructionExecutionCount steadyStateNCCJoins;
+  InstructionExecutionCount nonTerminalNCCJoins;
+  InstructionExecutionCount nccParticipantWaits;
+  InstructionExecutionCount steadyStateNCCParticipantWaits;
+  InstructionExecutionCount nonTerminalNCCParticipantWaits;
+  InstructionExecutionCount intrinsicNCCDrains;
+};
+
 struct InstructionProgramCost {
+  InstructionProgramWork work;
   ScheduleComputeCost compute;
   ScheduleCostMetric ddrReadBytes;
   ScheduleCostMetric ddrWriteBytes;
@@ -194,6 +240,14 @@ struct InstructionProgramCost {
   /// traffic may also appear here because the two dimensions account for
   /// different constrained resources.
   ScheduleCostMetric spmMovementBytes;
+  /// Bytes moved specifically by final gather/scatter instructions. This is a
+  /// subset of `spmMovementBytes`, retained so layout movement is auditable
+  /// without reparsing an IR dump.
+  ScheduleCostMetric gatherScatterBytes;
+  /// Maximum end offset among compiler-owned DDR allocations reachable from
+  /// the analyzed entry closure. External invocation buffers are not part of
+  /// this arena.
+  ScheduleCostMetric ddrHighWaterBytes;
   ScheduleNoCCost noc;
   ScheduleCostMetric instructionCount;
   /// Number of asynchronous completion-token results materialized by the
@@ -255,6 +309,8 @@ struct InstructionProgramCost {
   /// Maximum accepted SPM address end relative to the target SPM base. This is
   /// address-space high-water, not liveness-aware peak allocation.
   ScheduleCostMetric spmHighWaterBytes;
+  ScheduleCostMetric compilerOwnedSPMBufferCount;
+  ScheduleCostMetric compilerOwnedDDRBufferCount;
 };
 
 enum class ModeledNoCRouteKind : uint8_t {
@@ -281,10 +337,16 @@ struct ModeledNoCRouteCost {
 struct WholeCardInstructionProgramCost {
   llvm::SmallVector<InstructionProgramCost, 16> rankCosts;
 
+  /// Sum and per-dimension rank maximum of the same rank-local work facts.
+  /// Maxima expose rank-local pressure without pretending that every maximum
+  /// came from one fictitious critical rank.
+  InstructionProgramWork aggregateWork;
+  InstructionProgramWork maximumRankWork;
   ScheduleComputeCost aggregateCompute;
   ScheduleCostMetric aggregateDDRReadBytes;
   ScheduleCostMetric aggregateDDRWriteBytes;
   ScheduleCostMetric aggregateSPMMovementBytes;
+  ScheduleCostMetric aggregateGatherScatterBytes;
   ScheduleNoCCost aggregateNoC;
   /// Endpoint pressure derived from the actual per-rank instruction programs.
   /// These are maxima, not sums, because endpoints are tile-local resources.
@@ -347,6 +409,12 @@ struct WholeCardInstructionProgramCost {
 
   ScheduleCostMetric maximumRankSPMHighWaterBytes;
   ScheduleCostMetric summedRankSPMHighWaterBytes;
+  ScheduleCostMetric maximumRankDDRHighWaterBytes;
+  ScheduleCostMetric summedRankDDRHighWaterBytes;
+  ScheduleCostMetric aggregateCompilerOwnedSPMBufferCount;
+  ScheduleCostMetric aggregateCompilerOwnedDDRBufferCount;
+  ScheduleCostMetric maximumRankCompilerOwnedSPMBufferCount;
+  ScheduleCostMetric maximumRankCompilerOwnedDDRBufferCount;
 };
 
 /// Analyze a lowered instruction program without mutating it. Static scf.for

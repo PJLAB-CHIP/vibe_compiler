@@ -3,6 +3,7 @@
 
 #include "Scheduling/ScheduleTensorProgramInternal.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Support/CompileWorkStatistics.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
@@ -270,6 +271,8 @@ CandidateEvaluation evaluateCompleteCandidate(
   }
   TileRegionToInstrOptions instructionOptions =
       getCommunicationOptions(config.communicationAlternative);
+  wafer::support::recordCompileWork(
+      wafer::support::CompileWorkKind::TerminalCandidateClone);
   return finishCandidateEvaluation(std::move(evaluation), config,
                                    instructionOptions);
 }
@@ -424,7 +427,9 @@ private:
         : standaloneTaskModuleText(std::move(standaloneTaskModuleText)),
           traversalShape(traversalShape.begin(), traversalShape.end()),
           candidate(candidate), config(config),
-          timingSession(wafer::support::getActiveCompileTimingSession()) {
+          timingSession(wafer::support::getActiveCompileTimingSession()),
+          workStatisticsSession(
+              wafer::support::getActiveCompileWorkStatisticsSession()) {
       this->config.evaluationExecutor = nullptr;
     }
 
@@ -433,6 +438,8 @@ private:
     CandidateSpec candidate;
     SelectionConfig config;
     std::shared_ptr<wafer::support::CompileTimingSession> timingSession;
+    std::shared_ptr<wafer::support::CompileWorkStatisticsSession>
+        workStatisticsSession;
     std::promise<CandidateCheckResult> promise;
   };
 
@@ -468,6 +475,8 @@ private:
       queueSpaceAvailable.notify_one();
       wafer::support::ScopedCompileTimingActivation timingActivation(
           item->timingSession);
+      wafer::support::ScopedCompileWorkStatisticsActivation
+          workStatisticsActivation(item->workStatisticsSession);
       std::string timingDetail;
       llvm::raw_string_ostream timingDetailStream(timingDetail);
       timingDetailStream << "tile-rank=" << item->candidate.tileSizes.size()

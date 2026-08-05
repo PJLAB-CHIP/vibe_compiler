@@ -2,6 +2,7 @@
 //-----------------===//
 
 #include "Scheduling/ScheduleTensorProgramInternal.h"
+#include "Wafer/Support/CompileWorkStatistics.h"
 
 namespace wafer::tensor_program_scheduling {
 
@@ -28,6 +29,7 @@ std::optional<std::string> getRankingCostFailure(const CandidateStats &stats) {
       {"DDR read bytes", &cost.ddrReadBytes},
       {"DDR write bytes", &cost.ddrWriteBytes},
       {"SPM movement bytes", &cost.spmMovementBytes},
+      {"gather/scatter bytes", &cost.gatherScatterBytes},
       {"NoC transmit bytes", &cost.noc.aggregateTransmitBytes},
       {"NoC receive bytes", &cost.noc.aggregateReceiveBytes},
       {"instruction count", &cost.instructionCount},
@@ -408,6 +410,11 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
   int64_t rejectedCount = 0;
   std::string lastFailure;
   int64_t visitedCount = 0;
+  auto recordExpandedState = [&] {
+    ++visitedCount;
+    wafer::support::recordCompileWork(
+        wafer::support::CompileWorkKind::CandidateExpandedState);
+  };
   int64_t completeEvaluationCount = 0;
   llvm::StringSet<> seen;
   llvm::SmallVector<CandidateWorkItem, 32> queue;
@@ -537,6 +544,7 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
   };
 
   size_t queueIndex = 0;
+  constexpr size_t candidateEvaluationBatchWidth = 4;
   std::shared_ptr<const std::string> standaloneTaskModuleText;
   std::unique_ptr<CandidateEvaluationExecutor> fallbackEvaluationExecutor;
   CandidateEvaluationExecutor *evaluationExecutor = config.evaluationExecutor;
@@ -557,117 +565,66 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
     if (config.maxSearchCandidates > 0 &&
         visitedCount >= config.maxSearchCandidates)
       break;
-    if (config.candidateParallelism > 1) {
-      size_t remainingBudget =
-          config.maxSearchCandidates > 0
-              ? static_cast<size_t>(config.maxSearchCandidates - visitedCount)
-              : std::numeric_limits<size_t>::max();
-      size_t batchSize =
-          std::min<size_t>({static_cast<size_t>(config.candidateParallelism),
-                            queue.size() - queueIndex, remainingBudget});
-      llvm::SmallVector<CandidateCheckResult, 8> results(batchSize);
-      llvm::SmallVector<unsigned, 8> futureSlots;
-      std::vector<std::future<CandidateCheckResult>> futures;
-      for (size_t batchOffset = 0; batchOffset < batchSize; ++batchOffset) {
-        CandidateSpec candidate = queue[queueIndex + batchOffset].spec;
-        ++visitedCount;
-        if (std::optional<std::string> failure = getCheapTargetGeometryFailure(
-                task, candidate, *reductionRanges)) {
-          results[batchOffset].spec = candidate;
-          results[batchOffset].failureReason = std::move(*failure);
-          continue;
-        }
-        if (std::optional<std::string> failure =
-                getSearchSPMHeadroomFailure(task, candidate, config)) {
-          results[batchOffset].spec = candidate;
-          results[batchOffset].failureReason = std::move(*failure);
-          continue;
-        }
-        if (std::optional<int64_t> required =
-                estimateTargetSPMRequiredLiveBytes(task, candidate,
-                                                   config.spmAlignment);
-            required && config.spmLimit > config.spmBase &&
-            *required > config.spmLimit - config.spmBase) {
-          results[batchOffset].spec = candidate;
-          results[batchOffset].failureReason =
-              "target_spm_bound: required modeled live roots exceed planning "
-              "window";
-          continue;
-        }
-        if (failsCheapSPMBound(task, candidate, config.spmBase,
-                               config.spmLimit)) {
-          results[batchOffset].spec = candidate;
-          results[batchOffset].failureReason =
-              "cheap_bound: minimum SPM bytes exceed planning window";
-          continue;
-        }
+    size_t remainingBudget =
+        config.maxSearchCandidates > 0
+            ? static_cast<size_t>(config.maxSearchCandidates - visitedCount)
+            : std::numeric_limits<size_t>::max();
+    size_t batchSize =
+        std::min<size_t>({candidateEvaluationBatchWidth,
+                          queue.size() - queueIndex, remainingBudget});
+    llvm::SmallVector<CandidateCheckResult, 8> results(batchSize);
+    llvm::SmallVector<unsigned, 8> futureSlots;
+    std::vector<std::future<CandidateCheckResult>> futures;
+    for (size_t batchOffset = 0; batchOffset < batchSize; ++batchOffset) {
+      CandidateSpec candidate = queue[queueIndex + batchOffset].spec;
+      recordExpandedState();
+      if (std::optional<std::string> failure = getCheapTargetGeometryFailure(
+              task, candidate, *reductionRanges)) {
+        results[batchOffset].spec = candidate;
+        results[batchOffset].failureReason = std::move(*failure);
+        continue;
+      }
+      if (std::optional<std::string> failure =
+              getSearchSPMHeadroomFailure(task, candidate, config)) {
+        results[batchOffset].spec = candidate;
+        results[batchOffset].failureReason = std::move(*failure);
+        continue;
+      }
+      if (std::optional<int64_t> required = estimateTargetSPMRequiredLiveBytes(
+              task, candidate, config.spmAlignment);
+          required && config.spmLimit > config.spmBase &&
+          *required > config.spmLimit - config.spmBase) {
+        results[batchOffset].spec = candidate;
+        results[batchOffset].failureReason =
+            "target_spm_bound: required modeled live roots exceed planning "
+            "window";
+        continue;
+      }
+      if (failsCheapSPMBound(task, candidate, config.spmBase,
+                             config.spmLimit)) {
+        results[batchOffset].spec = candidate;
+        results[batchOffset].failureReason =
+            "cheap_bound: minimum SPM bytes exceed planning window";
+        continue;
+      }
+      ++completeEvaluationCount;
+      if (evaluationExecutor) {
         futureSlots.push_back(static_cast<unsigned>(batchOffset));
-        ++completeEvaluationCount;
         futures.push_back(evaluationExecutor->submit(
             standaloneTaskModuleText, *shape, candidate, config));
+      } else {
+        results[batchOffset] =
+            evaluateCandidateOnOriginalTask(task, *shape, candidate, config);
       }
-      for (auto [futureIndex, slot] : llvm::enumerate(futureSlots))
-        results[slot] = futures[futureIndex].get();
-      queueIndex += batchSize;
-      for (CandidateCheckResult &result : results) {
-        processCheckResult(result);
-        if (hasRequestedAlternative())
-          break;
-      }
-      continue;
     }
-
-    CandidateSpec candidate = queue[queueIndex++].spec;
-    ++visitedCount;
-    if (std::optional<std::string> failure = getCheapTargetGeometryFailure(
-            task, candidate, *reductionRanges)) {
-      rejectCandidate(candidate, *failure);
-      continue;
+    for (auto [futureIndex, slot] : llvm::enumerate(futureSlots))
+      results[slot] = futures[futureIndex].get();
+    queueIndex += batchSize;
+    for (CandidateCheckResult &result : results) {
+      processCheckResult(result);
+      if (hasRequestedAlternative())
+        break;
     }
-    if (std::optional<std::string> failure =
-            getSearchSPMHeadroomFailure(task, candidate, config)) {
-      rejectCandidate(candidate, *failure);
-      continue;
-    }
-    if (std::optional<int64_t> required = estimateTargetSPMRequiredLiveBytes(
-            task, candidate, config.spmAlignment);
-        required && config.spmLimit > config.spmBase &&
-        *required > config.spmLimit - config.spmBase) {
-      rejectCandidate(candidate,
-                      "target_spm_bound: required modeled live roots exceed "
-                      "planning window");
-      continue;
-    }
-    if (failsCheapSPMBound(task, candidate, config.spmBase, config.spmLimit)) {
-      rejectCandidate(candidate,
-                      "cheap_bound: minimum SPM bytes exceed planning window");
-      continue;
-    }
-    ++completeEvaluationCount;
-    CandidateCheckResult check =
-        evaluateCandidateOnOriginalTask(task, *shape, candidate, config);
-    if (!check.failureReason.empty()) {
-      rejectCandidate(candidate, check.failureReason);
-      continue;
-    }
-    if (!isCompleteArtifactSource(check.artifactSource) || !check.module) {
-      rejectCandidate(
-          candidate,
-          "complete-artifact: candidate passed without accepted module");
-      continue;
-    }
-    if (std::optional<std::string> failure =
-            getRankingCostFailure(check.stats)) {
-      rejectCandidate(candidate, *failure);
-      continue;
-    }
-    SelectedCandidate selected = buildSelected(check, visitedCount);
-    insertCandidate(std::move(selected));
-    if (hasRequestedAlternative())
-      break;
-    if (supportsTiledTraversal)
-      enqueueRefinements(task, candidate, *reductionRanges, tileSizeOptions,
-                         seen, queue, config.searchBeamWidth);
   }
 
   if (config.taskAlternativeOrdinal < candidateFrontier.size()) {

@@ -1031,7 +1031,7 @@ TEST_F(CandidateSearchExecutionTest,
       select(/*taskAlternativeOrdinal=*/0, /*candidateParallelism=*/1);
   ASSERT_TRUE(serial.selected);
   ASSERT_TRUE(serial.selected->module);
-  EXPECT_EQ(serial.selected->candidateCount, 1);
+  EXPECT_EQ(serial.selected->candidateCount, 2);
   EXPECT_EQ(serial.selected->completeEvaluationCount, 1);
   EXPECT_EQ(serial.selected->rejectedCount, 0);
   EXPECT_EQ(serial.selected->spec.tileSizes,
@@ -1041,11 +1041,16 @@ TEST_F(CandidateSearchExecutionTest,
       select(/*taskAlternativeOrdinal=*/0, /*candidateParallelism=*/4);
   ASSERT_TRUE(parallel.selected);
   ASSERT_TRUE(parallel.selected->module);
-  // The fixed batch also visits the cheap-rejected full tile, but the accepted
-  // worker module is imported rather than lowered a second time on the owner.
+  // The fixed semantic batch visits the cheap-rejected full tile in both
+  // execution modes. The accepted worker module is imported rather than
+  // lowered a second time on the owner.
   EXPECT_EQ(parallel.selected->candidateCount, 2);
   EXPECT_EQ(parallel.selected->completeEvaluationCount, 1);
   EXPECT_EQ(parallel.selected->rejectedCount, 0);
+  EXPECT_EQ(parallel.selected->candidateCount,
+            serial.selected->candidateCount);
+  EXPECT_EQ(parallel.selected->completeEvaluationCount,
+            serial.selected->completeEvaluationCount);
   EXPECT_EQ(printModule(*parallel.selected->module),
             printModule(*serial.selected->module));
 }
@@ -1082,8 +1087,8 @@ TEST_F(CandidateSearchExecutionTest,
       select(/*taskAlternativeOrdinal=*/1, /*candidateParallelism=*/1);
   ASSERT_TRUE(serial.selected);
   ASSERT_TRUE(serial.selected->module);
-  EXPECT_EQ(serial.selected->candidateCount, 4);
-  EXPECT_EQ(serial.selected->completeEvaluationCount, 3);
+  EXPECT_EQ(serial.selected->candidateCount, 6);
+  EXPECT_EQ(serial.selected->completeEvaluationCount, 5);
   EXPECT_EQ(serial.selected->rejectedCount, 2);
 
   SelectionRun parallel =
@@ -1091,10 +1096,10 @@ TEST_F(CandidateSearchExecutionTest,
   ASSERT_TRUE(parallel.selected);
   ASSERT_TRUE(parallel.selected->module);
   EXPECT_EQ(parallel.selected->rejectedCount, 2);
-  EXPECT_GE(parallel.selected->candidateCount, 3);
-  EXPECT_LE(parallel.selected->candidateCount, 6);
-  EXPECT_GE(parallel.selected->completeEvaluationCount, 2);
-  EXPECT_LE(parallel.selected->completeEvaluationCount, 5);
+  EXPECT_EQ(parallel.selected->candidateCount,
+            serial.selected->candidateCount);
+  EXPECT_EQ(parallel.selected->completeEvaluationCount,
+            serial.selected->completeEvaluationCount);
   EXPECT_EQ(parallel.selected->spec.tileSizes, serial.selected->spec.tileSizes);
   EXPECT_EQ(parallel.selected->spec.reductionSplitSizes,
             serial.selected->spec.reductionSplitSizes);

@@ -73,6 +73,12 @@ Quantity Quantity::overflow() {
 }
 
 Quantity multiply(Quantity lhs, Quantity rhs) {
+  // A statically unreachable region contributes no work even when a nested
+  // bound or path is dynamic. Preserve that exact zero instead of allowing an
+  // irrelevant Unknown to leak out of dead structured control flow.
+  if ((lhs.knowledge == ScheduleCostKnowledge::Known && lhs.value == 0) ||
+      (rhs.knowledge == ScheduleCostKnowledge::Known && rhs.value == 0))
+    return Quantity{0};
   if (lhs.knowledge != ScheduleCostKnowledge::Known ||
       rhs.knowledge != ScheduleCostKnowledge::Known) {
     if (getKnowledgeSeverity(rhs.knowledge) >
@@ -144,6 +150,7 @@ analyzeInstructionProgramCost(mlir::Operation *root,
   detail::collectDataDependencyDepth(root, cost);
   detail::collectQualifiedOverlapWindows(root, cost, policy);
   detail::collectSPMHighWater(root, cost, policy);
+  detail::collectDDRHighWater(root, cost);
   return cost;
 }
 
@@ -203,6 +210,36 @@ static void addNoCCost(ScheduleNoCCost &aggregate,
        ++index)
     addMetric(aggregate.collectiveTransmitBytes[index],
               rankCost.collectiveTransmitBytes[index]);
+}
+
+static void addExecutionCount(InstructionExecutionCount &aggregate,
+                              const InstructionExecutionCount &rankCount) {
+  addMetric(aggregate.staticSites, rankCount.staticSites);
+  addMetric(aggregate.exactExecutions, rankCount.exactExecutions);
+  addMetric(aggregate.lowerBound, rankCount.lowerBound);
+  addMetric(aggregate.upperBound, rankCount.upperBound);
+}
+
+static void maximizeExecutionCount(InstructionExecutionCount &maximum,
+                                   const InstructionExecutionCount &rankCount) {
+  maximizeMetric(maximum.staticSites, rankCount.staticSites);
+  maximizeMetric(maximum.exactExecutions, rankCount.exactExecutions);
+  maximizeMetric(maximum.lowerBound, rankCount.lowerBound);
+  maximizeMetric(maximum.upperBound, rankCount.upperBound);
+}
+
+static void addWork(InstructionProgramWork &aggregate,
+                    const InstructionProgramWork &rankWork) {
+  for (detail::InstructionWorkCountMember member :
+       detail::kInstructionWorkCountMembers)
+    addExecutionCount(aggregate.*member, rankWork.*member);
+}
+
+static void maximizeWork(InstructionProgramWork &maximum,
+                         const InstructionProgramWork &rankWork) {
+  for (detail::InstructionWorkCountMember member :
+       detail::kInstructionWorkCountMembers)
+    maximizeExecutionCount(maximum.*member, rankWork.*member);
 }
 
 struct PendingHopTransmit {
@@ -444,10 +481,13 @@ WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
   for (mlir::Operation *root : rankRoots) {
     InstructionProgramCost rankCost =
         analyzeInstructionProgramCost(root, policy);
+    addWork(result.aggregateWork, rankCost.work);
+    maximizeWork(result.maximumRankWork, rankCost.work);
     addComputeCost(result.aggregateCompute, rankCost.compute);
     addMetric(result.aggregateDDRReadBytes, rankCost.ddrReadBytes);
     addMetric(result.aggregateDDRWriteBytes, rankCost.ddrWriteBytes);
     addMetric(result.aggregateSPMMovementBytes, rankCost.spmMovementBytes);
+    addMetric(result.aggregateGatherScatterBytes, rankCost.gatherScatterBytes);
     addNoCCost(result.aggregateNoC, rankCost.noc);
     maximizeMetric(result.maximumRankNoCTransmitBytes,
                    rankCost.noc.aggregateTransmitBytes);
@@ -457,21 +497,6 @@ WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
                    rankCost.noc.transmitMessageCount);
     maximizeMetric(result.maximumRankNoCReceiveMessageCount,
                    rankCost.noc.receiveMessageCount);
-    addMetric(result.aggregateInstructionCount, rankCost.instructionCount);
-    addMetric(result.aggregateEventCount, rankCost.eventCount);
-    addMetric(result.aggregateNCCJoinCount, rankCost.nccJoinCount);
-    addMetric(result.aggregateSteadyStateNCCJoinCount,
-              rankCost.steadyStateNCCJoinCount);
-    addMetric(result.aggregateNonTerminalNCCJoinCount,
-              rankCost.nonTerminalNCCJoinCount);
-    addMetric(result.aggregateNCCParticipantWaitCount,
-              rankCost.nccParticipantWaitCount);
-    addMetric(result.aggregateSteadyStateNCCParticipantWaitCount,
-              rankCost.steadyStateNCCParticipantWaitCount);
-    addMetric(result.aggregateNonTerminalNCCParticipantWaitCount,
-              rankCost.nonTerminalNCCParticipantWaitCount);
-    addMetric(result.aggregateIntrinsicNCCDrainCount,
-              rankCost.intrinsicNCCDrainCount);
     maximizeMetric(result.maximumRankDataDependencyDepth,
                    rankCost.dataDependencyDepth);
     addMetric(result.aggregateReadyOrderPriorityInversions,
@@ -483,8 +508,36 @@ WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
     maximizeMetric(result.maximumRankSPMHighWaterBytes,
                    rankCost.spmHighWaterBytes);
     addMetric(result.summedRankSPMHighWaterBytes, rankCost.spmHighWaterBytes);
+    maximizeMetric(result.maximumRankDDRHighWaterBytes,
+                   rankCost.ddrHighWaterBytes);
+    addMetric(result.summedRankDDRHighWaterBytes, rankCost.ddrHighWaterBytes);
+    addMetric(result.aggregateCompilerOwnedSPMBufferCount,
+              rankCost.compilerOwnedSPMBufferCount);
+    addMetric(result.aggregateCompilerOwnedDDRBufferCount,
+              rankCost.compilerOwnedDDRBufferCount);
+    maximizeMetric(result.maximumRankCompilerOwnedSPMBufferCount,
+                   rankCost.compilerOwnedSPMBufferCount);
+    maximizeMetric(result.maximumRankCompilerOwnedDDRBufferCount,
+                   rankCost.compilerOwnedDDRBufferCount);
     result.rankCosts.push_back(std::move(rankCost));
   }
+  result.aggregateInstructionCount =
+      result.aggregateWork.instructions.exactExecutions;
+  result.aggregateEventCount =
+      result.aggregateWork.asynchronousEvents.exactExecutions;
+  result.aggregateNCCJoinCount = result.aggregateWork.nccJoins.exactExecutions;
+  result.aggregateSteadyStateNCCJoinCount =
+      result.aggregateWork.steadyStateNCCJoins.exactExecutions;
+  result.aggregateNonTerminalNCCJoinCount =
+      result.aggregateWork.nonTerminalNCCJoins.exactExecutions;
+  result.aggregateNCCParticipantWaitCount =
+      result.aggregateWork.nccParticipantWaits.exactExecutions;
+  result.aggregateSteadyStateNCCParticipantWaitCount =
+      result.aggregateWork.steadyStateNCCParticipantWaits.exactExecutions;
+  result.aggregateNonTerminalNCCParticipantWaitCount =
+      result.aggregateWork.nonTerminalNCCParticipantWaits.exactExecutions;
+  result.aggregateIntrinsicNCCDrainCount =
+      result.aggregateWork.intrinsicNCCDrains.exactExecutions;
   collectMinimumHopLinkByteDemand(
       rankRoots, result.minimumHopLinkByteDemand,
       result.minimumHopMessageDemand, result.directedNoCLinkCount,
@@ -528,6 +581,10 @@ llvm::StringRef stringifyScheduleCostReason(ScheduleCostReason reason) {
     return "missing-accepted-spm-offset";
   case ScheduleCostReason::InvalidAcceptedSPMOffset:
     return "invalid-accepted-spm-offset";
+  case ScheduleCostReason::MissingAcceptedDDROffset:
+    return "missing-accepted-ddr-offset";
+  case ScheduleCostReason::InvalidAcceptedDDROffset:
+    return "invalid-accepted-ddr-offset";
   case ScheduleCostReason::UnsupportedSPMRoot:
     return "unsupported-spm-root";
   case ScheduleCostReason::UnresolvedNoCRoute:

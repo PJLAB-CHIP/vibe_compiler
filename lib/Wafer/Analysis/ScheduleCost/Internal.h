@@ -32,9 +32,51 @@ struct Quantity {
   static Quantity overflow();
 };
 
+struct ExecutionMultiplicity {
+  Quantity exact{1};
+  Quantity lowerBound{1};
+  Quantity upperBound{1};
+};
+
+using InstructionWorkCountMember =
+    InstructionExecutionCount InstructionProgramWork::*;
+
+/// Canonical enumeration of every execution-count dimension. Aggregation and
+/// knowledge degradation use this list so adding a typed work field cannot
+/// silently create a second, partial fact path.
+inline constexpr InstructionWorkCountMember kInstructionWorkCountMembers[] = {
+    &InstructionProgramWork::instructions,
+    &InstructionProgramWork::asynchronousEvents,
+    &InstructionProgramWork::rdmaIssues,
+    &InstructionProgramWork::wdmaIssues,
+    &InstructionProgramWork::tdmaIssues,
+    &InstructionProgramWork::ctIssues,
+    &InstructionProgramWork::neIssues,
+    &InstructionProgramWork::dteOperations,
+    &InstructionProgramWork::gatherScatterOperations,
+    &InstructionProgramWork::dteSendOperations,
+    &InstructionProgramWork::dteReceiveOperations,
+    &InstructionProgramWork::dteWaitOperations,
+    &InstructionProgramWork::collectiveDTEIssues,
+    &InstructionProgramWork::peerDTEIssues,
+    &InstructionProgramWork::nccJoins,
+    &InstructionProgramWork::steadyStateNCCJoins,
+    &InstructionProgramWork::nonTerminalNCCJoins,
+    &InstructionProgramWork::nccParticipantWaits,
+    &InstructionProgramWork::steadyStateNCCParticipantWaits,
+    &InstructionProgramWork::nonTerminalNCCParticipantWaits,
+    &InstructionProgramWork::intrinsicNCCDrains,
+};
+
 Quantity multiply(Quantity lhs, Quantity rhs);
 Quantity multiply(Quantity lhs, uint64_t rhs);
 void add(ScheduleCostMetric &metric, Quantity quantity);
+
+void walkInstructionProgramWork(
+    mlir::Operation *root,
+    llvm::function_ref<void(mlir::Operation *, ExecutionMultiplicity)>
+        onInstruction,
+    llvm::function_ref<void()> onUnsupportedControlFlow);
 
 /// Visits the same statically executable instruction stream used by the
 /// rank-local cost collector. The callback receives the current static
@@ -53,6 +95,7 @@ void collectQualifiedOverlapWindows(mlir::Operation *root,
                                     const TargetScheduleCostPolicy &policy);
 void collectSPMHighWater(mlir::Operation *root, InstructionProgramCost &cost,
                          const TargetScheduleCostPolicy &policy);
+void collectDDRHighWater(mlir::Operation *root, InstructionProgramCost &cost);
 
 } // namespace wafer::analysis::detail
 

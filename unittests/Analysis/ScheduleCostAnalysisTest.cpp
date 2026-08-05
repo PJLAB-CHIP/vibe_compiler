@@ -148,6 +148,18 @@ module {
   InstructionProgramCost cost = analyze(*module);
   ASSERT_TRUE(cost.instructionCount.isKnown());
   EXPECT_EQ(cost.instructionCount.value, 24u);
+  EXPECT_EQ(cost.work.instructions.staticSites.value, 4u);
+  EXPECT_EQ(cost.work.instructions.exactExecutions.value, 24u);
+  EXPECT_EQ(cost.work.instructions.lowerBound.value, 24u);
+  EXPECT_EQ(cost.work.instructions.upperBound.value, 24u);
+  EXPECT_EQ(cost.work.rdmaIssues.staticSites.value, 1u);
+  EXPECT_EQ(cost.work.rdmaIssues.exactExecutions.value, 6u);
+  EXPECT_EQ(cost.work.wdmaIssues.staticSites.value, 1u);
+  EXPECT_EQ(cost.work.wdmaIssues.exactExecutions.value, 6u);
+  EXPECT_EQ(cost.work.ctIssues.staticSites.value, 1u);
+  EXPECT_EQ(cost.work.ctIssues.exactExecutions.value, 6u);
+  EXPECT_EQ(cost.work.nccJoins.staticSites.value, 1u);
+  EXPECT_EQ(cost.work.nccJoins.exactExecutions.value, 6u);
   ASSERT_TRUE(cost.ddrReadBytes.isKnown());
   EXPECT_EQ(cost.ddrReadBytes.value, 48u);
   ASSERT_TRUE(cost.ddrWriteBytes.isKnown());
@@ -174,6 +186,7 @@ module {
   EXPECT_EQ(cost.qualifiedOverlapWindowCount.value, 0u);
   ASSERT_TRUE(cost.spmHighWaterBytes.isKnown());
   EXPECT_EQ(cost.spmHighWaterBytes.value, 264u);
+  EXPECT_EQ(cost.compilerOwnedSPMBufferCount.value, 2u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
@@ -674,6 +687,15 @@ module {
   EXPECT_EQ(cost.noc.receiveMessageCount.value, 1u);
   EXPECT_EQ(cost.noc.waitOperationCount.value, 1u);
   EXPECT_EQ(cost.noc.waitedEventCount.value, 2u);
+  EXPECT_EQ(cost.work.instructions.staticSites.value, 3u);
+  EXPECT_EQ(cost.work.instructions.exactExecutions.value, 3u);
+  EXPECT_EQ(cost.work.asynchronousEvents.staticSites.value, 2u);
+  EXPECT_EQ(cost.work.asynchronousEvents.exactExecutions.value, 2u);
+  EXPECT_EQ(cost.work.dteSendOperations.staticSites.value, 1u);
+  EXPECT_EQ(cost.work.dteReceiveOperations.staticSites.value, 1u);
+  EXPECT_EQ(cost.work.dteWaitOperations.staticSites.value, 1u);
+  EXPECT_EQ(cost.work.collectiveDTEIssues.staticSites.value, 2u);
+  EXPECT_EQ(cost.work.peerDTEIssues.staticSites.value, 0u);
   ASSERT_TRUE(cost.noc.collective(NoCCollectiveKind::AllReduce).isKnown());
   EXPECT_EQ(cost.noc.collective(NoCCollectiveKind::AllReduce).value, 16u);
   for (NoCDirection direction : {NoCDirection::North, NoCDirection::South,
@@ -714,10 +736,150 @@ module {
   EXPECT_EQ(cost.instructionCount.knowledge, ScheduleCostKnowledge::Unknown);
   EXPECT_EQ(cost.instructionCount.reason,
             ScheduleCostReason::DynamicLoopTripCount);
+  EXPECT_EQ(cost.work.rdmaIssues.staticSites.value, 1u);
+  EXPECT_EQ(cost.work.rdmaIssues.exactExecutions.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.work.rdmaIssues.exactExecutions.reason,
+            ScheduleCostReason::DynamicLoopTripCount);
+  EXPECT_TRUE(cost.work.rdmaIssues.lowerBound.isKnown());
+  EXPECT_EQ(cost.work.rdmaIssues.lowerBound.value, 0u);
+  EXPECT_EQ(cost.work.rdmaIssues.upperBound.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.work.rdmaIssues.upperBound.reason,
+            ScheduleCostReason::DynamicLoopTripCount);
   EXPECT_EQ(cost.ddrReadBytes.knowledge, ScheduleCostKnowledge::Unknown);
   EXPECT_EQ(cost.ddrReadBytes.reason, ScheduleCostReason::DynamicLoopTripCount);
   EXPECT_TRUE(cost.spmHighWaterBytes.isKnown());
   EXPECT_EQ(cost.spmHighWaterBytes.value, 8u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       ConditionalWorkRetainsStaticSitesAndConservativeBounds) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(
+      %condition: i1,
+      %input: memref<4xf16, #wafer.memory<ddr, tensor>>,
+      %output: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.rdma %input to %buffer
+        {byte_count = 8 : i64, inner_bytes = 8 : i64,
+         src_strides = array<i64: 0, 0, 0>,
+         src_iterations = array<i64: 1, 1, 1>}
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+       to memref<4xf16, #wafer.memory<spm, tensor>>
+    scf.if %condition {
+      wafer.instr.rdma %input to %buffer
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>}
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+         to memref<4xf16, #wafer.memory<spm, tensor>>
+    } else {
+      wafer.instr.wdma %buffer to %output
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+         to memref<4xf16, #wafer.memory<ddr, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  EXPECT_EQ(cost.work.instructions.staticSites.value, 3u);
+  EXPECT_EQ(cost.work.instructions.exactExecutions.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.work.instructions.exactExecutions.reason,
+            ScheduleCostReason::ConditionalControlFlow);
+  EXPECT_EQ(cost.work.instructions.lowerBound.value, 1u);
+  EXPECT_EQ(cost.work.instructions.upperBound.value, 3u);
+  EXPECT_EQ(cost.work.rdmaIssues.staticSites.value, 2u);
+  EXPECT_EQ(cost.work.rdmaIssues.lowerBound.value, 1u);
+  EXPECT_EQ(cost.work.rdmaIssues.upperBound.value, 2u);
+  EXPECT_EQ(cost.work.wdmaIssues.staticSites.value, 1u);
+  EXPECT_EQ(cost.work.wdmaIssues.lowerBound.value, 0u);
+  EXPECT_EQ(cost.work.wdmaIssues.upperBound.value, 1u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       CountsGatherScatterCallsAndBytesFromTheFinalInstructionWalk) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %source = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<3x2xf16, #wafer.memory<spm, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.for %i = %c0 to %c4 step %c1 {
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<3x2xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  EXPECT_EQ(cost.work.gatherScatterOperations.staticSites.value, 1u);
+  EXPECT_EQ(cost.work.gatherScatterOperations.exactExecutions.value, 4u);
+  EXPECT_EQ(cost.work.tdmaIssues.exactExecutions.value, 4u);
+  EXPECT_EQ(cost.gatherScatterBytes.value, 48u);
+  EXPECT_EQ(cost.spmMovementBytes.value, 48u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       CountsOnePrivateCalleeSiteAcrossMultipleStaticCalls) {
+  auto module = parse(R"mlir(
+module {
+  func.func private @load(
+      %input: memref<4xf16, #wafer.memory<ddr, tensor>>,
+      %buffer: memref<4xf16, #wafer.memory<spm, tensor>>) {
+    wafer.instr.rdma %input to %buffer
+        {byte_count = 8 : i64, inner_bytes = 8 : i64,
+         src_strides = array<i64: 0, 0, 0>,
+         src_iterations = array<i64: 1, 1, 1>}
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+       to memref<4xf16, #wafer.memory<spm, tensor>>
+    return
+  }
+  func.func @main(%input: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    call @load(%input, %buffer)
+        : (memref<4xf16, #wafer.memory<ddr, tensor>>,
+           memref<4xf16, #wafer.memory<spm, tensor>>) -> ()
+    call @load(%input, %buffer)
+        : (memref<4xf16, #wafer.memory<ddr, tensor>>,
+           memref<4xf16, #wafer.memory<spm, tensor>>) -> ()
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  EXPECT_EQ(cost.work.instructions.staticSites.value, 1u);
+  EXPECT_EQ(cost.work.instructions.exactExecutions.value, 2u);
+  EXPECT_EQ(cost.work.rdmaIssues.staticSites.value, 1u);
+  EXPECT_EQ(cost.work.rdmaIssues.exactExecutions.value, 2u);
+  EXPECT_EQ(cost.ddrReadBytes.value, 16u);
 }
 
 TEST_F(ScheduleCostAnalysisTest, LoopMultiplicityOverflowIsNotSaturated) {
@@ -757,6 +919,10 @@ module {
 TEST_F(ScheduleCostAnalysisTest, ZeroTripLoopHasNoExecutionCost) {
   auto module = parse(R"mlir(
 module {
+  func.func private @recursive() {
+    func.call @recursive() : () -> ()
+    return
+  }
   func.func @main() {
     %input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
         : memref<4xf16, #wafer.memory<spm, tensor>>
@@ -767,6 +933,7 @@ module {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     scf.for %i = %c1 to %c0 step %c1 {
+      func.call @recursive() : () -> ()
       wafer.instr.peripheral #wafer.instr_peripheral_kind<argmax>
           %input into %value, %index {elem_count = 4 : i64}
           : memref<4xf16, #wafer.memory<spm, tensor>>
@@ -804,6 +971,106 @@ module {
   EXPECT_EQ(cost.spmHighWaterBytes.knowledge, ScheduleCostKnowledge::Unknown);
   EXPECT_EQ(cost.spmHighWaterBytes.reason,
             ScheduleCostReason::MissingAcceptedSPMOffset);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       RecomputesReachableCompilerOwnedSPMHighWaterFromAcceptedOffsets) {
+  auto module = parse(R"mlir(
+module {
+  func.func private @unused() {
+    %unused = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66560>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    return
+  }
+  func.func private @allocate() {
+    %reachable = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    return
+  }
+  func.func @main() {
+    %local = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    func.call @allocate() : () -> ()
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  ASSERT_TRUE(cost.spmHighWaterBytes.isKnown());
+  EXPECT_EQ(cost.spmHighWaterBytes.value, 264u);
+  EXPECT_EQ(cost.compilerOwnedSPMBufferCount.value, 2u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       RecomputesReachableCompilerOwnedDDRHighWaterFromAcceptedOffsets) {
+  auto module = parse(R"mlir(
+module {
+  func.func private @unused() {
+    %unused = memref.alloc()
+        {wafer.ddr.offset = #wafer.ddr_offset<1024>}
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+    return
+  }
+  func.func @main() {
+    %first = memref.alloc()
+        {wafer.ddr.offset = #wafer.ddr_offset<0>}
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+    %second = memref.alloc()
+        {wafer.ddr.offset = #wafer.ddr_offset<256>}
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  ASSERT_TRUE(cost.ddrHighWaterBytes.isKnown());
+  EXPECT_EQ(cost.ddrHighWaterBytes.value, 264u);
+  EXPECT_EQ(cost.compilerOwnedDDRBufferCount.value, 2u);
+}
+
+TEST_F(ScheduleCostAnalysisTest, MissingAcceptedDDROffsetIsTypedUnknown) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %buffer = memref.alloc()
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  EXPECT_EQ(cost.ddrHighWaterBytes.knowledge, ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.ddrHighWaterBytes.reason,
+            ScheduleCostReason::MissingAcceptedDDROffset);
+}
+
+TEST_F(ScheduleCostAnalysisTest, InvalidAcceptedDDROffsetIsUnsupported) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %buffer = memref.alloc()
+        {wafer.ddr.offset = #wafer.ddr_offset<-1>}
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  EXPECT_EQ(cost.ddrHighWaterBytes.knowledge,
+            ScheduleCostKnowledge::Unsupported);
+  EXPECT_EQ(cost.ddrHighWaterBytes.reason,
+            ScheduleCostReason::InvalidAcceptedDDROffset);
 }
 
 TEST_F(ScheduleCostAnalysisTest, UnmodeledComputeSemanticsAreUnsupported) {
@@ -1124,6 +1391,12 @@ module {
   EXPECT_EQ(cost.aggregateSPMMovementBytes.value, 16u);
   ASSERT_TRUE(cost.aggregateInstructionCount.isKnown());
   EXPECT_EQ(cost.aggregateInstructionCount.value, 3u);
+  EXPECT_EQ(cost.aggregateWork.instructions.staticSites.value, 3u);
+  EXPECT_EQ(cost.aggregateWork.instructions.exactExecutions.value, 3u);
+  EXPECT_EQ(cost.maximumRankWork.instructions.staticSites.value, 2u);
+  EXPECT_EQ(cost.maximumRankWork.instructions.exactExecutions.value, 2u);
+  EXPECT_EQ(cost.aggregateWork.rdmaIssues.exactExecutions.value, 2u);
+  EXPECT_EQ(cost.maximumRankWork.rdmaIssues.exactExecutions.value, 1u);
   ASSERT_TRUE(cost.maximumRankDataDependencyDepth.isKnown());
   EXPECT_EQ(cost.maximumRankDataDependencyDepth.value, 2u);
   ASSERT_TRUE(cost.aggregateReadyOrderPriorityInversions.isKnown());
@@ -1133,6 +1406,14 @@ module {
   EXPECT_EQ(cost.maximumRankSPMHighWaterBytes.value, 264u);
   ASSERT_TRUE(cost.summedRankSPMHighWaterBytes.isKnown());
   EXPECT_EQ(cost.summedRankSPMHighWaterBytes.value, 272u);
+  ASSERT_TRUE(cost.maximumRankDDRHighWaterBytes.isKnown());
+  EXPECT_EQ(cost.maximumRankDDRHighWaterBytes.value, 0u);
+  ASSERT_TRUE(cost.summedRankDDRHighWaterBytes.isKnown());
+  EXPECT_EQ(cost.summedRankDDRHighWaterBytes.value, 0u);
+  EXPECT_EQ(cost.aggregateCompilerOwnedSPMBufferCount.value, 2u);
+  EXPECT_EQ(cost.maximumRankCompilerOwnedSPMBufferCount.value, 1u);
+  EXPECT_EQ(cost.aggregateCompilerOwnedDDRBufferCount.value, 0u);
+  EXPECT_EQ(cost.maximumRankCompilerOwnedDDRBufferCount.value, 0u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,

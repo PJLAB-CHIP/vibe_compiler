@@ -1,6 +1,6 @@
 # Whole-Rank Tile Dataflow Synthesis 实施计划
 
-状态：设计与施工边界已收敛，C0–C6待实施。任务状态以 `tasks/progress.md` 中
+状态：设计与施工边界已收敛，C0已完成，C1–C6待实施。任务状态以 `tasks/progress.md` 中
 `whole-rank-tile-dataflow-synthesis` 为准。
 
 本计划只拆解 `tasks/06-physical-dataflow-synthesis.md` 的施工顺序、迁移删除面和验证 checkpoint；算法、IR 和
@@ -52,8 +52,9 @@ post-SPMD complete-rank structured IR
    wall/RSS复用Q41的compile-transaction timer与process peak-RSS事实源：同一Release build、source/payload/options、`nproc`
    并发度和host身份下先做1次不计入的warm-up，再以3个独立process测量；冻结wall中位数、peak RSS最大值和每次search-work counters。
 4. 对同一source、payload、launch、ABI和fresh build生成pre-Q49 optimized production baseline与`none`保守参照；两者只允许
-   optimization policy不同。dump以下稳定semantic stages：
-   post-SPMD structured IR、selected Tile/Dataflow IR、final Instr IR。dump名和诊断不含任务号、case名或临时目录约定。
+   optimization policy不同。C0从当前pipeline dump post-SPMD structured IR与final Instr IR；selected complete-rank
+   Tile/Dataflow IR必须在C1建立真实decision point后由同一driver直接dump。当前per-task pipeline在selection前已经破坏性lower
+   Tile candidate，C0不得为补齐中间dump而保留/replay影子clone或建立sidecar。dump名和诊断不含任务号、case名或临时目录约定。
 5. Fresh重放16的Q49 gate所定义的当前Llama primary，生成TP16 FP16完整package/no-card；只做本任务定向gate，不重跑无关catalog或历史板测。
 
 Gate：
@@ -62,9 +63,47 @@ Gate：
 - serial/parallel compile得到相同work counts、winner digest和package；
 - 当前output、guard、ABI与package contract不变；
 - baseline记录至少包含本轮fresh RDMA/WDMA/GS/join/bytes、SPM high-water、compile work/RSS/wall；
+- C1建立complete-rank decision point后，selected Tile/Dataflow dump能与同一次compile的post-SPMD和final Instr直接关联；
 - 未满足以上条件，不得用旧日志或理论机会量签后续收益。
 
-不算完成：只统计静态call site、只报全卡Instr总数、把不同rank平均后隐藏critical rank，或把未校准work加成伪cycle。
+不算完成：只统计静态call site、只报全卡Instr总数、用aggregate/平均值隐藏逐rank与rank-maxima，或把未校准work加成伪cycle。
+
+### C0 fresh evidence（2026-08-05）
+
+同一Release build、同一PyTorch-exported FP16 Llama block source/payload、TP16 kernel launch与current ABI下，production和
+`none`均从source生成完整16-rank package并fresh no-card。production三次独立正常并发compile的transaction wall为
+`90269 / 93817 / 90493 ms`，中位数`90493 ms`；peak RSS为`2952700 / 2969012 / 2951464 KiB`，最大值
+`2969012 KiB`。三次compiler work均严格相同：expanded states `37488`、terminal clones `48784`、terminal
+Tile→Instr lowerings `49040`、SPM planning `60084`、DDR planning `46992`。
+
+固定单CPU affinity的完整同源compile得到相同五项work、winner Instr与递归package bytes；其transaction wall为
+`1352964 ms`、peak RSS为`814604 KiB`。正常并发三份package、单CPU package、manifest与rank-0 Instr digest分别逐字节一致；
+manifest digest为`bead668201b76b7728813ed25a657f542ffda9093d03e2092c99b7451b16facb`，rank-0 Instr digest为
+`445dd648b1d3f287e1ab9c1c8195778a0f36293cdfd85d4759f2870be3302d9f`。并发执行只改变吞吐和RSS，不改变search work或artifact。
+
+final Instr同源counter如下；call/site与loop-expanded execution均保留在diagnostic中，表中列出最直接回答当前问题的exact work：
+
+| all-rank exact work | production | `none` | production相对`none` |
+| --- | ---: | ---: | ---: |
+| Instr | 10324 | 15120 | -31.7% |
+| GS calls | 3280 | 4064 | -19.3% |
+| GS bytes | 885675520 | 904680960 | -2.1% |
+| Direct-DTE send / receive / wait | 60 / 60 / 120 | 960 / 960 / 960 | DTE总work -91.7% |
+| `NCCJoin` | 870 | 1792 | -51.5% |
+| nonterminal `NCCJoin` | 854 | 1776 | -51.9% |
+| DDR read / write bytes | 888076384 / 430446080 | 888076384 / 430446080 | 0% |
+| SPM movement bytes | 2204197984 | 2223203424 | -0.9% |
+| compiler-owned SPM / DDR buffers | 3824 / 832 | 4112 / 832 | SPM -7.0%，DDR 0% |
+| summed SPM / DDR high-water bytes | 46850048 / 95428608 | 46850048 / 95428608 | 0% |
+
+production的rank-0为`137 RDMA / 86 WDMA / 205 GS / 54 join`，rank-15为相同movement与`54 join`；各维度
+rank-maxima为`658 Instr / 205 GS / 56 join / 24 DTE`，不是伪造的单一critical rank。现有dependency-depth analysis不能解释
+该final Instr中的structured control，因而明确报告`Unknown(unsupported-control-flow)`，没有当作零或伪造cycle。
+
+这组事实说明旧独立优化确实大量压低了Direct-DTE与约一半join，但没有减少任何DDR traffic/high-water，GS bytes也只下降
+2.1%；因此后续收益不能再靠late局部cleanup，必须由C1开始把decision point移到complete-rank pre-Instr structured IR。
+当前driver只能直接保存post-SPMD structured IR与final Instr；selected complete-rank Tile/Dataflow证据按上面的边界在C1建立，
+没有为C0引入shadow clone、replay或sidecar。
 
 ## C1：Complete-Rank Decision Point
 

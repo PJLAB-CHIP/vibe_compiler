@@ -1836,7 +1836,7 @@ TEST_F(WholeVariantCoordinatorTest,
 }
 
 TEST_F(WholeVariantCoordinatorTest,
-       RejectsModularReassociationWithoutNumericAdmission) {
+       AcceptsModularReassociationForSupportedIntegerArithmetic) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -1872,14 +1872,11 @@ module {
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto accepted = selectProductionVariant(
       *source, replicated1DProgram(3, 16, "i8"), diagnostics);
-  EXPECT_TRUE(mlir::failed(accepted));
-  EXPECT_NE(diagnosticText.find("integer-elementwise-policy-unproven"),
-            std::string::npos)
-      << diagnosticText;
+  EXPECT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
 }
 
 TEST_F(WholeVariantCoordinatorTest,
-       RejectsBalancedModularAdditionTreeWithoutNumericAdmission) {
+       AcceptsBalancedAdditionTreeForSupportedIntegerArithmetic) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -1917,14 +1914,11 @@ module {
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto accepted = selectProductionVariant(
       *source, replicated1DProgram(4, 16, "i8"), diagnostics);
-  EXPECT_TRUE(mlir::failed(accepted));
-  EXPECT_NE(diagnosticText.find("integer-elementwise-policy-unproven"),
-            std::string::npos)
-      << diagnosticText;
+  EXPECT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
 }
 
 TEST_F(WholeVariantCoordinatorTest,
-       RejectsModularDistributiveContractionWithoutNumericAdmission) {
+       AcceptsModularDistributiveContractionForSupportedIntegerArithmetic) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -1960,14 +1954,11 @@ module {
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto accepted = selectProductionVariant(
       *source, replicated1DProgram(3, 16, "i8"), diagnostics);
-  EXPECT_TRUE(mlir::failed(accepted));
-  EXPECT_NE(diagnosticText.find("integer-elementwise-policy-unproven"),
-            std::string::npos)
-      << diagnosticText;
+  EXPECT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
 }
 
 TEST_F(WholeVariantCoordinatorTest,
-       RejectsModularCommonFactorWithoutNumericAdmission) {
+       AcceptsModularCommonFactorForSupportedIntegerArithmetic) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -2003,10 +1994,7 @@ module {
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto accepted = selectProductionVariant(
       *source, replicated1DProgram(3, 16, "i8"), diagnostics);
-  EXPECT_TRUE(mlir::failed(accepted));
-  EXPECT_NE(diagnosticText.find("integer-elementwise-policy-unproven"),
-            std::string::npos)
-      << diagnosticText;
+  EXPECT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
 }
 
 TEST_F(WholeVariantCoordinatorTest,
@@ -2688,7 +2676,7 @@ module {
   }
 }
 
-TEST_F(WholeVariantCoordinatorTest, RejectsI8AllReduceWithoutNumericAdmission) {
+TEST_F(WholeVariantCoordinatorTest, AcceptsI8AllReduce) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -2724,10 +2712,11 @@ module {
       replicated1DProgram(1, 16, "i8", /*outputCount=*/1,
                           /*rankCount=*/16),
       diagnostics, /*baselineCost=*/nullptr, /*rankCount=*/16);
-  EXPECT_TRUE(mlir::failed(accepted));
-  EXPECT_NE(diagnosticText.find("integer-elementwise-policy-unproven"),
-            std::string::npos)
-      << diagnosticText;
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  EXPECT_EQ(accepted->ranks.size(), 16u);
+  const auto &ctWork = accepted->resourceCost.aggregateWork.ctIssues;
+  ASSERT_TRUE(ctWork.exactExecutions.isKnown());
+  EXPECT_GT(ctWork.exactExecutions.value, 0u);
 }
 
 TEST_F(WholeVariantCoordinatorTest,

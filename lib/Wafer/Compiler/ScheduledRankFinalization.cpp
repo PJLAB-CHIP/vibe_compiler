@@ -45,6 +45,7 @@ getExactCostClosureFailure(const analysis::InstructionProgramCost &cost) {
       {"DDR read bytes", &cost.ddrReadBytes},
       {"DDR write bytes", &cost.ddrWriteBytes},
       {"SPM movement bytes", &cost.spmMovementBytes},
+      {"gather/scatter bytes", &cost.gatherScatterBytes},
       {"NoC transmit bytes", &cost.noc.aggregateTransmitBytes},
       {"NoC receive bytes", &cost.noc.aggregateReceiveBytes},
       {"instruction count", &cost.instructionCount},

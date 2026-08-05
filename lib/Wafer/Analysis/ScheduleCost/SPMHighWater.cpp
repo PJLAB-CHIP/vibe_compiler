@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/DenseSet.h"
@@ -128,10 +129,18 @@ class SPMHighWaterAnalysis {
 public:
   SPMHighWaterAnalysis(InstructionProgramCost &cost,
                        const TargetScheduleCostPolicy &policy)
-      : metric(cost.spmHighWaterBytes), policy(policy) {}
+      : metric(cost.spmHighWaterBytes),
+        bufferCount(cost.compilerOwnedSPMBufferCount), policy(policy) {}
 
   void run(mlir::Operation *root) {
-    llvm::SmallVector<mlir::Operation *, 8> scopes{root};
+    llvm::SmallVector<mlir::Operation *, 8> scopes;
+    if (auto module = mlir::dyn_cast<mlir::ModuleOp>(root)) {
+      for (mlir::func::FuncOp function : module.getOps<mlir::func::FuncOp>())
+        if (!function.isPrivate())
+          scopes.push_back(function.getOperation());
+    } else {
+      scopes.push_back(root);
+    }
     llvm::DenseSet<mlir::Operation *> seenScopes;
     while (!scopes.empty()) {
       mlir::Operation *scope = scopes.pop_back_val();
@@ -176,6 +185,7 @@ private:
   void accountAllocation(mlir::memref::AllocOp alloc) {
     if (!seenAllocs.insert(alloc.getOperation()).second)
       return;
+    add(bufferCount, Quantity{1});
     auto offset = alloc->getAttrOfType<SPMOffsetAttr>(kWaferSPMOffsetAttrName);
     if (!offset) {
       degrade(metric, ScheduleCostKnowledge::Unknown,
@@ -207,6 +217,7 @@ private:
   }
 
   ScheduleCostMetric &metric;
+  ScheduleCostMetric &bufferCount;
   const TargetScheduleCostPolicy &policy;
   llvm::DenseSet<mlir::Operation *> seenAllocs;
 };

@@ -1285,3 +1285,19 @@
 - compiler级IR取证使用稳定入口`wafer-compile --dump-compiler-ir <dir>`；每rank final Instr输出到
   `instruction/rank_XXXXX.mlir`，对应Target LLVM输出到`target-llvm/rank_XXXXX.ll`。runner要验证all-and-only rank文件、
   稳定零填充命名和非空内容；目录名表达artifact语义，不包含任务号、阶段号或临时case名。
+
+## Compiler work与串并确定性检查
+
+- compiler work使用一次compile transaction拥有的invocation-local session；expanded state、actual terminal clone、
+  Tile→Instr lowering、SPM planning和DDR planning在各自唯一动作入口计数。bounded executor、outer shard worker和其它
+  thread owner必须显式传播同一session；计数不写入IR、package、manifest或cache key。
+- static instruction work从final Instr的同一次structured walk派生：分别保留reachable static site、static-loop-expanded
+  exact execution、conditional/dynamic lower/upper和typed Unknown。旧的instruction/join等exact字段只作该事实源的投影，
+  不再另走一套collector。DDR/SPM high-water从current accepted offsets和physical footprint重算，external invocation
+  buffer不计入compiler-owned arena。
+- 检查并发确定性时，正常compile使用机器可用并发；串行compile用`taskset -c <cpu>`限制CPU affinity。两边必须保持同一
+  source、payload、optimization policy、rank/launch、toolchain和semantic batch，只允许worker/shard执行分配不同；比较
+  compile-work整行、winner IR/package递归bytes和manifest digest。wall与peak RSS是执行结果，不要求相同。
+- candidate evaluation的batch宽度是search policy，不能取worker count；request shard可按host并发分配，但每个semantic
+  request group只属于一个shard并按原ordinal canonical merge。若串并work不同，先查speculative batch、shard-local early stop、
+  missing counter propagation或重复lowering，不把差异解释成正常并行开销。

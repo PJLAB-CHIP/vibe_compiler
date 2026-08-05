@@ -8,6 +8,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Support/CompileWorkStatistics.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -1351,6 +1352,8 @@ mlir::LogicalResult planDDRMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t ddrCapacityBytes,
                                         int64_t ddrLargestContiguousBytes,
                                         int64_t ddrBandwidthLimitBytes) {
+  wafer::support::recordCompileWork(
+      wafer::support::CompileWorkKind::DDRPlanning);
   wafer::support::ScopedCompileTimingSpan timing(
       "transformation", "planDDRMemoryModule", "total");
   if (ddrCapacityBytes < 0 || ddrLargestContiguousBytes < 0 ||
