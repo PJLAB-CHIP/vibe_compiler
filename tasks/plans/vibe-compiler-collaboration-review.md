@@ -616,3 +616,39 @@ qualification章节顺延到133–150页，附录保持A1–A18。最终交付�
 - Notes保留讲述顺序、停顿、展开与转场，并嵌入PPT的演讲者备注区。
 - 合并后按页检查标题、takeaway、图、分析正文、IR/code和Notes是否围绕同一技术问题；不以页数、
   文本长度或自动脚本通过替代内容质量判断。
+
+## 18. 全稿可见正文重写（2026-08-05）
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  已核对的168页dossier、正式技术图、IR/code/data、speaker notes和逐页source map。
+- Current stage responsibility:
+  逐页重写可见takeaway与analysis，建立问题来源、机制、case证据、失败条件和下游影响的连续叙述。
+- Output artifact / IR:
+  一份168页PPTX/PDF、嵌入Notes、逐页PNG和contact sheet；不产生compiler program IR。
+- Downstream consumer:
+  面向compiler/runtime/hardware专家的内部技术汇报。
+- User-level driver / named pipeline:
+  `docs/presentations/2026-07-31-vibe-compiler-collaboration-review-v2/build_deck.py`。
+- Explicit non-goals:
+  不改技术图、不改IR/code/data、不重跑板端case、不改变已有compiler/hardware结论。
+- Completion gate:
+  1–115、133–150与A1–A18逐页可见正文完成内容复核；无speaker instruction、无无主句、无机械模板；
+  重新生成168页PPTX/PDF/PNG/Notes，关键页原尺寸可读，页面对象无越界。
+```
+
+逐页文案标准：
+
+- 每页必须回答一个具体技术问题；不以“本页展示”、“沿图讲”或一组名词代替论证。
+- 第一段给出上下文和问题，中间段落解释当前IR/算法和实际作用，后续段落给出case数字、失败条件与下游影响。
+- 不强行让每页使用同样的句式或固定四段格式；因果、对比、时序、算法或case结构按本页实际内容选择。
+- 专有token、op/type/attr、API、数字和状态保留英文；机制、因果与结论使用自然中文。
+
+完成记录（2026-08-05）：
+
+- 1–115、133–150 与 A1–A18 的 `takeaway` / `analysis_paragraphs` 已逐页重写；116–132 的同步与内存章节保持原内容。
+- 技术图、IR/code、数据表和既有板端结论未修改；PowerPoint Notes 继续使用原讲述顺序。
+- `load_specs` / `validate_specs` 通过全部 168 页；旧页可见正文的演讲指令式和抽象验收措辞扫描无命中。
+- 最终 PPTX、PDF、168 张逐页 PNG、contact sheet、speaker notes 与 source map 已重新生成；PDF 为 168 页 16:9，关键页原尺寸复核未见文字越界或遮挡。
+- 本轮没有产生新的 compiler/runtime/hardware 行为结论，无需写入 `memory/`，也未执行板端测试。
