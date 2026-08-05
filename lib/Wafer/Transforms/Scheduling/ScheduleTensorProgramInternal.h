@@ -10,6 +10,7 @@
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetSchedulingCapability.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
+#include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -367,6 +368,58 @@ mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
 
 mlir::LogicalResult commitSelectedTaskCandidate(SelectedCandidate &selected,
                                                 const SelectionConfig &config);
+
+/// Clones one complete rank and conservatively materializes every discovered
+/// structured operation as Tile IR in one outer residency region. No
+/// instruction conversion, completion insertion, or memory placement is
+/// performed. The returned IR is the complete-rank decision boundary consumed
+/// by later synthesis; source scheduling scopes are not materialization units.
+mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
+materializeCompleteRankTileProgram(mlir::ModuleOp sourceModule,
+                                   int64_t logicalRank,
+                                   unsigned *materializedRegionCount = nullptr);
+
+struct SelectiveSpillMaterialization {
+  mlir::Value ddrBuffer;
+  mlir::Value reloadedValue;
+  wafer::StorageStoreOp store;
+  wafer::StorageLoadOp load;
+  mlir::Operation *reloadAllocation = nullptr;
+};
+
+/// Ends one selected SPM root after `storeAfter` and creates a fresh SPM root
+/// before `reloadBefore`. Other roots and the enclosing residency region are
+/// unchanged. The caller selects the root from current IR; this action never
+/// recovers a role from a name or side table.
+mlir::FailureOr<SelectiveSpillMaterialization>
+materializeSelectiveTileSpill(wafer::TileRegionOp region, mlir::Value root,
+                              mlir::Operation *storeAfter,
+                              mlir::Operation *reloadBefore);
+
+struct TileRegionPartition {
+  wafer::TileRegionOp head;
+  wafer::TileRegionOp tail;
+};
+
+/// Splits one actual tile residency region before `tailBegin`. Every SSA value
+/// crossing the selected cut becomes an explicit region result/input and must
+/// therefore be DDR or a non-shaped typed control value. SPM crossings fail
+/// closed.
+mlir::FailureOr<TileRegionPartition>
+partitionTileRegionAtDDRBoundary(wafer::TileRegionOp region,
+                                 mlir::Operation *tailBegin);
+
+namespace testing {
+
+/// Exercises the pre-complete-rank frontier while its implementation remains
+/// available for direct mechanism coverage during the C1--C5 migration. No
+/// production driver calls this entry; C6 removes it with the dead path.
+mlir::FailureOr<std::vector<ScheduledRankCandidate>>
+buildLegacyScheduledRankCandidateFrontier(
+    mlir::ModuleOp sourceModule,
+    const TensorProgramSchedulingConfig &frontierConfig);
+
+} // namespace testing
 
 mlir::LogicalResult accumulateStaticTerminalOperations(mlir::Operation *root,
                                                        uint64_t &count);

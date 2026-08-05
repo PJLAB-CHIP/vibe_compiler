@@ -43,6 +43,7 @@ struct RankVariantCandidate {
   wafer::RankWorkerPlacementKind workerPlacementKind =
       wafer::RankWorkerPlacementKind::Unplaced;
   uint32_t workerPlacementPlanOrdinal = 0;
+  std::shared_ptr<const std::string> selectedTileIR;
 };
 
 using RankVariantFrontier = std::vector<RankVariantCandidate>;

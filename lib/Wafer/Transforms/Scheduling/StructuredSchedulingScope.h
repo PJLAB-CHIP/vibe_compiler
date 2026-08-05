@@ -60,6 +60,15 @@ bool buildStructuredSchedulingScope(mlir::Operation *root,
 mlir::LogicalResult refreshStructuredSchedulingScopeBoundary(
     StructuredSchedulingScope &scope);
 
+/// Replaces a scope with the body of a verified one-block function whose
+/// arguments are the scope inputs followed by its output destinations and
+/// whose results correspond to the scope yielded values. The boundary is
+/// refreshed from current SSA before replacement, so consumer-first rewrites
+/// do not rely on stale Value handles.
+mlir::LogicalResult
+replaceStructuredSchedulingScopeWithFunction(StructuredSchedulingScope &scope,
+                                             mlir::func::FuncOp replacement);
+
 llvm::StringRef
 getScopeSelectionFailureMessage(ScopeSelectionFailure failure);
 

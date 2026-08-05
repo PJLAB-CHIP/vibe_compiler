@@ -634,6 +634,16 @@ static bool tryPromoteResult(TileRegionOp producer, unsigned resultIndex) {
   if (rewrites.empty())
     return false;
 
+  // Q49 defines each tile.region as one complete SPM residency domain.  The
+  // historical rewrite below exposes the producer's SPM allocation as a
+  // result and threads it through sibling region operands, which is no longer
+  // a legal region boundary.  Residency is now selected by constructing or
+  // merging complete regions before Tile-to-Instr lowering; this legacy
+  // post-hoc handoff must therefore fail closed until it is removed at the C6
+  // cutover.
+  if (isWaferSPMMemRefType(residentType))
+    return false;
+
   bool promotesEveryConsumer = rewrites.size() == paths.size();
   mlir::Value producerResult;
   {

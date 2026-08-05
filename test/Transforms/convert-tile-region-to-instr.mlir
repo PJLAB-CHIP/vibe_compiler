@@ -618,3 +618,23 @@ func.func @reshape_cx_block_major_materializes(%zero: f16) {
 // CHECK-SAME: src_iterations = array<i64: 2, 2, 1>
 // CHECK-SAME: src_strides = array<i64: 256, 128, 0>
 // CHECK-NOT: wafer.instr.gather_scatter %{{.+}} to %[[RESHAPED]]
+
+func.func @reshape_cx_period_inside_projected_factor(%zero: f16) {
+  %region = wafer.tile.region(%zero : f16) -> (f16) {
+  ^bb0(%fill: f16):
+    %source = memref.alloc()
+        : memref<2x256xf16, #wafer.memory<spm, cx>>
+    %reshaped = wafer.tile.reshape %source
+        : memref<2x256xf16, #wafer.memory<spm, cx>>
+       -> memref<1x2x2x128xf16, #wafer.memory<spm, cx>>
+    wafer.tile.yield %fill : f16
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @reshape_cx_period_inside_projected_factor
+// CHECK-NOT: wafer.tile.reshape
+// CHECK: %[[PERIOD_SOURCE:.+]] = memref.alloc() : memref<2x256xf16, #wafer.memory<spm, cx>>
+// CHECK: %[[PERIOD_RESHAPED:.+]] = memref.alloc() : memref<1x2x2x128xf16, #wafer.memory<spm, cx>>
+// CHECK: wafer.instr.gather_scatter %[[PERIOD_SOURCE]] to %[[PERIOD_RESHAPED]]
+// CHECK-NOT: wafer.instr.gather_scatter %[[PERIOD_SOURCE]] to %[[PERIOD_RESHAPED]]

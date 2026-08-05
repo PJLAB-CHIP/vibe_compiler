@@ -10,6 +10,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "gtest/gtest.h"
@@ -37,6 +38,12 @@ protected:
   mlir::OwningOpRef<mlir::ModuleOp> parse(llvm::StringRef source) {
     return mlir::parseSourceString<mlir::ModuleOp>(
         source, mlir::ParserConfig(&context));
+  }
+
+  mlir::OwningOpRef<mlir::ModuleOp>
+  parseWithoutVerification(llvm::StringRef source) {
+    return mlir::parseSourceString<mlir::ModuleOp>(
+        source, mlir::ParserConfig(&context, /*verifyAfterParse=*/false));
   }
 
   static mlir::func::FuncOp getOnlyFunction(mlir::ModuleOp module) {
@@ -699,8 +706,8 @@ module {
 }
 
 TEST_F(LifetimeAnalysisTest,
-       DataflowPropagatesRootAcrossSiblingTileRegionBoundary) {
-  auto module = parse(R"mlir(
+       RejectsRootPropagationAcrossSiblingTileRegionBoundary) {
+  auto module = parseWithoutVerification(R"mlir(
 module {
   func.func @sibling_regions() {
     %zero = arith.constant 0 : i8
@@ -727,38 +734,7 @@ module {
 }
 )mlir");
   ASSERT_TRUE(module);
-  mlir::func::FuncOp function = getOnlyFunction(*module);
-  mlir::memref::AllocOp allocation;
-  mlir::memref::LoadOp load;
-  function.walk([&](mlir::memref::AllocOp op) { allocation = op; });
-  function.walk([&](mlir::memref::LoadOp op) { load = op; });
-  ASSERT_TRUE(allocation);
-  ASSERT_TRUE(load);
-
-  mlir::FailureOr<StructuredTimeline> timeline =
-      StructuredTimeline::build(function);
-  ASSERT_TRUE(mlir::succeeded(timeline));
-  llvm::SmallVector<LifetimeDemand, 1> demands{
-      LifetimeDemand{allocation, 16, 16, 0}};
-  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
-    return wafer::isWaferSPMMemRefType(type);
-  });
-  LifetimeFailure failure;
-  ASSERT_TRUE(mlir::succeeded(dataflow.run(function, nullptr, &failure)));
-
-  std::optional<ProgramPoint> loadPoint = timeline->lookup(load);
-  ASSERT_TRUE(loadPoint);
-  llvm::SmallVector<RootRef, 2> roots =
-      dataflow.rootsAt(load.getMemRef(), loadPoint->path);
-  ASSERT_EQ(roots.size(), 1u);
-  EXPECT_EQ(roots.front().demandIndex, 0u);
-  EXPECT_TRUE(
-      llvm::any_of(demands.front().segments, [&](const LiveSegment &segment) {
-        // The consumer region also forwards the same alias through its result,
-        // so the root must reach at least the load and may remain live through
-        // the later tile.yield.
-        return segment.endEvent >= loadPoint->event;
-      }));
+  EXPECT_TRUE(mlir::failed(mlir::verify(*module)));
 }
 
 TEST_F(LifetimeAnalysisTest, DDRNCCJoinExtendsManagedRootLifetime) {
@@ -1595,6 +1571,65 @@ module {
 }
 
 TEST_F(LifetimeAnalysisTest,
+       SameWorkerIssueOnEveryIfPathOrdersLoopBackedgeWithoutInnerJoin) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(%condition: i1) {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %ddr = memref.alloc()
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      scf.if %condition {
+        %then = memref.alloc()
+            : memref<128xf16, #wafer.memory<spm, tensor>>
+        wafer.instr.rdma %ddr to %then
+            {byte_count = 256 : i64, inner_bytes = 256 : i64,
+             src_iterations = array<i64: 1, 1, 1>,
+             src_strides = array<i64: 0, 0, 0>}
+            : memref<128xf16, #wafer.memory<ddr, tensor>>
+           to memref<128xf16, #wafer.memory<spm, tensor>>
+      } else {
+        %else = memref.alloc()
+            : memref<128xf16, #wafer.memory<spm, tensor>>
+        wafer.instr.rdma %ddr to %else
+            {byte_count = 256 : i64, inner_bytes = 256 : i64,
+             src_iterations = array<i64: 1, 1, 1>,
+             src_strides = array<i64: 0, 0, 0>}
+            : memref<128xf16, #wafer.memory<ddr, tensor>>
+           to memref<128xf16, #wafer.memory<spm, tensor>>
+      }
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  llvm::SmallVector<mlir::memref::AllocOp, 2> allocations;
+  function.walk([&](mlir::memref::AllocOp allocation) {
+    if (wafer::isWaferSPMMemRefType(allocation.getType()))
+      allocations.push_back(allocation);
+  });
+  ASSERT_EQ(allocations.size(), 2u);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 2> demands{
+      LifetimeDemand{allocations[0], 256, 256, 0},
+      LifetimeDemand{allocations[1], 256, 256, 1}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+}
+
+TEST_F(LifetimeAnalysisTest,
        HighDecisionLoopBodyIssueStillFailsClosedAtBackedge) {
   std::string source = R"mlir(
 module {
@@ -1879,8 +1914,8 @@ module {
 }
 
 TEST_F(LifetimeAnalysisTest,
-       PendingIssueCrossesTileRegionIntoSameWorkerSuccessor) {
-  auto module = parse(R"mlir(
+       RejectsPendingIssueSPMRootCrossingTileRegionBoundary) {
+  auto module = parseWithoutVerification(R"mlir(
 module {
   func.func @main() {
     %zero = arith.constant 0.000000e+00 : f16
@@ -1908,27 +1943,12 @@ module {
 }
 )mlir");
   ASSERT_TRUE(module);
-  mlir::func::FuncOp function = getOnlyFunction(*module);
-  mlir::memref::AllocOp allocation;
-  function.walk([&](mlir::memref::AllocOp op) { allocation = op; });
-  ASSERT_TRUE(allocation);
-
-  mlir::FailureOr<StructuredTimeline> timeline =
-      StructuredTimeline::build(function);
-  ASSERT_TRUE(mlir::succeeded(timeline));
-  llvm::SmallVector<LifetimeDemand, 1> demands{
-      LifetimeDemand{allocation, 256, 256, 0}};
-  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
-    return wafer::isWaferSPMMemRefType(type);
-  });
-  LocalCompletionTracker completion;
-  LifetimeFailure failure;
-  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+  EXPECT_TRUE(mlir::failed(mlir::verify(*module)));
 }
 
 TEST_F(LifetimeAnalysisTest,
-       DirectDTECannotObservePendingIssueAcrossTileRegion) {
-  auto module = parse(R"mlir(
+       RejectsDirectDTEUsingSPMRootAcrossTileRegionBoundary) {
+  auto module = parseWithoutVerification(R"mlir(
 module {
   func.func @main() {
     %zero = arith.constant 0.000000e+00 : f16
@@ -1959,27 +1979,7 @@ module {
 }
 )mlir");
   ASSERT_TRUE(module);
-  mlir::func::FuncOp function = getOnlyFunction(*module);
-  mlir::memref::AllocOp allocation;
-  wafer::InstrFillOp issue;
-  function.walk([&](mlir::memref::AllocOp op) { allocation = op; });
-  function.walk([&](wafer::InstrFillOp op) { issue = op; });
-  ASSERT_TRUE(allocation);
-  ASSERT_TRUE(issue);
-
-  mlir::FailureOr<StructuredTimeline> timeline =
-      StructuredTimeline::build(function);
-  ASSERT_TRUE(mlir::succeeded(timeline));
-  llvm::SmallVector<LifetimeDemand, 1> demands{
-      LifetimeDemand{allocation, 256, 256, 0}};
-  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
-    return wafer::isWaferSPMMemRefType(type);
-  });
-  LocalCompletionTracker completion;
-  LifetimeFailure failure;
-  EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
-  EXPECT_EQ(failure.kind, LifetimeFailureKind::MissingLocalCompletion);
-  EXPECT_EQ(failure.origin, issue.getOperation());
+  EXPECT_TRUE(mlir::failed(mlir::verify(*module)));
 }
 
 TEST_F(LifetimeAnalysisTest, LoopOnlyFenceDoesNotCoverZeroTripPath) {

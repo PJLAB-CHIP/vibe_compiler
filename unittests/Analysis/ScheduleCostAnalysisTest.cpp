@@ -656,6 +656,70 @@ module {
 }
 
 TEST_F(ScheduleCostAnalysisTest,
+       ResolvesEveryStructuredIfSPMResultToAcceptedAllocations) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(%condition: i1) {
+    %first = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %second = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %selected = scf.if %condition
+        -> (memref<4xf16, #wafer.memory<spm, tensor>>) {
+      scf.yield %first : memref<4xf16, #wafer.memory<spm, tensor>>
+    } else {
+      scf.yield %second : memref<4xf16, #wafer.memory<spm, tensor>>
+    }
+    %zero = arith.constant 0.0 : f16
+    wafer.instr.fill %selected, %zero
+        : memref<4xf16, #wafer.memory<spm, tensor>>, f16
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  ASSERT_TRUE(cost.spmHighWaterBytes.isKnown());
+  EXPECT_EQ(cost.spmHighWaterBytes.value, 264u);
+  ASSERT_TRUE(cost.compilerOwnedSPMBufferCount.isKnown());
+  EXPECT_EQ(cost.compilerOwnedSPMBufferCount.value, 2u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       StructuredIfSPMResultStillFailsClosedOnUnknownOrigin) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(
+      %condition: i1,
+      %unknown: memref<4xf16, #wafer.memory<spm, tensor>>) {
+    %known = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %selected = scf.if %condition
+        -> (memref<4xf16, #wafer.memory<spm, tensor>>) {
+      scf.yield %known : memref<4xf16, #wafer.memory<spm, tensor>>
+    } else {
+      scf.yield %unknown : memref<4xf16, #wafer.memory<spm, tensor>>
+    }
+    %zero = arith.constant 0.0 : f16
+    wafer.instr.fill %selected, %zero
+        : memref<4xf16, #wafer.memory<spm, tensor>>, f16
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  EXPECT_EQ(cost.spmHighWaterBytes.knowledge, ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.spmHighWaterBytes.reason,
+            ScheduleCostReason::UnsupportedSPMRoot);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
        KeepsAggregateNoCWhenDirectionalRouteIsUnresolved) {
   auto module = parse(R"mlir(
 module {
@@ -792,18 +856,76 @@ module {
 
   InstructionProgramCost cost = analyze(*module);
   EXPECT_EQ(cost.work.instructions.staticSites.value, 3u);
-  EXPECT_EQ(cost.work.instructions.exactExecutions.knowledge,
-            ScheduleCostKnowledge::Unknown);
-  EXPECT_EQ(cost.work.instructions.exactExecutions.reason,
-            ScheduleCostReason::ConditionalControlFlow);
-  EXPECT_EQ(cost.work.instructions.lowerBound.value, 1u);
-  EXPECT_EQ(cost.work.instructions.upperBound.value, 3u);
+  ASSERT_TRUE(cost.work.instructions.exactExecutions.isKnown());
+  EXPECT_EQ(cost.work.instructions.exactExecutions.value, 2u);
+  EXPECT_EQ(cost.work.instructions.lowerBound.value, 2u);
+  EXPECT_EQ(cost.work.instructions.upperBound.value, 2u);
   EXPECT_EQ(cost.work.rdmaIssues.staticSites.value, 2u);
+  EXPECT_EQ(cost.work.rdmaIssues.exactExecutions.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.work.rdmaIssues.exactExecutions.reason,
+            ScheduleCostReason::ConditionalControlFlow);
   EXPECT_EQ(cost.work.rdmaIssues.lowerBound.value, 1u);
   EXPECT_EQ(cost.work.rdmaIssues.upperBound.value, 2u);
   EXPECT_EQ(cost.work.wdmaIssues.staticSites.value, 1u);
+  EXPECT_EQ(cost.work.wdmaIssues.exactExecutions.knowledge,
+            ScheduleCostKnowledge::Unknown);
   EXPECT_EQ(cost.work.wdmaIssues.lowerBound.value, 0u);
   EXPECT_EQ(cost.work.wdmaIssues.upperBound.value, 1u);
+  EXPECT_EQ(cost.ddrReadBytes.knowledge, ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.ddrWriteBytes.knowledge, ScheduleCostKnowledge::Unknown);
+  ASSERT_TRUE(cost.spmMovementBytes.isKnown());
+  EXPECT_EQ(cost.spmMovementBytes.value, 16u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       EqualConditionalPathsHaveExactExecutionCostAndTightBounds) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(
+      %condition: i1,
+      %first: memref<4xf16, #wafer.memory<ddr, tensor>>,
+      %second: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    scf.if %condition {
+      wafer.instr.rdma %first to %buffer
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>}
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+         to memref<4xf16, #wafer.memory<spm, tensor>>
+    } else {
+      wafer.instr.rdma %second to %buffer
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>}
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+         to memref<4xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  EXPECT_EQ(cost.work.instructions.staticSites.value, 2u);
+  ASSERT_TRUE(cost.work.instructions.exactExecutions.isKnown());
+  EXPECT_EQ(cost.work.instructions.exactExecutions.value, 1u);
+  EXPECT_EQ(cost.work.instructions.lowerBound.value, 1u);
+  EXPECT_EQ(cost.work.instructions.upperBound.value, 1u);
+  EXPECT_EQ(cost.work.rdmaIssues.staticSites.value, 2u);
+  ASSERT_TRUE(cost.work.rdmaIssues.exactExecutions.isKnown());
+  EXPECT_EQ(cost.work.rdmaIssues.exactExecutions.value, 1u);
+  EXPECT_EQ(cost.work.rdmaIssues.lowerBound.value, 1u);
+  EXPECT_EQ(cost.work.rdmaIssues.upperBound.value, 1u);
+  ASSERT_TRUE(cost.ddrReadBytes.isKnown());
+  EXPECT_EQ(cost.ddrReadBytes.value, 8u);
+  ASSERT_TRUE(cost.ddrWriteBytes.isKnown());
+  EXPECT_EQ(cost.ddrWriteBytes.value, 0u);
+  ASSERT_TRUE(cost.spmMovementBytes.isKnown());
+  EXPECT_EQ(cost.spmMovementBytes.value, 8u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,

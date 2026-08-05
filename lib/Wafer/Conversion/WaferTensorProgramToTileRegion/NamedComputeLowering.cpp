@@ -121,11 +121,30 @@ TileRegionBodyEmitter::convertFill(mlir::linalg::FillOp fill,
       attrIt != scalarAttrs.end())
     fillInitAttrs[fill.getResult(0)] = attrIt->second;
 
-  // The target GEMM is overwrite-only. Preserve its source-level identity
-  // proof without issuing a dead fill or loading an output buffer that the
-  // successful GEMM path cannot consume.
-  if (onlyFeedsGemmOverwriteInit(fill.getResult(0)))
+  // Target GEMM/reduce consume a typed scalar initialization while their
+  // complete traversal writes every result tile. Preserve that source-level
+  // fact without materializing a full-shape fill in SPM.
+  if (onlyFeedsScalarInitializedComputeInit(fill.getResult(0))) {
+    // The fill result still names the same destination object.  Preserve an
+    // explicit DDR destination across the proof-only fill so a tiled compute
+    // can carry that object through its traversal loops and store each
+    // produced tile directly. This is buffer identity propagation; the fill
+    // scalar remains attached to each target compute tile below.
+    mlir::Value init = op.getDpsInits().front();
+    if (auto external = externalBuffers.find(init);
+        external != externalBuffers.end()) {
+      externalBuffers[fill.getResult(0)] = external->second;
+      if (writableExternalBuffers.contains(init))
+        writableExternalBuffers.insert(fill.getResult(0));
+      if (auto outputIndex = externalOutputIndices.find(init);
+          outputIndex != externalOutputIndices.end())
+        externalOutputIndices[fill.getResult(0)] = outputIndex->second;
+      if (auto base = directYieldBuffers.find(init);
+          base != directYieldBuffers.end())
+        directYieldBuffers[fill.getResult(0)] = base->second;
+    }
     return mlir::success();
+  }
 
   auto resultTensorType =
       mlir::dyn_cast<mlir::RankedTensorType>(fill.getResult(0).getType());

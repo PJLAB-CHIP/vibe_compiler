@@ -12,6 +12,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace wafer::compiler::detail {
 namespace {
@@ -143,6 +144,7 @@ finalizeScheduledRankCandidateFrontier(
         candidate.bufferingKind, candidate.bufferingPlanOrdinal,
         candidate.workerPlacementKind, candidate.workerPlacementPlanOrdinal,
         candidate.frontierOrderOrdinal);
+    finalized.back().selectedTileIR = std::move(candidate.selectedTileIR);
   }
 
   if (finalized.empty() && requireReservedBaseline)

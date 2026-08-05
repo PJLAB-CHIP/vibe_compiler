@@ -688,6 +688,95 @@ refreshStructuredSchedulingScopeBoundary(StructuredSchedulingScope &scope) {
   return hasValidInsertionPoint(scope) ? mlir::success() : mlir::failure();
 }
 
+mlir::LogicalResult
+replaceStructuredSchedulingScopeWithFunction(StructuredSchedulingScope &scope,
+                                             mlir::func::FuncOp replacement) {
+  mlir::Operation *anchor = scope.insertionPoint;
+  if (!anchor || !replacement)
+    return mlir::failure();
+  if (mlir::failed(refreshStructuredSchedulingScopeBoundary(scope))) {
+    anchor->emitError(
+        "structured scheduling replacement cannot refresh its SSA boundary");
+    return mlir::failure();
+  }
+  if (!replacement.getBody().hasOneBlock()) {
+    anchor->emitError(
+        "structured scheduling replacement requires one function block");
+    return mlir::failure();
+  }
+
+  mlir::Block &entry = replacement.getBody().front();
+  auto returnOp = mlir::dyn_cast<mlir::func::ReturnOp>(entry.getTerminator());
+  if (!returnOp) {
+    anchor->emitError("structured scheduling replacement requires func.return");
+    return mlir::failure();
+  }
+  const unsigned expectedArgumentCount =
+      static_cast<unsigned>(scope.inputs.size() + scope.outs.size());
+  if (entry.getNumArguments() != expectedArgumentCount ||
+      returnOp.getNumOperands() != scope.yieldedValues.size()) {
+    anchor->emitError(
+        "structured scheduling replacement boundary cardinality mismatch");
+    return mlir::failure();
+  }
+
+  mlir::IRMapping mapping;
+  unsigned argumentIndex = 0;
+  for (mlir::Value input : scope.inputs) {
+    mlir::BlockArgument argument = entry.getArgument(argumentIndex++);
+    if (argument.getType() != input.getType()) {
+      anchor->emitError(
+          "structured scheduling replacement input type mismatch");
+      return mlir::failure();
+    }
+    mapping.map(argument, input);
+  }
+  for (mlir::Value out : scope.outs) {
+    mlir::BlockArgument argument = entry.getArgument(argumentIndex++);
+    if (argument.getType() != out.getType()) {
+      anchor->emitError(
+          "structured scheduling replacement output type mismatch");
+      return mlir::failure();
+    }
+    mapping.map(argument, out);
+  }
+
+  mlir::OpBuilder builder(anchor);
+  llvm::SmallVector<mlir::Operation *, 8> clonedOperations;
+  for (mlir::Operation &operation : entry.without_terminator())
+    clonedOperations.push_back(builder.clone(operation, mapping));
+
+  llvm::SmallVector<mlir::Value, 4> replacements;
+  replacements.reserve(scope.yieldedValues.size());
+  for (auto [returned, yielded] :
+       llvm::zip_equal(returnOp.getOperands(), scope.yieldedValues)) {
+    mlir::Value mapped = mapping.lookupOrNull(returned);
+    if (!mapped || returned.getType() != yielded.getType() ||
+        mapped.getType() != yielded.getType()) {
+      for (mlir::Operation *operation : llvm::reverse(clonedOperations))
+        operation->erase();
+      anchor->emitError(
+          "structured scheduling replacement result type mismatch");
+      return mlir::failure();
+    }
+    replacements.push_back(mapped);
+  }
+
+  for (auto [yielded, replacementValue] :
+       llvm::zip_equal(scope.yieldedValues, replacements)) {
+    llvm::SmallVector<mlir::OpOperand *> externalUses;
+    for (mlir::OpOperand &use : yielded.getUses()) {
+      if (!isInsideStructuredSchedulingScope(use.getOwner(), scope))
+        externalUses.push_back(&use);
+    }
+    for (mlir::OpOperand *use : externalUses)
+      use->set(replacementValue);
+  }
+  for (mlir::Operation *operation : llvm::reverse(scope.orderedOps))
+    operation->erase();
+  return mlir::success();
+}
+
 llvm::StringRef getScopeSelectionFailureMessage(ScopeSelectionFailure failure) {
   switch (failure) {
   case ScopeSelectionFailure::MissingExternalResult:

@@ -899,11 +899,49 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
       origin = demand->allocation.getOperation();
     }
     switch (packing.status) {
-    case mp::PackingStatus::ProvenInfeasible:
-      return origin->emitError()
-             << "capacity_overflow: SPM planning range [" << spmBase << ", "
-             << spmLimit << ") has no valid static placement"
-             << (demand ? " for an IR-derived lifetime demand" : "");
+    case mp::PackingStatus::ProvenInfeasible: {
+      mlir::InFlightDiagnostic diagnostic = origin->emitError();
+      diagnostic << "capacity_overflow: SPM planning range [" << spmBase << ", "
+                 << spmLimit << ") has no valid static placement";
+      if (demand)
+        diagnostic << " for an IR-derived lifetime demand of "
+                   << demand->sizeBytes << " bytes, type "
+                   << demand->allocation.getType();
+      if (!demands.empty()) {
+        mp::LifetimeDemand &largest =
+            *llvm::max_element(demands, [](const mp::LifetimeDemand &lhs,
+                                           const mp::LifetimeDemand &rhs) {
+              return lhs.sizeBytes < rhs.sizeBytes;
+            });
+        diagnostic << "; demand_count=" << demands.size()
+                   << ", largest_demand_bytes=" << largest.sizeBytes
+                   << ", largest_demand_type=" << largest.allocation.getType();
+        llvm::SmallVector<llvm::StringRef, 4> userNames;
+        for (mlir::Operation *user :
+             largest.allocation.getResult().getUsers()) {
+          if (userNames.size() == 4)
+            break;
+          userNames.push_back(user->getName().getStringRef());
+        }
+        if (!userNames.empty()) {
+          diagnostic << ", largest_demand_users=[";
+          llvm::interleaveComma(userNames, diagnostic);
+          diagnostic << "]";
+        }
+        for (mlir::Operation *user :
+             largest.allocation.getResult().getUsers()) {
+          if (!mlir::isa<InstrGemmOp>(user))
+            continue;
+          diagnostic << ", gemm_operand_types=[";
+          llvm::interleaveComma(user->getOperandTypes(), diagnostic);
+          diagnostic << "], gemm_result_types=[";
+          llvm::interleaveComma(user->getResultTypes(), diagnostic);
+          diagnostic << "]";
+          break;
+        }
+      }
+      return mlir::failure();
+    }
     case mp::PackingStatus::ResourceExhausted:
       return origin->emitError()
              << "packing_search_exhausted: MiniMalloc consumed "

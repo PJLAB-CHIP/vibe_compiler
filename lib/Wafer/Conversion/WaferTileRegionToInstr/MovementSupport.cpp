@@ -395,33 +395,61 @@ getProjectedCoordinates(const analysis::IndexRelation &relation,
   return coordinates;
 }
 
-bool isCanonicalPeriodicDecomposition(const ProjectedCoordinate &coordinate,
-                                      llvm::ArrayRef<int64_t> iterationShape,
-                                      int64_t logicalExtent, int64_t period) {
+struct CanonicalPeriodicPartition {
+  int64_t iterationDim = -1;
+  int64_t iterationPeriod = 0;
+};
+
+std::optional<CanonicalPeriodicPartition>
+getCanonicalPeriodicPartition(const ProjectedCoordinate &coordinate,
+                              llvm::ArrayRef<int64_t> iterationShape,
+                              int64_t logicalExtent, int64_t period) {
   if (coordinate.offset != 0 || logicalExtent <= 0 || period <= 0 ||
       logicalExtent % period != 0)
-    return false;
-  llvm::SmallVector<std::pair<int64_t, int64_t>, 4> factors;
+    return std::nullopt;
+  struct Factor {
+    int64_t iterationDim;
+    int64_t multiplier;
+    int64_t extent;
+  };
+  llvm::SmallVector<Factor, 4> factors;
   for (auto [dim, multiplier] : llvm::enumerate(coordinate.multipliers)) {
     if (multiplier == 0)
       continue;
     if (multiplier < 0 || iterationShape[dim] <= 0)
-      return false;
-    factors.push_back({multiplier, iterationShape[dim]});
+      return std::nullopt;
+    factors.push_back(
+        {static_cast<int64_t>(dim), multiplier, iterationShape[dim]});
   }
-  llvm::sort(factors);
+  llvm::sort(factors, [](const Factor &lhs, const Factor &rhs) {
+    return lhs.multiplier < rhs.multiplier;
+  });
   int64_t expectedMultiplier = 1;
   bool hasBlockBoundary = false;
-  for (auto [multiplier, extent] : factors) {
-    if (multiplier != expectedMultiplier)
-      return false;
-    std::optional<int64_t> next = checkedSignedMul(expectedMultiplier, extent);
+  CanonicalPeriodicPartition partition;
+  for (const Factor &factor : factors) {
+    if (factor.multiplier != expectedMultiplier)
+      return std::nullopt;
+    std::optional<int64_t> next =
+        checkedSignedMul(expectedMultiplier, factor.extent);
     if (!next)
-      return false;
+      return std::nullopt;
+    if (expectedMultiplier < period && period < *next) {
+      if (partition.iterationDim >= 0 || period % expectedMultiplier != 0)
+        return std::nullopt;
+      partition.iterationDim = factor.iterationDim;
+      partition.iterationPeriod = period / expectedMultiplier;
+      if (partition.iterationPeriod <= 0 ||
+          factor.extent % partition.iterationPeriod != 0)
+        return std::nullopt;
+      hasBlockBoundary = true;
+    }
     expectedMultiplier = *next;
     hasBlockBoundary |= expectedMultiplier == period;
   }
-  return hasBlockBoundary && expectedMultiplier == logicalExtent;
+  if (!hasBlockBoundary || expectedMultiplier != logicalExtent)
+    return std::nullopt;
+  return partition;
 }
 
 bool appendPhysicalPieceBoundaries(
@@ -655,11 +683,34 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
       if (coordinate.iterationDim == -1)
         continue;
       if (coordinate.iterationDim == -2) {
-        if (positivePeriods.size() != 1 ||
-            !isCanonicalPeriodicDecomposition(coordinate, iterationShape,
-                                              logicalExtent,
-                                              positivePeriods.front()))
+        if (positivePeriods.size() != 1)
           return false;
+        std::optional<CanonicalPeriodicPartition> partition =
+            getCanonicalPeriodicPartition(coordinate, iterationShape,
+                                          logicalExtent,
+                                          positivePeriods.front());
+        if (!partition)
+          return false;
+        if (partition->iterationDim >= 0) {
+          int64_t iterationDim = partition->iterationDim;
+          int64_t iterationPeriod = partition->iterationPeriod;
+          DirectPeriodicDecomposition &decomposition =
+              decompositions[iterationDim];
+          if (decomposition.requested &&
+              decomposition.period != iterationPeriod)
+            return false;
+          decomposition.requested = true;
+          decomposition.period = iterationPeriod;
+          for (int64_t boundary = iterationPeriod;
+               boundary < iterationShape[iterationDim];) {
+            boundaries[iterationDim].push_back(boundary);
+            std::optional<int64_t> next =
+                checkedSignedAdd(boundary, iterationPeriod);
+            if (!next || *next <= boundary)
+              return false;
+            boundary = *next;
+          }
+        }
         continue;
       }
 

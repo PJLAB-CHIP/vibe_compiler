@@ -74,6 +74,27 @@ static void normalizeMapOps(mlir::func::FuncOp function) {
   }
 }
 
+static mlir::FailureOr<mlir::Value>
+findFunctionalOutputDestination(mlir::Value returned) {
+  llvm::DenseSet<mlir::Value> visited;
+  mlir::Value current = returned;
+  while (visited.insert(current).second) {
+    auto result = mlir::dyn_cast<mlir::OpResult>(current);
+    if (!result)
+      return mlir::failure();
+    auto dps =
+        mlir::dyn_cast<mlir::DestinationStyleOpInterface>(result.getOwner());
+    if (!dps ||
+        result.getResultNumber() >= static_cast<unsigned>(dps.getNumDpsInits()))
+      return mlir::failure();
+    mlir::Value init = dps.getDpsInitOperand(result.getResultNumber())->get();
+    if (init.getDefiningOp<mlir::tensor::EmptyOp>())
+      return init;
+    current = init;
+  }
+  return mlir::failure();
+}
+
 static mlir::LogicalResult rewriteTensorProgramInPlace(
     mlir::ModuleOp module, int64_t currentLogicalRank,
     std::string *failureReason,
@@ -246,4 +267,148 @@ mlir::LogicalResult wafer::lowerTensorProgramToTileRegionModule(
       /*suppressDiagnostics=*/true, /*verifyResult=*/true,
       /*populateFallbackFailureReason=*/true, selectedAlternative,
       useDirectMappedBoundaryTransfer);
+}
+
+mlir::LogicalResult wafer::lowerCompleteRankTensorProgramToTileRegionModule(
+    mlir::ModuleOp sourceModule, mlir::OwningOpRef<mlir::ModuleOp> &module,
+    std::string *failureReason, int64_t currentLogicalRank) {
+  if (failureReason)
+    failureReason->clear();
+  if (!sourceModule || currentLogicalRank < 0) {
+    if (failureReason)
+      *failureReason =
+          "complete-rank Tile lowering requires a module and non-negative "
+          "logical rank";
+    return mlir::failure();
+  }
+  module = mlir::cast<mlir::ModuleOp>(sourceModule->clone());
+  mlir::func::FuncOp function =
+      tensor_program_to_tile_region::findSingleStandaloneTensorProgram(*module);
+  if (!function || function.isExternal() ||
+      !llvm::hasSingleElement(function.getBody())) {
+    if (failureReason)
+      *failureReason =
+          "complete-rank tensor program must contain one defined single-block "
+          "function";
+    return mlir::failure();
+  }
+
+  mlir::FunctionType functionalType = function.getFunctionType();
+  const unsigned inputCount = function.getNumArguments();
+  const unsigned outputCount = function.getNumResults();
+  auto returnOp = mlir::dyn_cast<mlir::func::ReturnOp>(
+      function.getBody().front().getTerminator());
+  if (!returnOp || returnOp.getNumOperands() != outputCount ||
+      outputCount == 0) {
+    if (failureReason)
+      *failureReason = "complete-rank functional result boundary is invalid";
+    return mlir::failure();
+  }
+
+  llvm::SmallVector<mlir::Value, 4> outputDestinations;
+  llvm::DenseSet<mlir::Value> uniqueDestinations;
+  outputDestinations.reserve(outputCount);
+  for (auto [index, returned] : llvm::enumerate(returnOp.getOperands())) {
+    auto resultType =
+        mlir::dyn_cast<mlir::RankedTensorType>(functionalType.getResult(index));
+    mlir::FailureOr<mlir::Value> destination =
+        findFunctionalOutputDestination(returned);
+    if (!resultType || mlir::failed(destination) ||
+        (*destination).getType() != resultType ||
+        !uniqueDestinations.insert(*destination).second) {
+      if (failureReason)
+        *failureReason =
+            "complete-rank functional result has no unique tensor.empty "
+            "destination chain";
+      return mlir::failure();
+    }
+    if (!resultType.hasStaticShape()) {
+      if (failureReason)
+        *failureReason =
+            "complete-rank functional output restoration requires static "
+            "result shape";
+      return mlir::failure();
+    }
+    outputDestinations.push_back(*destination);
+  }
+
+  for (mlir::Type resultType : functionalType.getResults())
+    function.insertArgument(function.getNumArguments(), resultType,
+                            mlir::DictionaryAttr{}, function.getLoc());
+  for (auto [index, destination] : llvm::enumerate(outputDestinations)) {
+    destination.replaceAllUsesWith(function.getArgument(inputCount + index));
+    if (mlir::Operation *producer = destination.getDefiningOp();
+        producer && producer->use_empty())
+      producer->erase();
+  }
+
+  if (mlir::failed(
+          tensor_program_to_tile_region::
+              materializeConservativeCompleteRankTraversals(
+                  tensor_program_to_tile_region::TensorProgramScope(function),
+                  failureReason)))
+    return mlir::failure();
+
+  if (mlir::failed(tensor_program_to_tile_region::
+                       convertTensorProgramToTileRegionModuleInPlace(
+                           *module, sourceModule.getContext(),
+                           currentLogicalRank, failureReason,
+                           /*suppressDiagnostics=*/true,
+                           /*verifyResult=*/true,
+                           /*populateFallbackFailureReason=*/true,
+                           /*selectedAlternative=*/std::nullopt,
+                           /*useDirectMappedBoundaryTransfer=*/false)))
+    return mlir::failure();
+
+  function =
+      tensor_program_to_tile_region::findSingleStandaloneTensorProgram(*module);
+  if (!function || !function.getBody().hasOneBlock()) {
+    if (failureReason)
+      *failureReason = "lowered complete-rank function boundary is invalid";
+    return mlir::failure();
+  }
+  mlir::OwningOpRef<mlir::func::FuncOp> loweredSnapshot =
+      mlir::cast<mlir::func::FuncOp>(function->clone());
+  mlir::Block &loweredEntry = loweredSnapshot->getBody().front();
+  auto loweredReturn =
+      mlir::dyn_cast<mlir::func::ReturnOp>(loweredEntry.getTerminator());
+  if (!loweredReturn ||
+      loweredEntry.getNumArguments() != inputCount + outputCount) {
+    if (failureReason)
+      *failureReason = "lowered complete-rank DPS boundary is invalid";
+    return mlir::failure();
+  }
+
+  function.getBody().dropAllReferences();
+  function.getBody().getBlocks().clear();
+  function.setType(functionalType);
+  mlir::Block *restoredEntry = function.addEntryBlock();
+  mlir::OpBuilder builder(restoredEntry, restoredEntry->end());
+  mlir::IRMapping mapping;
+  for (unsigned index = 0; index < inputCount; ++index)
+    mapping.map(loweredEntry.getArgument(index),
+                restoredEntry->getArgument(index));
+  for (unsigned index = 0; index < outputCount; ++index) {
+    auto resultType =
+        mlir::cast<mlir::RankedTensorType>(functionalType.getResult(index));
+    mlir::Value destination = builder
+                                  .create<mlir::tensor::EmptyOp>(
+                                      function.getLoc(), resultType.getShape(),
+                                      resultType.getElementType())
+                                  .getResult();
+    mapping.map(loweredEntry.getArgument(inputCount + index), destination);
+  }
+  for (mlir::Operation &operation : loweredEntry.without_terminator())
+    builder.clone(operation, mapping);
+  llvm::SmallVector<mlir::Value, 4> restoredResults;
+  for (mlir::Value returned : loweredReturn.getOperands())
+    restoredResults.push_back(mapping.lookupOrDefault(returned));
+  builder.create<mlir::func::ReturnOp>(function.getLoc(), restoredResults);
+
+  if (mlir::failed(mlir::verify(*module))) {
+    if (failureReason)
+      *failureReason = "restored complete-rank Tile module failed verifier";
+    return mlir::failure();
+  }
+  return mlir::success();
 }

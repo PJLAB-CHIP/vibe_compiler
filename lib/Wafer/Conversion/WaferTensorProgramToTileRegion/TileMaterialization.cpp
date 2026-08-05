@@ -3,12 +3,23 @@
 #include "Internal.h"
 
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include <deque>
 
 using namespace wafer;
 
 namespace wafer::tensor_program_to_tile_region {
+
+static bool isCandidateOutputDestination(TensorProgramScope scope,
+                                         mlir::Value value,
+                                         unsigned outputIndex) {
+  if (isTensorProgramOutputBoundary(scope, value, outputIndex))
+    return true;
+  auto toTensor = value.getDefiningOp<mlir::bufferization::ToTensorOp>();
+  return toTensor && toTensor.getWritable() &&
+         wafer::isWaferDDRMemRefType(toTensor.getMemref().getType());
+}
 
 static std::optional<ComputeReduceKind>
 inferCandidateReduceKind(mlir::linalg::GenericOp generic,
@@ -134,20 +145,16 @@ static mlir::LogicalResult fuseCandidateProducerSlices(
 }
 
 void eraseDeadCandidateSupportClosure(TensorProgramScope scope) {
-  // Tiled producer fusion leaves the original untiled producer and its pure
-  // destination/view support dead.  This cleanup is required by both the
-  // complete traversal API and the direct single-tile API: otherwise the
-  // latter lowers a dead full-shape producer and creates SPM pressure that is
-  // unrelated to the requested tile.
+  // Tiled producer fusion leaves the original untiled producer and its
+  // transitive pure support dead. Use the operation effect contract rather
+  // than an op-name allowlist so arbitrary shaped views and held-out
+  // side-effect-free structured producers disappear with that closure, while
+  // unknown or observable effects remain explicit.
   llvm::SmallVector<mlir::Operation *, 8> operations;
   for (mlir::Operation &op : scope.getBody().without_terminator())
     operations.push_back(&op);
   for (mlir::Operation *op : llvm::reverse(operations)) {
-    if (!op->use_empty())
-      continue;
-    if (mlir::isa<mlir::linalg::LinalgOp, mlir::tensor::EmptyOp,
-                  mlir::tensor::ExpandShapeOp, mlir::tensor::CollapseShapeOp,
-                  mlir::tensor::ExtractSliceOp, mlir::arith::ConstantOp>(op))
+    if (mlir::isOpTriviallyDead(op))
       op->erase();
   }
 }
@@ -206,7 +213,7 @@ static mlir::FailureOr<mlir::Value> materializeCandidateLinalgRootTileValue(
   }
 
   llvm::SmallVector<unsigned, 2> reductionLoopDims = getReductionLoopDims(root);
-  bool hasDirectOutputInit = isTensorProgramOutputBoundary(
+  bool hasDirectOutputInit = isCandidateOutputDestination(
       scope, root.getDpsInits().front(), outputIndex);
   if (!hasDirectOutputInit && reductionLoopDims.empty()) {
     setFailureReason(failureReason,
@@ -621,8 +628,8 @@ static mlir::FailureOr<mlir::Value> materializeCandidateInterfaceRootTileValue(
         "candidate reduction split requires a yielded linalg reduction root");
     return mlir::failure();
   }
-  if (!isTensorProgramOutputBoundary(scope, dps.getDpsInits().front(),
-                                     outputIndex)) {
+  if (!isCandidateOutputDestination(scope, dps.getDpsInits().front(),
+                                    outputIndex)) {
     setFailureReason(failureReason,
                      "candidate interface root requires direct output "
                      "boundary init");

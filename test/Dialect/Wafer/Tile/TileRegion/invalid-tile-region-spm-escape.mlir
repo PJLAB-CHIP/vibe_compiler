@@ -1,10 +1,12 @@
 // RUN: not wafer-opt %s 2>&1 | FileCheck %s
 
 module {
-  %source = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
-  %0 = wafer.tile.region(%source : tensor<4xf32>)
+  %source = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4xf32, #wafer.memory<ddr, tensor>>
+  %0 = wafer.tile.region(
+      %source : memref<4xf32, #wafer.memory<ddr, tensor>>)
       -> (memref<4xf32, #wafer.memory<spm, tensor>>) {
-  ^bb0(%arg0: tensor<4xf32>):
+  ^bb0(%arg0: memref<4xf32, #wafer.memory<ddr, tensor>>):
     %local = "builtin.unrealized_conversion_cast"()
         : () -> memref<4xf32, #wafer.memory<spm, tensor>>
     wafer.tile.yield %local
@@ -12,4 +14,4 @@ module {
   }
 }
 
-// CHECK: result at index 0 has unsupported SPM storage provenance
+// CHECK: shaped data result at index 0 must be a Wafer DDR memref

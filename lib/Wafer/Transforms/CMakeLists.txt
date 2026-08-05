@@ -10,6 +10,7 @@ add_mlir_library(WaferTransforms
   Scheduling/FixedSlotPipeline.cpp
   Scheduling/FullBufferHandoff.cpp
   Scheduling/RedundantTransferElimination.cpp
+  Scheduling/RankTileMaterialization.cpp
   Scheduling/ScheduleTensorProgram.cpp
   Scheduling/StructuredSchedulingScope.cpp
   Scheduling/WorkerPlacement.cpp

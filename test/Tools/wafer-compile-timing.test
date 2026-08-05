@@ -10,9 +10,10 @@
 # RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.default --execution-ranks=1 --launch-kind=kernel --optimization-preset=none 2>&1 | tee %t.default.log
 # RUN: not grep -q 'compile-timing-' %t.default.log
 
-# One source-to-package invocation exposes orchestration, every configured
-# optimization axis, MLIR passes/analyses, conversions/patterns, and internal
-# algorithm phases. Numeric timings are deliberately not golden values.
+# One source-to-package invocation exposes the complete-rank structured seam,
+# terminal memory/target gates, MLIR passes/analyses, conversions/patterns, and
+# internal algorithm phases. Numeric timings are deliberately not golden
+# values. The retired per-candidate lowering pipeline must not reappear.
 # RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.timed --execution-ranks=1 --launch-kind=kernel --optimization-preset=production --compile-timing 2>&1 | tee %t.timed.log | FileCheck %s --check-prefix=TIMING
 # RUN: test -s %t.timed/modules/module_00000.so
 
@@ -21,41 +22,18 @@
 # TIMING-DAG: wafer-compile: | stage | source-to-package | source-to-tensor-program | 1 |
 # TIMING-DAG: wafer-compile: | stage | tensor-program-to-executable | rank-candidate-generation | 1 |
 # TIMING-DAG: wafer-compile: | search | rank-candidate-generation | rank-request-shard |
-# TIMING-DAG: wafer-compile: | search-phase | candidate-evaluation | instr-lowering |
-# TIMING-DAG: wafer-compile: | search-phase | candidate-evaluation | spm-offset-planning |
-# TIMING-DAG: wafer-compile: | search-phase | candidate-evaluation | ddr-offset-planning |
 # TIMING-DAG: wafer-compile: | lowering-phase | tile-region-to-instr | full-conversion |
 # TIMING-DAG: wafer-compile: | lowering-pattern | tile-region-to-instr | wafer.tile.load |
 # TIMING-DAG: wafer-compile: | conversion | convertTensorProgramToTileRegionModuleInPlace | total |
 # TIMING-DAG: wafer-compile: | conversion | tile-region-to-instr | module-conversion |
-# TIMING-DAG: wafer-compile: | optimization | consumer-local-recomputation | materializeConsumerLocalTensorRecomputation |
-# TIMING-DAG: wafer-compile: | optimization | loop-invariant-code-motion | hoistStaticLoopInvariantOperations |
-# TIMING-DAG: wafer-compile: | optimization | algebraic-reassociation | reassociateElementwiseExpressions |
-# TIMING-DAG: wafer-compile: | optimization | reduction-tree-balancing | balanceElementwiseReductionTrees |
-# TIMING-DAG: wafer-compile: | optimization | algebraic-distribution | contractDistributiveExpressions |
-# TIMING-DAG: wafer-compile: | optimization | algebraic-factorization | factorElementwiseExpressions |
-# TIMING-DAG: wafer-compile: | optimization | implementation-selection | buildRankSearchRecipes |
-# TIMING-DAG: wafer-compile: | optimization | tile-search-alternatives | buildRankSearchRecipes |
-# TIMING-DAG: wafer-compile: | optimization | scope-composition | buildScheduledRankCandidateFrontier |
-# TIMING-DAG: wafer-compile: | optimization | collective-algorithm-selection | buildRankSearchRecipes |
-# TIMING-DAG: wafer-compile: | optimization | direct-mapped-boundary-transfer | buildRankSearchRecipes |
-# TIMING-DAG: wafer-compile: | optimization | concurrent-working-set-selection | buildRankSearchRecipes |
-# TIMING-DAG: wafer-compile: | optimization | full-buffer-transfer-elision | elideRedundantFullBufferTransfers |
-# TIMING-DAG: wafer-compile: | optimization | full-buffer-residency | promoteFullBufferHandoffs |
-# TIMING-DAG: wafer-compile: | optimization | ready-order-scheduling | scheduleIndependentInstructionsByReadyOrder |
-# TIMING-DAG: wafer-compile: | optimization | static-fixed-slot-buffering | deriveStaticFixedSlotPipelineCandidate |
-# TIMING-DAG: wafer-compile: | optimization | disjoint-worker-placement | deriveDisjointNCCWorkerPlacementCandidate |
-# TIMING-DAG: wafer-compile: | optimization | noc-resident-dataflow | appendNoCResidentDataflowCandidates |
 # TIMING-DAG: wafer-compile: | transformation | planSPMMemoryModule | total |
 # TIMING-DAG: wafer-compile: | transformation | planDDRMemoryModule | total |
-# TIMING-DAG: wafer-compile: | analysis | provesCompleteStaticView | total |
-# TIMING-DAG: wafer-compile: | analysis-phase | provesCompleteStaticView | provesCanonicalCompleteStaticView |
 # TIMING-DAG: wafer-compile: | analysis-phase | planFunction(SPM) | StructuredTimeline::build |
 # TIMING-DAG: wafer-compile: | conversion-phase | rewriteTensorProgramInPlace | TileRegionBodyEmitter::emit |
-# TIMING-DAG: wafer-compile: | lowering-algorithm-phase | getRelationMovementDescriptors | TransferRealizability::proveMappedTransfer |
 # TIMING-DAG: wafer-compile: | external-pipeline | source-to-tensor-program | xla-spmd-partitioning |
 # TIMING-DAG: wafer-compile: | pass | stablehlo-to-linalg |
 # TIMING-DAG: wafer-compile: | pass | scheduled-rank-finalization |
 # TIMING-DAG: wafer-compile: | pass | instr-to-target-llvm |
+# TIMING-NOT: wafer-compile: | search-phase | candidate-evaluation |
 # TIMING: wafer-compile: compile-timing-summary-end transaction_wall_ms={{[0-9]+\.[0-9][0-9][0-9]}}
 # TIMING: wafer-compile: published verified package with execution-ranks=1:

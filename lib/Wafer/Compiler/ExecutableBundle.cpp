@@ -4,7 +4,6 @@
 
 #include "CompilationInternal.h"
 #include "CompilationStatistics.h"
-#include "NoCResidentDataflow.h"
 #include "ScheduledRankFinalization.h"
 #include "WholeVariantAttemptPlan.h"
 #include "WholeVariantCoordinator.h"
@@ -93,7 +92,7 @@ detail::importRankVariantFrontiersIntoOwnerContext(
           {std::move(module), candidate.stableOrdinal, candidate.artifactKind,
            candidate.reservedBaseline, candidate.bufferingKind,
            candidate.bufferingPlanOrdinal, candidate.workerPlacementKind,
-           candidate.workerPlacementPlanOrdinal});
+           candidate.workerPlacementPlanOrdinal, candidate.selectedTileIR});
     }
     frontiers.push_back(std::move(imported));
   }
@@ -619,6 +618,7 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
       serialized.workerPlacementKind = candidate.workerPlacementKind;
       serialized.workerPlacementPlanOrdinal =
           candidate.workerPlacementPlanOrdinal;
+      serialized.selectedTileIR = candidate.selectedTileIR;
       if (required[candidateIndex]) {
         std::string moduleData;
         llvm::raw_string_ostream moduleStream(moduleData);
@@ -680,21 +680,6 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
   // transformation/selection frontier starts evolving.
   detail::compactImportedRankVariantFrontiers(frontiers);
 
-  const detail::CompileClock::time_point dataflowStart =
-      detail::CompileClock::now();
-  auto dataflowTiming =
-      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-          "stage", "tensor-program-to-executable", "noc-candidate-expansion");
-  std::string dataflowFailure;
-  if (optimizations.isEnabled(OptimizationKind::NoCResidentDataflow) &&
-      mlir::failed(detail::appendNoCResidentDataflowCandidates(
-          frontiers, program, executionConfig, &dataflowFailure)))
-    return fail("all-rank NoC-resident candidate construction failed: " +
-                dataflowFailure);
-  const int64_t dataflowWallMs =
-      detail::elapsedCompileMilliseconds(dataflowStart);
-  dataflowTiming.reset();
-
   const detail::CompileClock::time_point selectionStart =
       detail::CompileClock::now();
   auto selectionTiming =
@@ -736,11 +721,6 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
               << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
               << " imported_modules=" << importPlan.getRequiredModuleCount()
               << "\n";
-  diagnostics << "wafer-compile: compile-stats stage=noc-candidate-expansion"
-              << " wall_ms=" << dataflowWallMs
-              << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
-              << " frontier_candidates="
-              << selectionStatistics.frontierCandidateCount << "\n";
   diagnostics << "wafer-compile: compile-stats stage=whole-variant-selection"
               << " wall_ms=" << selectionWallMs
               << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()

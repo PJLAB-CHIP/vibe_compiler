@@ -270,65 +270,31 @@ module {
 };
 
 TEST_F(FullBufferHandoffTest,
-       PromotesStaticReshapeFanoutToSharedProducerSPMResult) {
+       RejectsStaticReshapeFanoutAcrossTileResidencyDomains) {
   mlir::OwningOpRef<mlir::ModuleOp> module = parseHandoffModule();
   ASSERT_TRUE(module);
-  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
-
-  EXPECT_EQ(
-      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 1u);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
 
   llvm::SmallVector<wafer::TileRegionOp, 4> regions =
       collectOps<wafer::TileRegionOp>(*module);
   ASSERT_EQ(regions.size(), 3u);
-  wafer::TileRegionOp producer = regions[0];
-  ASSERT_EQ(producer.getNumResults(), 1u);
-  EXPECT_TRUE(wafer::isWaferSPMMemRefType(producer.getResult(0).getType()));
-  EXPECT_TRUE(producer.getInputs().empty());
-  EXPECT_TRUE(producer.getBody().front().getArguments().empty());
+  mlir::Value spill = regions.front().getInputs().front();
+  llvm::SmallVector<wafer::InstrWDMAOp, 4> wdmas =
+      collectOps<wafer::InstrWDMAOp>(*module);
+  llvm::SmallVector<wafer::InstrRDMAOp, 4> rdmas =
+      collectOps<wafer::InstrRDMAOp>(*module);
+  ASSERT_EQ(wdmas.size(), 1u);
+  ASSERT_EQ(rdmas.size(), 2u);
 
-  EXPECT_TRUE(collectOps<wafer::InstrWDMAOp>(*module).empty());
-  EXPECT_TRUE(collectOps<wafer::InstrRDMAOp>(*module).empty());
-  llvm::SmallVector<wafer::InstrGatherScatterOp, 4> gathers =
-      collectOps<wafer::InstrGatherScatterOp>(*module);
-  ASSERT_EQ(gathers.size(), 2u);
-
-  llvm::SmallVector<mlir::memref::CollapseShapeOp, 4> reshapes =
-      collectOps<mlir::memref::CollapseShapeOp>(*module);
-  ASSERT_EQ(reshapes.size(), 2u);
-  for (unsigned index = 1; index < regions.size(); ++index) {
-    wafer::TileRegionOp consumer = regions[index];
-    ASSERT_EQ(consumer.getInputs().size(), 2u);
-    EXPECT_EQ(consumer.getInputs()[0], producer.getResult(0));
-    EXPECT_EQ(consumer.getInputs()[0], regions[1].getInputs()[0]);
-    ASSERT_EQ(consumer.getBody().front().getNumArguments(), 2u);
-    mlir::BlockArgument residentArgument =
-        consumer.getBody().front().getArgument(0);
-    EXPECT_EQ(residentArgument.getType(), producer.getResult(0).getType());
-
-    llvm::SmallVector<mlir::memref::CollapseShapeOp, 1> consumerReshapes;
-    llvm::SmallVector<wafer::InstrGatherScatterOp, 1> consumerGathers;
-    consumer.walk([&](mlir::memref::CollapseShapeOp reshape) {
-      consumerReshapes.push_back(reshape);
-    });
-    consumer.walk([&](wafer::InstrGatherScatterOp gather) {
-      consumerGathers.push_back(gather);
-    });
-    ASSERT_EQ(consumerReshapes.size(), 1u);
-    ASSERT_EQ(consumerGathers.size(), 1u);
-    EXPECT_EQ(consumerReshapes.front().getSrc(), residentArgument);
-    EXPECT_TRUE(wafer::isWaferSPMMemRefType(
-        consumerReshapes.front().getResult().getType()));
-    EXPECT_EQ(consumerGathers.front().getSource(),
-              consumerReshapes.front().getResult());
-    EXPECT_TRUE(wafer::isWaferSPMMemRefType(
-        consumerGathers.front().getDest().getType()));
-    EXPECT_EQ(consumerGathers.front().getByteCountAttr().getInt(), 8);
-  }
+  EXPECT_EQ(
+      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 0u);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  expectUnmodifiedSpillEdge(*module, spill, wdmas.front(), rdmas,
+                            /*expectCompilerOwnedSpill=*/true);
 }
 
-TEST_F(FullBufferHandoffTest, AcceptsProducerJoinThatCompletesTheWDMAWorker) {
+TEST_F(FullBufferHandoffTest,
+       RejectsCrossRegionHandoffEvenWithCompletedWDMAWorker) {
   mlir::OwningOpRef<mlir::ModuleOp> module = parseHandoffModule();
   ASSERT_TRUE(module);
   llvm::SmallVector<wafer::TileRegionOp, 4> regions =
@@ -346,17 +312,13 @@ TEST_F(FullBufferHandoffTest, AcceptsProducerJoinThatCompletesTheWDMAWorker) {
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
 
   EXPECT_EQ(
-      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 1u);
-  ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(*module)));
+      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 0u);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
-  EXPECT_TRUE(collectOps<wafer::InstrWDMAOp>(*module).empty());
-  regions = collectOps<wafer::TileRegionOp>(*module);
-  ASSERT_EQ(regions.size(), 3u);
-  EXPECT_TRUE(collectOps<wafer::SyncNCCJoinOp>(regions.front()).empty());
+  EXPECT_EQ(collectOps<wafer::InstrWDMAOp>(*module).size(), 1u);
 }
 
 TEST_F(FullBufferHandoffTest,
-       KeepsProducerJoinWhenEarlierSameWorkerIssueRemainsPending) {
+       RejectsCrossRegionHandoffWithEarlierSameWorkerIssue) {
   mlir::OwningOpRef<mlir::ModuleOp> module = parseHandoffModule();
   ASSERT_TRUE(module);
   llvm::SmallVector<wafer::TileRegionOp, 4> regions =
@@ -383,19 +345,13 @@ TEST_F(FullBufferHandoffTest,
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
 
   EXPECT_EQ(
-      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 1u);
-  ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(*module)));
+      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 0u);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
 
   regions = collectOps<wafer::TileRegionOp>(*module);
   ASSERT_EQ(regions.size(), 3u);
-  EXPECT_TRUE(collectOps<wafer::InstrWDMAOp>(*module).empty());
+  EXPECT_EQ(collectOps<wafer::InstrWDMAOp>(*module).size(), 1u);
   EXPECT_EQ(collectOps<wafer::InstrFillOp>(regions.front()).size(), 1u);
-  llvm::SmallVector<wafer::SyncNCCJoinOp, 2> producerJoins =
-      collectOps<wafer::SyncNCCJoinOp>(regions.front());
-  ASSERT_EQ(producerJoins.size(), 1u);
-  ASSERT_EQ(producerJoins.front().getParticipants().size(), 1u);
-  EXPECT_EQ(producerJoins.front().getParticipants().front(), 0);
 }
 
 TEST_F(FullBufferHandoffTest,
@@ -422,8 +378,7 @@ TEST_F(FullBufferHandoffTest,
   EXPECT_EQ(collectOps<wafer::InstrWDMAOp>(*module).size(), 1u);
 }
 
-TEST_F(FullBufferHandoffTest,
-       PromotesMaximalCompatibleSubsetWhenOneConsumerRDMAIsPartial) {
+TEST_F(FullBufferHandoffTest, RejectsPartialCrossRegionHandoffSubset) {
   mlir::OwningOpRef<mlir::ModuleOp> module = parseHandoffModule();
   ASSERT_TRUE(module);
   llvm::SmallVector<wafer::InstrRDMAOp, 4> rdmas =
@@ -443,7 +398,7 @@ TEST_F(FullBufferHandoffTest,
   mlir::Value externalReshape = reshapes.front().getResult();
 
   EXPECT_EQ(
-      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 1u);
+      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 0u);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
 
   regions = collectOps<wafer::TileRegionOp>(*module);
@@ -451,41 +406,40 @@ TEST_F(FullBufferHandoffTest,
   EXPECT_TRUE(wafer::isWaferDDRMemRefType(regions[0].getResult(0).getType()));
   EXPECT_EQ(regions[0].getInputs().size(), 1u);
   EXPECT_EQ(regions[0].getBody().front().getNumArguments(), 1u);
-  ASSERT_EQ(regions[0].getNumResults(), 2u);
-  EXPECT_TRUE(wafer::isWaferSPMMemRefType(regions[0].getResult(1).getType()));
-  EXPECT_EQ(regions[1].getInputs()[0], regions[0].getResult(1));
-  EXPECT_TRUE(wafer::isWaferSPMMemRefType(
-      regions[1].getBody().front().getArgument(0).getType()));
+  ASSERT_EQ(regions[0].getNumResults(), 1u);
+  EXPECT_EQ(regions[1].getInputs()[0], externalReshape);
   EXPECT_EQ(regions[2].getInputs()[0], externalReshape);
   EXPECT_TRUE(wafer::isWaferDDRMemRefType(
       regions[2].getBody().front().getArgument(0).getType()));
   ASSERT_EQ(collectOps<wafer::InstrWDMAOp>(*module).size(), 1u);
   rdmas = collectOps<wafer::InstrRDMAOp>(*module);
-  ASSERT_EQ(rdmas.size(), 1u);
-  EXPECT_EQ(rdmas.front().getByteCountAttr().getInt(), 4);
-  EXPECT_EQ(collectOps<wafer::InstrGatherScatterOp>(*module).size(), 1u);
-  EXPECT_EQ(collectOps<mlir::memref::CollapseShapeOp>(*module).size(), 2u);
+  ASSERT_EQ(rdmas.size(), 2u);
+  EXPECT_TRUE(llvm::any_of(rdmas, [](wafer::InstrRDMAOp rdma) {
+    return rdma.getByteCountAttr().getInt() == 4;
+  }));
+  EXPECT_TRUE(collectOps<wafer::InstrGatherScatterOp>(*module).empty());
+  EXPECT_EQ(collectOps<mlir::memref::CollapseShapeOp>(*module).size(), 1u);
 }
 
 TEST_F(FullBufferHandoffTest,
-       PromotesFullProducerSubviewAndConsumerLocalViewChain) {
+       RejectsCrossRegionProducerSubviewAndConsumerLocalViewChain) {
   mlir::OwningOpRef<mlir::ModuleOp> module = parseLocalViewHandoffModule();
   ASSERT_TRUE(module);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
 
   EXPECT_EQ(
-      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 1u);
+      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 0u);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
 
   llvm::SmallVector<wafer::TileRegionOp, 4> regions =
       collectOps<wafer::TileRegionOp>(*module);
   ASSERT_EQ(regions.size(), 2u);
-  EXPECT_TRUE(wafer::isWaferSPMMemRefType(regions[0].getResult(0).getType()));
+  EXPECT_TRUE(wafer::isWaferDDRMemRefType(regions[0].getResult(0).getType()));
   EXPECT_EQ(regions[1].getInputs()[0], regions[0].getResult(0));
-  EXPECT_TRUE(collectOps<wafer::InstrWDMAOp>(*module).empty());
-  EXPECT_TRUE(collectOps<wafer::InstrRDMAOp>(*module).empty());
-  ASSERT_EQ(collectOps<wafer::InstrGatherScatterOp>(*module).size(), 1u);
-  EXPECT_TRUE(collectOps<mlir::memref::SubViewOp>(*module).empty());
+  EXPECT_EQ(collectOps<wafer::InstrWDMAOp>(*module).size(), 1u);
+  EXPECT_EQ(collectOps<wafer::InstrRDMAOp>(*module).size(), 1u);
+  EXPECT_TRUE(collectOps<wafer::InstrGatherScatterOp>(*module).empty());
+  EXPECT_EQ(collectOps<mlir::memref::SubViewOp>(*module).size(), 1u);
 
   llvm::SmallVector<mlir::memref::CollapseShapeOp, 4> collapses =
       collectOps<mlir::memref::CollapseShapeOp>(*module);
@@ -493,8 +447,8 @@ TEST_F(FullBufferHandoffTest,
       collectOps<mlir::memref::CastOp>(*module);
   ASSERT_EQ(collapses.size(), 1u);
   ASSERT_EQ(casts.size(), 1u);
-  EXPECT_TRUE(wafer::isWaferSPMMemRefType(collapses.front().getType()));
-  EXPECT_TRUE(wafer::isWaferSPMMemRefType(casts.front().getType()));
+  EXPECT_TRUE(wafer::isWaferDDRMemRefType(collapses.front().getType()));
+  EXPECT_TRUE(wafer::isWaferDDRMemRefType(casts.front().getType()));
 }
 
 TEST_F(FullBufferHandoffTest, RejectsOperationAfterProducerWDMA) {

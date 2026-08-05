@@ -2539,12 +2539,50 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
     // partially resolved streams, but rescanning the complete loop for every
     // operation is redundant when every tracked issue has the same stable
     // address domain and worker.
+    std::function<bool(mlir::Block &)> guaranteesUniformIssueOnEveryPath;
+    guaranteesUniformIssueOnEveryPath = [&](mlir::Block &block) {
+      for (mlir::Operation &candidate : block.without_terminator()) {
+        NCCCompletionContract contract = getNCCCompletionContract(&candidate);
+        if (mlir::isa<WaferNCCIssueOpInterface>(candidate) &&
+            contract.behavior == LocalInstructionCompletion::OrderedPending &&
+            getNCCIssueWorkerMask(contract) == uniformWorkerMask)
+          return true;
+        if (auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(candidate)) {
+          if (isStaticallyNonEmpty(nestedFor) &&
+              guaranteesUniformIssueOnEveryPath(*nestedFor.getBody()))
+            return true;
+          continue;
+        }
+        if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(candidate)) {
+          if (!ifOp.getElseRegion().empty() &&
+              guaranteesUniformIssueOnEveryPath(ifOp.getThenRegion().front()) &&
+              guaranteesUniformIssueOnEveryPath(ifOp.getElseRegion().front()))
+            return true;
+        }
+      }
+      return false;
+    };
+
     std::function<bool(mlir::Block &)> provesUniformOrderedStream;
     provesUniformOrderedStream = [&](mlir::Block &block) {
       for (mlir::Operation &candidate : block.without_terminator()) {
         if (auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(candidate)) {
           if (!isStaticallyNonEmpty(nestedFor) ||
               !provesUniformOrderedStream(*nestedFor.getBody()))
+            return false;
+          continue;
+        }
+        if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(candidate)) {
+          if (ifOp.getElseRegion().empty())
+            return false;
+          bool containsIssue = false;
+          ifOp.walk([&](WaferNCCIssueOpInterface) { containsIssue = true; });
+          if ((containsIssue && (!guaranteesUniformIssueOnEveryPath(
+                                     ifOp.getThenRegion().front()) ||
+                                 !guaranteesUniformIssueOnEveryPath(
+                                     ifOp.getElseRegion().front()))) ||
+              !provesUniformOrderedStream(ifOp.getThenRegion().front()) ||
+              !provesUniformOrderedStream(ifOp.getElseRegion().front()))
             return false;
           continue;
         }

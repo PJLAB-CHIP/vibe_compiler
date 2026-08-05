@@ -168,6 +168,7 @@ public:
   int64_t getLogicalRank() const { return logicalRank; }
   llvm::StringRef getEntrySymbol() const { return entrySymbol; }
   mlir::ModuleOp getModule() const { return *module; }
+  llvm::StringRef getSelectedTileIR() const { return selectedTileIR; }
   const std::vector<RankProgramBinding> &getProgramBindings() const {
     return programBindings;
   }
@@ -185,7 +186,8 @@ private:
   RankExecutable(int64_t logicalRank, mlir::OwningOpRef<mlir::ModuleOp> module,
                  llvm::StringRef entrySymbol,
                  std::vector<RankProgramBinding> programBindings,
-                 TransportContract transportContract)
+                 TransportContract transportContract,
+                 llvm::StringRef selectedTileIR = {})
       : logicalRank(logicalRank), module(std::move(module)),
         entrySymbol(entrySymbol.str()),
         programBindings(std::move(programBindings)),
@@ -193,7 +195,8 @@ private:
             TerminalCompletionKind::EntryReturnAfterLocalDrain),
         transportContract(transportContract),
         ddrAllocationContract(
-            DDRAllocationContract::DefaultArenaRelativeOffsets) {}
+            DDRAllocationContract::DefaultArenaRelativeOffsets),
+        selectedTileIR(selectedTileIR.str()) {}
 
   int64_t logicalRank;
   mlir::OwningOpRef<mlir::ModuleOp> module;
@@ -202,6 +205,10 @@ private:
   TerminalCompletionKind terminalCompletionKind;
   TransportContract transportContract;
   DDRAllocationContract ddrAllocationContract;
+  /// Same-invocation snapshot printed at the selected complete-rank Tile
+  /// decision boundary before terminal lowering. It is inspection evidence,
+  /// not a package member or a semantic side channel.
+  std::string selectedTileIR;
 };
 
 /// Atomic owner of the complete static logical-rank domain. The context is

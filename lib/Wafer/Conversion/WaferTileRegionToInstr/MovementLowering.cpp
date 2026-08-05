@@ -806,8 +806,17 @@ public:
                                        movementRelations->iterationToDest,
                                        MovementEngine::GatherScatter,
                                        failureReason, "tile.reshape lowering");
-    if (mlir::failed(descriptors))
+    if (mlir::failed(descriptors)) {
+      if (failureReason) {
+        std::string typeDetail;
+        llvm::raw_string_ostream detailStream(typeDetail);
+        detailStream << " (source=" << sourceType << ", result=" << resultType
+                     << ")";
+        detailStream.flush();
+        failureReason->append(typeDetail);
+      }
       return mlir::failure();
+    }
 
     mlir::FailureOr<mlir::Value> dest = createDestAlloc(
         op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);

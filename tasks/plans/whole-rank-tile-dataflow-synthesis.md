@@ -1,6 +1,6 @@
 # Whole-Rank Tile Dataflow Synthesis 实施计划
 
-状态：设计与施工边界已收敛，C0已完成，C1–C6待实施。任务状态以 `tasks/progress.md` 中
+状态：设计与施工边界已收敛，C0–C1已完成，C2–C6待实施。任务状态以 `tasks/progress.md` 中
 `whole-rank-tile-dataflow-synthesis` 为准。
 
 本计划只拆解 `tasks/06-physical-dataflow-synthesis.md` 的施工顺序、迁移删除面和验证 checkpoint；算法、IR 和
@@ -138,6 +138,13 @@ rank-maxima为`658 Instr / 205 GS / 56 join / 24 DTE`，不是伪造的单一cri
 没有为C0引入shadow clone、replay或sidecar。
 
 ## C1：Complete-Rank Decision Point
+
+状态：已完成。production在旧per-scope lowering之前直接持有complete-rank structured clone，只由request shard 0
+物化唯一conservative baseline；同一actual Tile clone在Tile→Instr前保存selected IR，再经现有late gates形成rank-count
+1/16完整package并fresh no-card。旧per-scope实现与NoC独立扩展只保留testing consumer，统一在C6物理删除。
+`tile.region` shaped data边界已收紧为DDR-only、top-level non-nested SPM residency domain；complete-rank graph、不同
+traversal domain、rank-changing view、structured concat、显式two-region DDR cut及same-region selective spill均有fresh
+source/IR gate，SPM root/alias escape和unsupported indexed payload fail closed。
 
 目标：在任何不可逆 Tile→Instr、SPM/DDR placement或terminal join之前，建立完整rank的structured decision scope。
 

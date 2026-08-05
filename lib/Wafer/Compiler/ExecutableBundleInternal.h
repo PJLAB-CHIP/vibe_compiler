@@ -27,9 +27,11 @@ struct ExecutableBundleBuilder {
   makeRank(int64_t logicalRank, mlir::OwningOpRef<mlir::ModuleOp> module,
            llvm::StringRef entrySymbol,
            std::vector<RankProgramBinding> programBindings,
-           TransportContract transportContract) {
+           TransportContract transportContract,
+           llvm::StringRef selectedTileIR = {}) {
     return RankExecutable(logicalRank, std::move(module), entrySymbol,
-                          std::move(programBindings), transportContract);
+                          std::move(programBindings), transportContract,
+                          selectedTileIR);
   }
 
   static ExecutableBundle
@@ -59,6 +61,7 @@ struct SerializedRankVariantCandidate {
   wafer::RankWorkerPlacementKind workerPlacementKind =
       wafer::RankWorkerPlacementKind::Unplaced;
   uint32_t workerPlacementPlanOrdinal = 0;
+  std::shared_ptr<const std::string> selectedTileIR;
 };
 
 using SerializedRankVariantFrontier =

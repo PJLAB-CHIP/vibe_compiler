@@ -2,6 +2,8 @@
 
 #include "Internal.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+
 using namespace wafer;
 
 namespace wafer::tensor_program_to_tile_region {
@@ -785,6 +787,268 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTwoWayConcatGeneric(
   return mlir::success();
 }
 
+mlir::FailureOr<bool> TileRegionBodyEmitter::tryConvertTiledTwoWayConcatGeneric(
+    mlir::linalg::GenericOp generic, mlir::OpBuilder &builder) {
+  auto noMatch = []() { return mlir::FailureOr<bool>(false); };
+  if (generic.getNumDpsInputs() != 0 || generic.getNumDpsInits() != 1 ||
+      generic->getNumResults() != 1)
+    return noMatch();
+
+  auto resultTensorType =
+      mlir::dyn_cast<mlir::RankedTensorType>(generic->getResult(0).getType());
+  if (!resultTensorType || !resultTensorType.hasStaticShape() ||
+      llvm::any_of(resultTensorType.getShape(),
+                   [](int64_t extent) { return extent != 1; }))
+    return noMatch();
+  int64_t rank = resultTensorType.getRank();
+
+  llvm::SmallVector<mlir::AffineMap, 1> maps = generic.getIndexingMapsArray();
+  if (maps.size() != 1 || !isIdentityMap(maps.front(), rank))
+    return noMatch();
+  llvm::SmallVector<mlir::utils::IteratorType, 4> iteratorTypes =
+      generic.getIteratorTypesArray();
+  if (iteratorTypes.size() != static_cast<size_t>(rank) ||
+      !llvm::all_of(iteratorTypes, [](mlir::utils::IteratorType type) {
+        return type == mlir::utils::IteratorType::parallel;
+      }))
+    return noMatch();
+
+  auto yield =
+      mlir::dyn_cast<mlir::linalg::YieldOp>(generic.getBody()->getTerminator());
+  if (!yield || yield.getValues().size() != 1)
+    return noMatch();
+  auto ifOp = yield.getValues().front().getDefiningOp<mlir::scf::IfOp>();
+  if (!ifOp || ifOp->getNumResults() != 1 || !ifOp.thenBlock() ||
+      !ifOp.elseBlock() || ifOp->getBlock() != generic.getBody())
+    return noMatch();
+  auto thenYield =
+      mlir::dyn_cast<mlir::scf::YieldOp>(ifOp.thenBlock()->getTerminator());
+  auto elseYield =
+      mlir::dyn_cast<mlir::scf::YieldOp>(ifOp.elseBlock()->getTerminator());
+  if (!thenYield || !elseYield || thenYield.getResults().size() != 1 ||
+      elseYield.getResults().size() != 1)
+    return noMatch();
+  auto firstExtract =
+      thenYield.getResults().front().getDefiningOp<mlir::tensor::ExtractOp>();
+  auto secondExtract =
+      elseYield.getResults().front().getDefiningOp<mlir::tensor::ExtractOp>();
+  if (!firstExtract || !secondExtract ||
+      firstExtract->getBlock() != ifOp.thenBlock() ||
+      secondExtract->getBlock() != ifOp.elseBlock())
+    return noMatch();
+
+  auto firstType = mlir::dyn_cast<mlir::RankedTensorType>(
+      firstExtract.getTensor().getType());
+  auto secondType = mlir::dyn_cast<mlir::RankedTensorType>(
+      secondExtract.getTensor().getType());
+  if (!firstType || !secondType || !firstType.hasStaticShape() ||
+      !secondType.hasStaticShape() || firstType.getRank() != rank ||
+      secondType.getRank() != rank ||
+      firstType.getElementType() != resultTensorType.getElementType() ||
+      secondType.getElementType() != resultTensorType.getElementType() ||
+      firstExtract.getIndices().size() != static_cast<size_t>(rank) ||
+      secondExtract.getIndices().size() != static_cast<size_t>(rank))
+    return noMatch();
+
+  llvm::DenseSet<mlir::Operation *> bodySkeleton;
+  bodySkeleton.insert(ifOp.getOperation());
+  auto matchGlobalIndex = [&](mlir::Value value,
+                              int64_t dim) -> std::optional<mlir::Value> {
+    auto apply = value.getDefiningOp<mlir::affine::AffineApplyOp>();
+    if (!apply || apply->getParentOp() != generic.getOperation() ||
+        apply.getMapOperands().size() != 2)
+      return std::nullopt;
+    mlir::AffineMap map = apply.getAffineMap();
+    if (map.getNumDims() != 2 || map.getNumSymbols() != 0 ||
+        map.getNumResults() != 1)
+      return std::nullopt;
+    auto add = mlir::dyn_cast<mlir::AffineBinaryOpExpr>(map.getResult(0));
+    if (!add || add.getKind() != mlir::AffineExprKind::Add)
+      return std::nullopt;
+    auto lhs = mlir::dyn_cast<mlir::AffineDimExpr>(add.getLHS());
+    auto rhs = mlir::dyn_cast<mlir::AffineDimExpr>(add.getRHS());
+    if (!lhs || !rhs || lhs.getPosition() == rhs.getPosition() ||
+        lhs.getPosition() >= 2 || rhs.getPosition() >= 2)
+      return std::nullopt;
+
+    for (unsigned localOperand = 0; localOperand < 2; ++localOperand) {
+      auto index = apply.getMapOperands()[localOperand]
+                       .getDefiningOp<mlir::linalg::IndexOp>();
+      if (!index || index->getParentOp() != generic.getOperation() ||
+          index.getDim() != static_cast<uint64_t>(dim))
+        continue;
+      unsigned offsetOperand = 1 - localOperand;
+      if ((lhs.getPosition() != localOperand &&
+           rhs.getPosition() != localOperand) ||
+          (lhs.getPosition() != offsetOperand &&
+           rhs.getPosition() != offsetOperand))
+        return std::nullopt;
+      mlir::Value offset = apply.getMapOperands()[offsetOperand];
+      if (mlir::Operation *definition = offset.getDefiningOp();
+          definition && generic->isProperAncestor(definition))
+        return std::nullopt;
+      bodySkeleton.insert(index.getOperation());
+      bodySkeleton.insert(apply.getOperation());
+      return offset;
+    }
+    return std::nullopt;
+  };
+
+  llvm::SmallVector<mlir::Value, 4> globalIndices;
+  globalIndices.reserve(rank);
+  for (int64_t dim = 0; dim < rank; ++dim) {
+    std::optional<mlir::Value> offset =
+        matchGlobalIndex(firstExtract.getIndices()[dim], dim);
+    if (!offset)
+      return noMatch();
+    globalIndices.push_back(*offset);
+  }
+
+  auto cmp = ifOp.getCondition().getDefiningOp<mlir::arith::CmpIOp>();
+  if (!cmp || cmp.getPredicate() != mlir::arith::CmpIPredicate::ult ||
+      cmp->getBlock() != generic.getBody())
+    return noMatch();
+  bodySkeleton.insert(cmp.getOperation());
+  int64_t concatAxis = -1;
+  for (int64_t dim = 0; dim < rank; ++dim) {
+    if (cmp.getLhs() == firstExtract.getIndices()[dim]) {
+      concatAxis = dim;
+      break;
+    }
+  }
+  if (concatAxis < 0)
+    return noMatch();
+
+  auto boundaryConstant = cmp.getRhs().getDefiningOp<mlir::arith::ConstantOp>();
+  auto boundaryAttr =
+      boundaryConstant
+          ? mlir::dyn_cast<mlir::IntegerAttr>(boundaryConstant.getValue())
+          : mlir::IntegerAttr{};
+  if (!boundaryAttr) {
+    auto boundary = scalarAttrs.find(cmp.getRhs());
+    if (boundary != scalarAttrs.end())
+      boundaryAttr = mlir::dyn_cast<mlir::IntegerAttr>(boundary->second);
+  }
+  if (!boundaryAttr || !mlir::isa<mlir::IndexType>(cmp.getRhs().getType()) ||
+      boundaryAttr.getInt() != firstType.getDimSize(concatAxis) ||
+      boundaryAttr.getInt() <= 0)
+    return noMatch();
+
+  for (int64_t dim = 0; dim < rank; ++dim) {
+    if (dim != concatAxis &&
+        firstType.getDimSize(dim) != secondType.getDimSize(dim))
+      return noMatch();
+    if (dim != concatAxis) {
+      if (secondExtract.getIndices()[dim] != firstExtract.getIndices()[dim])
+        return noMatch();
+      continue;
+    }
+    auto subtract =
+        secondExtract.getIndices()[dim].getDefiningOp<mlir::arith::SubIOp>();
+    if (!subtract || subtract->getBlock() != ifOp.elseBlock() ||
+        subtract.getLhs() != firstExtract.getIndices()[dim] ||
+        subtract.getRhs() != cmp.getRhs())
+      return noMatch();
+  }
+
+  for (mlir::Operation &op : generic.getBody()->without_terminator())
+    if (!bodySkeleton.contains(&op))
+      return noMatch();
+  for (mlir::Operation &op : ifOp.thenBlock()->without_terminator())
+    if (&op != firstExtract.getOperation())
+      return noMatch();
+  for (mlir::Operation &op : ifOp.elseBlock()->without_terminator())
+    if (!mlir::isa<mlir::arith::SubIOp>(op) &&
+        &op != secondExtract.getOperation())
+      return noMatch();
+
+  llvm::SmallVector<mlir::Value, 4> convertedIndices;
+  convertedIndices.reserve(globalIndices.size());
+  for (auto [dim, index] : llvm::enumerate(globalIndices)) {
+    mlir::FailureOr<mlir::Value> converted = getScalarValue(index);
+    if (mlir::failed(converted)) {
+      std::string owner = "unknown";
+      if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(index)) {
+        if (mlir::Operation *parent = argument.getOwner()->getParentOp())
+          owner = parent->getName().getStringRef().str();
+      } else if (mlir::Operation *definition = index.getDefiningOp()) {
+        owner = definition->getName().getStringRef().str();
+      }
+      setFailureReason(failureReason,
+                       "tiled concat global offset dim " + std::to_string(dim) +
+                           " has no converted scalar value (owner=" + owner +
+                           ")");
+      return mlir::failure();
+    }
+    convertedIndices.push_back(*converted);
+  }
+  mlir::Value boundary = builder
+                             .create<mlir::arith::ConstantIndexOp>(
+                                 generic.getLoc(), boundaryAttr.getInt())
+                             .getResult();
+  auto condition = builder.create<mlir::arith::CmpIOp>(
+      generic.getLoc(), mlir::arith::CmpIPredicate::ult,
+      convertedIndices[concatAxis], boundary);
+  mlir::MemRefType tileType =
+      makeSPMMemRefType(resultTensorType, MemLayout::Tensor);
+  auto convertedIf = builder.create<mlir::scf::IfOp>(
+      generic.getLoc(), mlir::TypeRange{tileType}, condition.getResult(),
+      /*withElseRegion=*/true);
+
+  auto buildBranch = [&](mlir::Block *block, mlir::Value source,
+                         bool second) -> mlir::LogicalResult {
+    eraseImplicitYield(block);
+    mlir::OpBuilder branchBuilder(block, block->end());
+    auto external = externalBuffers.find(source);
+    if (external == externalBuffers.end())
+      return fail("tiled concat source is not an explicit DDR value");
+    llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+    offsets.reserve(convertedIndices.size());
+    for (mlir::Value index : convertedIndices)
+      offsets.push_back(index);
+    if (second) {
+      mlir::Value adjusted = branchBuilder.create<mlir::arith::SubIOp>(
+          generic.getLoc(), convertedIndices[concatAxis], boundary);
+      offsets[concatAxis] = adjusted;
+    }
+    llvm::SmallVector<int64_t, 4> sizes(rank, 1);
+    llvm::SmallVector<int64_t, 4> strides(rank, 1);
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(external->second.getType());
+    if (!sourceType || sourceType.getRank() != rank ||
+        sourceType.getElementType() != resultTensorType.getElementType())
+      return fail("tiled concat DDR source type does not match its tile");
+    llvm::SmallVector<mlir::OpFoldResult, 4> mixedSizes;
+    llvm::SmallVector<mlir::OpFoldResult, 4> mixedStrides;
+    for (int64_t size : sizes)
+      mixedSizes.push_back(branchBuilder.getIndexAttr(size));
+    for (int64_t stride : strides)
+      mixedStrides.push_back(branchBuilder.getIndexAttr(stride));
+    auto subviewType = mlir::cast<mlir::MemRefType>(
+        mlir::memref::SubViewOp::inferRankReducedResultType(
+            resultTensorType.getShape(), sourceType, offsets, mixedSizes,
+            mixedStrides));
+    auto view = branchBuilder.create<mlir::memref::SubViewOp>(
+        generic.getLoc(), subviewType, external->second, offsets, mixedSizes,
+        mixedStrides);
+    auto tile =
+        branchBuilder.create<mlir::memref::AllocOp>(generic.getLoc(), tileType);
+    branchBuilder.create<StorageLoadOp>(generic.getLoc(), view.getResult(),
+                                        tile.getResult());
+    branchBuilder.create<mlir::scf::YieldOp>(generic.getLoc(),
+                                             tile.getResult());
+    return mlir::success();
+  };
+  if (mlir::failed(buildBranch(convertedIf.thenBlock(),
+                               firstExtract.getTensor(), /*second=*/false)) ||
+      mlir::failed(buildBranch(convertedIf.elseBlock(),
+                               secondExtract.getTensor(), /*second=*/true)))
+    return mlir::failure();
+
+  record(generic->getResult(0), MemLayout::Tensor, convertedIf.getResult(0));
+  return true;
+}
+
 mlir::LogicalResult
 TileRegionBodyEmitter::convertGeneric(mlir::linalg::GenericOp generic,
                                       bool useReciprocalInstruction,
@@ -802,6 +1066,12 @@ TileRegionBodyEmitter::convertGeneric(mlir::linalg::GenericOp generic,
       mlir::succeeded(concatInputs))
     return convertTwoWayConcatGeneric(generic, *concatInputs, concatAxis,
                                       builder);
+  mlir::FailureOr<bool> tiledConcat =
+      tryConvertTiledTwoWayConcatGeneric(generic, builder);
+  if (mlir::failed(tiledConcat))
+    return mlir::failure();
+  if (*tiledConcat)
+    return mlir::success();
   return convertElementwiseGenericExpression(generic, useReciprocalInstruction,
                                              builder);
 }

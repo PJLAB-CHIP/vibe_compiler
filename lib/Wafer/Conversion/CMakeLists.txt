@@ -18,6 +18,7 @@ add_mlir_conversion_library(WaferTensorProgramToTileRegion
   WaferAnalysis
   WaferIR
   MLIRAnalysis
+  MLIRAffineDialect
   MLIRArithDialect
   MLIRBufferizationDialect
   MLIRFuncDialect

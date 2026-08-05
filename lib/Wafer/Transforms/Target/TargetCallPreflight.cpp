@@ -311,7 +311,7 @@ getStaticIndexRange(mlir::memref::SubViewOp subviewOp,
                     mlir::Value dynamicOffset, unsigned dynamicIndex) {
   memory_planning::detail::StaticIndexRangeResult result =
       memory_planning::detail::evaluateNonNegativeStaticIndexRange(
-          dynamicOffset);
+          dynamicOffset, subviewOp);
   using Failure = memory_planning::detail::StaticIndexRangeFailureKind;
   switch (result.failure) {
   case Failure::None:

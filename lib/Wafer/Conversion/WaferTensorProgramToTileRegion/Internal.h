@@ -91,6 +91,7 @@ struct StateSnapshot {
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
   llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
   llvm::DenseMap<mlir::Value, mlir::Attribute> tensorAttrs;
+  llvm::DenseMap<mlir::Value, mlir::Value> compilerOwnedDDRBuffers;
   llvm::DenseMap<mlir::Value, mlir::Value> externalBuffers;
   llvm::DenseSet<mlir::Value> writableExternalBuffers;
   llvm::DenseMap<mlir::Value, unsigned> externalOutputIndices;
@@ -227,6 +228,16 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     CandidateTileTraversalKind traversalKind, std::string *failureReason);
 
+/// Materializes one deterministic, complete traversal for every distinct
+/// static result shape in a complete-rank program.  Roots with the same shape
+/// share a traversal; different shapes remain separate traversals inside the
+/// same later tile.region.  The unit tile is deliberately conservative: this
+/// bring-up path establishes a bounded SPM working set without selecting a
+/// local winner or creating a per-root artifact.
+mlir::LogicalResult
+materializeConservativeCompleteRankTraversals(TensorProgramScope scope,
+                                              std::string *failureReason);
+
 void setFailureReason(std::string *failureReason, llvm::StringRef reason);
 
 std::optional<ComputeReduceKind>
@@ -255,6 +266,7 @@ private:
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
   llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
   llvm::DenseMap<mlir::Value, mlir::Attribute> tensorAttrs;
+  llvm::DenseMap<mlir::Value, mlir::Value> compilerOwnedDDRBuffers;
   llvm::DenseMap<mlir::Value, mlir::Value> externalBuffers;
   llvm::DenseSet<mlir::Value> writableExternalBuffers;
   llvm::DenseMap<mlir::Value, unsigned> externalOutputIndices;
@@ -443,10 +455,10 @@ private:
 
   bool onlyFeedsUnreadDpsInit(mlir::Value value) const;
 
-  bool onlyFeedsGemmOverwriteInit(mlir::Value value,
-                                  llvm::DenseSet<mlir::Value> &visited) const;
+  bool onlyFeedsScalarInitializedComputeInit(
+      mlir::Value value, llvm::DenseSet<mlir::Value> &visited) const;
 
-  bool onlyFeedsGemmOverwriteInit(mlir::Value value) const;
+  bool onlyFeedsScalarInitializedComputeInit(mlir::Value value) const;
 
   mlir::LogicalResult verifyNamedLinalgPayloads(TensorProgramScope scope);
 
@@ -576,6 +588,10 @@ private:
   convertTwoWayConcatGeneric(mlir::linalg::GenericOp generic,
                              llvm::ArrayRef<mlir::Value> concatInputs,
                              int64_t concatAxis, mlir::OpBuilder &builder);
+
+  mlir::FailureOr<bool>
+  tryConvertTiledTwoWayConcatGeneric(mlir::linalg::GenericOp generic,
+                                     mlir::OpBuilder &builder);
 
   mlir::LogicalResult convertGeneric(mlir::linalg::GenericOp generic,
                                      bool useReciprocalInstruction,

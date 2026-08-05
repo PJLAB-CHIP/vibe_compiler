@@ -523,6 +523,9 @@ DDR往返、GS/layout movement和`NCCJoin`。不能用某一项下降而把work�
   workers、event、alias/range、reuse和observer构造fixed-frontier latest-necessary completion。每个join有hazard/protocol/observable
   witness，可安全coalesce的均合并。随后每个terminal rank-entry Instr variant按
   `SPM roots/lifetime/coexistence/conflict → fixed-problem 3 MiB MiniMalloc → physical-alias verify`执行并all-and-only覆盖；
+  path-dependent dynamic view/index range在实际descriptor/subview use处由包围的typed `scf.if` predicate收紧；DDR planner与
+  target preflight必须对同一use得到一致界。SPM planner、accepted-offset high-water和final cost对`scf.if`/select/
+  loop-carried origin采用同一typed provenance闭包，任一无法解析的path/origin保持typed failure，不得把它当作零；
   每个complete all-rank variant从current explicit DDR arenas/domains构造problems并原子执行post-memory Direct-DTE
   binding/resource与ABI。packing失败从无offset parent生成
   新alternative；失败terminal candidate整体丢弃，派生出的全部fixed problems各求解一次，不对同一problem

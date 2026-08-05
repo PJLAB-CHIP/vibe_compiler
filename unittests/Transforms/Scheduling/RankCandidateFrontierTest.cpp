@@ -1,6 +1,7 @@
 //===- RankCandidateFrontierTest.cpp - Actual-clone frontier tests ------===//
 
 #include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
+#include "Scheduling/ScheduleTensorProgramInternal.h"
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/Compiler/Testing.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
@@ -142,8 +143,8 @@ module {
   wafer::TensorProgramSchedulingConfig unshardedConfig;
   unshardedConfig.logicalRank = 0;
   unshardedConfig.candidateParallelism = 1;
-  auto unsharded =
-      wafer::buildScheduledRankCandidateFrontier(*source, unshardedConfig);
+  auto unsharded = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, unshardedConfig);
   ASSERT_TRUE(mlir::succeeded(unsharded));
   std::vector<RankCandidateSignature> expected =
       getRankCandidateSignatures(*unsharded);
@@ -154,8 +155,8 @@ module {
     wafer::TensorProgramSchedulingConfig shardConfig = unshardedConfig;
     shardConfig.requestShardIndex = shardIndex;
     shardConfig.requestShardCount = requestShardCount;
-    auto shard =
-        wafer::buildScheduledRankCandidateFrontier(*source, shardConfig);
+    auto shard = wafer::tensor_program_scheduling::testing::
+        buildLegacyScheduledRankCandidateFrontier(*source, shardConfig);
     ASSERT_TRUE(mlir::succeeded(shard));
     for (wafer::ScheduledRankCandidate &candidate : *shard)
       shardCandidates.push_back(std::move(candidate));
@@ -222,7 +223,8 @@ module {
   config.logicalRank = 0;
   config.candidateParallelism = 1;
   config.optimizations = wafer::OptimizationConfig::none();
-  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto frontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   ASSERT_EQ(frontier->size(), 1u);
   EXPECT_TRUE(frontier->front().reservedBaseline);
@@ -274,7 +276,8 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto frontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
 
   // Result recipes occupy 12 slots for each of at most 16 source variants,
@@ -382,7 +385,8 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto frontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), wafer::kMaximumScheduledRankFrontierSize);
 
@@ -406,7 +410,7 @@ module {
 }
 
 TEST(RankCandidateFrontierTest,
-     PreservesReservedSpillAndResidentAsIndependentPlacedClones) {
+     PreservesReservedSpillAndCommunicationClonesWithoutSPMBoundaryEscape) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
                   mlir::bufferization::BufferizationDialect,
@@ -460,7 +464,8 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto frontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   ASSERT_GE(frontier->size(), 2u);
   EXPECT_LE(frontier->size(), wafer::kMaximumScheduledRankFrontierSize);
@@ -468,7 +473,7 @@ module {
   unsigned baselineCount = 0;
   std::optional<unsigned> baselineGatherScatterCount;
   std::optional<unsigned> optimizedMinimumGatherScatterCount;
-  bool sawResidentAlternative = false;
+  bool sawSPMBoundaryEscape = false;
   bool sawRingAllReduce = false;
   bool sawTreeReduce = false;
   bool sawTreeBroadcast = false;
@@ -492,14 +497,16 @@ module {
                gatherScatterCount < *optimizedMinimumGatherScatterCount) {
       optimizedMinimumGatherScatterCount = gatherScatterCount;
     }
-    bool candidateResident = false;
     candidate.module->walk([&](wafer::TileRegionOp region) {
-      candidateResident |=
+      sawSPMBoundaryEscape |=
+          llvm::any_of(region.getInputs().getTypes(),
+                       [](mlir::Type type) {
+                         return wafer::isWaferSPMMemRefType(type);
+                       }) ||
           llvm::any_of(region.getResultTypes(), [](mlir::Type type) {
             return wafer::isWaferSPMMemRefType(type);
           });
     });
-    sawResidentAlternative |= !candidate.reservedBaseline && candidateResident;
 
     candidate.module->walk([&](mlir::memref::AllocOp allocation) {
       if (wafer::isWaferSPMMemRefType(allocation.getType()))
@@ -520,14 +527,14 @@ module {
   ASSERT_TRUE(baselineGatherScatterCount.has_value());
   ASSERT_TRUE(optimizedMinimumGatherScatterCount.has_value());
   EXPECT_GT(*baselineGatherScatterCount, *optimizedMinimumGatherScatterCount);
-  EXPECT_TRUE(sawResidentAlternative);
+  EXPECT_FALSE(sawSPMBoundaryEscape);
   EXPECT_TRUE(sawRingAllReduce);
   EXPECT_TRUE(sawTreeReduce);
   EXPECT_TRUE(sawTreeBroadcast);
 
   config.candidateParallelism = 4;
-  auto parallelFrontier =
-      wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto parallelFrontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(parallelFrontier));
   ASSERT_EQ(parallelFrontier->size(), frontier->size());
   for (auto &&[serial, parallel] :
@@ -597,7 +604,8 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto frontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_EQ(llvm::count_if(*frontier,
                            [](const auto &candidate) {
@@ -657,8 +665,8 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  auto serialFrontier =
-      wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto serialFrontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(serialFrontier));
 
   wafer::ScheduledRankCandidate *fixed = nullptr;
@@ -724,8 +732,8 @@ module {
   EXPECT_EQ(slotOffsets.size(), 6u);
 
   config.candidateParallelism = 4;
-  auto parallelFrontier =
-      wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto parallelFrontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(parallelFrontier));
   ASSERT_EQ(parallelFrontier->size(), serialFrontier->size());
   for (auto &&[serial, parallel] :
@@ -795,7 +803,8 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto frontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), wafer::kMaximumScheduledRankFrontierSize);
   EXPECT_EQ(llvm::count_if(*frontier,
@@ -915,7 +924,8 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto frontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), wafer::kMaximumScheduledRankFrontierSize);
 
@@ -992,7 +1002,8 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto frontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), wafer::kMaximumScheduledRankFrontierSize);
 
@@ -1066,7 +1077,8 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto frontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), wafer::kMaximumScheduledRankFrontierSize);
 
@@ -1118,7 +1130,8 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto frontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
 
   bool sawReciprocal = false;
@@ -1197,7 +1210,8 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
-  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  auto frontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
 
   std::optional<uint64_t> baselineMovement;

@@ -63,8 +63,7 @@ TEST(PipelinesTest, ScheduledRankFinalizationDoesNotSelectAnotherCandidate) {
       << pipeline;
 }
 
-TEST(PipelinesTest,
-     StructuredProgramLowersResidentSharedProducerWinnerToTarget) {
+TEST(PipelinesTest, StructuredProgramLowersCompleteRankRegionToTarget) {
   mlir::DialectRegistry registry;
   wafer::compiler::detail::registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
@@ -151,6 +150,10 @@ module {
   // the source module before that owner so its uniqued state stays live.
   module = nullptr;
   ASSERT_EQ(executable->getRankExecutables().size(), 1u);
+  llvm::StringRef selectedTileIR =
+      executable->getRankExecutables().front().getSelectedTileIR();
+  EXPECT_TRUE(selectedTileIR.contains("wafer.tile.region"));
+  EXPECT_FALSE(selectedTileIR.contains("wafer.instr."));
   mlir::ModuleOp scheduled =
       executable->getRankExecutables().front().getModule();
 
@@ -161,7 +164,7 @@ module {
   llvm::raw_string_ostream scheduledStream(scheduledText);
   scheduled.print(scheduledStream);
   scheduledStream.flush();
-  ASSERT_EQ(regions.size(), 3u) << scheduledText;
+  ASSERT_EQ(regions.size(), 1u) << scheduledText;
   bool hasSPMResult = false;
   bool hasSPMOperand = false;
   for (wafer::TileRegionOp region : regions) {
@@ -170,16 +173,17 @@ module {
     for (mlir::Value operand : region.getOperands())
       hasSPMOperand |= wafer::isWaferSPMMemRefType(operand.getType());
   }
-  // The interface-driven complete traversal materializes the shared convert
-  // once, then carries its typed SPM result to both consumers. This explicit
-  // SSA handoff replaces the two independent DDR reloads.
-  EXPECT_TRUE(hasSPMResult);
-  EXPECT_TRUE(hasSPMOperand);
-  EXPECT_EQ(countOps<wafer::InstrRDMAOp>(scheduled), 1u);
-  EXPECT_EQ(countOps<wafer::InstrWDMAOp>(scheduled), 2u);
-  // The producer and each consumer retain a terminal participant join.
-  // Cross-region join sinking is a separate optimization.
-  EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(scheduled), 3u);
+  // The complete post-SPMD rank graph is one residency domain. Shaped data
+  // may cross its outer boundary only in DDR; SPM SSA stays internal.
+  EXPECT_FALSE(hasSPMResult);
+  EXPECT_FALSE(hasSPMOperand);
+  // The C1 conservative baseline materializes all three structured roots in
+  // this graph. The converted tensor is an explicit DDR boundary consumed by
+  // the reduction and square traversals, so each root has one exact load/store
+  // pair before later frontier actions consider residency fusion.
+  EXPECT_EQ(countOps<wafer::InstrRDMAOp>(scheduled), 3u);
+  EXPECT_EQ(countOps<wafer::InstrWDMAOp>(scheduled), 3u);
+  EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(scheduled), 1u);
 
   llvm::Expected<wafer::compiler::TargetLLVMModuleBundle> target =
       wafer::compiler::compileExecutableBundleToTargetLLVMModules(*executable,

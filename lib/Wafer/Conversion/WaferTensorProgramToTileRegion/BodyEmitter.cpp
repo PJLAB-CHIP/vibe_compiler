@@ -246,6 +246,7 @@ StateSnapshot TileRegionBodyEmitter::snapshotState() const {
           scalarValues,
           scalarAttrs,
           tensorAttrs,
+          compilerOwnedDDRBuffers,
           externalBuffers,
           writableExternalBuffers,
           externalOutputIndices,
@@ -259,6 +260,7 @@ void TileRegionBodyEmitter::restoreState(const StateSnapshot &snapshot) {
   scalarValues = snapshot.scalarValues;
   scalarAttrs = snapshot.scalarAttrs;
   tensorAttrs = snapshot.tensorAttrs;
+  compilerOwnedDDRBuffers = snapshot.compilerOwnedDDRBuffers;
   externalBuffers = snapshot.externalBuffers;
   writableExternalBuffers = snapshot.writableExternalBuffers;
   externalOutputIndices = snapshot.externalOutputIndices;
@@ -564,10 +566,10 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
 
   if (mlir::isa<mlir::arith::ConstantOp, mlir::bufferization::ToMemrefOp,
                 mlir::bufferization::ToTensorOp, mlir::tensor::EmptyOp,
-                mlir::tensor::ExtractOp, mlir::tensor::ExtractSliceOp,
-                mlir::tensor::InsertSliceOp, mlir::tensor::ExpandShapeOp,
-                mlir::tensor::CollapseShapeOp, mlir::scf::IfOp,
-                mlir::scf::ForOp>(op))
+                mlir::memref::AllocOp, mlir::tensor::ExtractOp,
+                mlir::tensor::ExtractSliceOp, mlir::tensor::InsertSliceOp,
+                mlir::tensor::ExpandShapeOp, mlir::tensor::CollapseShapeOp,
+                mlir::scf::IfOp, mlir::scf::ForOp>(op))
     return convertSupportOp(op, builder);
 
   return fail("unsupported tensor-program op " +

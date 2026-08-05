@@ -694,6 +694,274 @@ private:
   llvm::DenseSet<mlir::Operation *> activeFunctions;
 };
 
+template <typename Callback>
+static void forEachExactExecutionMetric(InstructionProgramCost &cost,
+                                        Callback &&callback) {
+  callback(cost.compute.npuF16Bf16LogicalOps);
+  callback(cost.compute.npuOtherLogicalOps);
+  callback(cost.compute.vectorF16Bf16LogicalOps);
+  callback(cost.compute.vectorF32LogicalOps);
+  callback(cost.compute.vectorOtherLogicalOps);
+  callback(cost.ddrReadBytes);
+  callback(cost.ddrWriteBytes);
+  callback(cost.spmMovementBytes);
+  callback(cost.gatherScatterBytes);
+  callback(cost.noc.aggregateTransmitBytes);
+  callback(cost.noc.aggregateReceiveBytes);
+  callback(cost.noc.waitedEventCount);
+  for (ScheduleCostMetric &metric : cost.noc.directionalTransmitBytes)
+    callback(metric);
+  for (ScheduleCostMetric &metric : cost.noc.collectiveTransmitBytes)
+    callback(metric);
+  for (InstructionWorkCountMember member : kInstructionWorkCountMembers)
+    callback((cost.work.*member).exactExecutions);
+}
+
+template <typename Callback>
+static void zipExactExecutionMetrics(InstructionProgramCost &result,
+                                     const InstructionProgramCost &lhs,
+                                     const InstructionProgramCost &rhs,
+                                     Callback &&callback) {
+  callback(result.compute.npuF16Bf16LogicalOps,
+           lhs.compute.npuF16Bf16LogicalOps, rhs.compute.npuF16Bf16LogicalOps);
+  callback(result.compute.npuOtherLogicalOps, lhs.compute.npuOtherLogicalOps,
+           rhs.compute.npuOtherLogicalOps);
+  callback(result.compute.vectorF16Bf16LogicalOps,
+           lhs.compute.vectorF16Bf16LogicalOps,
+           rhs.compute.vectorF16Bf16LogicalOps);
+  callback(result.compute.vectorF32LogicalOps, lhs.compute.vectorF32LogicalOps,
+           rhs.compute.vectorF32LogicalOps);
+  callback(result.compute.vectorOtherLogicalOps,
+           lhs.compute.vectorOtherLogicalOps,
+           rhs.compute.vectorOtherLogicalOps);
+  callback(result.ddrReadBytes, lhs.ddrReadBytes, rhs.ddrReadBytes);
+  callback(result.ddrWriteBytes, lhs.ddrWriteBytes, rhs.ddrWriteBytes);
+  callback(result.spmMovementBytes, lhs.spmMovementBytes, rhs.spmMovementBytes);
+  callback(result.gatherScatterBytes, lhs.gatherScatterBytes,
+           rhs.gatherScatterBytes);
+  callback(result.noc.aggregateTransmitBytes, lhs.noc.aggregateTransmitBytes,
+           rhs.noc.aggregateTransmitBytes);
+  callback(result.noc.aggregateReceiveBytes, lhs.noc.aggregateReceiveBytes,
+           rhs.noc.aggregateReceiveBytes);
+  callback(result.noc.waitedEventCount, lhs.noc.waitedEventCount,
+           rhs.noc.waitedEventCount);
+  for (size_t index = 0; index < result.noc.directionalTransmitBytes.size();
+       ++index)
+    callback(result.noc.directionalTransmitBytes[index],
+             lhs.noc.directionalTransmitBytes[index],
+             rhs.noc.directionalTransmitBytes[index]);
+  for (size_t index = 0; index < result.noc.collectiveTransmitBytes.size();
+       ++index)
+    callback(result.noc.collectiveTransmitBytes[index],
+             lhs.noc.collectiveTransmitBytes[index],
+             rhs.noc.collectiveTransmitBytes[index]);
+  for (InstructionWorkCountMember member : kInstructionWorkCountMembers)
+    callback((result.work.*member).exactExecutions,
+             (lhs.work.*member).exactExecutions,
+             (rhs.work.*member).exactExecutions);
+}
+
+static Quantity asQuantity(const ScheduleCostMetric &metric) {
+  return {metric.value, metric.knowledge, metric.reason};
+}
+
+static void addExactExecutionCost(InstructionProgramCost &result,
+                                  const InstructionProgramCost &increment) {
+  zipExactExecutionMetrics(
+      result, result, increment,
+      [](ScheduleCostMetric &sum, const ScheduleCostMetric &,
+         const ScheduleCostMetric &value) { add(sum, asQuantity(value)); });
+}
+
+static void scaleExactExecutionCost(InstructionProgramCost &cost,
+                                    Quantity factor) {
+  forEachExactExecutionMetric(cost, [&](ScheduleCostMetric &metric) {
+    Quantity scaled = multiply(asQuantity(metric), factor);
+    metric = {};
+    add(metric, scaled);
+  });
+}
+
+static ScheduleCostMetric
+mergeConditionalExactMetric(const ScheduleCostMetric &thenMetric,
+                            const ScheduleCostMetric &elseMetric) {
+  if (thenMetric.value == elseMetric.value &&
+      thenMetric.knowledge == elseMetric.knowledge &&
+      thenMetric.reason == elseMetric.reason)
+    return thenMetric;
+  if (thenMetric.isKnown() && elseMetric.isKnown()) {
+    ScheduleCostMetric result;
+    degrade(result, ScheduleCostKnowledge::Unknown,
+            ScheduleCostReason::ConditionalControlFlow);
+    return result;
+  }
+
+  const ScheduleCostMetric *selected = &thenMetric;
+  if (getKnowledgeSeverity(elseMetric.knowledge) >
+      getKnowledgeSeverity(thenMetric.knowledge))
+    selected = &elseMetric;
+  ScheduleCostMetric result;
+  degrade(result, selected->knowledge, selected->reason);
+  return result;
+}
+
+static InstructionProgramCost
+mergeConditionalExactCost(const InstructionProgramCost &thenCost,
+                          const InstructionProgramCost &elseCost) {
+  InstructionProgramCost result;
+  zipExactExecutionMetrics(
+      result, thenCost, elseCost,
+      [](ScheduleCostMetric &merged, const ScheduleCostMetric &thenMetric,
+         const ScheduleCostMetric &elseMetric) {
+        merged = mergeConditionalExactMetric(thenMetric, elseMetric);
+      });
+  return result;
+}
+
+static void markExactExecutionCostUnsupported(InstructionProgramCost &cost) {
+  forEachExactExecutionMetric(cost, [](ScheduleCostMetric &metric) {
+    degrade(metric, ScheduleCostKnowledge::Unsupported,
+            ScheduleCostReason::UnsupportedControlFlow);
+  });
+}
+
+/// Evaluates only dynamically executed cost dimensions. Unlike ProgramWalker,
+/// this evaluator joins a dynamic `scf.if` dimension exactly when both
+/// mutually exclusive paths contribute the same value to that dimension.
+/// Static-site counts and conservative bounds remain owned by ProgramWalker.
+class PathInvariantExactCostEvaluator {
+public:
+  InstructionProgramCost evaluateRoot(mlir::Operation *root) {
+    InstructionProgramCost result;
+    if (auto module = mlir::dyn_cast<mlir::ModuleOp>(root)) {
+      for (mlir::func::FuncOp function : module.getOps<mlir::func::FuncOp>()) {
+        if (function.isPrivate())
+          continue;
+        addExactExecutionCost(result, evaluateFunction(function));
+      }
+      return result;
+    }
+    if (auto function = mlir::dyn_cast<mlir::func::FuncOp>(root)) {
+      return evaluateFunction(function);
+    }
+    evaluateOperation(root, result);
+    return result;
+  }
+
+private:
+  InstructionProgramCost evaluateRegion(mlir::Region &region) {
+    InstructionProgramCost result;
+    bool unsupported = !region.empty() && !region.hasOneBlock();
+    for (mlir::Block &block : region)
+      for (mlir::Operation &operation : block)
+        evaluateOperation(&operation, result);
+    if (unsupported)
+      scaleExactExecutionCost(
+          result,
+          Quantity::unsupported(ScheduleCostReason::UnsupportedControlFlow));
+    return result;
+  }
+
+  void evaluateOperation(mlir::Operation *operation,
+                         InstructionProgramCost &result) {
+    if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(operation)) {
+      InstructionProgramCost body = evaluateRegion(loop.getRegion());
+      scaleExactExecutionCost(body, getTripCount(loop));
+      addExactExecutionCost(result, body);
+      return;
+    }
+    if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(operation)) {
+      std::optional<int64_t> condition = mlir::getConstantIntValue(
+          mlir::getAsOpFoldResult(ifOp.getCondition()));
+      if (condition) {
+        mlir::Region &selected =
+            *condition ? ifOp.getThenRegion() : ifOp.getElseRegion();
+        addExactExecutionCost(result, evaluateRegion(selected));
+        return;
+      }
+      InstructionProgramCost thenCost = evaluateRegion(ifOp.getThenRegion());
+      InstructionProgramCost elseCost = evaluateRegion(ifOp.getElseRegion());
+      addExactExecutionCost(result,
+                            mergeConditionalExactCost(thenCost, elseCost));
+      return;
+    }
+    if (isInstructionProgramOperation(operation)) {
+      InstructionProgramCost instruction;
+      collectInstructionCost(operation, instruction, ExecutionMultiplicity{},
+                             /*countStaticSite=*/false);
+      addExactExecutionCost(result, instruction);
+      return;
+    }
+    if (auto call = mlir::dyn_cast<mlir::func::CallOp>(operation)) {
+      mlir::func::FuncOp callee =
+          mlir::SymbolTable::lookupNearestSymbolFrom<mlir::func::FuncOp>(
+              call, call.getCalleeAttr());
+      if (!callee || callee.isDeclaration()) {
+        markExactExecutionCostUnsupported(result);
+        return;
+      }
+      addExactExecutionCost(result, evaluateFunction(callee));
+      return;
+    }
+    if (operation->getNumRegions() == 0)
+      return;
+    if (mlir::isa<mlir::ModuleOp, mlir::func::FuncOp, TileRegionOp>(
+            operation)) {
+      for (mlir::Region &region : operation->getRegions())
+        addExactExecutionCost(result, evaluateRegion(region));
+      return;
+    }
+
+    InstructionProgramCost nested;
+    for (mlir::Region &region : operation->getRegions())
+      addExactExecutionCost(nested, evaluateRegion(region));
+    scaleExactExecutionCost(
+        nested,
+        Quantity::unsupported(ScheduleCostReason::UnsupportedControlFlow));
+    addExactExecutionCost(result, nested);
+  }
+
+  InstructionProgramCost evaluateFunction(mlir::func::FuncOp function) {
+    auto cached = functionCosts.find(function.getOperation());
+    if (cached != functionCosts.end())
+      return cached->second;
+
+    InstructionProgramCost result;
+    if (!activeFunctions.insert(function.getOperation()).second) {
+      markExactExecutionCostUnsupported(result);
+      return result;
+    }
+    result = evaluateRegion(function.getBody());
+    activeFunctions.erase(function.getOperation());
+    functionCosts.try_emplace(function.getOperation(), result);
+    return result;
+  }
+
+  llvm::DenseSet<mlir::Operation *> activeFunctions;
+  llvm::DenseMap<mlir::Operation *, InstructionProgramCost> functionCosts;
+};
+
+static void refinePathInvariantExactCost(mlir::Operation *root,
+                                         InstructionProgramCost &cost) {
+  InstructionProgramCost exact =
+      PathInvariantExactCostEvaluator().evaluateRoot(root);
+  zipExactExecutionMetrics(
+      cost, cost, exact,
+      [](ScheduleCostMetric &result, const ScheduleCostMetric &,
+         const ScheduleCostMetric &refined) { result = refined; });
+
+  // A known exact execution count is also the tight lower and upper bound.
+  // Keep branch-local static sites distinct so the IR surface remains
+  // auditable even when all runtime paths have equal cost.
+  for (InstructionWorkCountMember member : kInstructionWorkCountMembers) {
+    InstructionExecutionCount &count = cost.work.*member;
+    if (!count.exactExecutions.isKnown())
+      continue;
+    count.lowerBound = count.exactExecutions;
+    count.upperBound = count.exactExecutions;
+  }
+}
+
 } // namespace
 
 void walkInstructionProgramWork(
@@ -761,6 +1029,7 @@ void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
       markCount(cost.work.*member);
   };
   walkInstructionProgramWork(root, collect, markAllUnsupported);
+  refinePathInvariantExactCost(root, cost);
 
   auto exact = [](const InstructionExecutionCount &count) {
     return count.exactExecutions;

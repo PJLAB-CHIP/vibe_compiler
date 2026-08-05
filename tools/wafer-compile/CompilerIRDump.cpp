@@ -72,9 +72,12 @@ bool dumpCompilerIR(
 
   llvm::SmallString<256> instructionDirectory(destination);
   llvm::sys::path::append(instructionDirectory, "instruction");
+  llvm::SmallString<256> tileDataflowDirectory(destination);
+  llvm::sys::path::append(tileDataflowDirectory, "tile-dataflow");
   llvm::SmallString<256> targetLLVMDirectory(destination);
   llvm::sys::path::append(targetLLVMDirectory, "target-llvm");
-  if (!createDirectory(instructionDirectory, diagnostics) ||
+  if (!createDirectory(tileDataflowDirectory, diagnostics) ||
+      !createDirectory(instructionDirectory, diagnostics) ||
       !createDirectory(targetLLVMDirectory, diagnostics))
     return false;
 
@@ -93,6 +96,15 @@ bool dumpCompilerIR(
       diagnostics << "wafer-compile: compiler IR dump rank order differs\n";
       return false;
     }
+    llvm::SmallString<256> tileDataflowPath =
+        rankPath(tileDataflowDirectory, rank.getLogicalRank(), ".mlir");
+    if (!writeIRFile(
+            tileDataflowPath,
+            [&](llvm::raw_ostream &output) {
+              output << rank.getSelectedTileIR();
+            },
+            diagnostics))
+      return false;
     llvm::SmallString<256> instructionPath = rankPath(
         instructionDirectory, rank.getLogicalRank(), ".mlir");
     if (!writeIRFile(

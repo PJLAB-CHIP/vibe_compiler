@@ -93,7 +93,8 @@ static void deduplicateExternalSlicesInBlock(mlir::Block &block,
 static mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>>
 materializeLoopedRootsTraversal(
     mlir::OpBuilder &builder, TensorProgramScope scope,
-    llvm::ArrayRef<mlir::Operation *> roots, llvm::ArrayRef<int64_t> shape,
+    llvm::ArrayRef<mlir::Operation *> roots,
+    llvm::ArrayRef<unsigned> outputIndices, llvm::ArrayRef<int64_t> shape,
     llvm::ArrayRef<int64_t> tileSizes,
     llvm::ArrayRef<int64_t> reductionTileSizes,
     CandidateTileTraversalKind traversalKind, unsigned dim,
@@ -102,7 +103,7 @@ materializeLoopedRootsTraversal(
     llvm::SmallVectorImpl<int64_t> &sizes,
     llvm::SmallVectorImpl<mlir::LoopLikeOpInterface> &loops,
     std::string *failureReason) {
-  if (roots.size() != outputs.size()) {
+  if (roots.size() != outputs.size() || roots.size() != outputIndices.size()) {
     setFailureReason(failureReason,
                      "shared traversal root/output count mismatch");
     return mlir::failure();
@@ -117,8 +118,8 @@ materializeLoopedRootsTraversal(
                     builder, scope, root, offsets, sizes, reductionTileSizes,
                     loops, failureReason)
               : materializeCandidateRootTileValue(
-                    builder, scope, root, static_cast<unsigned>(index), offsets,
-                    sizes, reductionTileSizes, loops, failureReason);
+                    builder, scope, root, outputIndices[index], offsets, sizes,
+                    reductionTileSizes, loops, failureReason);
       if (mlir::failed(tile))
         return mlir::failure();
       nextOutputs.push_back(insertCandidateRootTile(
@@ -148,11 +149,10 @@ materializeLoopedRootsTraversal(
     loops.push_back(mlir::cast<mlir::LoopLikeOpInterface>(loop.getOperation()));
     mlir::OpBuilder bodyBuilder = mlir::OpBuilder::atBlockBegin(loop.getBody());
     mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>> next =
-        materializeLoopedRootsTraversal(bodyBuilder, scope, roots, shape,
-                                        tileSizes, reductionTileSizes,
-                                        traversalKind, dim + 1,
-                                        loop.getRegionIterArgs(), offsets, sizes,
-                                        loops, failureReason);
+        materializeLoopedRootsTraversal(
+            bodyBuilder, scope, roots, outputIndices, shape, tileSizes,
+            reductionTileSizes, traversalKind, dim + 1,
+            loop.getRegionIterArgs(), offsets, sizes, loops, failureReason);
     loops.pop_back();
     sizes.pop_back();
     offsets.pop_back();
@@ -168,10 +168,10 @@ materializeLoopedRootsTraversal(
     offsets.push_back(builder.getIndexAttr(mainEnd));
     sizes.push_back(tailSize);
     mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>> tail =
-        materializeLoopedRootsTraversal(
-            builder, scope, roots, shape, tileSizes, reductionTileSizes,
-            traversalKind, dim + 1, currentOutputs, offsets, sizes, loops,
-            failureReason);
+        materializeLoopedRootsTraversal(builder, scope, roots, outputIndices,
+                                        shape, tileSizes, reductionTileSizes,
+                                        traversalKind, dim + 1, currentOutputs,
+                                        offsets, sizes, loops, failureReason);
     sizes.pop_back();
     offsets.pop_back();
     if (mlir::failed(tail))
@@ -186,6 +186,31 @@ struct OperandDrivenTraversalSeed {
   unsigned operandNumber = 0;
   mlir::RankedTensorType type;
 };
+
+static bool isScalarInitializedTargetCompute(mlir::Operation *operation) {
+  if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
+                mlir::linalg::MatmulTransposeBOp, mlir::linalg::BatchMatmulOp,
+                mlir::linalg::BatchMatmulTransposeAOp,
+                mlir::linalg::BatchMatmulTransposeBOp>(operation))
+    return true;
+  auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(operation);
+  return generic && !getReductionLoopDims(generic).empty();
+}
+
+static mlir::Value getConservativeTraversalDestination(mlir::Operation *root,
+                                                       mlir::Value dpsInit) {
+  if (!isScalarInitializedTargetCompute(root))
+    return dpsInit;
+  auto fill = dpsInit.getDefiningOp<mlir::linalg::FillOp>();
+  if (!fill || fill.getDpsInits().size() != 1)
+    return dpsInit;
+
+  // Tile materialization still consumes the fill result to recover the exact
+  // scalar initialization required by target GEMM/reduce.  The complete
+  // traversal, however, writes every output tile and must carry the fill's
+  // destination object rather than a full-shape value produced by the fill.
+  return fill.getDpsInits().front();
+}
 
 static mlir::FailureOr<OperandDrivenTraversalSeed>
 findOperandDrivenTraversalSeed(TensorProgramScope scope,
@@ -428,12 +453,14 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
   auto returnOp =
       mlir::cast<mlir::func::ReturnOp>(scope.getBody().getTerminator());
   llvm::SmallVector<mlir::Value, 4> outputBoundaries;
+  llvm::SmallVector<unsigned, 4> outputIndices;
   for (auto [index, root] : llvm::enumerate(*roots)) {
     mlir::FailureOr<mlir::Value> outputBoundary = getCandidateOutputBoundary(
         scope, static_cast<unsigned>(index), failureReason);
     if (mlir::failed(outputBoundary))
       return mlir::failure();
     outputBoundaries.push_back(*outputBoundary);
+    outputIndices.push_back(static_cast<unsigned>(index));
   }
 
   mlir::OpBuilder builder((*roots).front());
@@ -442,10 +469,9 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
   llvm::SmallVector<mlir::LoopLikeOpInterface, 4> loops;
   mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>> completeOutputs =
       materializeLoopedRootsTraversal(
-          builder, scope, *roots, firstResultType.getShape(),
+          builder, scope, *roots, outputIndices, firstResultType.getShape(),
           candidateTileSizes, candidateReductionTileSizes, traversalKind,
-          /*dim=*/0,
-          outputBoundaries, offsets, sizes, loops, failureReason);
+          /*dim=*/0, outputBoundaries, offsets, sizes, loops, failureReason);
   if (mlir::failed(completeOutputs))
     return mlir::failure();
 
@@ -453,6 +479,148 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
     returnOp->setOperand(index, output);
   for (mlir::Operation *root : *roots)
     root->erase();
+
+  eraseDeadCandidateSupportClosure(scope);
+  return mlir::success();
+}
+
+mlir::LogicalResult
+materializeConservativeCompleteRankTraversals(TensorProgramScope scope,
+                                              std::string *failureReason) {
+  llvm::SmallVector<mlir::Operation *, 16> roots;
+  for (mlir::Operation &operation : scope.getBody().without_terminator()) {
+    if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(operation)) {
+      bool isReturned =
+          llvm::any_of(fill->getUsers(), [](mlir::Operation *user) {
+            return mlir::isa<mlir::func::ReturnOp>(user);
+          });
+      // Keep a non-terminal fill attached to its consumer so reduction and
+      // overwrite lowering can prove the exact initialization scalar while
+      // materializing that consumer's tile.
+      if (!isReturned)
+        continue;
+    }
+    CandidateTraversalRootCapability capability =
+        classifyCandidateTraversalRoot(&operation);
+    if (capability == CandidateTraversalRootCapability::Unsupported)
+      continue;
+    if (capability != CandidateTraversalRootCapability::Tiled) {
+      setFailureReason(
+          failureReason,
+          "conservative complete-rank baseline requires every structured "
+          "root to support tiled traversal");
+      return mlir::failure();
+    }
+    if (operation.getNumResults() != 1) {
+      setFailureReason(
+          failureReason,
+          "conservative complete-rank baseline requires single-result "
+          "structured roots");
+      return mlir::failure();
+    }
+    roots.push_back(&operation);
+  }
+  if (roots.empty()) {
+    setFailureReason(failureReason,
+                     "conservative complete-rank baseline found no "
+                     "structured roots");
+    return mlir::failure();
+  }
+
+  // C1's mandatory baseline is deliberately spill-conservative: every
+  // original tensor.empty that is not the public function output becomes an
+  // explicit compiler-owned DDR tensor. Each structured root then traverses
+  // into that destination before the next root is tiled. This keeps one
+  // complete-rank decision clone and one residency region, but prevents an
+  // unsupported producer-view relation from silently materializing a
+  // full-shape SPM producer.
+  llvm::SmallVector<mlir::tensor::EmptyOp, 16> emptyDestinations;
+  for (mlir::Operation &operation : scope.getBody().without_terminator())
+    if (auto empty = mlir::dyn_cast<mlir::tensor::EmptyOp>(operation))
+      emptyDestinations.push_back(empty);
+  for (mlir::tensor::EmptyOp empty : emptyDestinations) {
+    auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(empty.getType());
+    if (!tensorType || !tensorType.hasStaticShape()) {
+      setFailureReason(
+          failureReason,
+          "conservative complete-rank spill requires static tensor.empty "
+          "destinations");
+      return mlir::failure();
+    }
+    auto ddrType = mlir::MemRefType::get(
+        tensorType.getShape(), tensorType.getElementType(),
+        mlir::MemRefLayoutAttrInterface{},
+        wafer::MemoryAttr::get(scope.getContext(), wafer::MemorySpace::DDR,
+                               wafer::MemLayout::Tensor));
+    mlir::OpBuilder builder(empty);
+    auto allocation =
+        builder.create<mlir::memref::AllocOp>(empty.getLoc(), ddrType);
+    auto tensor = builder.create<mlir::bufferization::ToTensorOp>(
+        empty.getLoc(), allocation.getResult(), /*restrict=*/true,
+        /*writable=*/true);
+    empty.getResult().replaceAllUsesWith(tensor.getResult());
+    empty.erase();
+  }
+
+  for (mlir::Operation *root : roots) {
+    auto resultType =
+        mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
+    if (!resultType || !resultType.hasStaticShape() ||
+        llvm::any_of(resultType.getShape(),
+                     [](int64_t extent) { return extent <= 0; })) {
+      setFailureReason(failureReason,
+                       "conservative complete-rank traversal requires "
+                       "positive static result shapes");
+      return mlir::failure();
+    }
+    auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(root);
+    if (!dps || dps.getNumDpsInits() != 1) {
+      setFailureReason(
+          failureReason,
+          "conservative complete-rank baseline requires one DPS destination");
+      return mlir::failure();
+    }
+
+    llvm::SmallVector<int64_t, 4> shape(resultType.getShape().begin(),
+                                        resultType.getShape().end());
+    llvm::SmallVector<int64_t, 4> tileSizes(shape.size(), 1);
+    if (mlir::failed(
+            getCandidateOutputTileCount(resultType, tileSizes, failureReason)))
+      return mlir::failure();
+
+    unsigned outputIndex = 0;
+    if (auto argument =
+            mlir::dyn_cast<mlir::BlockArgument>(dps.getDpsInits().front());
+        argument && argument.getOwner() == &scope.getBody() &&
+        argument.getArgNumber() >= scope.getInputCount())
+      outputIndex = argument.getArgNumber() - scope.getInputCount();
+
+    mlir::Value originalResult = root->getResult(0);
+    mlir::Value outputDestination =
+        getConservativeTraversalDestination(root, dps.getDpsInits().front());
+    mlir::OpBuilder builder(root);
+    llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+    llvm::SmallVector<int64_t, 4> sizes;
+    llvm::SmallVector<mlir::LoopLikeOpInterface, 4> loops;
+    mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>> completeOutputs =
+        materializeLoopedRootsTraversal(
+            builder, scope, llvm::ArrayRef<mlir::Operation *>{root},
+            llvm::ArrayRef<unsigned>{outputIndex}, shape, tileSizes,
+            /*reductionTileSizes=*/{}, CandidateTileTraversalKind::ResultDriven,
+            /*dim=*/0, mlir::ValueRange{outputDestination}, offsets, sizes,
+            loops, failureReason);
+    if (mlir::failed(completeOutputs))
+      return mlir::failure();
+    if (completeOutputs->size() != 1) {
+      setFailureReason(
+          failureReason,
+          "conservative complete-rank traversal produced invalid arity");
+      return mlir::failure();
+    }
+    originalResult.replaceAllUsesWith(completeOutputs->front());
+    root->erase();
+    eraseDeadCandidateSupportClosure(scope);
+  }
 
   eraseDeadCandidateSupportClosure(scope);
   return mlir::success();

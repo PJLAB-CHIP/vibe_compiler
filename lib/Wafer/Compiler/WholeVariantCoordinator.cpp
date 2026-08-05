@@ -1150,9 +1150,13 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
       return mlir::failure();
     }
     std::string entrySymbol = closure->entry.getSymName().str();
+    const RankVariantCandidate &sourceCandidate =
+        frontiers[rank][candidateIndices[rank]];
     ranks.push_back(ExecutableBundleBuilder::makeRank(
         static_cast<int64_t>(rank), std::move(modules[rank]), entrySymbol,
-        std::move(*bindings), *transport));
+        std::move(*bindings), *transport,
+        sourceCandidate.selectedTileIR ? *sourceCandidate.selectedTileIR
+                                       : llvm::StringRef{}));
   }
 
   if (ranks.empty()) {

@@ -71,6 +71,53 @@ func.func @bounded_dynamic_ddr_subview(
 // LLVMIR: call void @wafer_tx81_rdma_v3(i64 %[[INPUT_ADDR]],
 // LLVMIR: call void @wafer_tx81_wdma_v3({{.*}}i64 %[[OUTPUT_ADDR]],
 
+func.func @branch_refined_dynamic_ddr_subview(
+    %input: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c8 = arith.constant 8 : index
+  %spm = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+      : memref<1xf16, #wafer.memory<spm, tensor>>
+  scf.for %i = %c0 to %c8 step %c1 {
+    %first = arith.cmpi ult, %i, %c4 : index
+    scf.if %first {
+      %view = memref.subview %input[%i] [1] [1]
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+         to memref<1xf16, strided<[1], offset: ?>,
+                   #wafer.memory<ddr, tensor>>
+      wafer.instr.rdma %view to %spm
+          {byte_count = 2 : i64, inner_bytes = 2 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>}
+          : memref<1xf16, strided<[1], offset: ?>,
+                   #wafer.memory<ddr, tensor>>
+         to memref<1xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.ncc_join [0]
+    } else {
+      %local = arith.subi %i, %c4 : index
+      %view = memref.subview %input[%local] [1] [1]
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+         to memref<1xf16, strided<[1], offset: ?>,
+                   #wafer.memory<ddr, tensor>>
+      wafer.instr.rdma %view to %spm
+          {byte_count = 2 : i64, inner_bytes = 2 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>}
+          : memref<1xf16, strided<[1], offset: ?>,
+                   #wafer.memory<ddr, tensor>>
+         to memref<1xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.ncc_join [0]
+    }
+  }
+  return
+}
+
+// POS-LABEL: llvm.func @branch_refined_dynamic_ddr_subview(
+// POS: llvm.cond_br
+// POS-COUNT-2: llvm.call @wafer_tx81_rdma_v3
+// POS-NOT: memref.subview
+
 //--- derived-offset.mlir
 
 func.func @lower_stage_shifted_dynamic_offset(

@@ -46,6 +46,15 @@ static void mergeTrace(StorageTrace &destination, StorageTrace source) {
   destination.hasSPMRoot |= source.hasSPMRoot;
 }
 
+static bool isShapedDataType(mlir::Type type) {
+  return mlir::isa<mlir::ShapedType>(type);
+}
+
+static bool isDDRDataType(mlir::Type type) {
+  auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
+  return memrefType && hasWaferMemorySpace(memrefType, wafer::MemorySpace::DDR);
+}
+
 /// Proves storage provenance for a value crossing a tile-region boundary.
 /// Unknown shaped producers are traversed only to detect an erased SPM
 /// dependency; they are never accepted as an alias producer for an SPM result.
@@ -165,7 +174,33 @@ static StorageTrace traceSPMStorage(mlir::Value value, TileRegionOp owner,
 
 } // namespace
 
-mlir::LogicalResult TileRegionOp::verify() { return mlir::success(); }
+mlir::LogicalResult TileRegionOp::verify() {
+  if (getOperation()->getParentOfType<TileRegionOp>())
+    return emitOpError("must be an outer, non-nested SPM residency region");
+
+  for (auto [index, input] : llvm::enumerate(getInputs())) {
+    if (!isShapedDataType(input.getType()))
+      continue;
+    if (!isDDRDataType(input.getType()))
+      return emitOpError("shaped data input at index ")
+             << index << " must be a Wafer DDR memref, got " << input.getType();
+    llvm::DenseSet<mlir::Value> active;
+    StorageTrace trace = traceSPMStorage(input, *this, active);
+    if (!trace.valid || trace.hasSPMRoot)
+      return emitOpError("shaped data input at index ")
+             << index
+             << " carries SPM storage provenance across the region "
+                "boundary";
+  }
+
+  for (auto [index, result] : llvm::enumerate(getResults())) {
+    if (isShapedDataType(result.getType()) && !isDDRDataType(result.getType()))
+      return emitOpError("shaped data result at index ")
+             << index << " must be a Wafer DDR memref, got "
+             << result.getType();
+  }
+  return mlir::success();
+}
 
 mlir::LogicalResult TileRegionOp::verifyRegions() {
   if (getBody().empty())
@@ -215,15 +250,10 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
              << index
              << " has unsupported SPM storage provenance; SPM results must "
                 "alias a matching region input or a region-owned memref.alloc";
-    if (isSPMBuffer(resultType) && !trace.hasSPMRoot)
-      return emitOpError("SPM result at index ")
-             << index
-             << " must alias a matching region input or a region-owned "
-                "memref.alloc";
-    if (!isSPMBuffer(resultType) && trace.hasSPMRoot)
+    if (trace.hasSPMRoot)
       return emitOpError("result at index ")
              << index
-             << " cannot erase SPM storage provenance across the "
+             << "cannot carry SPM storage provenance across the "
                 "wafer.tile.region boundary";
   }
 

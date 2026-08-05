@@ -9,6 +9,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -108,6 +109,32 @@ static SPMRootResolution resolveSPMRoots(mlir::Value initialValue) {
         continue;
       }
       enqueueLoopCarriedOrigins(loop, result.getResultNumber());
+      continue;
+    }
+
+    if (auto ifOp = mlir::dyn_cast_or_null<mlir::scf::IfOp>(def)) {
+      auto result = mlir::dyn_cast<mlir::OpResult>(value);
+      auto thenYield = ifOp.thenBlock() ? mlir::dyn_cast<mlir::scf::YieldOp>(
+                                              ifOp.thenBlock()->getTerminator())
+                                        : mlir::scf::YieldOp{};
+      auto elseYield = ifOp.elseBlock() ? mlir::dyn_cast<mlir::scf::YieldOp>(
+                                              ifOp.elseBlock()->getTerminator())
+                                        : mlir::scf::YieldOp{};
+      if (!result || !thenYield || !elseYield ||
+          result.getResultNumber() >= thenYield.getNumOperands() ||
+          result.getResultNumber() >= elseYield.getNumOperands()) {
+        resolution.complete = false;
+        continue;
+      }
+      worklist.push_back(thenYield.getOperand(result.getResultNumber()));
+      worklist.push_back(elseYield.getOperand(result.getResultNumber()));
+      continue;
+    }
+
+    if (auto select =
+            mlir::dyn_cast_or_null<mlir::SelectLikeOpInterface>(def)) {
+      worklist.push_back(select.getTrueValue());
+      worklist.push_back(select.getFalseValue());
       continue;
     }
 

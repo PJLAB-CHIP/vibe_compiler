@@ -133,6 +133,14 @@ mlir::LogicalResult lowerTensorProgramToTileRegionModule(
     std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
     bool useDirectMappedBoundaryTransfer = false);
 
+/// Clones a module containing one complete rank function and lowers that
+/// function to one outer Tile residency region while preserving module-level
+/// target facts and referenced globals. This is the conservative complete-rank
+/// decision boundary; source scheduling scopes are not lowering units.
+mlir::LogicalResult lowerCompleteRankTensorProgramToTileRegionModule(
+    mlir::ModuleOp sourceModule, mlir::OwningOpRef<mlir::ModuleOp> &module,
+    std::string *failureReason, int64_t currentLogicalRank);
+
 /// Verifies that replacing one structured reduction by more than one ordered
 /// chunk, including neutral-initialized partials and chunk-result combines, is
 /// permitted by the source IR's numeric semantics. This is a transformation

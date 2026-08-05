@@ -2447,3 +2447,26 @@
   GS、completion、compute/recompute、tile utilization、NoC、Instr、
   SPM movement、descriptor/resource和critical-path全部selection-sensitive维度参与；`Unknown`不同则不可比，同一all-rank
   coordinator与global work ledger贯穿structured和terminal evaluation，不由实施checkpoint各自发布winner。
+
+## 2026-08-05 动态地址范围必须在实际use路径上求值
+
+- 现象：structured concat已经用`scf.if`把两个input slice分支限定在各自合法index区间，但DDR planner仍按完整loop范围
+  计算某一branch-local subview，误报view越过root；只修DDR后，target preflight还会对同一descriptor给出不同结论。
+- 根因：静态index range evaluator只看value def-use算术，没有观察实际use被哪些structured branch predicate支配。
+  branch-local value的全局range确实较宽，只有在具体use路径上才有足够约束；让各consumer各写一份特殊判断会形成重复事实源。
+- 修复模式：range API显式接收use，沿包围该use的`scf.if`收集typed integer comparison，对then path应用predicate、对else path
+  应用逻辑反谓词，再用同一analysis同时服务DDR placement与target descriptor preflight。无法表示、overflow或非支配条件继续
+  fail closed，不从op名、concat位置或loop ordinal猜范围。
+- 防复发：正例同时覆盖then/else、交换comparison operand和signed/unsigned谓词，负例保留真实越界；同一dynamic subview必须
+  同时通过DDR与target gate，不能用只过其中一个consumer的局部测试代签。
+
+## 2026-08-05 Planner与final cost必须闭合同一SPM provenance
+
+- 现象：SPM lifetime/placement已接受两个branch都返回合法allocation的`scf.if`结果，final cost却报告
+  `unsupported-spm-root`；相同问题也会出现在typed select返回的SPM alias。
+- 根因：planner的root dataflow已经遍历structured control-flow和select两侧，SPM high-water consumer仍只追直接allocation/
+  view/loop形式。同一accepted IR在两个stage拥有不同provenance closure，导致后置诊断误拒合法placement。
+- 修复模式：任何消费accepted SPM offset、footprint或high-water的analysis都要解析planner已接受的同一typed alias/control-flow
+  形式，并对每条可能origin求union/max；只要其中一条origin未知就保留typed failure。不能选择任意一侧，也不能把未知当零。
+- 防复发：每种新增planner provenance都成对增加“所有path均为accepted allocation”的正例和“任一path未知”的负例，并重跑
+  placement与final cost纵向；长期应优先复用一个可失效、可重算的root resolver，避免consumer集合再次漂移。

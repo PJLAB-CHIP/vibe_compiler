@@ -3,6 +3,7 @@
 #include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
 #include "../../lib/Wafer/Compiler/ScheduledRankFinalization.h"
 #include "../../lib/Wafer/Compiler/StaticFixedSlotQualification.h"
+#include "../../lib/Wafer/Transforms/Scheduling/ScheduleTensorProgramInternal.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
@@ -744,7 +745,9 @@ module {
     schedulingConfig.logicalRank = 0;
     schedulingConfig.candidateParallelism = 1;
     mlir::FailureOr<std::vector<wafer::ScheduledRankCandidate>> scheduled =
-        wafer::buildScheduledRankCandidateFrontier(*source, schedulingConfig);
+        wafer::tensor_program_scheduling::testing::
+            buildLegacyScheduledRankCandidateFrontier(*source,
+                                                      schedulingConfig);
     if (mlir::failed(scheduled))
       return std::nullopt;
     mlir::FailureOr<

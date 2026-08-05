@@ -54,6 +54,7 @@ add_executable(WaferUnitTests
   Transforms/Scheduling/CandidateSelectionTest.cpp
   Transforms/Scheduling/FixedSlotPipelineTest.cpp
   Transforms/Scheduling/FullBufferHandoffTest.cpp
+  Transforms/Scheduling/RankTileMaterializationTest.cpp
   Transforms/Scheduling/RankCandidateFrontierTest.cpp
   Transforms/Scheduling/RedundantTransferEliminationTest.cpp
   Transforms/Scheduling/StructuredSchedulingScopeTest.cpp

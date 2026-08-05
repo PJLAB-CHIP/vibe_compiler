@@ -11,6 +11,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -38,6 +39,12 @@ protected:
   mlir::OwningOpRef<mlir::ModuleOp> parse(llvm::StringRef source) {
     return mlir::parseSourceString<mlir::ModuleOp>(
         source, mlir::ParserConfig(context.get()));
+  }
+
+  mlir::OwningOpRef<mlir::ModuleOp>
+  parseWithoutVerification(llvm::StringRef source) {
+    return mlir::parseSourceString<mlir::ModuleOp>(
+        source, mlir::ParserConfig(context.get(), /*verifyAfterParse=*/false));
   }
 
   mlir::DialectRegistry registry;
@@ -76,8 +83,8 @@ module {
 }
 
 TEST_F(WholeVariantResourceAcceptanceTest,
-       ResolvesExplicitSPMHandoffToTheProducerAllocation) {
-  auto module = parse(R"mlir(
+       RejectsSPMHandoffAcrossTileResidencyDomains) {
+  auto module = parseWithoutVerification(R"mlir(
 module {
   func.func @main(
       %input: memref<4xf16, #wafer.memory<ddr, tensor>>,
@@ -120,15 +127,7 @@ module {
 }
 )mlir");
   ASSERT_TRUE(module);
-  ASSERT_TRUE(config);
-  llvm::SmallVector<mlir::ModuleOp, 1> modules{*module};
-
-  auto accepted =
-      wafer::compiler::testing::acceptWholeVariantResources(modules, *config);
-  ASSERT_TRUE(mlir::succeeded(accepted));
-  EXPECT_EQ(accepted->aggregateDDRReadBytes.value, 8u);
-  EXPECT_EQ(accepted->aggregateDDRWriteBytes.value, 8u);
-  EXPECT_EQ(accepted->maximumRankSPMHighWaterBytes.value, 8u);
+  EXPECT_TRUE(mlir::failed(mlir::verify(*module)));
 }
 
 TEST_F(WholeVariantResourceAcceptanceTest,

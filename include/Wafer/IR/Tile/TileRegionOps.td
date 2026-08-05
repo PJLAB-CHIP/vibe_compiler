@@ -14,10 +14,11 @@ def Wafer_TileRegionOp : Wafer_Op<"tile.region", [
     tile-local storage values, layout materialization, movement, target-abstract
     compute, communication, and sync/effect ordering. It does not store
     scheduling search state, raw packets, runtime buffer handles, or target CRT
-    calls. SPM storage may cross sibling region boundaries only as an explicit
-    SSA operand/result. An SPM entry block argument aliases its corresponding
-    operand, and an SPM result must alias either such an entry argument or an
-    SPM allocation owned by this region.
+    calls. Shaped data operands and results are explicit DDR boundaries. SPM
+    roots and aliases are owned by one outer, non-nested region and cannot cross
+    its boundary; selected cross-region dataflow must materialize a DDR
+    store/completion/load edge. Scalar, event, and control values may cross the
+    boundary according to their typed contracts.
   }];
 
   let arguments = (ins Variadic<AnyType>:$inputs);

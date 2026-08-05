@@ -10,6 +10,7 @@
 #include "mlir/Support/LogicalResult.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -108,14 +109,16 @@ struct ScheduledRankCandidate {
       RankWorkerPlacementKind workerPlacementKind =
           RankWorkerPlacementKind::Unplaced,
       uint32_t workerPlacementPlanOrdinal = 0,
-      uint32_t frontierOrderOrdinal = 0)
+      uint32_t frontierOrderOrdinal = 0,
+      std::shared_ptr<const std::string> selectedTileIR = nullptr)
       : module(std::move(module)), stableOrdinal(stableOrdinal),
         artifactKind(artifactKind), reservedBaseline(reservedBaseline),
         bufferingKind(bufferingKind),
         bufferingPlanOrdinal(bufferingPlanOrdinal),
         workerPlacementKind(workerPlacementKind),
         workerPlacementPlanOrdinal(workerPlacementPlanOrdinal),
-        frontierOrderOrdinal(frontierOrderOrdinal) {}
+        frontierOrderOrdinal(frontierOrderOrdinal),
+        selectedTileIR(std::move(selectedTileIR)) {}
 
   ScheduledRankCandidate(ScheduledRankCandidate &&) = default;
   ScheduledRankCandidate &operator=(ScheduledRankCandidate &&) = default;
@@ -138,6 +141,9 @@ struct ScheduledRankCandidate {
   /// independently evaluated search shards before final rank admission; it is
   /// never persisted or used as semantic correspondence identity.
   uint32_t frontierOrderOrdinal;
+  /// Printed directly from the actual complete-rank Tile clone before this
+  /// candidate is irreversibly lowered. Debug evidence only.
+  std::shared_ptr<const std::string> selectedTileIR;
 };
 
 struct TensorProgramSchedulingConfig {
@@ -161,11 +167,12 @@ struct TensorProgramSchedulingConfig {
 /// tensor-program artifact.
 bool isTensorProgramSchedulingRankInvariant(mlir::ModuleOp sourceModule);
 
-/// Builds a bounded frontier of complete rank alternatives in independent
-/// clones. Every returned module has passed task commit, whole-rank SPM
-/// planning, verification, and exact cost closure. The source module is
-/// never modified. DDR placement, cross-rank transport, card resources, and
-/// target ABI are deliberately deferred to the executable-bundle coordinator.
+/// Builds the current complete-rank structured frontier in independent actual
+/// clones. The conservative production seam returns one unplaced instruction
+/// baseline derived from one outer Tile residency region; function-boundary
+/// bufferization, fresh completion, SPM planning, DDR placement, cross-rank
+/// transport, card resources, exact cost, and target ABI remain downstream
+/// terminal gates. The source module is never modified.
 mlir::FailureOr<std::vector<ScheduledRankCandidate>>
 buildScheduledRankCandidateFrontier(
     mlir::ModuleOp sourceModule, const TensorProgramSchedulingConfig &config);

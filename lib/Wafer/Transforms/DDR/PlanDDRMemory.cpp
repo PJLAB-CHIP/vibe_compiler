@@ -367,7 +367,7 @@ getStaticIndexRange(mlir::Operation *anchor, mlir::OpFoldResult offset,
 
   memory_planning::StaticIndexRangeResult result =
       memory_planning::evaluateNonNegativeStaticIndexRange(
-          mlir::cast<mlir::Value>(offset));
+          mlir::cast<mlir::Value>(offset), anchor);
   using Failure = memory_planning::StaticIndexRangeFailureKind;
   switch (result.failure) {
   case Failure::None:
@@ -869,7 +869,11 @@ collectDDRDescriptorDemand(mlir::Operation *op, mlir::Value ddrValue,
     if (absoluteEnd > view.rootBytes)
       return op->emitError()
              << "ddr_range_overflow: " << descriptor.role << " access end "
-             << absoluteEnd << " exceeds DDR root byte size " << view.rootBytes;
+             << absoluteEnd << " exceeds DDR root byte size " << view.rootBytes
+             << " (view max offset " << view.maxViewOffsetBytes
+             << ", descriptor local end " << *localEnd << ", view span "
+             << view.viewSpanBytes << ", value type " << ddrValue.getType()
+             << ", root type " << view.root.getType() << ")";
 
     if (!isCompilerManagedDDRRoot(view.root)) {
       auto [it, inserted] = summary.externalRootDemands.try_emplace(view.root);
@@ -1238,14 +1242,12 @@ static mlir::LogicalResult planScopeDDRMemory(
               "supports single-block wafer.tile.region, scf.if and scf.for "
               "structured regions";
   }
-
   llvm::SmallVector<memory_planning::LifetimeDemand, 8> demands;
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "analysis-phase", "planScopeDDRMemory", "collectDDRDemands");
   if (mlir::failed(
           collectDDRDemands(scope, defaultAlignment, *timeline, demands)))
     return mlir::failure();
-
   memory_planning::LocalCompletionTracker localCompletion;
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "analysis-phase", "planScopeDDRMemory", "lifetime-dataflow");
@@ -1256,7 +1258,6 @@ static mlir::LogicalResult planScopeDDRMemory(
   memory_planning::LifetimeFailure lifetimeFailure;
   if (mlir::failed(dataflow.run(scope, &localCompletion, &lifetimeFailure)))
     return emitLifetimeFailure(scope, lifetimeFailure);
-
   DDRDemandSummary summary;
   PlannedDDROffsets plannedOffsets;
   llvm::SmallVector<PendingDDRPlacement, 8> scopePlacements;
@@ -1266,14 +1267,12 @@ static mlir::LogicalResult planScopeDDRMemory(
           scope, demands, capacityBytes, largestContiguousBytes,
           summary.plannedHighWaterBytes, plannedOffsets, scopePlacements)))
     return mlir::failure();
-
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "analysis-phase", "planScopeDDRMemory", "collectDDRDescriptorDemands");
   if (mlir::failed(collectDDRDescriptorDemands(scope, defaultAlignment,
                                                plannedOffsets, *timeline,
                                                dataflow, summary)))
     return mlir::failure();
-
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "analysis-phase", "planScopeDDRMemory", "verifyResourceLimits");
   if (mlir::failed(verifyResourceLimits(scope, summary, capacityBytes,

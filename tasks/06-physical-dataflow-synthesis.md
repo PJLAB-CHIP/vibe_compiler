@@ -419,7 +419,9 @@ movement、loop order和worker/completion的选择会真实改写op、SSA、effe
    不是region或entry固定语义；packing层
    不选tile、不插spill/join、不返回repair recipe；
 4. accepted offsets回到同一actual clone后重跑无搜索的range/descriptor/completion-consistency/ABI validator和final recost，
-   不再插入或移动join，也不存在solver sidecar。
+   不再插入或移动join，也不存在solver sidecar。dynamic view/index range必须在实际use位置解释包围它的typed structured
+   branch predicate；SPM provenance/high-water consumer必须覆盖planner已接受的同一`scf.if`/select/loop-carried alias形式，
+   无法证明的path或origin保持typed `Unknown`/fail closed。
 
 MiniMalloc是当前fixed-lifetime/fixed-capacity合同的唯一production backend；这是专用搜索、确定性、
 三态failure和轻量集成上的工程选择，不声称它对所有图都有通用运行时最优性。不建立常驻

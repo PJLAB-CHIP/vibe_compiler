@@ -44,6 +44,27 @@ TileRegionBodyEmitter::materializeControlFlowValue(mlir::Value original,
 mlir::LogicalResult
 TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
                                         mlir::OpBuilder &builder) {
+  if (auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(op)) {
+    if (!isWaferDDRMemRefType(allocation.getType()) ||
+        !allocation.getDynamicSizes().empty() ||
+        !allocation.getSymbolOperands().empty())
+      return fail("compiler-owned tensor spill requires one static DDR "
+                  "memref.alloc");
+    mlir::Operation *cloned = builder.clone(*allocation.getOperation());
+    compilerOwnedDDRBuffers[allocation.getResult()] = cloned->getResult(0);
+    return mlir::success();
+  }
+
+  if (auto toTensor = mlir::dyn_cast<mlir::bufferization::ToTensorOp>(op)) {
+    auto converted = compilerOwnedDDRBuffers.find(toTensor.getMemref());
+    if (converted == compilerOwnedDDRBuffers.end())
+      return mlir::success();
+    externalBuffers[toTensor.getResult()] = converted->second;
+    if (toTensor.getWritable())
+      writableExternalBuffers.insert(toTensor.getResult());
+    return mlir::success();
+  }
+
   if (auto constant = mlir::dyn_cast<mlir::arith::ConstantOp>(op)) {
     if (constant->getNumResults() == 0)
       return mlir::success();
@@ -143,10 +164,10 @@ TileRegionBodyEmitter::convertNestedOp(mlir::Operation *op,
     return materializeSourceImplementation(op, builder);
   if (mlir::isa<mlir::arith::ConstantOp, mlir::bufferization::ToMemrefOp,
                 mlir::bufferization::ToTensorOp, mlir::tensor::EmptyOp,
-                mlir::tensor::ExtractOp, mlir::tensor::ExtractSliceOp,
-                mlir::tensor::InsertSliceOp, mlir::tensor::ExpandShapeOp,
-                mlir::tensor::CollapseShapeOp, mlir::scf::IfOp,
-                mlir::scf::ForOp>(op))
+                mlir::memref::AllocOp, mlir::tensor::ExtractOp,
+                mlir::tensor::ExtractSliceOp, mlir::tensor::InsertSliceOp,
+                mlir::tensor::ExpandShapeOp, mlir::tensor::CollapseShapeOp,
+                mlir::scf::IfOp, mlir::scf::ForOp>(op))
     return convertSupportOp(op, builder);
   return fail("unsupported op inside structured control-flow " +
               op->getName().getStringRef().str());
@@ -299,7 +320,6 @@ TileRegionBodyEmitter::convertScfFor(mlir::scf::ForOp forOp,
     if (auto external = externalBuffers.find(init);
         external != externalBuffers.end() &&
         writableExternalBuffers.contains(init) &&
-        externalOutputIndices.contains(init) &&
         tracesExternalDestination(sourceYield.getResults()[index],
                                   forOp.getRegionIterArgs()[index])) {
       initArgs.push_back(external->second);
@@ -514,7 +534,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorExtractSlice(
   bool hasFillInitMarker = fillInitAttrs.contains(extractSlice.getSource()) ||
                            fillInitScalars.contains(extractSlice.getSource());
   if (hasFillInitMarker &&
-      onlyFeedsGemmOverwriteInit(extractSlice.getResult())) {
+      onlyFeedsScalarInitializedComputeInit(extractSlice.getResult())) {
     if (auto attrIt = fillInitAttrs.find(extractSlice.getSource());
         attrIt != fillInitAttrs.end())
       fillInitAttrs[extractSlice.getResult()] = attrIt->second;
@@ -540,13 +560,11 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorExtractSlice(
     if (mlir::failed(tileView))
       return mlir::failure();
 
-    auto destination = builder.create<mlir::memref::AllocOp>(
-        extractSlice.getLoc(),
-        makeSPMMemRefType(resultTensorType, MemLayout::Tensor));
-    builder.create<StorageLoadOp>(extractSlice.getLoc(), *tileView,
-                                  destination.getResult());
-    record(extractSlice.getResult(), MemLayout::Tensor,
-           destination.getResult());
+    // tensor.extract_slice is a functional read-only view. Preserve an
+    // external source as a DDR subview and let the first concrete consumer
+    // tile request materialize it. This avoids promoting an entire boundary
+    // slice to SPM merely because a later tiled op captures the tensor value.
+    externalBuffers[extractSlice.getResult()] = *tileView;
     return mlir::success();
   }
 
@@ -617,13 +635,14 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
   bool isLoopYield = insertSlice.getResult().hasOneUse() &&
                      mlir::isa<mlir::scf::YieldOp>(
                          insertSlice.getResult().use_begin()->getOwner());
+  bool isCompilerOwnedSpill =
+      outputIndexIt == externalOutputIndices.end() && isLoopYield;
   if (externalIt != externalBuffers.end() &&
       writableExternalBuffers.contains(insertSlice.getDest()) &&
-      outputIndexIt != externalOutputIndices.end() &&
       hasNoObservableDestUseExceptInsert(insertSlice) &&
-      (isDirectYield || isLinearInsertChain || isLoopYield)) {
+      (isCompilerOwnedSpill || isDirectYield || isLinearInsertChain ||
+       isLoopYield)) {
     mlir::Value externalBuffer = externalIt->second;
-    unsigned outputIndex = outputIndexIt->second;
     mlir::FailureOr<mlir::Value> source =
         getOrMaterialize(insertSlice.getSource(), MemLayout::Tensor, builder);
     if (mlir::failed(source))
@@ -640,15 +659,27 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
     mlir::Value result = insertSlice.getResult();
     externalBuffers[result] = externalBuffer;
     writableExternalBuffers.insert(result);
-    externalOutputIndices[result] = outputIndex;
-    auto base = directYieldBuffers.find(insertSlice.getDest());
-    directYieldBuffers[result] =
-        base == directYieldBuffers.end() ? externalBuffer : base->second;
+    if (outputIndexIt != externalOutputIndices.end()) {
+      externalOutputIndices[result] = outputIndexIt->second;
+      auto base = directYieldBuffers.find(insertSlice.getDest());
+      directYieldBuffers[result] =
+          base == directYieldBuffers.end() ? externalBuffer : base->second;
+    }
     return mlir::success();
   }
 
-  if (!allStatic(insertSlice.getStaticOffsets()))
-    return fail("dynamic tile-local tensor.insert_slice is not representable");
+  if (!allStatic(insertSlice.getStaticOffsets())) {
+    std::string detail;
+    llvm::raw_string_ostream stream(detail);
+    stream << "dynamic tile-local tensor.insert_slice is not representable"
+           << " (external=" << (externalIt != externalBuffers.end())
+           << ", writable="
+           << writableExternalBuffers.contains(insertSlice.getDest())
+           << ", output=" << (outputIndexIt != externalOutputIndices.end())
+           << ", loop-yield=" << isLoopYield << ", isolated-dest="
+           << hasNoObservableDestUseExceptInsert(insertSlice) << ")";
+    return fail(stream.str());
+  }
 
   mlir::FailureOr<mlir::Value> source =
       getOrMaterialize(insertSlice.getSource(), MemLayout::Tensor, builder);
@@ -779,7 +810,7 @@ bool TileRegionBodyEmitter::onlyFeedsUnreadDpsInit(mlir::Value value) const {
   return onlyFeedsUnreadDpsInit(value, visited);
 }
 
-bool TileRegionBodyEmitter::onlyFeedsGemmOverwriteInit(
+bool TileRegionBodyEmitter::onlyFeedsScalarInitializedComputeInit(
     mlir::Value value, llvm::DenseSet<mlir::Value> &visited) const {
   if (value.use_empty() || !visited.insert(value).second)
     return false;
@@ -796,18 +827,26 @@ bool TileRegionBodyEmitter::onlyFeedsGemmOverwriteInit(
       return false;
     }
 
+    if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(owner)) {
+      auto linalg = mlir::cast<mlir::linalg::LinalgOp>(owner);
+      if (linalg.isDpsInit(&use) && hasReductionIterator(generic))
+        continue;
+      return false;
+    }
+
     auto extractSlice = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(owner);
     if (!extractSlice || extractSlice.getSource() != value ||
-        !onlyFeedsGemmOverwriteInit(extractSlice.getResult(), visited))
+        !onlyFeedsScalarInitializedComputeInit(extractSlice.getResult(),
+                                               visited))
       return false;
   }
   return true;
 }
 
-bool TileRegionBodyEmitter::onlyFeedsGemmOverwriteInit(
+bool TileRegionBodyEmitter::onlyFeedsScalarInitializedComputeInit(
     mlir::Value value) const {
   llvm::DenseSet<mlir::Value> visited;
-  return onlyFeedsGemmOverwriteInit(value, visited);
+  return onlyFeedsScalarInitializedComputeInit(value, visited);
 }
 
 } // namespace wafer::tensor_program_to_tile_region

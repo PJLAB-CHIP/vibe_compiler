@@ -3,6 +3,7 @@
 #ifndef WAFER_TRANSFORMS_MEMORYPLANNING_STATICINDEXRANGE_H
 #define WAFER_TRANSFORMS_MEMORYPLANNING_STATICINDEXRANGE_H
 
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 
 #include <cstdint>
@@ -38,8 +39,12 @@ struct StaticIndexRangeResult {
 /// Conservatively evaluates a non-negative index value from constants,
 /// constant-bounded scf.for induction variables, checked addition/subtraction,
 /// multiplication with at least one singleton operand, and static unsigned
-/// division. Unknown expressions and arithmetic overflow fail closed.
-StaticIndexRangeResult evaluateNonNegativeStaticIndexRange(mlir::Value value);
+/// division. When `use` is present, constant integer comparisons on enclosing
+/// scf.if paths refine the same SSA values before arithmetic is evaluated.
+/// Unknown expressions and arithmetic overflow fail closed.
+StaticIndexRangeResult
+evaluateNonNegativeStaticIndexRange(mlir::Value value,
+                                    mlir::Operation *use = nullptr);
 
 } // namespace wafer::memory_planning::detail
 

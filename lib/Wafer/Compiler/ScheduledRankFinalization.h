@@ -48,6 +48,7 @@ struct FinalizedRankCandidate {
   /// Canonical pre-finalization request order. This is used only to merge
   /// independently finalized request shards before whole-variant planning.
   uint32_t frontierOrderOrdinal;
+  std::shared_ptr<const std::string> selectedTileIR;
 };
 
 mlir::FailureOr<std::vector<FinalizedRankCandidate>>

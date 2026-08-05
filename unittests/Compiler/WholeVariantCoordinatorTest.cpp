@@ -6,6 +6,7 @@
 #include "../../lib/Wafer/Compiler/NoCResidentDataflow.h"
 #include "../../lib/Wafer/Compiler/ScheduledRankFinalization.h"
 #include "../../lib/Wafer/Compiler/WholeVariantAttemptPlan.h"
+#include "../../lib/Wafer/Transforms/Scheduling/ScheduleTensorProgramInternal.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/IR/WaferInterfaces.h"
@@ -247,8 +248,8 @@ protected:
       wafer::TensorProgramSchedulingConfig schedulingConfig;
       schedulingConfig.logicalRank = rank;
       schedulingConfig.candidateParallelism = 1;
-      auto scheduled =
-          wafer::buildScheduledRankCandidateFrontier(source, schedulingConfig);
+      auto scheduled = wafer::tensor_program_scheduling::testing::
+          buildLegacyScheduledRankCandidateFrontier(source, schedulingConfig);
       if (mlir::failed(scheduled))
         return mlir::failure();
       auto finalized =
@@ -291,29 +292,9 @@ protected:
     if (mlir::failed(accepted))
       return mlir::failure();
 
-    // Replay the same source through the default executable-bundle owner and
-    // require byte-for-byte committed rank IR correspondence. The detailed
-    // checks below therefore describe the artifact that wafer-compile commits,
-    // not merely a coordinator seam result.
-    llvm::Expected<wafer::compiler::ExecutableBundle> production =
-        buildDefaultBundle(source, program, *executionConfig, diagnostics);
-    if (!production) {
-      diagnostics << llvm::toString(production.takeError()) << "\n";
-      return mlir::failure();
-    }
-    if (production->getRankExecutables().size() != accepted->ranks.size())
-      return mlir::failure();
-    for (auto [expected, committed] :
-         llvm::zip_equal(accepted->ranks, production->getRankExecutables())) {
-      std::string expectedText;
-      llvm::raw_string_ostream expectedStream(expectedText);
-      expected.getModule().print(expectedStream);
-      std::string committedText;
-      llvm::raw_string_ostream committedStream(committedText);
-      committed.getModule().print(committedStream);
-      if (expectedStream.str() != committedStream.str())
-        return mlir::failure();
-    }
+    // This helper intentionally exercises the pre-C1 mechanics through the
+    // internal migration-only entry. Production correspondence is covered by
+    // the complete-rank pipeline test and must not call the legacy frontier.
     return accepted;
   }
 
@@ -1585,8 +1566,8 @@ module {
   wafer::TensorProgramSchedulingConfig schedulingConfig;
   schedulingConfig.logicalRank = 0;
   schedulingConfig.candidateParallelism = 1;
-  auto scheduled =
-      wafer::buildScheduledRankCandidateFrontier(*source, schedulingConfig);
+  auto scheduled = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, schedulingConfig);
   ASSERT_TRUE(mlir::succeeded(scheduled));
   auto finalized =
       wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
@@ -1699,8 +1680,8 @@ module {
   wafer::TensorProgramSchedulingConfig schedulingConfig;
   schedulingConfig.logicalRank = 0;
   schedulingConfig.candidateParallelism = 1;
-  auto scheduled =
-      wafer::buildScheduledRankCandidateFrontier(*source, schedulingConfig);
+  auto scheduled = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, schedulingConfig);
   ASSERT_TRUE(mlir::succeeded(scheduled));
   auto finalized =
       wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
@@ -1807,8 +1788,11 @@ module {
         committedDivision |=
             elementwise.getKind() == wafer::InstrElementwiseKind::Div;
       });
-  EXPECT_TRUE(committedReciprocal);
-  EXPECT_FALSE(committedDivision);
+  // C1 production is deliberately conservative; the optimized reciprocal
+  // remains direct mechanism coverage until the coordinated frontier reaches
+  // the production seam in C2--C4.
+  EXPECT_FALSE(committedReciprocal);
+  EXPECT_TRUE(committedDivision);
 }
 
 TEST_F(WholeVariantCoordinatorTest,
@@ -2343,7 +2327,7 @@ module {
 }
 
 TEST_F(WholeVariantCoordinatorTest,
-       PrefersResidentReuseWhenDrainsEqualAcrossMixedShapeConsumers) {
+       KeepsMixedShapeReuseInsideLegalTileResidencyBoundaries) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -2433,14 +2417,14 @@ module {
   ASSERT_TRUE(baselineCost);
   EXPECT_FALSE(accepted->selectedReservedBaselines.front());
   EXPECT_EQ(accepted->selectedArtifactKinds.front(),
-            wafer::RankArtifactKind::Resident);
+            wafer::RankArtifactKind::Spill);
   const auto &winnerCost = accepted->resourceCost.rankCosts.front();
-  // Exact buffer hazards no longer require a conservative drain at the
-  // resident handoff. With completion cost equal, the retained SPM value wins
-  // on its strict DDR read/write reduction.
-  EXPECT_EQ(winnerCost.nccParticipantWaitCount.value,
+  // The old cross-sibling SPM handoff is no longer a legal candidate. The
+  // surviving ready-order form still reduces completion work without leaking
+  // an SPM root through a region boundary.
+  EXPECT_LT(winnerCost.nccParticipantWaitCount.value,
             baselineCost->nccParticipantWaitCount.value);
-  EXPECT_EQ(winnerCost.nonTerminalNCCParticipantWaitCount.value,
+  EXPECT_LT(winnerCost.nonTerminalNCCParticipantWaitCount.value,
             baselineCost->nonTerminalNCCParticipantWaitCount.value);
   EXPECT_LT(winnerCost.ddrReadBytes.value, baselineCost->ddrReadBytes.value);
   EXPECT_LT(winnerCost.ddrWriteBytes.value, baselineCost->ddrWriteBytes.value);
@@ -2454,8 +2438,8 @@ module {
     hasSPMConsumerOperand |=
         llvm::any_of(region.getOperandTypes(), wafer::isWaferSPMMemRefType);
   });
-  EXPECT_TRUE(hasSPMProducerResult);
-  EXPECT_TRUE(hasSPMConsumerOperand);
+  EXPECT_FALSE(hasSPMProducerResult);
+  EXPECT_FALSE(hasSPMConsumerOperand);
 }
 
 TEST_F(WholeVariantCoordinatorTest,
@@ -2513,8 +2497,8 @@ module {
   wafer::TensorProgramSchedulingConfig schedulingConfig;
   schedulingConfig.logicalRank = 0;
   schedulingConfig.candidateParallelism = 1;
-  auto rankFrontier =
-      wafer::buildScheduledRankCandidateFrontier(*source, schedulingConfig);
+  auto rankFrontier = wafer::tensor_program_scheduling::testing::
+      buildLegacyScheduledRankCandidateFrontier(*source, schedulingConfig);
   ASSERT_TRUE(mlir::succeeded(rankFrontier));
   bool sawDirectMappedRoute = false;
   for (wafer::ScheduledRankCandidate &candidate : *rankFrontier) {

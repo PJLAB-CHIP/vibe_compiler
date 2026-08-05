@@ -3,6 +3,7 @@
 #include "Scheduling/ScheduleTensorProgramInternal.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Support/CompileWorkStatistics.h"
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 #include "Wafer/Transforms/SoftwarePipelining.h"
@@ -1551,10 +1552,11 @@ bool isTensorProgramSchedulingRankInvariant(mlir::ModuleOp sourceModule) {
   return !rankDependent;
 }
 
-mlir::FailureOr<std::vector<ScheduledRankCandidate>>
-buildScheduledRankCandidateFrontier(
+static mlir::FailureOr<std::vector<ScheduledRankCandidate>>
+buildScheduledRankCandidateFrontierImpl(
     mlir::ModuleOp sourceModule,
-    const TensorProgramSchedulingConfig &frontierConfig) {
+    const TensorProgramSchedulingConfig &frontierConfig,
+    bool exerciseLegacyTestPath) {
   wafer::support::ScopedCompileTimingSpan frontierTiming(
       "search", "rank-candidate-generation", "scheduled-rank-frontier");
   if (!sourceModule) {
@@ -1584,6 +1586,93 @@ buildScheduledRankCandidateFrontier(
   config.logicalRank = frontierConfig.logicalRank;
   config.candidateParallelism = frontierConfig.candidateParallelism;
   config.optimizations = frontierConfig.optimizations;
+
+  // The conservative production seam owns one complete-rank structured clone
+  // before any irreversible instruction or placement work. Request sharding
+  // remains an outer driver concern, but only shard zero materializes this
+  // mandatory baseline; other shards have no independent rank-local search
+  // state to publish.
+  if (!exerciseLegacyTestPath) {
+    if (frontierConfig.requestShardIndex != 0)
+      return std::vector<ScheduledRankCandidate>{};
+
+    mlir::OwningOpRef<mlir::ModuleOp> stagedModule =
+        mlir::cast<mlir::ModuleOp>(sourceModule->clone());
+    outlineRankDenseTensorConstants(*stagedModule);
+    bool hasStructuredRoot = false;
+    stagedModule->walk([&](mlir::Operation *operation) {
+      hasStructuredRoot |=
+          structured_scheduler::isEligibleStructuredSchedulingRoot(operation);
+      return hasStructuredRoot ? mlir::WalkResult::interrupt()
+                               : mlir::WalkResult::advance();
+    });
+
+    mlir::OwningOpRef<mlir::ModuleOp> baselineModule;
+    if (hasStructuredRoot) {
+      unsigned regionCount = 0;
+      mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> materialized =
+          materializeCompleteRankTileProgram(*stagedModule, config.logicalRank,
+                                             &regionCount);
+      if (mlir::failed(materialized) || regionCount != 1)
+        return mlir::failure();
+      baselineModule = std::move(*materialized);
+
+      std::string selectedTileText;
+      llvm::raw_string_ostream selectedTileStream(selectedTileText);
+      baselineModule->print(selectedTileStream);
+      selectedTileStream.flush();
+      auto selectedTileIR =
+          std::make_shared<const std::string>(std::move(selectedTileText));
+
+      std::string failureReason;
+      wafer::support::recordCompileWork(
+          wafer::support::CompileWorkKind::TerminalCandidateClone);
+      if (mlir::failed(tile_region_to_instr::convertTileRegionToInstrModule(
+              *baselineModule, TileRegionToInstrOptions{}, &failureReason))) {
+        baselineModule->emitError()
+            << "complete-rank instruction lowering failed"
+            << (failureReason.empty() ? "" : ": ") << failureReason;
+        return mlir::failure();
+      }
+      if (mlir::failed(normalizeMinimumNCCJoins(*baselineModule))) {
+        baselineModule->emitError(
+            "complete-rank completion normalization failed");
+        return mlir::failure();
+      }
+      clearRankCandidatePhysicalFacts(*baselineModule);
+      if (mlir::failed(mlir::verify(*baselineModule))) {
+        baselineModule->emitError(
+            "complete-rank conservative baseline failed verification");
+        return mlir::failure();
+      }
+
+      std::vector<ScheduledRankCandidate> conservativeFrontier;
+      conservativeFrontier.emplace_back(
+          std::move(baselineModule), /*stableOrdinal=*/0,
+          RankArtifactKind::Spill, /*reservedBaseline=*/true,
+          RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
+          RankWorkerPlacementKind::Unplaced,
+          /*workerPlacementPlanOrdinal=*/0, /*frontierOrderOrdinal=*/0,
+          std::move(selectedTileIR));
+      return conservativeFrontier;
+    } else {
+      baselineModule = std::move(stagedModule);
+    }
+
+    clearRankCandidatePhysicalFacts(*baselineModule);
+    if (mlir::failed(mlir::verify(*baselineModule))) {
+      baselineModule->emitError(
+          "complete-rank conservative baseline failed verification");
+      return mlir::failure();
+    }
+
+    std::vector<ScheduledRankCandidate> conservativeFrontier;
+    conservativeFrontier.emplace_back(
+        std::move(baselineModule), /*stableOrdinal=*/0, RankArtifactKind::Spill,
+        /*reservedBaseline=*/true);
+    return conservativeFrontier;
+  }
+
   std::unique_ptr<CandidateEvaluationExecutor> evaluationExecutor;
   if (config.candidateParallelism > 1) {
     evaluationExecutor = std::make_unique<CandidateEvaluationExecutor>(
@@ -1911,6 +2000,22 @@ buildScheduledRankCandidateFrontier(
   for (const std::string &failure : failures)
     diagnostic << "\n  - " << failure;
   return mlir::failure();
+}
+
+mlir::FailureOr<std::vector<ScheduledRankCandidate>>
+buildScheduledRankCandidateFrontier(
+    mlir::ModuleOp sourceModule,
+    const TensorProgramSchedulingConfig &frontierConfig) {
+  return buildScheduledRankCandidateFrontierImpl(
+      sourceModule, frontierConfig, /*exerciseLegacyTestPath=*/false);
+}
+
+mlir::FailureOr<std::vector<ScheduledRankCandidate>>
+tensor_program_scheduling::testing::buildLegacyScheduledRankCandidateFrontier(
+    mlir::ModuleOp sourceModule,
+    const TensorProgramSchedulingConfig &frontierConfig) {
+  return buildScheduledRankCandidateFrontierImpl(
+      sourceModule, frontierConfig, /*exerciseLegacyTestPath=*/true);
 }
 
 } // namespace wafer

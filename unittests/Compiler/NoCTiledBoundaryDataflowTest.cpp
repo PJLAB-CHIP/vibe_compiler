@@ -3,6 +3,7 @@
 #include "../../lib/Wafer/Compiler/ScheduledRankFinalization.h"
 #include "../../lib/Wafer/Compiler/WholeVariantAttemptPlan.h"
 #include "../../lib/Wafer/Compiler/WholeVariantCoordinator.h"
+#include "../../lib/Wafer/Transforms/Scheduling/ScheduleTensorProgramInternal.h"
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -184,7 +185,8 @@ TEST(NoCTiledBoundaryDataflowTest,
     scheduling.logicalRank = rank;
     scheduling.candidateParallelism = 4;
     mlir::FailureOr<std::vector<wafer::ScheduledRankCandidate>> scheduled =
-        wafer::buildScheduledRankCandidateFrontier(*source, scheduling);
+        wafer::tensor_program_scheduling::testing::
+            buildLegacyScheduledRankCandidateFrontier(*source, scheduling);
     ASSERT_TRUE(mlir::succeeded(scheduled));
     auto finalized =
         wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(

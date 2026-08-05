@@ -9,11 +9,13 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Parallel.h"
 
 #include <algorithm>
 #include <limits>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace wafer::analysis {
 namespace detail {
@@ -477,10 +479,12 @@ WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
     llvm::ArrayRef<mlir::Operation *> rankRoots,
     const TargetScheduleCostPolicy &policy) {
   WholeCardInstructionProgramCost result;
+  std::vector<InstructionProgramCost> rankCosts(rankRoots.size());
+  llvm::parallelFor(0, rankRoots.size(), [&](size_t rank) {
+    rankCosts[rank] = analyzeInstructionProgramCost(rankRoots[rank], policy);
+  });
   result.rankCosts.reserve(rankRoots.size());
-  for (mlir::Operation *root : rankRoots) {
-    InstructionProgramCost rankCost =
-        analyzeInstructionProgramCost(root, policy);
+  for (InstructionProgramCost &rankCost : rankCosts) {
     addWork(result.aggregateWork, rankCost.work);
     maximizeWork(result.maximumRankWork, rankCost.work);
     addComputeCost(result.aggregateCompute, rankCost.compute);

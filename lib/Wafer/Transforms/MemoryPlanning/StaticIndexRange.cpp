@@ -7,9 +7,11 @@
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <utility>
 
@@ -25,6 +27,10 @@ static Result failed(Failure failure) {
 
 class StaticIndexRangeEvaluator {
 public:
+  explicit StaticIndexRangeEvaluator(mlir::Operation *use) {
+    collectEnclosingBranchConstraints(use);
+  }
+
   Result evaluate(mlir::Value value) {
     auto cached = cache.find(value);
     if (cached != cache.end())
@@ -32,13 +38,166 @@ public:
     if (!active.insert(value).second)
       return failed(Failure::UnsupportedExpression);
 
-    Result result = evaluateImpl(value);
+    Result result = applyConstraint(value, evaluateImpl(value));
     active.erase(value);
     cache.try_emplace(value, result);
     return result;
   }
 
 private:
+  struct Constraint {
+    std::optional<int64_t> minimum;
+    std::optional<int64_t> maximum;
+  };
+
+  static mlir::arith::CmpIPredicate
+  invertPredicate(mlir::arith::CmpIPredicate predicate) {
+    using Predicate = mlir::arith::CmpIPredicate;
+    switch (predicate) {
+    case Predicate::eq:
+      return Predicate::ne;
+    case Predicate::ne:
+      return Predicate::eq;
+    case Predicate::slt:
+      return Predicate::sge;
+    case Predicate::sle:
+      return Predicate::sgt;
+    case Predicate::sgt:
+      return Predicate::sle;
+    case Predicate::sge:
+      return Predicate::slt;
+    case Predicate::ult:
+      return Predicate::uge;
+    case Predicate::ule:
+      return Predicate::ugt;
+    case Predicate::ugt:
+      return Predicate::ule;
+    case Predicate::uge:
+      return Predicate::ult;
+    }
+    llvm_unreachable("unhandled integer comparison predicate");
+  }
+
+  static mlir::arith::CmpIPredicate
+  swapPredicate(mlir::arith::CmpIPredicate predicate) {
+    using Predicate = mlir::arith::CmpIPredicate;
+    switch (predicate) {
+    case Predicate::eq:
+    case Predicate::ne:
+      return predicate;
+    case Predicate::slt:
+      return Predicate::sgt;
+    case Predicate::sle:
+      return Predicate::sge;
+    case Predicate::sgt:
+      return Predicate::slt;
+    case Predicate::sge:
+      return Predicate::sle;
+    case Predicate::ult:
+      return Predicate::ugt;
+    case Predicate::ule:
+      return Predicate::uge;
+    case Predicate::ugt:
+      return Predicate::ult;
+    case Predicate::uge:
+      return Predicate::ule;
+    }
+    llvm_unreachable("unhandled integer comparison predicate");
+  }
+
+  void constrainMinimum(mlir::Value value, int64_t minimum) {
+    Constraint &constraint = constraints[value];
+    if (!constraint.minimum || minimum > *constraint.minimum)
+      constraint.minimum = minimum;
+  }
+
+  void constrainMaximum(mlir::Value value, int64_t maximum) {
+    Constraint &constraint = constraints[value];
+    if (!constraint.maximum || maximum < *constraint.maximum)
+      constraint.maximum = maximum;
+  }
+
+  void addComparisonConstraint(mlir::Value value,
+                               mlir::arith::CmpIPredicate predicate,
+                               int64_t constant) {
+    using Predicate = mlir::arith::CmpIPredicate;
+    switch (predicate) {
+    case Predicate::eq:
+      constrainMinimum(value, constant);
+      constrainMaximum(value, constant);
+      return;
+    case Predicate::ne:
+      return;
+    case Predicate::slt:
+    case Predicate::ult:
+      if (constant != std::numeric_limits<int64_t>::min())
+        constrainMaximum(value, constant - 1);
+      return;
+    case Predicate::sle:
+    case Predicate::ule:
+      constrainMaximum(value, constant);
+      return;
+    case Predicate::sgt:
+    case Predicate::ugt:
+      if (constant != std::numeric_limits<int64_t>::max())
+        constrainMinimum(value, constant + 1);
+      return;
+    case Predicate::sge:
+    case Predicate::uge:
+      constrainMinimum(value, constant);
+      return;
+    }
+    llvm_unreachable("unhandled integer comparison predicate");
+  }
+
+  void collectComparisonConstraint(mlir::Value condition, bool selected) {
+    auto compare = condition.getDefiningOp<mlir::arith::CmpIOp>();
+    if (!compare)
+      return;
+    mlir::arith::CmpIPredicate predicate = compare.getPredicate();
+    if (!selected)
+      predicate = invertPredicate(predicate);
+
+    if (std::optional<int64_t> rhs =
+            mlir::getConstantIntValue(compare.getRhs())) {
+      addComparisonConstraint(compare.getLhs(), predicate, *rhs);
+      return;
+    }
+    if (std::optional<int64_t> lhs =
+            mlir::getConstantIntValue(compare.getLhs()))
+      addComparisonConstraint(compare.getRhs(), swapPredicate(predicate), *lhs);
+  }
+
+  void collectEnclosingBranchConstraints(mlir::Operation *use) {
+    if (!use)
+      return;
+    mlir::Operation *nested = use;
+    while (mlir::Operation *parent = nested->getParentOp()) {
+      if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(parent)) {
+        if (nested->getBlock() == ifOp.thenBlock())
+          collectComparisonConstraint(ifOp.getCondition(), /*selected=*/true);
+        else if (nested->getBlock() == ifOp.elseBlock())
+          collectComparisonConstraint(ifOp.getCondition(), /*selected=*/false);
+      }
+      nested = parent;
+    }
+  }
+
+  Result applyConstraint(mlir::Value value, Result result) const {
+    if (!result.succeeded() || result.range.empty)
+      return result;
+    auto it = constraints.find(value);
+    if (it == constraints.end())
+      return result;
+    if (it->second.minimum)
+      result.range.min = std::max(result.range.min, *it->second.minimum);
+    if (it->second.maximum)
+      result.range.max = std::min(result.range.max, *it->second.maximum);
+    if (result.range.min > result.range.max)
+      result.range = StaticIndexRange{/*min=*/0, /*max=*/0, /*empty=*/true};
+    return result;
+  }
+
   Result evaluateImpl(mlir::Value value) {
     if (std::optional<int64_t> constant = mlir::getConstantIntValue(value))
       return Result{StaticIndexRange{*constant, *constant, /*empty=*/false}};
@@ -184,13 +343,15 @@ private:
 
   llvm::DenseMap<mlir::Value, Result> cache;
   llvm::DenseSet<mlir::Value> active;
+  llvm::DenseMap<mlir::Value, Constraint> constraints;
 };
 
 } // namespace
 
 StaticIndexRangeResult
-evaluateNonNegativeStaticIndexRange(mlir::Value value) {
-  StaticIndexRangeResult result = StaticIndexRangeEvaluator().evaluate(value);
+evaluateNonNegativeStaticIndexRange(mlir::Value value, mlir::Operation *use) {
+  StaticIndexRangeResult result =
+      StaticIndexRangeEvaluator(use).evaluate(value);
   if (result.succeeded() && !result.range.empty && result.range.min < 0)
     result.failure = StaticIndexRangeFailureKind::NegativeRange;
   return result;
