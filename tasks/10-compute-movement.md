@@ -470,7 +470,7 @@ current instruction op、typed target facts、accepted offsets和transport bindi
 | instruction legalization | verified complete-rank tile IR | complete-rank canonical/unplaced wafer.instr.* | DialectConversion生成exact instruction、temp、descriptor和typed async token/wait；不插participant join |
 | execution sibling materialization | canonical/unplaced instruction actual clone | fixed worker/slot/ready-order sibling | 从actual SSA/effects/ranges生成有界execution mapping，不原地改写其它candidate |
 | completion reconstruction | fixed execution sibling | final instruction sibling with latest-necessary participant joins | 入口删除全部compiler-derived join，从current effects/events/ranges fresh重建并逐join验证witness |
-| SPM planning | completion-complete instruction sibling | accepted SPM offsets | whole-entry lifetime、range、bank和capacity gate |
+| SPM planning | completion-complete instruction sibling | accepted SPM offsets | whole-entry lifetime/range/capacity hard gate；Q49待实现的offset-derived bank phase仅作等primary-cost hard-valid placement最后tie-break |
 | DDR planning | SPM-planned whole variant | accepted DDR offsets | external/compiler-managed range、lifetime和capacity gate |
 | final rank/variant verification | placed instruction IR + transport binding | atomic executable proposal | 重算resource、completion、ABI和all-rank facts |
 | target LLVM emission | committed instruction IR | LLVM/target calls | checked派生address/range/descriptor/ABI字段 |

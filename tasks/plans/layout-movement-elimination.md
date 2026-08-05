@@ -23,7 +23,7 @@ Pipeline position:
   frontier hard cap约束。PBQP projection、assignment、relation proof和cost hint在clone进入现有frontier前销毁；
   最终只有现有candidate owner提交的typed winner IR进入bundle。
 - Downstream consumer:
-  TileRegion到Instr conversion、SPM/DDR planning、completion/resource/transport gate、target publication、
+  complete-rank Tile/Dataflow到Instr conversion、SPM/DDR planning、completion/resource/transport gate、target publication、
   package、SystemC和板端执行。
 - User-level driver / named pipeline:
   现有wafer-compile source-to-bundle production pipeline；wafer-opt仅作局部replay/test。
@@ -69,7 +69,8 @@ Pipeline position:
 ### 3. Layout、implementation与fanout联合分配
 
 - 不扩展`TargetImplementationCandidate`，也不新增layout-demand/access-constraint接口。existing source interface仍只枚举
-  implementation kind；scheduler以稳定recipe先物化该kind的完整TileRegion actual clone，再从该clone重建layout PBQP。
+  implementation kind；scheduler以稳定recipe先物化该kind的isolated complete-rank actual clone，再从该clone重建layout PBQP；
+  selected residency确定后再物化maximal `tile.region` partition。
   default implementation和每个non-default implementation分别交叉至多四个layout proposal，仍受12个semantic recipe、
   96次optimized rank evaluation及whole-variant hard cap约束。
 - PBQP node直接保存可由typed verifier与`provePhysicalTraversal`接受的`MemLayout`值，不再包装第二个layout enum、
@@ -148,8 +149,9 @@ PBQP只负责有界提案，不复制implementation、value、shape或legality�
   candidates，composite内部步骤继续参与layout分配，不结构性强制Tensor。
 - Tree AllReduce在全部参与rank具有相同encoding与完整physical mapping时直接处理Cx/NCx physical footprint，
   包括tail/padding；AllReduce/ReduceScatter Ring仅在每个chunk都有exact、互斥physical-range证明时生成对应候选。
-- public input/output ABI继续保持compact Tensor。full-buffer resident handoff在descriptor展开前转交producer已有
-  SPM version；不兼容fanout保留DDR spill sibling，late transfer elimination继续作cleanup。
+- public input/output ABI继续保持compact Tensor。full-buffer resident handoff只有在pre-Instr owner已把
+  producer/consumer收入同一maximal region时，才可在descriptor展开前转交producer已有SPM version；仍为
+  sibling regions或不兼容的fanout保留显式DDR spill sibling，late transfer elimination不发明跨region alias。
 
 ## 实施 Checkpoints
 
@@ -172,7 +174,9 @@ PBQP只负责有界提案，不复制implementation、value、shape或legality�
 - physical：Tensor/NTensor/Cx/NCx full/tail、bitpacked relation/select、unknown padding、neutral reduce、跨dtype block mismatch；
 - solver：typed layout legality不扩接口、fixed-point/solver-work/search-expansion hard cap、deterministic Top-4、共享secondary
   只物化一次、双版本cap、失败不回填、baseline保留、无solver residue，以及implementation/layout actual recipe联合候选；
-- vertical：GEMM到pointwise/convert/reduce链、Tree AllReduce full footprint、exact Ring chunk正负例、跨tile-region resident handoff；
+- vertical：GEMM到pointwise/convert/reduce链、Tree AllReduce full footprint、exact Ring chunk正负例、
+  region merge/rebuild后的intra-region resident handoff；未合并sibling boundary保留显式DDR materialization，
+  且最终IR没有跨sibling-region SPM memref/root/alias；
 - production：同源baseline/winner均经source-to-package、fresh no-card、output/guard验证；板端使用FP16/BF16，
   targeted winner必须减少final IR movement bytes/commands且matched性能不劣于baseline。
 

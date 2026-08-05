@@ -1,6 +1,6 @@
 # TX81 Compiler-Hardware Boundary Calibration
 
-状态：Q37 已完成。当前target profile中，能安全执行且会改变compiler决策的校准项均已有fresh板端结论；
+状态：Q37 已完成。当前已资格确认的软硬件身份中，能安全执行且会改变compiler决策的校准项均已有fresh板端结论；
 当前接口无法观测的机制以`unknown`和保守策略闭合，已知错误或不属于当前ABI的用法以`excluded`闭合。
 
 本文不是按日期、批次或runner顺序记录的实验日志。主体按“具体实验—实际观察—硬件行为—compiler价值—
@@ -16,7 +16,7 @@
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  version-matched target profile、完整rank instruction program、typed buffer/view/range/effect、
+  version-matched hardware/runtime qualification identity、完整rank instruction program、typed buffer/view/range/effect、
   worker/engine、async token、wait/fence、target module和runtime package。
 - Current stage responsibility:
   用静态接口事实和fresh板端实验恢复会改变compiler legality、planning、lowering、completion或cost的
@@ -31,7 +31,7 @@ Pipeline position:
 - User-level driver / named pipeline:
   production使用现有source-to-bundle named pipeline；板端实验通过正常compile/package/run链路取证。
 - Explicit non-goals:
-  不建立cycle-accurate模型，不猜测未暴露的bank/route/arbiter，不把单个case写成通用ISA语义，
+  不建立cycle-accurate模型，不猜测未暴露的精确port/stride bank penalty、route或arbiter，不把单个case写成通用ISA语义，
   不回放历史板端输出，不用管理面idle或单次counter代替execution/completion证据。
 - Completion gate:
   每个compiler-sensitive问题都有fresh板端结论，或有明确unknown/excluded边界及保守处理；
@@ -73,13 +73,24 @@ physical timing未校准就把可精确计数的工作量降成Unknown：
   collective latency或sustained lower bound；
 - physical route和arbiter仍未知。point model从typed 2D mesh构造modeled deterministic shortest path，
   以`EstimatedRoute` assumption计peak directed-link pressure；它不是actual route或hot-link observation；
-- Direct-DTE每message `α = 10 us`、maximum modeled route每hop的route-fill prior `1 ns`、每tile SPM
-  `128 GB/s`以及instruction/event/wait control `1 ns`均为versioned compiler policy prior，不是板端测量或
-  保守bound。SPM prior只把文档中的
-  1024-bit interface和1 GHz model quantum转成point estimate。当前`α`有意惩罚小message；未来由同profile、
+- Direct-DTE每message `α = 10 us`、maximum modeled route每hop的route-fill prior `1 ns`以及
+  instruction/event/wait control `1 ns`均为versioned compiler policy prior，不是板端测量或保守bound。
+  历史Q39曾把SPM0/RAM_ACC的1024-bit接口与1 GHz相乘得到每tile `128 GB/s` point estimate；该数不是
+  SPM1 aggregate bandwidth。现存cost实现仍有该legacy term，Q49必须删除；终态不得用它给SPM驻留或
+  allocator候选计时。当前`α`有意惩罚小message；未来由同profile、
   同participant、重复matched board measurement替换，而不是由论文或单次counter移植绝对常数。
 
-nominal makespan只消费上述exact work和versioned point parameters。没有current-IR+target capability共同
+SPM1的静态硬件事实另行处理：每tile 3 MiB，由8个独立2048-bit bank和LSB-interleaved交换网络组成。
+本项目按1 GHz做粗略service-envelope算术得到2.048 TB/s；16个端口连续burst8的设计目标是平均per-port约90%效率，
+并存在可配置DIDT active-bank throttling。`1.8432 TB/s`只是额外假设该效率可聚合到全bank利用率后的条件算术，
+不是sustained lower bound或candidate duration。allocator可以从accepted offset使用
+由256B bank宽度和LSB interleaving推得`(offset / 256) mod 8`的working coarse phase，做hard-valid且
+candidate-visible primary cost相同placements之间的
+最后tie-break；该allocator逻辑仍待Q49实现。当前校准没有给出可消费的
+port/stride conflict penalty，因此phase不得影响legality、resident/spill、`tile.region`或join。
+
+Q49终态nominal makespan只消费上述仍有效的exact work和versioned point parameters，不含legacy SPM flat
+duration。没有current-IR+target capability共同
 qualified的multi-buffer时，DDR、NoC和compute按sequential phases计费；只有fixed-slot/multi-buffer recurrence、
 exact wait/reuse cut和capability均闭合时，steady state才取并行resource maximum。candidate nominal乘`1.20`
 仍小于baseline nominal时签发`EstimatedBenefit`并可进入normal selection；只有candidate conservative upper
@@ -123,9 +134,9 @@ promotion winner的fresh correctness；静态`EstimatedBenefit`不代签这两�
 | SPM capacity/reservation | 从current 3MiB SPM及普通allocation区间`[0x10000, 0x2F0000)`推导最高合法256B block、allocation边界、跨界1 block和保留区相邻block；正向做RDMA→SPM→WDMA round-trip，负向只走planner/verifier。 | 4个boundary/held-out正向通过result、count和guard；6个越界/保留区输入被static-negative拒绝。 | Allocatable SPM边界可以由profile静态表达并在边界正向验证；危险范围不需要发板。 | Static packing使用profile容量和reservation，host以半开range做checked legality。 | 不探测未知保留区，不由current profile区间外推其它SKU。 |
 | SPM evidence inventory | Typed SPM catalog共146个row：24个本地board、10个static-negative、112个delegated。Delegated中5个由DataMove physical-layout case提供，107个由current memory-descriptor矩阵提供；本地部分覆盖capacity、11个offset、64KiB transfer、single/双slot奇偶lifetime和五个nonpreferred geometry。 | 24个本地row、5个DataMove-backed row和107个memory-backed row均有对应板端证据；10个negative只处理真实reservation/range非法、缺dependency/completion、悬空view和capacity不足。 | SPM能力由多个真实consumer共同闭合，delegation必须指向具体case和同一range/layout合同，不能只写“邻近测试覆盖”。 | Compiler消费具体owner的allocation、layout、effect和completion证据，不维护第二套SPM语义。 | 146是证据inventory，不是任意SPM访问白名单，也不产生bank或cost结论。 |
 | SPM nonpreferred alignment | 同一payload除256B对齐control外，执行`base+64/+128/+192`和`length=128/384`五种geometry；每项使用独立非零pattern、round-trip、前后guard和matching completion。 | 五项全部通过。 | 256B是preferred alignment而非硬legality门槛；硬件能处理这五种离散geometry。 | Planner保留256B偏好，同时准入已验证base/length组合。 | 不开放任意byte alignment，不由movement资格外推所有compute opcode。 |
-| SPM relative-offset sweep | 固定engine、payload和pattern，只改变A/B relative offset `0/256/512/1K/2K/4K/8K/16K/32K/64K/65792`；每格先检查output/guard，再保存PMU raw。 | 所有已列offset完成correctness；raw latency方向含长尾且不能形成稳定周期。 | Relative offset是actual-address proxy，不是physical bank identity。 | Offset只用于已测range legality和matched control，不驱动bank coloring。 | 不把64KiB或单点峰值命名bank周期，不写固定offset收益。 |
+| SPM relative-offset sweep | 固定engine、payload和pattern，只改变A/B relative offset `0/256/512/1K/2K/4K/8K/16K/32K/64K/65792`；每格先检查output/guard，再保存PMU raw。 | 所有已列offset完成correctness；raw latency方向含长尾且不能形成稳定周期。 | 该实验没有校准offset-derived phase的性能penalty；SPM1 coarse phase是由硬件设计中的256B bank宽度和LSB interleaving形成的working inference，不由这组timing反推。 | Offset sweep只签发已测range legality；Q49 allocator可独立使用coarse phase做等primary-cost hard-valid placement最后tie-break。 | 不把64KiB或单点峰值命名bank周期，不写固定offset收益、hard color或spill规则。 |
 | SPM phase observation | 256B CT+RDMA固定8KiB间距，比较base phase 0/64/128/192；另观察6144B offset的serial/window重复。 | Phase 0/128的CT execution中位约47 cycles，64/192约50；6144B样本相对常见280--282 FU更慢，但主要来自RDMA，未跨workload复现。 | 存在窄actual-address趋势，但证据不足以建立bank class或固定penalty。 | 只保留原始profile observation，不进入production cost。 | 不命名bank，不外推其它length/engine/tile，不把3-cycle差异视为稳定硬件常数。 |
-| SPM sustained conflict pilot | `4/16KiB × A→B/B→A`四个matched group、16 cell；检查owned-SPM与gap canary、address/count、owner-backed port0/6 T2/T3、matched WDMA readback和lifecycle。 | 4/4 group通过correctness、counter和completion。 | Counter能确认已测actual address上的活动和等价对照，不能把port编号映射为physical bank。 | 不做bank coloring；这些数据只作为actual-address scoped proxy和Q9 measurement候选。 | 不外推bank-specific attribution、固定cost或其它engine pair。 |
+| SPM sustained conflict pilot | `4/16KiB × A→B/B→A`四个matched group、16 cell；检查owned-SPM与gap canary、address/count、owner-backed port0/6 T2/T3、matched WDMA readback和lifecycle。 | 4/4 group通过correctness、counter和completion。 | Counter能确认已测actual address上的活动和等价对照，不能把PMU port编号映射为某个physical bank，也没有给出phase penalty。 | 不做hard bank coloring；这些数据只作为未来校准allocator软phase penalty的actual-address scoped measurement basis。 | 不外推bank-specific attribution、固定cost、hard legality或其它engine pair。 |
 | Memory descriptor matrix | Current schema下155个case覆盖contiguous、offset、exact/partial/adjacent/disjoint、1D/2D/3D stride、tail、iteration、五类engine access和guard；每项检查packet inclusive end与host半开range转换。 | 155/155通过result、descriptor echo、count、guard、completion和current validator。 | Current typed descriptor/range/schedule在已列范围内成立；logical bytes、physical footprint和descriptor envelope必须分别建模。 | Lowering按各row的已验证geometry准入，range/effect进入dependency和allocation检查。 | 不由155项宣称任意descriptor、physical bank、固定cost或未匹配overlap。 |
 | Mapped-SPM alias | 审计SDK `get_spm_memory_mapping(offset)`并用Kcore/NCC/DMA case区分cache、descriptor和completion假说。 | 地址为`0x30400000 + offset`，属于uncached weak-order alias；修正layout/descriptor后结果正确，stale-cache假说撤回。 | Mapped-SPM正确性依赖有序load/store与`fence`/`sync`，不依赖dcache clean/invalidate。 | Mapped-SPM路径禁止生成dcache操作；用typed effect和completion保证顺序。 | 不适用于raw cacheable SPM alias或cacheable DDR，不把其它mismatch归因于cache。 |
 | DDR cache publication | 58个cache/coherence case覆盖host H2D→Kcore、Kcore store→NCC RDMA、NCC WDMA→Kcore、NCC WDMA→host；每个方向在真实consumer前检查owned range。 | 58/58通过。Pure NCC链无需Kcore cache操作；跨Kcore/host domain需要相应publication。 | Cache coherence不是全局布尔属性，而是producer/consumer domain crossing合同；DMA completion与CPU cache visibility不同。 | H2D→Kcore读前invalidate；Kcore→RDMA前clean+fence；WDMA→Kcore在matching completion后invalidate；WDMA→host由runtime publication/readback。 | 当前一次性runtime已闭合；persistent跨launch复用allocation时需重新验证。 |
@@ -180,7 +191,7 @@ promotion winner的fresh correctness；静态`EstimatedBenefit`不代签这两�
 | Collective runtime status gap | 每个schema-v6 manifest要求16个rank各有唯一64B aligned `transport_status`、`wafer-direct-dte-status-v2`和16个matching entry_return；BoardRuntime在发布output前D2H并要求全部Success。 | Runtime强制all-rank success，但`wafer-run` stdout尚不导出逐rankraw `(resource,status ABI,value)`。 | Enforced success和host独立观察是不同证据强度；当前只能声明runtime enforcement。 | Manifest/package verifier保留status storage、watchdog和terminal合同；文档不伪称观察到16条raw Success。 | 若promotion要求逐rankraw status，必须扩runtime output surface，不能从总成功外推。 |
 | Host launch/runtime lifecycle | Kernel/model以及16-rank path使用同package schema，按ordered launch→completion→D2H→cleanup执行；success要求完整output、terminal schema、transport status enforcement和资源回到基线。Failure由外层bounded timeout停止。 | 已有kernel/model和16-rank路径按各自owner证据board-observed/supported；错误或不完整readback会失败并quarantine。 | Device execution、runtime publication和resource cleanup共同构成一次可消费launch，不能只看device packet。 | BoardRuntime保持typed launch kind、terminal、D2H和cleanup gate；compiler package携带唯一entry/phase/status合同。 | 不把host process退出、管理面idle或部分stdout当成功，不由kernel path外推model/collective ABI。 |
 | NCC PMU basis | 单engine校验instruction count、engine execution、global FU union、worker scope和high-low-high稳定读取；pair同时保存serial/window、repeat ordinal、issue order和profile identity。 | Count能确认实际发射；只有部分expanded cell的FU union形成稳定正excess。Single execution与blocking不稳定。 | Counter各自回答有限问题：count是发射数，FU union可区分功能单元窗口；它们不是统一cycle模型。 | PMU先用于资格和归因，只有matched、重复、correctness通过的样本进入Q9。 | 不用单次execution、blocking=0或host elapsed写固定latency。 |
-| SPM PMU与TMNOC | SPM sustained读取owner-backed port0/6 T2/T3并检查enable/scope、counter稳定和matched WDMA readback。TMNOC仅有base address，无decoded只读offset。 | SPM counter可读且随已测workload活动；没有physical bank/port attribution。TMNOC未上板读取。 | 可读取counter不等于理解physical resource identity；未知offset不能靠猜测。 | SPM PMU只作actual-address measurement basis；TMNOC保持static-negative。 | 不命名bank/port，不读未解码寄存器，不把aggregate counter直接写cost。 |
+| SPM PMU与TMNOC | SPM sustained读取owner-backed port0/6 T2/T3并检查enable/scope、counter稳定和matched WDMA readback。TMNOC仅有base address，无decoded只读offset。 | SPM counter可读且随已测workload活动；没有把counter归因到某个physical bank/port，也没有校准phase conflict penalty。TMNOC未上板读取。 | 官方设计已给出SPM1的8-bank/16-port/LSB-interleaving结构，但可读取aggregate counter不等于恢复精确arbiter、stride压力或DIDT条件。 | Q49 allocator将使用offset-derived coarse phase作等primary-cost placement最后tie-break；SPM PMU只作为未来actual-address penalty measurement basis，TMNOC保持static-negative。 | 不把counter命名成具体bank/port，不读未解码寄存器，不把aggregate counter或raw envelope直接写成固定cost/hard legality。 |
 | SCALAR/CSR ordinary issue | 审计current ABI是否存在可由`TsmExecute`承载的SCALAR/CSR普通queue type；没有typed constructor、packet field或owner-backed执行合同。 | Current ABI没有安全正向入口，未发送猜测packet。 | Header/寄存器名字不足以构造普通issue能力；缺typed surface时应静态拒绝。 | SCALAR/CSR ordinary issue保持`excluded`，不进入scheduler或board inventory。 | 不从邻近engine编码、反汇编片段或未知packet试探能力。 |
 | Production three-stage producer | Catalog列出90个RDMA→CT/NE→WDMA正向three-stage cell和19个capacity/alias/provenance负例；compiler-owned qualification sibling从final accepted Instr绑定真实fixed-slot rotation、typed worker、completion和package manifest，手写16KiB双slot只作负对照。 | Production fixed-slot multi-buffer producer、typed worker、host exact、package、target model和no-card gate已经闭合；90个正向cell等待configured-board fresh qualification，19个结构负例由host exact gate拥有，当前没有board correctness结论。 | Raw adapter、手写packet或untimed model不能代签software-pipeline IR、prologue/steady/epilogue、actual-clone资源合同或真实板端winner correctness。 | 保留compiler-owned candidate和manifest-bound qualification；下一门禁只在configured board上对同源baseline/winner做fresh、bounded correctness。 | 不把catalog存在、手写双slot、host/model结果或既有overlap白名单当作board通过。 |
 | Production optimizer paired qualification | 同一source/profile发布reserved baseline与production winner，要求最终ELF结构不同、两包完整CPU expected、guard、terminal和A/B平衡顺序；覆盖common-factor、reciprocal、resident share/recompute、ready-order、GEMM和tree AllReduce等8 pair，另复用Direct-DTE vertical。 | 8/8 paired和Direct-DTE vertical通过统一FP16合同与完整package/board lifecycle。 | Microcase结论只有进入真实source→IR→package→board链路，才能证明compiler选择没有破坏语义；qualification不反向改变legality。 | Q38每个actual clone都重过SPM/DDR、Instr、Target、package和fresh board correctness gate。 | 不外推全部optimization、shape、dtype或cost，未产生production IR的能力不靠raw case代签。 |
@@ -195,15 +206,16 @@ promotion winner的fresh correctness；静态`EstimatedBenefit`不代签这两�
 2. 可提交数量、resident容量和并行收益是三个不同问题。`D+1`证明有界总提交可完成，不给resident；
    `serial_mode=0`只给配置；只有带correctness和FU-union的matched cell才能给窄overlap资格。
 3. Compiler可以可靠建模半开range、DDR envelope、compact SPM、owned-range publication和40GiB i64
-   addressing，但当前无法从logical/relative address恢复physical bank、controller、hop或固定offset收益。
+   addressing；SPM1 accepted offset还能按documented LSB interleaving恢复coarse bank phase。但当前无法由此
+   恢复精确port/stride arbitration、controller、hop或固定offset收益。
 4. Physical span与logical tensor语义必须分离。Cx/NCx padding、batch stride、BOOL packing、reduce write
    granularity、Pool双writeback和BackwardConv footprint都证明logical element count不足以安全分配。
 5. 指令完成不等于通用数学语义成立。ArgMin负数、Unpool collision、NE option、native Concat和TDMA BOOL
    说明ABI字段或bounded completion不能代替typed numeric capability。
 6. Communication primitive必须按真实数据流命名。DTE source-gather不是shuffle/AllToAll；collective
    schedule correctness不等于cost；full-card barrier不等于subgroup barrier。
-7. 当前unknown主要来自观测面，而不是没跑。Queue resident/full、wait排他scope、physical bank/route、
-   absolute worker timestamp和DTE device phase都缺owner-backed字段；Q37已用保守compiler处理闭合。
+7. 当前unknown主要来自观测面，而不是没跑。Queue resident/full、wait排他scope、SPM bank/port penalty、
+   physical route、absolute worker timestamp和DTE device phase都缺owner-backed字段；Q37已用保守compiler处理闭合。
 
 ## 对Q38和后续工作的约束
 
@@ -220,8 +232,10 @@ promotion winner的fresh correctness；静态`EstimatedBenefit`不代签这两�
 - Raw Direct-DTE async correctness不能代签current production sender overlap：现行TargetCall send只prepare，
   真实`send_async`发生在wait路径。Q38只有在typed DTE issue与exact wait/release、CRT及model issue point同批
   闭合后，才能生成DTE+NCC overlap candidate。
-- Planner不做SPM/DDR bank coloring，不写伪latency，不扩大default wait scope；mapped-SPM和cacheable DDR
-  使用不同publication合同。
+- Planner不做DDR coloring或hard SPM bank coloring，不写伪latency，不扩大default wait scope；Q49 SPM allocator
+  只可在capacity/range/alignment/lifetime、actual high-water、fragmentation及其它candidate-visible primary
+  cost均相同的placements之间使用offset-derived bank phase最后tie-break，且不得
+  因此spill、拆region、插join或改变执行顺序。mapped-SPM和cacheable DDR使用不同publication合同。
 - Floating correctness按operation选择exact或统一typed tolerance；`+0/-0`差异不伪报失败，但special
   value、layout、guard、index和physical span不能被容差掩盖。
 - 新production producer可以建立一个能区分新compiler选择的纵向case；不得回放历史输出，也不得重跑已有

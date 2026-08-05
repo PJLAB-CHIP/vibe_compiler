@@ -1268,6 +1268,6 @@ These are intentionally not claimed as statically complete:
   contract.
 - Raw DTE multi-destination broadcast/scatter/shuffle policies outside the
   documented unicast/RDMA/WDMA helper path.
-- Exact SPM bank mapping and 64 KiB parallel allocator coloring; the snapshot
-  does not prove a 64 KiB hard ABI. Allocation policy belongs to `tasks/09`, and
+- Exact SPM mapping/penalty beyond the authoritative SPM1 design's 8×2048-bit LSB-interleaved coarse phase,
+  and 64 KiB parallel allocator coloring；this snapshot does not prove a 64 KiB hard ABI. Allocation policy belongs to `tasks/09`, and
   hardware validation belongs to `tasks/16`.

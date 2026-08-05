@@ -296,7 +296,7 @@ page dossier；表格内容不是最终页面栏目。
 
 | 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
 |---:|---|---|---|---|
-| 61 | Structured task → TileRegion | 用matmul/load/store case展示result tile如何决定operand slices、tile loop和logical movement；旁边放Tensor→TileRegion真实IR。 | tensor iteration space折叠为tile任务图，slice关系与SSA同名。 | TensorProgram→TileRegion tests；尚不出现physical offset。 |
+| 61 | Connected dataflow → maximal SPM residency region | 用matmul/load/store case展示result tile如何决定operand slices、tile loop、resident chain和真实DDR cut；旁边放Tensor→maximal TileRegion真实IR，不建立task与region一一对应。 | tensor iteration space折叠为connected tile dataflow，slice关系、SSA与SPM驻留边界同名。 | complete-rank TensorProgram→TileRegion tests；尚不出现physical offset。 |
 | 62 | Buffer roots 与 physical placement | 展示DPS/tensor use如何成为memref root、alias和function boundary；列64B buffer alignment与后续256B planner alignment的区别。 | tensor SSA→buffer root/alias forest→memory-space typed memrefs；真实before/after IR嵌入。 | bufferization options/tests；不能混淆两类alignment。 |
 | 63 | TileRegion → Instr | 4×8 FP16 case：tile.load/fill/elementwise/store→RDMA/fill/NCC elementwise/WDMA/join，`4×8×2=64B`。 | Tensor task、TileRegion和Instr三段连续机制图；engine lanes和completion清楚。 | `convert-tile-region-to-instr.mlir::load_compute_store` fresh IR。 |
 | 64 | DMA descriptor geometry | 拆解`byte_count`、`inner_bytes`、iterations、strides、src/dst offsets；用连续与二维stride各代入一次。 | descriptor字段环绕地址几何，数值从memref/subview逐步推导。 | movement lowering与descriptor tests；不把envelope当traffic。 |

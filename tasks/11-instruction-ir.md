@@ -546,11 +546,12 @@ worker进入ordered-pending frontier，matching `wafer.instr.ncc_join`只完成�
 NCC join不能完成Direct DTE。generic async
 completion proof不替代SPM owner的DTE origin/exact-wait proof；SPM当前保守拒绝所有loop-carried async token。
 `busytable`只能作为target capability/legality/cost input，不能替代token、typed join、effects或terminal
-drain。pending NCC issue可透明跨tile-region及已证明same-worker ordered reuse的loop backedge；每条function
-exit path仍必须证明participant completion闭合，并证明没有未消费DTE token、generic async task或未完成recv。
-跨tile-region的SPM buffer、alias和event
-必须由显式SSA/control-flow表达并纳入whole-rank plan；SPM planner仍拒绝nested tile-region scope，且不会为
-各region独立分配物理arena。
+drain。不携带resident data的pending NCC completion frontier可按精确event/control relation跨tile-region；
+same-worker ordered reuse的SPM root只可在同一region及已证明安全的loop backedge内延续。每条function exit path
+仍必须证明participant completion闭合，并证明没有未消费DTE token、generic async task或未完成recv。
+SPM buffer/root/alias不得跨sibling tile-region；真实data edge必须由前一region的DDR store、可信completion和
+后一region的DDR load表达。SPM planner把各region的distinct roots纳入whole-rank plan和同一physical arena，
+但仍拒绝nested tile-region scope。
 
 R3.2d建模closed `worker0/worker1/worker2` issue identity，但不暴露raw `inter_type`、register window或
 packet field；这些字段只在target lowering按current ABI编码。ordinary operator ABI使用`_v3` symbol并携带typed
@@ -1169,8 +1170,8 @@ R3.2d verifier checks only instruction legality:
   `wafer.instr.dte_send` / `dte_recv` / `dte_wait`, not ad hoc tile p2p ops or side tables；在physical
   endpoint/slot binding和target CRT support闭合前，这三类op在production target conversion中必须整体拒绝；
   Q16.T已对当前single-card fixed-size unicast profile闭合该binding，超出profile的模式继续拒绝。
-- 每个issue都有可验证completion relation；`wafer.tile.region` exit不是completion boundary，pending NCC
-  frontier可沿显式SSA/control flow传播；每条rank function exit在显式terminal participant join/exact wait后
+- 每个issue都有可验证completion relation；`wafer.tile.region` exit不是completion boundary，不携带resident
+  data的pending NCC frontier可沿显式SSA/control flow传播；SPM root/alias仍不得跨sibling region。每条rank function exit在显式terminal participant join/exact wait后
   pending-event set为空，variant gate覆盖rank中的all-and-only regions。`busytable` state
   不能作为completion proof。
 - async handle的root provenance与task identity分别验证；handle alias或path union不能冒充完成了未被terminal
@@ -1186,8 +1187,11 @@ instruction/control-flow 的唯一 code owner；symbol 或 package metadata 不�
 event、transport和target binding均通过后，才由atomic commit构造all-and-only typed C++ rank records；
 representative rank或byte-identical module不能替代未验证entry。
 
-Instruction op-local lowering 不分配 physical address range、不解决 SPM bank conflict、不选择 DDR arena
-placement，也不绑定 runtime symbol、packet bit 或 worker window。这些值属于 SPM/DDR planning 和 late
+Instruction op-local lowering不分配physical address range、不选择SPM bank phase、不选择DDR arena
+placement，也不绑定runtime symbol、packet bit或worker window。Q49 SPM allocator只可在hard-valid且
+actual high-water/fragmentation/其它candidate-visible primary cost相同的placements之间，使用
+accepted-offset-derived bank phase作最后tie-break；它不得改变spill/resident、region、DDR movement、order或join。
+这些值属于SPM/DDR planning和late
 target binding；但所有 consumer 都必须在 whole-variant commit 前调用同一个 shared physical
 geometry/range/narrowing verifier，target LLVM/package 不能成为首次发现 overflow 或 silent narrowing 的阶段。
 DDR offset assignment必须接受或拒绝当前IR中的explicit DDR views/descriptors/compiler-managed

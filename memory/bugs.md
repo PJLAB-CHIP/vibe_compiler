@@ -273,16 +273,17 @@
   storage编码，capability matrix则实际执行每个TableGen-declared convert kind，不能只证明switch有case。任何基于
   MLIR type的分类（包括program-boundary dtype）必须先判具体`FloatTF32Type`，再判会同时命中的通用`isF32()`。
 
-## 2026-07-13 region result必须继承yield值的memory root relation
+## 2026-07-13 DDR region result必须继承yield值的DDR root relation
 
 - 现象：Tiny Llama的accepted DDR alloc全部获得offset 0；每个tile region内部读写本身合法，但后续region同时消费
   多个上游result时，早先结果已经被相同arena range覆盖，reference输出丢失residual并接近零。
-- 根因：lifetime dataflow把tile-region block argument解析回outer operand，却只为view-like和`scf.if/for`传播
-  op result root；`wafer.tile.yield`到`wafer.tile.region` result的SSA alias relation缺失，compiler-managed root
+- 根因：DDR lifetime dataflow把tile-region block argument解析回outer DDR operand，却只为view-like和`scf.if/for`传播
+  op result root；`wafer.tile.yield`到`wafer.tile.region` result的DDR SSA alias relation缺失，compiler-managed DDR root
   lifetime因此被错误截断在isolated region出口。
-- 修复模式：处理完region body后，按result ordinal把对应yield value的root refs传播到region result；后续SSA use
-  再自然延长原root lifetime。回归必须构造两个先后产生、随后被同一region共同消费的result，并证明它们得到不同
-  arena range；不能通过executor为每个alloc私建storage掩盖planner错误。
+- 修复模式：处理完region body后，按result ordinal把对应yield DDR value的root refs传播到region result；后续SSA use
+  再自然延长原DDR root lifetime。回归必须构造两个先后产生、随后被同一region共同消费的DDR result，并证明它们得到不同
+  arena range；不能通过executor为每个alloc私建storage掩盖planner错误。该经验不授权SPM root跨sibling
+  `tile.region`；SPM data必须保留在同一maximal region，或显式store到DDR后在下一region reload。
 # DTE wait被canonicalizer删除
 
 - 现象：带`wafer.instr.dte_wait`的collective在selected pipeline进入SPM planning时报告
@@ -1893,10 +1894,12 @@
   nested loop可递归穿过，loop/alloc视作结构节点；same-worker冲突后继保持真实issue order并继续寻找现有join。
   disjoint worker stream互不要求join，冲突cross-worker、conditional observer、DTE/Kcore/host边界仍fail closed。
   pending access之后的Free和zero-region Unknown memory observer都要求先有matching participant join；region
-  container本身透明，其nested operation、branch path和join分别在各自program point处理。
+  container只对不携带resident data的completion frontier透明，其nested operation、branch path和join分别在各自
+  program point处理。SPM data/root/alias不得因该completion规则跨sibling region。
   lit负例必须期待真正的terminal/domain-exit failure，不能继续锁定“body-local fence”这种旧实现条件。
 - 防复发：同时覆盖nested static loop正例、conditional loop负例、disjoint/conflicting multi-worker pair、
-  multi-access issue不能由单一successor错误完成、跨sibling tile-region由后续unconditional join统一收口，
+  multi-access issue不能由单一successor错误完成、跨sibling tile-region的non-data pending frontier由后续
+  unconditional join统一收口，
   以及pending issue后dealloc/Unknown observer负例和两branch各自join的region-container正例。
 
 ## 2026-07-28 软件流水的地址表达和placement事实必须各有单一owner
@@ -1923,12 +1926,15 @@
 - 现象：DDR spill/reload已被resident handoff删除后，instruction lowering仍可能在compute、reduce、
   movement或communication来源之间留下完整SPM GatherScatter；最终产物虽然正确，但会执行没有改变
   logical payload或physical map的TDMA copy。只看shape、byte count或某个通信case无法安全判断哪些可删。
-- 根因：resident promotion只闭合跨region的DDR边界，没有拥有后续instruction-level storage identity；
+- 根因：旧resident promotion只闭合跨region的DDR边界，却没有先把producer/consumer重建为同一maximal
+  residency region，也没有拥有后续instruction-level storage identity；
   `IndexRelation`/`proveMetadataView`又只证明两种view的logical-to-physical映射等价，不能单独证明两个
   allocation可合并。metadata-only `memref.cast`把静态offset放宽为dynamic以及cross-encoding destination
   的更强alignment要求，还会让本来合法的full-buffer alias被误拒绝；标准reinterpret cast也不能改变
   memref memory-space attr。
-- 修复模式：在complete-rank unplaced actual clone上统一识别exact full descriptor，从current
+- 修复模式：pre-Instr owner删除spill后必须先merge/rebuild producer/consumer为同一maximal `tile.region`；
+  sibling boundary仍存在时必须保留显式DDR movement，不能形成跨region SPM alias。随后在complete-rank
+  unplaced actual clone上统一识别exact full descriptor，从current
   root/view/type/encoding重建`IndexRelation`并证明physical map；另行证明destination first definition、
   compiler-owned source/destination origin、base-preserving view provenance、alias/effect/lifetime、
   snapshot、alignment和DTE issue-to-exact-wait区间。成功后让标准view保留source storage encoding、

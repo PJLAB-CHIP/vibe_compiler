@@ -1,18 +1,22 @@
 # Wafer SPM Memory Planning Design
 
-状态：2026-07-28同步typed NCC worker completion。本合同覆盖instruction IR上的SPM
-lifetime/range planning；async issue的全部read/write resource必须活到可信completion。当前实现对同一
-rank function中的non-nested sibling `wafer.tile.region`建立统一timeline/demand set并联合packing；tile-region
-不是completion boundary，pending NCC access可沿显式SSA/control flow跨region传播。nested/async/parallel scope和
-缺少arena/resource summary的调用保持fail closed。实现状态以`tasks/progress.md`为准。accepted fact 为
-offset-only `wafer.spm.offset`，size / bank span / alignment 由 memref type、layout 和 target policy 重算。
-allocator对candidate generator提交的每个完整clone使用同一exact gate，不识别spill/resident策略类别。
+状态：2026-08-05同步SPM驻留域和SPM1分配合同。本文覆盖instruction IR上的SPM
+lifetime/range planning；async issue的全部read/write resource必须活到可信completion。同一rank function中的
+全部`wafer.tile.region`共用一个3 MiB physical arena并联合packing，但每个region拥有自己的SPM allocation
+roots：SPM memref/root/alias不得跨sibling region。tile-region不是completion boundary，非data control/event
+relation仍可按显式SSA/control flow传播；真正跨region的数据只能经过前一region的DDR store、可信completion和
+后一region的DDR load。nested/async/parallel scope和缺少arena/resource summary的调用保持fail closed。
+实现状态以`tasks/progress.md`为准。accepted fact为offset-only `wafer.spm.offset`；size、alignment和SPM1
+bank phase均由memref type、layout、accepted offset和target policy重算。allocator对candidate generator提交的
+每个完整clone使用同一exact gate，不识别spill/resident策略类别。当前production allocator尚未实现本文的
+bank-phase最后tie-break；该实现属于Q49，本文先固定其不得外溢到candidate dataflow的终态合同。
 
 本文定义Wafer SPM bufferization、rank-local allocation和storage verification。它服务于complete-rank
 tile-dataflow candidate的合法性搜索，并在完整static rank entry上统一验证所有`wafer.tile.region`、
-structured loop和SSA data edge的memory space、range、lifetime和completion effect。`wafer.tile.region`可作为
-structured traversal fragment，不是独立physical arena或自动completion边界；跨region SPM memref/event必须以显式
-operand/result或enclosing structured control flow表达，并在whole-rank lifetime中规划。
+structured loop和SSA data edge的memory space、range、lifetime和completion effect。`wafer.tile.region`是
+maximal SPM residency domain，不是独立physical arena或自动completion边界；whole-rank planner统一放置各驻留域的
+distinct roots，并只在lifetime不重叠时复用physical offset。region边界不得携带SPM memref/root/alias；event
+可以显式跨越，但不能隐式携带resident data或替代DDR materialization。
 SPM memory planning 的 instruction-level 输入合同由
 `tasks/11-instruction-ir.md` 定义；本文只消费该层暴露的
 Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op。
@@ -47,7 +51,7 @@ selected physical encoding / transfer materialization
   -> instruction-level IR with unplaced Wafer-tagged memref values
   -> storage requirement collection
   -> liveness/effect analysis
-  -> whole-rank SPM memory planning across explicit task/region dataflow + shared physical geometry/range verification
+  -> whole-rank SPM memory planning across maximal residency regions + shared physical geometry/range verification
   -> candidate target-ABI address/range/narrowing preflight before commit
   -> target-codegen derivation from the same committed facts; runtime only binds verified manifest ABI slots
 ```
@@ -72,14 +76,16 @@ Pipeline position:
   completion/lifetime/SPM gate。SPM planner
   每次只接收candidate generator已经显式物化的一份完整whole-rank clone；输入不得由多个已经独立placement的task artifact
   拼接，所有offset、completion和lifetime facts必须从同一个完整rank clone fresh产生。candidate来自MLIR-native rewrite
-  有界组合的implementation/encoding/physical-version/transfer/residency/buffering/order alternative。region/loop间的SPM
-  value和event已由显式SSA/control-flow连接，包含actual DDR
+  有界组合的implementation/encoding/physical-version/transfer/residency/buffering/order alternative。每个
+  `tile.region`拥有自己的SPM roots；同region内SPM value/event由显式SSA/control-flow连接，sibling region之间的
+  data edge已经物化为DDR store/completion/load，非data event可显式继续。输入包含actual DDR
   tile views、unplaced `memref<..., #wafer.memory<spm, layout>>` values，以及selected physical encodings、
   explicit materialization、effect/order 和 target SPM policy。
 - Current stage responsibility:
   在每个complete rank entry上对`#wafer.memory<spm, layout>` memref做SPM memory planning，
-  计算 offset/end/bank span、alignment、lifetime/reuse、must-alias/must-not-alias、reserved range
-  和 range-end verification；用显式generic async wait、DTE exact token/wait、typed NCC ordered-pending/
+  计算offset/end、alignment、lifetime/reuse、must-alias/must-not-alias、reserved range和range-end
+  verification；在hard-valid placement中以accepted offset可重算的SPM1 bank phase作为末级软偏好；用显式generic
+  async wait、DTE exact token/wait、typed NCC ordered-pending/
   participant join和function terminal completion proof证明该rank所有issue completion，并在variant-set gate汇总所有rank的
   通过结果。对完整candidate运行硬件arena
   fixed-capacity legality并返回validated placement和实际high-water。每个candidate clone独立规划、
@@ -116,6 +122,9 @@ Pipeline position:
   不依据presumed rank equivalence复用或跳过任何rank plan；allocator不决定哪些handoff应resident，不生成
   implementation/transfer/physical-version/per-edge frontier，也不通过给两个distinct roots分配同一offset来
   模拟copy消除，不把某个unsafe consumer拆成partial promotion；
+  bank phase preference只可在hard outcome、actual high-water、fragmentation及其它candidate-visible primary
+  cost均相同的placements之间作最后tie-break；不得把hard-valid placement变成failure，也不得改变
+  resident/spill、region数量、DDR movement、worker/order或participant join；不新增bank/color attr或side table；
   allocator本身不拥有candidate objective、不生成IIS，不让solver trace或pressure witness成为accepted attr/side table。
   `Feasible`/`ProvenInfeasible`/`ResourceExhausted`、validated high-water和typed failure是唯一反馈；选择、
   邻居生成和stop policy由06拥有。06可以从无offset parent产生edge-residency/tile/order或terminal
@@ -156,17 +165,20 @@ captured group、选择不同task identity的`SelectLike`和非identity-preservi
 `missing_async_completion`拒绝。`scf.if`只有在task origin本来只存在于对应branch path时，result wait才能完成它；
 在分支前已经发起的不同task不能靠if选择隐式取消未选task。
 
-当前SPM实现以rank function为planning scope，对全部non-nested sibling `wafer.tile.region`统一收集demand、
-path-aware lifetime和physical arena placement；跨region value只能通过显式operand/result或受支持的
-view/select/SCF SSA edge传播。planner在完整rank function上验证typed worker NCC frontier与Direct DTE token：
-same-worker exact RAW/WAR/WAW可跨tile-region和安全loop backedge保持ordered pending，只有跨completion-domain
+SPM planning以rank function为scope，对全部non-nested sibling `wafer.tile.region`统一收集demand、
+path-aware lifetime和physical arena placement。每个region的SPM roots彼此独立；region之间只有显式DDR
+materialization或非data event/control relation，不能通过view/select/SCF结果恢复跨region resident alias。
+planner在完整rank function上验证typed worker NCC frontier与Direct DTE token：
+same-worker exact RAW/WAR/WAW可在同一region和安全loop backedge保持ordered pending；跨region时必须先按
+显式DDR materialization及其completion结束旧SPM root，只有不携带resident data的typed frontier可继续。跨completion-domain
 observer、unsafe reuse或function terminal要求matching participant join；DTE仍由path-covering exact wait完成并
 保守拒绝所有loop-carried `!async.token`。共享generic async analysis不替代DTE origin/wait legality；也不能把DDR的
 whole-entry/external-root/resource-limit语义反向引入SPM。
 
 这一实现的动态执行scope只接受由`func.func`、`scf.if`和`scf.for`顺序拥有的non-nested tile-region；
-async/parallel/unknown region owner均拒绝。SPM value不得成为`func.func`边界；tile-region外只允许显式
-tile-region operand/result和受支持的structured alias/control-flow SSA edge。唯一的helper边界是defined
+async/parallel/unknown region owner均拒绝。SPM value不得成为`func.func`或sibling tile-region边界；
+tile-region外只允许DDR value/view（function external或compiler-managed spill）和不携带resident data的typed
+event/control relation。唯一的helper边界是defined
 `async.func`的SPM formal，由tile-local call site传入且callee body须独立通过DTE/local/generic async terminal
 proof。active/async/parallel SPM scope中的indirect、external/unresolved或call graph上可能执行另一tile-region的
 direct `func.call`拒绝；whole-rank lifetime证明某个SPM allocation在兼容路径上跨过顶层/structured
@@ -192,8 +204,8 @@ live segment，不靠symbol名字判断callee行为，也不形成跨过程summa
 输入：
 
 - transformation-local whole-variant candidate clone 中的完整 static rank programs；其中同一rank function的
-  non-nested sibling `wafer.tile.region`共享一个physical allocation scope，显式SSA boundary value参与统一
-  lifetime/packing，rejected clone 必须整体丢弃。
+  non-nested sibling `wafer.tile.region`共享一个physical allocation scope，但每个region提供distinct SPM
+  allocation roots；region间data edge已显式物化为DDR store/completion/load，rejected clone必须整体丢弃。
   SPM memory planning 不直接消费
   target-abstract tile-region IR，而消费instruction legalization生成的instruction-level IR with unplaced
   Wafer-tagged memref values。
@@ -202,8 +214,8 @@ live segment，不靠symbol名字判断callee行为，也不形成跨过程summa
   accumulator/psum/staging 分类、instruction family、effect event 和 async policy。
 - `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
   token/wait 和 staging storage。
-- target policy：SPM range、reserved range、alignment、coloring preference。
-- 每个 region 内的 structured control-flow、SSA/alias relation、op effect、token、participant join/exact wait/barrier 和
+- target policy：SPM range、reserved range、alignment和bank-phase soft preference。
+- 每个 region 内的 structured control-flow、SPM SSA/alias relation、op effect、token、participant join/exact wait/barrier 和
   terminal completion boundary，以及 variant 中 all-and-only region/rank coverage。
 
 输出：
@@ -330,11 +342,13 @@ V0 规则：
   multi-instance/ping-pong placement，必须fail closed。
 - 非repeatable branch buffer只有在control-flow证明互斥时才能复用；`scf.for`内的分支每个动态iteration可重新选择，
   其相反branch path对packing仍按may-overlap处理。
-- region内的nested control-flow不自动截断lifetime；`wafer.tile.region` isolation禁止隐式capture，但显式SPM
-  operand/result是合法跨sibling-region data edge。planner必须沿yield、region result和consumer operand传播同一个
-  allocation root；nested `wafer.tile.region`仍共享同一physical arena且当前结构化拒绝。不能从名字、task顺序或
-  isolation trait恢复跨region SPM alias。
-- tile-region exit不自动收口pending NCC access；它们可沿显式SSA/control flow进入后续region。每条rank
+- region内的nested control-flow不自动截断lifetime；`wafer.tile.region` isolation禁止隐式capture，且SPM
+  operand/result不得形成跨sibling-region data edge。同一resident allocation root的yield/result/consumer链必须
+  保留在一个maximal region；selected spill则结束该root，并由后续region的DDR load建立新root。nested
+  `wafer.tile.region`仍共享同一physical arena且当前结构化拒绝。不能从名字、task顺序或isolation trait恢复
+  跨region SPM alias。
+- tile-region exit不自动收口pending NCC access；不携带resident data的typed completion frontier可沿显式
+  control/event relation进入后续region。每条rank
   function exit前必须用typed participant join/exact wait收口所有path上的pending NCC/DTE event，不能用
   “后续package/runtime会等待”作为lifetime证明。
 
@@ -391,8 +405,9 @@ V0 event model：
 - loop backedge 让loop-carried value跨iteration live；body-local allocation/task被携带时拒绝静态单地址规划。
 - 非循环分支只有在control-flow可证明互斥时共享lifetime slot；loop-local repeatable branch不能证明全执行互斥。
 - dataflow/lifetime analysis在完整rank function的统一timeline和demand set上运行；nested control-flow和
-  tile-region exit都不清空pending events。non-nested sibling region可通过显式operand/result共享SPM allocation
-  root和typed NCC frontier并进入同一次packing；nested tile-region scope仍在analysis前拒绝。variant gate要求
+  tile-region exit都不清空pending events。non-nested sibling region的distinct SPM roots进入同一次packing，
+  typed NCC frontier可按精确event/control relation延续，但SPM allocation root不得跨region；nested tile-region
+  scope仍在analysis前拒绝。variant gate要求
   all-and-only regions均已规划，且每条function exit的pending set为空。
 
 这个 event model 只用于 analysis 和 verifier 可复核的 lowering；它不是新的 schedule attr。
@@ -423,20 +438,34 @@ alignment：
 - hard alignment 来自 wrapper/op verifier、physical layout、stride/range-end 规则。
 - 256B 是 line/layout padding 粒度，也是普通 allocation 的保守 preferred alignment。
 - 64KB 只是在历史 parallel allocator 中出现过的 page/color 候选粒度；当前 register/library
-  证据没有证明它对应物理 bank 或硬件 legality。在 board offset sweep 校准前，不能把它固化为
-  overlap-critical allocation 的固定粒度。
+  证据没有证明它对应物理 bank 或硬件 legality，不能把它固化为overlap-critical allocation的固定粒度。
 
-V0 对 coloring 的处理：
+SPM1 bank placement事实与策略：
 
-- 普通 buffer 不做 hard coloring。
-- overlap-critical buffer只有在current target policy已由board calibration提供可解释的bank/color
-  mapping 时才记录 color class；未校准时只保留 address-range/alignment 事实和 Unknown cost。
-- 只有当 scheduler 明确启用 parallel issue 且 target policy 要求隔离时，color conflict 才升级为
-  hard legality。
+- 硬件设计给出8个独立2048-bit bank、LSB interleaving，以及CT/NE/LSU/TMNOC/DTE合计
+  10读6写端口；每个bank每周期最多响应一个port request。16端口连续burst8访问的设计目标是平均
+  per-port约90%效率；阵列每周期最多服务8个bank requests，16是可能同时到达的port requests。DIDT
+  寄存器还可限制8 bank同时连续活跃比例。这些是physical placement evidence和future cost calibration输入，
+  不是新的IR语义或hard allocation legality。
+- 由256B bank宽度和LSB interleaving得到目标allocator的粗粒度bank-phase working inference：对256B对齐base，
+  `phase = (offset / 256) mod 8`，phase周期为2 KiB。该式只描述连续bank-line的起始相位；确切端口仲裁、
+  stride访问分布、DIDT配置和冲突penalty尚未校准，不能把phase相同等价为必然stall。
+- allocator始终先保留满足capacity/range/alignment/lifetime的deterministic baseline。对issue window内可证明
+  并发访问的roots，可在与baseline具有相同actual high-water、fragmentation和其它candidate-visible primary
+  cost的hard-valid offset/padding候选中优先分散起始phase；256B alignment保持不变，不引入通用2 KiB或64 KiB对齐。
+- bank phase只是等primary-cost placement的最后tie-break：没有更好phase时接受baseline；不得造成allocation failure，也不得改变
+  resident/spill、`tile.region`数量、DDR movement、worker/order或join。accepted IR仍只保存offset，phase
+  和soft score从offset及当前IR重算，不新增color attr。
+
+按本项目1 GHz粗略估算，8个bank的raw service-envelope算术为`8 * 256 B * 1 GHz = 2.048 TB/s`；
+`2.048 * 0.9 = 1.8432 TB/s`只是额外假设per-port效率目标可聚合为全bank利用率的条件说明，不是
+operating point或sustained guarantee，更不能作为candidate的
+固定duration。它与历史SPM0/RAM_ACC的1024-bit接口是不同层级。
 
 ## 8. Static Allocation Algorithm
 
-默认allocator使用受管MiniMalloc的fixed-capacity canonical search。它只消费本stage从当前IR重算出的demand、
+当前hard placement由受管MiniMalloc的fixed-capacity canonical search实现；本节步骤8定义Q49待实现的
+bank-phase最后tie-break。allocator只消费本stage从当前IR重算出的demand、
 absolute alignment、arena range和pairwise may-overlap relation，不读取op名、workload、tile shape或旧candidate历史。
 
 1. 从 instruction-level IR with unplaced Wafer-tagged memref values 收集 `BufferDemand`。
@@ -490,13 +519,20 @@ Interval {
 7. 对MiniMalloc或fallback的每个结果独立验证：placement coverage/唯一性、absolute alignment、checked end/range、
    conflict pair不得byte overlap。
 
-8. owner继续执行range/end verification：
+8. 保留上述validated placement作为hard-valid baseline；若current IR能证明一组roots处于同一并发issue
+   window，则只在hard outcome、actual high-water、fragmentation和其它candidate-visible primary cost均与
+   baseline相同，且不改变root lifetime、range、alignment或byte-overlap legality的前提下，有限枚举等价
+   offset/padding候选，以`(offset / 256) mod 8`的起始phase分散作为deterministic最后tie-break。没有更好候选时
+   原样接受baseline；被选择的候选仍须重新通过步骤7的独立validator。本步不得返回新的failure状态。
+
+9. owner继续执行range/end verification：
 
 - 检查 `base + allocated_size`。
 - 检查 wrapper begin/end range。
 - 检查 bool bitpack、stride byte count、Cx/NCx padding。
 
-9. 只返回typed result；search trace、work count、conflict encoding和fallback状态都是invocation-local diagnostic，不写IR。
+10. 只返回typed result；search trace、work count、conflict encoding、bank soft score和fallback状态都是
+    invocation-local diagnostic，不写IR。
 
 固定硬件容量下的feasibility是本stage唯一hard legality primitive。实际high-water从已经接受的placement重算并返回candidate
 owner，作为IR-derived cost；09自身不运行candidate objective或改变IR。
@@ -623,8 +659,8 @@ accepted range/arena relation；commit后package/runtime只消费
 
 ### 12.1 Accepted SPM Offset Fact
 
-当前SPM planning在instruction-level IR上使用`wafer.spm.offset` op attr表达接受的
-接受的 offset/range fact。该 attr 挂在定义 SPM buffer value 的 `memref.alloc` 上，值为
+当前SPM planning在instruction-level IR上使用`wafer.spm.offset` op attr表达接受的offset fact。
+该attr挂在定义SPM buffer value的`memref.alloc`上，值为
 `#wafer.spm_offset<offset>`：
 
 - `offset` 是allocation root在当前logical rank SPM arena中的byte offset。
@@ -634,12 +670,15 @@ accepted range/arena relation；commit后package/runtime只消费
 - `size` 来自 `computeWaferPhysicalTensorInfo(memrefType).physicalBytes`，不是 logical compact bytes。
 - `alignment` 来自 target policy 和 `memref.alloc` alignment；planner 用它验证 offset，但 accepted
   IR 不复制该输入。
-- bank span 按 256B bank-line 粒度由 `[offset / 256, ceil((offset + size) / 256))` 重算。
+- bank-line span按256B粒度由`[offset / 256, ceil((offset + size) / 256))`重算；对256B对齐base的
+  working bank phase按`(offset / 256) mod 8`重算。二者都不是accepted attr。
 
-每个logical rank的SPM window是rank-local physical arena。task/region间的SPM memref、alias和completion必须由
-当前IR的SSA/control-flow/event显式表达；当前allocator对同一rank function内全部non-nested sibling regions的
-完整traversal统一规划和packing。region result必须alias显式input或region-owned SPM allocation，任意raw escape或
-无法解析的provenance结构化拒绝。输出仍保持offset-only，size/alignment/lifetime从accepted IR重算。
+每个logical rank的SPM window是rank-local physical arena。同一rank function内全部non-nested sibling regions的
+distinct roots统一规划和packing；SPM memref/root/alias不得跨region。region result若是data，只能发布DDR
+value/view，其root可以是function external或compiler-managed spill；resident intermediate必须保留在region内部。
+non-data completion/event可由当前IR的SSA/control-flow
+显式表达。任意SPM raw escape或无法解析的provenance结构化拒绝。输出仍保持offset-only，size/alignment/
+lifetime/bank phase从accepted IR重算。
 
 当前dataflow边界：
 
@@ -665,7 +704,8 @@ accepted range/arena relation；commit后package/runtime只消费
   local issue集合，其全部SPM read/write effect按typed worker进入pending local access集合；matching
   participant join只清除覆盖的worker。same-worker exact RAW/WAR/WAW后继可接管同一root的有序访问，DTE wait
   不能消费NCC状态。
-- `wafer.tile.region` exit不执行terminal completion；pending NCC状态沿显式control flow传播。每条function exit存在
+- `wafer.tile.region` exit不执行terminal completion；不携带resident data的pending NCC状态沿显式
+  control/event relation传播，SPM root本身不跨region。每条function exit存在
   未await generic task、未等待DTE token或未join NCC participant时规划失败。可能zero-trip的loop内completion
   不能覆盖loop外pending状态；safe same-worker NCC frontier可跨backedge，但SPM仍拒绝loop-carried async token。
 - rejected/candidate offset、search trace、cost estimate 和 repair suggestion 仍是 analysis，不写入
@@ -688,11 +728,12 @@ SPM memory planning使用经典静态memory planning的离线模型，而不是�
   capacity不可行证明。
 
 solver和fallback的accepted placement均由Wafer独立validator复验。rejected/candidate offset、search work、fallback状态和
-conflict encoding都保持为analysis/debug统计，不写入`wafer.spm.offset`。后续若引入graph coloring、ILP、
-schedule-aware double buffering或bank-aware coloring，必须保持same input/output IR contract和三态结果，只改变
-analysis/search；color/bank hard constraint必须先成为显式可验证输入。
+conflict encoding都保持为analysis/debug统计，不写入`wafer.spm.offset`。后续若引入graph coloring、ILP或
+schedule-aware double buffering，必须保持same input/output IR contract和三态结果，只改变analysis/search。
+SPM1 bank phase只属于allocator内部offset选择，永远不得升级为hard constraint或改变candidate dataflow。
+未来若硬件暴露新的独立legality事实，必须另立合同，不能把它追认成phase legality。
 
-`wafer.spm.offset` 只保存 accepted offset，不保存 size、alignment、bank span、lifetime 或搜索 trace。
+`wafer.spm.offset`只保存accepted offset，不保存size、alignment、bank-line span、bank phase、lifetime或搜索trace。
 失败原因仍通过 pass diagnostic 返回，
 不写进IR；rejected/candidate offset、canonical search/fallback过程和repair suggestion都保持为analysis。
 
@@ -708,8 +749,11 @@ SPM / tile-region verifier 至少检查：
 - may-reuse buffers 的 lifetime 不重叠，或由明确 wait/barrier 收口。
 - async buffer在matching completion前不能复用；仅same-worker exact RAW/WAR/WAW ordered successor可接管访问。
 - host-visible writeback和communication boundary有明确participant join/exact wait/sync。
-- 跨`wafer.tile.region`的SPM buffer/alias/event必须由显式SSA/control-flow表达并纳入whole-rank plan；
-  所有rank function exit path的pending event set为空，variant coverage确保没有漏规划task/region。
+- 跨`wafer.tile.region`不得直接传递SPM buffer/root/alias；真实data edge必须是前一region的DDR
+  store、可信completion和后一region的DDR load。non-data event/control relation必须显式表达并纳入whole-rank
+  plan；所有rank function exit path的pending event set为空，variant coverage确保没有漏规划task/region。
+- bank phase soft preference不参与verifier legality；verifier只重算accepted offset的range/alignment/
+  overlap。任何因phase冲突拒绝hard-valid placement、插入spill/region/join或依赖bank attr的实现均违反本合同。
 - tile-region只允许sequential func/scf.if/scf.for ownership；active/async/parallel scope中的unknown/external/
   indirect或可能重入SPM的call失败。没有SPM arena/effect的closed scalar direct callee可在resident value live时
   穿过；可能执行tile-region的defined callee、external/unresolved或indirect call因缺少interprocedural
@@ -761,13 +805,14 @@ worker/effect/token合同处理；NCC completion只接受typed participant join�
   不能仅因单个case placement更紧凑而替换默认路径。
 - allocator内部repair loop：只允许有限repair；如果repair开始改变tile shape或dataflow cut，
   应交还task scheduler，而不是让allocator变成隐藏scheduler。
-- PMU 驱动 bank conflict model：当 board profiling 能稳定解释 blocking time 和 bank/color 关系后，
-  替换 V0 的 color penalty。
+- PMU驱动bank penalty：当board profiling能稳定解释blocking time、port/stride和bank phase关系后，校准
+  soft preference的penalty与DIDT条件；不改变documented LSB interleaving，也不把penalty升级为hard legality。
 - worker-local / runtime-visible / communication-only pool：当对应 dialect 和 verifier 已能表达
   ownership、visibility和typed completion边界后引入。
 
 ## 16. 参考材料
 
+- SPM1 hardware facts：`docs/wafer-hardware-instruction-set-and-programming-model.md`。
 - MLIR Bufferization / One-Shot Bufferize：<https://mlir.llvm.org/docs/Bufferization/>
 - XLA BufferAssignment：<https://openxla.org/xla/hlo_to_thunks>
 - TVM USMP：<https://discuss.tvm.apache.org/t/rfc-unified-static-memory-planning/10099>

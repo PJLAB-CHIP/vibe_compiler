@@ -91,12 +91,12 @@ Cross-document evidence summary:
 | Completion semantics | KMD compute fences are not proof of model/kernel completion in this driver snapshot. HPGR command-slot completion, async receive thread, module `completeSignal`, and stream waits are distinct observed mechanisms whose production mapping belongs to `tasks/15`. |
 | Address space and PG | BAR/ATU windows, BO pools, tile SPM/register layout, Kcore/Score firmware slots, global stream mapping table, and 8/16-tile PG behavior are source- or binary-confirmed. |
 | DTE | KMD UAPI, Kcore raw registers, direct-DTE helper, and VS D2D/P2P TLV paths are separate evidence layers. Production transport remains whatever `tasks/13`/`tasks/14` explicitly accept and board-test. |
-| Parallel/SPM bank | `serial_mode=0`, per-packet range metadata, and SPM bank-resource hazards are confirmed. Exact SPM address-to-bank mapping is unproven; 64 KiB page coloring appears only as a historical heuristic. |
+| Parallel/SPM bank | This SDK snapshot confirms `serial_mode=0`, per-packet range metadata, and SPM bank-resource hazards, but not an exact mapping. The authoritative SPM1 design separately gives 8×2048-bit banks with LSB interleaving, sufficient only for an offset-derived coarse phase; 64 KiB page coloring remains a historical heuristic. |
 
 ## Remaining Gaps
 
 1. `HardwareVerify` is the main evidence gap: PMU, MHU/power-off, DTE PMU counters, board services, and hardware state/timing paths still need board validation.
 2. `__execute_sc` is reserved/stub in the current `libinstr_tx81.a`; this snapshot does not prove a production SCALAR path. Acceptance remains with the numbered instruction and target contracts.
-3. Exact SPM bank mapping and aggressive parallel cost modeling require board sweeps or lower RTL/firmware evidence.
+3. Exact SPM port/stride conflict penalty and any mapping beyond the documented coarse LSB phase require board sweeps or lower RTL/firmware evidence.
 4. API/function semantics, instruction constraints, runtime/driver behavior, and DTE/stream/mailbox/PMU register meanings are consolidated in [tx8-interface-contract.md](tx8-interface-contract.md), with SDK/driver additions in [firmware-kuiper-runtime-hardware-analysis.md](firmware-kuiper-runtime-hardware-analysis.md).
 5. Raw multi-destination DTE modes have register evidence but incomplete public-helper evidence. `tasks/13`, `tasks/14`, and the board gates own any future compiler-facing acceptance.

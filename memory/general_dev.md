@@ -43,8 +43,8 @@
   legality。packet/register字段只能证明请求和路由，完整非零output、全range readback及双侧guard才是
   correctness oracle。
 - 板端结果必须按“已测事实→compiler/runtime消费决策”收口。若descriptor、result、guard、count和completion
-  通过，而PMU尚不能区分bank或overlap，应该分别记录“该geometry有界合法”和“当前不做bank coloring/不启用
-  overlap”，不能把整项笼统写成Unknown。Unknown只保留给确实未被区分的单一机制边界，并同时给出当前保守
+  通过，而PMU尚不能区分bank penalty或overlap，应该分别记录“该geometry有界合法”“documented bank phase
+  只作allocator软偏好”和“当前不启用未经校准的overlap收益”，不能把整项笼统写成Unknown。Unknown只保留给确实未被区分的单一机制边界，并同时给出当前保守
   行为；已经取得bounded observation的case不因缺numeric exact或性能模型退回未测试状态。
 - 每个硬件probe在实现前先写明至少两种仍可能成立的行为解释，以及哪个boundary result、raw sink、
   counter relation或guard能把它们区分开；只证明“请求完成”的smoke不能关闭机制问题。板端结果收口时必须
@@ -536,13 +536,17 @@
   tile offsets/sizes candidate evaluation lowering 的 DDR `memref.subview` producer；instruction lowering
   仍不能根据 whole-boundary shape 自己恢复 subview，closed-loop traversal / tile-shape search 归
   candidate-selection。
-- SPM/DDR accepted offsets不属于layout本身。同一rank function内的non-nested sibling `wafer.tile.region`通过
-  显式operand/result或受支持的view/select/SCF SSA edge传递SPM value，并由一个whole-function timeline/demand set
-  联合packing；每条region exit仍独立证明pending set为空。nested/async/parallel scope、raw escape和无法解析的
+- SPM/DDR accepted offsets不属于layout本身。`wafer.tile.region`是maximal SPM residency domain；同一
+  resident SPM memref/root/alias不得跨non-nested sibling regions，真实跨region data edge必须显式
+  store到DDR、完成后再load成新root。所有regions的distinct roots仍由一个whole-function timeline/demand set
+  在同一3 MiB physical arena内联合packing；region exit不自动清空pending completion frontier。nested/async/parallel scope、raw escape和无法解析的
   provenance失败；没有SPM arena/effect的closed scalar direct callee可穿过live resident，可能执行tile-region的
   callee、external/unresolved或indirect call在缺少arena/resource summary时fail closed。DDR `wafer.ddr.offset`始终是arena-relative fact，没有typed
   arena base binding时target不得把它当absolute address。physical size、alignment和bank span统一从shared
-  geometry helper推导；runtime object、physical address和packet字段不得写回planning IR。
+  geometry helper推导；Q49终态allocator可从accepted offset按`(offset / 256) mod 8`重算coarse bank phase，
+  但只在hard-valid且actual high-water/fragmentation/其它candidate-visible primary cost相同的placements间作
+  最后tie-break，不得引入bank attr、spill、region或join；当前代码是否已迁移以`tasks/progress.md`为准。
+  runtime object、physical address和packet字段不得写回planning IR。
 - reduction语义恢复不能只看yielded op class。使用`mlir::matchReduction`或等价结构匹配，证明单一combiner
   的operands精确连接reduced value与accumulator。未拆分source reduction保持原合同；candidate把一个reduction
   regroup成多个partial时，generic floating只要求exact single combiner，named floating matmul可按合法K范围切分，
@@ -839,12 +843,12 @@
   loop动态task加入captured group、SelectLike distinct task和non-identity-preserving loop recurrence拒绝；if result只完成
   origin存在于对应branch path的task。未await task与unsupported identity flow必须用不同failure class。
 - loop body allocation或task一旦通过memref/async handle跨backedge携带，就不是单个静态instance；没有显式
-  multi-instance/ping-pong placement时fail closed。non-nested sibling tile-region允许通过显式operand/result共享SPM root，
-  并在同一whole-function timeline中规划；nested tile-region仍可能在同一physical arena覆盖outer live buffer，因而当前
+  multi-instance/ping-pong placement时fail closed。non-nested sibling tile-region不得共享SPM root；每个region的
+  distinct roots在同一whole-function timeline和physical arena中规划。nested tile-region仍可能覆盖outer live buffer，因而当前
   结构化拒绝，同时保守拒绝全部loop-carried async token。
 - whole-rank SPM high-water必须从全部accepted allocation的`offset + physicalBytes`相对arena base重算，不能求和或取
-  per-region局部peak。provenance closure要沿`wafer.tile.yield -> region result -> sibling operand`延长同一root；否则
-  resident handoff会在region出口被错误截断，high-water与reuse结论都会失真。
+  per-region局部peak。provenance closure只在region内部延长同一root；跨sibling-region若没有显式DDR
+  store/completion/load必须拒绝，不能为修补high-water而恢复隐藏resident handoff。
 - DDR module同时含function planning scopes和function外compiler-managed allocation时没有单一timeline；必须拒绝mixed scope，
   不能因发现func.func就静默跳过top-level allocation。
 - static memory-space type不是storage provenance。`to_memref`、memory-space cast、ViewLike/control-flow result及
@@ -1086,9 +1090,10 @@
 - SCF流水会把原始index改写成`iv + stage displacement`等静态表达式。DDR planner、Target preflight和其它
   downstream consumer应共享一个overflow-safe、fail-closed的静态index range evaluator，支持constant-bounded
   induction variable及受限add/sub/mul/div；不能一个层接受而另一个层仍只认bare IV。
-- same-worker pending NCC stream可跨statically non-empty nested loop和tile-region边界传播。loop container、
-  loop-local allocation和纯pointer permutation是结构节点；后续same-worker issue可接管有序访问责任，最终由
-  一个unconditional participant join收口。conditional region、Direct DTE/Kcore observer、cross-worker冲突、
+- 不携带resident data的same-worker pending NCC completion frontier可跨statically non-empty nested loop和
+  tile-region边界传播。loop container、loop-local allocation和纯pointer permutation是结构节点；同一SPM
+  root的后续same-worker issue只在本maximal region内接管有序访问责任，跨region则是distinct root与显式DDR
+  materialization，最终由一个unconditional participant join收口。conditional region、Direct DTE/Kcore observer、cross-worker冲突、
   root/range Unknown仍必须fail closed，不能为了让planner通过而补逐iteration waitfinish。
 - current target identity由compiler固定。候选生成必须离线确定，
   不得读取实卡身份、Q9 profiler、PMU、runtime历史或本地校准缓存；板端结果只能离线验证实现，若要改变静态
@@ -1152,8 +1157,10 @@
 - DDR read/write先在16-rank完整domain求和，再只除以一次整卡带宽。`200 GB/s`只作DDR lower，`150 GB/s`
   是整卡nominal operating point；`128 GB/s`分别作为directional link reference和显式分开的DTE endpoint
   point prior。modeled deterministic shortest path必须标`EstimatedRoute`，不能冒充actual hot-link。
-- point model还显式携带message `α`、maximum-route fill hop、SPM和control prior；当前Direct-DTE
-  `α=10 us`是versioned policy prior，不是测量，未来由matched board calibration替换。论文只贡献
+- point model还显式携带message `α`、maximum-route fill hop和control prior；当前Direct-DTE
+  `α=10 us`是versioned policy prior，不是测量，未来由matched board calibration替换。历史每tile
+  `128 GB/s`来自SPM0/RAM_ACC 1024-bit接口，不能作为SPM1 aggregate rate；SPM1 bytes可精确计数，但在
+  sustained/port penalty校准前不使用单一flat duration。论文只贡献
   `α+nβ`、congestion/dilation、
   work-centric partition和double-buffer resource-envelope等结构，绝对参数不能直接移植。
 - 没有qualified multi-buffer时，DDR/NoC/compute按sequential phases计费；只有current-IR fixed-slot、

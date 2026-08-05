@@ -249,9 +249,16 @@ Tensor logical-fill不能替代这些扩展gate。
 - WDMA source在completion前不可复用，fence后可以；
 - RDMA destination、compute operands/results、DTE send/recv staging同理；
 - branch mutually-exclusive reuse与join后lifetime；
-- isolated `wafer.tile.region`内loop-carried lifetime和path-specific terminal completion；跨non-nested sibling
-  regions的显式SPM operand/result正例必须进入同一whole-function lifetime/packing，重叠需求产生容量失败，
-  non-overlap需求证明offset reuse；raw escape、无法解析provenance、nested/async/parallel scope为negative；
+- isolated maximal `wafer.tile.region`内覆盖chain、diamond、fanin/fanout、loop-carried lifetime和path-specific
+  terminal completion；variadic inputs/results及多边fan-in/fan-out不设固定数量上限；
+- 跨non-nested sibling regions直接传递SPM memref/root/alias是negative；多region正例必须包含前一region的
+  DDR store、可信completion和后一region的DDR load。各region的distinct SPM roots进入同一whole-rank
+  physical arena packing，重叠需求产生容量失败，non-overlap需求证明physical offset可复用；raw escape、
+  无法解析provenance、nested/async/parallel scope为negative；
+- allocator bank-phase正例只比较同一hard-valid demand/lifetime、actual high-water、fragmentation和其它
+  candidate-visible primary cost下的offset选择，并从accepted offset重算`(offset / 256) mod 8`；
+  同phase压力不得把Feasible变成failure，也不得改变spill/resident、region数量、
+  DDR movement、worker/order或join。不存在bank/color attr，且测试不声称固定latency收益；
 - resident SPM跨closed scalar direct callee可通过；可能执行tile-region的defined callee、external/unresolved和
   indirect call在缺少interprocedural arena/resource summary时fail closed；
 - missing/wrong-engine fence不能释放resource；
@@ -442,8 +449,9 @@ Q46必须从同一个production source和complete-rank actual-clone owner证明l
   physical relation有hole/overlap的negative。
   collective-connected component必须由whole-variant coordinator从all-rank actual IR一次派生transient proposal并原子物化，
   proposal立即销毁且不成为shared state/sidecar，禁止per-rank Top-4 Cartesian；
-- full-buffer resident handoff在descriptor展开前复用producer已有SPM encoding；不兼容consumer保留DDR spill sibling，late
-  transfer cleanup不从descriptor反推逻辑语义；
+- full-buffer resident handoff只有在pre-Instr owner已把producer/consumer收入同一maximal region时，才在
+  descriptor展开前复用producer已有SPM encoding；未合并的sibling boundary或不兼容consumer保留显式DDR
+  spill sibling，late transfer cleanup不从descriptor反推逻辑语义或发明跨region alias；
 - baseline与winner都沿`wafer-compile`完成source-to-package和fresh no-card。无卡通过后只能标`board-ready`；真实板端使用
   FP16/BF16串行执行matched baseline/winner，output/guard正确、targeted movement bytes/commands下降且性能不劣化后才可标`done`。
 
@@ -455,8 +463,10 @@ Q49只接受默认`wafer-compile`产生的complete-rank actual clones和完整�
 DDR往返、GS/layout movement和`NCCJoin`。不能用某一项下降而把work转移到未统计engine或额外recompute掩盖另一项。
 
 - **decision boundary**：post-SPMD完整rank structured SSA在任何Tile→Instr、SPM/DDR placement或compiler-derived join前
-  进入06；每条edge分别验证tile propagation、numeric、storage、completion和rank-coupling legality。`tile.region`、
-  shape变化、layout不兼容和collective均不自动切component或强制intermediate store/reload；external input仍有typed load。
+  进入06；每条edge分别验证tile propagation、numeric、storage、completion和rank-coupling legality。旧source scope、
+  shape变化、layout不兼容和collective均不自动切component或强制intermediate store/reload；winner materialization
+  重建maximal SPM residency `tile.region`，只有真实selected DDR store/completion/load cut形成sibling regions，
+  external input仍有typed load。最终IR不得保留跨sibling-region SPM SSA；
   source-observable ordering由control-flow、SSA event/token和typed effects表达，只约束schedule/completion维度；
   unsupported control/numeric path按对应维度fail closed；
 - **actual-clone search**：每个frontier survivor是actual unplaced rank clone，factor proposal立即materialize后销毁；

@@ -28,7 +28,8 @@ post-SPMD complete-rank structured IR
   cross-stage component/fusion graph、layout plan、repair sidecar或新schema。
 - 新算法只按 SSA、structured interfaces、`IndexRelation`、effects、typed numeric/target capability分派；禁止模型名、
   参数名、固定shape和字符串op-name matcher。
-- `tile.region`保持语义容器，不作为fusion、allocation、completion或lowering单元。
+- `tile.region`物化selected dataflow中的maximal SPM residency/SSA containment domain；它不是独立physical
+  arena、candidate-selection、completion或lowering单元。全部sibling regions仍由whole-rank allocator联合packing。
 - allocator、conversion、completion和all-rank verifier仍是独立owner；只有06 decision owner生成sibling和选winner。
 - baseline永远通过同一生产pipeline和late exact gates，不调用被退役的兼容路径。
 - 每个checkpoint必须包含真实source到actual rewrite再到该阶段所有terminal gates；空框架、手工pass或局部fixture不算闭合。
@@ -126,8 +127,11 @@ Gate：
 
 - chain、diamond、fanin/fanout、shared input、multi-root、structured control flow、unknown/observable effect的component与
   edge-legality正负例通过；
-- `tile.region`、shape变化、layout不兼容和collective不会自动切component或强制intermediate store/reload；external input仍按
-  storage semantics显式load，但不因此形成standalone lowering边界；
+- 旧source scope、shape变化、layout不兼容和collective不会自动切component或强制intermediate store/reload；
+  winner随后重建maximal SPM residency regions。最终sibling-region data edge必须是显式
+  store→completion→load，不能保留SPM SSA；external input仍按storage semantics显式load，但不因此形成
+  standalone lowering边界；
+- final `tile.region` inputs/results为variadic，chain、diamond、fanin/fanout和multi-root不受人为边数上限；
 - source-observable ordering只阻断对应schedule/completion action；unsupported numeric reorder、不可表示control flow及其它
   未知legality也只阻断其对应维度，只有所有可用实现都无法跨越时才成为component separator；
 - production candidate construction不再调用单task独立Tile→Instr/SPM/DDR再import的路径；旧死代码统一在C6删除；
@@ -180,6 +184,8 @@ Gate：
    SPM/DDR planner只返回validated placement/high-water或typed failure；decision owner从本次evaluation仍持有的无offset actual
    Tile parent生成有限retile、spill低收益edge、share→recompute、layout/route、loop order和double-buffer siblings；allocator不返回repair。
 5. all-rank collective/peer alternatives共同物化；rank pruning保留可能组成whole-card winner的actual clones，tuple从current IR逐项重证。
+6. SPM movement bytes保持final-IR exact work/pressure维度；删除现存NoC profitability中的历史per-tile
+   `128 GB/s` SPM flat-duration项。bank phase只作allocator最后tie-break，不产生candidate-level latency或收益。
 
 建议初始确定性预算（由C0 fresh work counters标定后冻结）：
 
@@ -198,6 +204,7 @@ Gate：
 - 每个survivor都是actual clone，factor/search对象销毁后verifier和lowering结论不变；
 - packing failure不留下partial offsets，不使allocator修改tile/layout/order；
 - serial/parallel frontier和winner确定一致；
+- final cost不再包含SPM0/RAM_ACC 1024-bit接口外推的per-tile SPM flat duration；
 - 不出现“region/task数 × recipe数”的full lowering笛卡尔积，expanded states、terminal lowering次数和RSS保持显式bounded；
 
 不算完成：独立选layout、resident和NoC再做artifact Cartesian product，或用外部solver结果作为production语义输入。
@@ -218,7 +225,10 @@ completion，再执行一次packing与独立alias验证。
    可安全coalesce的必须合并。地址复用只能生成bounded explicit siblings：separate slot、reorder、worker change、join或spill。
 5. 每个completion sibling按`lifetime/conflict → SPM packing → physical-alias verification`执行一次。worker/order/slot/join sibling
    从无offset Instr parent生成；需要retile/spill/layout改变时回到同一evaluation的actual Tile parent生成新structured sibling。
-   allocator不插join、不修改order，也不原地迭代到fixed point。
+   allocator不插join、不修改order，也不原地迭代到fixed point。它保持hard feasibility/exact verification owner，
+   只允许在hard-valid且actual high-water/fragmentation/其它candidate-visible primary cost相同的placements内，
+   使用offset-derived bank phase作最后tie-break；该偏好不得反馈或改变spill、region、
+   DDR movement、worker/order或join。
 
 Gate：
 
@@ -257,7 +267,7 @@ Gate：
 Gate：
 
 - native、partial和online三类分别有typed positive/negative与numeric oracle；unsupported路径fail closed；
-- collective前后resident edge没有因container边界产生DDR round-trip；
+- collective本身不切region；collective前后仍resident的edge位于同一maximal region且没有DDR round-trip；
 - score/partial/state traversal有complete coverage、tail和completion证明；
 - 至少一个真实PyTorch-exported cached-attention或prefill case由production cost/legality实际选中partial或online sibling，且
   final IR证明没有完整score/probability tensor的DDR store→reload；仅让synthetic positive能生成candidate不算完成；
@@ -278,6 +288,8 @@ Gate：
 - spill/spill-ready/resident/resident-ready等artifact-kind Cartesian machinery；
 - all-or-nothing full-buffer residency decision owner；
 - late NoC-resident tuple decision owner；typed peer/collective mechanics迁入06/13 action library；
+- 历史NoC profitability中的per-tile SPM flat-rate duration及其配置/测试期望；SPM bytes保留为exact work，
+  不用未经校准的单一rate计时；
 - 被统一owner吸收的scope/layout/residency/NoC独立public optimization flags；
 - 任何隐藏compatibility pipeline、手工pass拼接或名字/shape matcher。
 
@@ -291,8 +303,9 @@ qualification选择仍可用compiler-private typed seam，但不是public optimi
 
 - redundant transfer、GS coalescing、view folding和local LICM只作policy-free generic canonicalization；
 - worker placement、fixed-slot、PBQP和NoC lowering保留为typed mechanics/action library；
-- SPM/DDR allocator继续pure exact gate；
-- `tile.region`继续表达structured traversal和SSA，不因cutover删除。
+- SPM/DDR allocator继续作为hard exact gate；SPM allocator只在hard-valid placements内用可重算bank phase作
+  末级软偏好，不拥有candidate dataflow选择；
+- `tile.region`继续表达maximal SPM residency、structured traversal和SSA containment，不因cutover删除。
 
 Gate：
 
@@ -329,7 +342,8 @@ Gate：
 
 - oriented GEMM + effect-proven read-only weight的exact composed mapped transfer，无runtime full transpose；
 - LHS load/layout不随N-loop重复；
-- 跨region resident edge无WDMA/RDMA；
+- spill消除后producer/consumer合并进入同一maximal region，intra-region resident edge无WDMA/RDMA；
+- sibling region之间没有SPM memref/root/alias，且只由显式DDR store/completion/load连接；
 - collective有正确wait/completion但无自动DDR；
 - same-worker ordered chain不join，cross-worker/range reuse/observer必须join；
 - chain、diamond、fanout/fanin、multi-root、reduction、control flow和effect barrier；

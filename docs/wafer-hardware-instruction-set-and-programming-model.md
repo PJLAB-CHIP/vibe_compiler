@@ -23,6 +23,7 @@
 | 来源 | 路径 | 用途 | 可信度 |
 | --- | --- | --- | --- |
 | 架构参数文档 | 未vendored official-doc snapshot中的`架构参数说明.pdf` | tile 数量、SPM、算力、DDR/C2C/NoC 带宽 | 高；文件名只作provenance，不是repo路径 |
+| SPM1硬件设计资料 | 未vendored official-doc snapshot中的《02. TX8 HW & OpLib & Runtime》pp.36--37 | SPM1容量、bank/port、交换网络、ECC、DIDT和效率目标 | 高；只记录文档事实，不把外部文件路径写成仓库依赖 |
 | Direct DTE 文档 | 未vendored official-doc snapshot中的`Kcore Direct DTE编程使用文档.pdf` | DTE/FSM 编程模型、同步方式、DTE 资源约束 | 高；文件名只作provenance，不是repo路径 |
 | Runtime 文档 | 未vendored official-doc snapshot中的runtime/C-intrinsic/toolchain PDFs | Host/AP/Kcore 调度、cluster kernel、ringbuffer、C-intrinsic 模型 | 中高；原始文件不属于当前checkout |
 | TX8 逆向证据 | `docs/tx8-deps-reverse-engineering/tx8-interface-contract.md` | `tx8_deps` 静态反汇编后的接口语义、MMIO surface、runtime/driver 行为、DTE/stream/mailbox/PMU、bootparam/TLV | 高；当旧公开资料与反汇编口径冲突时，回到对应header、binary和register-level evidence交叉确认 |
@@ -440,7 +441,45 @@ NCx retained C0 tail:
 `[M,1000]`，`Cx` full-block order 是 `[16][M][64]`，logical `(m,c)` 的 offset 是
 `(c/64) * M * 64 + m * 64 + (c%64)`，不是 `m * 1024 + c`。
 
-### bank alignment、SPM0 bank conflict 和 base address
+### SPM1 bank、端口和带宽边界
+
+官方硬件设计资料把SPM1定义为每个Tile唯一的全局计算缓存；架构因软件考虑取消二级计算缓存，
+因此片上驻留规划只面对这一块3 MiB空间。SPM1由8个独立2048-bit memory bank和交换网络组成，
+采用LSB interleaving。每个bank每周期最多响应任意一个访存端口的请求；总端口构成为：
+
+| 模块 | 读端口 | 写端口 |
+| --- | ---: | ---: |
+| CT | 2 | 1 |
+| NE | 4 | 1 |
+| LSU | 2 | 2 |
+| TMNOC | 1 | 1 |
+| DTE | 1 | 1 |
+| 合计 | 10 | 6 |
+
+因此阵列每周期最多服务8个bank requests；16是可能同时到达交换网络的port requests，不是16个都能
+在同一周期被bank阵列完成。交换网络共四层：前两层转发访问请求以及写数据/掩码，后两层转发读数据。设计目标是在上述16个
+端口同时、连续、以burst8访问时，平均每端口传输效率约90%。每个bank内SRAM独立支持可配置ECC；
+ECC错误记录寄存器并向A55上报中断。为抑制DIDT，SPM还允许用寄存器限制8个bank每周期同时连续
+活跃的最大比例，并报告与bank访问相关的max-power信息。
+
+本项目粗略估算模型按1 GHz工作频率，bank阵列的raw service-envelope算术为：
+
+```text
+8 banks * 2048 bit/bank/cycle * 1 GHz = 2.048 TB/s
+```
+
+`2.048 * 0.9 = 1.8432 TB/s`只是一项条件算术说明，还额外假设per-port效率目标能够聚合为全bank
+利用率；它不是operating point或sustained bandwidth guarantee，也不能直接除candidate bytes得到执行时间。端口仲裁、真实stride访问分布、
+DIDT配置和冲突penalty仍需profile evidence。
+
+由2048-bit即256B bank宽度和LSB interleaving可建立目标allocator使用的粗粒度working inference：对256B对齐的
+线性buffer base，起始bank phase近似为`(offset / 256) mod 8`，周期为2 KiB。compiler设计只允许在
+hard-valid且actual high-water/fragmentation/其它candidate-visible primary cost相同的SPM placements之间，
+用该phase作最后tie-break；它不构成verifier legality，不得导致DDR spill、拆分`tile.region`、增加join
+或改变执行顺序。accepted IR仍只保存SPM offset，phase从offset重算。精确bank-select/port arbitration和
+penalty不由该近似声称。
+
+### layout bank alignment、SPM0 conflict 和 base address
 
 `common_tensor_info_generate_i64` 在 C alignment 之后继续做 256B bank alignment。`bank_align_elem(dtype)` 把 256B 换算为元素数：
 
@@ -467,7 +506,7 @@ NCx:
 
 `get_tensor_align_info` 只是 metadata helper：`LAYOUT_Cx` 时 `n=1`、`hw=product(shape[0..dim-2])`；`LAYOUT_NCx` 时 `n=shape[0]`、`hw=product(shape[1..dim-2])`；随后复用 `get_cx_align_base`、`get_CxC0`、`common_tensor_info_generate` 得到 `c_align_base/cx/c0/batch_mem_size`。它不引入新的 layout 语义。
 
-SPM0 bank conflict在parallel mode下影响ready/调度；当前静态资料没有把它记录为普通address的通用hard reject。官方HW资料显示：NCC打包指令时读取记录in-flight bank与DDR范围的SPM/DMA busytable；queue head只有在对应bank无冲突时ready，RDMA/WDMA还检查DDR范围overlap。SPM0地址高位参与bank选择；两个读通道和一个写通道同时访问同一bank时写优先，读通道等待或经RAM_ACC/Ram_acc_phy缓存和重放。
+特定SPM0/RAM_ACC前端访问路径的bank conflict在parallel mode下影响ready/调度；当前静态资料没有把它记录为普通address的通用hard reject。官方HW资料显示：NCC打包指令时读取记录in-flight bank与DDR范围的SPM/DMA busytable；queue head只有在对应bank无冲突时ready，RDMA/WDMA还检查DDR范围overlap。该历史路径中SPM0地址高位参与前端bank/resource选择；两个读通道和一个写通道同时访问同一resource时写优先，读通道等待或经RAM_ACC/Ram_acc_phy缓存和重放。本文没有足够证据把该前端命名/高位规则等同于SPM1阵列的LSB interleaving，compiler placement只消费前一小节的SPM1 coarse phase。
 
 SPM0和RAM_ACC的内部接口宽度是1024 bit，非1024-bit边界访问会通过Ram_acc_phy对齐并可能产生性能损失。写数据通路没有反压能力；多周期写回会要求读地址生成逻辑插入间隔。这些是board/profile与cost evidence输入，不直接定义compiler legality或cost公式；对应owner见`tasks/09`/`tasks/16`。
 
@@ -485,7 +524,10 @@ PIPE/执行单元内不同指令的数据并行度不一定都是 1024 bit；当
 | `256B` | SPM bank/line宽度、Cx/NCx batch对齐与`bank_align_bytes_chip()`返回值 | 有直接helper/header证据 |
 | `64KB` | 3MB空间可按page切分，历史parallel allocator用作color heuristic | 没有register legality或精确bank-mapping证据，不能由本文提升为Wafer policy |
 
-因此`64KB`不等于物理SPM bank，也不能保证任意两个64KB对齐buffer无冲突。exact mapping只能由board microbench或更低层证据校准；是否采用page-color heuristic由`tasks/09`/`tasks/16`决定。
+因此`64KB`不等于物理SPM bank，也不能保证任意两个64KB对齐buffer无冲突。SPM1的LSB interleaving和
+256B bank宽度足以支持上述offset-derived coarse phase；但精确port/stride arbitration、DIDT条件和冲突
+penalty仍只能由更低层证据或board microbench校准。是否采用soft placement heuristic由`tasks/09`决定，
+验证边界由`tasks/16`决定。
 
 tx8_deps 反汇编没有发现把 `64KB` 写成硬件寄存器合法性约束的证据：
 
@@ -497,7 +539,10 @@ tx8_deps 反汇编没有发现把 `64KB` 写成硬件寄存器合法性约束的
 | `getreg()` / `get_ncc_reg()` | NCC MMIO base 为 `0x01000000`；per-worker window 用 `(worker % 3) << 20` 加到 base 上，这是 worker register window 选择，不是 SPM operand alignment |
 | `__execute_ct/ne/rdma/wdma/td()` | 发射路径抽取 `inter_type[9:8]` 得到 worker，按 worker window 直接写 CT/NE/RDMA/WDMA/TDMA 参数寄存器和 `cmd_valid`；未看到 SPM base 64KB 对齐的 reject、mask 或 rounding |
 
-历史allocator coloring和scheduler gating只能作为候选heuristic来源；它们不是硬件事实，也不在本文形成长期策略。任何64KB coloring、bank-set approximation或overlap scoring都必须在编号owner中声明，并用PMU/board evidence校准。
+历史64KB allocator coloring和scheduler gating只能作为反例或候选heuristic来源；它们不是SPM1 bank事实，
+也不在本文形成长期策略。编号owner可以直接消费documented LSB interleaving形成offset-derived soft phase；
+任何固定conflict penalty或port-overlap收益仍必须由PMU/board evidence校准；coarse phase永远不升级为
+hard bank legality。未来若出现新的独立legality事实，必须另立合同。
 
 ### 公开实现线索和反例
 
@@ -650,5 +695,6 @@ target CRT command ABI/prototype已由`tasks/14`拥有。本文观察到的full-
 
 Conv optional/fused字段、除上述Memset外的TDMA variants、Peripheral bitcount、raw DTE non-unicast、
 SCALAR/CSR ordinary execution等只作为能力类别和证据缺口保留；是否进入production IR/ABI以及当前完成状态
-只看编号设计与`tasks/progress.md`。现有证据表明SPM bank conflict和非
-1024-bit内部对齐访问会影响queue ready、stall和性能，但不足以单独推导单条指令legality。
+只看编号设计与`tasks/progress.md`。SPM1的8-bank/16-port/LSB-interleaving事实与SPM0/RAM_ACC的
+1024-bit内部路径必须分开解释：前者可给allocator提供offset-phase软偏好，后者说明部分NCC ready/stall
+现象；两者都不足以单独推导单条指令legality或固定性能penalty。

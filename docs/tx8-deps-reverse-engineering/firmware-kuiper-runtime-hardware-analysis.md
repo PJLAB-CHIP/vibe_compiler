@@ -1292,8 +1292,10 @@ hardware ABI.
 
 This is the part where it is easy to overfit.  The combined
 `firmware_kuiper` + `tx8_deps` evidence proves that parallel instruction issue
-is a real hardware/software mode, but it still does not expose the exact
-SPM-address-to-bank function.
+is a real hardware/software mode, but this snapshot still does not expose the exact
+SPM-address-to-bank function or penalty. The authoritative SPM1 design separately gives
+8×2048-bit banks and LSB interleaving; that supports only the coarse working phase described
+by `tasks/09`, not an exact SDK-derived mapping.
 
 ### 12.1 What Is Confirmed
 
@@ -1358,9 +1360,8 @@ following explanation is an inference only and does not define Wafer policy:
   reject obvious read/write overlap and some resource hazards;
 - SPM bank conflicts are then a second-order physical resource hazard, not a
   normal address-overlap hazard;
-- a 64 KiB allocation color is a conservative way to keep concurrently live
-  SPM regions on coarse, predictable slices, while preserving the lower 256-byte
-  line/layout alignment inside each slice;
+- a 64 KiB allocation color is only a historical allocator heuristic; it is not needed to
+  recover the documented coarse SPM1 phase and must not become a hard placement rule;
 - the VS D2D 16-lane, 4 KiB-per-lane, `0x10000` aggregate stride is consistent
   with this interpretation, but it is not sufficient proof of the physical bank
   function.
@@ -1402,7 +1403,7 @@ Current static coverage:
 | FlagCX | Medium: symbols and strings. | No public header in this SDK. |
 | Multimedia/CV | High at public ABI level. | Hardware limits and performance require board tests. |
 | Profiler | Medium: CLI/libs/docs visible. | Device-side event fidelity requires board tests. |
-| SPM bank / `serial_mode=0` | Medium for existence of parallel mode, operand range metadata, and likely bank-resource hazard; low for exact physical bank mapping. | Need board sweep or lower RTL/firmware evidence before any 64 KiB heuristic can be treated as calibrated policy or hardware ABI. |
+| SPM bank / `serial_mode=0` | Medium for existence of parallel mode, operand range metadata, and likely bank-resource hazard; this SDK remains low confidence for mapping, while the separate authoritative SPM1 design gives an 8×2048-bit LSB-interleaved coarse phase. | Need board sweep or lower RTL/firmware evidence for exact port/stride penalty; 64 KiB remains neither calibrated policy nor hardware ABI. |
 | `txdnn` eager op layer | Not covered by this SDK. | `libtxdnn.so` / `txdnn.h` are still absent here. |
 
 Evidence handoff to the numbered designs:

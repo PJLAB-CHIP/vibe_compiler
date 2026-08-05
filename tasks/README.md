@@ -17,7 +17,7 @@
 | 04 | `tasks/04-topology-execution-mesh.md` | 当前topology/execution mesh；current target identity不进入mesh IR |
 | 05 | `tasks/05-local-compute-normalization.md` | rank-local structured compute normalization与tensor collective handoff |
 | 06 | `tasks/06-physical-dataflow-synthesis.md` | MLIR-native physical-dataflow synthesis：implementation/tile/encoding/route/residency/buffering/order/communication的bounded actual-clone selection与atomic commit |
-| 07 | `tasks/07-tile-region.md` | selected tile/dataflow actual IR物化与完整traversal；`tile.region`不是fusion、lowering、completion或memory-planning边界 |
+| 07 | `tasks/07-tile-region.md` | selected tile/dataflow actual IR物化、完整traversal与maximal SPM驻留域；`tile.region`以显式DDR materialization cut分界，不是lowering、completion或独立arena |
 | 08 | `tasks/08-physical-realization.md` | physical encoding attr/type语义、valid domain、view、transfer realizability analysis、descriptor cover和selected physical realization |
 | 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/completion、fixed-capacity legality、validated high-water和accepted offsets；candidate choice仍由06拥有 |
 | 10 | `tasks/10-compute-movement.md` | 窄source implementation OpInterface/external model、typed target-abstract compute/movement、standard MLIR effects/interface reuse和issue/token/fence/wait |
@@ -144,7 +144,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | `tasks/archive/llama-block-numeric-characterization.md` | 已完成Q31的ProgramTensor逐rank abs/ULP统计、非admission多seed 7B重放及source/model comparator gate收紧记录 |
 | `tasks/archive/llama-block-production-performance.md` | 已完成Q30的static movement/physical codec host性能收口、package等价性和完整7B双replay记录 |
 | `tasks/archive/llama-7b-block-vertical.md` | 已完成Q28的标准Llama-2 7B单block TP16 source/package、repo-owned SystemC managed-reference和完整PyTorch eager output differential记录 |
-| `tasks/archive/tile-dataflow-scheduling.md` | 已完成Q29的structured tensor program直达bounded task/dataflow scheduling、跨region SPM、whole-variant commit、旧group executable surface退役及7B TP16 compile-only gate记录 |
+| `tasks/archive/tile-dataflow-scheduling.md` | 已完成Q29历史structured tensor program直达bounded task/dataflow scheduling、当时的跨region SPM合同、whole-variant commit、旧group executable surface退役及7B TP16 compile-only gate记录；当前region语义已由07/Q49替代 |
 | `tasks/archive/reference-executor-retirement.md` | 已完成Q27的accepted-IR第二套解释器、oracle分支和旧CLI退役，以及CPU-expected到target CModel纵向gate收敛记录 |
 | `tasks/archive/memory-lifetime-analysis.md` | 已完成Q26的共享structured lifetime/packing core、DDR issue-to-fence completion、两侧scope/provenance/原子commit和双配置gate记录 |
 | `tasks/archive/residual-source-modularity.md` | 已完成Q25的reference/model、numeric/bulk、compiler/artifact/package与frontend bridge共11个聚合实现模块化和双配置gate记录 |

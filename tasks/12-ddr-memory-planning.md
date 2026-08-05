@@ -30,8 +30,9 @@ compiler IR 合同。
   access demand 和 compiler-managed DDR allocation demand。
 - 对 external input/output DDR view 做 descriptor、view/root byte range和capacity validation，并输出exact movement bytes。
 - 对当前rank clone内compiler-managed workspace、resident constant、显式spill DDR temporary等non-external
-  allocation，在default arena中规划symbolic range/offset/size/alignment，并用完整rank-entry内跨region/SSA edge的
-  lifetime/reuse证明互不冲突。
+  allocation，在default arena中规划symbolic range/offset/size/alignment，并用完整rank-entry内真实
+  sibling-region DDR materialization edge和region内SSA use-def的lifetime/reuse证明互不冲突；不得把跨region
+  SPM resident handoff伪装成DDR lifetime。
 - 给 candidate-selection 一个真实 candidate gate：成功表示当前 candidate 的 DDR view、accepted offset fact 和
   IR-derived demand 都可被下游直接消费；失败只返回typed infeasible reason给06 candidate owner，后者可用另一clone尝试
   implementation、tile、encoding、route、residency/buffering或order。allocator本身不修补候选，也不内置某个
@@ -60,7 +61,8 @@ Pipeline position:
 - Upstream artifact / IR:
   SPM offset assignment之后的一份whole-variant candidate clone，包含每个static rank entry的完整
   instruction-level structured program。SPM side 已有 whole-entry accepted SPM offset facts；
-  DDR side 已由 `#wafer.memory<ddr, layout>` memref、tile-region block argument、
+  DDR side 已由 `#wafer.memory<ddr, layout>` memref、只承载DDR data/view（function external或
+  compiler-managed spill）或non-data event的tile-region block argument、
   `memref.alloc`、ViewLike/SelectLike/structured-control aliases、generic async handle和RDMA/WDMA descriptor
   表达external view与当前rank default-arena compiler-managed/resident/explicit-spill demand；selected
   implementation/physical version、mapped或staged transfer、resident/spill均已成为显式memref/view/instruction事实。
@@ -168,7 +170,9 @@ marker。它不说明 future runtime allocation path，也不说明 host 是否�
 
 允许的root和alias来源：
 
-- external function / tile-region boundary argument：由 launch/runtime 在更低层绑定或导入。
+- external function-entry argument：由launch/runtime在更低层绑定或导入。
+- tile-region DDR boundary argument/result：沿region operand/yield传播已有DDR root；root既可来自上述
+  function external，也可来自compiler-managed spill `memref.alloc`，region边界不创建新的runtime binding。
 - DDR `memref.alloc`：compiler-managed DDR allocation。owner 由 SSA definition 表达，lifetime 由
   SSA use-def、region/control-flow 和 async token use 重算。
 - `ViewLikeOpInterface` / `SelectLikeOpInterface`以及`scf.if`/`scf.for` result：从受支持root派生并通过
@@ -319,8 +323,8 @@ Rules:
 - view offset是从SSA view链重算的proof input；instruction offset已经是最终root-relative descriptor起点。recovery必须验证
   `descriptor_*_root_offset = view_root_offset + segment_relative_offset`，range公式只使用descriptor root offset一次，不能再把
   view offset重复相加。
-- tile-region block arguments are resolved back to the corresponding region operands.
-- tile-region results inherit the root relation of the corresponding `wafer.tile.yield` value；result的后续SSA
+- tile-region DDR block arguments are resolved back to the corresponding region DDR operands.
+- tile-region DDR results inherit the root relation of the corresponding `wafer.tile.yield` DDR value；result的后续SSA
   consumer必须把compiler-managed root lifetime延长到region之外，不能因isolated boundary截断。
 - root/origin查询递归闭合`ViewLikeOpInterface`、`SelectLikeOpInterface`、`scf.if`和`scf.for`，并保留
   path condition；loop backedge union对body中已建立的view同样可见。
@@ -583,6 +587,7 @@ Expected coverage:
 - Board-validated runtime allocation failure mapping and recovery policy。
 - PMU-calibrated DDR bandwidth model。
 
-跨region/SSA edge的显式spill DDR lifetime不是deferred work：只要producer/consumer relation已由当前SSA、view、region、
-explicit allocation或transport facts表达，它就是complete static rank entry / variant-set gate的mandatory
-输入。关系无法表达时candidate必须结构化失败或先扩IR，不能退回局部task planning。
+跨region的显式spill DDR lifetime不是deferred work：只要producer store、可信completion、consumer load及其
+relation已由当前SSA、view、region、explicit allocation或transport facts表达，它就是complete static rank entry /
+variant-set gate的mandatory输入。sibling region之间不得直接传递SPM memref/root/alias；关系无法表达时candidate
+必须结构化失败或先扩IR，不能退回局部task planning。

@@ -18,8 +18,10 @@ profile-scoped硬件能力边界。本文是compiler、target artifact、package
    transfer route、residency、buffering、有限DAG顺序、communication和resource-aware tradeoff联合决定；下游不得另做
    layout assignment、隐式route fallback、communication reselection或residency修复。每个选择都必须物化进隔离actual
    clone并通过同一rank-local/whole-variant gate，不能只存在于analysis摘要。
-4. **fusion不是协议对象。** producer/consumer共享显式SPM SSA physical version时形成resident dataflow；store/load表示spill。
-   不创建opaque fused group，也不让region边界自动成为DDR或memory-planning边界。
+4. **fusion不是旁路协议。** producer/consumer共享显式SPM SSA physical version时必须形成同一
+   maximal `tile.region` SPM驻留域；显式store/completion/load表示spill并分开两个region。不创建
+   opaque fused group，也不按task、shape、layout、collective或builder边界切region。`tile.region`声明已选
+   residency cut，但不是独立memory-planning、completion、lowering或commit单元。
 5. **artifact原子形成。** 单tile、单region、代表rank或未覆盖当前配置all-and-only rank domain的partial rank/module set
    都不是可发布结果；全部配置rank通过后才形成bundle，所有package成员readback通过后才发布final root。
 6. **同一次target lowering服务两个consumer。** device link与repo-owned TargetCall/SystemC CModel消费同一owner-backed
@@ -131,7 +133,7 @@ manifest的move-only lifetime/container artifact，不是另一份program或pack
 | Topology/SPMD | `wafer.target.topology`、`wafer.execution.mesh`、post-SPMD StableHLO | compiler内部single-card endpoint与logical rank domain、rank-local partition | candidate、SPM/DDR、physical transport |
 | Structured tensor program | Linalg/Tensor/SCF/Arith/Math与typed logical collective | rank-local数学语义、iterator/indexing relation、effect/control及native numeric semantics/permissions | target implementation、physical encoding、offset |
 | Candidate analysis | transformation-local component/edge legality、IndexRelation、complete-rank actual clones、structured bounds与terminal final cost | consumer-driven tile/loop/layout/route/residency alternatives；每个frontier survivor的选择已物化进clone；worker/join/critical-path exact cost只在terminal Instr后Known | accepted事实、package字段、shadow schedule、长期side table |
-| Selected tile/dataflow IR（stage-internal） | `wafer.tile.region` fragments、Wafer memref/view、typed compute/movement/collective/event | 完整static traversal、selected implementation与physical versions；必须继续lower，不是accepted artifact | rejected candidates、独立arena、runtime launch |
+| Selected tile/dataflow IR（stage-internal） | maximal SPM-resident `wafer.tile.region`、Wafer memref/view、typed compute/movement/collective/event | 完整static traversal、selected implementation/physical versions和显式DDR materialization cut；必须继续lower，不是accepted artifact | rejected candidates、独立arena、runtime launch |
 | Instruction/memory program | `wafer.instr.*`、accepted SPM/DDR offsets、completion/Direct DTE | target-abstract invocation、physical geometry、range/lifetime/effect | raw host handle、package schedule |
 | Executable bundle | move-only `RankExecutable[]`/`ExecutableBundle` | all-and-only rank modules、entry、program bindings、completion、transport、atomic acceptance | target object、runtime session、rejected choice |
 | Target LLVM bundle | move-only `TargetLLVMModule[]`/`TargetLLVMModuleBundle` | 一次target conversion后的owner-backed LLVM modules、typed ABI slots与profile identity | device-linked file、package、model state |
@@ -187,8 +189,9 @@ baseline；driver/process cancellation在任意时点终止整个transaction且�
   accepted instruction program。
 - Direct、Ring和ordered-Tree只作为complete-rank clone上的typed rewrite参数；Ring cycle和Tree edge/root从current
   topology/placement推导。accepted IR只保留展开后的p2p、local work、token/wait/typed completion，不保存算法名或通信sidecar。
-- `wafer.tile.region`只是structured traversal container。跨region resident buffer与event通过SSA/structured control flow传递，
-  region边界不自动切DDR、分配arena或提交candidate。
+- `wafer.tile.region`是maximal SPM驻留域，数据operand/result均为variadic。SPM allocation root/value/alias
+  不跨sibling region；跨region tensor edge必须由显式DDR store/completion/load或external boundary连接。
+  event/control SSA可按typed control-flow跨边界，但region边界不自动生成join、独立arena或candidate commit。
 
 ## 7. Target Conversion 与原子发布
 
@@ -248,11 +251,11 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | source boundary | static-ranked StableHLO program directory；rank-count显式1/16 | dynamic shape/state、MPMD、cross-card |
 | decision owner | actual-clone有界联合评估implementation、tile/relation、encoding/route、residency、share/recompute、hoist、numeric DAG、buffering/order和communication；全部current producer进入共同frontier | production multi-buffer prologue/steady/epilogue |
 | numeric transformation | supported integer exact/modular变换，以及f16/bf16/f32 reassociation、tree、distribution/factorization、reduction/GEMM split与floating collective；统一typed comparator验收 | 任意fast-math、未证明FMA contraction、用容差掩盖special value/index/layout/guard错误 |
-| physical realization | typed Tensor/Cx/NCx、mapped/compact movement、physical-footprint fill、fixed-capacity SPM/DDR packing和oriented GEMM | 无typed target/profile依据的encoding、bank coloring或route猜测 |
+| physical realization | typed Tensor/Cx/NCx、mapped/compact movement、physical-footprint fill、fixed-capacity SPM/DDR packing和oriented GEMM | Q49待实现offset-derived SPM bank-phase最后tie-break；bank attr、硬bank legality/color class、由bank phase反向产生spill/region/join，或无typed依据的route猜测均不进入基线 |
 | communication | 不超过16 rank的topology-derived Direct/Ring/ordered-Tree，显式p2p/local work/completion和all-rank Direct DTE acceptance | ragged/segmented peer exchange、subgroup full-card barrier替代、cross-card transport |
 | artifact/runtime | all-and-only rank `ExecutableBundle`、same-lowering Target LLVM、schema-v7 verified package、no-card、TargetCall/SystemC和configured TX81 RuntimeProvider | exact-package ISS/vendor simulator |
 | hardware evidence | 当前profile的compiler-sensitive行为按supported/board-observed/unknown/excluded闭合；unknown采用保守compiler策略 | 通用model/board numeric correlation、packet/MMIO provenance、cycle-accurate timing |
-| performance evidence | compiler只消费final IR可证明的静态cost；板端样本不自动回写candidate ranking | production-artifact profiler完成资格化，以及其后独立的hardware-informed ranking |
+| performance evidence | compiler只消费final IR可证明的静态work；板端样本不自动回写candidate ranking | Q49删除历史SPM0/RAM_ACC `128 GB/s` per-tile flat-duration项；production-artifact profiler完成资格化，以及其后独立的hardware-informed ranking |
 
 当前队列先完成production-artifact profiler，随后才启动multi-engine software pipelining；二者在各自completion gate
 闭合前都不改变本表的production事实。动态状态和启动前置只读`tasks/progress.md`。

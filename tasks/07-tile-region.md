@@ -1,4 +1,4 @@
-# Wafer Selected Tile-Dataflow IR 与原子物化
+# Wafer Selected Tile-Dataflow IR、SPM 驻留域与原子物化
 
 状态：本文定义 selected tile/dataflow IR 的 MLIR-native 边界。Q32/Q46已闭合现有typed materialization、
 relation和physical-version机制；Q49负责把production调用域收敛为complete-rank、pre-Instr联合综合。
@@ -10,11 +10,20 @@ residency、movement、share-vs-recompute、loop-invariant hoist、current numer
 `DialectConversion` 直接物化真实 IR。物化完成后，选择过程中的临时对象可以销毁；下游只读取
 current IR。
 
-`wafer.tile.region` 是 complete-rank traversal 中的结构化 tile/dataflow scope。它可以组织
-Wafer-tagged memref、view、compute、movement、event 和 structured control flow，但不是 fusion group、
-独立 SPM arena、候选描述、executable、lowering或提交单元。跨 region 的 value 和 completion relation必须通过
-显式 SSA operand/result 传递；region 边界本身不隐含 store、reload、barrier 或资源释放。
-跨region exact SSA tile edge与同region内edge具有相同resident候选资格，region数量不作为融合质量指标。
+`wafer.tile.region` 是 complete-rank traversal 中一个最大的 tile-local **SPM 驻留域**。它组织
+Wafer-tagged SPM memref、view、compute、SPM 内 movement、peer/collective movement、event 和 structured
+control flow。数据 input/result 都是 variadic，fan-in、fan-out 和边数没有 IR 上限。region-external DDR
+value/view（function external或compiler-managed spill）在入口通过显式load建立本地SPM version；
+可观察输出或后续spill在出口通过显式store发布到DDR；
+region op 不隐式执行搬运。
+
+一条 intermediate SPM SSA edge 不得跨 non-nested sibling `tile.region`。如果 producer 与 consumer 共享
+同一 resident physical version，它们必须位于同一驻留域；只有 selected dataflow 中真实存在
+SPM eviction / DDR materialization / reload cut 时才形成两个 region。shape、traversal domain、layout、
+GS、collective、task 或 builder 边界都不自动切 region。region 仍不是独立 physical arena、
+executable、lowering、completion 或提交单元；所有 region 共享同一 tile 的 3 MiB SPM，并由
+whole-rank planner 统一放置和复用已结束驻留的地址。当前 ODS 和 production builder 尚保留旧
+structured-scope 边界，Q49 C1 负责按本合同迁移，不允许按旧 scope 一对一 materialize region。
 
 本文依赖：
 
@@ -47,6 +56,8 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
   `wafer.tile.*` compute。
 - 物化 Wafer-tagged memref、standard/typed view、resident SSA edge、显式 movement、spill/reload、
   temporary、accumulator 和 staging。
+- 把 selected resident connected dataflow 物化为 maximal `wafer.tile.region`；一条 spill/reload 决定
+  物化为两个驻留域之间的显式 DDR cut，不把 intermediate DDR round-trip 藏在单个 region 内。
 - 用 event SSA、typed wait/dependency、MemoryEffects和structured control flow表达issue、event completion、reuse及仍待下游
   完成的observable obligations；本层不物化compiler-derived participant join或terminal drain。
 - 让 conversion legality、op/interface verifier 和 fresh analyses 能从 current clone 独立重建全部事实。
@@ -59,6 +70,10 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
 - 不保存选择历史、评分、失败轨迹、影子调度图或其它 IR 外长期语义。
 - 不分配 SPM/DDR physical offset，不在 region 内单独证明 whole-rank capacity。
 - 不让单个region、component或旧task module独立执行Tile→Instr、SPM/DDR planning或terminal completion后再拼接rank。
+- 不按 task、shape、traversal domain、layout、GS、collective 或同步位置切 region，也不用
+  region 数量代替 DDR bytes / materialization cut 的真实成本。
+- 不因SPM bank phase/conflict拆region或选择DDR spill；09的终态合同只允许在hard-valid且candidate-visible
+  primary cost相同的physical offsets之间使用可重算bank phase作最后tie-break，当前实现状态见Q49。
 - 不 lower raw packet、CRT、LLVM、runtime handle 或 package 字段。
 - 不通过 op/value/parameter 名、固定 shape、参数顺序或 workload topology 恢复语义。
 - 不把单个 region、representative tile、单个 rank 或局部 FileCheck 当成完整完成证据。
@@ -76,13 +91,15 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
     - Current stage responsibility:
       clone完整rank module；用PatternRewriter应用selected structured rewrites、producer clone/共享、loop hoist和显式numeric DAG，
       并更新真实use-def；
-      用source implementation hook、op builders和DialectConversion创建typed region、view、
+      用source implementation hook、op builders和DialectConversion创建表达maximal SPM驻留域的typed region、view、
       compute、movement、event和SSA relation；生成complete traversal；每次mutation后丢弃旧
       IndexRelation、alias、effect、liveness和resource observations并从current clone重算；
       最后运行conversion legality和tile/dataflow verifier。
     - Output artifact / IR:
-      transaction-local、verifier-legal、覆盖完整rank traversal的selected tile/dataflow IR，
-      或在无任何published mutation的情况下返回failure。成功IR只含typed operation/region/type/
+      transaction-local、verifier-legal、覆盖完整rank traversal的selected tile/dataflow IR；其中每个
+      `wafer.tile.region`是一个maximal SPM驻留域，跨region data edge只能是显式DDR存储物化或
+      非data control/event relation。若物化失败，在无任何published mutation的情况下返回failure。
+      成功IR只含typed operation/region/type/
       attribute、memref/view、compute、movement、event和SSA；不依赖任何外部解释对象。
     - Downstream consumer:
       target-abstract legality，并按terminal typed collective/peer algorithm参数逐点执行complete-rank instruction lowering；
@@ -143,10 +160,14 @@ type、indexing map、view或effect后，基于旧IR得到的analysis全部失�
 
 region必须表达：
 
-- region argument/result与enclosing rank value/event的SSA relation；
+- variadic region argument/result与enclosing rank DDR value/view及non-data event的SSA relation；DDR root既可
+  来自function external，也可来自compiler-managed spill；边数不是硬件端口、
+  descriptor 或 DMA 数量上限；
 - 当前tile coordinate，或能从enclosing `scf` induction variables重算的coordinate；
-- local allocation root、logical shape/dtype、memory space和selected physical encoding；
-- external、constant、resident、spill边界及其显式movement；
+- region-owned SPM allocation root、logical shape/dtype、memory space和selected physical encoding；
+- region-external DDR/constant input到region-owned SPM version的显式load，以及SPM output到DDR view的
+  显式store；
+- 所有intermediate producer-consumer edge的resident SPM SSA relation，或region内显式SPM-to-SPM movement；
 - compute/movement dependencies、completion和reuse ordering；
 - every output tile all-and-only一次的traversal relation。
 
@@ -155,10 +176,15 @@ region不得表达：
 - fusion identity、候选编号、评分、搜索终止原因或调试统计；
 - raw packet field、runtime allocation handle或package locator；
 - case-specific模型角色或依赖文件名的operand role；
-- 跨region隐式capture、隐式DDR round-trip、隐式barrier或私有SPM arena。
+- 跨region SPM value/root/alias的隐式capture、隐式DDR round-trip、隐式barrier或私有physical SPM arena；
+  non-data event/control relation若跨边界必须是显式SSA，且不能携带resident data；
+- region内部intermediate DDR spill/reload；selected spill必须结束当前驻留域，并由后续
+  region的显式load建立新的SPM version。
 
-同一SPM allocation root可以作为SSA value跨多个region传递，也可以在lifetime不重叠时由whole-rank
-planner复用。container边界不决定residency、lifetime或physical allocation。
+同一SPM allocation root不得作为SSA value跨sibling region传递。whole-rank planner可以在两个驻留域
+的lifetime确定不重叠时复用同一physical offset，但这是两个不同allocation root的放置结果，
+不是跨region resident handoff。region不分配独立arena；它只声明selected dataflow中哪些值在同一
+SPM residency lifetime内保持片上。
 
 ## 5. Buffer、View 与 Physical Version
 
@@ -220,11 +246,11 @@ MemoryEffect和async token完整解释当前movement；typed conversion pattern�
 | resident | producer与consumer共享同一memref SSA value，无中间movement |
 | physical-isomorphic view | standard/typed view，alias与logical relation可验证 |
 | compute-consumed relation | relation由selected compute op的typed operand contract表达，无隐藏movement |
-| boundary load/store | external DDR view与SPM view之间的destination-style identity-coordinate movement |
+| boundary load/store | region-external DDR view（function external或compiler-managed spill）与SPM view之间的destination-style identity-coordinate movement |
 | peer movement | `wafer.tile.peer_send`读取source SPM range，`wafer.tile.peer_recv`写入destination SPM range；logical peer、fixed bytes和communication identity显式，physical endpoint/route/FSM留给instruction acceptance |
 | local movement | `wafer.tile.materialize_layout`或其它typed movement产生新physical version |
 | staged movement | temp allocation、每段movement和completion全部显式 |
-| spill/reload | DDR allocation/view、store、completion和load全部显式 |
+| spill/reload | 前一region的DDR store、可信completion、后一region的DDR load全部显式；该cut分开两个SPM驻留域 |
 | constant load/fill | ConstantLike source或typed immutable resource relation与destination encoding显式 |
 
 boundary movement的概念形式：
@@ -272,8 +298,9 @@ range和effect事实，使下游能够证明并重建all-and-only external write
    relation rewrite；pattern只能按MLIR rewrite contract更新真实use-def。
 4. **物化complete traversal**：生成compact `scf.for`、static tail、branch和合法ordered reduction step，
    并验证每个logical output all-and-only一次。
-5. **物化physical SSA graph**：创建allocation roots、views、physical encodings、resident edges、
-   temporary、accumulator和staging。
+5. **物化SPM驻留partition与physical SSA graph**：把maximal resident connected dataflow收入同一
+   `tile.region`，对真实spill/reload创建sibling region和显式DDR cut；再创建各region-owned
+   allocation roots、views、physical encodings、resident edges、temporary、accumulator和staging。
 6. **物化selected compute**：调用`WaferTargetImplementationOpInterface::materializeSelectedImplementation`，创建typed
    `wafer.tile.*` compute；hook失败时丢弃clone，不换另一implementation。
 7. **物化movement和events**：在完整rank clone中创建boundary/local/staged movement、spill/reload、tokens和typed
@@ -341,7 +368,8 @@ tile/dataflow verifier至少检查：
 - selected compute/movement的operand/result、rank、shape、dtype和typed parameters合法；
 - 每个physical version的memory space、encoding、allocation root、view和valid domain可重算；
 - metadata view保持physical storage同构，不能用reshape逃避真实movement；
-- 每条跨region/component edge共享同一version或存在显式lowerable movement；
+- 每条region内intermediate edge共享同一SPM version或存在显式lowerable SPM movement；
+  跨sibling-region data edge不得直接传递SPM memref，必须由显式DDR store/completion/load连接；
 - standard MemoryEffect直接关联实际SSA value或custom resource，bytes/footprint可从typed IR重算；
 - async producer在completion前不能被读取、覆盖或复用；
 - all exits保留可重建terminal drain所需的control-flow、event、range和effect obligations；
@@ -442,6 +470,8 @@ gate拒绝该clone，clone整体丢弃；materializer不就地换实现。
 3. every successful case产生真实MLIR mutation；no-match/failure保持source byte-identical。
 4. every mutation使旧IndexRelation、alias、effect、liveness、completion和resource analysis失效并fresh重算。
 5. complete traversal覆盖chain、diamond、fanout/fanin、multi-root、reduction、view、control flow和communication。
+   同时证明shape/layout/GS/collective/task边界不会拆分resident chain，只有显式DDR materialization
+   cut会形成sibling region；region inputs/results的variadic fan-in/fan-out无人为上限。
 6. every compute/movement通过op verifier、适用的standard interfaces和MemoryEffect/custom resource effects；
    every async issue都有SSA或typed fence completion。
 7. selected tile IR经tile-to-instruction conversion、SPM/DDR、all-rank communication、transport和ABI gate直接消费。

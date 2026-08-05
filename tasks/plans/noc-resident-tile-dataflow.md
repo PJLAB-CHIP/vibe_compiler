@@ -61,7 +61,9 @@ Pipeline position:
   producer closure并用PeerDataflow round 2把produced value送入其它publisher的fresh SPM destination；
   descriptor不完整、publisher缺失/重复、produced value不等价或存在后续writer时整组不改写；
   (3) 从actual producer store、consumer reload、SSA/view occurrence、effect和lifetime证明一个
-  intermediate spill cut，owner复用producer root、peer直接接收进consumer root并删除该组额外WDMA/RDMA；
+  intermediate spill cut。same-rank direct-root handoff只有在pre-Instr complete-rank owner把producer/consumer
+  合并进同一maximal `tile.region`后才可删除WDMA/RDMA；若仍是sibling regions就保留显式DDR cut，post-Instr
+  materializer不得发明跨region alias。cross-rank由显式peer op接入各rank自己region-owned destination root；
   (4) 从typed ProgramRankSlice、function boundary、tile-region/view链和compact actual RDMA重建global
   input/parameter tile，生成Direct或ReceiveForward owner-load peer traffic。
   新peer receive preparation只在自己的structured block内前移到该block所有既有/新增transport issue之前；
@@ -131,7 +133,7 @@ Pipeline position:
   partial-reduction只能由标准interface及current IR进入；有界枚举owner、peer fan-out/forward、显式
   local merge、resident/spill cut和required writeback，对每个参数点原子修改complete-rank actual tuple。
 - Output artifact / IR:
-  覆盖完整静态traversal的complete-rank actual clones；owner-only boundary movement、resident SSA、
+  覆盖完整静态traversal的complete-rank actual clones；owner-only boundary movement、各maximal region内部的resident SSA、
   peer send/recv、local compute/reduce、token/wait、SCF和required output publication全部显式。
 - Downstream consumer:
   与A相同，并复用C的generic asynchronous realization。
@@ -225,7 +227,8 @@ Pipeline position:
 - Explicit non-goals:
   不按GEMM、shape、case名或artifact kind恢复收益；不把200 GB/s峰值、150 GB/s nominal、128 GB/s
   directional reference混成同一置信级别；不把modeled deterministic shortest path冒充physical route，
-  不猜SPM bank、worker fairness、queue occupancy或未校准group overlap。DTE startup、endpoint service、
+  不猜SPM精确port/stride penalty、worker fairness、queue occupancy或未校准group overlap。SPM allocator使用
+  documented offset-derived coarse phase的软偏好不属于本层cost decision。DTE startup、endpoint service、
   hop、SPM和control的point prior只签发`EstimatedBenefit`，不能冒充板端测量或`ProvenBenefit`。
 - Completion gate:
   host tests覆盖整卡共享DDR、read/write共同占用、4x4 mesh endpoint/link work、消息计数、Unknown传播、
@@ -256,8 +259,9 @@ fixture重造一条结构化schedule，而是闭合已有actual candidate的comp
 - 当且仅当两个以上actual loads覆盖同一global tile时，从实际有coverage的load holder中确定owner，
   保留owner RDMA，并生成Direct或ReceiveForward显式peer movement；普通partitioned unique shard不改写；
 - 对intermediate要求producer store与consumer reload的global tile、structured occurrence、定义版本、
-  effect和lifetime全部可证明；owner直接把producer root交给本地consumer，peer接收进各自consumer root，
-  删除该组spill/reload和consumer allocation，从actual IR形成zero-extra-DDR cut；
+  effect和lifetime全部可证明；same-rank owner先重建maximal region后才把producer root交给本地consumer，
+  peer接收进各rank自己的region-owned consumer root。无法合并的sibling boundary保留显式DDR
+  store/completion/load，不以post-Instr copy deletion形成跨region SPM alias；
 - partial路径从standard interface产生真实local partial/merge，并把已有typed tree/ring collective接入
   resident proof。tree按contribution multiplicity、combiner、compact publisher和final writer验证；
   ring从final `(source,destination,phase,round,slice)` tuple验证reduce-scatter/all-gather、origin
@@ -272,9 +276,10 @@ fixture重造一条结构化schedule，而是闭合已有actual candidate的comp
 是否能组合多个block、seed已有collective及新peer traffic，不再由block identity决定。peer lowering、SPM
 planning与fixed-slot periodic site specialization之后，gate从current complete-rank Instr IR展开direct
 accepted call closure，以typed source/destination/message identity、call/TileRegion/常量loop occurrence及
-rank内issue/wait顺序建依赖图：V3 send issue等待peer receive prepare，exact wait等待matching send。
+rank内issue/wait顺序建依赖图：typed send issue等待peer receive prepare，exact wait等待matching send。
 message/call occurrence不等、一个static site需要不同binding、未调用helper、无法证明的control或图中存在cycle
 都会整代原子拒绝；成功时只证明transport可进展，不保存graph，也不移动wait或发明pipeline stage。纯
+该跨block wait graph只连接typed transport/completion，不授权跨sibling-region SPM data edge。
 elementwise add/multiply source已经通过同一generic candidate owner：replicated input候选由16次DDR read
 收敛为1次owner read和15份peer traffic；当前4 KiB实例因message startup/route成本无法清除production margin，
 normal production保留baseline，winner/baseline均通过target model，最终ELF不含GEMM调用。这证明op无关的
@@ -356,7 +361,7 @@ bytes相等或message成对就认定语义正确。
   shard”的最小coverage，不生成peer traffic，也不能把global tensor的partitioned读取宣称为总DDR下降；
 - intermediate tile：只有实际materialized producer result所在rank可作为owner；当前实现只在producer
   store、consumer reload、same-version use-def/effect/lifetime和global tile全部可证明时建立peer residency，
-  无法证明则保留原spill；
+  same-rank handoff还必须由pre-Instr owner合并到同一maximal region；无法证明或仍是sibling regions则保留原spill；
 - recomputable tile：只有op可speculate、effect/numeric/recompute gate允许且actual clone已物化计算时才增加
   producer；
 - partial tile：owner由实际partial-reduction iteration、combiner SSA和typed collective message决定；
@@ -374,7 +379,8 @@ LLVM hash只可作为同一次analysis中的候选预筛，不能决定equivalen
 
 ### 2.3 驻留和转发
 
-一个tile只有在以下条件全部成立时才能跨edge保持SPM/NoC resident：
+一个tile只有在以下条件全部成立时才能跨edge保持SPM/NoC resident。SPM SSA的resident范围始终限制在
+各rank自己的maximal `tile.region`内；跨rank只由显式peer send/recv连接，不等于跨sibling-region SSA：
 
 - logical relation、dtype、valid/padding domain和physical segments可证明；
 - producer completion与consumer availability由same-domain issue order、typed participant join或exact DTE
@@ -473,15 +479,17 @@ consumer的receiver。
 
 producer result到consumer operand的exact relation允许：
 
-- same-rank same-root resident handoff；
+- 同一maximal region内的same-rank same-root resident handoff；
 - cross-rank peer transfer；
 - receive后直接供多个local consumer；
 - transfer与recompute的bounded alternatives；
 - compound operation中跨compute engine的pipeline。
 
 任一observable store、unsupported relation、effect barrier、numeric change或capacity conflict都切断resident
-edge并保留baseline。当前实现已对actual producer store/consumer reload cut建立共享global-tile relation：
-owner本地复用producer root，peer直接接收进consumer root，并在所有rank删除matching WDMA/RDMA、spill
+edge并保留baseline。pre-Instr owner必须先按selected residency重建maximal regions；若producer/consumer仍是
+sibling regions，matching WDMA/completion/RDMA不得删除。满足该containment gate后，actual producer
+store/consumer reload cut可建立共享global-tile relation：owner本地复用producer root，peer直接接收进各自
+region-owned consumer root，并在参与rank删除matching WDMA/RDMA、spill
 allocation和reload allocation。pure overwrite允许无boundary定义；read-modify-write必须证明相同prior
 state。alias write/free、early observer、不同structured occurrence、dynamic/unrepresentable view或任一rank
 缺口都会整代回退。operand-driven consumer traversal已经进入candidate recipe；bounded recompute及无法由
@@ -594,9 +602,9 @@ paired duration gate，不能让resource class字典序直接选winner。成本�
 - Direct-DTE每message的`α = 10 us`与maximum modeled route每hop `1 ns`是当前profile中惩罚小消息和
   route fill的point policy prior，用来阻止小payload仅凭DDR byte下降胜出；它们不是板端测量，未来必须由
   同profile matched board calibration替换；
-- SPM point prior为每tile `128 GB/s`，来源是1024-bit interface在1 GHz model quantum下的一beat估计；
-  instruction、DTE event release和NCC participant wait的control prior均为`1 ns`。这些值不是SPM sustained
-  bandwidth或wait latency bound；
+- 历史Q39 point model曾使用每tile`128 GB/s`，来源是SPM0/RAM_ACC 1024-bit interface在1 GHz model
+  quantum下的一beat估计；它不是SPM1 aggregate bandwidth，Q49及后续SPM residency/allocator cost不得复用。
+  instruction、DTE event release和NCC participant wait的control prior均为`1 ns`；这些值也不是wait latency bound；
 - CT/NE documented peak logical throughput作为compute point reference，不冒充sustained lower bound。
 
 对candidate `P`分别形成resource duration interval。整卡DDR项为：
@@ -611,25 +619,26 @@ NoC乐观lower使用route-independent
 `minimum-hop total link-byte / directed link count`形成idealized peak-link floor。nominal在modeled
 deterministic shortest path下取peak directed-link serialization、maximum transmit endpoint与maximum receive
 endpoint的最大值，每个endpoint都显式加入message `α`，再加入route fill hop prior。compute nominal按每rank
-engine work计算后跨rank取最大；SPM用maximum per-rank movement和per-tile point prior；control按maximum
-rank-local issue/event/wait计数。所有work仍来自current final IR，policy prior不回写IR。
+engine work计算后跨rank取最大；control按maximum rank-local issue/event/wait计数。SPM movement bytes仍从
+final IR精确计数并作为独立work/pressure维度，但不再用单一flat rate换算duration。现存Q39代码仍含历史
+`128 GB/s` SPM nominal项，这是Q49必须删除的明确implementation gap，不是本节终态合同。
 
-没有qualified multi-buffer时，nominal makespan为：
+Q49终态在没有qualified multi-buffer时，nominal makespan为：
 
 ```text
-max(DDR nominal + compute nominal + NoC nominal, SPM nominal) + control nominal
+DDR nominal + compute nominal + NoC nominal + control nominal
 ```
 
 只有current IR具有完整fixed-slot/multi-buffer recurrence、exact wait/reuse cut，且target capability gate也
 通过时，才使用steady-state resource envelope：
 
 ```text
-max(DDR nominal, compute nominal, NoC nominal, SPM nominal) + control nominal
+max(DDR nominal, compute nominal, NoC nominal) + control nominal
 ```
 
 这对应实际prologue/steady/epilogue结构，而不是由“存在DTE”或queue depth自动授予overlap credit。真正的
   upper以exact minimum-hop message demand乘route dilation和hop upper覆盖串行message-hop；仍要求
-  DDR/NoC/endpoint/message startup/route dilation/hop fill/compute/SPM/control的保守参数，缺失时
+  DDR/NoC/endpoint/message startup/route dilation/hop fill/compute/control的保守参数，缺失时
 upper保持Unknown，但不影响point estimate自身可用。
 
 production先用同一参数实例做paired point comparison：
@@ -752,7 +761,8 @@ Softmax、LayerNorm和attention名字不进入generic opportunity discovery。�
    sibling；已有nonzero/fixed-slot actual seed保持原样。缺失/null/mixed/伪metadata tuple不参与。
 3. **Cumulative IR-derived materializers**：common owner不保存role enum。input/parameter materializer要求
    exact compact boundary descriptor并生成owner-load Direct/ReceiveForward；intermediate materializer证明
-   same-version producer/consumer cut并删除所有rank的matching spill/reload；partial materializer验证tree
+   same-version producer/consumer cut，并且仅在pre-Instr owner已把same-rank handoff收入同一maximal region时
+   删除matching spill/reload；post-Instr materializer遇到sibling boundary必须保留movement。partial materializer验证tree
    contribution/combiner/publisher和ring slice-precise reduce-scatter/all-gather provenance；output
    materializer保留all-rank required WDMA并用round 2分发等价produced value。四者按
    partial→output→intermediate→boundary顺序在同一discardable clone累计；任一机会不存在不阻断其它role，
@@ -798,7 +808,7 @@ current SSA/effect/range证明的recompute或producer chain均是明确非目标
 | Complete tuples | baseline-first；canonical Single/Unplaced current Instr先原子派生typed DisjointComponents sibling，再派生worker-preserving StaticFixedSlot；已有nonzero/fixed-slot不原地重写；四materializer同clone累计；null/mixed/伪metadata跳过；failure atomic | 五类tile role、worker/fixed-slot和structured occurrence保持complete-rank correspondence |
 | IR | owner RDMA、intermediate zero-DDR、tree/ring partial、round-2 output、local merge、bytes/peer/message、DTE token/wait、actual worker/loop及required store全部显式 | 不保留role/owner/channel/stage side protocol |
 | Lifetime/scheduling | Direct/ReceiveForward、SPM/fixed-slot/worker late gates；receive-prep-before-issue；call-expanded whole-program wait graph；Q38 odd/even/tail和same/cross-worker流水 | Unknown alias/control/message occurrence原子拒绝 |
-| Cost | DDR/SPM/NoC message+endpoint/compute/join从final IR exact重算；partitioned unique shard不报DDR下降；200 peak lower、150 DDR nominal、128 link/endpoint point reference和10 us message `α`分级；modeled deterministic shortest path标`EstimatedRoute`；无qualified multi-buffer按sequential phases，qualified fixed-slot按steady-state maximum；20% margin区分`EstimatedBenefit`/`ProvenBenefit` | dynamic/unsupported work才`Indeterminate`；configured-board matched calibration与winner correctness尚未闭合 |
+| Cost | DDR/SPM/NoC message+endpoint/compute/join从final IR exact重算；partitioned unique shard不报DDR下降；200 peak lower、150 DDR nominal、128 link/endpoint point reference和10 us message `α`分级；modeled deterministic shortest path标`EstimatedRoute`；SPM bytes不再用legacy 128 GB/s flat duration，现存Q39代码项由Q49删除；无qualified multi-buffer按sequential phases，qualified fixed-slot按steady-state maximum；20% margin区分`EstimatedBenefit`/`ProvenBenefit` | dynamic/unsupported work才`Indeterminate`；configured-board matched calibration与winner correctness尚未闭合 |
 | Genericity | 四materializer覆盖五类role，不含op/shape/name matcher；纯elementwise非GEMM和GEMM两个compute family均进入同一candidate/model，small elementwise回退而large contraction清除margin，compound也覆盖 | case只验证协议，不成为matcher |
 | Vertical | input、纯elementwise非GEMM小payload回退、tree/ring partial、large contraction positive、compound qualification、strict boundary-only ring及独立fixed-slot/worker纵向均闭合；intermediate/output/parameter各有独立原子正负例；NoC×fixed-slot×nonzero-worker同候选的target model、ELF、package、attestation和no-card fresh纵向已闭合 | 已完成 |
 | Board | K-sharded `4096³`同源baseline/winner完成6次16-rank exact output；winner profile有效且保持16-rank exact | 已完成；wait/overlap转交Q40，compile-time search转交Q41 |

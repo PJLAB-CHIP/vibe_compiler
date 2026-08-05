@@ -222,7 +222,8 @@ geometry/ABI定义或生成的typed定义，不能把本文表格复制成第二
 - header/register给出的CT/NE/RDMA/WDMA `D=6`、TDMA `D=4` queue shape之外的resident/full/outstanding
   capacity、同queue多发射、cross-queue arbitration和三个worker的真实共享资源拓扑；D或D+1总提交可完成
   不等于pipeline window；
-- exact SPM address-to-bank函数、RAM_ACC replay成本、LSU/NoC/DDR arbitration和route/hop contention；
+- 超出官方SPM1 256B bank宽度+LSB interleaving所支持coarse phase inference的exact address-to-bank函数、
+  port/stride conflict penalty、RAM_ACC replay成本、LSU/NoC/DDR arbitration和route/hop contention；
 - DTE setup、packet、alignment、route和并发传输周期函数；
 - PMU单位、enable/clear边界、wrap/saturation和host/device时间相关性；
 - 浮点NaN/Inf/subnormal/overflow、部分fused optional field、zero-point公式、stochastic seed/state/推进合同；
@@ -344,9 +345,9 @@ Direct DTE event仍按原ABI返回opaque `i64`，失败先锁存错误再返回�
 - completion/result：typed worker issue/participant completion、DTE destination visible、all-rank terminal和
   typed no-progress diagnostic。
 
-current ordinary operator call通过`_v3` symbol和末尾worker scalar表达worker。typed descriptor/transaction与NCC join mask提供model completion
-identity。静态证据没有证明queue resident/full、
-同queue多发射、cross-worker arbitration或SPM bank函数。模型保持untimed/delta-cycle functional-event边界；
+current ordinary operator call通过唯一current symbol和末尾worker scalar表达worker。typed descriptor/transaction与NCC join mask提供model completion
+identity。静态SDK证据没有证明queue resident/full、同queue多发射、cross-worker arbitration或超出
+offset-derived coarse phase的exact SPM bank函数/penalty。模型保持untimed/delta-cycle functional-event边界；
 不能把header queue shape、任意`sc_fifo`容量、worker数或调度顺序升级成pipeline window或微架构事实。
 
 typed transaction检查、地址检查和各engine的numeric/memory effect由不包含SystemC header、不链接SystemC的plain C++ kernels
