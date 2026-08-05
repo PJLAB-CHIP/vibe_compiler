@@ -5,59 +5,52 @@
 
 ## Pipeline Contract
 
+Q40的board-ready记录保留pre-Q49实现证据；下列是Q49终态对这些mechanics的唯一定位。已lowered
+per-rank frontier、rank-local accepted module、attempt plan和digest companion不是新production architecture。
+
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  source frontend、SPMD specialization与tile-region lowering已经产出complete-rank、尚未提交DDR offset的
-  Instr候选。Q38提供fixed-slot multi-buffer、V3 Direct-DTE prepare/explicit issue/exact wait-release，
-  Q39提供complete-rank NoC-resident tuple，Q41为candidate/attempt/import/clone/lowering建立硬上界。
+  Q49 C3正在评估的complete all-rank actual variant；其中每个rank都是complete-entry canonical/unplaced Instr parent，
+  shared collective/peer parameter已在同一transaction中固定。Q38提供fixed-slot和typed worker mechanics，Q39提供
+  NoC/DDR cost terms，Q41的counter/bounded executor由Q49唯一work budget统一调用。
 - Current stage responsibility:
-  在同一bounded whole-variant search中组合storage、ready order、NoC communication、fixed-slot buffering
-  和worker placement；每个actual complete-rank tuple独立重放completion、SPM/DDR、Direct-DTE binding、
-  whole-card resource、accepted-rank和target gate。对V3 fixed-slot tuple，从accepted Instr、SSA token
-  use-def、MemoryEffect与planned allocation range重算same-block
-  Direct-DTE issue -> 独立FP16/BF16 CT/NE compute -> matching exact wait结构。结构witness只证明合法并发
-  机会，不宣称硬件时间收益。
+  作为C3 terminal mechanics，在canonical unplaced Instr parent上物化worker/fixed-slot/ready-order variant，删除旧join并
+  fresh重建completion，然后在同一all-rank transaction中证明Direct-DTE issue -> FP16/BF16 CT/NE compute ->
+  matching exact wait的token、effect、range和control-flow witness。本stage不生成rank-local frontier、winner或accepted module。
 - Output artifact / IR:
-  一组fully gated、rank-local accepted Instr modules及其all-and-only target LLVM/ELF、schema-6 package。
-  qualified candidate另带digest-bound companion；companion记录accepted IR digest、每rank结构witness计数、
-  DTE issue/wait、SPM root和static-loop inventory，不成为第二份schedule或selection输入。
+  同一disposable all-rank actual variant中已物化的Instr/SSA/event/range事实，或结构化failure。witness只是
+  invocation-local analysis/diagnostic，不是package companion、selection key或第二份schedule。
 - Downstream consumer:
-  target lowering、device link、package verifier与wafer-run no-card消费同一accepted modules。专用board
-  runner消费同源serialized baseline / overlap candidate、同cluster launch、同transport ABI、同Direct-DTE
-  binding、同payload与FP16 exact oracle；真实板端结果只用于后续qualification/promotion。
+  C3的唯一terminal exact chain：每个terminal rank-entry Instr variant一次whole-entry SPM solve，每个complete
+  all-rank variant一次whole-variant DDR、Direct-DTE/message-resource、ABI和final recost；C4只从fully gated frontier选winner。
 - User-level driver / named pipeline:
-  主线仍是wafer-compile source-to-package production pipeline。wafer-compile-test只暴露内部qualification
-  selection；不新增public pass拼装、workload开关或另一套lowering。板端入口是semantic-named、单case、
-  串行runner。
+  wafer-compile source-to-bundle production pipeline。历史wafer-compile-test qualification seam只保留Q40 board-ready证据，
+  不成为Q49的public option、candidate wire format或另一条lowering pipeline。
 - Explicit non-goals:
-  本轮不运行真实板端，不用case、shape、op/buffer名或artifact path恢复窗口，不引入shadow plan/side
-  table，不把obsolete wait-auto-issue当成显式overlap，不从no-card、host elapsed、target model或既有
-  Direct-DTE资格推导硬件收益，不修改Q39 NoC cost或Q41搜索上界。
+  不按case、shape、op/buffer名或artifact path恢复window；不从NoC/fixed-slot/worker独立mechanic生成winner；
+  不维护rank correspondence key、attempt plan、shadow plan或digest companion作为production语义。
 - Completion gate:
-  host回归证明fixed-slot与Direct-DTE/compute witness来自同一个actual tuple，issue/wait token、顺序、
-  dtype与footprint错误均fail closed；16-rank FP16 matched case生成完整serialized-baseline和
-  qualified-candidate package，二者source、launch、host-visible ABI、transport、binding和target-call
-  inventory一致，仅scheduler顺序不同，并分别通过fresh no-card。payload、CPU exact expected、guard、
-  runner、bounded timeout与正常lifecycle齐全。以上达到后Q40为board-ready；真实板端exact output和
-  counterbalanced matched A/B仍是唯一剩余gate。
+  source/integration tests证明fixed-slot与Direct-DTE/compute witness来自同一actual all-rank variant，issue/wait token、
+  order、dtype、range、footprint和message matching错误均fail closed；候选继续经过Q49相同SPM/DDR/completion/
+  transport/ABI gates，不以Q40旧package companion或board-ready记录代签。
 ```
 
-## 1. 组合搜索边界
+## 1. Q49 终态集成边界
 
-组合搜索不维护全局Cartesian shadow schedule：
+Q40不再组合多个已lowered rank-local frontiers。storage、region/tile、ready order、NoC、buffering和worker均由
+Q49同一coordinated frontier管理：
 
-- rank-local frontier从spill/resident与ready-order parent派生fixed-slot sibling，再从各actual clone派生
-  typed worker sibling；NoC-resident synthesis从完整cross-rank correspondence seed生成communication tuple；
-- generation、rank frontier、whole-variant attempt、clone/import和target lowering均受Q41硬上界约束；
-  failed tuple不消耗reserved baseline allowance，不污染parent、sibling或已fully gated frontier；
-- complete tuple在fixed-slot endpoint specialization后从current IR重新调度ready order，再执行DDR placement、
-  Direct-DTE acceptance、whole-card resource、accepted-rank及target gate；
-- qualification选择先要求每rank属于同一个typed fixed-slot tuple，再要求每rank至少一个exact
-  Direct-DTE/compute witness。两个条件独立重证，避免把“module中分别有fixed-slot、DTE和compute”误写成
-  组合证明。
+- structured choices在C2的complete-rank actual Tile clones中联合物化；不用spill/resident/ready artifact kind
+  组成rank correspondence seed；
+- C3只从terminal all-rank Tile variant派生worker/fixed-slot/order Instr variants，每个扩展都消耗Q49唯一
+  tuple-level work budget；不存在per-rank cap、attempt Cartesian product或rank-local accept/commit；
+- Direct-DTE/compute witness在fresh completion后从current IR重算，是legality/cost input，不是自动收益或winner；
+- qualification要求all-and-only ranks都属于同一actual variant，再验证所需witness。这是all-rank transaction的gate，
+  不是把逐rank accepted modules拼回tuple。
 
-normal production在没有可信板端收益证据前仍保持原static policy；qualification seam不反向改变normal winner。
+normal production winner由Q49 C4的统一hardware cost model选择；Q40的board qualification只校准overlap capability与验证
+matched correctness，不反向改变candidate generation、Pareto scope或winner。
 
 ## 2. Exact Overlap Witness
 

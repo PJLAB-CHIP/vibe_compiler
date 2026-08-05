@@ -207,17 +207,16 @@
   tensor、replica-id domain 完整且 payload 一致。当前 schema 无法表达 partial replication 时在 producer
   端失败，不把 subgroup 缺口降级成默认复制。
 
-## 2026-07-13 candidate-local memory gate 不能覆盖最终 function bufferization
+## 2026-07-13 memory gate 必须看到 final function bufferization，但同一terminal variant不能重复packing
 
-- 现象：真实structured program通过candidate-local SPM/DDR planning，但完整rank pipeline最后的whole-function
-  One-Shot Bufferize又产生untagged DDR `memref.alloc`及`bufferization.to_tensor/to_memref` bridge；candidate
-  成功并不代表完整rank artifact已经memory-planned。
-- 根因：candidate legality发生在局部materialization内，function-boundary bufferization位于其后；
-  后续transformation新建的buffer不可能被更早的planner覆盖。
-- 修复模式：所有unknown/default tensor buffer显式转换为Wafer DDR memref；bufferization后canonicalize并在完整
-  rank evaluation clone上重跑SPM planning，whole-variant disposable tuple再重跑DDR planning，最终用accepted-rank legality拒绝
-  高层dialect、untagged memref和缺失offset。task/candidate-local SPM/DDR gate仍保留用于搜索拒绝，但其offset必须在commit后从
-  generation parent清除，不能用debug direct pipeline替代selector或把早期placement带进frontier。
+- 现象：旧structured program在task/candidate-local SPM/DDR planning通过后，whole-function One-Shot Bufferize又产生
+  untagged DDR allocation和bridge；早期offset无法覆盖final rank artifact。
+- 根因：把memory planning放在会改变buffer/movement/lifetime的function-boundary transformation之前，同时试图用
+  早期placement帮助搜索并在后面再解一次。
+- 修复模式：Q49先在complete-rank Tile clone上完成Tile→Instr和function-boundary bufferization，再派生
+  final worker/slot/order并fresh重建completion。每个terminal rank-entry Instr variant对完整entry lifetime与3 MiB arena恰好执行
+  一次whole-entry SPM solve；每个complete all-rank variant恰好执行一次whole-variant DDR exact planning。后续任何
+  rewrite使原variant整体失效，新alternative从无placement parent物化，不在原variant上第二次solve。
 
 ## 2026-07-13 MLIR module 的失败路径必须由显式 context lifetime 覆盖
 
@@ -282,8 +281,9 @@
   lifetime因此被错误截断在isolated region出口。
 - 修复模式：处理完region body后，按result ordinal把对应yield DDR value的root refs传播到region result；后续SSA use
   再自然延长原DDR root lifetime。回归必须构造两个先后产生、随后被同一region共同消费的DDR result，并证明它们得到不同
-  arena range；不能通过executor为每个alloc私建storage掩盖planner错误。该经验不授权SPM root跨sibling
-  `tile.region`；SPM data必须保留在同一maximal region，或显式store到DDR后在下一region reload。
+  arena range；不能通过executor为每个alloc私建storage掩盖planner错误。该经验不授权SPM root跨ownership epoch；
+  当前static rank entry的全部traversal位于同一outer `tile.region`，内部可以显式store到DDR后reload成新root。
+  未来若出现第二个typed epoch，region boundary仍禁止SPM data，live value必须在前一epoch完成DDR materialization。
 # DTE wait被canonicalizer删除
 
 - 现象：带`wafer.instr.dte_wait`的collective在selected pipeline进入SPM planning时报告
@@ -635,7 +635,7 @@
   pipeline位置都语义透明。candidate尚未完整物化时，loop structure仍是analysis和改写worklist的输入事实。
 - 修复模式：保留one-trip traversal wrapper直到rank内全部selected task candidates写入同一个完整
   transformation-local clone；随后只运行一次post-commit canonicalization，再从同一canonical committed rank派生
-  spill baseline和deterministic maximal full-buffer-resident alternatives。两个alternatives不得各自在不同wrapper形态上
+  spill baseline和bounded full-buffer-resident alternatives。两个alternatives不得各自在不同wrapper形态上
   重做canonicalization；SPM、DDR、verifier和cost analysis必须在派生后分别从各自当前IR独立重算。
 - 防复发：ordering regression必须锁定candidate traversal materialization先于one-trip folding，并同时比较完整traversal
   multiplicity、resource/cost summary和deterministic selection；只检查最终shape、op数量或canonical IR文本不能证明
@@ -647,24 +647,24 @@
   class让spill与resident的scalar estimate都饱和到最大值，selector因此错误保留spill。
 - 根因：把coarse、saturating的时间投影当成唯一序关系；它丢失了原始cost vector上“所有dimension不更差且至少一项
   更低”的信息。直接调小常量或忽略未校准class又会制造没有hardware依据的timing claim。
-- 修复模式：Q32.G已删除旧coarse/saturating scalar estimate和time projection。当前只从complete final IR重算
-  NPU/vector compute classes、DDR read/write、SPM movement、NoC transmit/receive、instruction、event、
-  dependency/order和validated high-water，ordinary selector先保留exact Pareto；DDR下降但candidate引入或保留
-  NoC依赖的候选随后进入Q39独立typed point/interval gate。任一required work dimension unknown时保持保守。
+- 修复模式：Q32.G已删除旧coarse/saturating scalar estimate和time projection。Q49终态从complete final IR分别重算
+  NPU/vector compute、aggregate DDR、max-rank GS/local movement、NoC、instruction、participant completion与
+  dependency/order；SPM high-water只作capacity/headroom。共同global frontier先保留exact tradeoff，不再由Q39或其它
+  单轴owner覆盖winner。任一required work dimension unknown时保持不可比较并保留保守代表。
 - 防复发：回归覆盖strict dominance、反向比较、真实tradeoff和unknown metric，并搜索`estimatedTimePs`及scalar winner残留；
   Q39 `EstimatedBenefit`只能宣称versioned static model清除margin，不能宣称board-measured time收益。
 
-## 2026-07-16 rank frontier finalization不能因一个alternative失败而整体终止
+## 2026-07-16 terminal alternative failure 不能变成rank-local accept/commit
 
-- 现象：scheduler已经返回多个rank alternatives；function-boundary bufferization和replanning后，frontier中的首项发生
-  SPM overflow，compiler立即拒绝整个rank，即使后续alternative合法。合法项还沿用bufferization前的estimated time，
-  movement或issue发生变化时whole-variant排序会读取stale cost。
-- 根因：把候选frontier错误实现成“任一项失败即rank失败”的线性pipeline，并假设后续bufferization/replanning不改变cost。
-- 修复模式：逐alternative独立运行finalization；失败项只从frontier过滤，每个survivor从final instruction IR重新计算
-  exact resource vector，只有没有survivor时才拒绝rank。generation ordinal和physical artifact kind随survivor保留，
-  后续whole-variant coordinator只消费finalized frontier。
-- 防复发：单测用一个确定SPM overflow项加一个合法项，断言只保留合法项且cost不是输入的stale值；另测全部失败才返回
-  failure，并要求两类路径都保留结构化capacity diagnostic。
+- 现象：旧rank frontier在function-boundary bufferization/replanning后某项SPM overflow时直接拒绝rank，或反过来
+  先产生rank-local survivor再拼all-rank tuple；两者都会让后续读取stale cost或误剪card-wide winner。
+- 根因：把terminal evaluation实现成per-rank linear pipeline，并假设bufferization、completion、SPM/DDR与跨rank
+  resource可以分开accept。
+- 修复模式：C2的all-rank coordinated frontier直接产生terminal Tile variants；C3在同一transaction中物化
+  all-and-only rank-entry Instr variants。每个rank-entry SPM solve失败或whole-variant DDR/transport/ABI gate失败都拒绝
+  该complete variant，但不影响global frontier中其它actual variants。没有rank-local survivor、artifact kind或commit。
+- 防复发：测试在同一coordinated frontier中放入一个确定SPM failure和一个合法all-rank variant，断言只有
+  完整合法variant进入fully gated frontier，cost从final IR重算，且每个terminal rank-entry只有一次SPM query。
 
 ## 2026-07-16 source expected comparator不能按“只有F32是浮点”分流
 
@@ -845,23 +845,21 @@
 - 根因：把baseline acceptance/fallback与Pareto frontier winner选择合成一次early-exit判断；候选hard cap存在并不意味着可以跳过
   已接受survivors之间的比较。
 - 修复模式：baseline先独立通过全部gate并保留；optimization budget内的accepted tuples全部进入bounded exact Pareto；最后由
-  target-owned static policy逐个与当前winner比较，Unknown/overflow/同class tradeoff保持当前winner。测试必须至少包含“first
+  当前hardware cost policy逐个与当前winner比较，Unknown/overflow/同class tradeoff保持当前winner。测试必须至少包含“first
   improvement不是final winner”和两个真实producer相互遮蔽的production-shaped case。
 
-## 2026-07-21 all-rank candidate correspondence不能只匹配semantic generation
+## 2026-07-21 all-rank correspondence 不能依赖 ordinal 或 artifact kind
 
-- 现象：tiny-Llama的每个rank candidate都通过verifier、SPM/DDR、transport、resource和ABI gate，但coordinator把同一
-  source/recipe/scope ordinal下的spill、resident、ready-order派生混成一个16-rank tuple，SystemC完整输出64/64元素错误。
-  单独强制全rank spill、ready或resident均数值正确，rank 0正确/错误winner IR也完全相同。
-- 根因：stable ordinal只标识semantic generation，frontier内一个generation仍有四种physical derivation；best-first和
-  coordinated fallback只检查ordinal，允许各rank选择不同artifact kind。另一个独立缺口是ready-order按原始SSA value比较
-  memory effect，未沿memref view追到storage base。
-- 修复模式：frontier显式携带compiler-private `RankArtifactKind`（spill、spill-ready、resident、resident-ready），经过
-  finalization和并行序列化保留；all-rank attempt和coordinated fallback同时匹配generation ordinal与artifact kind。
-  ready-order hazard收集沿`ViewLikeOpInterface`规范化到storage base，base/view冲突保守保序。
-- 防复发：coordinator负例用rank 0 resident、其它rank resident-ready，要求回到完整reserved spill tuple；frontier并行
-  determinism同时比较ordinal与artifact kind；真实16-rank source必须执行SystemC完整tensor comparator，不能以IR verifier、
-  rank 0 dump或package发布成功代替数值证明。
+- 现象：旧coordinator把同一source/recipe/scope ordinal下的spill、resident和ready-order派生混成16-rank tuple；
+  每个rank单独通过verifier/resource仍会在SystemC完整输出上失败。
+- 根因：把generation ordinal和`RankArtifactKind`当作跨rank语义对应，而没有从actual IR重证
+  collective/peer parameter、physical payload、SSA/effect、range、control-flow instance和complete rank domain。
+- 修复模式：Q49在generation前建立all-rank coordinated state，collective/peer action以shared typed parameter
+  原子扩展。每个tuple只从current actual IR fresh验证all-and-only rank/message/resource relation；ordinal、scope、
+  spill/resident/ready labels和artifact kind全部退出语义和selection。ready-order hazard仍沿`ViewLikeOpInterface`
+  规范化到storage base。
+- 防复发：跨rank negative在任一rank修改payload/layout/message/control instance后必须拒绝整个variant；
+  serial/parallel独立compiler进程比较frontier/winner/package digest，并用完整SystemC tensor comparator而不是rank-0 dump代签。
 
 ## 2026-07-21 TX module entry不是host风格的direct scalar ABI
 
@@ -1555,8 +1553,8 @@
 - 根因：把离线candidate qualification当成了production selection的一种常驻模式；测试需要取得候选，不等于
   compiler应长期提供另一套选择语义。
 - 修复模式：删除优化专用selector及其编译/package入口。候选生成、buffer、completion和placement结构在
-  rank-frontier/IR层直接验证；若必须做板端性能实验，只使用不提交的临时提取入口。实验结果只能推动通用、
-  versioned target capability和normal selection revision，最终package/no-card/board gate重新从普通
+  coordinated actual-IR frontier中直接验证；若必须做板端性能实验，只使用不提交的临时提取入口。实验结果只能推动通用
+  typed hardware capability、校准参数和normal selection revision，最终package/no-card/board gate重新从普通
   `wafer-compile`产物闭合。
 - 防复发：不得以任务号、单个优化名、fixture或case增加forced-winner模式。新增选择输入必须是稳定的通用
   compiler contract；否则测试停留在候选边界，不能伪装成production artifact路径。
@@ -1669,26 +1667,19 @@
 - 防复发：未由独立规范和区分向量资格化的raw寄存器/返回值只能作为observation；测试必须包含raw为0但其它
   completion/output/record合同全部有效的正例，避免再次硬编码“成功值”。
 
-## 2026-07-27 whole-variant吞吐优化不能改变搜索域或fully-gated frontier
+## 2026-07-27 whole-variant 吞吐优化不能改变搜索域或 fully-gated frontier
 
-- 现象：大shape、多rank production compile即使已启用外层并行仍很慢。task selector在已经取得所需passing ordinal后继续扩展；
-  每个并行batch反复创建线程、`MLIRContext`并parse相同task；worker通过完整candidate gate后owner又重跑一次lowering；
-  rank worker输出被全部parse进owner context，即使既有exact tuple walk永远不会引用其中一部分；最终会被Pareto拒绝的tuple也
-  提前重复运行target ABI/LLVM gate。
-- 根因：把“候选语义域、稳定attempt顺序和exact gates不可减少”误解为“所有已生成工作必须重复执行”。同时没有区分
-  cross-context actual-module ownership transfer、metadata可精确证明的不可达owner import，以及只有fully target-gated
-  candidate才有资格修改Pareto frontier这三个边界。
-- 修复模式：selector收齐`taskAlternativeOrdinal + 1`个passing项后停止，parallel只容许固定batch内有界overshoot并按submit
-  order消费；rank-frontier持有persistent bounded executor，每worker独占context并复用同task parse。worker把已经完整gate的
-  actual module文本导入owner，owner fresh verify/recost而不二次lowering。all-rank侧用原slot metadata精确重放既有
-  `WholeVariantAttemptPlan`，保留frontier slot/order/duplicate/baseline和attempt budget，只少parse不可达owner module，
-  worker仍print全部候选。baseline先完整target-gate；optimized pre-target项只有按正式规则会留在当前fully-gated frontier时
-  才运行target gate，通过后才能淘汰旧项，失败保持frontier并继续后续attempt。
-- 防复发：回归分别锁定serial/parallel selected module与前置failure、batch overshoot上界、worker/context/task-parse复用、
-  owner不二次complete lowering、attempt plan与reference sequence逐项一致、malformed metadata保守全import，以及late target
-  failure不会遮蔽后续合法candidate。吞吐对比不能通过降低hard cap、缩小candidate domain、跳过final gate或增加用户可见
-  quick mode取得。executor中会在首次submit扩容的worker容器及其统计getter必须由同一mutex保护；只有独立标量计数可使用
-  atomic，否则“只供测试”的读取同样会与lazy worker construction形成data race。
+- 现象：旧task selector/rank frontier为每个task、rank和attempt重复parse、clone、lower和owner import，在large
+  all-rank workload上产生非线性CPU/RSS；后来的局部优化又依赖slot metadata重放attempt plan。
+- 根因：候选域被分割成task/rank/artifact多层frontier，每层各有cap和ownership transfer，再企图从metadata
+  恢复全局组合；这不仅重复工作，也会改变可见搜索域。
+- 修复模式：Q49在generation前建立唯一all-rank work budget和coordinated frontier。cheap proposal通过后才
+  materialize actual clone；只对terminal all-rank variants执行Tile→Instr、per-entry SPM和per-variant DDR exact gates。
+  parallel只执行独立actual variants，按stable insertion order消费；cross-context交接只是ownership transfer，不形成
+  attempt/correspondence protocol、不重跑已完成的solver query。
+- 防复发：同时锁定serial/parallel的proposal/clone/terminal-lowering/SPM/DDR work counts、frontier/winner/package
+  digest、global budget exhaustion、peak live clones和RSS。吞吐收益不得靠降低cap、缩小candidate domain、跳过gate或
+  保留另一quick mode获得；shared executor的lazy worker state仍必须使用正确同步。
 
 ## 2026-07-27 板端module export不能复制旧launch symbol
 
@@ -1895,10 +1886,11 @@
   disjoint worker stream互不要求join，冲突cross-worker、conditional observer、DTE/Kcore/host边界仍fail closed。
   pending access之后的Free和zero-region Unknown memory observer都要求先有matching participant join；region
   container只对不携带resident data的completion frontier透明，其nested operation、branch path和join分别在各自
-  program point处理。SPM data/root/alias不得因该completion规则跨sibling region。
+  program point处理。SPM data/root/alias不得因该completion规则跨真实ownership epoch；current one-region rank entry内部
+  的不同traversal无需跨region。
   lit负例必须期待真正的terminal/domain-exit failure，不能继续锁定“body-local fence”这种旧实现条件。
 - 防复发：同时覆盖nested static loop正例、conditional loop负例、disjoint/conflicting multi-worker pair、
-  multi-access issue不能由单一successor错误完成、跨sibling tile-region的non-data pending frontier由后续
+  multi-access issue不能由单一successor错误完成、跨普通nested structure的non-data pending frontier由后续
   unconditional join统一收口，
   以及pending issue后dealloc/Unknown observer负例和两branch各自join的region-container正例。
 
@@ -1926,14 +1918,15 @@
 - 现象：DDR spill/reload已被resident handoff删除后，instruction lowering仍可能在compute、reduce、
   movement或communication来源之间留下完整SPM GatherScatter；最终产物虽然正确，但会执行没有改变
   logical payload或physical map的TDMA copy。只看shape、byte count或某个通信case无法安全判断哪些可删。
-- 根因：旧resident promotion只闭合跨region的DDR边界，却没有先把producer/consumer重建为同一maximal
-  residency region，也没有拥有后续instruction-level storage identity；
+- 根因：旧resident promotion只做局部DDR边界删除，却没有把producer/consumer、兼容tile schedule和resident storage
+  realization原子物化到同一个complete-rank actual clone，也没有拥有后续instruction-level storage identity；
   `IndexRelation`/`proveMetadataView`又只证明两种view的logical-to-physical映射等价，不能单独证明两个
   allocation可合并。metadata-only `memref.cast`把静态offset放宽为dynamic以及cross-encoding destination
   的更强alignment要求，还会让本来合法的full-buffer alias被误拒绝；标准reinterpret cast也不能改变
   memref memory-space attr。
-- 修复模式：pre-Instr owner删除spill后必须先merge/rebuild producer/consumer为同一maximal `tile.region`；
-  sibling boundary仍存在时必须保留显式DDR movement，不能形成跨region SPM alias。随后在complete-rank
+- 修复模式：pre-Instr owner在既定outer `tile.region`内联合选择producer/consumer、兼容tile schedule和resident storage
+  realization后才能删除对应spill；未选择resident的edge必须保留显式DDR movement，selective spill仍保持显式并只结束
+  目标root。随后在complete-rank
   unplaced actual clone上统一识别exact full descriptor，从current
   root/view/type/encoding重建`IndexRelation`并证明physical map；另行证明destination first definition、
   compiler-owned source/destination origin、base-preserving view provenance、alias/effect/lifetime、
@@ -2032,12 +2025,12 @@
 - 根因：artifact kind属于frontier generation/correspondence provenance，finalization、跨role累计rewrite及
   后续lowering都可能改变当前IR的DDR行为。把标签当作语义事实既会false negative，也会让stale metadata
   false positive；aggregate DDR byte count同样无法区分boundary movement和private spill。
-- 修复模式：qualification从每个accepted rank的current Instr IR重建DDR movement root，只允许entry DDR
+- 修复模式：qualification从fully gated all-rank variant中每个rank entry的current Instr IR重建DDR movement root，只允许entry DDR
   argument上的RDMA及唯一entry return root上的WDMA；沿明确的TileRegion、透明memref cast和ViewLike alias，
   对private allocation、unknown producer、helper-local root或不完整return关系fail closed。collective算法
   仍由typed final message phase逐rank精确匹配，reserved状态单独拒绝。
-- 防复发：正例必须用`Spill`和`SpillReady`标签证明boundary-only IR仍可选；负例必须用`Resident`标签加
-  private spill/reload证明仍拒绝，并独立覆盖reserved candidate。source vertical继续检查slice/round/message、
+- 防复发：测试可故意让旧生成标签与实际IR相反，证明标签不参与选择；正例使用boundary-only IR，负例加入
+  private spill/reload并覆盖reserved baseline。source vertical继续检查slice/round/message、
   target model、ELF、package和no-card，不能以qualification mode本身代签执行事实。
 
 ## 2026-07-29 静态callsite不能代替动态loop work
@@ -2092,12 +2085,12 @@
 - 根因：candidate cap本应限制编译成本，却被实现成对稳定有序domain的prefix语义；增加head/tail配额只会把
   starvation移到中间。另一个隐患是generation在全部rank/final gate成功前就递增共享worker配额，失败clone也会
   消耗后续合法候选的容量。
-- 修复模式：先收集完整typed correspondence domain，再在固定总预算内做包含首尾的确定性等距quantile采样；
-  worker、fixed-slot和ordinary generic tuple使用独立有界band并公平交错。generation使用tentative计数，只有整组
-  all-rank commit成功才发布计数；同一generation先保留直接worker realization，再让其fixed-slot siblings消费
-  剩余额度。
-- 防复发：构造超过cap的完整domain并断言中部、尾部的稳定采样与重复确定性；另用前一generation晚失败、后一
-  generation合法的case证明额度回滚。测试必须检查实际attempt/import索引及current IR，不只检查candidate总数。
+- 修复模式：在generation前建立all-rank coordinator和唯一tuple-level deterministic work budget。所有region/tile/layout、
+  worker/fixed-slot/completion action在同一coordinated frontier中消耗work units；保留reserved baseline和non-dominated
+  states，不建立per-rank/per-band allowance、ordinal prefix或`N^R` attempt plan。失败actual clone只消耗已经实际执行的work，
+  不发布局部winner或commit计数。
+- 防复发：用超过global cap且早/中/晚action都可能成为唯一合法解的domain验证deterministic expansion、baseline retention和
+  serial/parallel同frontier digest；晚失败不能改变其它state的预算记账。测试检查current actual IR与work counters，不依赖attempt/import索引。
 
 ## 2026-07-29 fixed-slot选择证明和publication清单不能共用同一量词
 
@@ -2119,9 +2112,9 @@
   loop拼成一个complete fixed-slot tuple；局部派生均合法，但all-rank metadata错误声称它们是同一realization。
 - 根因：operation walk顺序只是当前module的遍历偶然，不是跨rank结构身份；rank-specific send/recv数量又使body
   fingerprint或operation count同样不稳定。
-- 修复模式：以anchor loop的exact constant `(lower, upper, step)`和到public entry的typed structured operation
-  path作为最小correspondence key；每个其它rank必须恰有一个匹配。路径或bounds不一致、private helper路径不可证明、
-  零匹配或多匹配都跳过该complete plan，不退回ordinal或名字。ordinal只用于成功候选的稳定plan编号。
+- 修复模式：跨rank action从同一coordinated all-rank current-IR state生成；loop bounds、structured control path、typed
+  collective/message relation和SSA/effect逐项fresh匹配。structural hash只可作预筛，零匹配、多匹配或任一rank不一致都拒绝
+  该action，不退回ordinal、名字或持久correspondence key。
 - 防复发：负例分别保持相同loop count但改变bounds、保持bounds但改变region sibling/nesting；正例允许各rank有不同
   通信角色和send/recv数量，仍要求完整path+bounds对应。
 
@@ -2156,30 +2149,21 @@
   独立compiler进程生成ordinary/profile package并做完整递归byte diff。禁止任何`hash % owner_count`、
   hash排序或hash tie-break进入可见artifact决策。
 
-## 2026-07-29 DDR优先级不能代替NoC profitability
+## 2026-07-29 DDR 优先级和独立 NoC gate 都不能代替统一 hardware cost model
 
-- 现象：只要NoC-resident candidate删除一份DDR movement，whole-variant的`ExternalMovementFirst`就可能让4 KiB
-  等小payload成为production winner；该选择没有计DTE message startup、endpoint热点、mesh link pressure或
-  communication/compute依赖，也把16 tile共享DDR误读成“DDR越少必然越快”。
-- 根因：exact resource Pareto与跨资源耗时是两个问题。旧selector能比较同一资源维度的严格支配，却没有相对同源
-  reserved baseline的paired makespan合同；同时`200 GB/s` peak、约`150 GB/s` nominal和NoC单方向
-  `128 GB/s` reference缺少显式证据等级。第一次修补又把“没有保守timing bound”等同于“final-IR work
-  Unknown”，导致所有大payload也只能`Indeterminate`；这是把work knowledge、point estimate和proof bound
-  三层混成一个状态。
-- 修复模式：只对“DDR严格下降且仍依赖NoC执行”的complete-rank candidate触发独立解析模型，包括新增/增加
-  traffic或保留已有collective。从final Instr fresh统计
-  整卡DDR/SPM、per-rank engine work、message/wait、endpoint maxima和minimum-hop work；这些可数work保持
-  exact `Known`。physical route/arbiter单独未知，nominal使用显式`EstimatedRoute`的modeled deterministic
-  shortest path和versioned DDR/link/endpoint/message-`α`/hop/SPM/control point priors。无qualified
-  multi-buffer按sequential phases；只有current-IR fixed-slot、exact wait/reuse cut及capability共同成立才按
-  steady-state resource maximum。`candidate.nominal * 1.20 < baseline.nominal`签发normal
-  `EstimatedBenefit`；真正的`candidate.upper * 1.20 < baseline.lower`才升级`ProvenBenefit`。缺少保守
-  bound不再回退，只有必要work仍dynamic/unsupported或算术失败才`Indeterminate`。
-- 防复发：host测试必须同时覆盖10 us message policy prior使小payload保留baseline、大DDR-bound candidate的
-  `EstimatedBenefit`、synthetic完整bounds的`ProvenBenefit`、16-rank DDR只计一份整卡带宽、
-  route-independent floor与`EstimatedRoute`/endpoint hotspot分栏、sequential与qualified fixed-slot两种
-  schedule、Unknown work fail-closed及非NoC优化不受新门禁影响。`α=10 us`不是板端测量，后续matched board
-  calibration可替换prior；论文绝对参数、静态公式或单engine counter均不能代签Q39 promotion和fresh correctness。
+- 现象：`ExternalMovementFirst`会让只要删除DDR的小payload NoC candidate直接获胜；后续独立Q39
+  paired makespan虽加入DTE startup/link/endpoint，又遗漏max-rank GS和统一completion scope，仍会用一个局部
+  duration gate越过其它资源tradeoff。
+- 根因：把exact resource Pareto、point estimate、proof bound和final winner selection分散给多个owner。各owner看到的
+  cost scope不同，而`Unknown`又容易被错当成0或整个`Indeterminate`。
+- 修复模式：Q49只保留一个hardware-cost selection owner。C3从fresh final Instr同时计数all-rank aggregate DDR、
+  max-rank GS/local movement、max-rank steady/nonterminal/total participant completion及critical-path位置，并保留
+  compute/recompute、NoC、Instr、descriptor/resource。Pareto只做无tradeoff dominance和多样性保留；C4使用
+  当前校准的point/bound parameters对fully gated states排序。任一在candidate间变化的主维度缺qualified
+  parameter时保持不可比/`Unknown`，不被DDR或NoC子公式绕过。
+- 防复发：host tests同时覆盖aggregate DDR、max-rank GS、max-rank completion、message startup、endpoint/link、
+  sequential/qualified steady-state、Unknown传播及20% margin。`EstimatedBenefit`只表示统一point model清除margin，
+  `ProvenBenefit`需要完整bounds；二者都不是board-measured收益，也不得由Q39独立签发。
 
 ## 2026-07-29 编译搜索的重复语义工作会放大成非线性资源消耗
 
@@ -2190,12 +2174,12 @@
 - 根因：rank-invariant artifact被误当成16个generation class，whole-variant有界attempt之前仍materialize和
   import完整candidate domain；可解析的规则layout和homogeneous ordered stream又退化成element/pair枚举。
   缺少阶段wall/RSS及candidate/attempt/lowering/capture计数，使“进程活跃”被误当成有效搜索进度。
-- 修复模式：只根据typed rank-dependent op判定generation class；request shard保持semantic recipe group完整，
-  canonical归并后重放原admission，并与未分片frontier逐module比较。whole-variant先从metadata建立固定attempt
-  plan，只bytecode传输required module；regular movement直接构造exact descriptor/block run，stable-root
+- 修复模式：用current typed rank-dependent facts决定哪些analysis/action可共享计算；并行request只承载独立work，结果必须回到
+  同一coordinated all-rank current-IR frontier逐项fresh重证，并受唯一global work budget约束，不生成generation class artifact、
+  metadata attempt plan或rank-local shortlist。regular movement直接构造exact descriptor/block run，stable-root
   same-worker stream用busytable合同摘要证明，mixed/unknown路径保留原fail-closed扫描。必然超过现有terminal/SPM
   exact gate的partial reduction可用sound lower bound提前拒绝。
-- 防复发：真实model-scale owner case必须同时检查完整package/no-card、可引用的frontier/attempt上界、阶段wall、
+- 防复发：真实model-scale owner case必须同时检查完整package/no-card、可引用的coordinated frontier/work上界、阶段wall、
   peak RSS和profile capture展开计数；小型unit固定分片/未分片frontier完全等价及fallback negative。不得通过缩小
   shape、关闭profile、按名字跳过候选或延长timeout满足门禁；统计也不得进入IR、selection或持久artifact。
 
@@ -2277,7 +2261,8 @@
 - 修复模式：先用默认关闭的invocation-local详细计时，分层聚合stage/pipeline/pass/pattern/algorithm的调用次数、
   wall与线程CPU，并周期输出active leaf和累计Top-N。static movement必须从typed IndexRelation和physical encoding
   piece直接构造exact多层descriptor；无法证明时structured failure，production不保留按logical element枚举的
-  性能悬崖。rank request按semantic group分片并按原ordinal归并，候选剪枝只能提前执行已有exact rejection。
+  性能悬崖。rank/component work可按current typed facts分片并行，但结果必须回到同一coordinated frontier按semantic key
+  fresh重证，不能按ordinal归并；候选剪枝只能提前执行已有exact rejection并消耗同一global work budget。
 - 防复发：实际shape case首次明显超出预算时先做短窗口分层采样，不读取历史中断输出、不重复盲跑完整compile，
   也不把board completion timeout与host compile deadline混用。只有定位结果证明工作量合理且有进展时才重新估算
   host deadline；不得通过缩小workload或复用partial staging取得`board-ready`。完整同shape复验还必须生成package并
@@ -2428,3 +2413,23 @@
   importer解释器的`py_compile`、`--help`及其定向unit。恢复时保留当前ABI/CLI语义，不从旧文件整份覆盖新合同。
 - 防复发：格式化命令显式列出同一语言文件，随后检查diff stat是否出现异常全文件重排。即使是临时代码和测试runner也遵守
   正常命名、语法和验证规则，不能以“后面会删”降低质量门槛。
+
+## 2026-08-05 Tile region不能代替traversal与materialization决策
+
+- 现象：把`tile.region`当fusion cluster会让“融合后小tile”和“拆成sibling region后大tile”看似只能二选一；随后每个cut又
+  自动制造DDR round-trip、GS和completion。实际上同一region完全可以包含两套独立SCF loop nests、不同tile shape和内部DDR
+  materialization，region partition没有提供额外表达能力，反而人为放大边界数量。
+- 根因：混淆了SPM ownership/device-execution epoch与schedule/dataflow。`IsolatedFromAbove`只要求显式region inputs，single-block
+  只限制outer CFG；body可含多个structured traversal。Tile→Instr递归lower body，SPM planner也按whole function建立一次timeline
+  和arena packing。因此tile/loop、layout/version、resident/spill/recompute需要联合选择，但region本身不是这些变量之一。
+- 修复模式：当前没有typed SPM-clobber/host handoff/第二次launch的static rank entry恰好物化一个non-nested outer region；
+  producer/consumer在region内分别选择coupled或separated traversal，以及resident、local movement、internal DDR、streaming或
+  recompute。至少比较fused-small-tile、separated-large-tile和selective-spill；separation的收益包括独立retile和缩短并发root
+  lifetime，即使原方案可pack也要保留。terminal clone才lower worker/order、删除旧join并fresh重建completion；每个terminal
+  rank-entry Instr variant只运行一次whole-entry fixed-capacity MiniMalloc，每个complete all-rank variant只运行一次
+  DDR/transport/ABI exact gates。
+- 防复发：测试固定current entry的region数量为一，并在同一region内证明多loop/tile、resident root与单root spill共存；普通
+  effect、collective、retile、layout change或spill都不得创建region。只有未来IR显式不同ownership epoch才允许多个region，且
+  boundary禁止SPM data。direct comparison必须让DDR、GS、completion、compute/recompute、tile utilization、NoC、Instr、
+  SPM movement、descriptor/resource和critical-path全部selection-sensitive维度参与；`Unknown`不同则不可比，同一all-rank
+  coordinator与global work ledger贯穿structured和terminal evaluation，不由实施checkpoint各自发布winner。

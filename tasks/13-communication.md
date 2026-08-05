@@ -39,7 +39,8 @@ Pipeline position:
   post-SPMD structured tensor program中的`wafer.linalg_ext.collective.*`、显式logical rank group或
   source-target pairs、combiner region、axis/slice/channel identity、`wafer.execution.mesh`和
   `wafer.target.topology`；以及当前rank的isolated complete-rank candidate clone、已选tiling/layout/residency
-  与对应未放置SPM storage values。
+  与对应未放置SPM storage values。current static rank entry恰好一个non-nested outer `wafer.tile.region`，
+  collective前后traversal和communication staging均在同一SPM ownership/device-execution epoch内。
 - Current stage responsibility:
   typed rewrite pattern直接读取current collective op、DPS/Tiling和execution mesh；从closed schedule enum枚举
   Direct/Ring/Tree小集合，并由无状态topology helper从current rank-to-endpoint placement与规则邻接派生Ring/Tree
@@ -115,7 +116,7 @@ post-SPMD structured collective IR
   -> local verifier and fresh analyses
   -> derive all-rank atomic typed worker/fixed-slot siblings from canonical/unplaced current Instr
   -> erase compiler-derived joins and fresh rebuild fixed-frontier latest-necessary completion
-  -> whole-entry SPM/DDR/event planning
+  -> once-per-terminal-rank-entry whole-entry SPM planning + whole-variant DDR/event planning
   -> all-rank message/range/completion/resource acceptance
   -> atomic DirectDTEBindingAttr commit
   -> target LLVM / model / package / runtime completion surface
@@ -316,7 +317,8 @@ instruction IR的真实send/recv/message/range/completion匹配证明。
 - final logical peer edge在current topology/execution placement上的shortest-hop distance，以及
   `sum(payload bytes * shortest hops)`形成的minimum link-byte demand；
 - local movement/compute op数；
-- communication staging bytes和accepted SPM high-water；
+- communication staging bytes；accepted SPM high-water只作hard-capacity/headroom diagnostic，不作为communication或
+  execution Pareto维度；
 - terminal instruction数；
 - event/token live range与resource peak。
 
@@ -606,8 +608,11 @@ unknown/external call保持conservative barrier。
 - wait之后若还有same-worker local insert/reduce，由issue order保持依赖；若后续是Kcore、DTE、不同worker、
   host publication或unsafe reuse，actual IR必须保留typed hazard witness，并由post-worker completion reconstruction在
   final sibling中构造覆盖producer worker的latest-necessary participant join；
-- collective是rank-coupling与completion边界，不是DDR边界；其input/result只要current physical relation、lifetime和
-  capacity允许，就可以跨前后compute保持SPM resident；
+- collective是rank-coupling点，但不是`tile.region`、DDR或terminal epoch-completion边界；matching token/wait只闭合其
+  communication obligation。其input/result只要current physical relation、lifetime和capacity允许，就可以跨前后compute
+  保持SPM resident；
+- 内部collective/traversal/schedule cut不拆region或插terminal join。SPM root/value/alias只能存在于current rank唯一outer
+  region内，不得跨真实epoch boundary；terminal completion只在outer region/rank-entry exit由final effects/events/ranges证明；
 - local NCC drain、DTE/FSM completion和group barrier是三种不同事件；
 - `async.token`表示依赖完成，不等于target operation成功；success、transport error、timeout与peer failure由
   lower-level status/completion contract区分；

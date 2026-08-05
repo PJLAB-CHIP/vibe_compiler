@@ -1227,8 +1227,8 @@ profiling config, group data dump, `D_DteCfgList`, `TileMappingTable`,
 Evidence boundary: the structures and call chain above are statically closed
 for the qualified V5.6 binary and cross-checked against legacy builders and
 installed device modules. The public header still provides no BPM builder or
-layout-version contract. Wafer current schema-v6 publication (the model
-BootParam ABI was first introduced in schema-v4) and its board provider
+layout-version contract. Wafer's sole current schema-v7 publication (the model
+BootParam ABI was first introduced in schema-v4 and schema-v6 was a historical publication) and its board provider
 now materialize typed graph I/O ordinals, checked sizes/offsets, nested
 allocation lifetimes, module-name identity, and artifact export/readback as
 the explicit nested `entry_abi=tx81-model-bootparam-v1` under the sole

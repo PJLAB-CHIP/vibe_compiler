@@ -80,7 +80,8 @@ Pipeline position:
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  已形成完整rank selected tile-dataflow的isolated clone，以及candidate generator当前准备尝试的
+  已形成完整rank selected tile-dataflow的isolated clone；current static rank entry由恰好一个non-nested outer
+  `wafer.tile.region`承载完整SPM ownership/device-execution epoch，以及candidate generator当前准备尝试的
   implementation/tile/encoding/route transition。
   strategy 只是调用哪组 rewrite 的栈上控制信息；任何已应用决定都必须立即出现在 clone IR 中。
 - Current stage responsibility:
@@ -92,7 +93,7 @@ Pipeline position:
   selected physical-version、descriptor list 或重复 schedule。
 - Downstream consumer:
   complete-rank Tile→Instr DialectConversion、worker/fixed-slot/ready-order sibling、compiler-derived completion fresh
-  reconstruction、whole-rank SPM planning、whole-variant DDR planning、post-memory transport/resource binding、
+  reconstruction、每个terminal rank-entry一次的whole-entry SPM planning、whole-variant DDR planning、post-memory transport/resource binding、
   ABI/artifact preflight和target conversion。
 - User-level driver / named pipeline:
   与 relation/realizability analysis 相同，由 production named pipeline 驱动。
@@ -142,7 +143,8 @@ Pipeline position:
 - Downstream consumer:
   typed worker/fixed-slot/ready-order sibling derivation与fresh whole-rank completion reconstruction/verifier；canonical/unplaced
   current Instr从SSA/effects/ranges原子派生siblings，删除全部compiler-derived`wafer.instr.ncc_join`并从current facts
-  fresh重建fixed-frontier latest-necessary completion；随后进入whole-rank lifetime/SPM fixed-capacity planning、whole-variant DDR、
+  fresh重建fixed-frontier latest-necessary completion；随后进入每个terminal rank-entry一次的whole-entry
+  lifetime/SPM fixed-capacity planning、whole-variant DDR、
   post-memory Direct-DTE binding/all-rank resource、fresh final-IR cost和target lowering。
 - User-level driver / named pipeline:
   现有 wafer-compile source-to-bundle production pipeline；局部测试调用同一 transformation library，
@@ -258,11 +260,13 @@ AnalysisManager 自动清理，因此首版宁可重算，也不能复用可能�
 4. relation组合为identity时删除相关view，单root非identity但physical access等价时形成metadata view，否则把每个source
    root的composed relation交给movement realization；concat保持per-input `staticConcatPiece`并证明pieces互斥且full-cover，
    只能合并为写同一destination的compound movement，不能成为跨root alias；
-5. 在selected residency partition形成前，exact relation可通过旧structured scope的operand/result、yield和受支持
-   SCF SSA继续组合；旧container boundary本身不停止传播。最终`tile.region`是maximal SPM residency domain：
-   SPM memref/root/alias不得跨sibling region，能保持resident的producer/consumer必须合并到同一region，真实
-   sibling-region data edge则保留显式DDR store/completion/load。external DDR value及不携带resident data的
-   event/control relation仍可经region operand/result表达。effect、unknown alias、不可表达的control-flow join、
+5. 在selected traversal coupling/separation与tile schedule形成前，exact relation可通过旧structured scope的operand/result、yield和
+   受支持SCF SSA继续组合；旧container boundary本身不停止传播。最终`tile.region`不是traversal group，而是固定的SPM
+   ownership/device-execution epoch：current static rank entry恰好一个non-nested outer region，其内允许多个traversal/loop nest、
+   不同tile shape、逐root lifetime、selective spill/streaming和显式internal DDR store/completion/load。06联合选择内部traversal
+   fusion/separation、tile与physical relation，但不搜索region partition。SPM memref/root/alias不得越过epoch boundary；只有不携带
+   SPM storage ownership的DDR/scalar/event/control value可作为boundary value。内部traversal separation不触发completion，真实
+   entry/epoch exit才由terminal completion owner从final effects/events/ranges显式证明。effect、unknown alias、不可表达的control-flow join、
    非不变loop-carried relation、checked overflow或任一proof/worklist预算耗尽只停止对应edge/dimension的传播并
    保留显式movement baseline，不把整个周围图误切为DDR component。
 
@@ -812,7 +816,7 @@ accepted physical-realization IR 至少验证：
 6. **descriptor tests**：one/multi-command RDMA/WDMA、GS、field overflow、alignment、range、broadcast read；
 7. **invalid-lane tests**：unknown、known splat、fill + segmented write、mask、negative consumer observation；
 8. **IR tests**：clone 内 materialization、DialectConversion legality、canonicalization、atomic rejection；
-9. **integrated tests**：whole-rank SPM、whole-variant DDR、event、instruction 和 SystemC logical round trip。
+9. **integrated tests**：once-per-terminal-rank-entry whole-entry SPM、whole-variant DDR、event、instruction 和 SystemC logical round trip。
 
 property tests 使用独立慢 oracle 与 interface/descriptor fast path differential。慢 oracle 可以逐元素；生产
 路径不能。

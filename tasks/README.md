@@ -16,10 +16,10 @@
 | 03 | `tasks/03-shardy-spmd.md` | 当前Shardy/XLA SPMD artifact、显式rank identity；MPMD/rank class延后 |
 | 04 | `tasks/04-topology-execution-mesh.md` | 当前topology/execution mesh；current target identity不进入mesh IR |
 | 05 | `tasks/05-local-compute-normalization.md` | rank-local structured compute normalization与tensor collective handoff |
-| 06 | `tasks/06-physical-dataflow-synthesis.md` | MLIR-native physical-dataflow synthesis：implementation/tile/encoding/route/residency/buffering/order/communication的bounded actual-clone selection与atomic commit |
-| 07 | `tasks/07-tile-region.md` | selected tile/dataflow actual IR物化、完整traversal与maximal SPM驻留域；`tile.region`以显式DDR materialization cut分界，不是lowering、completion或独立arena |
+| 06 | `tasks/06-physical-dataflow-synthesis.md` | MLIR-native physical-dataflow synthesis：tile/loop、implementation/encoding/route/residency/spill/recompute/buffering/order/communication的bounded actual-clone selection与atomic commit |
+| 07 | `tasks/07-tile-region.md` | selected tile/dataflow actual IR物化；每个current static rank entry恰好一个outer `tile.region`作为execution/SPM epoch，SPM data不跨其边界，不同traversal/tile与internal materialization均在region内表达 |
 | 08 | `tasks/08-physical-realization.md` | physical encoding attr/type语义、valid domain、view、transfer realizability analysis、descriptor cover和selected physical realization |
-| 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/completion、fixed-capacity legality、validated high-water和accepted offsets；candidate choice仍由06拥有 |
+| 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/completion、单次fixed-capacity MiniMalloc legality、validated placement/headroom和accepted offsets；candidate choice仍由06拥有 |
 | 10 | `tasks/10-compute-movement.md` | 窄source implementation OpInterface/external model、typed target-abstract compute/movement、standard MLIR effects/interface reuse和issue/token/fence/wait |
 | 11 | `tasks/11-instruction-ir.md` | complete static rank instruction program、current descriptor/geometry/range/narrowing legality及mapped/physical-fill/oriented typed extension |
 | 12 | `tasks/12-ddr-memory-planning.md` | 当前DDR demand/accepted offsets；multi-arena/state/streaming延后 |
@@ -40,7 +40,7 @@
 | pre-SPMD topology和execution mesh | 04 |
 | Shardy/SPMD output和显式rank identity | 03 |
 | component/rank-local compute normalization与collective handoff | 05；跨stage正确性证据由16约束 |
-| rank-local physical-dataflow bounded joint candidate生成/选择、selected tile/dataflow materialization和physical encoding/transfer | 06、07、08；source implementation interface由10提供，instruction legality由11提供，exact resource/transport gate由09、12、13提供 |
+| complete-rank physical-dataflow bounded joint candidate生成/选择、all-rank协调、selected tile/dataflow materialization和physical encoding/transfer | 06、07、08；source implementation interface由10提供，instruction legality由11提供，exact resource/transport gate由09、12、13提供 |
 | policy-free physical-dataflow rewrites | 06、07、08；upstream structured utility由05提供，source/selected implementation合同由10提供，源码ownership由18约束 |
 | source implementation interface、target-abstract compute/movement和instruction legality | 10、11；transfer realizability/descriptor cover只由08拥有 |
 | accepted SPM/DDR allocation、lifetime和offset | 09、12；shared lifetime analysis的源码ownership和测试镜像由18约束 |
@@ -63,8 +63,9 @@ Q47 Target ABI退役计划见`tasks/plans/target-abi-retirement.md`。它已在Q
 
 Q49 whole-rank tile dataflow synthesis计划见`tasks/plans/whole-rank-tile-dataflow-synthesis.md`。它由06作为唯一
 联合决策设计owner，复用01、07-13、16、18的selected IR、physical realization、memory、completion、communication和验证合同；
-目标是在Instr lowering前完成whole-rank consumer-driven composition，并删除旧per-task提前物化路径。动态状态和完成门禁只看
-`tasks/progress.md`。
+目标是在Instr lowering前，以每个static rank entry唯一outer `tile.region`为execution/SPM epoch完成whole-rank
+joint tiling/residency/materialization composition，并让candidate generation与terminal exact gate服从同一个all-rank
+coordinator/global ledger，同时删除旧per-task提前物化路径。动态状态和完成门禁只看`tasks/progress.md`。
 
 Q48语义驱动superoptimizer计划见`tasks/plans/semantic-superoptimization.md`。它必须在Q49达到`board-ready`且C0–C6
 compiler cutover完成、Q47 current ABI可消费final Instr/TargetCall后启动，

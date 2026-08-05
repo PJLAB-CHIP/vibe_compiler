@@ -86,7 +86,7 @@ Cross-document evidence summary:
 
 | area | observed evidence and limitation |
 | --- | --- |
-| Instruction wrappers and register packets | CT/NE/RDMA/WDMA/TDMA packet fields, wrapper units, CSR wait, and observed `serial_mode` behavior have static evidence. Whether that evidence is sufficient for a production command is decided by the numbered instruction and target contracts. |
+| Instruction wrappers and register packets | CT/NE/RDMA/WDMA/TDMA packet fields, wrapper units, CSR wait, and observed `serial_mode` behavior have static evidence. Whether that evidence is sufficient for a production command is decided by the numbered instruction and target design owners. |
 | Host runtime and driver | HPGR `tx_runtime.h`/`libhpgr.so` is the most complete CUDA-like provider surface observed in the `firmware_kuiper` snapshot; VS `Tsm*` remains compatibility evidence with several stubs. Provider selection and runtime policy belong to `tasks/15`. |
 | Completion semantics | KMD compute fences are not proof of model/kernel completion in this driver snapshot. HPGR command-slot completion, async receive thread, module `completeSignal`, and stream waits are distinct observed mechanisms whose production mapping belongs to `tasks/15`. |
 | Address space and PG | BAR/ATU windows, BO pools, tile SPM/register layout, Kcore/Score firmware slots, global stream mapping table, and 8/16-tile PG behavior are source- or binary-confirmed. |
@@ -96,7 +96,7 @@ Cross-document evidence summary:
 ## Remaining Gaps
 
 1. `HardwareVerify` is the main evidence gap: PMU, MHU/power-off, DTE PMU counters, board services, and hardware state/timing paths still need board validation.
-2. `__execute_sc` is reserved/stub in the current `libinstr_tx81.a`; this snapshot does not prove a production SCALAR path. Acceptance remains with the numbered instruction and target contracts.
+2. `__execute_sc` is reserved/stub in the current `libinstr_tx81.a`; this snapshot does not prove a production SCALAR path. Acceptance remains with the numbered instruction and target design owners.
 3. Exact SPM port/stride conflict penalty and any mapping beyond the documented coarse LSB phase require board sweeps or lower RTL/firmware evidence.
 4. API/function semantics, instruction constraints, runtime/driver behavior, and DTE/stream/mailbox/PMU register meanings are consolidated in [tx8-interface-contract.md](tx8-interface-contract.md), with SDK/driver additions in [firmware-kuiper-runtime-hardware-analysis.md](firmware-kuiper-runtime-hardware-analysis.md).
 5. Raw multi-destination DTE modes have register evidence but incomplete public-helper evidence. `tasks/13`, `tasks/14`, and the board gates own any future compiler-facing acceptance.

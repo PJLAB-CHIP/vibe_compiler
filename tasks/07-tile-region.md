@@ -1,36 +1,41 @@
-# Wafer Selected Tile-Dataflow IR、SPM 驻留域与原子物化
+# Wafer Selected Tile-Dataflow IR、SPM Ownership / Device-Execution Epoch 与原子物化
 
 状态：本文定义 selected tile/dataflow IR 的 MLIR-native 边界。Q32/Q46已闭合现有typed materialization、
-relation和physical-version机制；Q49负责把production调用域收敛为complete-rank、pre-Instr联合综合。
+relation和physical-version机制；Q49负责把production调用域收敛为complete-rank、pre-Instr联合综合，并把
+`wafer.tile.region`收敛为显式SPM ownership / device-execution epoch。
 实现状态只看`tasks/progress.md`；历史 task-dataflow scheduling 证据只作背景，不是当前合同。
 
 source structured op 的数学语义始终存在于当前 operation、region、SSA、type、attribute 和标准
-MLIR interfaces 中。tasks/06 在complete-rank transformation内选择 implementation、tile、physical encoding、
-residency、movement、share-vs-recompute、loop-invariant hoist、current numeric rewrite和structured traversal order后，本文负责在 isolated candidate clone 中用 `PatternRewriter` 和
-`DialectConversion` 直接物化真实 IR。物化完成后，选择过程中的临时对象可以销毁；下游只读取
-current IR。
+MLIR interfaces 中。tasks/06与本文不是“先选出全局plan，再统一import”的两个管线阶段：对一个fuse/tile/
+physical-dataflow proposal做完便宜预筛后，decision owner立即调用本文rewrite library，在isolated complete-rank
+candidate clone中用`PatternRewriter`和`DialectConversion`同时物化implementation、tile、physical
+encoding、residency、movement、share/recompute、hoist、numeric rewrite和traversal order。一旦作为frontier survivor，
+这些决定的唯一语义主体就是actual IR；transient proposal立即销毁，下游只读取current IR。
 
-`wafer.tile.region` 是 complete-rank traversal 中一个最大的 tile-local **SPM 驻留域**。它组织
-Wafer-tagged SPM memref、view、compute、SPM 内 movement、peer/collective movement、event 和 structured
-control flow。数据 input/result 都是 variadic，fan-in、fan-out 和边数没有 IR 上限。region-external DDR
-value/view（function external或compiler-managed spill）在入口通过显式load建立本地SPM version；
-可观察输出或后续spill在出口通过显式store发布到DDR；
-region op 不隐式执行搬运。
+`wafer.tile.region`物化一个显式的 **SPM ownership / device-execution epoch**：从进入region取得本Tile的
+3 MiB SPM所有权，到region exit完成该epoch的全部device work并释放全部SPM resident state。它组织该epoch内
+所有structured tile loops、Wafer-tagged SPM memref、view、compute、SPM内movement、peer/collective movement、
+显式DDR streaming或selective spill/reload、event和structured control flow。数据input/result都是variadic DDR
+value/view，fan-in、fan-out和边数没有IR上限；region op不隐式执行搬运，SPM value/root/alias不得成为region I/O。
 
-一条 intermediate SPM SSA edge 不得跨 non-nested sibling `tile.region`。如果 producer 与 consumer 共享
-同一 resident physical version，它们必须位于同一驻留域；只有 selected dataflow 中真实存在
-SPM eviction / DDR materialization / reload cut 时才形成两个 region。shape、traversal domain、layout、
-GS、collective、task 或 builder 边界都不自动切 region。region 仍不是独立 physical arena、
-executable、lowering、completion 或提交单元；所有 region 共享同一 tile 的 3 MiB SPM，并由
-whole-rank planner 统一放置和复用已结束驻留的地址。当前 ODS 和 production builder 尚保留旧
-structured-scope 边界，Q49 C1 负责按本合同迁移，不允许按旧 scope 一对一 materialize region。
+当前完整static rank entry必须恰好包含一个non-nested `wafer.tile.region`；typed opaque SPM clobber或device ownership
+handoff尚未进入current IR合同，遇到时fail closed。不同traversal domain、tile shape/loop order、融合或拆分的compute DAG、
+resident/spill/recompute和movement都在该region内部表达；region partition不是candidate搜索变量，也不能由source
+scope、task、算子、loop、spill点或tile-shape变化机械恢复。selective spill只结束目标SPM root，matching reload建立
+新root，其它resident roots和同一epoch继续存在。
+
+未来若扩展multi-region，只允许由显式typed epoch boundary分隔，例如能够验证的SPM clobber或device ownership
+handoff；该扩展不属于当前production输入/输出合同。届时每个boundary必须证明前一epoch的全部SPM roots已结束且全部pending device work已完成；跨boundary的
+所有data必须经DDR store/load表达，不能携带SPM memref/root/alias或把pending completion传给下一epoch。未建模的
+opaque clobber不能静默切region，必须fail closed。即使存在多个typed epochs，SPM placement仍按完整terminal
+rank entry只运行一次3 MiB whole-entry query，而不是给每个region建立physical arena或独立提交单元。
 
 本文依赖：
 
 - `tasks/05-local-compute-normalization.md`：rank-local structured tensor normal form。
 - `tasks/06-physical-dataflow-synthesis.md`：联合选择、clone 生命周期、精确排序和 all-rank atomic commit。
 - `tasks/08-physical-realization.md`：physical encoding、view、footprint 和 movement legality。
-- `tasks/09-spm-memory-planning.md`、`tasks/12-ddr-memory-planning.md`：whole-rank/variant lifetime、
+- `tasks/09-spm-memory-planning.md`、`tasks/12-ddr-memory-planning.md`：whole-entry/whole-variant lifetime、
   capacity 和 offset gate。
 - `tasks/10-compute-movement.md`：source implementation interface 与 selected compute/movement contract。
 - `tasks/11-instruction-ir.md`：complete-rank instruction IR 与 target legality。
@@ -39,8 +44,8 @@ structured-scope 边界，Q49 C1 负责按本合同迁移，不允许按旧 scop
 
 本层负责：
 
-- 在 isolated complete-rank clone 上应用已经选中的 tiling、fusion、producer propagation 或等价
-  indexing rewrite。
+- 在 isolated complete-rank clone 上应用当前frontier action选定的 tiling、fusion、producer propagation 或等价
+  indexing rewrite；该action与本次mutation同寿命，不先形成可跨pass保留的完整plan。
 - 物化share-vs-recompute与static loop-invariant hoist：share保持同一producer/physical version的多use；recompute只克隆
   pure/speculatable producer并形成consumer-local SSA；hoist把真实op移到loop外并让body捕获dominant SSA value。
 - 把floating numeric-validated与integer exact/modular-proof-backed reassociation、显式reduction tree、split和已支持
@@ -56,8 +61,9 @@ structured-scope 边界，Q49 C1 负责按本合同迁移，不允许按旧 scop
   `wafer.tile.*` compute。
 - 物化 Wafer-tagged memref、standard/typed view、resident SSA edge、显式 movement、spill/reload、
   temporary、accumulator 和 staging。
-- 把同一selected SPM residency domain内的全部dataflow物化为maximal `wafer.tile.region`；一条spill/reload决定
-  物化为两个驻留域之间的显式 DDR cut，不把 intermediate DDR round-trip 藏在单个 region 内。
+- 为完整rank entry物化唯一SPM ownership / device-execution epoch：恰好创建一个non-nested
+  `wafer.tile.region`，并把全部selected tile schedules和physical dataflow放在其内部。额外typed epoch boundary
+  属于未来IR扩展，不是当前production输入；当前遇到时fail closed。
 - 用 event SSA、typed wait/dependency、MemoryEffects和structured control flow表达issue、event completion、reuse及仍待下游
   完成的observable obligations；本层不物化compiler-derived participant join或terminal drain。
 - 让 conversion legality、op/interface verifier 和 fresh analyses 能从 current clone 独立重建全部事实。
@@ -68,13 +74,12 @@ structured-scope 边界，Q49 C1 负责按本合同迁移，不允许按旧 scop
 - 不生成或排序 implementation、tile、encoding、residency、movement 或 task-order 选择。
 - 不因 materialization/lowering 失败改选另一实现，不插入临时 fallback，不切分新的搜索分支。
 - 不保存选择历史、评分、失败轨迹、影子调度图或其它 IR 外长期语义。
-- 不分配 SPM/DDR physical offset，不在 region 内单独证明 whole-rank capacity。
-- 不让单个region、component或旧task module独立执行Tile→Instr、SPM/DDR planning或terminal completion后再拼接rank。
-- 不按 task、shape、traversal domain、layout、GS、collective 或同步位置切 region，也不用
-  region 数量代替 DDR bytes / materialization cut 的真实成本。
-- 不因SPM bank phase/conflict拆region或选择DDR spill；09的终态合同只允许在hard-valid relocation中先比较
-  actual high-water，并仅在high-water相同的physical offsets之间使用可重算bank phase作最后tie-break；
-  当前实现状态见Q49。
+- 不分配 SPM/DDR physical offset，不在 region 内单独证明 whole-entry capacity。
+- 不让单个traversal、component或旧task module独立执行Tile→Instr、SPM/DDR planning或completion后再拼接rank。
+- 不把task、shape、traversal domain、tile shape、layout、GS、collective、同步位置、融合/拆分选择或spill机械映射成
+  region boundary；region数量不是搜索变量，也不进入DDR、GS、completion、tile utilization或materialization成本。
+- 不因SPM bank phase/conflict拆epoch或选择DDR spill；09只允许allocator在不新增query的execution-equivalent
+  hard-valid offset顺序中使用可重算bank phase作确定性末级偏好；当前实现状态见Q49。
 - 不 lower raw packet、CRT、LLVM、runtime handle 或 package 字段。
 - 不通过 op/value/parameter 名、固定 shape、参数顺序或 workload topology 恢复语义。
 - 不把单个 region、representative tile、单个 rank 或局部 FileCheck 当成完整完成证据。
@@ -83,30 +88,32 @@ structured-scope 边界，Q49 C1 负责按本合同迁移，不允许按旧 scop
 
     Pipeline position:
     - Upstream artifact / IR:
-      verifier-legal complete-rank structured tensor IR，以及同一次 transformation 内由
-      WaferTargetImplementationOpInterface枚举并已经选中的TargetImplementationCandidate、
-      tile domain、physical operand/result encoding、residency、movement、share/recompute、hoist、current numeric variant和
-      execution order。所有选择都引用current op/value并可在mutation前重新验证；
-      它们不跨pass发布。跨rank NoC-resident candidate还接收共同verified post-SPMD snapshot、typed
+      verifier-legal complete-rank structured tensor IR，以及同一次 transformation 内通过便宜预筛、将立即物化的
+      WaferTargetImplementationOpInterface candidate、每个traversal的tile domain/loop order、physical operand/result
+      encoding、residency、movement、
+      share/recompute、hoist、current numeric variant和execution order。所有选择都引用current op/value并可在mutation前重新验证；
+      它们不跨pass发布。当前输入不得含opaque SPM clobber/device ownership handoff；未来若增加typed epoch-boundary
+      IR，必须另行扩展本合同。跨rank NoC-resident candidate还接收共同verified post-SPMD snapshot、typed
       global/local rank slice和同一transaction中的完整rank clone tuple。
     - Current stage responsibility:
       clone完整rank module；用PatternRewriter应用selected structured rewrites、producer clone/共享、loop hoist和显式numeric DAG，
       并更新真实use-def；
-      用source implementation hook、op builders和DialectConversion创建表达maximal SPM驻留域的typed region、view、
-      compute、movement、event和SSA relation；生成complete traversal；每次mutation后丢弃旧
+      用source implementation hook、op builders和DialectConversion创建表达SPM ownership/device-execution epoch的
+      typed region、view、compute、movement、event和SSA relation；在每个complete static rank entry中创建恰好一个
+      non-nested region，并在region内部生成全部complete traversals；任何额外或nested region都拒绝；每次mutation后丢弃旧
       IndexRelation、alias、effect、liveness和resource observations并从current clone重算；
       最后运行conversion legality和tile/dataflow verifier。
     - Output artifact / IR:
-      transaction-local、verifier-legal、覆盖完整rank traversal的selected tile/dataflow IR；其中每个
-      `wafer.tile.region`是一个maximal SPM驻留域，跨region data edge只能是显式DDR存储物化或
-      非data control/event relation。若物化失败，在无任何published mutation的情况下返回failure。
+      transaction-local、verifier-legal、覆盖完整rank traversal的selected tile/dataflow IR；整个static rank entry
+      恰好包含一个non-nested `wafer.tile.region`作为SPM ownership/device-execution epoch。region所有data I/O均为DDR，SPM
+      value/root/alias不能跨界；epoch exit完成全部pending device work。若物化失败，在无任何published mutation的情况下返回failure。
       成功IR只含typed operation/region/type/
       attribute、memref/view、compute、movement、event和SSA；不依赖任何外部解释对象。
     - Downstream consumer:
       target-abstract legality，并按terminal typed collective/peer algorithm参数逐点执行complete-rank instruction lowering；
       materialized canonical/unplaced Instr随后派生typed worker/fixed-slot/ready-order siblings，进入fresh completion
-      reconstruction、whole-rank SPM、whole-variant DDR、post-memory communication/transport/resource、ABI gates以及
-      all-rank atomic commit。任何region/component不得单独经过这些不可逆stage。
+      reconstruction、whole-entry SPM、whole-variant DDR、post-memory communication/transport/resource、ABI gates以及
+      all-rank atomic commit。completion只在epoch exit验证；任一内部traversal/component不得单独经过这些不可逆stage。
     - User-level driver / named pipeline:
       wafer-compile source-to-bundle production pipeline。wafer-opt只可对同一op/interface/
       conversion做局部parser、verifier和rewrite测试，不形成第二条compile pipeline。
@@ -117,7 +124,9 @@ structured-scope 边界，Q49 C1 负责按本合同迁移，不允许按旧 scop
       contraction、pointwise、ordered reduction、view、broadcast/slice、fanout/fanin、多root、
       structured control flow和当前已启用的terminal all-reduce tiled traversal均有真实source正负例；每个成功case发生可观察的
       MLIR mutation并覆盖完整traversal；失败保持source不变；输出被instruction、SPM/DDR、
-      completion、transport和ABI gate直接消费；rank-count 1/16与冻结7B纵向重放通过。
+      completion、transport和ABI gate直接消费；同一source覆盖同一epoch内的fused-small-tile、separated-large-tile和
+      selective-spill actual forms，并验证恰好一个non-nested region、region data I/O仅为DDR、额外/nested region拒绝、
+      completion只在epoch exit闭合；rank-count 1/16与冻结7B纵向重放通过。
 
 ## 3. IR 生命周期与唯一事实源
 
@@ -128,8 +137,8 @@ structured-scope 边界，Q49 C1 负责按本合同迁移，不允许按旧 scop
       -> verifier-legal tile/dataflow IR
       -> per-parameter tile-to-instruction DialectConversion
       -> worker/fixed-slot/ready-order siblings
-      -> erase and fresh-rebuild whole-rank completion
-      -> whole-rank SPM gates
+      -> erase and fresh-rebuild epoch-exit completion
+      -> one whole-entry SPM gate per terminal rank entry
       -> whole-variant DDR then post-memory communication/transport/resource/ABI gates
       -> atomic commit of all ranks
 
@@ -153,23 +162,24 @@ type、indexing map、view或effect后，基于旧IR得到的analysis全部失�
 
 概念形式：
 
-    wafer.tile.region (...) -> (...) {
-      ^bb0(%tile_indices..., %region_args...):
-        ... views, compute, movement and events ...
+    wafer.tile.region (%ddr_inputs..., %typed_control...) -> (%ddr_outputs...) {
+      ^bb0(%ddr_args..., %control_args...):
+        ... all traversals, views, compute, movement and events in this epoch ...
         wafer.tile.yield ...
     }
 
 region必须表达：
 
-- variadic region argument/result与enclosing rank DDR value/view及non-data event的SSA relation；DDR root既可
-  来自function external，也可来自compiler-managed spill；边数不是硬件端口、
-  descriptor 或 DMA 数量上限；
-- 当前tile coordinate，或能从enclosing `scf` induction variables重算的coordinate；
-- region-owned SPM allocation root、logical shape/dtype、memory space和selected physical encoding；
-- region-external DDR/constant input到region-owned SPM version的显式load，以及SPM output到DDR view的
-  显式store；
-- 所有intermediate producer-consumer edge的resident SPM SSA relation，或region内显式SPM-to-SPM movement；
-- compute/movement dependencies、completion和reuse ordering；
+- 一个从entry取得SPM所有权、到exit释放全部SPM resident state的device-execution epoch；
+- variadic region argument/result与enclosing rank DDR value/view的SSA relation；DDR root既可来自function external，
+  也可来自compiler-managed materialization，边数不是硬件端口、descriptor或DMA数量上限；
+- epoch内部任意数量的structured traversal domains、各自独立的tile coordinate、tile shape和loop order；
+- epoch-owned SPM allocation roots的logical shape/dtype、memory space和selected physical encoding；
+- DDR/constant input到epoch-owned SPM version的显式load，以及SPM output到DDR view的显式store；
+- intermediate producer-consumer edge的resident SPM SSA relation、显式SPM-to-SPM movement、recompute，或显式DDR
+  store/completion/reload；selective spill只结束目标root，不结束epoch或其它resident root；
+- compute/movement dependency、内部reuse所需的typed wait/join和pending obligation；所有path只在epoch exit验证
+  terminal completion；
 - every output tile all-and-only一次的traversal relation。
 
 region不得表达：
@@ -177,44 +187,43 @@ region不得表达：
 - fusion identity、候选编号、评分、搜索终止原因或调试统计；
 - raw packet field、runtime allocation handle或package locator；
 - case-specific模型角色或依赖文件名的operand role；
-- 跨region SPM value/root/alias的隐式capture、隐式DDR round-trip、隐式barrier或私有physical SPM arena；
-  non-data event/control relation若跨边界必须是显式SSA，且不能携带resident data；
-- region内部intermediate DDR spill/reload；selected spill必须结束当前驻留域，并由后续
-  region的显式load建立新的SPM version。
+- SPM value/root/alias作为region operand/result、隐式capture或跨epochcontrol state；region所有data I/O必须是DDR；
+- 未完成async device work、pending NCC participant或DTE token跨epoch传播；
+- 隐式DDR round-trip、隐式barrier、私有physical SPM arena，或按task/loop/tile shape建立的执行容器。
 
-同一SPM allocation root不得作为SSA value跨sibling region传递。whole-rank planner可以在两个驻留域
-的lifetime确定不重叠时复用同一physical offset，但这是两个不同allocation root的放置结果，
-不是跨region resident handoff。region不分配独立arena；它只声明selected dataflow中哪些值在同一
-SPM residency lifetime内保持片上。
+region不为每个root分配独立arena，也不声明全部root具有共同lifetime。每个root的出生、access、completion和结束仍从
+epoch内部SSA/effect独立重算；只要lifetime不重叠，whole-entry planner可以让任意roots复用physical offset。
 
-### 4.1 Maximal Residency Partition
+### 4.1 Single-Epoch Invariant 与 Typed Epoch Boundary
 
-region partition只在tile、layout/physical version、resident/spill和structured order已经选定后，从current
-whole-function Tile dataflow确定性重建，不沿用source scope或旧region边界：
+current materialization不识别或生成typed epoch boundary；每个complete static rank entry必须物化恰好一个non-nested
+`wafer.tile.region`。所有selected traversal、
+融合/拆分、tile shape/loop order、layout/version、resident/spill/recompute、buffering和movement都在该region内部表达。
+tasks/06不能生成region-partition candidate，canonicalization和memory planner也不能merge/split region。
 
-1. 为selected physical dataflow建立transient约束。resident SSA、SPM alias/view、SPM-local movement、
-   loop-carried resident state以及collective前后被选为resident的edge形成must-co-reside等价关系；
-2. compiler-managed intermediate DDR store、覆盖该store的可信completion和matching reload形成真实cut。
-   external input load和terminal output store只是rank boundary movement，不单独增加residency epoch；
-3. 对must-co-reside关系做union-find；同一等价类被真实DDR cut分开的candidate直接拒绝，不能生成跨region SPM；
-4. 沿current structured control tree递归求最小partition，而不是把loop展开成全局线性epoch：
-   - 在同一顺序block内，quotient graph的普通order edge不增加cut depth，真实DDR cut增加一个local segment；
-     independent roots放入最早合法segment，并合并所有无cut相邻segment；
-   - `scf.if`内部没有cut时，共同外层region可以包含整个if和resident branch result；任一branch存在local
-     cut时，if保持在tile-region之外，各branch物化自己的local region sequence，跨branch join的数据只能是
-     DDR value或non-data event。branch cut与跨if must-co-reside同时出现时拒绝；
-   - `scf.for`内部没有cut时，loop-carried resident state由共同外层region包含loop和backedge；body存在
-     显式DDR cut时，loop保持在tile-region之外，body内形成每iteration重复的local region sequence，所有
-     loop-carried data必须是DDR value或non-data event。body cut与resident backedge同时出现时拒绝；
-5. 对每个可结构化表示的segment物化maximal region。旧scope、shape、layout、GS、collective、worker或同步位置都不是cut；
-   若两个相邻region之间没有真实DDR cut，必须canonical merge；若无法在不移动observable effect的前提下表达，
-   则fail closed；
-6. 重建后验证每条resident edge完全位于一个region，每条sibling data edge都具有完整
-   store→completion→load，region operand/result不存在SPM memref/root/alias，region内部不存在
-   compiler-managed intermediate DDR spill/reload。
+每条epoch内部producer-consumer connection只选择其真实physical action：
 
-该算法允许一个region包含多个structured loops和遍历域，也允许variadic DDR/event边界。不同region的distinct
-SPM roots仍由09在同一physical arena中联合packing；相同offset复用不改变region partition。
+1. **resident/local**：兼容的SPM SSA、view或local movement；
+2. **recompute**：在consumer traversal中重新物化pure/speculatable producer；
+3. **DDR materialization**：显式store、可信completion和matching load，可用于selective spill或streaming；
+4. **independent roots**：按各自lifetime进入同一个whole-entry allocation problem。
+
+这些action可以改变DDR、GS、compute/recompute、completion、tile utilization和SPM demand，因此由06按actual IR计价；
+它们都不改变epoch数量。capacity失败产生新的tile/buffering/spill/recompute actual candidate，而不是region split。
+
+未来若另立IR扩展支持multi-region，必须同时满足以下条件；它们不是current positive：
+
+- 每个额外边界由typed operation/interface显式声明SPM clobber或device ownership handoff；source scope、task、loop、
+  tile shape、fusion cut、spill或普通function call都不是boundary；
+- regions non-nested且按entry control flow形成完整、可验证的epoch序列；
+- 每个epoch exit的全部SPM roots都已结束，所有generic async、DTE和NCC pending state均完成；completion proof只在该
+  epoch exit执行，普通traversal/loop/spill点不建立terminal completion boundary；
+- region argument/result中的data全部是DDR value/view。前一epoch必须显式store并完成，后一epoch显式load；SPM
+  memref/root/alias和pending event均不能跨界；
+- 未知或untyped opaque clobber直接结构化拒绝，不能通过插入新region使其“合法”。
+
+届时09仍应对整个terminal rank entry只运行一次3 MiB MiniMalloc query；即使typed boundary形成多个epochs，也不按region
+重复packing。epoch lifetimes天然不重叠时可以复用offset，但这只是whole-entry placement结果，不是跨epochresident handoff。
 
 ## 5. Buffer、View 与 Physical Version
 
@@ -276,11 +285,11 @@ MemoryEffect和async token完整解释当前movement；typed conversion pattern�
 | resident | producer与consumer共享同一memref SSA value，无中间movement |
 | physical-isomorphic view | standard/typed view，alias与logical relation可验证 |
 | compute-consumed relation | relation由selected compute op的typed operand contract表达，无隐藏movement |
-| boundary load/store | region-external DDR view（function external或compiler-managed spill）与SPM view之间的destination-style identity-coordinate movement |
+| boundary load/store | DDR view（function external或epoch内selective spill/streaming）与SPM view之间的destination-style identity-coordinate movement；region data I/O只能是DDR |
 | peer movement | `wafer.tile.peer_send`读取source SPM range，`wafer.tile.peer_recv`写入destination SPM range；logical peer、fixed bytes和communication identity显式，physical endpoint/route/FSM留给instruction acceptance |
 | local movement | `wafer.tile.materialize_layout`或其它typed movement产生新physical version |
 | staged movement | temp allocation、每段movement和completion全部显式 |
-| spill/reload | 前一region的DDR store、可信completion、后一region的DDR load全部显式；该cut分开两个SPM驻留域 |
+| spill/reload | DDR store、可信completion和matching load全部显式；store结束被spill value的SPM root，reload建立新root。当前全部selective spill/reload位于唯一epoch |
 | constant load/fill | ConstantLike source或typed immutable resource relation与destination encoding显式 |
 
 boundary movement的概念形式：
@@ -311,11 +320,11 @@ MemoryEffects、range和structured order留下pending obligation，不在本层�
       -> all consumers
       -> next writer or allocation reuse
 
-block order、region exit、loop iteration和旧task顺序都不自动证明completion。source/destination、temporary和
-staging的lifetime必须保守覆盖到显式event wait或下游重建的participant completion。terminal drain只允许由post-worker
-completion owner在complete-rank entry的真实exit path或显式observer/capability要求的cut处重建；region yield、standalone
-function return和candidate commit不得自动生成`NCCJoin`。Tile层每条exit path必须保留足够的control-flow、SSA token、
-range和effect事实，使下游能够证明并重建all-and-only external write、communication和其它observable effects的drain。
+block order、loop iteration、traversal结束、spill点和旧task顺序都不自动证明completion。source/destination、temporary和
+staging的lifetime必须保守覆盖到显式event wait或下游重建的participant completion。post-worker completion owner在
+outer epoch的每条真实exit path重建并验证terminal drain；普通loop/traversal/局部materialization cut不得建立completion
+validation boundary，也不得自动生成`NCCJoin`。epoch内部为真实reuse、observer或worker-domain切换插入的typed wait/join
+只更新pending state，最终all-and-only external write、communication和其它observable effects必须在epoch exit全部闭合。
 
 ## 7. 原子 Materialization Algorithm
 
@@ -328,10 +337,11 @@ range和effect事实，使下游能够证明并重建all-and-only external write
    relation rewrite；pattern只能按MLIR rewrite contract更新真实use-def。
 4. **物化complete traversal**：生成compact `scf.for`、static tail、branch和合法ordered reduction step，
    并验证每个logical output all-and-only一次。
-5. **物化SPM驻留partition与physical SSA graph**：把同一selected residency epoch内的全部dataflow收入同一
-   maximal `tile.region`；independent roots、不同traversal domain、fanout、layout movement、collective和同步点
-   都不自行切region。只对真实spill/reload创建sibling region和显式DDR cut；再创建各region-owned
-   allocation roots、views、physical encodings、resident edges、temporary、accumulator和staging。
+5. **物化epoch与physical SSA graph**：对完整static rank entry恰好创建一个non-nested region；typed SPM clobber/
+   device ownership handoff输入当前拒绝。随后在该epoch内部物化全部tile schedules、不同traversal
+   domains/tile shapes、layout/version、residency、recompute、movement和selective spill/streaming，并创建epoch-owned
+   allocation roots、views、resident edges、temporary、accumulator和staging。不得生成partition shadow plan，也不得从
+   fusion cut、spill集合或capacity pressure恢复region boundary。
 6. **物化selected compute**：调用`WaferTargetImplementationOpInterface::materializeSelectedImplementation`，创建typed
    `wafer.tile.*` compute；hook失败时丢弃clone，不换另一implementation。
 7. **物化movement和events**：在完整rank clone中创建boundary/local/staged movement、spill/reload、tokens和typed
@@ -399,11 +409,15 @@ tile/dataflow verifier至少检查：
 - selected compute/movement的operand/result、rank、shape、dtype和typed parameters合法；
 - 每个physical version的memory space、encoding、allocation root、view和valid domain可重算；
 - metadata view保持physical storage同构，不能用reshape逃避真实movement；
-- 每条region内intermediate edge共享同一SPM version或存在显式lowerable SPM movement；
-  跨sibling-region data edge不得直接传递SPM memref，必须由显式DDR store/completion/load连接；
+- 每条epoch内intermediate relation是共享SPM version、显式lowerable SPM movement、recompute或完整DDR
+  store/completion/reload之一；internal DDR只结束对应root，不能截断其它live root；
+- 当前完整static rank entry恰好一个non-nested region；任何额外或nested region，包括尚未支持的typed SPM
+  clobber/device ownership handoff输入，都直接拒绝；
+- region data argument/result全部是DDR value/view；不得传递SPM memref/root/alias或pending event；
 - standard MemoryEffect直接关联实际SSA value或custom resource，bytes/footprint可从typed IR重算；
 - async producer在completion前不能被读取、覆盖或复用；
-- all exits保留可重建terminal drain所需的control-flow、event、range和effect obligations；
+- outer epoch exit保留并闭合可重建terminal drain所需的control-flow、event、range和effect obligations；普通traversal、
+  loop和spill点不作为terminal completion validation boundary；
 - traversal、tail和reduction顺序符合source contract；
 - 输出不依赖任何IR外语义对象，不含opaque implementation payload或模型名matcher。
 
@@ -411,7 +425,7 @@ tile/dataflow verifier至少检查：
 
 - tile-to-instruction `DialectConversion`和instruction legality；
 - descriptor cover、checked arithmetic和address range；
-- whole-rank SPM lifetime/capacity/offset；
+- whole-entry SPM lifetime/capacity/offset；
 - whole-variant DDR lifetime/capacity/offset；
 - all-rank communication、completion、transport和ABI；
 - target emission、readback和atomic bundle publication。
@@ -466,9 +480,9 @@ checkpoint，不得因删除provider协议而消失；其它later能力也不得
 planner在transformation内选择tile、target implementation、Cx encoding和resident edge。materializer在clone中
 概念上生成：
 
-    scf.for %m = ... {
-      scf.for %n = ... {
-        wafer.tile.region (...) {
+    wafer.tile.region (...) {
+      scf.for %m = ... {
+        scf.for %n = ... {
           %a_spm = memref.alloc()
           %b_spm = memref.alloc()
           wafer.tile.load %a_view into %a_spm
@@ -479,9 +493,9 @@ planner在transformation内选择tile、target implementation、Cx encoding和re
 
           wafer.tile.store %act_spm into %out_view
           ... explicit async wait/effect dependency when required ...
-          wafer.tile.yield
         }
       }
+      wafer.tile.yield
     }
 
 真实op必须携带完整types、typed implementation/numeric fields、effects和tokens；上面省略这些字段只为讲解。
@@ -489,10 +503,11 @@ resident edge由`%mm_spm`的SSA use-def直接表达，没有中间spill。若lay
 gate拒绝该clone，clone整体丢弃；materializer不就地换实现。
 
 示例中的shape、tile、Cx和具体compute kind都是选择结果，不是协议。相同合同适用于一般structured graph。
-若同一函数还有与该chain独立的第二个root且两者之间没有intermediate DDR cut，它仍进入同一个maximal region；
-“图不连通”不产生第二个驻留域。反之，若selected candidate把`%mm_spm`显式store到compiler-managed DDR，
-在可信completion后reload成新的SPM root，则store前后必须属于两个sibling regions；这两个region可以在lifetime
-不重叠时由09分配相同physical offset，但IR中不存在跨region SPM SSA。
+同一source graph至少要能形成三类可比较的actual candidate：在同一epoch内融合producer/consumer并使用较小tile；
+仍在同一epoch内给两侧选择不同traversal/tile shape并以显式DDR materialization换取各自较大tile；或只spill某个root、
+让其它root继续驻留。独立root同样保留在该epoch中，并由各自lifetime决定offset reuse。“图连通/不连通”、
+“融合/拆分”和“有/无spill”都不改变region数量；current entry固定一个epoch。typed SPM clobber/device ownership
+handoff只可能属于未来multi-epoch扩展，当前输入拒绝。
 
 ## 13. Completion Gate
 
@@ -505,8 +520,9 @@ gate拒绝该clone，clone整体丢弃；materializer不就地换实现。
 3. every successful case产生真实MLIR mutation；no-match/failure保持source byte-identical。
 4. every mutation使旧IndexRelation、alias、effect、liveness、completion和resource analysis失效并fresh重算。
 5. complete traversal覆盖chain、diamond、fanout/fanin、multi-root、reduction、view、control flow和communication。
-   同时证明shape/layout/GS/collective/task边界不会拆分resident chain，只有显式DDR materialization
-   cut会形成sibling region；region inputs/results的variadic fan-in/fan-out无人为上限。
+   同一source必须在一个epoch内覆盖fused-small-tile、separated-large-tile和selective-spill actual forms；internal spill只
+   结束对应root，region inputs/results的variadic DDR fan-in/fan-out无人为上限。必须固定验证恰好一个non-nested region；
+   额外/nested region及typed clobber/handoff输入都是negative。任何case都不得把region partition作为搜索变量。
 6. every compute/movement通过op verifier、适用的standard interfaces和MemoryEffect/custom resource effects；
    every async issue都有SSA或typed fence completion。
 7. selected tile IR经tile-to-instruction conversion、SPM/DDR、all-rank communication、transport和ABI gate直接消费。
@@ -526,9 +542,10 @@ synthesis都必须先在isolated module中形成真实、verifier-clean MLIR clo
 complete traversal；不得把`InstructionSketch`、rewrite rule、solver AST、proof certificate或implementation descriptor
 物化为TileRegion op/attr。
 
-- source clone仍经06选择后，以本文typed task/view/compute/movement/event/SSA合同物化；proof通过不等于selected。
+- source clone仍经06的同一frontier action驱动，以本文typed view/compute/movement/event/SSA合同立即物化；
+  proof通过不等于selected，也不允许建立可重放的选择清单。
 - target synthesis消费complete verified Tile program和baseline complete-rank tile-to-Instr conversion，只输出disposable actual Instr
-  clone；每个clone重新执行本文coverage、effect/completion及下游memory/ABI gates，失败不修改selected TileRegion。
+  clone；每个clone重新执行本文coverage、effect/completion及下游memory/ABI gates，失败不修改selected complete-rank variant。
 - Q46 actual-op probe在Q48中迁移为读取actual typed clones/current IR facts后，旧implementation materializer与
   selected/forced字段全部删除；本文不接收替代side table或新的候选IR。
 

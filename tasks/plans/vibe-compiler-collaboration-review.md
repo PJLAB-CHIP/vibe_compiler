@@ -1,5 +1,11 @@
 # Vibe Compiler 专家技术汇报逐页重做计划
 
+状态：Q43已于2026-08-03完成，本文与其生成的deck是当时compiler的汇报快照，不是持续更新的架构合同。
+2026-08-05起，其中task-local commit、per-task/rank frontier、artifact correspondence、late NoC sibling、
+region-exit join、跨region SPM handoff、SPM-high-water Pareto和`ExternalMovementFirst`等optimizer叙述已被Q49的
+complete-rank/all-rank joint synthesis设计取代。当前实现只以`tasks/06-physical-dataflow-synthesis.md`、
+`tasks/07-tile-region.md`、`tasks/09-spm-memory-planning.md`和Q49实施计划为准；不得从本历史汇报恢复旧pipeline。
+
 本计划是 Q43 `compiler-collaboration-review-materials` 的唯一实施计划。听众是 compiler、runtime 和
 hardware 工程师，汇报沿真实 production pipeline 解释 Vibe Compiler 从 PyTorch/XLA exporter 到
 StableHLO、rank-local structured IR、physical-dataflow search、Instr、Target LLVM、RISC-V ELF、
@@ -267,7 +273,7 @@ page dossier；表格内容不是最终页面栏目。
 | 39 | Transfer realizability | 对比 contiguous、strided、mapped和unsupported dynamic relation；给出range set、layout map、descriptor层数与具体拒绝点。 | 四个地址几何小场景汇入realizability decision；不是黑箱绿/红框。 | `TransferRealizability.cpp`、static range tests；unknown保持拒绝。 |
 | 40 | Interface-driven implementation candidates | 用同一structured op分叉到divide/reciprocal和GEMM orientation候选；每条分支展示typed parameters、lowered Instr和target capability。 | interface dispatch图，左为共同数学语义，右为不同执行结构；旁边嵌真实interface/C++片段。 | interface models、candidate selection tests；不是字符串枚举。 |
 | 41 | Complete-lowering acceptance | 按 `materialize→Tile verify→Instr→temporary SPM/DDR→verifier→cost` 展示数量递减；明确temporary offset不写回parent。 | 候选解剖台而非简单漏斗：每道门显示IR形态变化和真实失败原因，baseline独立贯穿。 | `evaluateCompleteCandidate`、selection tests；采用当前case的真实计数时注明case。 |
-| 42 | State-aware schedule cost | 展示DDR/SPM/NoC bytes、compute ops、messages、joins、high-water；每个metric有Known/Unknown/Unsupported/Overflow，比较时不把Unknown当0。 | 并行坐标+状态化metric表；同一candidate的IR节点连到对应cost来源。 | `ScheduleCostAnalysis.cpp`及unit tests；不画单一总分仪表。 |
+| 42 | State-aware schedule cost | 展示aggregate DDR、max-rank GS、compute、NoC、participant waits与critical path；SPM high-water单列capacity/headroom而不进winner Pareto。每个metric有Known/Unknown/Unsupported/Overflow，比较时不把Unknown当0。 | 并行坐标+状态化metric表；同一candidate的IR节点连到对应cost来源。 | `ScheduleCostAnalysis.cpp`及unit tests；不画单一总分仪表。 |
 | 43 | Bounded rank frontier | 解释general/fixed-slot/worker bands、dominance、stable ordinal和273上限；用一个candidate被同band支配但baseline仍保留的case。 | 多泳道frontier时间轴，候选按band进入/淘汰；不是排行榜。 | `RankCandidateFrontier.h/Test`；上限和band来自代码。 |
 | 44 | Search scalability | 展示rank-invariant generation class、bytecode clone、bounded executor、attempt plan、selective import；放Q41 host case的wall/RSS/attempt counts。 | 搜索执行火焰/资源图：哪些工作复用、哪些并行、哪些延后import；数字贴在阶段旁。 | compiler-search plan、host evidence；wall/RSS不外推为固定性能。 |
 
@@ -296,7 +302,7 @@ page dossier；表格内容不是最终页面栏目。
 
 | 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
 |---:|---|---|---|---|
-| 61 | Connected dataflow → maximal SPM residency region | 用matmul/load/store case展示result tile如何决定operand slices、tile loop、resident chain和真实DDR cut；旁边放Tensor→maximal TileRegion真实IR，不建立task与region一一对应。 | tensor iteration space折叠为connected tile dataflow，slice关系、SSA与SPM驻留边界同名。 | complete-rank TensorProgram→TileRegion tests；尚不出现physical offset。 |
+| 61 | Joint tiling → selected SPM-residency cluster | 用同一matmul/load/store graph并列展示fused-small-tile、split-large-tile和same-region selective spill；旁边放selected TileRegion真实IR，不建立task、spill与region一一对应。 | tensor iteration space、tile几何、SSA resident root和显式DDR relation同图联动。 | complete-rank TensorProgram→TileRegion tests；尚不出现physical offset。 |
 | 62 | Buffer roots 与 physical placement | 展示DPS/tensor use如何成为memref root、alias和function boundary；列64B buffer alignment与后续256B planner alignment的区别。 | tensor SSA→buffer root/alias forest→memory-space typed memrefs；真实before/after IR嵌入。 | bufferization options/tests；不能混淆两类alignment。 |
 | 63 | TileRegion → Instr | 4×8 FP16 case：tile.load/fill/elementwise/store→RDMA/fill/NCC elementwise/WDMA/join，`4×8×2=64B`。 | Tensor task、TileRegion和Instr三段连续机制图；engine lanes和completion清楚。 | `convert-tile-region-to-instr.mlir::load_compute_store` fresh IR。 |
 | 64 | DMA descriptor geometry | 拆解`byte_count`、`inner_bytes`、iterations、strides、src/dst offsets；用连续与二维stride各代入一次。 | descriptor字段环绕地址几何，数值从memref/subview逐步推导。 | movement lowering与descriptor tests；不把envelope当traffic。 |

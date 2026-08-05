@@ -445,7 +445,7 @@ NCx retained C0 tail:
 
 官方硬件设计资料把SPM1定义为每个Tile唯一的全局计算缓存；架构因软件考虑取消二级计算缓存，
 因此片上驻留规划只面对这一块3 MiB空间。SPM1由8个独立2048-bit memory bank和交换网络组成，
-采用LSB interleaving。每个bank每周期最多响应任意一个访存端口的请求；总端口构成为：
+采用LSB interleaving。硬件摘录给出的总端口构成为：
 
 | 模块 | 读端口 | 写端口 |
 | --- | ---: | ---: |
@@ -456,13 +456,15 @@ NCx retained C0 tail:
 | DTE | 1 | 1 |
 | 合计 | 10 | 6 |
 
-因此阵列每周期最多服务8个bank requests；16是可能同时到达交换网络的port requests，不是16个都能
-在同一周期被bank阵列完成。交换网络共四层：前两层转发访问请求以及写数据/掩码，后两层转发读数据。设计目标是在上述16个
+每周期最多可同时收到16个port requests。提供的摘录没有进一步定义same-bank仲裁、同bank每周期完成请求数或
+port/stride冲突曲线，不能只根据8 banks和16 ports推出精确service/stall结论。交换网络共四层：前两层转发访问请求以及
+写数据/掩码，后两层转发读数据。设计目标是在上述16个
 端口同时、连续、以burst8访问时，平均每端口传输效率约90%。每个bank内SRAM独立支持可配置ECC；
 ECC错误记录寄存器并向A55上报中断。为抑制DIDT，SPM还允许用寄存器限制8个bank每周期同时连续
 活跃的最大比例，并报告与bank访问相关的max-power信息。
 
-本项目粗略估算模型按1 GHz工作频率，bank阵列的raw service-envelope算术为：
+本项目粗略估算模型按1 GHz工作频率，并额外假设每个bank每周期贡献一个2048-bit传输时，bank阵列的raw
+service-envelope上界算术为：
 
 ```text
 8 banks * 2048 bit/bank/cycle * 1 GHz = 2.048 TB/s
@@ -473,9 +475,9 @@ ECC错误记录寄存器并向A55上报中断。为抑制DIDT，SPM还允许用�
 DIDT配置和冲突penalty仍需profile evidence。
 
 由2048-bit即256B bank宽度和LSB interleaving可建立目标allocator使用的粗粒度working inference：对256B对齐的
-线性buffer base，起始bank phase近似为`(offset / 256) mod 8`，周期为2 KiB。compiler设计只允许在
-hard-valid且actual high-water/fragmentation/其它candidate-visible primary cost相同的SPM placements之间，
-用该phase作最后tie-break；它不构成verifier legality，不得导致DDR spill、拆分`tile.region`、增加join
+线性buffer base，起始bank phase近似为`(offset / 256) mod 8`，周期为2 KiB。compiler设计只允许在单次
+fixed-capacity solve自然遇到、hard outcome/high-water/search work相同的SPM placements之间，用该phase作
+确定性末级顺序；不为它新增query、search或relocation。它不构成verifier legality，不得导致DDR spill、拆分`tile.region`、增加join
 或改变执行顺序。accepted IR仍只保存SPM offset，phase从offset重算。精确bank-select/port arbitration和
 penalty不由该近似声称。
 

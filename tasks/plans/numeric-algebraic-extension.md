@@ -5,6 +5,10 @@
 对支持的floating type默认产生candidate，由统一typed浮点比较合同资格化；不增加exact/relaxed策略分叉、
 frontend numeric mode或Tile/Instr载荷。
 
+Q49集成说明：本文闭合的typed numeric legality与actual rewrite mechanics继续复用；下文的bounded rank frontier和
+whole-variant selection是完成时的历史下游描述，不是当前production候选协议。所有numeric siblings进入06的coordinated
+all-rank frontier和唯一work budget，不能形成独立rank-local winner。
+
 ## Pipeline Contract
 
 ```text

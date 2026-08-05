@@ -249,19 +249,23 @@ Tensor logical-fill不能替代这些扩展gate。
 - WDMA source在completion前不可复用，fence后可以；
 - RDMA destination、compute operands/results、DTE send/recv staging同理；
 - branch mutually-exclusive reuse与join后lifetime；
-- isolated maximal `wafer.tile.region`内覆盖chain、diamond、fanin/fanout、loop-carried lifetime和path-specific
-  terminal completion；variadic inputs/results及多边fan-in/fan-out不设固定数量上限；
-- 跨non-nested sibling regions直接传递SPM memref/root/alias是negative；多region正例必须包含前一region的
-  DDR store、可信completion和后一region的DDR load。各region的distinct SPM roots进入同一whole-rank
-  physical arena packing，重叠需求产生容量失败，non-overlap需求证明physical offset可复用；raw escape、
-  无法解析provenance、nested/async/parallel scope为negative；
-- allocator relocation正例先比较同一hard-valid frozen demand/lifetime下的actual high-water，并只在high-water
-  相同的offset之间比较bank phase；phase从accepted offset重算`(offset / 256) mod 8`；
-  同phase压力不得把Feasible变成failure，也不得改变spill/resident、region数量、
-  DDR movement、worker/order或join。不存在bank/color attr，且测试不声称固定latency收益；
+- 每个current static rank entry恰好一个outer、non-nested `wafer.tile.region`，它覆盖该entry的真实execution/SPM
+  epoch，并在内部覆盖chain、diamond、fanin/fanout、不同traversal/tile schedule、loop-carried lifetime、selective
+  spill/reload或recompute及path-specific completion；多个outer region或nested `tile.region`为negative；
+- `tile.region`边界的SPM data数量必须为零：SPM memref/root/alias不能成为region operand/result或raw escape。
+  DDR/non-SPM tensor data、scalar、event和control值可按语义进出且数量不设上限；region内部全部distinct SPM roots
+  进入同一whole-entry physical arena packing，重叠需求产生容量失败，non-overlap需求证明physical offset可复用；
+  无法解析provenance及nested/async/parallel scope为negative；
+- allocator对每个terminal rank-entry Instr variant只执行一次覆盖该entry唯一outer `tile.region`及其全部roots的3 MiB
+  MiniMalloc query和independent validator；actual high-water/
+  headroom只从accepted placement重算。bank phase若参与，只能打破solver自然遇到且hard outcome/high-water/search work
+  完全相同的placement，不新增query/search node/relocation；phase从accepted offset重算`(offset / 256) mod 8`；
+  同phase压力不得把Feasible变成failure，也不得改变spill/resident、DDR movement、worker/order或join。
+  不存在bank/color attr，且测试不声称固定latency收益；
 - fixed-lifetime packing小图由仓库内exhaustive/property test验证MiniMalloc adapter、三态、alignment、
-  nonzero arena base、capacity-query单调性和independent validator；production build、link、test和pipeline不依赖
-  ILP/CP-SAT或常驻外部oracle。外部solver只允许真实捕获实例异常后的一次性诊断，结果不得成为fixture、cost或accepted offset；
+  nonzero arena base、single-query fixed capacity和independent validator；production build、link、test和pipeline不依赖
+  ILP/CP-SAT或离线小图oracle。外部solver只允许真实捕获实例持续资源耗尽后的一次性诊断，结果不得成为fixture、
+  cost或accepted offset；
 - resident SPM跨closed scalar direct callee可通过；可能执行tile-region的defined callee、external/unresolved和
   indirect call在缺少interprocedural arena/resource summary时fail closed；
 - missing/wrong-engine fence不能释放resource；
@@ -279,8 +283,10 @@ Q0历史完成结果不覆盖本轮review发现的target identity、engine×form
   target LLVM bundle消费该proof，不是本gate提前创建的artifact。focused target-conversion tests必须经同一registry
   立即解析typed `TargetConversionRequest`；missing/unknown negative失败，不写module attr、不保留自由字符串、
   不提供default；
-- tasks/14 registry全枚举每个current engine×logical-format row，和tasks/08 physical encoding interface、target verifier、format
-  encoder及CRT参数逐项conformance；无证据UINT/64-bit/TF32 format-bearing row为negative，现有i64 positive相应修正；
+- tasks/14 registry全枚举65个current engine×logical-format row，并与tasks/08 physical encoding interface、target verifier、
+  唯一format encoder及CRT参数逐项conformance；13种current format-bearing encoding row全部为positive，只有invalid/unused/
+  F64/unknown和GEMM×F32因dtype拒绝。op semantic、shape/layout、field及typed convert-route negative另行归因，
+  UINT/64-bit/TF32不能因model/numeric coverage缺口被标成target-illegal；
 - elementwise identity/permutation/broadcast都在tile→instruction物化或strip；terminal instruction positive无map且same-shape，
   任一残留`indexing_maps` attr在instruction verifier/full conversion中illegal；target LLVM/CRT与CModel都不能忽略后继续；
 - tile reduce覆盖constant `init_value`和direct `arith.constant` SSA init的有序positive、dynamic init拒绝、二者同时出现、类型不匹配、combiner mapping
@@ -367,6 +373,9 @@ all-rank atomic commit和current ABI。详细历史证据见`tasks/archive/`；�
 Q38的fixed-slot和Direct-DTE细粒度issue必须在同一个source-backed、fully accepted artifact上验收，不能分别用
 手写双buffer IR和raw sender probe代签：
 
+以下只保留Q38完成时的历史qualification口径；其中`rank frontier`、schema版本和qualification companion不是Q49
+production architecture。Q49只复用fixed-slot、worker、issue/wait与range/effect验证mechanics，并按本节后面的Q49 gate重新验收。
+
 - compiler testing seam只从普通rank frontier选择all-rank static-fixed-slot tuple，重放Instr、SPM/DDR、
   target、package和readback gate；normal production selection及public CLI不读取该seam；
 - schema-v7 package与相邻qualification sibling作为一个no-replace transaction发布。activation精确绑定
@@ -394,6 +403,10 @@ Q38的fixed-slot和Direct-DTE细粒度issue必须在同一个source-backed、ful
 Q39的多机制组合必须来自同一个compiler-owned current-IR候选，不能把NoC、worker和fixed-slot三个分别通过的
 artifact或metadata摘要拼接成组合证据：
 
+以下只保留Q39完成时的历史qualification口径；其中role materializer、独立NoC gate和local sibling derivation不再拥有
+current decision。Q49只复用peer/collective、worker/fixed-slot、message/effect验证mechanics，并把实际候选放回06的
+coordinated all-rank frontier、唯一预算和统一hardware cost model。
+
 - resident role materializer从typed global/local rank slice、standard tiling/reduction interface、SSA/effects和
   all-rank actual tuple物化owner load、peer movement、local compute/reduce及required publication；它不重新选择
   compute implementation；
@@ -403,7 +416,7 @@ artifact或metadata摘要拼接成组合证据：
   source和已有nonzero assignment均不原地修改；
 - fixed-slot只从保留各自worker assignment的siblings继续派生。每个结果fresh重跑completion、SPM/DDR、
   Direct-DTE matching/binding、whole-variant resource、target ABI/LLVM、package、SystemC/CPU expected和no-card；
-- 当前独立NoC role、worker及fixed-slot host gates已经闭合，NoC×fixed-slot×nonzero-worker同候选也已通过
+- Q39当时的独立NoC role、worker及fixed-slot host gates已经闭合，NoC×fixed-slot×nonzero-worker同候选也已通过
   source/package/model/no-card组合验证。该结果仍不构成board correctness或hardware overlap evidence；
   configured-board fresh baseline/winner correctness保持独立external gate。
 
@@ -452,9 +465,9 @@ Q46必须从同一个production source和complete-rank actual-clone owner证明l
   physical relation有hole/overlap的negative。
   collective-connected component必须由whole-variant coordinator从all-rank actual IR一次派生transient proposal并原子物化，
   proposal立即销毁且不成为shared state/sidecar，禁止per-rank Top-4 Cartesian；
-- full-buffer resident handoff只有在pre-Instr owner已把producer/consumer收入同一maximal region时，才在
-  descriptor展开前复用producer已有SPM encoding；未合并的sibling boundary或不兼容consumer保留显式DDR
-  spill sibling，late transfer cleanup不从descriptor反推逻辑语义或发明跨region alias；
+- full-buffer resident handoff只有在pre-Instr owner把producer/consumer与兼容tile schedule、SPM lifetime联合选择时，才在
+  descriptor展开前复用producer已有SPM encoding；解耦schedule、不兼容consumer或selective spill保留region内部显式DDR
+  materialization。late transfer cleanup不从descriptor反推逻辑语义或发明SPM alias；
 - baseline与winner都沿`wafer-compile`完成source-to-package和fresh no-card。无卡通过后只能标`board-ready`；真实板端使用
   FP16/BF16串行执行matched baseline/winner，output/guard正确、targeted movement bytes/commands下降且性能不劣化后才可标`done`。
 
@@ -466,30 +479,53 @@ Q49只接受默认`wafer-compile`产生的complete-rank actual clones和完整�
 DDR往返、GS/layout movement和`NCCJoin`。不能用某一项下降而把work转移到未统计engine或额外recompute掩盖另一项。
 
 - **decision boundary**：post-SPMD完整rank structured SSA在任何Tile→Instr、SPM/DDR placement或compiler-derived join前
-  进入06；每条edge分别验证tile propagation、numeric、storage、completion和rank-coupling legality。旧source scope、
-  shape变化、layout不兼容和collective均不自动切component或强制intermediate store/reload；winner materialization
-  重建maximal SPM residency `tile.region`，只有真实selected DDR store/completion/load cut形成sibling regions，
-  external input仍有typed load。最终IR不得保留跨sibling-region SPM SSA；
+  进入06；每条connection分别验证tile propagation、numeric、storage、completion和rank-coupling legality，并把tile
+  shape/loop order、layout/version、resident/spill/recompute和movement作为原子action联合搜索，不搜索region partition。
+  C1对每个current static rank entry只物化一个outer、non-nested `tile.region`；它不是候选cluster，而是该entry真实的
+  execution/SPM epoch。不同traversal domain、tile shape、loop order、耦合或解耦schedule，以及internal DDR
+  store/completion/load、selective spill/reload和recompute全部留在该region内，不通过sibling region表达。region operand/result
+  不得携带SPM memref/root/alias，多个outer region或nested `tile.region`直接拒绝；
   source-observable ordering由control-flow、SSA event/token和typed effects表达，只约束schedule/completion维度；
   unsupported control/numeric path按对应维度fail closed；
-- **actual-clone search**：每个frontier survivor是actual unplaced rank clone，factor proposal立即materialize后销毁；
-  每个带决定的state在进入frontier/cost/gate前已把view/movement/event obligation物化进clone。chain/tree只有未处理IR可观察的
+- **actual-clone search**：factor proposal只在clone前用typed legality/footprint做便宜预筛；一旦进入frontier就必须
+  立即materialize到actual unplaced complete-rank clone并销毁proposal。每个带决定的state在进入frontier/cost/gate前已把
+  view/movement/event obligation物化进clone。chain/tree只有未处理IR可观察的
   current-IR frontier facts完全相同、且在有限枚举tile/action domain内才可作exact DP；一般DAG走bounded Pareto beam。
-  transient hash只预筛并fresh重证，不形成interface/key/schema。baseline保留，budget耗尽不伪装成capacity；
-  serial/parallel的work count、frontier、winner digest一致；
+  transient hash只预筛并fresh重证，不形成interface/key/schema。同一唯一outer region内，每条可连接relation至少覆盖
+  coupled/resident small-tile、不同traversal/tile schedule经internal DDR materialization解耦，以及selective
+  spill/reload或recompute三类相反actual forms；spill更少或tile更大均不能单独支配。
+  all-rank coordinator和唯一deterministic global ledger在C2 generation前建立并贯穿C3 terminal evaluation；所有
+  tile/layout/residency/movement/collective/worker action及late exact gate共享它，不按rank/component/layer或C2/C3
+  分别设cap、选winner或构造`N^R` tuple。baseline保留，budget耗尽不伪装成capacity；serial/parallel的work count、
+  frontier、winner digest一致；
+  任意pruning/frontier dominance必须覆盖全部selection-sensitive dimensions，包括all-rank aggregate与max-rank DDR、
+  GS/local movement、SPM movement、NoC/transport、compute/recompute、tile utilization、completion/wait/critical path、Instr/descriptor/
+  engine resource pressure及all-rank coupling。只有所有已知维度均不差且至少一维严格更好才能支配；known与
+  `Unknown`、或理由/上下界/disposition不同的`Unknown`不可比，除非fresh proof证明其disposition和保守界相同；
 - **generic graph**：chain、diamond、fanin/fanout、shared-input、multi-root、view/permutation、tail、loop-carried reduction、
   structured control flow、effect barrier和collective各有source正负例。至少两个不同scalar body的generic op在搜索策略冻结后
   通过，证明无模型名、参数名、shape或字符串op-name matcher；
 - **physical/dataflow**：oriented GEMM从structured indexing semantics吸收transpose relation；effect-proven read-only、原始逻辑
   shape的weight可走exact composed Tensor DDR mapped transfer到Cx，不假定identity DMA或任意transpose DMA。shared LHS load/layout
   不随N-loop multiplicity重复；resident edge无中间WDMA/RDMA；fanout允许search-bounded K个versions，K不是IR语义上限；
-  SPM failure只拒绝clone并由06从无offset parent产生有限sibling，allocator不修tile/layout/residency；
-- **completion/memory order**：只有terminal complete-rank Tile clone lower Instr，再派生worker/fixed-slot/ready-order siblings。
+  SPM failure只拒绝clone并由06从无offset parent产生有限retile/selective-spill/recompute/layout/movement alternative，
+  allocator不修tile/layout/residency；所有独立root仍在同一outer region，实际schedule/lifetime决定是否同时live，不能按图
+  连通性或internal DDR有无拆成多个region；
+- **completion/memory order**：只有terminal all-rank Tile variant中的complete-rank Tile clones lower Instr，再派生
+  worker/fixed-slot/ready-order rank-entry Instr variants。C3在启动这些昂贵工作前，必须从C2共用的global ledger为该
+  terminal candidate原子预留完整all-rank Tile→Instr、worker/order、各拟评估rank-entry Instr variant一次SPM exact solve，
+  以及整个complete all-rank variant一次DDR/transport/ABI exact evaluation；预留不足则不启动，不留下半评估winner或把它
+  记成`Unknown`/capacity failure。
   reconstruction入口删除全部`wafer.instr.ncc_join`；source-observable ordering由control-flow、SSA event/token和typed effects表达，
   DTE wait与group barrier各用独立typed语义；再从final effects、
   workers、event、alias/range、reuse和observer构造fixed-frontier latest-necessary completion。每个join有hazard/protocol/observable
-  witness，可安全coalesce的均合并。随后按`lifetime/conflict → SPM packing → physical-alias verify → whole-variant DDR →
-  post-memory Direct-DTE binding/resource → ABI`执行；packing失败从无offset parent生成有界sibling，不原地fixed-point修复；
+  witness，可安全coalesce的均合并。随后每个terminal rank-entry Instr variant按
+  `lifetime/conflict → 一次whole-entry 3 MiB MiniMalloc → physical-alias verify`执行，该solve覆盖其唯一outer
+  `tile.region`内全部roots；每个complete all-rank variant再恰好一次执行`whole-variant DDR → post-memory Direct-DTE
+  binding/resource → ABI`，其中每个rank独立default DDR arena恰好一次solve并原子汇总。packing失败从无offset parent生成
+  新alternative；失败terminal candidate整体丢弃，同一variant不重复packing、probe或原地修复；
+  high-water只作capacity/headroom诊断，不运行arena-end tightening或quality probe；bank phase不新增solver query、search node
+  或relocation，也不反馈到region/spill/join；
 - **collective/reduction**：collective保留真实DTE/NCC completion和从actual IR fresh验证的all-rank matching，但前后SPM resident edge
   不自动落DDR。reduction domain能由一个legal selected tile完整覆盖时可走native，不能完整覆盖时生成typed partial/two-pass，
   最终仍由capacity、numeric legality与cost选择，不按序列长度分支。fused online attention必须闭合`has_value`与`(m,l,o)`
@@ -502,7 +538,18 @@ DDR往返、GS/layout movement和`NCCJoin`。不能用某一项下降而把work�
   symbolic/Unknown和Q9 runtime-measured count。只有terminal Instr完成worker/completion后才报告exact join/DTE work；
   `Unknown`不当零。逐rank事实与各维度`rank-maxima`分别报告，不把不同维度的最大值伪装成一个真实critical rank；另报
   `max(per-rank dependency/critical-path lower bound)`、aggregate DDR/NoC、SPM high-water、descriptor、expanded
-  states、actual clones、terminal lowerings、packing calls、peak RSS与Release wall同时可审计；
+  states、actual clones、terminal reservations/denials、terminal lowerings、packing calls、all-rank DDR exact calls、peak RSS
+  与Release wall同时可审计。结构计数必须证明outer `tile.region`数等于static rank entry数、SPM region-boundary data为零；
+  MiniMalloc call数等于实际评估的terminal rank-entry Instr variant数，all-rank DDR exact call数等于实际评估的complete
+  all-rank variant数；
+- **final cost ordering**：只比较通过全部late gates的fresh final IR。DDR以all-rank aggregate bytes/executions为主并审计
+  max-rank issue；GS/layout movement以max-rank tile-local bytes/executions为主并审计aggregate；completion以max-rank
+  steady/nonterminal/total participant waits和critical-path placement为主，join op count只作次级统计。NoC/link/endpoint、
+  SPM movement、compute/recompute、tile utilization、Instr和descriptor/resource pressure分别计价；不得使用无量纲
+  `ExternalMovementFirst` acceptance，也不得用SPM
+  high-water代理DDR/GS/completion。Pareto保留不是winner选择；终态由当前校准的hardware cost model用
+  nominal/bounded makespan和promotion margin排序hard-legal states，无法越过baseline时不promotion。stable semantic order
+  只在完整hardware-cost comparison tuple相等时作末级tie-break；
 - **IR evidence boundary**：C0从当前同一production compile直接保存post-SPMD structured IR与final Instr IR；旧per-task路径在
   complete-rank selection前已经破坏性lower Tile candidate，因此不得用replay、影子clone或sidecar伪造selected Tile证据。
   C1建立真实complete-rank decision point后，必须在该点保存同一次compile的selected Tile/Dataflow IR，并与前后两层直接关联；
@@ -513,8 +560,10 @@ DDR往返、GS/layout movement和`NCCJoin`。不能用某一项下降而把work�
 - **online adoption**：至少一个上述真实PyTorch-exported cached-attention或prefill case由production winner实际选择partial或
   online sibling；final IR与work counters证明没有完整score/probability tensor的DDR store→reload。仅有synthetic candidate
   generation或未被选择的positive test不能代签；
-- **当前workload收益**：相对C0 fresh pre-Q49 optimized production baseline，`(16, 16)`的per-rank loop-expanded DDR bytes至少
-  下降50%、GS bytes至少下降80%、`rank-maxima` loop-expanded join至少下降80%。这些是workload gate，不是算法常量；同时核对compute/recompute、
+- **当前workload收益**：相对C0 fresh pre-Q49 optimized production baseline，`(16, 16)`的all-rank aggregate
+  loop-expanded DDR bytes至少下降50%、`rank-maxima` GS bytes至少下降80%、`rank-maxima` loop-expanded participant
+  join至少下降80%，并同时审计DDR max-rank issue、GS aggregate和join aggregate/steady/critical-path位置。这些是workload
+  gate，不是算法常量；同时核对compute/recompute、
   NoC/DTE、SPM capacity、numeric/output/guard和ABI/package，板端matched性能不得劣化；
 - **cutover**：per-task Tile→Instr/SPM/DDR、standalone task import/commit、task-return join、task/layout/artifact ordinal、
   artifact-kind Cartesian product、all-or-nothing full-buffer residency和late NoC tuple decision owner均无production consumer并
@@ -751,8 +800,10 @@ owner-backed target LLVM bundle和oneDNN bulk qualification；以下各gate仍�
 
 ### 11.1 Q22.N Multi-Dtype Numeric Foundation Gate
 
-- 从tasks/14单一拥有的shared registry读取13种logical format和65个current engine×format encoding；
-  `Fmt_UNUSED`与target f64拒绝，UINT/64-bit DMA及TF32 format-bearing op等无证据row不能由enum或host type兜底；
+- 从tasks/14单一拥有的shared registry读取13种logical format和65个current engine×format encoding；这65个row是
+  compiler/ABI legality的closed set，UINT/64-bit DMA和TF32 format-bearing command不得因model覆盖缺口反写成target-illegal。
+  `Fmt_UNUSED`、F64、unknown code及唯一dtype特例GEMM×F32拒绝；op semantic、shape/layout、field和typed convert-route
+  failure分别归因，不建立另一张通用dtype白名单；
 - codec conformance穷举INT8/UINT8/BOOL、FP16/BF16全部raw pattern和TF32 canonical semantic encoding；FP32、宽整数、
   TF32 noncanonical按classification/boundary/stratified random覆盖。logical codec检查endianness、NaN/Inf/±0/subnormal与
   round-trip；encoding profile另检查ABI/register code和engine legality，tasks/08唯一layout helper独立检查Cx/NCx

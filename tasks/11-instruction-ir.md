@@ -38,11 +38,11 @@ fresh重建completion；planner不能复制或猜测字段。实现状态以`tas
   layout slot 仍只用于 MLIR 能按 affine / strided 语义解释的普通 layout。
 - 不引入 `wafer.physical_view`、`!wafer.physical_memref`、side descriptor value、SPM offset、DDR
   DDR planning result、raw packet 或 target CRT call。
-- committed instruction artifact 不是单个 `wafer.tile.region`、task、tile 或 representative sample，
+- committed instruction artifact 不是脱离完整entry/all-rank domain的 `wafer.tile.region` body、task、tile 或 representative sample，
   而是每个 logical rank 一份覆盖完整 static traversal 的 structured instruction program；这些 rank
   programs 只能作为完整 variant set 原子提交。
 
-`wafer.instr` 的作用是把完整 rank traversal 中的 target-abstract tile-region scopes 变成可执行硬件动作或硬件通信调用，并让下游能从
+`wafer.instr` 的作用是把每个完整rank entry的target-abstract outer tile-region epoch body变成可执行硬件动作或硬件通信调用，并让下游能从
 memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects、typed worker、participant join和exact
 event wait直接推导endpoint/resource/completion输入。它不是另一层buffer IR。
 
@@ -79,7 +79,8 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
   DialectConversion；静态 `extract_slice`、`insert_slice`、`broadcast` 和 `transpose`
   通过统一 logical-to-physical offset calculator 生成 logical movement segments，并尽量打包成
   三层 stride/iteration `wafer.instr.gather_scatter` descriptor。
-- tile-region lowering 已产出 memref-backed `wafer.tile.region`，candidate materialization 已为
+- tile-region lowering 已产出memref-backed `wafer.tile.region`；Q49终态要求current static rank entry恰好一个
+  non-nested outer region，多个traversal/loop nest、不同tile shape和逐root lifetime都在其body内。candidate materialization 已为
   explicit static boundary slice 和 candidate output tile offsets/sizes 接入 DDR `memref.subview` producer；
   instruction lowering 必须基于该 unplaced Wafer-tagged memref graph 做转换，不能再引入
   storage/buffer IR 层。
@@ -107,8 +108,8 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  whole-variant evaluation clone 中每个 static rank entry 的完整 structured traversal；其中局部
-  `wafer.tile.region` scopes 包含带 Wafer memory attr 的 memref values、
+  whole-variant evaluation clone 中每个 static rank entry 的完整 structured traversal；其中恰好一个non-nested outer
+  `wafer.tile.region`表示完整SPM ownership/device-execution epoch，并包含带 Wafer memory attr 的 memref values、
   `memref.alloc` / `memref.subview` / verifier-legal metadata view、
   `wafer.tile.load` / `wafer.tile.store`、
   `wafer.tile.materialize_layout`、`wafer.tile.fill/gemm/elementwise/reduce`、
@@ -122,9 +123,10 @@ Pipeline position:
   current target limits fresh导出唯一direct descriptor cover，不读取family对象或side plan；
   把每个可执行 target-abstract op 改写成
   `wafer.instr.*`，把 tile-level `Compute*Kind` 选择成 instr-level target kind，并保留 memref SSA
-  graph。对 `scf.if` / `scf.for` 递归转换其 region body并保留control-flow结构；loop backedge和
-  tile-region exit、standalone function return和candidate commit不是NCC completion boundary，本conversion不能仅因结构scope
-  插入blocking join。same-worker RAW/WAR/WAW先由issue order和显式buffer lifetime暴露给后续completion owner；
+  graph。对 `scf.if` / `scf.for` 递归转换其 region body并保留control-flow结构；loop backedge、内部traversal/task
+  boundary和candidate commit不是NCC completion boundary，本conversion不能仅因结构scope插入blocking join。outer
+  tile-region/rank-entry exit是真实epoch exit，但本conversion尚无final worker/range事实；terminal completion由下游owner在
+  final sibling上显式重建并证明。same-worker RAW/WAR/WAW先由issue order和显式buffer lifetime暴露给后续completion owner；
   source-observable ordering继续由control-flow、SSA event/token与typed effects保持；当前没有source-authored Instr fence，
   `wafer.instr.ncc_join`也不承载这类来源语义。若未来source fence无法由这些事实表达，必须先增加独立typed op/event及verifier，
   不能借用join或provenance。NCC到Kcore、Direct DTE、其它worker、host publication或terminal的participant join只在最终
@@ -137,7 +139,7 @@ Pipeline position:
   和exact physical proof，不来自planner历史。
 - Output artifact / IR:
   candidate clone 中每个 static rank 一份完整 instruction-level structured program：
-  control flow + tile-local `wafer.tile.region` scopes + memref values with
+  control flow + exactly one non-nested outer `wafer.tile.region` epoch + memref values with
   `#wafer.memory<space, layout>` + canonical/unplaced `wafer.instr.*` + explicit DTE/generic async token/wait；
   compiler-derived participant join由下游fresh completion stage建立；或结构化
   legalization failure reason。单个 task/traversal fragment/tile 不是可提交 artifact。
@@ -145,10 +147,11 @@ Pipeline position:
   08 relation-backed redundant physical transfer normalization先在complete-rank unplaced actual clone上
   证明并删除可由same-root/standard view表达的完整movement；materialized canonical/unplaced current Instr再原子派生
   typed worker/fixed-slot siblings，删除全部compiler-derived`wafer.instr.ncc_join`并从current effects/ranges fresh重建latest-necessary
-  completion。每个sibling随后由whole-rank SPM planning、
+  completion。每个complete-entry Instr variant随后只运行一次覆盖完整outer region body的whole-entry SPM planning、
   whole-variant DDR planning、event/physical-transport/all-rank transport/
   target-entry verification 和
-  closed-loop whole-variant candidate driver；atomic commit 后才由 target LLVM、package 和 runtime 消费。
+  closed-loop whole-variant candidate driver；这里的每个Instr variant都是完整rank entry；atomic commit 后才由
+  target LLVM、package 和 runtime 消费。
 - User-level driver / named pipeline:
   Q16以后由同一
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --launch-kind={kernel|model}`
@@ -546,12 +549,13 @@ worker进入ordered-pending frontier，matching `wafer.instr.ncc_join`只完成�
 NCC join不能完成Direct DTE。generic async
 completion proof不替代SPM owner的DTE origin/exact-wait proof；SPM当前保守拒绝所有loop-carried async token。
 `busytable`只能作为target capability/legality/cost input，不能替代token、typed join、effects或terminal
-drain。不携带resident data的pending NCC completion frontier可按精确event/control relation跨tile-region；
-same-worker ordered reuse的SPM root只可在同一region及已证明安全的loop backedge内延续。每条function exit path
-仍必须证明participant completion闭合，并证明没有未消费DTE token、generic async task或未完成recv。
-SPM buffer/root/alias不得跨sibling tile-region；真实data edge必须由前一region的DDR store、可信completion和
-后一region的DDR load表达。SPM planner把各region的distinct roots纳入whole-rank plan和同一physical arena，
-但仍拒绝nested tile-region scope。
+drain。不携带resident data的pending NCC completion frontier可按精确event/control relation跨内部traversal、loop nest和
+traversal separation；same-worker ordered reuse的SPM root可在同一outer region及已证明安全的loop backedge内延续。
+`wafer.tile.region`表示SPM ownership/device-execution epoch，current static rank entry恰好一个non-nested outer region；
+每条region/rank-entry exit path必须证明participant completion闭合，并证明没有未消费DTE token、generic async task或未完成recv。
+SPM buffer/root/alias不得跨epoch boundary，region operand/result也不得携带SPM data。region body内的selective spill仍必须保留
+完整DDR store/completion/load并只结束目标root。SPM planner对每个terminal rank-entry只执行一次whole-entry solve，把该
+outer region内全部distinct roots纳入同一physical arena；current static entry拒绝nested或multiple sibling tile-region。
 
 R3.2d建模closed `worker0/worker1/worker2` issue identity，但不暴露raw `inter_type`、register window或
 packet field；这些字段只在target lowering按current ABI编码。ordinary operator ABI使用`_v3` symbol并携带typed
@@ -945,7 +949,7 @@ R3.2d 应实现为 MLIR DialectConversion：
 - illegal：`wafer.tile.load`、`wafer.tile.store`、`wafer.tile.materialize_layout`、
   `wafer.tile.fill/gemm/elementwise/reduce` 和 tile movement ops。
 - legal：`memref.alloc`、standard memref view ops、`wafer.instr.*`、
-  typed `wafer.instr.ncc_join`、maximal SPM-residency `wafer.tile.region`、
+  typed `wafer.instr.ncc_join`、SPM-ownership/device-execution epoch `wafer.tile.region`、
   `scf.if` / `scf.for`
   和必要 scalar/support op。
 - no type conversion for Wafer tagged memref values。
@@ -1049,7 +1053,9 @@ legalize 的其它 instruction fragments。
 
 - non-ranked or dynamic-shaped memref where V0 needs static byte/stride computation.
 - unsupported Wafer memory attr, address space or physical layout marker for an instruction family.
-- unsupported dtype, including relation/elementwise/convert pairs not mapped to CT V0.
+- invalid/unused/F64/unknown format，或GEMM使用F32。其它13种current logical format不能仅因dtype被拒绝；
+  relation/elementwise/convert若缺少source semantic、opcode、shape/layout、field或typed convert-route proof，按缺失的
+  op-specific legality fact失败，而不是恢复一张通用dtype白名单。
 - movement descriptor cannot be represented with buffer-local offsets, `inner_bytes` and three
   stride/iteration levels.
 - current compact DMA或GatherScatter的typed view/descriptor/range无法证明；Q32.V mapped DMA direct cover需要
@@ -1103,15 +1109,14 @@ R3.2d verifier checks only instruction legality:
   accepted allocation offset计算SPM sequential range与DDR strided range，不要求ODS中不存在的directional offset字段。
   Q32.V mapped DMA要求`src_offset`/`dst_offset`显式存在（包括0）、分别相对各自root，并证明descriptor序列对logical
   relation的all-and-only coverage；任何版本都不存在双侧任意stride的隐式合法化。
-- logical element type或`Data_Format` enum存在不证明任一engine可编码该dtype。production target verifier必须查询
-  current instruction-family×format `TargetFormatEncodingRecord`并引用tasks/08 physical encoding interface；当前typed convert kind可选择TF32 wrapper与
-  RDMA/WDMA/fill/elementwise/reduce/GEMM通用format encoder缺TF32是两个独立legality row。UINT/64-bit direct DMA等
-  未有engine encoding证据的row在shared registry闭合前target-illegal。
-- ABI format可编码也不证明数值语义可准入。target preflight还必须查询独立的
-  `TargetCTElementwiseNumericCapabilityRecord`，其key为instruction kind、logical format和
-  source semantic requirement。当前Instr只表达`source-exact`：I8 CT elementwise、无法保持精确signed-zero的
-  F16/BF16/F32 Neg，以及缺parameter policy的ExpLp/SatRelu/LeakyRelu均在生成target call前fail closed；
-  I8 RDMA/WDMA等纯movement不经过CT numeric gate。
+- production target verifier查询唯一current `TargetFormatEncodingRecord`和tasks/08 physical encoding interface。
+  I8/I16/F16/BF16/I32/F32/TF32/BOOL/U8/U16/U32/I64/U64在RDMA、WDMA、TDMA、CT和NE的format-bearing
+  command上都有current encoding row；TF32、UINT和64-bit不因format缺通用encoder而target-illegal。未列format、
+  `Fmt_UNUSED`、F64和unknown code拒绝；唯一额外dtype特例是GEMM拒绝F32，这不关闭整个NE×F32 row。
+- ABI format可编码不等于任意数学op自动合法。elementwise/reduce/convert仍须证明source semantic、opcode/kind、
+  operand/result relation、shape/layout、parameter fields、rounding/zero-point policy和typed convert route；失败必须归因到
+  对应op-specific fact，不能由私有numeric capability表把某个current dtype整体改成target-illegal。target-model尚未实现
+  某个op×dtype的数值执行也只限制model gate，不反向缩小compiler/ABI legality。
 - NE GEMM and CT reduce require supported aligned layout marker, dtype and rank. current plain GEMM按implicit
   normal/normal relation匹配stored shape与M/K/N/batch；Q32.V oriented tuple只有在typed orientation字段、versioned
   target ABI和capability row同时匹配时合法。每个command tuple还必须唯一映射numeric semantics profile；terminal CT reduce has no init operand/
@@ -1170,10 +1175,10 @@ R3.2d verifier checks only instruction legality:
   `wafer.instr.dte_send` / `dte_recv` / `dte_wait`, not ad hoc tile p2p ops or side tables；在physical
   endpoint/slot binding和target CRT support闭合前，这三类op在production target conversion中必须整体拒绝；
   Q16.T已对当前single-card fixed-size unicast profile闭合该binding，超出profile的模式继续拒绝。
-- 每个issue都有可验证completion relation；`wafer.tile.region` exit不是completion boundary，不携带resident
-  data的pending NCC frontier可沿显式SSA/control flow传播；SPM root/alias仍不得跨sibling region。每条rank function exit在显式terminal participant join/exact wait后
-  pending-event set为空，variant gate覆盖rank中的all-and-only regions。`busytable` state
-  不能作为completion proof。
+- 每个issue都有可验证completion relation；内部traversal/loop/separation不触发completion，pending NCC frontier可沿
+  显式SSA/control flow传播。`wafer.tile.region` exit是真实SPM ownership/device-execution epoch exit；每条rank function/epoch
+  exit在显式terminal participant join/exact wait后pending-event set为空，variant gate覆盖每个rank唯一outer region的完整body。
+  SPM root/value/alias不得跨boundary，`busytable` state不能作为completion proof。
 - async handle的root provenance与task identity分别验证；handle alias或path union不能冒充完成了未被terminal
   wait覆盖的task，unsupported flow和missing terminal分别稳定失败。
 
@@ -1188,9 +1193,11 @@ event、transport和target binding均通过后，才由atomic commit构造all-an
 representative rank或byte-identical module不能替代未验证entry。
 
 Instruction op-local lowering不分配physical address range、不选择SPM bank phase、不选择DDR arena
-placement，也不绑定runtime symbol、packet bit或worker window。Q49 SPM allocator只可在hard-valid且
-不提高best-known actual high-water的relocation placements之间，使用
-accepted-offset-derived bank phase作最后tie-break；它不得改变spill/resident、region、DDR movement、order或join。
+placement，也不绑定runtime symbol、packet bit或worker window。Q49 SPM allocator对每个terminal rank-entry Instr variant只执行一次
+whole-entry fixed-capacity MiniMalloc query，覆盖其唯一outer region的完整body；actual high-water只作headroom。
+accepted-offset-derived bank phase若参与，只能打破solver
+自然遇到的execution-equivalent hard-valid placement，不新增query/search/relocation，也不得改变spill/resident、epoch boundary、
+DDR movement、order或join。
 这些值属于SPM/DDR planning和late
 target binding；但所有 consumer 都必须在 whole-variant commit 前调用同一个 shared physical
 geometry/range/narrowing verifier，target LLVM/package 不能成为首次发现 overflow 或 silent narrowing 的阶段。
@@ -1289,11 +1296,15 @@ mapped transfer也必须用带local offset的typed RDMA/WDMA表达，不能由lo
 例子中 stride 数值只说明 descriptor 字段位置，不作为 Cx padding 或 hardware packet 的规范值；
 真实 padded size、Cx/NCx 对齐、bool bitpack、descriptor stride 和 SPM offset 分别由
 `computeWaferPhysicalTensorInfo`、SPM memory planning 和 later realization 处理。
+本例中的outer `tile.region`是完整rank-entry device-execution epoch；WDMA在epoch exit仍属于pending observable effect，
+因此post-worker completion owner依据final worker/effect/range在exit前fresh物化participant join。join来自真实
+terminal hazard/protocol/observable witness，不是因为内部traversal、tile或某套loop nest结束；若exit前没有pending
+effect，也不生成空join。
 
 ## 12. Implementation Work
 
 本节“已完成”只记录 op-local ODS、conversion 和局部 pipeline coverage，不是 committed executable
-completion proof。完整traversal、whole-rank SPM、whole-variant DDR、terminal event closure、transport/target binding、
+completion proof。完整traversal、once-per-terminal-rank-entry whole-entry SPM、whole-variant DDR、terminal event closure、transport/target binding、
 all-rank typed bundle和whole-variant atomic commit仍必须按第1、9、10节合同统一验收。
 
 R3.2c 已完成的前置：
@@ -1342,21 +1353,26 @@ R3.2d.2 当前 mechanics 与 Q49 gap：
    copy、metadata view lowered to standard memref view、`Cx/NCx` block-major reshape、
    tail-only metadata reshape、nested `scf.if`、tile communication structured failure，以及
    padding layout materialization structured failure。
-9. conversion不在WDMA后、`scf.for` backedge、`wafer.tile.region` exit或standalone `func.return`按结构插wait/join。
+9. conversion不在WDMA后、`scf.for` backedge、内部traversal/task boundary或仅因看到`wafer.tile.region`/
+   `func.return`就按结构插wait/join。
    普通NCC op进入worker-aware ordered-pending frontier；统一completion placement只在value effect/root alias证明的
-   NCC→Direct DTE/Kcore/call/return cut插入覆盖实际pending worker的latest typed join，空join和相邻冗余
+   NCC→Direct DTE/Kcore/call/return cut插入覆盖实际pending worker的latest typed join；其中current rank唯一outer
+   region/rank-entry exit是必须闭合的真实epoch exit，空join和相邻冗余
    join不进入accepted IR。same-worker RAW/WAR/WAW与loop-carried slot reuse由issue order和lifetime证明，
    不逐edge drain；SPM仍独立按exact DTE token/wait跟踪communication lifetime。当前production converter仍有
-   standalone task `func.return` terminal join遗留，随后被task commit复制；Q49 C4必须删除该builder路径并在完整rank
-   final worker/effect/range上fresh重建，完成前本条终态合同尚未闭合。
+   standalone task `func.return` terminal join遗留，随后被task commit复制。Q49 C1新production path不得调用该builder；
+   C3在完整rank final worker/effect/range上先erase-all再fresh重建；C6只删除已经零consumer的旧代码。完成前本条终态
+   合同尚未闭合。
 
 R3.2d.3 当前边界：
 
 10. `wafer-lower-tile-region-to-instr`复用`WaferTileRegionToInstr` conversion implementation，
     只作为bring-up / explicit-view lowering入口；它消费candidate已物化的DDR tile view，不负责搜索
     traversal / tile shape。
-11. pipeline tests覆盖多region、structured `scf.if` / `scf.for`、tile communication
-    structured failure，以及转换后不能残留executable target-abstract op的pipeline-level gate；
+11. Q49 pipeline gate必须把legacy多region正例迁为“每个static rank entry恰好一个non-nested outer region”，并覆盖
+    同一body内多个traversal/loop nest、不同tile shape、逐root lifetime与internal DDR spill/reload；multiple/nested region及
+    boundary携带SPM data为稳定负例。structured `scf.if` / `scf.for`、tile communication structured failure，以及转换后
+    不能残留executable target-abstract op的pipeline-level gate继续保留；
     focused memory-planning tests证明携带pre-existing root的same-worker ordered loop无需backedge join即可通过，而loop body创建
     fresh allocation并作为recurrence result携带时以`unsupported_lifetime_alias`拒绝。
 

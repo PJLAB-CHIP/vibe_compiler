@@ -88,8 +88,9 @@ runtime/package owner 负责。
 
     Pipeline position:
     - Upstream artifact / IR:
-      complete-rank selected tile-dataflow candidate clone。每个structured scope已经包含selected wafer.tile.*
-      compute/movement、Wafer-tagged memref、typed implementation fields、view、explicit
+      complete-rank selected tile-dataflow candidate clone。每个static rank entry恰好一个non-nested outer
+      `wafer.tile.region`表示完整SPM ownership/device-execution epoch；其body内的多个traversal/loop nest和不同tile shape已经包含selected
+      wafer.tile.* compute/movement、Wafer-tagged memref、typed implementation fields、view、explicit
       movement、storage roots以及必要token/effect；logical/tiled collective、physical payload relation和rank facts显式存在。
       Direct/Ring/Tree只是terminal conversion的一次typed参数，展开后立即成为actual Instr sibling并销毁参数。
     - Current stage responsibility:
@@ -97,8 +98,9 @@ runtime/package owner 负责。
       MemoryEffectOpInterface及conversion legality检查selected合同，再用DialectConversion/rewrite
       patterns生成complete-rank wafer.instr.*。lowering必须
       显式生成instruction kind/parameters、queue/effect、temporary/accumulator/staging、
-      descriptor、async token和completion relation。compiler-derived participant join不因region/task return在本conversion中
-      自动生成；它在terminal Instr clone的worker/slot/range已知后由11定义的completion owner fresh构造。
+      descriptor、async token和completion relation。compiler-derived participant join不因内部traversal/task/loop boundary在本conversion中
+      自动生成；它在terminal Instr clone的worker/slot/range已知后由11定义的completion owner fresh构造，并在真实outer
+      region/rank-entry epoch exit证明terminal completion。
     - Output artifact / IR:
       覆盖每个static rank entry完整structured control flow的wafer.instr.* program，
       operand仍是未放置Wafer-tagged memref；或在任何effect前返回结构化failure。
@@ -116,7 +118,8 @@ runtime/package owner 负责。
       每个selected op均生成verifier-legal canonical/unplaced instruction IR；typed async event具有matching token/wait，
       ordinary NCC issue的worker-independent effect/range/observer obligations保持可重建且不存在premature read/reuse；
       conversion不插participant join，也不要求function exit的pending ordinary-NCC effect set为空。任一rank失败丢弃整个
-      candidate，不能形成partial committed program；terminal sibling后续必须经过worker/slot/order、fresh completion和memory gates。
+      candidate，不能形成partial committed program；terminal rank-entry Instr variant后续必须经过worker/slot/order、
+      fresh completion和memory gates。
 
 ## 3. Source MLIR Interface 与 Candidate 合同
 
@@ -470,7 +473,7 @@ current instruction op、typed target facts、accepted offsets和transport bindi
 | instruction legalization | verified complete-rank tile IR | complete-rank canonical/unplaced wafer.instr.* | DialectConversion生成exact instruction、temp、descriptor和typed async token/wait；不插participant join |
 | execution sibling materialization | canonical/unplaced instruction actual clone | fixed worker/slot/ready-order sibling | 从actual SSA/effects/ranges生成有界execution mapping，不原地改写其它candidate |
 | completion reconstruction | fixed execution sibling | final instruction sibling with latest-necessary participant joins | 入口删除全部compiler-derived join，从current effects/events/ranges fresh重建并逐join验证witness |
-| SPM planning | completion-complete instruction sibling | accepted SPM offsets | whole-entry lifetime/range/capacity hard gate；Q49待实现的offset-derived bank phase按09仅在actual high-water相同的hard-valid relocation间最后tie-break |
+| SPM planning | completion-complete rank-entry Instr variant | accepted SPM offsets | whole-entry lifetime/range/capacity hard gate；每个variant只执行一次覆盖唯一outer `tile.region`完整body的MiniMalloc，high-water只作headroom，bank phase不新增query/relocation或改变candidate |
 | DDR planning | SPM-planned whole variant | accepted DDR offsets | external/compiler-managed range、lifetime和capacity gate |
 | final rank/variant verification | placed instruction IR + transport binding | atomic executable proposal | 重算resource、completion、ABI和all-rank facts |
 | target LLVM emission | committed instruction IR | LLVM/target calls | checked派生address/range/descriptor/ABI字段 |
@@ -508,11 +511,16 @@ wait，但必须显式表达依赖：
 - typed async issue返回async.token并由matching typed wait消费；ordinary NCC issue留下effects/ranges/observer obligations，
   不在conversion中借用local fence或participant join收口。
 - source/destination/temporary lifetime延伸到真实completion点。
-- tile.region、task boundary、loop iteration和block order都不自动完成pending issue。
+- 内部traversal/task boundary、loop iteration和block order都不完成pending issue，也不因traversal separation插join。
+- `tile.region` boundary表示真实SPM ownership/device-execution epoch；current static rank entry只有一个non-nested outer
+  region。其exit必须由post-worker explicit wait/join证明terminal completion，但region结构本身不自动完成issue。
+- SPM root/value/alias只能活在该outer region内；多个tile shape、逐root lifetime和internal DDR spill/reload都在同一body表达，
+  不能用sibling region传递SPM data。
 - DTE wait、post-worker compiler-derived NCC participant join和group barrier是不同resource边界，不能互相替代。
 - queue capacity或busy-table只限制in-flight legality，不是event或completion proof。
 - canonical/unplaced conversion输出的每条static rank exit path保留可重建的pending ordinary-NCC obligations；只有post-worker
-  completion reconstruction后的terminal sibling才要求all-and-only observable/pending effects已在合法cut完成。
+  completion reconstruction后的terminal rank-entry Instr variant才要求all-and-only observable/pending effects已在真实
+  outer-region/rank-entry epoch exit完成。
 
 ## 8. 通用 Case
 
