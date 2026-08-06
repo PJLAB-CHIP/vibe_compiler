@@ -707,3 +707,52 @@ Pipeline position:
 - `load_specs` / `validate_specs` 通过全部 168 页；旧页可见正文的演讲指令式和抽象验收措辞扫描无命中。
 - 最终 PPTX、PDF、168 张逐页 PNG、contact sheet、speaker notes 与 source map 已重新生成；PDF 为 168 页 16:9，关键页原尺寸复核未见文字越界或遮挡。
 - 本轮没有产生新的 compiler/runtime/hardware 行为结论，无需写入 `memory/`，也未执行板端测试。
+
+## 19. 独立开场四页整页返工（2026-08-06）
+
+首次生成的四页虽然通过页数、媒体数、字符数和对象边界检查，但这些指标没有证明页面能够用于技术汇报：
+正文被切成彼此独立的解释块，投影阅读时缺少问题、具体工程动作和结论之间的连续关系；主图则混入空白表单、
+泛化合规图标、伪代码和未被项目事实支持的对象。现有四张图和版式全部作废，不在其上继续补字。
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  当前AGENTS.md、项目设计文档与代码事实、已经收敛的四页主题和NoC Resident GEMM技术图的视觉标准。
+- Current stage responsibility:
+  将探索出发点、真实开发事务、工程规范和项目重构演进组织成四页可直接演讲的开场材料；逐页固定论证、
+  真实对象和讲述顺序，再生成与这些对象一一对应的Image2技术图。
+- Output artifact / IR:
+  独立4页PPTX/PDF、四张新Image2主图、逐页PNG、speaker notes和source记录；不产生compiler program IR。
+- Downstream consumer:
+  用户自行合入主汇报，并面向compiler、runtime和hardware专家演讲。
+- User-level driver / named pipeline:
+  docs/presentations/2026-08-06-vibe-compiler-opening-four-slides/build_deck.py。
+- Explicit non-goals:
+  不修改168页历史deck；不复用旧四张图；不猜测芯片内部结构；第一页不展开LLVM、ABI、ELF、bundle类型或artifact ownership；
+  不把AGENTS.md画成审批表、审计表或通用软件流程模板；第四页不展示commit hash。
+- Completion gate:
+  四页逐页完成内容稿、图形事实核对、投影预览与notes复核；主图中的对象、连接和状态变化均能在可见正文中解释；
+  每页形成自然的presentation叙事，100%预览可读，无裁切、遮挡、空白占位或由生成模型补出的伪技术细节。
+```
+
+逐页硬性约束：
+
+- 先写清本页要回答的问题、听众为什么需要知道、用哪个项目事实展开、最后带走什么判断；再画图和排版。
+- 图的“信息量”由真实对象、关系、状态变化和case细节构成，不用图标数量、伪代码、空白表单或重复小卡片制造复杂感。
+- Image2参考NoC Resident GEMM图的分区、箭头、局部放大和结论条组织方式，但每页重新设计视觉语法；PPT原生文本只承担
+  必须逐字准确的标题、短标签、代码/IR和正文，不覆盖一张本身没有含义的背景图。
+- 可见正文使用完整自然的中文论述，技术名词保留英文；不写“本页结论/真实证据/讲解边界”等审计式元语言。
+- 每完成一页，先在原尺寸PNG上检查主图是否忠实、正文是否能独立理解、讲述是否能在60--90秒内顺畅展开，
+  再进入下一页。自动检查只用于发现结构错误，不作为内容质量证明。
+
+完成记录：
+
+- 四页旧图和旧版式已经退出构建并从独立deck资产目录删除；四张新图分别围绕一个程序穿过项目、真实开发事务、
+  三类工程失败机制和六次边界重构重新生成。
+- 第一页删除了Image2虚构的shape/tile参数；第二页将生成图中的假路径改为当前仓库真实SPM planning owner；
+  第三页删除了无来源offset/地址数字；第四页只保留经git history和当前设计文档核对的日期、重构因果和进行态。
+- 可见正文重新写为自然中文论述，前三页各由四段原因/机制/工程含义和一条收束判断组成；第四页给时间线完整展示面积。
+  Speaker notes已嵌入PowerPoint Notes，不承担页面缺失信息。
+- Fresh构建与结构检查确认：4页16:9、每页1张唯一新图、4份notes、PDF 4页、所有对象在页面边界内；原尺寸PNG
+  复核未见裁切、遮挡或无法解释的空白占位。未执行compiler构建或板端测试，本轮没有产生新的硬件行为结论，
+  无需更新`memory/`。
