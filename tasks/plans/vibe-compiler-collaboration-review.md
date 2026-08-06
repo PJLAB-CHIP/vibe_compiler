@@ -1,5 +1,54 @@
 # Vibe Compiler 专家技术汇报逐页重做计划
 
+## 2026-08-06 独立开场四页
+
+状态：已完成。正式产物位于
+`docs/presentations/2026-08-06-vibe-compiler-opening-four-slides/`；4页PPTX/PDF、4张独立Image2主图、
+逐页PNG、contact sheet、完整dossier、source map与嵌入式speaker notes均已生成。新鲜构建与原尺寸检查确认
+4页16:9、每页一张唯一嵌入主图、可见文本和notes达到页面合同，且无裁切、遮挡或对象越界。
+
+本轮在冻结的168页历史deck之外新增一份独立4页PPTX，用户自行合并。四页不复述完整技术正文，负责在
+进入compiler细节前建立共同问题、开发方式和项目演进背景：
+
+1. `Vibe Compiler：端到端人机协同工程探索`：以真实多rank硬件compiler为载体，说明要验证的问题是
+   domain expert与AI能否共同完成架构收敛、持续实现、纠错和端到端交付；用项目级source-to-system链路
+   落实探索范围，但不提前展开LLVM、ABI或单个case。
+2. `开发流程：从任务边界到可验证产物`：按AGENTS.md展示一笔真实开发事务，并用SPM planning串起
+   IR、analysis、transformation、验证、文档和提交；设计未收敛、板端测试和阻塞分别走明确分支。
+3. `工程规范：语义、验证与提交`：用“规则如何改变实现、避免什么失败”解释IR语义归属、分层验证、
+   dirty worktree与文档/提交纪律，不把AGENTS.md抄成检查清单。
+4. `架构演进与关键重构`：按2026-05-21至2026-08-06的git历史选择六个边界变化，逐项说明触发问题、
+   旧owner/表示、新owner/表示与完成门；重点是重构如何提高可验证性和端到端完成标准，不做功能流水账。
+
+每页先完成独立dossier，再写Image2 prompt、生成主图、装配精确中文文本和speaker notes。主图承担结构、
+关系和状态变化；PPT原生文本承担准确术语、日期、命令、IR片段和结论。四页采用不同视觉语法，禁止统一
+卡片网格、泛化人物/机器人插画、虚构芯片内部结构以及用大图挤掉可见解释。
+
+### Pipeline Contract
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  当前AGENTS.md协作合同、git提交历史、tasks/progress.md、Q49实施计划，以及source、distributed
+  program、structured/tile/instr IR、target artifact、package/runtime和验证状态的当前项目事实。
+- Current stage responsibility:
+  把项目事实组织成四页开场叙事；分别解释探索问题、开发事务、工程规则和重构演进，并为每页生成一张
+  与正文逐项对应的Image2技术主图。
+- Output artifact / IR:
+  独立4页可编辑PPTX、PDF、逐页PNG、contact sheet、嵌入PowerPoint notes的讲稿、page dossiers、
+  Image2 prompts和本轮新生成的四张正式图。
+- Downstream consumer:
+  周五内部专家技术分享；由用户自行合并到主deck。
+- User-level driver / named pipeline:
+  人工打开PPTX/PDF演讲；构建脚本只装配和验证presentation artifact，不改变compiler pipeline。
+- Explicit non-goals:
+  不修改或合并冻结的168页deck；不把presentation写成架构事实源；不运行板端case；不更新compiler、
+  runtime、ABI或package实现；不在图中推断未记录的硬件结构。
+- Completion gate:
+  四页各有独立新图、足量可见中文内容和嵌入notes；项目链路、AGENTS.md规则和重构时间点可追溯；
+  PPTX/PDF/PNG无裁切遮挡，100%投影可读；四页在没有口头补充时也能看懂本页问题、机制和工程含义。
+```
+
 状态：Q43已于2026-08-03完成，本文与其生成的deck是当时compiler的汇报快照，不是持续更新的架构合同。
 2026-08-05起，其中task-local commit、per-task/rank frontier、artifact correspondence、late NoC sibling、
 region-exit join、跨region SPM handoff、SPM-high-water Pareto和`ExternalMovementFirst`等optimizer叙述已被Q49的
