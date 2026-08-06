@@ -14,36 +14,53 @@ func.func private @safe_scalar_helper() {
 
 func.func @share_across_sibling_regions(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
-  %resident = wafer.tile.region(%boundary
-      : memref<128xf16, #wafer.memory<ddr, tensor>>) ->
-      (memref<128xf16, #wafer.memory<spm, tensor>>) {
-  ^bb0(%ddr: memref<128xf16, #wafer.memory<ddr, tensor>>):
-    %zero = arith.constant 0.000000e+00 : f16
-    %produced = memref.alloc()
-        : memref<128xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.fill %produced, %zero
-        : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.ncc_join [0]
-    wafer.tile.yield %produced
-        : memref<128xf16, #wafer.memory<spm, tensor>>
-  }
-
-  // A closed callee without an SPM arena remains legal while the resident is
-  // live; the fail-closed boundary targets only calls that may clobber SPM.
-  func.call @safe_scalar_helper() : () -> ()
-
-  %written = wafer.tile.region(%resident, %boundary
-      : memref<128xf16, #wafer.memory<spm, tensor>>,
+  %spill = memref.alloc()
+      : memref<128xf16, #wafer.memory<ddr, tensor>>
+  %produced = wafer.tile.region(%boundary, %spill
+      : memref<128xf16, #wafer.memory<ddr, tensor>>,
         memref<128xf16, #wafer.memory<ddr, tensor>>) ->
       (memref<128xf16, #wafer.memory<ddr, tensor>>) {
-  ^bb0(%input: memref<128xf16, #wafer.memory<spm, tensor>>,
+  ^bb0(%unused: memref<128xf16, #wafer.memory<ddr, tensor>>,
+       %materialized: memref<128xf16, #wafer.memory<ddr, tensor>>):
+    %zero = arith.constant 0.000000e+00 : f16
+    %resident = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.fill %resident, %zero
+        : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    wafer.instr.wdma %resident to %materialized
+        {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
+         dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+       to memref<128xf16, #wafer.memory<ddr, tensor>>
+    wafer.instr.ncc_join [0]
+    wafer.tile.yield %materialized
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+  }
+
+  // No SPM root crosses the region boundary, so a closed scalar callee is
+  // transparent between the explicit store/completion and matching reload.
+  func.call @safe_scalar_helper() : () -> ()
+
+  %written = wafer.tile.region(%produced, %boundary
+      : memref<128xf16, #wafer.memory<ddr, tensor>>,
+        memref<128xf16, #wafer.memory<ddr, tensor>>) ->
+      (memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%input: memref<128xf16, #wafer.memory<ddr, tensor>>,
        %ddr: memref<128xf16, #wafer.memory<ddr, tensor>>):
     %zero = arith.constant 0.000000e+00 : f16
+    %reloaded = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
     %overlapping = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.rdma %input to %reloaded
+        {byte_count = 256 : i64, inner_bytes = 256 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+       to memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %overlapping, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.instr.wdma %input to %ddr
+    wafer.instr.wdma %reloaded to %ddr
         {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
          dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
         : memref<128xf16, #wafer.memory<spm, tensor>>
@@ -70,13 +87,15 @@ func.func @share_across_sibling_regions(
 }
 
 // SHARED-LABEL: func.func @share_across_sibling_regions
-// SHARED: %[[RESIDENT:.+]] = wafer.tile.region
-// SHARED: %[[PRODUCED:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
-// SHARED: wafer.tile.yield %[[PRODUCED]] : memref<128xf16, #wafer.memory<spm, tensor>>
-// SHARED: wafer.tile.region(%[[RESIDENT]],
-// SHARED: ^bb0(%[[INPUT:.+]]: memref<128xf16, #wafer.memory<spm, tensor>>
+// SHARED: %[[PRODUCED:.+]] = wafer.tile.region
+// SHARED: %[[RESIDENT:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+// SHARED: wafer.instr.wdma %[[RESIDENT]]
+// SHARED: wafer.tile.yield %{{.+}} : memref<128xf16, #wafer.memory<ddr, tensor>>
+// SHARED: wafer.tile.region(%[[PRODUCED]],
+// SHARED: ^bb0(%[[INPUT:[^ :]+]]: memref<128xf16, #wafer.memory<ddr, tensor>>
+// SHARED: %[[RELOADED:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
 // SHARED: %[[OVERLAPPING:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
-// SHARED: wafer.instr.wdma %[[INPUT]]
+// SHARED: wafer.instr.rdma %[[INPUT]] to %[[RELOADED]]
 // SHARED: %[[REUSABLE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
 
 // OVERLAP: capacity_overflow: SPM planning range [65536, 65792) has no valid static placement
@@ -84,47 +103,62 @@ func.func @share_across_sibling_regions(
 //--- escape.mlir
 func.func @escape_spm_ssa(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
-  %resident = wafer.tile.region(%boundary
+  %result = wafer.tile.region(%boundary
       : memref<128xf16, #wafer.memory<ddr, tensor>>) ->
-      (memref<128xf16, #wafer.memory<spm, tensor>>) {
+      (memref<128xf16, #wafer.memory<ddr, tensor>>) {
   ^bb0(%ddr: memref<128xf16, #wafer.memory<ddr, tensor>>):
     %produced = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
-    wafer.tile.yield %produced
-        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %escaped = memref.extract_aligned_pointer_as_index %produced
+        : memref<128xf16, #wafer.memory<spm, tensor>> -> index
+    wafer.tile.yield %ddr
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
-  %c0 = arith.constant 0 : index
-  %escaped = memref.load %resident[%c0]
-      : memref<128xf16, #wafer.memory<spm, tensor>>
   return
 }
 
-// ESCAPE: unsupported_spm_planning_scope: SPM values outside wafer.tile.region may only flow through explicit tile-region operands/results
+// ESCAPE: unsupported_lifetime_alias: tracked SPM storage cannot escape through raw metadata
 
 //--- cross-region-completion.mlir
 func.func @cross_region_same_worker_completion(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
-  %resident = wafer.tile.region(%boundary
-      : memref<128xf16, #wafer.memory<ddr, tensor>>) ->
-      (memref<128xf16, #wafer.memory<spm, tensor>>) {
-  ^bb0(%ddr: memref<128xf16, #wafer.memory<ddr, tensor>>):
+  %spill = memref.alloc()
+      : memref<128xf16, #wafer.memory<ddr, tensor>>
+  %materialized = wafer.tile.region(%boundary, %spill
+      : memref<128xf16, #wafer.memory<ddr, tensor>>,
+        memref<128xf16, #wafer.memory<ddr, tensor>>) ->
+      (memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%unused: memref<128xf16, #wafer.memory<ddr, tensor>>,
+       %ddr: memref<128xf16, #wafer.memory<ddr, tensor>>):
     %zero = arith.constant 0.000000e+00 : f16
     %produced = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %produced, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.tile.yield %produced
+    wafer.instr.wdma %produced to %ddr
+        {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
+         dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
         : memref<128xf16, #wafer.memory<spm, tensor>>
+       to memref<128xf16, #wafer.memory<ddr, tensor>>
+    wafer.instr.ncc_join [0]
+    wafer.tile.yield %ddr
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
-  %forwarded = wafer.tile.region(%resident
-      : memref<128xf16, #wafer.memory<spm, tensor>>) ->
-      (memref<128xf16, #wafer.memory<spm, tensor>>) {
-  ^bb0(%input: memref<128xf16, #wafer.memory<spm, tensor>>):
-    // Pending NCC state is function-wide. This explicit later sibling
-    // completion legitimately covers the same-worker producer stream.
+  %forwarded = wafer.tile.region(%materialized
+      : memref<128xf16, #wafer.memory<ddr, tensor>>) ->
+      (memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%input: memref<128xf16, #wafer.memory<ddr, tensor>>):
+    %reloaded = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.rdma %input to %reloaded
+        {byte_count = 256 : i64, inner_bytes = 256 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+       to memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.ncc_join [0]
     wafer.tile.yield %input
-        : memref<128xf16, #wafer.memory<spm, tensor>>
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
 }
@@ -136,42 +170,43 @@ func.func @cross_region_same_worker_completion(
 //--- live-across-direct-call.mlir
 func.func @independently_planned_callee(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
-  %callee_resident = wafer.tile.region(%boundary
+  %callee_result = wafer.tile.region(%boundary
       : memref<128xf16, #wafer.memory<ddr, tensor>>) ->
-      (memref<128xf16, #wafer.memory<spm, tensor>>) {
+      (memref<128xf16, #wafer.memory<ddr, tensor>>) {
   ^bb0(%ddr: memref<128xf16, #wafer.memory<ddr, tensor>>):
     %spm = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
-    wafer.tile.yield %spm
+    %c0 = arith.constant 0 : index
+    %unused = memref.load %spm[%c0]
         : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.yield %ddr
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
 }
 
 func.func @resident_across_direct_call(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
-  %resident = wafer.tile.region(%boundary
+  %result = wafer.tile.region(%boundary
       : memref<128xf16, #wafer.memory<ddr, tensor>>) ->
-      (memref<128xf16, #wafer.memory<spm, tensor>>) {
+      (memref<128xf16, #wafer.memory<ddr, tensor>>) {
   ^bb0(%ddr: memref<128xf16, #wafer.memory<ddr, tensor>>):
     %spm = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
-    wafer.tile.yield %spm
+    %c0 = arith.constant 0 : index
+    %before = memref.load %spm[%c0]
         : memref<128xf16, #wafer.memory<spm, tensor>>
-  }
-  func.call @independently_planned_callee(%boundary)
-      : (memref<128xf16, #wafer.memory<ddr, tensor>>) -> ()
-  %forwarded = wafer.tile.region(%resident
-      : memref<128xf16, #wafer.memory<spm, tensor>>) ->
-      (memref<128xf16, #wafer.memory<spm, tensor>>) {
-  ^bb0(%input: memref<128xf16, #wafer.memory<spm, tensor>>):
-    wafer.tile.yield %input
+    func.call @independently_planned_callee(%ddr)
+        : (memref<128xf16, #wafer.memory<ddr, tensor>>) -> ()
+    %after = memref.load %spm[%c0]
         : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.yield %ddr
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
 }
 
-// LIVE-DIRECT: unsupported_spm_planning_scope: live SPM storage crosses a call
+// LIVE-DIRECT: unsupported_spm_planning_scope: a call from an active or asynchronous SPM scope may dynamically execute another wafer.tile.region
 // LIVE-DIRECT-SAME: independently planned physical SPM arena
 
 //--- live-across-external-call.mlir
@@ -179,28 +214,26 @@ func.func private @unknown_spm_arena_effect()
 
 func.func @resident_across_external_call(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
-  %resident = wafer.tile.region(%boundary
+  %result = wafer.tile.region(%boundary
       : memref<128xf16, #wafer.memory<ddr, tensor>>) ->
-      (memref<128xf16, #wafer.memory<spm, tensor>>) {
+      (memref<128xf16, #wafer.memory<ddr, tensor>>) {
   ^bb0(%ddr: memref<128xf16, #wafer.memory<ddr, tensor>>):
     %spm = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
-    wafer.tile.yield %spm
+    %c0 = arith.constant 0 : index
+    %before = memref.load %spm[%c0]
         : memref<128xf16, #wafer.memory<spm, tensor>>
-  }
-  func.call @unknown_spm_arena_effect() : () -> ()
-  %forwarded = wafer.tile.region(%resident
-      : memref<128xf16, #wafer.memory<spm, tensor>>) ->
-      (memref<128xf16, #wafer.memory<spm, tensor>>) {
-  ^bb0(%input: memref<128xf16, #wafer.memory<spm, tensor>>):
-    wafer.tile.yield %input
+    func.call @unknown_spm_arena_effect() : () -> ()
+    %after = memref.load %spm[%c0]
         : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.yield %ddr
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
 }
 
-// LIVE-EXTERNAL: unsupported_spm_planning_scope: live SPM storage crosses a call
-// LIVE-EXTERNAL-SAME: interprocedural arena/resource summaries are not available
+// LIVE-EXTERNAL: unsupported_spm_planning_scope: a call from an active or asynchronous SPM scope may dynamically execute another wafer.tile.region
+// LIVE-EXTERNAL-SAME: independently planned physical SPM arena
 
 //--- live-across-indirect-call.mlir
 func.func @indirect_target() {
@@ -209,26 +242,23 @@ func.func @indirect_target() {
 
 func.func @resident_across_indirect_call(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
-  %resident = wafer.tile.region(%boundary
+  %result = wafer.tile.region(%boundary
       : memref<128xf16, #wafer.memory<ddr, tensor>>) ->
-      (memref<128xf16, #wafer.memory<spm, tensor>>) {
+      (memref<128xf16, #wafer.memory<ddr, tensor>>) {
   ^bb0(%ddr: memref<128xf16, #wafer.memory<ddr, tensor>>):
     %spm = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
-    wafer.tile.yield %spm
+    %c0 = arith.constant 0 : index
+    %before = memref.load %spm[%c0]
         : memref<128xf16, #wafer.memory<spm, tensor>>
-  }
-  %callee = func.constant @indirect_target : () -> ()
-  func.call_indirect %callee() : () -> ()
-  %forwarded = wafer.tile.region(%resident
-      : memref<128xf16, #wafer.memory<spm, tensor>>) ->
-      (memref<128xf16, #wafer.memory<spm, tensor>>) {
-  ^bb0(%input: memref<128xf16, #wafer.memory<spm, tensor>>):
-    wafer.tile.yield %input
+    %callee = func.constant @indirect_target : () -> ()
+    func.call_indirect %callee() : () -> ()
+    %after = memref.load %spm[%c0]
         : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.yield %ddr
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
 }
 
-// LIVE-INDIRECT: unsupported_spm_planning_scope: live SPM storage crosses a call
-// LIVE-INDIRECT-SAME: independently planned physical SPM arena
+// LIVE-INDIRECT: unsupported_spm_planning_scope: an indirect call from an active or asynchronous SPM scope may execute another wafer.tile.region

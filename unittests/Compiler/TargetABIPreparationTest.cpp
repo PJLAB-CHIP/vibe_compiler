@@ -4,6 +4,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitAll.h"
 
+#include "../../lib/Wafer/Compiler/CompilationInternal.h"
 #include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
 #include "../../lib/Wafer/Compiler/TargetArtifactInternal.h"
 
@@ -65,19 +66,7 @@ shapedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape) {
 TEST(TargetABIPreparationTest,
      WorkspaceAlignmentCombinesPolicyAndAllocationRequirements) {
   mlir::DialectRegistry registry;
-  registry.insert<mlir::arith::ArithDialect,
-                  mlir::bufferization::BufferizationDialect,
-                  mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
-                  mlir::LLVM::LLVMDialect, mlir::linalg::LinalgDialect,
-                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
-                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
-  wafer::registerAllDialects(registry);
-  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
-      registry);
-  mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
+  wafer::compiler::detail::registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
 

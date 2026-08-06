@@ -8,6 +8,9 @@ add_executable(WaferUnitTests
   Analysis/StaticBufferRangeTest.cpp
   Compiler/CompilationPublicationTest.cpp
   Compiler/CompilationTest.cpp
+  Compiler/CoordinatedDataflowSearchTest.cpp
+  Compiler/CoordinatedTerminalEvaluationTest.cpp
+  Compiler/CoordinatedVariantSelectionTest.cpp
   Compiler/DirectDTETransportTest.cpp
   Compiler/GlobalTileRelationTest.cpp
   Compiler/NoCIntermediateDataflowTest.cpp

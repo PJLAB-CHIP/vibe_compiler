@@ -14,8 +14,38 @@
 
 namespace wafer::compiler::detail {
 
-/// A rank candidate after function-boundary bufferization, SPM replanning, and
-/// exact cost closure. The reserved baseline must survive; failures of other
+enum class RankCompletionPolicy : uint8_t {
+  /// Preserve the completion topology already constructed by the rank-local
+  /// scheduling mechanics. This is used only by the pre-coordinated
+  /// qualification seam until that seam is retired.
+  PreserveConstructedTopology,
+  /// Erase compiler-derived joins after function-boundary bufferization and
+  /// rebuild the minimum completion topology solely from current typed IR.
+  RebuildFromCurrentEffects,
+};
+
+enum class RankFinalizationFailureKind : uint8_t {
+  None,
+  Contract,
+  WholeVariantFacts,
+  TileToInstr,
+  Completion,
+  Verification,
+  FunctionBoundaryBufferization,
+  SPMAllocation,
+  ExactCost,
+};
+
+/// Typed, invocation-local rejection evidence for one finalized rank request.
+/// It never carries a partially placed module or becomes an artifact.
+struct RankFinalizationFailure {
+  RankFinalizationFailureKind kind = RankFinalizationFailureKind::None;
+  int64_t stableOrdinal = -1;
+};
+
+/// A rank candidate after complete-entry Tile-to-Instr conversion,
+/// function-boundary bufferization, fresh completion, SPM replanning, and exact
+/// cost closure. The reserved baseline must survive; failures of other
 /// alternatives only prune the finalized frontier.
 struct FinalizedRankCandidate {
   FinalizedRankCandidate(
@@ -54,7 +84,10 @@ struct FinalizedRankCandidate {
 mlir::FailureOr<std::vector<FinalizedRankCandidate>>
 finalizeScheduledRankCandidateFrontier(
     std::vector<wafer::ScheduledRankCandidate> frontier,
-    bool requireReservedBaseline = true);
+    bool requireReservedBaseline = true,
+    RankCompletionPolicy completionPolicy =
+        RankCompletionPolicy::PreserveConstructedTopology,
+    RankFinalizationFailure *failure = nullptr);
 
 } // namespace wafer::compiler::detail
 

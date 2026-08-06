@@ -3,6 +3,7 @@
 #ifndef WAFER_LIB_TRANSFORMS_SCHEDULING_RANKCANDIDATEFRONTIER_H
 #define WAFER_LIB_TRANSFORMS_SCHEDULING_RANKCANDIDATEFRONTIER_H
 
+#include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/Support/OptimizationConfig.h"
 #include "Wafer/Target/TargetIdentity.h"
 
@@ -167,12 +168,62 @@ struct TensorProgramSchedulingConfig {
 /// tensor-program artifact.
 bool isTensorProgramSchedulingRankInvariant(mlir::ModuleOp sourceModule);
 
+/// One bounded physical residency action applied directly to an actual
+/// complete-rank Tile clone. It is invocation-local search policy, not an IR
+/// attribute, artifact kind, or commit input.
+enum class CandidateTileResidencyAction : uint8_t {
+  KeepSingleRegion,
+  SplitAtExplicitDDRBoundary,
+  SelectiveSpill,
+};
+
+/// Boundary movement realization consumed while constructing one actual Tile
+/// clone. ExactDirectMapped is admitted only when the current physical
+/// relation proves the transfer; the request itself never survives in IR.
+enum class CandidateBoundaryMovementAction : uint8_t {
+  Staged,
+  ExactDirectMapped,
+};
+
+/// Loop-local movement realization for one actual Tile clone. The hoisted
+/// form moves only a proven read-only boundary load and its invariant physical
+/// layout chain; all other movement remains in the constructed traversal.
+enum class CandidateLoopMovementAction : uint8_t {
+  AsConstructed,
+  HoistInvariantReadOnlyBoundary,
+};
+
+/// Prepares compiler-owned constant storage, then materializes one actual
+/// complete-rank structured traversal directly as unplaced Tile IR. This is a
+/// construction mechanism for the coordinated frontier; it performs no
+/// rank-local selection, instruction lowering, or memory placement.
+mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
+materializeCompleteRankCandidateTileProgram(
+    mlir::ModuleOp sourceModule, int64_t logicalRank,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    CandidateTileTraversalKind traversalKind,
+    CompleteRankTraversalComposition composition,
+    CandidateTileResidencyAction residencyAction,
+    CandidateBoundaryMovementAction boundaryMovementAction,
+    CandidateLoopMovementAction loopMovementAction,
+    std::string *failureReason = nullptr);
+
+/// Clones an already materialized, unplaced complete-rank Tile parent and
+/// applies one bounded residency action directly to that clone. This is the
+/// structured coordinator's terminal-feedback mechanism: it never replays
+/// source lowering and never consumes a failed Instr/placement clone.
+mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
+materializeCompleteRankTileResidencySibling(
+    mlir::ModuleOp tileParent, CandidateTileResidencyAction residencyAction,
+    std::string *failureReason = nullptr);
+
 /// Builds the current complete-rank structured frontier in independent actual
-/// clones. The conservative production seam returns one unplaced instruction
-/// baseline derived from one outer Tile residency region; function-boundary
-/// bufferization, fresh completion, SPM planning, DDR placement, cross-rank
-/// transport, card resources, exact cost, and target ABI remain downstream
-/// terminal gates. The source module is never modified.
+/// Tile clones. The conservative production seam returns one unplaced Tile
+/// baseline derived from one outer residency region; Tile-to-Instr lowering,
+/// function-boundary bufferization, fresh completion, SPM planning, DDR
+/// placement, cross-rank transport, card resources, exact cost, and target ABI
+/// remain downstream terminal gates. The source module is never modified.
 mlir::FailureOr<std::vector<ScheduledRankCandidate>>
 buildScheduledRankCandidateFrontier(
     mlir::ModuleOp sourceModule, const TensorProgramSchedulingConfig &config);

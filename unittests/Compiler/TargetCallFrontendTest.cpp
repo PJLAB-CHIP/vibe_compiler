@@ -4,6 +4,7 @@
 #include "Wafer/InitAll.h"
 #include "Wafer/Target/TargetCall.h"
 
+#include "../../lib/Wafer/Compiler/CompilationInternal.h"
 #include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
 #include "../../lib/Wafer/Compiler/TargetArtifactInternal.h"
 
@@ -94,21 +95,7 @@ wafer::frontend::ProgramBoundaryBinding partitionedBoundary(int64_t index) {
 
 std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
   mlir::DialectRegistry registry;
-  registry.insert<mlir::arith::ArithDialect,
-                  mlir::bufferization::BufferizationDialect,
-                  mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
-                  mlir::LLVM::LLVMDialect, mlir::linalg::LinalgDialect,
-                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
-                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
-  wafer::registerAllDialects(registry);
-  mlir::registerBuiltinDialectTranslation(registry);
-  mlir::registerLLVMDialectTranslation(registry);
-  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
-      registry);
-  mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
+  wafer::compiler::detail::registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
   return context;
@@ -876,8 +863,7 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
       ++argumentNCCIssueDomainCount;
       EXPECT_EQ(*descriptor.issueDomain->nccWorkerArgument + 1,
                 descriptor.arguments.size());
-      EXPECT_EQ(descriptor.arguments.back(),
-                wafer::TargetCallScalarType::I32);
+      EXPECT_EQ(descriptor.arguments.back(), wafer::TargetCallScalarType::I32);
       const auto *peripheral =
           std::get_if<wafer::InstrPeripheralKind>(&descriptor.semantic);
       const bool synchronous =
@@ -897,8 +883,8 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   EXPECT_EQ(directDTEIssueDomainCount, 2u);
   EXPECT_EQ(wafer::findTargetCallDescriptor("wafer_tx81_unknown"), nullptr);
 
-  const auto &join = wafer::getTargetCallDescriptor(
-      wafer::TargetCallBuiltin::NCCJoin);
+  const auto &join =
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::NCCJoin);
   EXPECT_EQ(join.result, wafer::TargetCallResultType::Void);
   ASSERT_EQ(join.arguments.size(), 1u);
   EXPECT_EQ(join.arguments.front(), wafer::TargetCallScalarType::I32);
@@ -918,17 +904,16 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrConvKind::Conv)
                 .arguments.size(),
             32u);
+  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrPeripheralKind::Bilinear)
+                .arguments.size(),
+            18u);
   EXPECT_EQ(
-      wafer::getTargetCallDescriptor(wafer::InstrPeripheralKind::Bilinear)
-          .arguments.size(),
-      18u);
-  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrElementwiseKind::Add)
-                .symbol,
-            "wafer_tx81_elementwise_add_v3");
-  EXPECT_EQ(wafer::getTargetCallDescriptor(
-                wafer::TargetCallBuiltin::GemmOriented)
-                .symbol,
-            "wafer_tx81_gemm_oriented_v3");
+      wafer::getTargetCallDescriptor(wafer::InstrElementwiseKind::Add).symbol,
+      "wafer_tx81_elementwise_add_v3");
+  EXPECT_EQ(
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::GemmOriented)
+          .symbol,
+      "wafer_tx81_gemm_oriented_v3");
 }
 
 TEST(TargetCallRegistryTest, ContainsOnlyCurrentWorkerAwareABI) {
@@ -941,10 +926,10 @@ TEST(TargetCallRegistryTest, ContainsOnlyCurrentWorkerAwareABI) {
   EXPECT_EQ(*rdma.issueDomain->nccWorkerArgument, 11u);
   EXPECT_EQ(wafer::findTargetCallDescriptor(rdma.symbol), &rdma);
   EXPECT_EQ(wafer::findTargetCallDescriptor("wafer_tx81_rdma"), nullptr);
-  EXPECT_EQ(wafer::getTargetCallDescriptor(
-                wafer::TargetCallBuiltin::GemmOriented)
-                .symbol,
-            "wafer_tx81_gemm_oriented_v3");
+  EXPECT_EQ(
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::GemmOriented)
+          .symbol,
+      "wafer_tx81_gemm_oriented_v3");
   EXPECT_EQ(wafer::getTargetCallDescriptor(
                 wafer::TargetCallBuiltin::DirectDTESendIssue)
                 .symbol,
@@ -969,8 +954,7 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
 
 TEST(TargetCallRegistryTest, DecodesExplicitWorkerOneAndTwo) {
   const wafer::TargetCallDescriptor &descriptor =
-      wafer::getTargetCallDescriptor(
-          wafer::InstrElementwiseKind::Add);
+      wafer::getTargetCallDescriptor(wafer::InstrElementwiseKind::Add);
   ASSERT_TRUE(descriptor.issueDomain.has_value());
   ASSERT_TRUE(descriptor.issueDomain->nccWorkerArgument.has_value());
   for (wafer::NCCWorker expected :
@@ -984,8 +968,7 @@ TEST(TargetCallRegistryTest, DecodesExplicitWorkerOneAndTwo) {
         << llvm::toString(worker.takeError());
     ASSERT_TRUE(worker->has_value());
     EXPECT_EQ(**worker, expected);
-    auto payload = wafer::decodeTargetCallPayload(
-        descriptor, {1}, arguments);
+    auto payload = wafer::decodeTargetCallPayload(descriptor, {1}, arguments);
     ASSERT_TRUE(static_cast<bool>(payload))
         << llvm::toString(payload.takeError());
   }
@@ -993,8 +976,7 @@ TEST(TargetCallRegistryTest, DecodesExplicitWorkerOneAndTwo) {
 
 TEST(TargetCallRegistryTest, RejectsOutOfRangeExplicitWorker) {
   const wafer::TargetCallDescriptor &descriptor =
-      wafer::getTargetCallDescriptor(
-          wafer::TargetCallBuiltin::RDMA);
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA);
   std::vector<uint64_t> arguments = makeDecodableArguments(descriptor);
   arguments[*descriptor.issueDomain->nccWorkerArgument] =
       wafer::kNCCWorkerCount;
@@ -1007,8 +989,7 @@ TEST(TargetCallRegistryTest, RejectsOutOfRangeExplicitWorker) {
 
 TEST(TargetCallRegistryTest, NCCJoinDecoderRejectsInvalidParticipantMasks) {
   const wafer::TargetCallDescriptor &descriptor =
-      wafer::getTargetCallDescriptor(
-          wafer::TargetCallBuiltin::NCCJoin);
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::NCCJoin);
   wafer::TargetCallDecodeContext context{1};
   auto empty = wafer::decodeTargetCallPayload(descriptor, context, {0});
   ASSERT_FALSE(static_cast<bool>(empty));
@@ -1065,6 +1046,7 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
   EXPECT_EQ(result->issuedTransactionCount, sink.transactions.size());
   ASSERT_FALSE(sink.transactions.empty());
   bool sawAdd = false;
+  uint64_t totalAddElements = 0;
   for (size_t index = 0; index < sink.transactions.size(); ++index) {
     const wafer::compiler::TargetTransaction &transaction =
         sink.transactions[index];
@@ -1086,11 +1068,12 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
                 wafer::TargetCallTSMEngine::CT);
       EXPECT_EQ(elementwise->kind, wafer::InstrElementwiseKind::Add);
       EXPECT_TRUE(elementwise->rhs.has_value());
-      EXPECT_EQ(elementwise->elementCount, 8u);
+      totalAddElements += elementwise->elementCount;
       EXPECT_EQ(elementwise->format, wafer::LogicalFormat::F32);
     }
   }
   EXPECT_TRUE(sawAdd);
+  EXPECT_EQ(totalAddElements, 8u);
   EXPECT_EQ(bundle->getModules().front().getTargetTriple(), originalTriple);
 }
 
@@ -1165,8 +1148,7 @@ TEST(TargetCallFrontendTest,
   for (wafer::InstrPeripheralKind kind : {wafer::InstrPeripheralKind::ArgMax,
                                           wafer::InstrPeripheralKind::ArgMin}) {
     const wafer::TargetCallDescriptor &descriptor =
-        wafer::getTargetCallDescriptor(
-            kind);
+        wafer::getTargetCallDescriptor(kind);
     llvm::SmallVector<llvm::Type *, 10> argumentTypes;
     llvm::SmallVector<llvm::Value *, 10> callArguments;
     std::vector<uint64_t> values = makeDecodableArguments(descriptor);

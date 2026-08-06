@@ -195,6 +195,16 @@ static void addComputeCost(ScheduleComputeCost &aggregate,
   addMetric(aggregate.vectorOtherLogicalOps, rankCost.vectorOtherLogicalOps);
 }
 
+static void maximizeComputeCost(ScheduleComputeCost &maximum,
+                                const ScheduleComputeCost &rankCost) {
+  maximizeMetric(maximum.npuF16Bf16LogicalOps, rankCost.npuF16Bf16LogicalOps);
+  maximizeMetric(maximum.npuOtherLogicalOps, rankCost.npuOtherLogicalOps);
+  maximizeMetric(maximum.vectorF16Bf16LogicalOps,
+                 rankCost.vectorF16Bf16LogicalOps);
+  maximizeMetric(maximum.vectorF32LogicalOps, rankCost.vectorF32LogicalOps);
+  maximizeMetric(maximum.vectorOtherLogicalOps, rankCost.vectorOtherLogicalOps);
+}
+
 static void addNoCCost(ScheduleNoCCost &aggregate,
                        const ScheduleNoCCost &rankCost) {
   addMetric(aggregate.staticIssueSiteCount, rankCost.staticIssueSiteCount);
@@ -488,10 +498,15 @@ WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
     addWork(result.aggregateWork, rankCost.work);
     maximizeWork(result.maximumRankWork, rankCost.work);
     addComputeCost(result.aggregateCompute, rankCost.compute);
+    maximizeComputeCost(result.maximumRankCompute, rankCost.compute);
     addMetric(result.aggregateDDRReadBytes, rankCost.ddrReadBytes);
     addMetric(result.aggregateDDRWriteBytes, rankCost.ddrWriteBytes);
     addMetric(result.aggregateSPMMovementBytes, rankCost.spmMovementBytes);
     addMetric(result.aggregateGatherScatterBytes, rankCost.gatherScatterBytes);
+    maximizeMetric(result.maximumRankSPMMovementBytes,
+                   rankCost.spmMovementBytes);
+    maximizeMetric(result.maximumRankGatherScatterBytes,
+                   rankCost.gatherScatterBytes);
     addNoCCost(result.aggregateNoC, rankCost.noc);
     maximizeMetric(result.maximumRankNoCTransmitBytes,
                    rankCost.noc.aggregateTransmitBytes);

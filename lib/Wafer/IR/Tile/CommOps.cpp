@@ -15,14 +15,34 @@ using namespace wafer::detail;
 
 namespace {
 
+static bool isPeerTileProtocolPhase(DTEProtocolPhase phase) {
+  switch (phase) {
+  case DTEProtocolPhase::PeerDataflow:
+  case DTEProtocolPhase::AllToAll:
+  case DTEProtocolPhase::CollectivePermute:
+    return true;
+  case DTEProtocolPhase::AllGatherDirect:
+  case DTEProtocolPhase::AllGatherRing:
+  case DTEProtocolPhase::ReduceScatterDirect:
+  case DTEProtocolPhase::AllReduceRing:
+  case DTEProtocolPhase::AllReduceTreeReduce:
+  case DTEProtocolPhase::AllReduceTreeBroadcast:
+  case DTEProtocolPhase::ReduceScatterRing:
+    return false;
+  }
+  llvm_unreachable("unhandled DTE protocol phase");
+}
+
 static mlir::LogicalResult
 verifyPeerTile(mlir::Operation *op, mlir::Value buffer, mlir::IntegerAttr peer,
                mlir::IntegerAttr bytes, DTEMessageAttr message,
                mlir::Type tokenType) {
   if (mlir::failed(verifyDTEP2P(op, buffer, peer, bytes, tokenType)))
     return mlir::failure();
-  if (message.getPhase() != DTEProtocolPhase::PeerDataflow)
-    return op->emitOpError("peer tile message phase must be peer_dataflow");
+  if (!isPeerTileProtocolPhase(message.getPhase()))
+    return op->emitOpError(
+        "peer tile message phase must be peer_dataflow, all_to_all, or "
+        "collective_permute");
   return verifyLogicalRankWithinExecutionMesh(op, peer.getInt(),
                                               "peer tile logical rank");
 }

@@ -48,6 +48,20 @@ checkStaticTerminalOperationBudget(mlir::Operation *root,
 /// tile-region and static-loop boundaries.
 mlir::LogicalResult normalizeMinimumNCCJoins(mlir::ModuleOp module);
 
+/// Erase every compiler-derived NCC participant join and rebuild completion
+/// solely from the module's current worker order, typed issues/effects,
+/// aliases, ranges, event tokens, and observer boundaries. Terminal candidate
+/// finalization uses this after function-boundary bufferization; action
+/// construction uses the incremental normalizer above while its loop-carried
+/// handoff topology is still being formed.
+mlir::LogicalResult rebuildMinimumNCCJoins(mlir::ModuleOp module);
+
+/// Returns true when `root` contains a typed Tile dataflow operation consumed
+/// by Tile-region-to-Instr conversion. TileRegionOp and TileYieldOp are
+/// structural boundaries and therefore do not by themselves require
+/// instruction lowering.
+bool containsTileDataflowOperations(mlir::Operation *root);
+
 mlir::LogicalResult
 convertTileRegionToInstrModule(mlir::ModuleOp module,
                                std::string *failureReason = nullptr);

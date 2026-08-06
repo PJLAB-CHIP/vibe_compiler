@@ -125,8 +125,8 @@ TileRegionBodyEmitter::materializeCollectiveInputInResultType(
   if (inputType.getElementType() == resultElementType)
     return input;
 
-  auto convertedTensorType = mlir::RankedTensorType::get(
-      inputType.getShape(), resultElementType);
+  auto convertedTensorType =
+      mlir::RankedTensorType::get(inputType.getShape(), resultElementType);
   auto converted = builder.create<ComputeConvertOp>(
       loc, makeSPMMemRefType(convertedTensorType, MemLayout::Tensor), input);
   return converted.getResult();
@@ -454,17 +454,16 @@ TileRegionBodyEmitter::convertAllToAll(LinalgExtCollectiveAllToAllOp op,
     auto recvMessage =
         DTEMessageAttr::get(builder.getContext(), *communicationId,
                             DTEProtocolPhase::AllToAll, distance, localRank);
-    auto dteRecv = builder.create<InstrDTERecvOp>(
-        op.getLoc(), tokenType, recvIt->buffer, mlir::Value(),
+    auto recv = builder.create<CommPeerRecvOp>(
+        op.getLoc(), tokenType, recvIt->buffer,
         builder.getI64IntegerAttr(recvIt->peer),
-        builder.getI64IntegerAttr(*bytes), recvMessage, DirectDTEBindingAttr());
-    auto dteSend = builder.create<InstrDTESendOp>(
-        op.getLoc(), tokenType, sendIt->buffer, mlir::Value(),
+        builder.getI64IntegerAttr(*bytes), recvMessage);
+    auto send = builder.create<CommPeerSendOp>(
+        op.getLoc(), tokenType, sendIt->buffer,
         builder.getI64IntegerAttr(sendIt->peer),
-        builder.getI64IntegerAttr(*bytes), message, DirectDTEBindingAttr());
-    llvm::SmallVector<mlir::Value, 2> roundTokens{dteSend.getToken(),
-                                                  dteRecv.getToken()};
-    builder.create<InstrDTEWaitOp>(op.getLoc(), roundTokens);
+        builder.getI64IntegerAttr(*bytes), message);
+    builder.create<mlir::async::AwaitOp>(op.getLoc(), recv.getToken());
+    builder.create<mlir::async::AwaitOp>(op.getLoc(), send.getToken());
   }
 
   for (const PendingRecv &recv : recvs) {
@@ -561,33 +560,29 @@ mlir::LogicalResult TileRegionBodyEmitter::convertCollectivePermute(
     bytes = *selectedBytes;
   }
 
-  llvm::SmallVector<mlir::Value, 2> tokens;
   mlir::Type tokenType = builder.getType<mlir::async::TokenType>();
   std::optional<mlir::Value> recvToken;
   if (recvPeer) {
     auto message = DTEMessageAttr::get(builder.getContext(), *communicationId,
                                        DTEProtocolPhase::CollectivePermute,
                                        /*round=*/0, *recvPayloadSlice);
-    auto recv = builder.create<InstrDTERecvOp>(
-        op.getLoc(), tokenType, resultBuffer, mlir::Value(),
+    auto recv = builder.create<CommPeerRecvOp>(
+        op.getLoc(), tokenType, resultBuffer,
         builder.getI64IntegerAttr(*recvPeer), builder.getI64IntegerAttr(*bytes),
-        message, DirectDTEBindingAttr());
+        message);
     recvToken = recv.getToken();
   }
   if (sendPeer) {
     auto message = DTEMessageAttr::get(builder.getContext(), *communicationId,
                                        DTEProtocolPhase::CollectivePermute,
                                        /*round=*/0, *sendPayloadSlice);
-    auto send = builder.create<InstrDTESendOp>(
-        op.getLoc(), tokenType, *input, mlir::Value(),
-        builder.getI64IntegerAttr(*sendPeer),
-        builder.getI64IntegerAttr(*bytes), message, DirectDTEBindingAttr());
-    tokens.push_back(send.getToken());
+    auto send = builder.create<CommPeerSendOp>(
+        op.getLoc(), tokenType, *input, builder.getI64IntegerAttr(*sendPeer),
+        builder.getI64IntegerAttr(*bytes), message);
+    builder.create<mlir::async::AwaitOp>(op.getLoc(), send.getToken());
   }
   if (recvToken)
-    tokens.push_back(*recvToken);
-  if (!tokens.empty())
-    builder.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+    builder.create<mlir::async::AwaitOp>(op.getLoc(), *recvToken);
 
   record(op.getResult(0), MemLayout::Tensor, resultBuffer);
   return mlir::success();

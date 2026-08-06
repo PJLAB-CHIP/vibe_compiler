@@ -140,11 +140,13 @@ module {
       << diagnosticsText
       << (executable ? "" : llvm::toString(executable.takeError()));
   EXPECT_NE(
-      diagnosticsText.find("compile-stats stage=rank-candidate-generation"),
+      diagnosticsText.find("compile-stats stage=coordinated-tile-frontier"),
       std::string::npos);
-  EXPECT_NE(diagnosticsText.find("compile-stats stage=whole-variant-selection"),
-            std::string::npos);
-  EXPECT_NE(diagnosticsText.find("planned_attempt_limit=153"),
+  EXPECT_NE(
+      diagnosticsText.find("compile-stats stage=coordinated-terminal-gate"),
+      std::string::npos);
+  EXPECT_NE(diagnosticsText.find("terminal_reserved=0"), std::string::npos);
+  EXPECT_EQ(diagnosticsText.find("per_rank_candidate_limit="),
             std::string::npos);
   // The executable bundle becomes the MLIRContext owner on success. Destroy
   // the source module before that owner so its uniqued state stays live.

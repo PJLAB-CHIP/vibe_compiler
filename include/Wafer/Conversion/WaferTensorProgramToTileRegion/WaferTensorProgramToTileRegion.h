@@ -41,6 +41,13 @@ enum class CandidateTileTraversalKind : uint8_t {
   PartialReduction,
 };
 
+/// Selects how one complete-rank candidate composes structured traversals.
+/// This is invocation-local transformation input and is not persisted in IR.
+enum class CompleteRankTraversalComposition : uint8_t {
+  Coupled,
+  Separated,
+};
+
 /// The iteration-domain tile corresponding to one operand tile. This is a
 /// transient analysis result derived from the current TilingInterface; callers
 /// must not retain it across IR mutation.
@@ -140,6 +147,18 @@ mlir::LogicalResult lowerTensorProgramToTileRegionModule(
 mlir::LogicalResult lowerCompleteRankTensorProgramToTileRegionModule(
     mlir::ModuleOp sourceModule, mlir::OwningOpRef<mlir::ModuleOp> &module,
     std::string *failureReason, int64_t currentLogicalRank);
+
+/// Clones a complete-rank module, materializes the requested actual structured
+/// traversal using explicit tile sizes, and lowers the whole clone to one
+/// unplaced Tile program. The composition request is consumed during this
+/// call; no candidate descriptor or schedule side data survives in the IR.
+mlir::LogicalResult lowerCompleteRankCandidateTensorProgramToTileRegionModule(
+    mlir::ModuleOp sourceModule, llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    CandidateTileTraversalKind traversalKind,
+    CompleteRankTraversalComposition composition,
+    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
+    int64_t currentLogicalRank, bool useDirectMappedBoundaryTransfer = false);
 
 /// Verifies that replacing one structured reduction by more than one ordered
 /// chunk, including neutral-initialized partials and chunk-result combines, is

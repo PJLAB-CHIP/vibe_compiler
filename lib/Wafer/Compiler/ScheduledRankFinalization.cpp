@@ -5,12 +5,17 @@
 #include "Wafer/Support/CompileTiming.h"
 
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
+#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Pipelines/Pipelines.h"
+#include "Wafer/Support/CompileWorkStatistics.h"
 #include "Wafer/Target/TargetIdentity.h"
+#include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -80,10 +85,16 @@ getExactCostClosureFailure(const analysis::InstructionProgramCost &cost) {
 mlir::FailureOr<std::vector<FinalizedRankCandidate>>
 finalizeScheduledRankCandidateFrontier(
     std::vector<wafer::ScheduledRankCandidate> frontier,
-    bool requireReservedBaseline) {
+    bool requireReservedBaseline, RankCompletionPolicy completionPolicy,
+    RankFinalizationFailure *failure) {
+  if (failure)
+    *failure = {};
   if (frontier.empty()) {
-    if (requireReservedBaseline)
+    if (requireReservedBaseline) {
+      if (failure)
+        failure->kind = RankFinalizationFailureKind::Contract;
       return mlir::failure();
+    }
     return std::vector<FinalizedRankCandidate>{};
   }
   unsigned baselineCount = llvm::count_if(
@@ -91,6 +102,10 @@ finalizeScheduledRankCandidateFrontier(
         return candidate.reservedBaseline;
       });
   if ((requireReservedBaseline && baselineCount != 1) || baselineCount > 1) {
+    if (failure) {
+      failure->kind = RankFinalizationFailureKind::Contract;
+      failure->stableOrdinal = frontier.front().stableOrdinal;
+    }
     frontier.front().module->emitError()
         << "rank_frontier_baseline_contract: expected "
         << (requireReservedBaseline ? "exactly one" : "at most one")
@@ -101,7 +116,12 @@ finalizeScheduledRankCandidateFrontier(
   std::vector<FinalizedRankCandidate> finalized;
   finalized.reserve(frontier.size());
   for (wafer::ScheduledRankCandidate &candidate : frontier) {
+    auto recordFailure = [&](RankFinalizationFailureKind kind) {
+      if (failure)
+        *failure = {kind, candidate.stableOrdinal};
+    };
     if (hasWholeVariantFacts(*candidate.module)) {
+      recordFailure(RankFinalizationFailureKind::WholeVariantFacts);
       candidate.module->emitError()
           << "rank_frontier_contains_whole_variant_facts: DDR placement and "
              "Direct DTE bindings must be recomputed by the all-rank "
@@ -110,15 +130,83 @@ finalizeScheduledRankCandidateFrontier(
         return mlir::failure();
       continue;
     }
-    mlir::PassManager manager(candidate.module->getContext());
-    wafer::support::attachCompileTiming(manager, "scheduled-rank-finalization");
-    wafer::buildFinalizeScheduledRankCandidatePipeline(manager);
-    if (mlir::failed(manager.run(*candidate.module))) {
+    wafer::support::recordCompileWork(
+        wafer::support::CompileWorkKind::TerminalCandidateClone);
+    bool loweredTileDataflow =
+        containsTileDataflowOperations(*candidate.module);
+    std::string loweringFailure;
+    if (mlir::failed(convertTileRegionToInstrModule(*candidate.module,
+                                                    &loweringFailure))) {
+      recordFailure(RankFinalizationFailureKind::TileToInstr);
+      candidate.module->emitError()
+          << "terminal complete-rank Tile-to-Instr conversion failed"
+          << (loweringFailure.empty() ? "" : ": ") << loweringFailure;
+      if (candidate.reservedBaseline)
+        return mlir::failure();
+      continue;
+    }
+    if (!loweredTileDataflow &&
+        mlir::failed(normalizeMinimumNCCJoins(*candidate.module))) {
+      recordFailure(RankFinalizationFailureKind::Completion);
+      candidate.module->emitError(
+          "terminal complete-rank completion normalization failed");
+      if (candidate.reservedBaseline)
+        return mlir::failure();
+      continue;
+    }
+    clearRankCandidatePhysicalFacts(*candidate.module);
+    if (mlir::failed(mlir::verify(*candidate.module))) {
+      recordFailure(RankFinalizationFailureKind::Verification);
+      candidate.module->emitError(
+          "terminal complete-rank Instr parent failed verification");
+      if (candidate.reservedBaseline)
+        return mlir::failure();
+      continue;
+    }
+    mlir::LogicalResult finalizationResult = mlir::success();
+    RankFinalizationFailureKind pipelineFailure =
+        RankFinalizationFailureKind::Contract;
+    if (completionPolicy == RankCompletionPolicy::RebuildFromCurrentEffects) {
+      mlir::PassManager preparation(candidate.module->getContext());
+      wafer::support::attachCompileTiming(preparation,
+                                          "scheduled-rank-preparation");
+      wafer::buildPrepareScheduledRankCandidatePipeline(preparation);
+      if (mlir::failed(preparation.run(*candidate.module))) {
+        finalizationResult = mlir::failure();
+        pipelineFailure =
+            RankFinalizationFailureKind::FunctionBoundaryBufferization;
+      } else if (mlir::failed(rebuildMinimumNCCJoins(*candidate.module))) {
+        finalizationResult = mlir::failure();
+        pipelineFailure = RankFinalizationFailureKind::Completion;
+      } else if (mlir::failed(mlir::verify(*candidate.module))) {
+        finalizationResult = mlir::failure();
+        pipelineFailure = RankFinalizationFailureKind::Verification;
+      }
+      mlir::PassManager spmPlanning(candidate.module->getContext());
+      wafer::support::attachCompileTiming(spmPlanning,
+                                          "scheduled-rank-spm-planning");
+      wafer::buildPlanSPMMemoryPipeline(spmPlanning);
+      spmPlanning.addPass(mlir::createCanonicalizerPass());
+      if (mlir::succeeded(finalizationResult)) {
+        finalizationResult = spmPlanning.run(*candidate.module);
+        if (mlir::failed(finalizationResult))
+          pipelineFailure = RankFinalizationFailureKind::SPMAllocation;
+      }
+    } else {
+      mlir::PassManager manager(candidate.module->getContext());
+      wafer::support::attachCompileTiming(manager,
+                                          "scheduled-rank-finalization");
+      wafer::buildFinalizeScheduledRankCandidatePipeline(manager);
+      finalizationResult = manager.run(*candidate.module);
+    }
+    if (mlir::failed(finalizationResult)) {
+      recordFailure(pipelineFailure);
       if (candidate.reservedBaseline)
         return mlir::failure();
       continue;
     }
     if (hasWholeVariantFacts(*candidate.module)) {
+      recordFailure(RankFinalizationFailureKind::WholeVariantFacts);
       candidate.module->emitError()
           << "rank_finalization_created_whole_variant_facts";
       if (candidate.reservedBaseline)
@@ -132,6 +220,7 @@ finalizeScheduledRankCandidateFrontier(
             analysis::getTargetScheduleCostPolicy());
     if (std::optional<std::string> failure =
             getExactCostClosureFailure(exactCost)) {
+      recordFailure(RankFinalizationFailureKind::ExactCost);
       candidate.module->emitError()
           << "rank_finalization_exact_cost: " << *failure;
       if (candidate.reservedBaseline)
@@ -149,6 +238,8 @@ finalizeScheduledRankCandidateFrontier(
 
   if (finalized.empty() && requireReservedBaseline)
     return mlir::failure();
+  if (!finalized.empty() && failure)
+    *failure = {};
   return finalized;
 }
 

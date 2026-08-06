@@ -122,6 +122,22 @@ TEST(NoCProfitabilityAnalysisTest,
 }
 
 TEST(NoCProfitabilityAnalysisTest,
+     SPMMovementHasNoHistoricalFlatDurationInMakespan) {
+  WholeCardInstructionProgramCost cost = makeCost(0, 0);
+  cost.aggregateSPMMovementBytes.value = 4096;
+  cost.maximumRankSPMMovementBytes.value = 4096;
+
+  auto estimate =
+      wafer::analysis::estimateWholeCardResourceDuration(cost, defaultPolicy());
+  EXPECT_EQ(estimate.spm.nominalPicoseconds.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(estimate.spm.nominalPicoseconds.reason,
+            ScheduleCostReason::MissingPerformanceCalibration);
+  ASSERT_TRUE(estimate.makespan.nominalPicoseconds.isKnown());
+  EXPECT_EQ(estimate.makespan.nominalPicoseconds.value, 0u);
+}
+
+TEST(NoCProfitabilityAnalysisTest,
      KnownWorkKeepsModeledRouteOutOfTheNoCLowerBound) {
   WholeCardInstructionProgramCost cost =
       makeCost(/*ddrReadBytes=*/0, /*ddrWriteBytes=*/0,

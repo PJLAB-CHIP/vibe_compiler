@@ -14,11 +14,12 @@ all-and-only fixed allocation problems，并用3 MiB MiniMalloc与独立validato
 actual high-water只作capacity/headroom诊断，不触发反复收紧query，也不作为06的主Pareto维度。bank phase只允许进入
 hard-valid placement间的soft preference；不得改变hard feasible set或新增candidate/relocation分支。
 
-当前实现与本文终态合同仍有明确缺口：MiniMalloc core已能对一个function timeline做packing，但production
-仍会在standalone task候选上提前执行Tile→Instr/SPM/DDR，commit后清offset并再跑whole-rank SPM；当前
-`tile.region` ODS/verifier也尚未禁止SPM operand/result。C1负责切换complete-rank调用边界并收紧multi-region合同，C3负责
-从final current IR派生allocation problems并原子执行SPM/DDR/transport/ABI exact gates。在这些checkpoint实现前，本文的
-“all-and-only root coverage”和“边界SPM为零”是completion contract，不是对现行production的完成声明。
+当前实现已由C1把production切到complete-rank decision point并禁止`tile.region`的SPM data operand/result；C2/C3
+纵向骨架也已让coordinator持有无offset actual Tile parent，在terminal worker/order action上执行function-boundary
+bufferization、fresh completion和SPM/DDR/transport/ABI exact gates，packing failure不复用failed Instr或partial offset。
+仍未闭合的是C2完整DP/Pareto candidate domain、C3全部repair family与serial/parallel fully-gated frontier，以及C5/C6
+collective/online和旧路径删除。因此“all-and-only root coverage”已是当前terminal evaluator的单candidate合同，但Q49整体
+仍未达到checkpoint完成或board-ready。
 
 本文定义Wafer SPM bufferization、rank-local allocation和storage verification。它服务于complete-rank
 tile-dataflow candidate的合法性搜索，并在完整static rank entry上统一验证SPM residency regions、structured loop和SSA data
@@ -364,6 +365,11 @@ V0 规则：
   spill结束该root，matching reload建立新root；它们在同一region内时不影响其它live roots，在下一个region时则
   要求selected cut已另行结束或materialize切口上的全部SPM roots。typed opaque clobber和
   nested `wafer.tile.region`结构化拒绝，不能从名字、task顺序或isolation trait恢复跨region SPM alias。
+- compiler-managed DDR materialization cut按current IR中的managed DDR root、对应WDMA和RDMA到fresh managed SPM root识别。
+  fresh completion在store后完成其participant worker，使被spill的SPM source可释放；reload前若同worker仍有intervening
+  pending work，再插matching participant join。只有latest issue、fresh allocation和reload位于同一block且顺序可证时，
+  该join才可前移到allocation之前以形成packing reuse witness；否则保守地放在reload前。不能为此把通用allocation lifetime
+  从allocation event改成first use，也不能把普通region boundary当成completion。
 - 普通traversal、loop、spill或local materialization结束不验证terminal completion。为reuse或observer执行的typed
   join/wait只更新current pending set；region exit只验证仍访问其SPM roots的work已被显式typed completion收口，
   region结构本身不插入或执行wait/join；entry terminal用typed participant join/exact

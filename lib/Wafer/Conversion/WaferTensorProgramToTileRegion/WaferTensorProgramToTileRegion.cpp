@@ -269,9 +269,14 @@ mlir::LogicalResult wafer::lowerTensorProgramToTileRegionModule(
       useDirectMappedBoundaryTransfer);
 }
 
-mlir::LogicalResult wafer::lowerCompleteRankTensorProgramToTileRegionModule(
+static mlir::LogicalResult lowerCompleteRankTensorProgramToTileRegionImpl(
     mlir::ModuleOp sourceModule, mlir::OwningOpRef<mlir::ModuleOp> &module,
-    std::string *failureReason, int64_t currentLogicalRank) {
+    std::string *failureReason, int64_t currentLogicalRank,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    std::optional<wafer::CandidateTileTraversalKind> traversalKind,
+    std::optional<wafer::CompleteRankTraversalComposition> composition,
+    bool useDirectMappedBoundaryTransfer) {
   if (failureReason)
     failureReason->clear();
   if (!sourceModule || currentLogicalRank < 0) {
@@ -342,11 +347,34 @@ mlir::LogicalResult wafer::lowerCompleteRankTensorProgramToTileRegionModule(
       producer->erase();
   }
 
-  if (mlir::failed(
-          tensor_program_to_tile_region::
-              materializeConservativeCompleteRankTraversals(
-                  tensor_program_to_tile_region::TensorProgramScope(function),
-                  failureReason)))
+  mlir::LogicalResult traversalResult = mlir::failure();
+  auto scope = tensor_program_to_tile_region::TensorProgramScope(function);
+  if (!composition) {
+    traversalResult = tensor_program_to_tile_region::
+        materializeConservativeCompleteRankTraversals(scope, failureReason);
+  } else if (*composition == wafer::CompleteRankTraversalComposition::Coupled) {
+    if (!traversalKind) {
+      if (failureReason)
+        *failureReason =
+            "coupled complete-rank candidate requires a traversal kind";
+      return mlir::failure();
+    }
+    traversalResult =
+        tensor_program_to_tile_region::materializeCompleteCandidateTraversal(
+            scope, candidateTileSizes, candidateReductionTileSizes,
+            *traversalKind, failureReason);
+  } else {
+    if (!candidateReductionTileSizes.empty()) {
+      if (failureReason)
+        *failureReason = "separated complete-rank traversal does not invent "
+                         "a reduction partition";
+      return mlir::failure();
+    }
+    traversalResult = tensor_program_to_tile_region::
+        materializeSeparatedCompleteRankTraversals(scope, candidateTileSizes,
+                                                   failureReason);
+  }
+  if (mlir::failed(traversalResult))
     return mlir::failure();
 
   if (mlir::failed(tensor_program_to_tile_region::
@@ -357,7 +385,7 @@ mlir::LogicalResult wafer::lowerCompleteRankTensorProgramToTileRegionModule(
                            /*verifyResult=*/true,
                            /*populateFallbackFailureReason=*/true,
                            /*selectedAlternative=*/std::nullopt,
-                           /*useDirectMappedBoundaryTransfer=*/false)))
+                           useDirectMappedBoundaryTransfer)))
     return mlir::failure();
 
   function =
@@ -411,4 +439,33 @@ mlir::LogicalResult wafer::lowerCompleteRankTensorProgramToTileRegionModule(
     return mlir::failure();
   }
   return mlir::success();
+}
+
+mlir::LogicalResult wafer::lowerCompleteRankTensorProgramToTileRegionModule(
+    mlir::ModuleOp sourceModule, mlir::OwningOpRef<mlir::ModuleOp> &module,
+    std::string *failureReason, int64_t currentLogicalRank) {
+  return lowerCompleteRankTensorProgramToTileRegionImpl(
+      sourceModule, module, failureReason, currentLogicalRank,
+      /*candidateTileSizes=*/{}, /*candidateReductionTileSizes=*/{},
+      /*traversalKind=*/std::nullopt, /*composition=*/std::nullopt,
+      /*useDirectMappedBoundaryTransfer=*/false);
+}
+
+mlir::LogicalResult
+wafer::lowerCompleteRankCandidateTensorProgramToTileRegionModule(
+    mlir::ModuleOp sourceModule, llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    CandidateTileTraversalKind traversalKind,
+    CompleteRankTraversalComposition composition,
+    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
+    int64_t currentLogicalRank, bool useDirectMappedBoundaryTransfer) {
+  if (candidateTileSizes.empty()) {
+    if (failureReason)
+      *failureReason = "complete-rank candidate tile sizes must be non-empty";
+    return mlir::failure();
+  }
+  return lowerCompleteRankTensorProgramToTileRegionImpl(
+      sourceModule, module, failureReason, currentLogicalRank,
+      candidateTileSizes, candidateReductionTileSizes, traversalKind,
+      composition, useDirectMappedBoundaryTransfer);
 }

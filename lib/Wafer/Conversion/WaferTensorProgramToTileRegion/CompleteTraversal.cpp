@@ -3,6 +3,7 @@
 #include "Internal.h"
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
 
 using namespace wafer;
@@ -243,17 +244,17 @@ findOperandDrivenTraversalSeed(TensorProgramScope scope,
         !operandType.hasStaticShape() || operandType != resultType)
       continue;
 
-    llvm::SmallVector<mlir::OpFoldResult, 4> offsets(
-        operandType.getRank(), builder.getIndexAttr(0));
+    llvm::SmallVector<mlir::OpFoldResult, 4> offsets(operandType.getRank(),
+                                                     builder.getIndexAttr(0));
     llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
     for (int64_t size : operandType.getShape())
       sizes.push_back(builder.getIndexAttr(size));
 
     std::string relationFailure;
     mlir::FailureOr<OperandTileIterationDomain> iteration =
-        mapOperandTileToIterationDomain(
-            root, builder, static_cast<unsigned>(operandNumber), offsets, sizes,
-            &relationFailure);
+        mapOperandTileToIterationDomain(root, builder,
+                                        static_cast<unsigned>(operandNumber),
+                                        offsets, sizes, &relationFailure);
     if (mlir::failed(iteration))
       continue;
     llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
@@ -293,8 +294,8 @@ static mlir::FailureOr<mlir::Value> materializeLoopedOperandTraversal(
             loops, failureReason);
     if (mlir::failed(tile))
       return mlir::failure();
-    mlir::Value next = insertCandidateRootTile(
-        builder, seed.root->getLoc(), *tile, output, offsets, sizes);
+    mlir::Value next = insertCandidateRootTile(builder, seed.root->getLoc(),
+                                               *tile, output, offsets, sizes);
     deduplicateExternalSlicesInBlock(*builder.getInsertionBlock(), scope);
     return next;
   }
@@ -309,8 +310,8 @@ static mlir::FailureOr<mlir::Value> materializeLoopedOperandTraversal(
     auto upper = builder.create<mlir::arith::ConstantIndexOp>(loc, mainEnd);
     auto step =
         builder.create<mlir::arith::ConstantIndexOp>(loc, tileSizes[dim]);
-    auto loop =
-        builder.create<mlir::scf::ForOp>(loc, lower, upper, step, currentOutput);
+    auto loop = builder.create<mlir::scf::ForOp>(loc, lower, upper, step,
+                                                 currentOutput);
     offsets.push_back(loop.getInductionVar());
     sizes.push_back(tileSizes[dim]);
     loops.push_back(mlir::cast<mlir::LoopLikeOpInterface>(loop.getOperation()));
@@ -358,8 +359,8 @@ static mlir::LogicalResult materializeCompleteOperandDrivenTraversal(
       findOperandDrivenTraversalSeed(scope, roots, failureReason);
   if (mlir::failed(seed))
     return mlir::failure();
-  if (mlir::failed(getCandidateOutputTileCount(
-          seed->type, candidateTileSizes, failureReason)))
+  if (mlir::failed(getCandidateOutputTileCount(seed->type, candidateTileSizes,
+                                               failureReason)))
     return mlir::failure();
 
   mlir::FailureOr<mlir::Value> outputBoundary =
@@ -398,31 +399,47 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
         scope, *roots, candidateTileSizes, candidateReductionTileSizes,
         failureReason);
 
-  auto firstResultType = mlir::dyn_cast<mlir::RankedTensorType>(
-      (*roots).front()->getResult(0).getType());
-  if (!firstResultType) {
-    setFailureReason(failureReason,
-                     "complete candidate traversal result is not ranked");
-    return mlir::failure();
-  }
-
-  // Compact loops avoid eager instance expansion, but the traversal domain
-  // must still be representable.  Prove rank, bounds and checked tile-count
-  // arithmetic before any subview/layout construction can observe it.
-  if (mlir::failed(getCandidateOutputTileCount(
-          firstResultType, candidateTileSizes, failureReason)))
-    return mlir::failure();
+  struct RootTraversalGroup {
+    llvm::SmallVector<int64_t, 4> shape;
+    llvm::SmallVector<mlir::Operation *, 4> roots;
+    llvm::SmallVector<unsigned, 4> outputIndices;
+    llvm::SmallVector<mlir::Value, 4> outputBoundaries;
+  };
+  llvm::SmallVector<RootTraversalGroup, 4> groups;
 
   bool hasReductionRoot = false;
-  for (mlir::Operation *root : *roots) {
+  for (auto [outputIndex, root] : llvm::enumerate(*roots)) {
     auto resultType =
         mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
-    if (!resultType || resultType.getShape() != firstResultType.getShape()) {
-      setFailureReason(
-          failureReason,
-          "complete candidate traversal requires equal static result shapes");
+    if (!resultType || !resultType.hasStaticShape()) {
+      setFailureReason(failureReason,
+                       "complete candidate traversal result is not a static "
+                       "ranked tensor");
       return mlir::failure();
     }
+    // Compact loops avoid eager instance expansion, but every traversal
+    // domain must still be representable before subview construction.
+    if (mlir::failed(getCandidateOutputTileCount(resultType, candidateTileSizes,
+                                                 failureReason)))
+      return mlir::failure();
+    mlir::FailureOr<mlir::Value> outputBoundary = getCandidateOutputBoundary(
+        scope, static_cast<unsigned>(outputIndex), failureReason);
+    if (mlir::failed(outputBoundary))
+      return mlir::failure();
+    auto group = llvm::find_if(groups, [&](const RootTraversalGroup &current) {
+      return llvm::equal(current.shape, resultType.getShape());
+    });
+    if (group == groups.end()) {
+      RootTraversalGroup next;
+      next.shape.assign(resultType.getShape().begin(),
+                        resultType.getShape().end());
+      groups.push_back(std::move(next));
+      group = std::prev(groups.end());
+    }
+    group->roots.push_back(root);
+    group->outputIndices.push_back(static_cast<unsigned>(outputIndex));
+    group->outputBoundaries.push_back(*outputBoundary);
+
     if (traversalKind == CandidateTileTraversalKind::PartialReduction) {
       mlir::FailureOr<mlir::linalg::LinalgOp> computeRoot =
           getCandidatePartialReductionComputeRoot(root, failureReason);
@@ -452,31 +469,28 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
   }
   auto returnOp =
       mlir::cast<mlir::func::ReturnOp>(scope.getBody().getTerminator());
-  llvm::SmallVector<mlir::Value, 4> outputBoundaries;
-  llvm::SmallVector<unsigned, 4> outputIndices;
-  for (auto [index, root] : llvm::enumerate(*roots)) {
-    mlir::FailureOr<mlir::Value> outputBoundary = getCandidateOutputBoundary(
-        scope, static_cast<unsigned>(index), failureReason);
-    if (mlir::failed(outputBoundary))
+  // Equal-shape roots share one traversal. Different result domains receive
+  // independent traversals in the same actual residency program; recursively
+  // tiled shared producers may therefore form bounded consumer-compatible
+  // versions instead of forcing a full-shape spill or rejecting multi-root
+  // programs outright.
+  for (RootTraversalGroup &group : groups) {
+    mlir::OpBuilder builder(group.roots.front());
+    llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+    llvm::SmallVector<int64_t, 4> sizes;
+    llvm::SmallVector<mlir::LoopLikeOpInterface, 4> loops;
+    mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>> completeOutputs =
+        materializeLoopedRootsTraversal(
+            builder, scope, group.roots, group.outputIndices, group.shape,
+            candidateTileSizes, candidateReductionTileSizes, traversalKind,
+            /*dim=*/0, group.outputBoundaries, offsets, sizes, loops,
+            failureReason);
+    if (mlir::failed(completeOutputs))
       return mlir::failure();
-    outputBoundaries.push_back(*outputBoundary);
-    outputIndices.push_back(static_cast<unsigned>(index));
+    for (auto [index, output] :
+         llvm::zip(group.outputIndices, *completeOutputs))
+      returnOp->setOperand(index, output);
   }
-
-  mlir::OpBuilder builder((*roots).front());
-  llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
-  llvm::SmallVector<int64_t, 4> sizes;
-  llvm::SmallVector<mlir::LoopLikeOpInterface, 4> loops;
-  mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>> completeOutputs =
-      materializeLoopedRootsTraversal(
-          builder, scope, *roots, outputIndices, firstResultType.getShape(),
-          candidateTileSizes, candidateReductionTileSizes, traversalKind,
-          /*dim=*/0, outputBoundaries, offsets, sizes, loops, failureReason);
-  if (mlir::failed(completeOutputs))
-    return mlir::failure();
-
-  for (auto [index, output] : llvm::enumerate(*completeOutputs))
-    returnOp->setOperand(index, output);
   for (mlir::Operation *root : *roots)
     root->erase();
 
@@ -484,9 +498,10 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
   return mlir::success();
 }
 
-mlir::LogicalResult
-materializeConservativeCompleteRankTraversals(TensorProgramScope scope,
-                                              std::string *failureReason) {
+static mlir::LogicalResult materializeSeparatedCompleteRankTraversalsImpl(
+    TensorProgramScope scope,
+    std::optional<llvm::ArrayRef<int64_t>> candidateTileSizes,
+    std::string *failureReason) {
   llvm::SmallVector<mlir::Operation *, 16> roots;
   for (mlir::Operation &operation : scope.getBody().without_terminator()) {
     if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(operation)) {
@@ -504,13 +519,6 @@ materializeConservativeCompleteRankTraversals(TensorProgramScope scope,
         classifyCandidateTraversalRoot(&operation);
     if (capability == CandidateTraversalRootCapability::Unsupported)
       continue;
-    if (capability != CandidateTraversalRootCapability::Tiled) {
-      setFailureReason(
-          failureReason,
-          "conservative complete-rank baseline requires every structured "
-          "root to support tiled traversal");
-      return mlir::failure();
-    }
     if (operation.getNumResults() != 1) {
       setFailureReason(
           failureReason,
@@ -581,9 +589,24 @@ materializeConservativeCompleteRankTraversals(TensorProgramScope scope,
       return mlir::failure();
     }
 
+    // A typed collective that is explicitly classified as full-traversal-only
+    // remains one complete tensor operation in this conservative clone. Its
+    // DPS destination is already an explicit DDR boundary/allocation, and the
+    // Tile body emitter materializes the matching typed communication op. Do
+    // not invent a tile relation for an operation whose interface does not
+    // provide one; coordinated collective tiling is a separate candidate
+    // action rather than a baseline legality requirement.
+    if (classifyCandidateTraversalRoot(root) ==
+        CandidateTraversalRootCapability::FullTraversalOnly)
+      continue;
+
     llvm::SmallVector<int64_t, 4> shape(resultType.getShape().begin(),
                                         resultType.getShape().end());
-    llvm::SmallVector<int64_t, 4> tileSizes(shape.size(), 1);
+    llvm::SmallVector<int64_t, 4> tileSizes;
+    if (candidateTileSizes)
+      tileSizes.assign(candidateTileSizes->begin(), candidateTileSizes->end());
+    else
+      tileSizes.assign(shape.size(), 1);
     if (mlir::failed(
             getCandidateOutputTileCount(resultType, tileSizes, failureReason)))
       return mlir::failure();
@@ -624,6 +647,20 @@ materializeConservativeCompleteRankTraversals(TensorProgramScope scope,
 
   eraseDeadCandidateSupportClosure(scope);
   return mlir::success();
+}
+
+mlir::LogicalResult
+materializeConservativeCompleteRankTraversals(TensorProgramScope scope,
+                                              std::string *failureReason) {
+  return materializeSeparatedCompleteRankTraversalsImpl(scope, std::nullopt,
+                                                        failureReason);
+}
+
+mlir::LogicalResult materializeSeparatedCompleteRankTraversals(
+    TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileSizes,
+    std::string *failureReason) {
+  return materializeSeparatedCompleteRankTraversalsImpl(
+      scope, candidateTileSizes, failureReason);
 }
 
 } // namespace wafer::tensor_program_to_tile_region

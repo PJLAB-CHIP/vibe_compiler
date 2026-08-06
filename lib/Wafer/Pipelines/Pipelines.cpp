@@ -90,10 +90,14 @@ void buildFinalizeScheduledTensorProgramPipeline(mlir::OpPassManager &pm) {
 }
 
 void buildFinalizeScheduledRankCandidatePipeline(mlir::OpPassManager &pm) {
+  buildPrepareScheduledRankCandidatePipeline(pm);
+  buildPlanSPMMemoryPipeline(pm);
+  pm.addPass(mlir::createCanonicalizerPass());
+}
+
+void buildPrepareScheduledRankCandidatePipeline(mlir::OpPassManager &pm) {
   pm.addPass(mlir::createCanonicalizerPass());
   addFunctionBoundaryBufferization(pm);
-  pm.addPass(mlir::createCanonicalizerPass());
-  buildPlanSPMMemoryPipeline(pm);
   pm.addPass(mlir::createCanonicalizerPass());
 }
 

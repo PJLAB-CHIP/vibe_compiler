@@ -22,10 +22,9 @@ enum class StaticDurationAssumption : uint32_t {
   DTEEndpointRatePrior = 1u << 3,
   DTEMessageStartupPrior = 1u << 4,
   NoCHopPrior = 1u << 5,
-  SPMInterfacePrior = 1u << 6,
-  ControlIssuePrior = 1u << 7,
-  SequentialPhaseModel = 1u << 8,
-  QualifiedPipelineModel = 1u << 9,
+  ControlIssuePrior = 1u << 6,
+  SequentialPhaseModel = 1u << 7,
+  QualifiedPipelineModel = 1u << 8,
 };
 
 using StaticDurationAssumptionMask = uint32_t;
@@ -54,10 +53,12 @@ struct WholeCardResourceDurationEstimate {
   StaticDurationInterval noc;
   StaticDurationInterval spm;
   StaticDurationInterval control;
-  /// The lower bound is the maximum resource floor, the nominal reference
-  /// follows the supplied current-IR schedule context, and the conservative
-  /// upper bound serializes resource envelopes unless calibrated overlap
-  /// proves a tighter bound.
+  /// The lower bound is the maximum calibrated resource floor, the nominal
+  /// reference follows the supplied current-IR schedule context, and the
+  /// conservative upper bound serializes calibrated resource envelopes.
+  /// Uncalibrated SPM/local movement stays in `spm` and exact Pareto facts; it
+  /// is not converted through a fabricated flat bandwidth or folded into
+  /// makespan.
   StaticDurationInterval makespan;
 };
 

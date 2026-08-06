@@ -193,3 +193,58 @@ func.func @same_worker_backedge(%zero: f32) {
 // CHECK: }
 // CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK-NEXT: return
+
+func.func @managed_materialization_releases_each_spm_root(
+    %input: memref<128xf16, #wafer.memory<ddr, tensor>>,
+    %output: memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  %result = wafer.tile.region(%input, %output
+      : memref<128xf16, #wafer.memory<ddr, tensor>>,
+        memref<128xf16, #wafer.memory<ddr, tensor>>) ->
+      (memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%in: memref<128xf16, #wafer.memory<ddr, tensor>>,
+       %out: memref<128xf16, #wafer.memory<ddr, tensor>>):
+    %first = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %in into %first
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+       into memref<128xf16, #wafer.memory<spm, tensor>>
+    %spill = memref.alloc()
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+    wafer.tile.store %first, %spill
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+       -> memref<128xf16, #wafer.memory<ddr, tensor>>
+    %middle = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %in into %middle
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+       into memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.store %middle, %out
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+       -> memref<128xf16, #wafer.memory<ddr, tensor>>
+    %reloaded = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %spill into %reloaded
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+       into memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.store %reloaded, %out
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+       -> memref<128xf16, #wafer.memory<ddr, tensor>>
+    wafer.tile.yield %out
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @managed_materialization_releases_each_spm_root
+// CHECK: wafer.instr.rdma %{{.+}} to %[[FIRST:[^ ]+]]
+// CHECK: wafer.instr.wdma %[[FIRST]] to %[[SPILL:[^ ]+]]
+// CHECK-NEXT: wafer.instr.ncc_join [0]
+// CHECK: wafer.instr.rdma %{{.+}} to %[[MIDDLE:[^ ]+]]
+// CHECK-NEXT: wafer.instr.wdma %[[MIDDLE]]
+// CHECK: wafer.instr.ncc_join [0]
+// CHECK-NEXT: %[[RELOADED:[^ ]+]] = memref.alloc()
+// CHECK-NEXT: wafer.instr.rdma %[[SPILL]] to %[[RELOADED]]
+// CHECK-NEXT: wafer.instr.wdma %[[RELOADED]]
+// CHECK-NEXT: wafer.tile.yield
+// CHECK: }
+// CHECK-NEXT: wafer.instr.ncc_join [0]

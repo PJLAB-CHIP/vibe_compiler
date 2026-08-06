@@ -24,6 +24,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <array>
 #include <cstdint>
 #include <iterator>
 #include <limits>
@@ -40,25 +41,36 @@ namespace wafer {
 
 namespace {
 
+template <typename... SourceOps> struct TileDataflowOperationSet {
+  static bool contains(mlir::Operation *operation) {
+    return mlir::isa<SourceOps...>(operation);
+  }
+
+  static void markIllegal(mlir::ConversionTarget &target) {
+    target.addIllegalOp<SourceOps...>();
+  }
+};
+
+using TileRegionToInstrSourceOperations = TileDataflowOperationSet<
+    StorageLoadOp, StorageStoreOp, LayoutMaterializeOp, ComputeFillOp,
+    ComputeConvertOp, ComputeGemmOp, ComputeElementwiseOp, ComputeReduceOp,
+    MoveCopyOp, MoveExtractSliceOp, MoveInsertSliceOp, MoveTransposeOp,
+    MoveBroadcastOp, ViewReshapeOp, CommPeerSendOp, CommPeerRecvOp,
+    CommAllGatherOp, CommReduceScatterOp, CommAllReduceOp>;
+
 static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.addLegalDialect<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
                          mlir::func::FuncDialect, mlir::memref::MemRefDialect,
                          mlir::scf::SCFDialect>();
-  target
-      .addLegalOp<mlir::ModuleOp, TileRegionOp, TileYieldOp, SyncNCCJoinOp,
-                  InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp,
-                  InstrFillOp, InstrElementwiseOp, InstrBit2FpOp,
-                  InstrMaskMoveOp, InstrReduceOp, InstrConvertOp, InstrGemmOp,
-                  InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>();
+  target.addLegalOp<mlir::ModuleOp, TileRegionOp, TileYieldOp, SyncNCCJoinOp,
+                    InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp, InstrFillOp,
+                    InstrElementwiseOp, InstrBit2FpOp, InstrMaskMoveOp,
+                    InstrReduceOp, InstrConvertOp, InstrGemmOp, InstrDTESendOp,
+                    InstrDTERecvOp, InstrDTEWaitOp>();
   target.addDynamicallyLegalOp<InstrTDMADataMoveOp>([](InstrTDMADataMoveOp op) {
     return !requiresGatherScatterMaterialization(op.getKindAttr().getValue());
   });
-  target.addIllegalOp<
-      StorageLoadOp, StorageStoreOp, LayoutMaterializeOp, ComputeFillOp,
-      ComputeConvertOp, ComputeGemmOp, ComputeElementwiseOp, ComputeReduceOp,
-      MoveCopyOp, MoveExtractSliceOp, MoveInsertSliceOp, MoveTransposeOp,
-      MoveBroadcastOp, ViewReshapeOp, CommPeerSendOp, CommPeerRecvOp,
-      CommAllGatherOp, CommReduceScatterOp, CommAllReduceOp>();
+  TileRegionToInstrSourceOperations::markIllegal(target);
   target.addDynamicallyLegalOp<mlir::async::AwaitOp>(
       [](mlir::async::AwaitOp op) {
         mlir::Value operand = op.getOperand();
@@ -110,6 +122,7 @@ struct PendingNCCState {
   uint32_t workers = 0;
   llvm::DenseMap<mlir::Value, uint32_t> readers;
   llvm::DenseMap<mlir::Value, uint32_t> writers;
+  std::array<mlir::Operation *, kNCCWorkerCount> latestIssues{};
 };
 
 static void addMask(llvm::DenseMap<mlir::Value, uint32_t> &masks,
@@ -135,10 +148,26 @@ static void clearCompletedWorkers(PendingNCCState &state, uint32_t completed) {
   state.workers &= ~completed;
   clearMask(state.readers, completed);
   clearMask(state.writers, completed);
+  for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker)
+    if ((completed & (uint32_t{1} << worker)) != 0)
+      state.latestIssues[worker] = nullptr;
 }
 
 static void mergePendingState(PendingNCCState &destination,
                               const PendingNCCState &source) {
+  uint32_t destinationWorkers = destination.workers;
+  for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
+    uint32_t mask = uint32_t{1} << worker;
+    bool destinationHasWorker = (destinationWorkers & mask) != 0;
+    bool sourceHasWorker = (source.workers & mask) != 0;
+    if (!destinationHasWorker && sourceHasWorker) {
+      destination.latestIssues[worker] = source.latestIssues[worker];
+      continue;
+    }
+    if (destinationHasWorker && sourceHasWorker &&
+        destination.latestIssues[worker] != source.latestIssues[worker])
+      destination.latestIssues[worker] = nullptr;
+  }
   destination.workers |= source.workers;
   for (const auto &entry : source.readers)
     destination.readers[entry.first] |= entry.second;
@@ -160,7 +189,8 @@ static bool haveEqualPendingState(const PendingNCCState &lhs,
                                   const PendingNCCState &rhs) {
   return lhs.workers == rhs.workers &&
          haveEqualMasks(lhs.readers, rhs.readers) &&
-         haveEqualMasks(lhs.writers, rhs.writers);
+         haveEqualMasks(lhs.writers, rhs.writers) &&
+         lhs.latestIssues == rhs.latestIssues;
 }
 
 static void collectAccessRoots(mlir::Value value,
@@ -321,6 +351,69 @@ getAliasingMask(mlir::Value value,
   return result;
 }
 
+static bool areManagedRoots(llvm::ArrayRef<mlir::Value> roots,
+                            bool (*isExpectedType)(mlir::Type)) {
+  return !roots.empty() && llvm::all_of(roots, [&](mlir::Value root) {
+           return root.getDefiningOp<mlir::memref::AllocOp>() &&
+                  isExpectedType(root.getType());
+         });
+}
+
+static bool isManagedMaterializationReload(
+    mlir::Operation *operation,
+    const llvm::DenseSet<mlir::Value> &materializationRoots) {
+  auto rdma = mlir::dyn_cast<InstrRDMAOp>(operation);
+  if (!rdma)
+    return false;
+  llvm::SmallVector<mlir::Value, 4> sourceRoots =
+      getAccessRoots(rdma.getSource());
+  llvm::SmallVector<mlir::Value, 4> destinationRoots =
+      getAccessRoots(rdma.getDest());
+  return areManagedRoots(sourceRoots, isWaferDDRMemRefType) &&
+         areManagedRoots(destinationRoots, isWaferSPMMemRefType) &&
+         llvm::all_of(sourceRoots, [&](mlir::Value root) {
+           return materializationRoots.contains(root);
+         });
+}
+
+static bool isManagedMaterializationStore(
+    mlir::Operation *operation,
+    const llvm::DenseSet<mlir::Value> &materializationRoots) {
+  auto wdma = mlir::dyn_cast<InstrWDMAOp>(operation);
+  if (!wdma)
+    return false;
+  llvm::SmallVector<mlir::Value, 4> destinationRoots =
+      getAccessRoots(wdma.getDest());
+  return areManagedRoots(destinationRoots, isWaferDDRMemRefType) &&
+         llvm::any_of(destinationRoots, [&](mlir::Value root) {
+           return materializationRoots.contains(root);
+         });
+}
+
+static mlir::Operation *getManagedReloadCompletionAnchor(
+    mlir::Operation *operation, const PendingNCCState &state,
+    uint32_t workerMask) {
+  auto rdma = mlir::dyn_cast<InstrRDMAOp>(operation);
+  if (!rdma || llvm::popcount(workerMask) != 1)
+    return operation;
+  uint32_t worker = llvm::countr_zero(workerMask);
+  mlir::Operation *latestIssue = state.latestIssues[worker];
+  if (!latestIssue || latestIssue->getBlock() != operation->getBlock())
+    return operation;
+
+  mlir::Operation *anchor = nullptr;
+  for (mlir::Value root : getAccessRoots(rdma.getDest())) {
+    auto allocation = root.getDefiningOp<mlir::memref::AllocOp>();
+    if (!allocation || allocation->getBlock() != operation->getBlock() ||
+        !latestIssue->isBeforeInBlock(allocation) ||
+        !allocation->isBeforeInBlock(operation))
+      return operation;
+    if (!anchor || allocation->isBeforeInBlock(anchor))
+      anchor = allocation;
+  }
+  return anchor ? anchor : operation;
+}
+
 static llvm::SmallVector<int64_t, kNCCWorkerCount>
 getParticipants(uint32_t mask) {
   llvm::SmallVector<int64_t, kNCCWorkerCount> participants;
@@ -341,9 +434,23 @@ static void insertNCCJoinBefore(mlir::Operation *operation, uint32_t mask,
   clearCompletedWorkers(state, mask);
 }
 
+static void insertNCCJoinAfter(mlir::Operation *operation, uint32_t mask,
+                               PendingNCCState &state) {
+  mask &= state.workers;
+  if (mask == 0)
+    return;
+  mlir::OpBuilder builder(operation);
+  builder.setInsertionPointAfter(operation);
+  builder.create<SyncNCCJoinOp>(operation->getLoc(), getParticipants(mask));
+  clearCompletedWorkers(state, mask);
+}
+
 static void recordNCCIssue(mlir::Operation *operation, uint32_t workerMask,
                            PendingNCCState &state) {
   state.workers |= workerMask;
+  for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker)
+    if ((workerMask & (uint32_t{1} << worker)) != 0)
+      state.latestIssues[worker] = operation;
   auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
   if (!effects)
     return;
@@ -413,6 +520,18 @@ getExternalConflictMask(mlir::Operation *operation,
 class NCCJoinPlacement {
 public:
   mlir::LogicalResult run(mlir::ModuleOp module) {
+    materializationRoots.clear();
+    module.walk([&](InstrRDMAOp rdma) {
+      llvm::SmallVector<mlir::Value, 4> sourceRoots =
+          getAccessRoots(rdma.getSource());
+      llvm::SmallVector<mlir::Value, 4> destinationRoots =
+          getAccessRoots(rdma.getDest());
+      if (!areManagedRoots(sourceRoots, isWaferDDRMemRefType) ||
+          !areManagedRoots(destinationRoots, isWaferSPMMemRefType))
+        return;
+      materializationRoots.insert(sourceRoots.begin(), sourceRoots.end());
+    });
+
     mlir::WalkResult result = module.walk([&](mlir::func::FuncOp function) {
       if (function.isExternal())
         return mlir::WalkResult::skip();
@@ -549,13 +668,24 @@ private:
       // The target busytable orders an NCC worker's own RAW/WAR/WAW chain,
       // but does not prove visibility across workers. Complete only prior
       // conflicting workers before issuing the new access; disjoint workers
-      // and same-worker chains remain in one nonblocking issue window.
+      // and ordinary same-worker chains remain in one nonblocking issue
+      // window. An explicit compiler-managed spill/reload additionally owns
+      // a real residency cut. Its store completion is emitted immediately
+      // below; before its reload, complete any intervening work on the same
+      // worker so the fresh SPM root can reuse that worker's prior ranges.
       uint32_t crossWorkerConflicts =
           getExternalConflictMask(operation, state,
                                   /*ignoreTypedIssueResources=*/true) &
           ~workerMask;
       insertNCCJoinBefore(operation, crossWorkerConflicts, state);
+      if (isManagedMaterializationReload(operation, materializationRoots)) {
+        mlir::Operation *anchor = getManagedReloadCompletionAnchor(
+            operation, state, workerMask);
+        insertNCCJoinBefore(anchor, workerMask, state);
+      }
       recordNCCIssue(operation, workerMask, state);
+      if (isManagedMaterializationStore(operation, materializationRoots))
+        insertNCCJoinAfter(operation, workerMask, state);
     }
 
     if (contract.behavior == LocalInstructionCompletion::ParticipantJoin) {
@@ -615,6 +745,8 @@ private:
     insertNCCJoinBefore(operation, conflicts, state);
     return mlir::success();
   }
+
+  llvm::DenseSet<mlir::Value> materializationRoots;
 };
 
 struct ConvertTileRegionToInstrPass
@@ -649,6 +781,35 @@ mlir::LogicalResult wafer::normalizeMinimumNCCJoins(mlir::ModuleOp module) {
   if (mlir::failed(result))
     timing.markFailed();
   return result;
+}
+
+mlir::LogicalResult wafer::rebuildMinimumNCCJoins(mlir::ModuleOp module) {
+  if (!module)
+    return mlir::failure();
+  wafer::support::ScopedCompileTimingSpan timing(
+      "lowering-phase", "tile-region-to-instr",
+      "fresh-ncc-join-rebuild");
+  llvm::SmallVector<SyncNCCJoinOp, 16> staleJoins;
+  module.walk([&](SyncNCCJoinOp join) { staleJoins.push_back(join); });
+  for (SyncNCCJoinOp join : llvm::reverse(staleJoins))
+    join.erase();
+  mlir::LogicalResult result = NCCJoinPlacement().run(module);
+  if (mlir::failed(result))
+    timing.markFailed();
+  return result;
+}
+
+bool wafer::containsTileDataflowOperations(mlir::Operation *root) {
+  if (!root)
+    return false;
+  bool found = false;
+  root->walk([&](mlir::Operation *operation) {
+    if (!TileRegionToInstrSourceOperations::contains(operation))
+      return mlir::WalkResult::advance();
+    found = true;
+    return mlir::WalkResult::interrupt();
+  });
+  return found;
 }
 
 wafer::detail::StaticTerminalOperationBudgetStatus

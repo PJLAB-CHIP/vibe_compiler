@@ -5,6 +5,7 @@
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -237,6 +238,14 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
 mlir::LogicalResult
 materializeConservativeCompleteRankTraversals(TensorProgramScope scope,
                                               std::string *failureReason);
+
+/// Materializes every supported root as an independent traversal using the
+/// same explicit tile vector. This is the separated counterpart to
+/// materializeCompleteCandidateTraversal; intermediate tensor destinations
+/// remain explicit storage and no traversal is fused implicitly.
+mlir::LogicalResult materializeSeparatedCompleteRankTraversals(
+    TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileSizes,
+    std::string *failureReason);
 
 void setFailureReason(std::string *failureReason, llvm::StringRef reason);
 

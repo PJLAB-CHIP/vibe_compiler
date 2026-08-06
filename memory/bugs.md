@@ -2470,3 +2470,19 @@
   形式，并对每条可能origin求union/max；只要其中一条origin未知就保留typed failure。不能选择任意一侧，也不能把未知当零。
 - 防复发：每种新增planner provenance都成对增加“所有path均为accepted allocation”的正例和“任一path未知”的负例，并重跑
   placement与final cost纵向；长期应优先复用一个可失效、可重算的root resolver，避免consumer集合再次漂移。
+
+## 2026-08-06 Materialization reuse必须由completion witness收窄，不能放宽通用lifetime
+
+- 现象：selective spill已经生成WDMA到compiler-owned DDR root和RDMA到fresh SPM root，但exact SPM packing仍把spill source、
+  intervening root和reload destination判为同时live；若把全部allocation lifetime从alloc event改成first use，repair case会通过，
+  但普通static roots也会在没有release witness时错误复用同一range。
+- 根因：缺失的是compiler-managed store/reload cut的局部completion placement，不是allocator的通用lifetime定义。same-worker
+  busytable只保证issue order；在store完成前不能释放source，在intervening issue完成前也不能让fresh destination复用其range。
+  `tile.region` boundary本身同样不是completion，单纯把一个region拆成两个不能证明异步SPM roots不重叠。
+- 修复模式：从current Instr IR识别managed DDR materialization root。store后立即插覆盖其worker的participant join；reload前
+  完成同worker intervening work，并且只在latest issue、fresh allocation和reload同block且顺序可证时把join锚到allocation前。
+  无法证明时join留在reload前、packing继续保守失败。allocator仍从allocation event开始lifetime，repair从无offset Tile parent
+  重新物化并走同一exact gate。
+- 防复发：成对保留正负纵向测试：selective spill必须真实从SPM overflow恢复；只有DDR-clean region split且没有completion
+  witness时必须再次得到typed SPM failure，且parent/repair均不能留下partial offset。另以普通alias/static-root packing lit证明
+  没有全局first-use放宽。

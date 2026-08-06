@@ -387,6 +387,14 @@ struct SelectiveSpillMaterialization {
   mlir::Operation *reloadAllocation = nullptr;
 };
 
+/// Pure legality probe for one selective-spill interval. The root must be
+/// initialized before the store, have no use inside the dead interval, and
+/// have at least one use at or after the reload point.
+bool canMaterializeSelectiveTileSpill(wafer::TileRegionOp region,
+                                      mlir::Value root,
+                                      mlir::Operation *storeAfter,
+                                      mlir::Operation *reloadBefore);
+
 /// Ends one selected SPM root after `storeAfter` and creates a fresh SPM root
 /// before `reloadBefore`. Other roots and the enclosing residency region are
 /// unchanged. The caller selects the root from current IR; this action never

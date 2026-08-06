@@ -96,6 +96,19 @@ struct WholeVariantSelectionStatistics {
   uint64_t noCProfitabilityProven = 0;
 };
 
+/// Runs every whole-variant exact gate on one already coordinated complete
+/// rank-domain candidate. This function performs no attempt planning, Pareto
+/// pruning, alternative generation, or winner selection. The input owns one
+/// actual finalized Instr module per logical rank; disposable clones receive
+/// DDR placement, transport binding, whole-card resource validation, and
+/// target ABI/LLVM preflight atomically.
+mlir::FailureOr<AcceptedWholeVariant> evaluateFullyGatedWholeVariant(
+    std::vector<RankVariantCandidate> rankCandidates,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    std::string *failureGate = nullptr,
+    WholeVariantSelectionStatistics *statistics = nullptr);
+
 /// Prove from one accepted rank's current IR that every DDR movement is
 /// attached to a function input or returned output root. Exact same-index SCF
 /// recurrences and same-root recurrence cycles through transparent aliases

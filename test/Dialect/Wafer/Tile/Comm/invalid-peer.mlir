@@ -15,10 +15,10 @@ module {
        policy = "all_available", endpoints = array<i64>}
   %buffer = "builtin.unrealized_conversion_cast"()
       : () -> memref<4xf32, #wafer.memory<spm, tensor>>
-  // expected-error @below {{peer tile message phase must be peer_dataflow}}
+  // expected-error @below {{peer tile message phase must be peer_dataflow, all_to_all, or collective_permute}}
   %token = wafer.tile.peer_send %buffer
       {peer = 1 : i64, bytes = 16 : i64,
-       message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+       message = #wafer.dte_message<communication = 0, phase = all_gather_ring, round = 0, slice = 0>}
       : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
 }
 

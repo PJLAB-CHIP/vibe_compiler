@@ -106,10 +106,6 @@ struct TargetScheduleCostPolicy {
   /// once as the route-fill/dilation term after link-congestion and endpoint
   /// service, not once per physical packet traversal.
   uint64_t noCHopPicosecondsEstimate = 1'000ULL;
-  /// SPM has a documented 1024-bit internal interface but no qualified
-  /// sustained bandwidth. One 128-byte beat per 1 GHz model quantum is an
-  /// explicit point prior, not a hardware bound.
-  uint64_t spmBytesPerSecondPerTileEstimate = 128'000'000'000ULL;
   /// Fixed issue/release priors. Blocking resource service is accounted by the
   /// DDR/NoC/compute terms and is not charged again here.
   uint64_t instructionFixedPicosecondsEstimate = 1'000ULL;
@@ -134,6 +130,9 @@ struct TargetScheduleCostPolicy {
   std::optional<uint64_t> f16Bf16NPULogicalOpsPerSecondPerTileLowerBound;
   std::optional<uint64_t> f16Bf16VectorLogicalOpsPerSecondPerTileLowerBound;
   std::optional<uint64_t> f32VectorLogicalOpsPerSecondPerTileLowerBound;
+  /// Future matched-board calibration may establish a sustained SPM service
+  /// lower bound. It is intentionally absent from the current point model;
+  /// no historical SPM0/RAM_ACC interface rate is used as a substitute.
   std::optional<uint64_t> spmBytesPerSecondPerTileLowerBound;
   /// Maximum fixed non-service time per statically executed instruction.
   /// Resource service time is modeled separately; this bound covers issue,
@@ -343,10 +342,16 @@ struct WholeCardInstructionProgramCost {
   InstructionProgramWork aggregateWork;
   InstructionProgramWork maximumRankWork;
   ScheduleComputeCost aggregateCompute;
+  ScheduleComputeCost maximumRankCompute;
   ScheduleCostMetric aggregateDDRReadBytes;
   ScheduleCostMetric aggregateDDRWriteBytes;
   ScheduleCostMetric aggregateSPMMovementBytes;
   ScheduleCostMetric aggregateGatherScatterBytes;
+  /// Tile-local movement pressure is compared by rank maximum. Aggregates
+  /// remain available as whole-program work audit and are not substituted for
+  /// this maximum.
+  ScheduleCostMetric maximumRankSPMMovementBytes;
+  ScheduleCostMetric maximumRankGatherScatterBytes;
   ScheduleNoCCost aggregateNoC;
   /// Endpoint pressure derived from the actual per-rank instruction programs.
   /// These are maxima, not sums, because endpoints are tile-local resources.

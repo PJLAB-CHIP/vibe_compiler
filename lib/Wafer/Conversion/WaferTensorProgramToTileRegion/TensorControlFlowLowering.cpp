@@ -104,6 +104,21 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
     return mlir::success();
   }
 
+  if (auto apply = mlir::dyn_cast<mlir::affine::AffineApplyOp>(op)) {
+    llvm::SmallVector<mlir::Value, 4> operands;
+    operands.reserve(apply.getMapOperands().size());
+    for (mlir::Value operand : apply.getMapOperands()) {
+      mlir::FailureOr<mlir::Value> converted = getScalarValue(operand);
+      if (mlir::failed(converted))
+        return mlir::failure();
+      operands.push_back(*converted);
+    }
+    auto converted = builder.create<mlir::affine::AffineApplyOp>(
+        apply.getLoc(), apply.getAffineMap(), operands);
+    scalarValues[apply.getResult()] = converted.getResult();
+    return mlir::success();
+  }
+
   if (auto empty = mlir::dyn_cast<mlir::tensor::EmptyOp>(op)) {
     if (onlyFeedsUnreadDpsInit(empty.getResult()))
       return mlir::success();
@@ -162,7 +177,8 @@ TileRegionBodyEmitter::convertNestedOp(mlir::Operation *op,
                 "single-tensor all_reduce");
   if (mlir::isa<mlir::linalg::LinalgOp>(op))
     return materializeSourceImplementation(op, builder);
-  if (mlir::isa<mlir::arith::ConstantOp, mlir::bufferization::ToMemrefOp,
+  if (mlir::isa<mlir::affine::AffineApplyOp, mlir::arith::ConstantOp,
+                mlir::bufferization::ToMemrefOp,
                 mlir::bufferization::ToTensorOp, mlir::tensor::EmptyOp,
                 mlir::memref::AllocOp, mlir::tensor::ExtractOp,
                 mlir::tensor::ExtractSliceOp, mlir::tensor::InsertSliceOp,

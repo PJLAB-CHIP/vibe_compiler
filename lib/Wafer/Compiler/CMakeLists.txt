@@ -15,6 +15,9 @@ add_mlir_library(WaferCompiler
   Compilation.cpp
   CompilationOrchestration.cpp
   CompilationStages.cpp
+  CoordinatedDataflowSearch.cpp
+  CoordinatedTerminalEvaluation.cpp
+  CoordinatedVariantSelection.cpp
   DirectDTETransport.cpp
   ExecutableBundle.cpp
   GlobalTileRelation.cpp

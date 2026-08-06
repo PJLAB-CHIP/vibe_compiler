@@ -4,6 +4,9 @@
 
 #include "CompilationInternal.h"
 #include "CompilationStatistics.h"
+#include "CoordinatedDataflowSearch.h"
+#include "CoordinatedTerminalEvaluation.h"
+#include "CoordinatedVariantSelection.h"
 #include "ScheduledRankFinalization.h"
 #include "WholeVariantAttemptPlan.h"
 #include "WholeVariantCoordinator.h"
@@ -17,12 +20,14 @@
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/Threading.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -252,6 +257,244 @@ printAcceptedInstructionWork(llvm::raw_ostream &diagnostics,
   diagnostics << '\n';
 }
 
+static llvm::Expected<ExecutableBundle> buildCoordinatedExecutableBundle(
+    std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig,
+    const OptimizationConfig &optimizations, llvm::raw_ostream &diagnostics,
+    detail::WholeVariantSelectionMode selectionMode,
+    std::optional<int64_t> failAfterLogicalRank,
+    const detail::CompileClock::time_point &totalStart) {
+  auto fail = [&](llvm::StringRef message) -> llvm::Error {
+    diagnostics << "wafer-compile: " << message << "\n";
+    return llvm::createStringError(llvm::errc::invalid_argument, "%s",
+                                   message.str().c_str());
+  };
+
+  mlir::FailureOr<detail::CoordinatedWorkLedger> ledger =
+      detail::CoordinatedWorkLedger::create(executionConfig.getRankCount());
+  if (mlir::failed(ledger))
+    return fail("cannot reserve coordinated dataflow work ledger");
+
+  const unsigned heavyweightThreadCount =
+      llvm::heavyweight_hardware_concurrency().compute_thread_count();
+  detail::CoordinatedDataflowSearchConfig searchConfig;
+  searchConfig.rankCount = executionConfig.getRankCount();
+  searchConfig.candidateParallelism =
+      std::max<unsigned>(1, std::min<unsigned>(4, heavyweightThreadCount));
+  searchConfig.optimizations = optimizations;
+
+  const detail::CompileClock::time_point generationStart =
+      detail::CompileClock::now();
+  wafer::support::ScopedCompileTimingSpan generationTiming(
+      "stage", "tensor-program-to-executable", "coordinated-tile-frontier");
+  mlir::FailureOr<detail::CoordinatedTileFrontier> tileFrontier =
+      detail::buildCoordinatedTileFrontier(tensorModule, searchConfig, *ledger);
+  if (mlir::failed(tileFrontier))
+    return fail("coordinated Tile frontier generation failed");
+  const int64_t generationWallMs =
+      detail::elapsedCompileMilliseconds(generationStart);
+  if (failAfterLogicalRank && *failAfterLogicalRank >= 0 &&
+      *failAfterLogicalRank < executionConfig.getRankCount())
+    return fail("test-only injected failure after logical rank " +
+                std::to_string(*failAfterLogicalRank));
+
+  detail::CoordinatedWorkLedgerSnapshot generationWork = ledger->getSnapshot();
+  diagnostics << "wafer-compile: compile-stats stage=coordinated-tile-frontier"
+              << " wall_ms=" << generationWallMs
+              << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
+              << " rank_count=" << executionConfig.getRankCount()
+              << " candidate_count=" << tileFrontier->size()
+              << " frontier_digest="
+              << detail::computeCoordinatedTileFrontierDigest(*tileFrontier)
+              << " work_capacity=" << generationWork.capacity
+              << " work_consumed=" << generationWork.consumed
+              << " terminal_reserved=" << generationWork.terminalReserved
+              << " repair_reserved=" << generationWork.repairReserved
+              << " work_unreserved=" << generationWork.unreserved << "\n";
+
+  const detail::CompileClock::time_point terminalStart =
+      detail::CompileClock::now();
+  wafer::support::ScopedCompileTimingSpan terminalTiming(
+      "stage", "tensor-program-to-executable", "coordinated-terminal-gate");
+  std::vector<detail::FullyGatedCoordinatedVariant> fullyGated;
+  fullyGated.reserve(tileFrontier->size());
+  detail::WholeVariantSelectionStatistics terminalStatistics;
+  llvm::StringSet<> terminalTileDigests;
+  int64_t nextStableSemanticOrdinal = 0;
+  for (const detail::CoordinatedTileVariant &variant : *tileFrontier) {
+    terminalTileDigests.insert(
+        detail::computeCoordinatedTileVariantContentDigest(variant));
+    if (variant.stableSemanticOrdinal == std::numeric_limits<int64_t>::max())
+      return fail("coordinated Tile semantic ordinal is exhausted");
+    nextStableSemanticOrdinal =
+        std::max(nextStableSemanticOrdinal, variant.stableSemanticOrdinal + 1);
+  }
+  uint64_t repairCandidateCount = 0;
+  for (size_t variantIndex = 0; variantIndex < tileFrontier->size();
+       ++variantIndex) {
+    const detail::CoordinatedTileVariant &variant =
+        (*tileFrontier)[variantIndex];
+    detail::CoordinatedTerminalFailure failure;
+    mlir::FailureOr<std::vector<detail::FullyGatedCoordinatedVariant>>
+        evaluated =
+        detail::evaluateCoordinatedTileVariant(
+            variant, program, executionConfig, optimizations, *ledger,
+            diagnostics, failure, &terminalStatistics);
+    if (mlir::succeeded(evaluated)) {
+      for (detail::FullyGatedCoordinatedVariant &survivor : *evaluated)
+        fullyGated.push_back(std::move(survivor));
+      continue;
+    }
+    diagnostics << "wafer-compile: coordinated terminal rejection"
+                << " semantic_ordinal=" << variant.stableSemanticOrdinal
+                << " logical_rank=" << failure.logicalRank
+                << " gate=" << failure.gate << "\n";
+    if (variant.reservedBaseline)
+      return fail("reserved coordinated baseline failed terminal exact gates");
+
+    if (failure.kind != detail::CoordinatedTerminalFailureKind::SPMAllocation ||
+        variant.repairDepth >= detail::kMaximumCoordinatedRepairDepth)
+      continue;
+    const detail::CoordinatedTileRepairAction repairActions[] = {
+        detail::CoordinatedTileRepairAction::SelectiveSpill,
+        detail::CoordinatedTileRepairAction::SplitAtExplicitDDRBoundary,
+    };
+    std::vector<detail::CoordinatedTileVariant> repairs;
+    for (detail::CoordinatedTileRepairAction action : repairActions) {
+      if (nextStableSemanticOrdinal == std::numeric_limits<int64_t>::max())
+        break;
+      const int64_t repairOrdinal = nextStableSemanticOrdinal++;
+      std::string repairFailure;
+      mlir::FailureOr<detail::CoordinatedTileVariant> repaired =
+          detail::materializeCoordinatedTileRepair(
+              variant, action, repairOrdinal, *ledger, &repairFailure);
+      if (mlir::failed(repaired)) {
+        diagnostics << "wafer-compile: coordinated repair rejection"
+                    << " parent_ordinal=" << variant.stableSemanticOrdinal
+                    << " action="
+                    << (action ==
+                                detail::CoordinatedTileRepairAction::
+                                    SelectiveSpill
+                            ? "selective-spill"
+                            : "split-ddr-boundary")
+                    << " reason=" << repairFailure << "\n";
+        continue;
+      }
+      std::string digest =
+          detail::computeCoordinatedTileVariantContentDigest(*repaired);
+      if (!terminalTileDigests.insert(digest).second) {
+        if (mlir::failed(ledger->releaseTerminalAction(
+                repaired->terminalReservation)))
+          return fail("cannot release duplicate coordinated repair");
+        continue;
+      }
+      diagnostics << "wafer-compile: coordinated repair admitted"
+                  << " parent_ordinal=" << variant.stableSemanticOrdinal
+                  << " repair_ordinal=" << repaired->stableSemanticOrdinal
+                  << " action="
+                  << (action ==
+                              detail::CoordinatedTileRepairAction::
+                                  SelectiveSpill
+                          ? "selective-spill"
+                          : "split-ddr-boundary")
+                  << "\n";
+      repairs.push_back(std::move(*repaired));
+    }
+    repairCandidateCount += repairs.size();
+    for (detail::CoordinatedTileVariant &repair : repairs)
+      tileFrontier->push_back(std::move(repair));
+  }
+  const int64_t terminalWallMs =
+      detail::elapsedCompileMilliseconds(terminalStart);
+  if (llvm::count_if(fullyGated, [](const auto &variant) {
+        return variant.reservedBaseline;
+      }) != 1)
+    return fail("fully gated frontier has no unique conservative baseline");
+
+  detail::CoordinatedWorkLedgerSnapshot terminalWork = ledger->getSnapshot();
+  const std::string terminalFrontierDigest =
+      detail::computeCoordinatedTileFrontierDigest(*tileFrontier);
+  for (detail::CoordinatedTileVariant &variant : *tileFrontier)
+    variant.frontierDigest = terminalFrontierDigest;
+  diagnostics << "wafer-compile: compile-stats stage=coordinated-terminal-gate"
+              << " wall_ms=" << terminalWallMs
+              << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
+              << " fully_gated=" << fullyGated.size()
+              << " repair_candidates=" << repairCandidateCount
+              << " terminal_frontier_digest=" << terminalFrontierDigest
+              << " terminal_reserved=" << terminalWork.terminalReserved
+              << " work_consumed=" << terminalWork.consumed << " tile_to_instr="
+              << terminalWork.consumedByKind[static_cast<size_t>(
+                     detail::CoordinatedWorkKind::TileToInstrLowering)]
+              << " spm_problems="
+              << terminalWork.consumedByKind[static_cast<size_t>(
+                     detail::CoordinatedWorkKind::SPMAllocationProblem)]
+              << " ddr_domains="
+              << terminalWork.consumedByKind[static_cast<size_t>(
+                     detail::CoordinatedWorkKind::DDRAllocationDomain)]
+              << " transport_gates="
+              << terminalWork.consumedByKind[static_cast<size_t>(
+                     detail::CoordinatedWorkKind::TransportValidation)]
+              << " abi_gates="
+              << terminalWork.consumedByKind[static_cast<size_t>(
+                     detail::CoordinatedWorkKind::ABIValidation)]
+              << "\n";
+
+  const size_t fullyGatedCount = fullyGated.size();
+  const detail::CoordinatedWorkLedgerSnapshot selectionWorkBefore =
+      ledger->getSnapshot();
+  const detail::CompileClock::time_point selectionStart =
+      detail::CompileClock::now();
+  mlir::FailureOr<detail::FullyGatedCoordinatedVariant> selected =
+      mlir::failure();
+  {
+    wafer::support::ScopedCompileTimingSpan selectionTiming(
+        "stage", "tensor-program-to-executable",
+        "coordinated-hardware-cost-selection");
+    selected = detail::selectFullyGatedCoordinatedVariant(
+        std::move(fullyGated), selectionMode, diagnostics, &terminalStatistics);
+  }
+  if (mlir::failed(selected))
+    return fail("coordinated whole-rank hardware-cost selection failed");
+  const detail::CoordinatedWorkLedgerSnapshot selectionWorkAfter =
+      ledger->getSnapshot();
+  if (selectionWorkBefore.capacity != selectionWorkAfter.capacity ||
+      selectionWorkBefore.consumed != selectionWorkAfter.consumed ||
+      selectionWorkBefore.mandatoryGenerationReserved !=
+          selectionWorkAfter.mandatoryGenerationReserved ||
+      selectionWorkBefore.terminalReserved !=
+          selectionWorkAfter.terminalReserved ||
+      selectionWorkBefore.repairReserved != selectionWorkAfter.repairReserved ||
+      selectionWorkBefore.unreserved != selectionWorkAfter.unreserved ||
+      selectionWorkBefore.consumedByKind != selectionWorkAfter.consumedByKind)
+    return fail("coordinated hardware-cost selection mutated the work ledger");
+  diagnostics
+      << "wafer-compile: compile-stats stage=coordinated-hardware-selection"
+      << " wall_ms=" << detail::elapsedCompileMilliseconds(selectionStart)
+      << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
+      << " fully_gated=" << fullyGatedCount
+      << " pareto_retained=" << terminalStatistics.paretoRetainedVariants
+      << " work_consumed_delta=0 tile_to_instr_delta=0"
+      << " spm_problems_delta=0 ddr_domains_delta=0"
+      << " transport_gates_delta=0 abi_gates_delta=0\n";
+  detail::AcceptedWholeVariant accepted = std::move(selected->variant);
+  printAcceptedInstructionWork(diagnostics, accepted);
+  std::vector<RankExecutable> ranks = std::move(accepted.ranks);
+  if (ranks.size() != static_cast<size_t>(executionConfig.getRankCount()))
+    return fail("executable bundle rank domain is incomplete");
+  for (auto [expectedRank, rank] : llvm::enumerate(ranks))
+    if (rank.getLogicalRank() != static_cast<int64_t>(expectedRank))
+      return fail("executable bundle rank domain is not canonical");
+
+  diagnostics << "wafer-compile: compile-stats stage=executable-bundle"
+              << " wall_ms=" << detail::elapsedCompileMilliseconds(totalStart)
+              << " peak_rss_kib=" << detail::getCompilePeakRSSKiB() << "\n";
+  return ExecutableBundleBuilder::makeBundle(
+      executionConfig, std::move(accepted.runtimeLaunchContract), context,
+      std::move(ranks));
+}
+
 static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
@@ -268,6 +511,12 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     return llvm::createStringError(llvm::errc::invalid_argument, "%s",
                                    message.str().c_str());
   };
+
+  if (selectionMode == detail::WholeVariantSelectionMode::Production ||
+      selectionMode == detail::WholeVariantSelectionMode::ReservedBaseline)
+    return buildCoordinatedExecutableBundle(
+        context, tensorModule, program, executionConfig, optimizations,
+        diagnostics, selectionMode, failAfterLogicalRank, totalStart);
 
   struct RankSearchShardResult {
     int64_t logicalRank;

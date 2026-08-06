@@ -6,6 +6,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -127,6 +128,9 @@ void expectSingletonCollectiveIdentity(mlir::MLIRContext &context,
   EXPECT_TRUE(collectOps<wafer::CommAllGatherOp>(*lowered).empty());
   EXPECT_TRUE(collectOps<wafer::CommReduceScatterOp>(*lowered).empty());
   EXPECT_TRUE(collectOps<wafer::CommAllReduceOp>(*lowered).empty());
+  EXPECT_TRUE(collectOps<wafer::CommPeerSendOp>(*lowered).empty());
+  EXPECT_TRUE(collectOps<wafer::CommPeerRecvOp>(*lowered).empty());
+  EXPECT_TRUE(collectOps<mlir::async::AwaitOp>(*lowered).empty());
   EXPECT_TRUE(collectOps<wafer::InstrDTESendOp>(*lowered).empty());
   EXPECT_TRUE(collectOps<wafer::InstrDTERecvOp>(*lowered).empty());
   EXPECT_TRUE(collectOps<wafer::InstrDTEWaitOp>(*lowered).empty());
@@ -278,29 +282,29 @@ module {
   ASSERT_TRUE(lowered);
 
   auto inserts = collectOps<wafer::MoveInsertSliceOp>(*lowered);
-  auto sends = collectOps<wafer::InstrDTESendOp>(*lowered);
-  auto recvs = collectOps<wafer::InstrDTERecvOp>(*lowered);
-  auto waits = collectOps<wafer::InstrDTEWaitOp>(*lowered);
+  auto tileSends = collectOps<wafer::CommPeerSendOp>(*lowered);
+  auto tileRecvs = collectOps<wafer::CommPeerRecvOp>(*lowered);
+  auto tileAwaits = collectOps<mlir::async::AwaitOp>(*lowered);
   auto stores = collectOps<wafer::StorageStoreOp>(*lowered);
   ASSERT_EQ(inserts.size(), 2u);
   EXPECT_TRUE(collectOps<wafer::SyncNCCJoinOp>(*lowered).empty());
-  ASSERT_EQ(sends.size(), 1u);
-  ASSERT_EQ(recvs.size(), 1u);
-  ASSERT_EQ(waits.size(), 1u);
+  ASSERT_EQ(tileSends.size(), 1u);
+  ASSERT_EQ(tileRecvs.size(), 1u);
+  ASSERT_EQ(tileAwaits.size(), 2u);
   ASSERT_EQ(stores.size(), 1u);
 
   expectValidInstructionLowering(*lowered);
 
   auto joins = collectOps<wafer::SyncNCCJoinOp>(*lowered);
   auto gathers = collectOps<wafer::InstrGatherScatterOp>(*lowered);
-  sends = collectOps<wafer::InstrDTESendOp>(*lowered);
-  recvs = collectOps<wafer::InstrDTERecvOp>(*lowered);
-  waits = collectOps<wafer::InstrDTEWaitOp>(*lowered);
+  auto sends = collectOps<wafer::InstrDTESendOp>(*lowered);
+  auto recvs = collectOps<wafer::InstrDTERecvOp>(*lowered);
+  auto waits = collectOps<wafer::InstrDTEWaitOp>(*lowered);
   auto wdmas = collectOps<wafer::InstrWDMAOp>(*lowered);
   ASSERT_EQ(joins.size(), 2u);
   ASSERT_EQ(sends.size(), 1u);
   ASSERT_EQ(recvs.size(), 1u);
-  ASSERT_EQ(waits.size(), 1u);
+  ASSERT_EQ(waits.size(), 2u);
   ASSERT_EQ(wdmas.size(), 1u);
   expectBefore(joins.front(), sends.front());
   // Receive preparation is deliberately earlier than the participant drain:
@@ -308,11 +312,11 @@ module {
   // drain only protects the later send source and result assembly.
   expectBefore(recvs.front(), joins.front());
   auto remoteAssembly = llvm::find_if(gathers, [&](auto gather) {
-    return gather->getBlock() == waits.front()->getBlock() &&
-           waits.front()->isBeforeInBlock(gather);
+    return gather->getBlock() == waits.back()->getBlock() &&
+           waits.back()->isBeforeInBlock(gather);
   });
   ASSERT_NE(remoteAssembly, gathers.end());
-  expectBefore(waits.front(), *remoteAssembly);
+  expectBefore(waits.back(), *remoteAssembly);
   expectBefore(*remoteAssembly, wdmas.front());
   expectBeforeTerminalPublication(joins.back());
 }
@@ -345,9 +349,9 @@ module {
 
   auto inserts = collectOps<wafer::MoveInsertSliceOp>(*lowered);
   auto stores = collectOps<wafer::StorageStoreOp>(*lowered);
-  EXPECT_TRUE(collectOps<wafer::InstrDTESendOp>(*lowered).empty());
-  EXPECT_TRUE(collectOps<wafer::InstrDTERecvOp>(*lowered).empty());
-  EXPECT_TRUE(collectOps<wafer::InstrDTEWaitOp>(*lowered).empty());
+  EXPECT_TRUE(collectOps<wafer::CommPeerSendOp>(*lowered).empty());
+  EXPECT_TRUE(collectOps<wafer::CommPeerRecvOp>(*lowered).empty());
+  EXPECT_TRUE(collectOps<mlir::async::AwaitOp>(*lowered).empty());
   ASSERT_EQ(inserts.size(), 1u);
   EXPECT_TRUE(collectOps<wafer::SyncNCCJoinOp>(*lowered).empty());
   ASSERT_EQ(stores.size(), 1u);
@@ -397,8 +401,8 @@ module {
     auto lowered = lowerTensorProgram(context, source, logicalRank);
     ASSERT_TRUE(lowered);
 
-    auto sends = collectOps<wafer::InstrDTESendOp>(*lowered);
-    auto recvs = collectOps<wafer::InstrDTERecvOp>(*lowered);
+    auto sends = collectOps<wafer::CommPeerSendOp>(*lowered);
+    auto recvs = collectOps<wafer::CommPeerRecvOp>(*lowered);
     ASSERT_EQ(sends.size(), 3u);
     ASSERT_EQ(recvs.size(), 3u);
     for (size_t round = 0; round < sends.size(); ++round) {
@@ -460,8 +464,8 @@ module {
                                     /*currentLogicalRank=*/0);
   ASSERT_TRUE(lowered);
 
-  auto sends = collectOps<wafer::InstrDTESendOp>(*lowered);
-  auto recvs = collectOps<wafer::InstrDTERecvOp>(*lowered);
+  auto sends = collectOps<wafer::CommPeerSendOp>(*lowered);
+  auto recvs = collectOps<wafer::CommPeerRecvOp>(*lowered);
   ASSERT_EQ(sends.size(), 16u);
   ASSERT_EQ(recvs.size(), 16u);
   EXPECT_EQ(sends.front().getPeer(), 1);
@@ -478,31 +482,35 @@ TEST_F(CollectiveCompletionTest,
                          /*currentLogicalRank=*/1);
   ASSERT_TRUE(lowered);
 
-  auto sends = collectOps<wafer::InstrDTESendOp>(*lowered);
-  auto recvs = collectOps<wafer::InstrDTERecvOp>(*lowered);
-  auto waits = collectOps<wafer::InstrDTEWaitOp>(*lowered);
+  auto tileSends = collectOps<wafer::CommPeerSendOp>(*lowered);
+  auto tileRecvs = collectOps<wafer::CommPeerRecvOp>(*lowered);
+  auto tileAwaits = collectOps<mlir::async::AwaitOp>(*lowered);
   auto stores = collectOps<wafer::StorageStoreOp>(*lowered);
   EXPECT_TRUE(collectOps<wafer::ComputeFillOp>(*lowered).empty());
   EXPECT_TRUE(collectOps<wafer::SyncNCCJoinOp>(*lowered).empty());
-  ASSERT_EQ(sends.size(), 1u);
-  ASSERT_EQ(recvs.size(), 1u);
-  ASSERT_EQ(waits.size(), 1u);
+  ASSERT_EQ(tileSends.size(), 1u);
+  ASSERT_EQ(tileRecvs.size(), 1u);
+  ASSERT_EQ(tileAwaits.size(), 2u);
   ASSERT_EQ(stores.size(), 1u);
-  EXPECT_TRUE(recvs.front().getBuffer().getDefiningOp<mlir::memref::AllocOp>());
+  EXPECT_TRUE(
+      tileRecvs.front().getBuffer().getDefiningOp<mlir::memref::AllocOp>());
   expectValidInstructionLowering(*lowered);
 
   auto joins = collectOps<wafer::SyncNCCJoinOp>(*lowered);
-  sends = collectOps<wafer::InstrDTESendOp>(*lowered);
-  recvs = collectOps<wafer::InstrDTERecvOp>(*lowered);
-  waits = collectOps<wafer::InstrDTEWaitOp>(*lowered);
+  auto sends = collectOps<wafer::InstrDTESendOp>(*lowered);
+  auto recvs = collectOps<wafer::InstrDTERecvOp>(*lowered);
+  auto waits = collectOps<wafer::InstrDTEWaitOp>(*lowered);
   auto wdmas = collectOps<wafer::InstrWDMAOp>(*lowered);
   ASSERT_EQ(joins.size(), 2u);
+  ASSERT_EQ(sends.size(), 1u);
+  ASSERT_EQ(recvs.size(), 1u);
+  ASSERT_EQ(waits.size(), 2u);
   ASSERT_EQ(wdmas.size(), 1u);
   expectBefore(joins.front(), sends.front());
   expectBefore(recvs.front(), joins.front());
   expectBefore(sends.front(), waits.front());
-  expectBefore(recvs.front(), waits.front());
-  expectBefore(waits.front(), wdmas.front());
+  expectBefore(recvs.front(), waits.back());
+  expectBefore(waits.back(), wdmas.front());
   expectBeforeTerminalPublication(joins.back());
 }
 
@@ -514,21 +522,21 @@ TEST_F(CollectiveCompletionTest,
   ASSERT_TRUE(lowered);
 
   auto fills = collectOps<wafer::ComputeFillOp>(*lowered);
-  auto sends = collectOps<wafer::InstrDTESendOp>(*lowered);
-  auto waits = collectOps<wafer::InstrDTEWaitOp>(*lowered);
+  auto tileSends = collectOps<wafer::CommPeerSendOp>(*lowered);
+  auto tileAwaits = collectOps<mlir::async::AwaitOp>(*lowered);
   auto stores = collectOps<wafer::StorageStoreOp>(*lowered);
-  EXPECT_TRUE(collectOps<wafer::InstrDTERecvOp>(*lowered).empty());
+  EXPECT_TRUE(collectOps<wafer::CommPeerRecvOp>(*lowered).empty());
   ASSERT_EQ(fills.size(), 1u);
   EXPECT_TRUE(collectOps<wafer::SyncNCCJoinOp>(*lowered).empty());
-  ASSERT_EQ(sends.size(), 1u);
-  ASSERT_EQ(waits.size(), 1u);
+  ASSERT_EQ(tileSends.size(), 1u);
+  ASSERT_EQ(tileAwaits.size(), 1u);
   ASSERT_EQ(stores.size(), 1u);
   expectValidInstructionLowering(*lowered);
 
   auto joins = collectOps<wafer::SyncNCCJoinOp>(*lowered);
   auto instrFills = collectOps<wafer::InstrFillOp>(*lowered);
-  sends = collectOps<wafer::InstrDTESendOp>(*lowered);
-  waits = collectOps<wafer::InstrDTEWaitOp>(*lowered);
+  auto sends = collectOps<wafer::InstrDTESendOp>(*lowered);
+  auto waits = collectOps<wafer::InstrDTEWaitOp>(*lowered);
   auto wdmas = collectOps<wafer::InstrWDMAOp>(*lowered);
   ASSERT_EQ(joins.size(), 2u);
   ASSERT_EQ(instrFills.size(), 1u);
@@ -547,16 +555,16 @@ TEST_F(CollectiveCompletionTest,
                          /*currentLogicalRank=*/1);
   ASSERT_TRUE(lowered);
 
-  auto recvs = collectOps<wafer::InstrDTERecvOp>(*lowered);
-  auto waits = collectOps<wafer::InstrDTEWaitOp>(*lowered);
+  auto tileRecvs = collectOps<wafer::CommPeerRecvOp>(*lowered);
+  auto tileAwaits = collectOps<mlir::async::AwaitOp>(*lowered);
   auto stores = collectOps<wafer::StorageStoreOp>(*lowered);
   EXPECT_TRUE(collectOps<wafer::ComputeFillOp>(*lowered).empty());
-  EXPECT_TRUE(collectOps<wafer::InstrDTESendOp>(*lowered).empty());
-  ASSERT_EQ(recvs.size(), 1u);
-  ASSERT_EQ(waits.size(), 1u);
+  EXPECT_TRUE(collectOps<wafer::CommPeerSendOp>(*lowered).empty());
+  ASSERT_EQ(tileRecvs.size(), 1u);
+  ASSERT_EQ(tileAwaits.size(), 1u);
   ASSERT_EQ(stores.size(), 1u);
-  expectBefore(recvs.front(), waits.front());
-  expectBefore(waits.front(), stores.front());
+  expectBefore(tileRecvs.front(), tileAwaits.front());
+  expectBefore(tileAwaits.front(), stores.front());
   expectValidInstructionLowering(*lowered);
 }
 
@@ -569,9 +577,9 @@ TEST_F(CollectiveCompletionTest,
 
   auto fills = collectOps<wafer::ComputeFillOp>(*lowered);
   auto stores = collectOps<wafer::StorageStoreOp>(*lowered);
-  EXPECT_TRUE(collectOps<wafer::InstrDTESendOp>(*lowered).empty());
-  EXPECT_TRUE(collectOps<wafer::InstrDTERecvOp>(*lowered).empty());
-  EXPECT_TRUE(collectOps<wafer::InstrDTEWaitOp>(*lowered).empty());
+  EXPECT_TRUE(collectOps<wafer::CommPeerSendOp>(*lowered).empty());
+  EXPECT_TRUE(collectOps<wafer::CommPeerRecvOp>(*lowered).empty());
+  EXPECT_TRUE(collectOps<mlir::async::AwaitOp>(*lowered).empty());
   ASSERT_EQ(fills.size(), 1u);
   EXPECT_TRUE(collectOps<wafer::SyncNCCJoinOp>(*lowered).empty());
   ASSERT_EQ(stores.size(), 1u);
@@ -597,9 +605,9 @@ TEST_F(CollectiveCompletionTest,
   auto copies = collectOps<wafer::MoveCopyOp>(*lowered);
   auto stores = collectOps<wafer::StorageStoreOp>(*lowered);
   EXPECT_TRUE(collectOps<wafer::ComputeFillOp>(*lowered).empty());
-  EXPECT_TRUE(collectOps<wafer::InstrDTESendOp>(*lowered).empty());
-  EXPECT_TRUE(collectOps<wafer::InstrDTERecvOp>(*lowered).empty());
-  EXPECT_TRUE(collectOps<wafer::InstrDTEWaitOp>(*lowered).empty());
+  EXPECT_TRUE(collectOps<wafer::CommPeerSendOp>(*lowered).empty());
+  EXPECT_TRUE(collectOps<wafer::CommPeerRecvOp>(*lowered).empty());
+  EXPECT_TRUE(collectOps<mlir::async::AwaitOp>(*lowered).empty());
   ASSERT_EQ(copies.size(), 1u);
   EXPECT_TRUE(collectOps<wafer::SyncNCCJoinOp>(*lowered).empty());
   ASSERT_EQ(stores.size(), 1u);

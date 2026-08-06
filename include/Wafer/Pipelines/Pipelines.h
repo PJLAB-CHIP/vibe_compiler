@@ -20,10 +20,17 @@ void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm);
 /// It does not perform candidate selection or cross-rank acceptance.
 void buildFinalizeScheduledTensorProgramPipeline(mlir::OpPassManager &pm);
 
-/// Finalizes a rank-frontier evaluation clone through function-boundary
-/// bufferization and SPM placement. DDR placement remains absent so the
-/// all-rank coordinator can recompute it on a disposable whole-variant clone.
+/// Finalizes canonical Instr after terminal Tile-to-Instr conversion through
+/// function-boundary bufferization and SPM placement. DDR placement remains
+/// absent so the all-rank coordinator can recompute it on a disposable
+/// whole-variant clone.
 void buildFinalizeScheduledRankCandidatePipeline(mlir::OpPassManager &pm);
+
+/// Canonicalizes and bufferizes one canonical, unplaced Instr sibling without
+/// assigning SPM or DDR offsets. Terminal scheduling uses this boundary so
+/// completion can be erased and rebuilt from the final buffer/effect IR before
+/// lifetime and SPM planning observe it.
+void buildPrepareScheduledRankCandidatePipeline(mlir::OpPassManager &pm);
 
 void buildLowerTileRegionToInstrPipeline(mlir::OpPassManager &pm);
 void buildPlanSPMMemoryPipeline(mlir::OpPassManager &pm);

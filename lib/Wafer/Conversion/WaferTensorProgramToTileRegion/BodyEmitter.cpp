@@ -564,7 +564,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
     return materializeSourceImplementation(op, builder);
   }
 
-  if (mlir::isa<mlir::arith::ConstantOp, mlir::bufferization::ToMemrefOp,
+  if (mlir::isa<mlir::affine::AffineApplyOp, mlir::arith::ConstantOp,
+                mlir::bufferization::ToMemrefOp,
                 mlir::bufferization::ToTensorOp, mlir::tensor::EmptyOp,
                 mlir::memref::AllocOp, mlir::tensor::ExtractOp,
                 mlir::tensor::ExtractSliceOp, mlir::tensor::InsertSliceOp,

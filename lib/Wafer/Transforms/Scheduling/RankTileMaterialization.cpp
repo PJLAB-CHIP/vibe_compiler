@@ -25,7 +25,62 @@ static bool isShapedDDR(mlir::Type type) {
          wafer::isWaferDDRMemRefType(type);
 }
 
+static mlir::FailureOr<llvm::SmallVector<mlir::OpOperand *, 8>>
+analyzeSelectiveTileSpill(TileRegionOp region, mlir::Value root,
+                          mlir::Operation *storeAfter,
+                          mlir::Operation *reloadBefore) {
+  if (!region || region.getBody().empty() || !root || !storeAfter ||
+      !reloadBefore)
+    return mlir::failure();
+  mlir::Operation *rootDefinition = root.getDefiningOp();
+  auto rootType = mlir::dyn_cast<mlir::MemRefType>(root.getType());
+  mlir::Block *block = rootDefinition ? rootDefinition->getBlock() : nullptr;
+  if (!rootType || !rootType.hasStaticShape() ||
+      !wafer::isWaferSPMMemRefType(rootType) || !rootDefinition || !block ||
+      storeAfter->getBlock() != block || reloadBefore->getBlock() != block ||
+      rootDefinition->getParentOfType<TileRegionOp>() != region ||
+      storeAfter->getParentOfType<TileRegionOp>() != region ||
+      reloadBefore->getParentOfType<TileRegionOp>() != region ||
+      storeAfter == block->getTerminator() ||
+      reloadBefore == block->getTerminator() ||
+      !isAtOrBefore(rootDefinition, storeAfter) ||
+      !storeAfter->isBeforeInBlock(reloadBefore))
+    return mlir::failure();
+
+  bool initialized = !mlir::isa<mlir::memref::AllocOp>(rootDefinition);
+  llvm::SmallVector<mlir::OpOperand *, 8> lateUses;
+  for (mlir::OpOperand &use : root.getUses()) {
+    mlir::Operation *top = getTopLevelOperation(use.getOwner(), block);
+    if (!top)
+      return mlir::failure();
+    if (isAtOrBefore(top, storeAfter)) {
+      if (auto effects =
+              mlir::dyn_cast<mlir::MemoryEffectOpInterface>(use.getOwner()))
+        initialized |= static_cast<bool>(
+            effects.getEffectOnValue<mlir::MemoryEffects::Write>(root));
+      continue;
+    }
+    if (isAtOrBefore(reloadBefore, top)) {
+      lateUses.push_back(&use);
+      continue;
+    }
+    // A use in the selected dead interval would require an additional root or
+    // a different action; do not silently move it across the spill.
+    return mlir::failure();
+  }
+  if (!initialized || lateUses.empty())
+    return mlir::failure();
+  return lateUses;
+}
+
 } // namespace
+
+bool canMaterializeSelectiveTileSpill(TileRegionOp region, mlir::Value root,
+                                      mlir::Operation *storeAfter,
+                                      mlir::Operation *reloadBefore) {
+  return mlir::succeeded(analyzeSelectiveTileSpill(
+      region, root, storeAfter, reloadBefore));
+}
 
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
 materializeCompleteRankTileProgram(
@@ -69,42 +124,11 @@ mlir::FailureOr<SelectiveSpillMaterialization>
 materializeSelectiveTileSpill(TileRegionOp region, mlir::Value root,
                               mlir::Operation *storeAfter,
                               mlir::Operation *reloadBefore) {
-  if (!region || region.getBody().empty() || !root || !storeAfter ||
-      !reloadBefore)
+  mlir::FailureOr<llvm::SmallVector<mlir::OpOperand *, 8>> lateUses =
+      analyzeSelectiveTileSpill(region, root, storeAfter, reloadBefore);
+  if (mlir::failed(lateUses))
     return mlir::failure();
-  mlir::Operation *rootDefinition = root.getDefiningOp();
   auto rootType = mlir::dyn_cast<mlir::MemRefType>(root.getType());
-  mlir::Block *block = rootDefinition ? rootDefinition->getBlock() : nullptr;
-  if (!rootType || !rootType.hasStaticShape() ||
-      !wafer::isWaferSPMMemRefType(rootType) || !rootDefinition ||
-      !block || storeAfter->getBlock() != block ||
-      reloadBefore->getBlock() != block ||
-      rootDefinition->getParentOfType<TileRegionOp>() != region ||
-      storeAfter->getParentOfType<TileRegionOp>() != region ||
-      reloadBefore->getParentOfType<TileRegionOp>() != region ||
-      storeAfter == block->getTerminator() ||
-      reloadBefore == block->getTerminator() ||
-      !isAtOrBefore(rootDefinition, storeAfter) ||
-      !storeAfter->isBeforeInBlock(reloadBefore))
-    return mlir::failure();
-
-  llvm::SmallVector<mlir::OpOperand *, 8> lateUses;
-  for (mlir::OpOperand &use : root.getUses()) {
-    mlir::Operation *top = getTopLevelOperation(use.getOwner(), block);
-    if (!top)
-      return mlir::failure();
-    if (isAtOrBefore(top, storeAfter))
-      continue;
-    if (isAtOrBefore(reloadBefore, top)) {
-      lateUses.push_back(&use);
-      continue;
-    }
-    // A use in the selected dead interval would require an additional root or
-    // a different action; do not silently move it across the spill.
-    return mlir::failure();
-  }
-  if (lateUses.empty())
-    return mlir::failure();
 
   auto ddrType = mlir::MemRefType::get(
       rootType.getShape(), rootType.getElementType(),
@@ -123,7 +147,7 @@ materializeSelectiveTileSpill(TileRegionOp region, mlir::Value root,
       reloadBuilder.create<mlir::memref::AllocOp>(root.getLoc(), rootType);
   auto load = reloadBuilder.create<wafer::StorageLoadOp>(
       root.getLoc(), ddrAllocation.getResult(), reloadAllocation.getResult());
-  for (mlir::OpOperand *use : lateUses)
+  for (mlir::OpOperand *use : *lateUses)
     use->set(reloadAllocation.getResult());
 
   return SelectiveSpillMaterialization{

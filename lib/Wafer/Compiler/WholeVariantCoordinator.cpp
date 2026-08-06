@@ -2,6 +2,8 @@
 
 #include "WholeVariantCoordinator.h"
 
+#include "CoordinatedVariantSelection.h"
+
 #include "Wafer/Support/CompileTiming.h"
 
 #include "AcceptedCallClosure.h"
@@ -70,8 +72,8 @@ static llvm::Expected<RuntimeLaunchContract> formAcceptedRuntimeLaunchContract(
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "model runtime launch requires 16 ranks without a prepare phase");
-    return RuntimeLaunchContract::createModel(
-        ModelEntryABI::Tx81ModelBootParam, main);
+    return RuntimeLaunchContract::createModel(ModelEntryABI::Tx81ModelBootParam,
+                                              main);
   }
   if (executionConfig.getRankCount() == 1) {
     if (requiresRuntimePrepare)
@@ -79,8 +81,7 @@ static llvm::Expected<RuntimeLaunchContract> formAcceptedRuntimeLaunchContract(
           llvm::errc::invalid_argument,
           "rank-one kernel runtime launch does not support a prepare phase");
     return RuntimeLaunchContract::createKernel(
-        KernelLaunchForm::PerRank, KernelEntryABI::RankLocalPointerBlock,
-        main);
+        KernelLaunchForm::PerRank, KernelEntryABI::RankLocalPointerBlock, main);
   }
   const KernelLaunchForm form = requiresRuntimePrepare
                                     ? KernelLaunchForm::Cluster
@@ -626,8 +627,7 @@ static bool hasMultipleNCCWorkers(mlir::ModuleOp module) {
 static mlir::LogicalResult classifySchedulingCapability(
     llvm::ArrayRef<mlir::ModuleOp> modules,
     wafer::RankBufferingKind bufferingKind,
-    wafer::RankWorkerPlacementKind workerPlacementKind,
-    bool &hasQuery,
+    wafer::RankWorkerPlacementKind workerPlacementKind, bool &hasQuery,
     TargetSchedulingProfitabilityEvidence &profitability) {
   hasQuery = false;
   profitability = {};
@@ -1076,8 +1076,7 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
   TargetSchedulingProfitabilityEvidence schedulingProfitability;
   if (mlir::failed(classifySchedulingCapability(
           moduleViews, *bufferingKind, *workerPlacementKind,
-          hasSchedulingCapabilityQuery,
-          schedulingProfitability))) {
+          hasSchedulingCapabilityQuery, schedulingProfitability))) {
     failureGate = "target-scheduling-capability";
     return mlir::failure();
   }
@@ -1263,6 +1262,60 @@ static mlir::FailureOr<AcceptedWholeVariant> runTargetGate(
   return accepted;
 }
 
+static mlir::FailureOr<AcceptedWholeVariant> evaluateFullyGatedWholeVariantImpl(
+    std::vector<RankVariantCandidate> rankCandidates,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    std::string *failureGate, WholeVariantSelectionStatistics *statistics) {
+  auto fail = [&](llvm::StringRef gate, llvm::StringRef message) {
+    if (failureGate)
+      *failureGate = gate.str();
+    if (!message.empty())
+      diagnostics << "wafer-compile: " << message << '\n';
+    return mlir::FailureOr<AcceptedWholeVariant>(mlir::failure());
+  };
+  if (rankCandidates.empty() ||
+      rankCandidates.size() !=
+          static_cast<size_t>(executionConfig.getRankCount()) ||
+      program.logicalRankCount != executionConfig.getRankCount())
+    return fail("rank-domain",
+                "coordinated terminal candidate has an incomplete rank "
+                "domain");
+
+  std::vector<RankVariantFrontier> frontiers;
+  frontiers.reserve(rankCandidates.size());
+  for (RankVariantCandidate &candidate : rankCandidates) {
+    if (!candidate.module)
+      return fail("rank-materialization",
+                  "coordinated terminal candidate has a missing rank module");
+    RankVariantFrontier frontier;
+    frontier.push_back(std::move(candidate));
+    frontiers.push_back(std::move(frontier));
+  }
+  std::vector<size_t> candidateIndices(frontiers.size(), 0);
+  std::string gate = "unknown";
+  if (statistics)
+    ++statistics->preTargetAttempts;
+  mlir::FailureOr<PreTargetWholeVariant> preTarget = tryPreTargetCombination(
+      candidateIndices, frontiers, program, executionConfig, gate);
+  if (mlir::failed(preTarget))
+    return fail(gate, "coordinated terminal candidate failed exact gate '" +
+                          gate + "'");
+  if (statistics)
+    ++statistics->preTargetAccepted;
+
+  mlir::FailureOr<AcceptedWholeVariant> accepted =
+      runTargetGate(std::move(*preTarget), executionConfig, statistics, gate);
+  if (mlir::failed(accepted))
+    return fail(gate, "coordinated terminal candidate failed exact gate '" +
+                          gate + "'");
+  if (statistics)
+    ++statistics->fullyAcceptedVariants;
+  if (failureGate)
+    failureGate->clear();
+  return accepted;
+}
+
 enum class ParetoOrder {
   Equivalent,
   LeftDominates,
@@ -1441,18 +1494,6 @@ static ParetoOrder compareExactWholeVariantCost(
   return compareKnownMetrics(dimensions);
 }
 
-static ParetoOrder compareExactExecutionResources(
-    const analysis::WholeCardInstructionProgramCost &left,
-    const analysis::WholeCardInstructionProgramCost &right) {
-  analysis::WholeCardInstructionProgramCost leftExecution = left;
-  analysis::WholeCardInstructionProgramCost rightExecution = right;
-  leftExecution.maximumRankSPMHighWaterBytes = {};
-  leftExecution.summedRankSPMHighWaterBytes = {};
-  rightExecution.maximumRankSPMHighWaterBytes = {};
-  rightExecution.summedRankSPMHighWaterBytes = {};
-  return compareExactWholeVariantCost(leftExecution, rightExecution);
-}
-
 static ParetoOrder compareStaticDataflowPolicy(
     const analysis::WholeCardInstructionProgramCost &left,
     const analysis::WholeCardInstructionProgramCost &right) {
@@ -1479,101 +1520,23 @@ static ParetoOrder compareStaticDataflowPolicy(
   return ParetoOrder::Equivalent;
 }
 
-static ParetoOrder compareTargetStaticTradeoff(
-    const analysis::WholeCardInstructionProgramCost &left,
-    const analysis::WholeCardInstructionProgramCost &right,
-    const TargetStaticSelectionPolicy &policy) {
-  if (policy.tradeoff == TargetStaticTradeoffPolicy::Conservative)
-    return ParetoOrder::Equivalent;
-
-  const llvm::SmallVector<llvm::SmallVector<MetricPair, 8>, 6> priorityClasses =
-      {
-          {{&left.aggregateDDRReadBytes, &right.aggregateDDRReadBytes},
-           {&left.aggregateDDRWriteBytes, &right.aggregateDDRWriteBytes}},
-          {{&left.aggregateNoC.aggregateTransmitBytes,
-            &right.aggregateNoC.aggregateTransmitBytes},
-           {&left.aggregateNoC.aggregateReceiveBytes,
-            &right.aggregateNoC.aggregateReceiveBytes},
-           {&left.minimumHopLinkByteDemand, &right.minimumHopLinkByteDemand},
-           {&left.aggregateNoC.collectiveTransmitBytes[0],
-            &right.aggregateNoC.collectiveTransmitBytes[0]},
-           {&left.aggregateNoC.collectiveTransmitBytes[1],
-            &right.aggregateNoC.collectiveTransmitBytes[1]},
-           {&left.aggregateNoC.collectiveTransmitBytes[2],
-            &right.aggregateNoC.collectiveTransmitBytes[2]},
-           {&left.aggregateNoC.collectiveTransmitBytes[3],
-            &right.aggregateNoC.collectiveTransmitBytes[3]},
-           {&left.aggregateNoC.collectiveTransmitBytes[4],
-            &right.aggregateNoC.collectiveTransmitBytes[4]}},
-          {{&left.aggregateSPMMovementBytes, &right.aggregateSPMMovementBytes}},
-          {{&left.aggregateInstructionCount, &right.aggregateInstructionCount},
-           {&left.aggregateEventCount, &right.aggregateEventCount}},
-          {{&left.aggregateCompute.npuF16Bf16LogicalOps,
-            &right.aggregateCompute.npuF16Bf16LogicalOps},
-           {&left.aggregateCompute.npuOtherLogicalOps,
-            &right.aggregateCompute.npuOtherLogicalOps},
-           {&left.aggregateCompute.vectorF16Bf16LogicalOps,
-            &right.aggregateCompute.vectorF16Bf16LogicalOps},
-           {&left.aggregateCompute.vectorF32LogicalOps,
-            &right.aggregateCompute.vectorF32LogicalOps},
-           {&left.aggregateCompute.vectorOtherLogicalOps,
-            &right.aggregateCompute.vectorOtherLogicalOps}},
-          {{&left.maximumRankDataDependencyDepth,
-            &right.maximumRankDataDependencyDepth},
-           {&left.aggregateReadyOrderPriorityInversions,
-            &right.aggregateReadyOrderPriorityInversions}},
-      };
-  for (const llvm::SmallVector<MetricPair, 8> &priorityClass :
-       priorityClasses) {
-    ParetoOrder order = compareKnownMetrics(priorityClass);
-    if (order != ParetoOrder::Equivalent)
-      return order;
-  }
-  return ParetoOrder::Equivalent;
-}
-
 static bool isResourceCostPreferredOver(
     const analysis::WholeCardInstructionProgramCost &candidate,
-    const analysis::WholeCardInstructionProgramCost &baseline,
-    const TargetStaticSelectionPolicy &policy) {
-  // `ExternalMovementFirst` is the target's explicit policy for a strict DDR
-  // reduction. A NoC-resident owner-load candidate can require an exact
-  // NCC-to-DTE handoff completion while still eliminating the other ranks'
-  // DDR transactions; that real cross-resource tradeoff must not be erased by
-  // the drain tie-breaker used when external movement is equal.
-  if (policy.tradeoff == TargetStaticTradeoffPolicy::ExternalMovementFirst) {
-    ParetoOrder ddrOrder = compareExternalDDRMovement(candidate, baseline);
-    if (ddrOrder == ParetoOrder::LeftDominates)
-      return true;
-    if (ddrOrder == ParetoOrder::RightDominates ||
-        ddrOrder == ParetoOrder::Unknown)
-      return false;
-  }
-
-  ParetoOrder order = compareExactWholeVariantCost(candidate, baseline);
-  if (order == ParetoOrder::LeftDominates)
-    return true;
-  if (order == ParetoOrder::Equivalent)
-    return compareStaticDataflowPolicy(candidate, baseline) ==
-           ParetoOrder::LeftDominates;
-  if (order != ParetoOrder::Incomparable)
-    return false;
-  // Accepted high-water is a capacity fact, not a calibrated performance
-  // quantity. When all exact execution-resource dimensions are no worse and
-  // at least one is lower, the static target policy accepts the known
-  // high-water tradeoff instead of requiring an unavailable timing model.
-  if (compareExactExecutionResources(candidate, baseline) ==
-      ParetoOrder::LeftDominates)
-    return true;
-  return compareTargetStaticTradeoff(candidate, baseline, policy) ==
-         ParetoOrder::LeftDominates;
+    const analysis::WholeCardInstructionProgramCost &baseline) {
+  const CoordinatedVariantCostView views[] = {
+      {/*stableSemanticOrdinal=*/0, /*reservedBaseline=*/true, &baseline},
+      {/*stableSemanticOrdinal=*/1, /*reservedBaseline=*/false, &candidate},
+  };
+  mlir::FailureOr<CoordinatedVariantSelectionPlan> plan =
+      planCoordinatedVariantSelection(views,
+                                      WholeVariantSelectionMode::Production);
+  return mlir::succeeded(plan) && plan->selectedIndex == 1;
 }
 
 static bool isPreferredOver(const AcceptedWholeVariant &candidate,
-                            const AcceptedWholeVariant &baseline,
-                            const TargetStaticSelectionPolicy &policy) {
+                            const AcceptedWholeVariant &baseline) {
   return isResourceCostPreferredOver(candidate.resourceCost,
-                                     baseline.resourceCost, policy);
+                                     baseline.resourceCost);
 }
 
 static bool hasStrictQualifiedDrainReduction(
@@ -1660,8 +1623,7 @@ struct ParetoInsertionPlan {
 
 static ParetoInsertionPlan
 planParetoInsertion(ParetoCandidateView candidate,
-                    llvm::ArrayRef<AcceptedWholeVariant> frontier,
-                    const TargetStaticSelectionPolicy &selectionPolicy) {
+                    llvm::ArrayRef<AcceptedWholeVariant> frontier) {
   ParetoInsertionPlan plan;
   for (auto [index, existing] : llvm::enumerate(frontier)) {
     ParetoCandidateView existingView = getParetoCandidateView(existing);
@@ -1715,18 +1677,14 @@ planParetoInsertion(ParetoCandidateView candidate,
                return hasEarlierStaticPolicyOrder(lhs.view, rhs.view);
              });
   if (simulated.size() > kWholeVariantParetoLimit) {
-    // The pre-target resource facts already carry every input to the target's
-    // static selection policy. Preserve the policy-best member when bounding
-    // an otherwise incomparable frontier, then use stable metadata order for
-    // the remaining slots.
-    unsigned policyBestIndex = 0;
+    unsigned modelBestIndex = 0;
     for (unsigned index = 1; index < simulated.size(); ++index)
       if (isResourceCostPreferredOver(
               *simulated[index].view.resourceCost,
-              *simulated[policyBestIndex].view.resourceCost, selectionPolicy))
-        policyBestIndex = index;
+              *simulated[modelBestIndex].view.resourceCost))
+        modelBestIndex = index;
     unsigned removalIndex = simulated.size() - 1;
-    if (removalIndex == policyBestIndex)
+    if (removalIndex == modelBestIndex)
       --removalIndex;
     simulated.erase(simulated.begin() + removalIndex);
   }
@@ -1739,19 +1697,16 @@ planParetoInsertion(ParetoCandidateView candidate,
 
 static bool
 wouldRetainParetoCandidate(const PreTargetWholeVariant &candidate,
-                           llvm::ArrayRef<AcceptedWholeVariant> frontier,
-                           const TargetStaticSelectionPolicy &selectionPolicy) {
-  return planParetoInsertion(getParetoCandidateView(candidate), frontier,
-                             selectionPolicy)
+                           llvm::ArrayRef<AcceptedWholeVariant> frontier) {
+  return planParetoInsertion(getParetoCandidateView(candidate), frontier)
       .retained;
 }
 
 static bool
 insertParetoCandidate(AcceptedWholeVariant candidate,
-                      llvm::SmallVectorImpl<AcceptedWholeVariant> &frontier,
-                      const TargetStaticSelectionPolicy &selectionPolicy) {
-  ParetoInsertionPlan plan = planParetoInsertion(
-      getParetoCandidateView(candidate), frontier, selectionPolicy);
+                      llvm::SmallVectorImpl<AcceptedWholeVariant> &frontier) {
+  ParetoInsertionPlan plan =
+      planParetoInsertion(getParetoCandidateView(candidate), frontier);
   if (!plan.retained)
     return false;
   for (unsigned index : llvm::reverse(plan.dominatedIndices))
@@ -1763,14 +1718,13 @@ insertParetoCandidate(AcceptedWholeVariant candidate,
                                        getParetoCandidateView(rhs));
   });
   if (frontier.size() > kWholeVariantParetoLimit) {
-    unsigned policyBestIndex = 0;
+    unsigned modelBestIndex = 0;
     for (unsigned index = 1; index < frontier.size(); ++index)
       if (isResourceCostPreferredOver(frontier[index].resourceCost,
-                                      frontier[policyBestIndex].resourceCost,
-                                      selectionPolicy))
-        policyBestIndex = index;
+                                      frontier[modelBestIndex].resourceCost))
+        modelBestIndex = index;
     unsigned removalIndex = frontier.size() - 1;
-    if (removalIndex == policyBestIndex)
+    if (removalIndex == modelBestIndex)
       --removalIndex;
     frontier.erase(frontier.begin() + removalIndex);
   }
@@ -1800,6 +1754,16 @@ static std::string summarizeAttemptFailure(llvm::ArrayRef<size_t> indices,
 }
 
 } // namespace
+
+mlir::FailureOr<AcceptedWholeVariant> evaluateFullyGatedWholeVariant(
+    std::vector<RankVariantCandidate> rankCandidates,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    std::string *failureGate, WholeVariantSelectionStatistics *statistics) {
+  return evaluateFullyGatedWholeVariantImpl(std::move(rankCandidates), program,
+                                            executionConfig, diagnostics,
+                                            failureGate, statistics);
+}
 
 static mlir::FailureOr<AcceptedProductionAndBaseline>
 selectAcceptedWholeVariants(
@@ -2007,8 +1971,6 @@ selectAcceptedWholeVariants(
   const bool qualifyNoCResidentFixedSlotWorker =
       selectionMode ==
       WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker;
-  const TargetStaticSelectionPolicy selectionPolicy =
-      getDefaultWaferTargetPolicy(TileSearchEffort::Default).staticSelection;
   const analysis::TargetScheduleCostPolicy scheduleCostPolicy =
       analysis::getTargetScheduleCostPolicy();
 
@@ -2136,15 +2098,14 @@ selectAcceptedWholeVariants(
         }
       }
     }
-    if (!wouldRetainParetoCandidate(*preTarget, paretoFrontier,
-                                    selectionPolicy))
+    if (!wouldRetainParetoCandidate(*preTarget, paretoFrontier))
       return;
     mlir::FailureOr<AcceptedWholeVariant> accepted =
         targetGate(candidateIndices, std::move(*preTarget));
     if (mlir::failed(accepted))
       return;
-    const bool retained = insertParetoCandidate(
-        std::move(*accepted), paretoFrontier, selectionPolicy);
+    const bool retained =
+        insertParetoCandidate(std::move(*accepted), paretoFrontier);
     assert(retained &&
            "target gate cannot change Pareto facts or frontier membership");
     if (statistics)
@@ -2165,7 +2126,7 @@ selectAcceptedWholeVariants(
                                           selectionMode))
       selected.emplace(std::move(baselineAccepted));
     for (AcceptedWholeVariant &candidate : paretoFrontier)
-      if (!selected || isPreferredOver(candidate, *selected, selectionPolicy))
+      if (!selected || isPreferredOver(candidate, *selected))
         selected.emplace(std::move(candidate));
     if (!selected) {
       diagnostics << "wafer-compile: no fully accepted whole variant matches "
@@ -2183,7 +2144,7 @@ selectAcceptedWholeVariants(
       qualifyNoCResidentFixedSlotWorker) {
     std::optional<AcceptedWholeVariant> selected;
     for (AcceptedWholeVariant &candidate : paretoFrontier)
-      if (!selected || isPreferredOver(candidate, *selected, selectionPolicy))
+      if (!selected || isPreferredOver(candidate, *selected))
         selected.emplace(std::move(candidate));
     if (!selected) {
       diagnostics << "wafer-compile: no fully accepted whole variant matches "
@@ -2207,7 +2168,7 @@ selectAcceptedWholeVariants(
   }
   AcceptedWholeVariant *selected = &baselineAccepted;
   for (AcceptedWholeVariant &candidate : paretoFrontier)
-    if (isPreferredOver(candidate, *selected, selectionPolicy))
+    if (isPreferredOver(candidate, *selected))
       selected = &candidate;
   if (selected == &baselineAccepted)
     return AcceptedProductionAndBaseline{std::move(baselineAccepted),

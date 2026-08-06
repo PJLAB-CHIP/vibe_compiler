@@ -11,8 +11,12 @@
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
 #include "mlir/Transforms/Passes.h"
+
+#include <tuple>
 
 namespace wafer {
 using namespace tensor_program_scheduling;
@@ -1023,21 +1027,21 @@ static mlir::LogicalResult evaluateRankVariantImpl(
         "search-phase", "rank-artifact-derivation",
         "fixed-slot-neighbor-derivation");
     if (spillNormalized)
-      appendStaticFixedSlotNeighbors(
-          *spillModule, /*promotedHandoffs=*/0,
-          /*readyReordered=*/false, pipelineAlternatives);
+      appendStaticFixedSlotNeighbors(*spillModule, /*promotedHandoffs=*/0,
+                                     /*readyReordered=*/false,
+                                     pipelineAlternatives);
     if (spillReadyModule)
-      appendStaticFixedSlotNeighbors(
-          *spillReadyModule, /*promotedHandoffs=*/0,
-          /*readyReordered=*/true, pipelineAlternatives);
+      appendStaticFixedSlotNeighbors(*spillReadyModule, /*promotedHandoffs=*/0,
+                                     /*readyReordered=*/true,
+                                     pipelineAlternatives);
     if (residentModule)
-      appendStaticFixedSlotNeighbors(
-          *residentModule, promotedHandoffs,
-          /*readyReordered=*/false, pipelineAlternatives);
+      appendStaticFixedSlotNeighbors(*residentModule, promotedHandoffs,
+                                     /*readyReordered=*/false,
+                                     pipelineAlternatives);
     if (residentReadyModule)
-      appendStaticFixedSlotNeighbors(
-          *residentReadyModule, promotedHandoffs,
-          /*readyReordered=*/true, pipelineAlternatives);
+      appendStaticFixedSlotNeighbors(*residentReadyModule, promotedHandoffs,
+                                     /*readyReordered=*/true,
+                                     pipelineAlternatives);
   }
 
   // Worker placement is an independent derivation dimension. Generate one
@@ -1534,6 +1538,307 @@ struct RankEvaluationRequest {
   }
 };
 
+static TileRegionOp getOnlyTileRegion(mlir::ModuleOp module) {
+  TileRegionOp only;
+  bool multiple = false;
+  module.walk([&](TileRegionOp region) {
+    if (only)
+      multiple = true;
+    else
+      only = region;
+  });
+  return multiple ? TileRegionOp{} : only;
+}
+
+static mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
+splitCompleteRankTileProgramAtDDRBoundary(
+    mlir::OwningOpRef<mlir::ModuleOp> candidate, std::string *failureReason) {
+  TileRegionOp original = getOnlyTileRegion(*candidate);
+  if (!original || original.getBody().empty()) {
+    if (failureReason)
+      *failureReason =
+          "complete-rank residency split requires one actual Tile region";
+    return mlir::failure();
+  }
+  llvm::SmallVector<unsigned, 16> candidateIndices;
+  llvm::SmallVector<mlir::Operation *, 16> originalOperations;
+  for (mlir::Operation &operation :
+       original.getBody().front().without_terminator())
+    originalOperations.push_back(&operation);
+  auto isResidencyWork = [](mlir::Operation *operation) {
+    return wafer::containsTileDataflowOperations(operation);
+  };
+  auto isMeaningfulCut = [&](unsigned index) {
+    llvm::ArrayRef<mlir::Operation *> operations(originalOperations);
+    return llvm::any_of(operations.take_front(index), isResidencyWork) &&
+           llvm::any_of(operations.drop_front(index), isResidencyWork);
+  };
+  // Prefer a traversal boundary over setup operations. Fall back to every
+  // other top-level DDR-clean cut in deterministic block order.
+  for (auto [index, operation] : llvm::enumerate(originalOperations))
+    if (index != 0 && isMeaningfulCut(index) &&
+        mlir::isa<mlir::scf::ForOp>(operation))
+      candidateIndices.push_back(index);
+  for (unsigned index = 1; index < originalOperations.size(); ++index)
+    if (isMeaningfulCut(index) && !llvm::is_contained(candidateIndices, index))
+      candidateIndices.push_back(index);
+
+  for (unsigned index : candidateIndices) {
+    mlir::OwningOpRef<mlir::ModuleOp> trial =
+        mlir::cast<mlir::ModuleOp>((*candidate)->clone());
+    TileRegionOp trialRegion = getOnlyTileRegion(*trial);
+    if (!trialRegion)
+      return mlir::failure();
+    llvm::SmallVector<mlir::Operation *, 16> trialOperations;
+    for (mlir::Operation &operation :
+         trialRegion.getBody().front().without_terminator())
+      trialOperations.push_back(&operation);
+    if (index >= trialOperations.size())
+      return mlir::failure();
+    if (mlir::succeeded(
+            tensor_program_scheduling::partitionTileRegionAtDDRBoundary(
+                trialRegion, trialOperations[index])) &&
+        mlir::succeeded(mlir::verify(*trial)))
+      return std::move(trial);
+  }
+  if (failureReason)
+    *failureReason =
+        "actual Tile clone has no explicit DDR-clean residency cut";
+  return mlir::failure();
+}
+
+static mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
+materializeCompleteRankSelectiveSpill(
+    mlir::OwningOpRef<mlir::ModuleOp> candidate, std::string *failureReason) {
+  TileRegionOp region = getOnlyTileRegion(*candidate);
+  if (!region || region.getBody().empty()) {
+    if (failureReason)
+      *failureReason =
+          "complete-rank selective spill requires one actual Tile region";
+    return mlir::failure();
+  }
+
+  llvm::SmallVector<mlir::Block *, 16> blocks;
+  llvm::DenseSet<mlir::Block *> seenBlocks;
+  blocks.push_back(&region.getBody().front());
+  seenBlocks.insert(blocks.front());
+  region.walk([&](mlir::Operation *operation) {
+    mlir::Block *block = operation->getBlock();
+    if (block && seenBlocks.insert(block).second)
+      blocks.push_back(block);
+  });
+
+  struct SpillProposal {
+    mlir::Value root;
+    mlir::Operation *storeAfter = nullptr;
+    mlir::Operation *reloadBefore = nullptr;
+    uint64_t rootBytes = 0;
+    uint64_t deadOperationCount = 0;
+    unsigned blockOrdinal = 0;
+    unsigned definitionIndex = 0;
+    unsigned resultIndex = 0;
+    unsigned storeIndex = 0;
+    unsigned reloadIndex = 0;
+  };
+  llvm::SmallVector<SpillProposal, 32> proposals;
+  for (auto [blockOrdinal, block] : llvm::enumerate(blocks)) {
+    llvm::SmallVector<mlir::Operation *, 32> operations;
+    for (mlir::Operation &operation : block->without_terminator())
+      operations.push_back(&operation);
+    for (auto [definitionIndex, definition] : llvm::enumerate(operations)) {
+      for (auto [resultIndex, root] :
+           llvm::enumerate(definition->getResults())) {
+        auto rootType = mlir::dyn_cast<mlir::MemRefType>(root.getType());
+        MemoryAttr memory = rootType ? getWaferMemoryAttr(rootType)
+                                     : MemoryAttr{};
+        if (!rootType || !memory || !isWaferSPMMemRefType(rootType))
+          continue;
+        mlir::FailureOr<int64_t> footprint =
+            memory.getPhysicalFootprintBytes(rootType);
+        if (mlir::failed(footprint) || *footprint <= 0)
+          continue;
+        for (unsigned storeIndex = definitionIndex;
+             storeIndex + 1 < operations.size(); ++storeIndex) {
+          for (unsigned reloadIndex = storeIndex + 2;
+               reloadIndex < operations.size(); ++reloadIndex) {
+            if (!tensor_program_scheduling::canMaterializeSelectiveTileSpill(
+                    region, root, operations[storeIndex],
+                    operations[reloadIndex]))
+              continue;
+            proposals.push_back(
+                {root, operations[storeIndex], operations[reloadIndex],
+                 static_cast<uint64_t>(*footprint),
+                 static_cast<uint64_t>(reloadIndex - storeIndex - 1),
+                 static_cast<unsigned>(blockOrdinal),
+                 static_cast<unsigned>(definitionIndex),
+                 static_cast<unsigned>(resultIndex), storeIndex, reloadIndex});
+          }
+        }
+      }
+    }
+  }
+  llvm::sort(proposals, [](const SpillProposal &left,
+                           const SpillProposal &right) {
+    unsigned __int128 leftRelief =
+        static_cast<unsigned __int128>(left.rootBytes) *
+        left.deadOperationCount;
+    unsigned __int128 rightRelief =
+        static_cast<unsigned __int128>(right.rootBytes) *
+        right.deadOperationCount;
+    if (leftRelief != rightRelief)
+      return leftRelief > rightRelief;
+    if (left.rootBytes != right.rootBytes)
+      return left.rootBytes > right.rootBytes;
+    if (left.deadOperationCount != right.deadOperationCount)
+      return left.deadOperationCount > right.deadOperationCount;
+    return std::tie(left.blockOrdinal, left.definitionIndex, left.resultIndex,
+                    left.storeIndex, left.reloadIndex) <
+           std::tie(right.blockOrdinal, right.definitionIndex,
+                    right.resultIndex, right.storeIndex, right.reloadIndex);
+  });
+  for (const SpillProposal &proposal : proposals)
+    if (mlir::succeeded(
+            tensor_program_scheduling::materializeSelectiveTileSpill(
+                region, proposal.root, proposal.storeAfter,
+                proposal.reloadBefore))) {
+      if (mlir::failed(mlir::verify(*candidate)))
+        return mlir::failure();
+      return std::move(candidate);
+    }
+  if (failureReason)
+    *failureReason =
+        "actual Tile clone has no bounded selective-spill interval";
+  return mlir::failure();
+}
+
+static mlir::Value traceTileBoundaryBase(mlir::Value value) {
+  while (auto subview = value.getDefiningOp<mlir::memref::SubViewOp>())
+    value = subview.getSource();
+  return value;
+}
+
+static bool isReadOnlyFunctionalBoundarySource(mlir::Value value) {
+  auto argument =
+      mlir::dyn_cast<mlir::BlockArgument>(traceTileBoundaryBase(value));
+  if (!argument)
+    return false;
+  auto region =
+      mlir::dyn_cast_or_null<TileRegionOp>(argument.getOwner()->getParentOp());
+  if (!region || argument.getArgNumber() >= region.getInputs().size())
+    return false;
+  auto toMemref = region.getInputs()[argument.getArgNumber()]
+                      .getDefiningOp<mlir::bufferization::ToMemrefOp>();
+  if (!toMemref)
+    return false;
+  auto functionArgument =
+      mlir::dyn_cast<mlir::BlockArgument>(toMemref.getTensor());
+  return functionArgument && mlir::isa_and_nonnull<mlir::func::FuncOp>(
+                                 functionArgument.getOwner()->getParentOp());
+}
+
+static bool hasOnlyReadUses(mlir::Value value) {
+  if (value.use_empty())
+    return false;
+  for (mlir::OpOperand &use : value.getUses()) {
+    auto effects =
+        mlir::dyn_cast<mlir::MemoryEffectOpInterface>(use.getOwner());
+    if (!effects)
+      return false;
+    llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> onValue;
+    effects.getEffectsOnValue(value, onValue);
+    if (onValue.empty() || llvm::any_of(onValue, [](const auto &effect) {
+          return !mlir::isa<mlir::MemoryEffects::Read>(effect.getEffect());
+        }))
+      return false;
+  }
+  return true;
+}
+
+static StorageLoadOp
+getReadOnlyBoundaryLoadForAlloc(mlir::memref::AllocOp alloc) {
+  if (!alloc || !isWaferSPMMemRefType(alloc.getType()) ||
+      !alloc.getDynamicSizes().empty())
+    return {};
+  StorageLoadOp load;
+  for (mlir::OpOperand &use : alloc.getResult().getUses()) {
+    if (auto candidate = mlir::dyn_cast<StorageLoadOp>(use.getOwner());
+        candidate && candidate.getDest() == alloc.getResult()) {
+      if (load || !isReadOnlyFunctionalBoundarySource(candidate.getSource()))
+        return {};
+      load = candidate;
+      continue;
+    }
+    auto effects =
+        mlir::dyn_cast<mlir::MemoryEffectOpInterface>(use.getOwner());
+    if (!effects ||
+        effects.getEffectOnValue<mlir::MemoryEffects::Write>(alloc.getResult()))
+      return {};
+  }
+  return load;
+}
+
+static bool tracesReadOnlyBoundaryLoad(mlir::Value value) {
+  llvm::DenseSet<mlir::Value> visited;
+  while (visited.insert(value).second) {
+    if (auto layout = value.getDefiningOp<LayoutMaterializeOp>()) {
+      value = layout.getSource();
+      continue;
+    }
+    auto alloc = value.getDefiningOp<mlir::memref::AllocOp>();
+    return alloc && getReadOnlyBoundaryLoadForAlloc(alloc);
+  }
+  return false;
+}
+
+static mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
+hoistInvariantReadOnlyTileMovement(mlir::OwningOpRef<mlir::ModuleOp> candidate,
+                                   std::string *failureReason) {
+  llvm::SmallVector<mlir::scf::ForOp, 8> loops;
+  candidate->walk<mlir::WalkOrder::PostOrder>(
+      [&](mlir::scf::ForOp loop) { loops.push_back(loop); });
+  unsigned movedMovement = 0;
+  for (mlir::scf::ForOp loop : loops) {
+    auto loopLike = mlir::cast<mlir::LoopLikeOpInterface>(loop.getOperation());
+    mlir::moveLoopInvariantCode(
+        {&loop.getRegion()},
+        [&](mlir::Value value, mlir::Region *) {
+          return loopLike.isDefinedOutsideOfLoop(value);
+        },
+        [&](mlir::Operation *operation, mlir::Region *) {
+          if (mlir::isMemoryEffectFree(operation) &&
+              mlir::isSpeculatable(operation))
+            return true;
+          if (auto alloc = mlir::dyn_cast<mlir::memref::AllocOp>(operation))
+            return static_cast<bool>(getReadOnlyBoundaryLoadForAlloc(alloc));
+          if (auto load = mlir::dyn_cast<StorageLoadOp>(operation))
+            return load.getDest().getDefiningOp<mlir::memref::AllocOp>() &&
+                   isReadOnlyFunctionalBoundarySource(load.getSource());
+          if (auto layout = mlir::dyn_cast<LayoutMaterializeOp>(operation))
+            return tracesReadOnlyBoundaryLoad(layout.getSource()) &&
+                   hasOnlyReadUses(layout.getResult());
+          return false;
+        },
+        [&](mlir::Operation *operation, mlir::Region *) {
+          movedMovement +=
+              mlir::isa<StorageLoadOp, LayoutMaterializeOp>(operation);
+          loopLike.moveOutOfLoop(operation);
+        });
+  }
+  if (movedMovement == 0) {
+    if (failureReason)
+      *failureReason =
+          "actual Tile clone has no invariant read-only boundary movement";
+    return mlir::failure();
+  }
+  if (mlir::failed(mlir::verify(*candidate))) {
+    if (failureReason)
+      *failureReason =
+          "invariant read-only Tile movement produced invalid actual IR";
+    return mlir::failure();
+  }
+  return std::move(candidate);
+}
+
 } // namespace
 
 bool isTensorProgramSchedulingRankInvariant(mlir::ModuleOp sourceModule) {
@@ -1550,6 +1855,90 @@ bool isTensorProgramSchedulingRankInvariant(mlir::ModuleOp sourceModule) {
                          : mlir::WalkResult::advance();
   });
   return !rankDependent;
+}
+
+mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
+materializeCompleteRankCandidateTileProgram(
+    mlir::ModuleOp sourceModule, int64_t logicalRank,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    CandidateTileTraversalKind traversalKind,
+    CompleteRankTraversalComposition composition,
+    CandidateTileResidencyAction residencyAction,
+    CandidateBoundaryMovementAction boundaryMovementAction,
+    CandidateLoopMovementAction loopMovementAction,
+    std::string *failureReason) {
+  if (!sourceModule || logicalRank < 0 || candidateTileSizes.empty())
+    return mlir::failure();
+  mlir::OwningOpRef<mlir::ModuleOp> stagedModule =
+      mlir::cast<mlir::ModuleOp>(sourceModule->clone());
+  outlineRankDenseTensorConstants(*stagedModule);
+  mlir::OwningOpRef<mlir::ModuleOp> candidate;
+  if (mlir::failed(lowerCompleteRankCandidateTensorProgramToTileRegionModule(
+          *stagedModule, candidateTileSizes, candidateReductionTileSizes,
+          traversalKind, composition, candidate, failureReason, logicalRank,
+          boundaryMovementAction ==
+              CandidateBoundaryMovementAction::ExactDirectMapped)))
+    return mlir::failure();
+  if (loopMovementAction ==
+      CandidateLoopMovementAction::HoistInvariantReadOnlyBoundary) {
+    auto hoisted =
+        hoistInvariantReadOnlyTileMovement(std::move(candidate), failureReason);
+    if (mlir::failed(hoisted))
+      return mlir::failure();
+    candidate = std::move(*hoisted);
+  }
+  switch (residencyAction) {
+  case CandidateTileResidencyAction::KeepSingleRegion:
+    return std::move(candidate);
+  case CandidateTileResidencyAction::SplitAtExplicitDDRBoundary:
+    return splitCompleteRankTileProgramAtDDRBoundary(std::move(candidate),
+                                                     failureReason);
+  case CandidateTileResidencyAction::SelectiveSpill:
+    return materializeCompleteRankSelectiveSpill(std::move(candidate),
+                                                 failureReason);
+  }
+  llvm_unreachable("unknown complete-rank Tile residency action");
+}
+
+mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
+materializeCompleteRankTileResidencySibling(
+    mlir::ModuleOp tileParent, CandidateTileResidencyAction residencyAction,
+    std::string *failureReason) {
+  if (!tileParent ||
+      residencyAction == CandidateTileResidencyAction::KeepSingleRegion) {
+    if (failureReason)
+      *failureReason =
+          "Tile residency sibling requires an actual non-identity action";
+    return mlir::failure();
+  }
+  bool hasTile = false;
+  bool hasInstruction = false;
+  tileParent.walk([&](mlir::Operation *operation) {
+    hasTile |= mlir::isa<TileRegionOp>(operation);
+    hasInstruction |=
+        mlir::isa<WaferInstructionOpInterface, SyncNCCJoinOp>(operation);
+  });
+  if (!hasTile || hasInstruction) {
+    if (failureReason)
+      *failureReason =
+          "residency repair requires unplaced Tile IR without Instr state";
+    return mlir::failure();
+  }
+
+  mlir::OwningOpRef<mlir::ModuleOp> sibling =
+      mlir::cast<mlir::ModuleOp>(tileParent->clone());
+  switch (residencyAction) {
+  case CandidateTileResidencyAction::KeepSingleRegion:
+    llvm_unreachable("identity residency action rejected above");
+  case CandidateTileResidencyAction::SplitAtExplicitDDRBoundary:
+    return splitCompleteRankTileProgramAtDDRBoundary(std::move(sibling),
+                                                     failureReason);
+  case CandidateTileResidencyAction::SelectiveSpill:
+    return materializeCompleteRankSelectiveSpill(std::move(sibling),
+                                                 failureReason);
+  }
+  llvm_unreachable("unknown complete-rank Tile residency action");
 }
 
 static mlir::FailureOr<std::vector<ScheduledRankCandidate>>
@@ -1623,26 +2012,9 @@ buildScheduledRankCandidateFrontierImpl(
       selectedTileStream.flush();
       auto selectedTileIR =
           std::make_shared<const std::string>(std::move(selectedTileText));
-
-      std::string failureReason;
-      wafer::support::recordCompileWork(
-          wafer::support::CompileWorkKind::TerminalCandidateClone);
-      if (mlir::failed(tile_region_to_instr::convertTileRegionToInstrModule(
-              *baselineModule, TileRegionToInstrOptions{}, &failureReason))) {
-        baselineModule->emitError()
-            << "complete-rank instruction lowering failed"
-            << (failureReason.empty() ? "" : ": ") << failureReason;
-        return mlir::failure();
-      }
-      if (mlir::failed(normalizeMinimumNCCJoins(*baselineModule))) {
-        baselineModule->emitError(
-            "complete-rank completion normalization failed");
-        return mlir::failure();
-      }
-      clearRankCandidatePhysicalFacts(*baselineModule);
       if (mlir::failed(mlir::verify(*baselineModule))) {
         baselineModule->emitError(
-            "complete-rank conservative baseline failed verification");
+            "complete-rank conservative Tile baseline failed verification");
         return mlir::failure();
       }
 

@@ -386,24 +386,19 @@ estimateNoC(const WholeCardInstructionProgramCost &cost,
 static StaticDurationInterval
 estimateSPM(const WholeCardInstructionProgramCost &cost,
             const TargetScheduleCostPolicy &policy) {
-  ScheduleCostMetric maximumRankMovement;
-  if (cost.rankCosts.empty()) {
-    // Synthetic callers may provide only an aggregate. Treating it as one rank
-    // is conservative for the point estimate and does not affect real
-    // complete-rank analysis, which always retains rankCosts.
+  ScheduleCostMetric maximumRankMovement = cost.maximumRankSPMMovementBytes;
+  if (cost.rankCosts.empty() && maximumRankMovement.isKnown() &&
+      maximumRankMovement.value == 0)
     maximumRankMovement = cost.aggregateSPMMovementBytes;
-  } else {
-    for (const InstructionProgramCost &rank : cost.rankCosts)
-      maximumRankMovement =
-          maxMetric(maximumRankMovement, rank.spmMovementBytes);
-  }
-  return {
-      {},
-      timeForWork(maximumRankMovement, policy.spmBytesPerSecondPerTileEstimate),
-      timeForWork(
-          cost.aggregateSPMMovementBytes,
-          validatedSustainedRate(policy.spmBytesPerSecondPerTileLowerBound)),
-      assumptions({StaticDurationAssumption::SPMInterfacePrior})};
+  ScheduleCostMetric nominal = maximumRankMovement;
+  if (nominal.isKnown() && nominal.value != 0)
+    nominal = unknown(ScheduleCostReason::MissingPerformanceCalibration);
+  return {{},
+          nominal,
+          timeForWork(cost.aggregateSPMMovementBytes,
+                      validatedSustainedRate(
+                          policy.spmBytesPerSecondPerTileLowerBound)),
+          /*nominalAssumptions=*/0};
 }
 
 static StaticDurationInterval
@@ -473,42 +468,36 @@ estimateWholeCardResourceDuration(const WholeCardInstructionProgramCost &cost,
   result.control = estimateControl(cost, policy);
   result.makespan.lowerBoundPicoseconds = maxMetrics(
       {result.ddr.lowerBoundPicoseconds, result.compute.lowerBoundPicoseconds,
-       result.noc.lowerBoundPicoseconds, result.spm.lowerBoundPicoseconds,
-       result.control.lowerBoundPicoseconds});
+       result.noc.lowerBoundPicoseconds, result.control.lowerBoundPicoseconds});
   ScheduleCostMetric service;
   switch (schedule) {
   case StaticCrossResourceSchedule::SequentialPhases:
     // DDR, inter-tile communication and compute are charged in dependency
-    // order when current IR has no qualified recurring overlap schedule. SPM
-    // is a simultaneous port constraint on those operations, not a fourth
-    // serial copy of their service time.
-    service = maxMetric(sumMetrics({result.ddr.nominalPicoseconds,
-                                    result.compute.nominalPicoseconds,
-                                    result.noc.nominalPicoseconds}),
-                        result.spm.nominalPicoseconds);
+    // order when current IR has no qualified recurring overlap schedule.
+    service = sumMetrics({result.ddr.nominalPicoseconds,
+                          result.compute.nominalPicoseconds,
+                          result.noc.nominalPicoseconds});
     break;
   case StaticCrossResourceSchedule::PipelinedSteadyState:
     // Explicit multi-buffer/fixed-slot evidence permits the standard
     // steady-state resource-envelope model used by tile pipelines.
-    service = maxMetrics(
-        {result.ddr.nominalPicoseconds, result.compute.nominalPicoseconds,
-         result.noc.nominalPicoseconds, result.spm.nominalPicoseconds});
+    service = maxMetrics({result.ddr.nominalPicoseconds,
+                          result.compute.nominalPicoseconds,
+                          result.noc.nominalPicoseconds});
     break;
   }
   result.makespan.nominalPicoseconds =
       addMetric(service, result.control.nominalPicoseconds);
   result.makespan.nominalAssumptions =
       result.ddr.nominalAssumptions | result.compute.nominalAssumptions |
-      result.noc.nominalAssumptions | result.spm.nominalAssumptions |
-      result.control.nominalAssumptions |
+      result.noc.nominalAssumptions | result.control.nominalAssumptions |
       staticDurationAssumptionMask(
           schedule == StaticCrossResourceSchedule::SequentialPhases
               ? StaticDurationAssumption::SequentialPhaseModel
               : StaticDurationAssumption::QualifiedPipelineModel);
   result.makespan.upperBoundPicoseconds = sumMetrics(
       {result.ddr.upperBoundPicoseconds, result.compute.upperBoundPicoseconds,
-       result.noc.upperBoundPicoseconds, result.spm.upperBoundPicoseconds,
-       result.control.upperBoundPicoseconds});
+       result.noc.upperBoundPicoseconds, result.control.upperBoundPicoseconds});
   return result;
 }
 

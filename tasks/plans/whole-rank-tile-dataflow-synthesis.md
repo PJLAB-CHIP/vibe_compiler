@@ -1,6 +1,7 @@
 # Whole-Rank Tile Dataflow Synthesis 实施计划
 
-状态：设计与施工边界已收敛，C0–C1已完成，C2–C6待实施。任务状态以 `tasks/progress.md` 中
+状态：设计与施工边界已收敛，C0–C1已完成；C2–C4的production纵向骨架施工中，但尚未通过任一
+C2/C3/C4完整checkpoint gate；C5–C6待实施。任务状态以 `tasks/progress.md` 中
 `whole-rank-tile-dataflow-synthesis` 为准。
 
 本计划只拆解 `tasks/06-physical-dataflow-synthesis.md` 的施工顺序、迁移删除面和验证 checkpoint；算法、IR 和
@@ -26,6 +27,28 @@ seam，并把exact success/failure反馈给仍存活的同一frontier；C2+C3共
 | C4 | 用当前校准hardware cost model从fully gated frontier选winner并原子提交 | 不生成候选、不重新packing |
 | C5 | 在同一C2→C4闭环中加入collective residency与native/partial/online reduction候选 | 不建立算子专用pipeline或第二decision owner |
 | C6 | 启用已验证的完整winner policy，删除C1起已零consumer的旧per-task/独立selector实现 | 不保留隐藏兼容分支 |
+
+### 当前施工状态（2026-08-06）
+
+- C2已接入唯一invocation-local all-rank work ledger，generation前预留mandatory baseline terminal gate和repair
+  credits；frontier成员是complete-rank actual Tile clones，并覆盖coupled/separated traversal、显式DDR cut、selective
+  spill、mixed-shape三consumer fanout、diamond/fanin/tail、shared-input contraction、oriented transpose contraction、
+  exact direct-mapped boundary movement和read-only loop-invariant movement。budget exhaustion与不同generation
+  parallelism保持baseline reservation和frontier digest一致；structured concat在可表示tile上保留`scf.if`，跨越当前
+  unsupported `linalg.index` payload的action单独fail closed。C2尚未闭合current-IR frontier-fact equivalence、chain DP、
+  general-DAG Pareto beam、完整selection vector dominance和collective shared-parameter expansion，因此不得标完成。
+- C3已由同一coordinator reservation驱动：每个actual Tile parent只lower一次，再派生有限complete-rank ready-order、
+  fixed-slot和worker siblings；function-boundary bufferization后删除旧join并从current effects fresh重建completion，随后原子
+  执行SPM、DDR、transport与ABI exact gates。SPM失败返回typed feedback；selective-spill repair从仍存活的无offset Tile
+  parent产生新actual clone并重新通过同一exact gate。DDR split repair也重新进入同一gate；没有真实completion witness的
+  sibling-region cut仍会因SPM overlap失败，证明region边界没有被偷换成自动join。C3尚未完成全部repair family、fully-gated
+  serial/parallel digest及C2完整candidate矩阵的联合闭环。
+- C4已有只消费C3 fully-gated set的纯Pareto/hardware-cost selector和move-one原子提交；selection不改变global ledger，
+  `Unknown` disposition不同保持不可比，SPM high-water只作capacity/headroom，历史`ExternalMovementFirst`及128 GB/s SPM
+  duration已删除。旧test-only whole-variant seam的promotion测试已改为未校准tradeoff不越过baseline的负例；C4仍缺C2/C3
+  完整frontier上的serial/parallel winner/package、model-scale work/RSS bound和C6后唯一production surface证明。
+- C5的typed peer/collective基础改动不构成checkpoint完成；native/partial/online三类候选、numeric oracle和真实
+  cached-attention/prefill选择尚未闭合。C6旧路径删除、完整package/fresh no-card和board-ready gate尚未开始。
 
 ## 施工边界
 

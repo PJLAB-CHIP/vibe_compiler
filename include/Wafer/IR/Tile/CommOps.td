@@ -15,43 +15,45 @@ class Wafer_CommPeerOp<string mnemonic, list<Trait> resourceEffects,
     routes, FSMs, algorithms, pipeline stages, slots, ownership roles and
     costs are deliberately absent.
 
+    The message phase is `peer_dataflow` for ordinary physical-dataflow
+    movement. Rank-specialized equal-split all-to-all and
+    collective-permute may use `all_to_all` or `collective_permute` because
+    those logical operations directly determine one explicit peer schedule;
+    collective families that still require terminal algorithm selection are
+    not legal peer-tile phases.
+
     The returned token makes issue-to-completion lifetime explicit. A
     matching `async.await` is converted to an exact
     `wafer.instr.dte_wait`; it does not complete any NCC worker domain.
   }];
-  let arguments = (ins
-    Arg<Wafer_AnySPMMemRef, "", bufferEffects>:$buffer,
-    I64Attr:$peer,
-    I64Attr:$bytes,
-    Wafer_DTEMessageAttr:$message
-  );
+  let arguments = (ins Arg<Wafer_AnySPMMemRef, "", bufferEffects>:$buffer,
+      I64Attr:$peer, I64Attr:$bytes, Wafer_DTEMessageAttr:$message);
   let results = (outs Async_TokenType:$token);
   let hasVerifier = 1;
-  let assemblyFormat =
-      "$buffer attr-dict `:` type($buffer) `->` type($token)";
+  let assemblyFormat = "$buffer attr-dict `:` type($buffer) `->` type($token)";
 }
 
 def Wafer_CommPeerSendOp
     : Wafer_CommPeerOp<"tile.peer_send",
-        [MemoryEffects<[MemRead<Wafer_SPMResource>,
-                        MemWrite<Wafer_CommunicationResource>]>],
-        [MemRead]> {
+                       [MemoryEffects<[MemRead<Wafer_SPMResource>,
+                                       MemWrite<Wafer_CommunicationResource>]>],
+                       [MemRead]> {
   let summary = "target-abstract fixed-size peer tile send";
 }
 
 def Wafer_CommPeerRecvOp
     : Wafer_CommPeerOp<"tile.peer_recv",
-        [MemoryEffects<[MemWrite<Wafer_SPMResource>,
-                        MemWrite<Wafer_CommunicationResource>]>],
-        [MemWrite]> {
+                       [MemoryEffects<[MemWrite<Wafer_SPMResource>,
+                                       MemWrite<Wafer_CommunicationResource>]>],
+                       [MemWrite]> {
   let summary = "target-abstract fixed-size peer tile receive";
 }
 
-def Wafer_CommAllGatherOp : Wafer_Op<"tile.all_gather", [
-    MemoryEffects<[MemRead<Wafer_SPMResource>,
-                   MemWrite<Wafer_SPMResource>,
-                   MemWrite<Wafer_CommunicationResource>]>
-  ]> {
+def Wafer_CommAllGatherOp
+    : Wafer_Op<"tile.all_gather",
+               [MemoryEffects<[MemRead<Wafer_SPMResource>,
+                               MemWrite<Wafer_SPMResource>,
+                               MemWrite<Wafer_CommunicationResource>]>]> {
   let summary = "target-abstract fixed-size all-gather request";
   let description = [{
     `wafer.tile.all_gather` is the collective-level communication boundary
@@ -67,48 +69,38 @@ def Wafer_CommAllGatherOp : Wafer_Op<"tile.all_gather", [
     semantics.
   }];
 
-  let arguments = (ins
-    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$local_chunk,
-    Arg<Wafer_AnySPMMemRef, "", [MemWrite]>:$gather_buffer,
-    I64Attr:$local_rank,
-    I64Attr:$group_size,
-    DenseI64ArrayAttr:$rank_group,
-    I64Attr:$bytes,
-    I64Attr:$communication_id
-  );
+  let arguments = (ins Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$local_chunk,
+      Arg<Wafer_AnySPMMemRef, "", [MemWrite]>:$gather_buffer,
+      I64Attr:$local_rank, I64Attr:$group_size, DenseI64ArrayAttr:$rank_group,
+      I64Attr:$bytes, I64Attr:$communication_id);
   let hasVerifier = 1;
-  let assemblyFormat =
-      "$local_chunk `into` $gather_buffer attr-dict `:` type($local_chunk) `->` type($gather_buffer)";
+  let assemblyFormat = "$local_chunk `into` $gather_buffer attr-dict `:` "
+                       "type($local_chunk) `->` type($gather_buffer)";
 }
 
-class Wafer_CommReduceCollectiveOp<string mnemonic> : Wafer_Op<mnemonic, [
-    MemoryEffects<[MemRead<Wafer_SPMResource>,
-                   MemWrite<Wafer_SPMResource>,
-                   MemWrite<Wafer_ComputeResource>,
-                   MemWrite<Wafer_CommunicationResource>]>
-  ]> {
-  let arguments = (ins
-    Wafer_ComputeReduceKindAttr:$kind,
-    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$input,
-    Arg<Wafer_AnySPMMemRef, "", [MemRead, MemWrite]>:$recv_buffer,
-    I64Attr:$local_rank,
-    I64Attr:$group_size,
-    DenseI64ArrayAttr:$rank_group,
-    I64Attr:$bytes,
-    I64Attr:$communication_id
-  );
+class Wafer_CommReduceCollectiveOp<string mnemonic>
+    : Wafer_Op<
+          mnemonic, [MemoryEffects<[MemRead<Wafer_SPMResource>,
+                                    MemWrite<Wafer_SPMResource>,
+                                    MemWrite<Wafer_ComputeResource>,
+                                    MemWrite<Wafer_CommunicationResource>]>]> {
+  let arguments = (ins Wafer_ComputeReduceKindAttr:$kind,
+      Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$input,
+      Arg<Wafer_AnySPMMemRef, "", [MemRead, MemWrite]>:$recv_buffer,
+      I64Attr:$local_rank, I64Attr:$group_size, DenseI64ArrayAttr:$rank_group,
+      I64Attr:$bytes, I64Attr:$communication_id);
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
-  let assemblyFormat =
-      "$kind $input `using` $recv_buffer attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "$kind $input `using` $recv_buffer attr-dict `:` "
+                       "functional-type(operands, results)";
 }
 
-def Wafer_CommReduceScatterOp : Wafer_Op<"tile.reduce_scatter", [
-    MemoryEffects<[MemRead<Wafer_SPMResource>,
-                   MemWrite<Wafer_SPMResource>,
-                   MemWrite<Wafer_ComputeResource>,
-                   MemWrite<Wafer_CommunicationResource>]>
-  ]> {
+def Wafer_CommReduceScatterOp
+    : Wafer_Op<"tile.reduce_scatter",
+               [MemoryEffects<[MemRead<Wafer_SPMResource>,
+                               MemWrite<Wafer_SPMResource>,
+                               MemWrite<Wafer_ComputeResource>,
+                               MemWrite<Wafer_CommunicationResource>]>]> {
   let summary = "target-abstract fixed-size reduce-scatter full-input request";
   let description = [{
     `wafer.tile.reduce_scatter` represents a rank-local reduce-scatter request
@@ -120,21 +112,15 @@ def Wafer_CommReduceScatterOp : Wafer_Op<"tile.reduce_scatter", [
     explicit p2p DTE steps plus local accumulation; reduction semantics are not
     hidden in DTE protocol.
   }];
-  let arguments = (ins
-    Wafer_ComputeReduceKindAttr:$kind,
-    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$input,
-    Arg<Wafer_AnySPMMemRef, "", [MemRead, MemWrite]>:$recv_buffer,
-    I64Attr:$axis,
-    I64Attr:$local_rank,
-    I64Attr:$group_size,
-    DenseI64ArrayAttr:$rank_group,
-    I64Attr:$bytes,
-    I64Attr:$communication_id
-  );
+  let arguments = (ins Wafer_ComputeReduceKindAttr:$kind,
+      Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$input,
+      Arg<Wafer_AnySPMMemRef, "", [MemRead, MemWrite]>:$recv_buffer,
+      I64Attr:$axis, I64Attr:$local_rank, I64Attr:$group_size,
+      DenseI64ArrayAttr:$rank_group, I64Attr:$bytes, I64Attr:$communication_id);
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
-  let assemblyFormat =
-      "$kind $input `using` $recv_buffer attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "$kind $input `using` $recv_buffer attr-dict `:` "
+                       "functional-type(operands, results)";
 }
 
 def Wafer_CommAllReduceOp : Wafer_CommReduceCollectiveOp<"tile.all_reduce"> {

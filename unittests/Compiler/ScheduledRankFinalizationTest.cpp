@@ -3,6 +3,10 @@
 #include "../../lib/Wafer/Compiler/ScheduledRankFinalization.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
 
+#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
+#include "Wafer/IR/WaferDialect.h"
+
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -30,20 +34,29 @@ protected:
     std::string source;
     llvm::raw_string_ostream os(source);
     os << R"mlir(module {
-  func.func @main(%boundary: memref<1xf16, #wafer.memory<ddr, tensor>>) {
+  func.func @main(%boundary: memref<)mlir"
+       << elements << R"mlir(xf16, #wafer.memory<ddr, tensor>>) {
     %unused = wafer.tile.region(%boundary
-        : memref<1xf16, #wafer.memory<ddr, tensor>>) ->
-        (memref<1xf16, #wafer.memory<ddr, tensor>>) {
-    ^bb0(%ddr: memref<1xf16, #wafer.memory<ddr, tensor>>):
+        : memref<)mlir"
+       << elements << R"mlir(xf16, #wafer.memory<ddr, tensor>>) ->
+        (memref<)mlir"
+       << elements << R"mlir(xf16, #wafer.memory<ddr, tensor>>) {
+    ^bb0(%ddr: memref<)mlir"
+       << elements << R"mlir(xf16, #wafer.memory<ddr, tensor>>):
       %zero = arith.constant 0.000000e+00 : f16
       %spm = memref.alloc() : memref<)mlir"
        << elements << R"mlir(xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.fill %spm, %zero
+      wafer.tile.load %ddr into %spm
+          : memref<)mlir"
+       << elements << R"mlir(xf16, #wafer.memory<ddr, tensor>>
+        into memref<)mlir"
+       << elements << R"mlir(xf16, #wafer.memory<spm, tensor>>
+      wafer.tile.fill %spm, %zero
           : memref<)mlir"
        << elements << R"mlir(xf16, #wafer.memory<spm, tensor>>, f16
-      wafer.instr.ncc_join [0]
       wafer.tile.yield %ddr
-          : memref<1xf16, #wafer.memory<ddr, tensor>>
+          : memref<)mlir"
+       << elements << R"mlir(xf16, #wafer.memory<ddr, tensor>>
     }
     return
   }
@@ -64,9 +77,72 @@ module {
                                                    context.get());
   }
 
+  mlir::OwningOpRef<mlir::ModuleOp> candidateWithStaleMidRegionJoin() {
+    return mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(
+      %boundary: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    %unused = wafer.tile.region(%boundary
+        : memref<4xf16, #wafer.memory<ddr, tensor>>) ->
+        (memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    ^bb0(%ddr: memref<4xf16, #wafer.memory<ddr, tensor>>):
+      %a = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %b = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %zero = arith.constant 0.000000e+00 : f16
+      wafer.instr.fill %a, %zero
+          : memref<4xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.instr.ncc_join [0]
+      wafer.instr.wdma %a to %ddr
+          {byte_count = 8 : i64, dst_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>, inner_bytes = 8 : i64}
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+         to memref<4xf16, #wafer.memory<ddr, tensor>>
+      wafer.instr.fill %b, %zero
+          : memref<4xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.instr.wdma %b to %ddr
+          {byte_count = 8 : i64, dst_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>, inner_bytes = 8 : i64}
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+         to memref<4xf16, #wafer.memory<ddr, tensor>>
+      wafer.tile.yield %ddr
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+    }
+    return
+  }
+}
+)mlir",
+                                                   context.get());
+  }
+
   mlir::DialectRegistry registry;
   std::unique_ptr<mlir::MLIRContext> context;
 };
+
+TEST_F(ScheduledRankFinalizationTest,
+       LowersTypedTileDataflowOnlyAtTerminalBoundary) {
+  mlir::OwningOpRef<mlir::ModuleOp> tileCandidate =
+      candidateWithSPMElements(/*elements=*/128);
+  ASSERT_TRUE(tileCandidate);
+  ASSERT_TRUE(
+      wafer::containsTileDataflowOperations(tileCandidate->getOperation()));
+
+  std::vector<wafer::ScheduledRankCandidate> frontier;
+  frontier.emplace_back(std::move(tileCandidate), /*stableOrdinal=*/0,
+                        wafer::RankArtifactKind::Spill,
+                        /*reservedBaseline=*/true);
+  auto finalized =
+      wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
+          std::move(frontier));
+  ASSERT_TRUE(mlir::succeeded(finalized));
+  ASSERT_EQ(finalized->size(), 1u);
+  EXPECT_FALSE(wafer::containsTileDataflowOperations(
+      finalized->front().module->getOperation()));
+  bool hasRDMA = false;
+  finalized->front().module->walk([&](wafer::InstrRDMAOp) { hasRDMA = true; });
+  EXPECT_TRUE(hasRDMA);
+}
 
 TEST_F(ScheduledRankFinalizationTest,
        FiltersFailedAlternativeAndClosesSurvivorExactCost) {
@@ -96,7 +172,7 @@ TEST_F(ScheduledRankFinalizationTest,
                         /*reservedBaseline=*/true);
   mlir::FailureOr<std::vector<wafer::compiler::detail::FinalizedRankCandidate>>
       finalized =
-      wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
+          wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
               std::move(frontier));
 
   ASSERT_TRUE(mlir::succeeded(finalized)) << diagnostics;
@@ -216,6 +292,31 @@ TEST_F(ScheduledRankFinalizationTest,
   EXPECT_NE(diagnostics.find("rank_frontier_contains_whole_variant_facts"),
             std::string::npos)
       << diagnostics;
+}
+
+TEST_F(ScheduledRankFinalizationTest,
+       RebuildsCompletionAfterBufferizationFromCurrentEffects) {
+  auto candidate = candidateWithStaleMidRegionJoin();
+  ASSERT_TRUE(candidate);
+  std::vector<wafer::ScheduledRankCandidate> frontier;
+  frontier.emplace_back(std::move(candidate), /*stableOrdinal=*/0,
+                        wafer::RankArtifactKind::Spill,
+                        /*reservedBaseline=*/true);
+  auto finalized =
+      wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
+          std::move(frontier), /*requireReservedBaseline=*/true,
+          wafer::compiler::detail::RankCompletionPolicy::
+              RebuildFromCurrentEffects);
+  ASSERT_TRUE(mlir::succeeded(finalized));
+  ASSERT_EQ(finalized->size(), 1u);
+
+  llvm::SmallVector<wafer::SyncNCCJoinOp, 2> joins;
+  finalized->front().module->walk(
+      [&](wafer::SyncNCCJoinOp join) { joins.push_back(join); });
+  ASSERT_EQ(joins.size(), 1u);
+  EXPECT_EQ(joins.front().getParticipants(),
+            (llvm::ArrayRef<int64_t>{0}));
+  EXPECT_TRUE(mlir::isa<mlir::func::ReturnOp>(joins.front()->getNextNode()));
 }
 
 } // namespace
