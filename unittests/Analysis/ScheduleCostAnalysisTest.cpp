@@ -190,6 +190,54 @@ module {
 }
 
 TEST_F(ScheduleCostAnalysisTest,
+       ResolvesStaticLoopBoundsThroughNestedTileRegions) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(
+      %input: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c4 = arith.constant 4 : index
+    %bounds:3 = wafer.tile.region(%c0, %c4, %c2 : index, index, index)
+        -> (index, index, index) {
+    ^bb0(%lower: index, %upper: index, %step: index):
+      wafer.tile.yield %lower, %upper, %step : index, index, index
+    }
+    %result = wafer.tile.region(
+        %input, %bounds#0, %bounds#1, %bounds#2
+        : memref<4xf16, #wafer.memory<ddr, tensor>>, index, index, index)
+        -> (memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    ^bb0(%in: memref<4xf16, #wafer.memory<ddr, tensor>>,
+         %lower: index, %upper: index, %step: index):
+      %spm = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      scf.for %iteration = %lower to %upper step %step {
+        wafer.instr.rdma %in to %spm
+            {byte_count = 8 : i64, inner_bytes = 8 : i64,
+             src_strides = array<i64: 0, 0, 0>,
+             src_iterations = array<i64: 1, 1, 1>}
+            : memref<4xf16, #wafer.memory<ddr, tensor>>
+           to memref<4xf16, #wafer.memory<spm, tensor>>
+      }
+      wafer.tile.yield %in
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  ASSERT_TRUE(cost.instructionCount.isKnown());
+  EXPECT_EQ(cost.instructionCount.value, 2u);
+  ASSERT_TRUE(cost.work.rdmaIssues.exactExecutions.isKnown());
+  EXPECT_EQ(cost.work.rdmaIssues.exactExecutions.value, 2u);
+  ASSERT_TRUE(cost.ddrReadBytes.isKnown());
+  EXPECT_EQ(cost.ddrReadBytes.value, 16u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
        EvaluatesStaticArithmeticBoundsIntroducedByLoopTransforms) {
   auto module = parse(R"mlir(
 module {
@@ -339,6 +387,57 @@ module {
   EXPECT_EQ(cost.compute.npuF16Bf16LogicalOps.value, 48u);
   ASSERT_TRUE(cost.compute.vectorF32LogicalOps.isKnown());
   EXPECT_EQ(cost.compute.vectorF32LogicalOps.value, 4u);
+}
+
+TEST_F(ScheduleCostAnalysisTest, ClassifiesConvertWorkFromBothTypedEndpoints) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %bf16 = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xbf16, #wafer.memory<spm, tensor>>
+    %f16a = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %f32 = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+    %i8 = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66304>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %f16b = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66560>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %tf32 = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66816>}
+        : memref<4xtf32, #wafer.memory<spm, tensor>>
+    wafer.instr.convert #wafer.instr_convert_kind<bf16_fp16>
+        %bf16 into %f16a
+        : memref<4xbf16, #wafer.memory<spm, tensor>>
+       to memref<4xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.convert #wafer.instr_convert_kind<fp16_fp32>
+        %f16a into %f32
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+       to memref<4xf32, #wafer.memory<spm, tensor>>
+    wafer.instr.convert #wafer.instr_convert_kind<fp32_int8>
+        %f32 into %i8 {rounding_mode = 0 : i64}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+       to memref<4xi8, #wafer.memory<spm, tensor>>
+    wafer.instr.convert #wafer.instr_convert_kind<int8_fp16>
+        %i8 into %f16b {zero_point = 0 : i64}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+       to memref<4xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.convert #wafer.instr_convert_kind<bf16_tf32>
+        %bf16 into %tf32
+        : memref<4xbf16, #wafer.memory<spm, tensor>>
+       to memref<4xtf32, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  ASSERT_TRUE(cost.compute.vectorF16Bf16LogicalOps.isKnown());
+  EXPECT_EQ(cost.compute.vectorF16Bf16LogicalOps.value, 4u);
+  ASSERT_TRUE(cost.compute.vectorF32LogicalOps.isKnown());
+  EXPECT_EQ(cost.compute.vectorF32LogicalOps.value, 8u);
+  ASSERT_TRUE(cost.compute.vectorOtherLogicalOps.isKnown());
+  EXPECT_EQ(cost.compute.vectorOtherLogicalOps.value, 8u);
 }
 
 TEST_F(ScheduleCostAnalysisTest, RecomputesHighWaterFromPhysicalLayout) {
@@ -574,6 +673,93 @@ module {
   InstructionProgramCost cost = analyze(*module);
   ASSERT_TRUE(cost.directDTEComputeOverlapWindowCount.isKnown());
   EXPECT_EQ(cost.directDTEComputeOverlapWindowCount.value, 1u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       ConstantConditionalOverlapUsesOnlyTheReachableCurrentIRBranch) {
+  auto constant = parse(R"mlir(
+module {
+  func.func @main(%dynamic: i1) {
+    %send = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %true = arith.constant true
+    scf.if %true {
+      %sent = wafer.instr.dte_send %send
+          {peer = 1 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 75, phase = peer_dataflow, round = 0, slice = 0>,
+           binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 0, remote_address_mode = absolute, remote_receiver_address = 65792, route_bindings = [], completion = sender_wait_receiver_fsm>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.elementwise <add> %send, %send into %dest
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+         into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.dte_wait %sent : !async.token
+    } else {
+      scf.if %dynamic {
+        %unreachable = wafer.instr.dte_send %send
+            {peer = 1 : i64, bytes = 8 : i64,
+             message = #wafer.dte_message<communication = 76, phase = peer_dataflow, round = 0, slice = 0>,
+             binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 1, remote_address_mode = absolute, remote_receiver_address = 65792, route_bindings = [], completion = sender_wait_receiver_fsm>}
+            : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+        wafer.instr.elementwise <add> %send, %send into %dest
+            : memref<4xf16, #wafer.memory<spm, tensor>>,
+              memref<4xf16, #wafer.memory<spm, tensor>>
+           into memref<4xf16, #wafer.memory<spm, tensor>>
+        wafer.instr.dte_wait %unreachable : !async.token
+      }
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(constant);
+
+  InstructionProgramCost constantCost = analyze(*constant);
+  ASSERT_TRUE(constantCost.directDTEComputeOverlapWindowCount.isKnown());
+  EXPECT_EQ(constantCost.directDTEComputeOverlapWindowCount.value, 1u);
+  ASSERT_TRUE(constantCost.qualifiedOverlapWindowCount.isKnown());
+  EXPECT_EQ(constantCost.qualifiedOverlapWindowCount.value, 0u);
+
+  auto dynamic = parse(R"mlir(
+module {
+  func.func @main(%condition: i1) {
+    %send = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    scf.if %condition {
+      %sent = wafer.instr.dte_send %send
+          {peer = 1 : i64, bytes = 8 : i64,
+           message = #wafer.dte_message<communication = 77, phase = peer_dataflow, round = 0, slice = 0>,
+           binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 0, remote_address_mode = absolute, remote_receiver_address = 65792, route_bindings = [], completion = sender_wait_receiver_fsm>}
+          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.elementwise <add> %send, %send into %dest
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+         into memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.dte_wait %sent : !async.token
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(dynamic);
+
+  InstructionProgramCost dynamicCost = analyze(*dynamic);
+  EXPECT_EQ(dynamicCost.directDTEComputeOverlapWindowCount.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(dynamicCost.directDTEComputeOverlapWindowCount.reason,
+            ScheduleCostReason::UnsupportedControlFlow);
+  EXPECT_EQ(dynamicCost.qualifiedOverlapWindowCount.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(dynamicCost.qualifiedOverlapWindowCount.reason,
+            ScheduleCostReason::UnsupportedControlFlow);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
@@ -1305,6 +1491,47 @@ module {
             balancedCost.instructionCount.value);
   EXPECT_EQ(chainCost.compute.vectorOtherLogicalOps.value,
             balancedCost.compute.vectorOtherLogicalOps.value);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       FixedStructuredLoopsHaveKnownStructuralDependencyDepth) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(
+      %input: memref<4xi8, #wafer.memory<ddr, tensor>>) {
+    %loaded = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %result = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %c0 = arith.constant 0 : index
+    %c4 = arith.constant 4 : index
+    %c1 = arith.constant 1 : index
+    scf.for %i = %c0 to %c4 step %c1 {
+      wafer.instr.rdma %input to %loaded
+          {byte_count = 4 : i64, inner_bytes = 4 : i64,
+           src_iterations = array<i64: 1, 1, 1>,
+           src_strides = array<i64: 0, 0, 0>}
+          : memref<4xi8, #wafer.memory<ddr, tensor>>
+         to memref<4xi8, #wafer.memory<spm, tensor>>
+      wafer.instr.elementwise <neg> %loaded into %result
+          : memref<4xi8, #wafer.memory<spm, tensor>>
+         into memref<4xi8, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  ASSERT_TRUE(cost.dataDependencyDepth.isKnown());
+  EXPECT_EQ(cost.dataDependencyDepth.value, 2u);
+  ASSERT_TRUE(cost.readyOrderPriorityInversions.isKnown());
+  EXPECT_EQ(cost.readyOrderPriorityInversions.value, 0u);
+  ASSERT_TRUE(cost.instructionCount.isKnown());
+  EXPECT_EQ(cost.instructionCount.value, 8u);
 }
 
 TEST_F(ScheduleCostAnalysisTest, TypedJoinOnlyOrdersItsNCCWorkerParticipants) {

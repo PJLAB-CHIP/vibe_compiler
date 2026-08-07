@@ -16,7 +16,7 @@ Pipeline position:
   Q38提供fixed-slot和typed worker mechanics，Q39提供
   NoC/DDR cost terms，Q41的counter/bounded executor由Q49唯一work budget统一调用。
 - Current stage responsibility:
-  作为C3 terminal mechanics，在canonical unplaced Instr parent上物化worker/fixed-slot/ready-order variant，删除旧join并
+  作为C3 executable-finalization mechanics，在canonical unplaced Instr parent上物化worker/fixed-slot/ready-order candidate，删除旧join并
   fresh重建completion，然后在同一all-rank transaction中证明Direct-DTE issue -> FP16/BF16 CT/NE compute ->
   matching exact wait的token、effect、range和control-flow witness。本stage不独立改变region partition；stage、wait或通信窗口
   不机械切region，region boundary也不自动生成DDR movement或join。本stage不生成rank-local frontier、winner或accepted module。
@@ -24,7 +24,7 @@ Pipeline position:
   同一disposable all-rank actual variant中已物化的Instr/SSA/event/range事实，或结构化failure。witness只是
   invocation-local analysis/diagnostic，不是package companion、selection key或第二份schedule。
 - Downstream consumer:
-  C3的terminal exact chain：从每个terminal rank-entry Instr variant的final roots、lifetime、control-flow coexistence派生
+  C3的executable-finalization exact chain：从每个finalized rank-entry Instr candidate的final roots、lifetime、control-flow coexistence派生
   一个或多个fixed SPM allocation problems，再对complete all-rank variant执行whole-variant DDR、Direct-DTE/message-resource、
   ABI和final recost；allocation problem/query数量只作work diagnostic，C4只从fully gated frontier选winner。
 - User-level driver / named pipeline:
@@ -48,7 +48,7 @@ Q49同一coordinated frontier管理：
 - structured choices在C2的complete-rank actual Tile clones中联合物化；region merge/split与tile、residency、materialization、
   communication共同选择，stage/traversal和collective不自动形成region cut；不用spill/resident/ready artifact kind
   组成rank correspondence seed；
-- C3只从terminal all-rank Tile variant派生worker/fixed-slot/order Instr variants，每个扩展都消耗Q49唯一
+- C3只从准入executable finalization的all-rank Tile candidate派生worker/fixed-slot/order Instr candidates，每个扩展都消耗Q49唯一
   tuple-level work budget；不存在per-rank cap、attempt Cartesian product或rank-local accept/commit；
 - Direct-DTE/compute witness在fresh completion后从current IR重算，是legality/cost input，不是自动收益或winner；
 - qualification要求all-and-only ranks都属于同一actual variant，再验证所需witness。这是all-rank transaction的gate，

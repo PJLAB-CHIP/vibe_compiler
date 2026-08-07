@@ -14,6 +14,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -68,10 +69,25 @@ static ScalarClass classifyScalar(mlir::Type type) {
   return ScalarClass::Unsupported;
 }
 
-static void addVectorCost(InstructionProgramCost &cost, mlir::Type type,
+static ScalarClass classifyConvert(mlir::Type sourceType, mlir::Type destType) {
+  ScalarClass source = classifyScalar(sourceType);
+  ScalarClass dest = classifyScalar(destType);
+  if (source == ScalarClass::Unsupported || dest == ScalarClass::Unsupported)
+    return ScalarClass::Unsupported;
+  // Conversion service is estimated at the slower modeled endpoint class.
+  // This remains a typed point-model prior: integer and TF32-only pairs have
+  // no calibrated vector rate and therefore stay in Other.
+  if (source == ScalarClass::F32 || dest == ScalarClass::F32)
+    return ScalarClass::F32;
+  if (source == ScalarClass::F16Bf16 && dest == ScalarClass::F16Bf16)
+    return ScalarClass::F16Bf16;
+  return ScalarClass::Other;
+}
+
+static void addVectorCost(InstructionProgramCost &cost, ScalarClass scalarClass,
                           Quantity logicalOps, Quantity multiplicity) {
   Quantity total = multiply(logicalOps, multiplicity);
-  switch (classifyScalar(type)) {
+  switch (scalarClass) {
   case ScalarClass::F16Bf16:
     add(cost.compute.vectorF16Bf16LogicalOps, total);
     return;
@@ -88,6 +104,11 @@ static void addVectorCost(InstructionProgramCost &cost, mlir::Type type,
             ScheduleCostReason::UnsupportedComputeType);
     return;
   }
+}
+
+static void addVectorCost(InstructionProgramCost &cost, mlir::Type type,
+                          Quantity logicalOps, Quantity multiplicity) {
+  addVectorCost(cost, classifyScalar(type), logicalOps, multiplicity);
 }
 
 static void addNPUCost(InstructionProgramCost &cost, mlir::Type type,
@@ -225,9 +246,10 @@ static void collectComputeCost(mlir::Operation *op,
     return;
   }
   if (auto convert = mlir::dyn_cast<InstrConvertOp>(op)) {
-    // Mixed-endpoint converts cannot be assigned to one arithmetic rate.
-    add(cost.compute.vectorOtherLogicalOps,
-        multiply(getElementCount(convert.getDest()), multiplicity));
+    addVectorCost(cost,
+                  classifyConvert(convert.getSource().getType(),
+                                  convert.getDest().getType()),
+                  getElementCount(convert.getDest()), multiplicity);
     return;
   }
   if (auto gemm = mlir::dyn_cast<InstrGemmOp>(op)) {
@@ -509,21 +531,53 @@ evaluateConstantIndex(mlir::Value value,
   };
 
   ConstantIndex result;
-  if (auto add = value.getDefiningOp<mlir::arith::AddIOp>()) {
-    result = evaluateBinary(add.getLhs(), add.getRhs(),
-                            [](int64_t lhs, int64_t rhs, int64_t &folded) {
-                              return llvm::AddOverflow(lhs, rhs, folded);
-                            });
-  } else if (auto sub = value.getDefiningOp<mlir::arith::SubIOp>()) {
-    result = evaluateBinary(sub.getLhs(), sub.getRhs(),
-                            [](int64_t lhs, int64_t rhs, int64_t &folded) {
-                              return llvm::SubOverflow(lhs, rhs, folded);
-                            });
-  } else if (auto mul = value.getDefiningOp<mlir::arith::MulIOp>()) {
-    result = evaluateBinary(mul.getLhs(), mul.getRhs(),
-                            [](int64_t lhs, int64_t rhs, int64_t &folded) {
-                              return llvm::MulOverflow(lhs, rhs, folded);
-                            });
+  if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+    mlir::Block *owner = argument.getOwner();
+    auto tileRegion =
+        mlir::dyn_cast_or_null<TileRegionOp>(owner->getParentOp());
+    unsigned index = argument.getArgNumber();
+    if (tileRegion && owner == &tileRegion.getBody().front() &&
+        index < tileRegion.getInputs().size())
+      result =
+          evaluateConstantIndex(tileRegion.getInputs()[index], activeValues);
+  }
+  if (result.knowledge == ConstantIndexKnowledge::Unknown)
+    if (auto opResult = mlir::dyn_cast<mlir::OpResult>(value)) {
+      if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(opResult.getOwner())) {
+        auto yield = mlir::dyn_cast<TileYieldOp>(
+            tileRegion.getBody().front().getTerminator());
+        unsigned index = opResult.getResultNumber();
+        if (yield && index < yield.getValues().size())
+          result =
+              evaluateConstantIndex(yield.getValues()[index], activeValues);
+      }
+    }
+  if (result.knowledge == ConstantIndexKnowledge::Unknown) {
+    if (auto add = value.getDefiningOp<mlir::arith::AddIOp>()) {
+      result = evaluateBinary(add.getLhs(), add.getRhs(),
+                              [](int64_t lhs, int64_t rhs, int64_t &folded) {
+                                return llvm::AddOverflow(lhs, rhs, folded);
+                              });
+    } else if (auto sub = value.getDefiningOp<mlir::arith::SubIOp>()) {
+      result = evaluateBinary(sub.getLhs(), sub.getRhs(),
+                              [](int64_t lhs, int64_t rhs, int64_t &folded) {
+                                return llvm::SubOverflow(lhs, rhs, folded);
+                              });
+    } else if (auto mul = value.getDefiningOp<mlir::arith::MulIOp>()) {
+      result = evaluateBinary(mul.getLhs(), mul.getRhs(),
+                              [](int64_t lhs, int64_t rhs, int64_t &folded) {
+                                return llvm::MulOverflow(lhs, rhs, folded);
+                              });
+    }
+  }
+  if (result.knowledge == ConstantIndexKnowledge::Unknown &&
+      value.getType().isIndex()) {
+    mlir::FailureOr<int64_t> constant =
+        mlir::ValueBoundsConstraintSet::computeConstantBound(
+            mlir::presburger::BoundType::EQ,
+            mlir::ValueBoundsConstraintSet::Variable(value));
+    if (mlir::succeeded(constant))
+      result = {ConstantIndexKnowledge::Known, *constant};
   }
   activeValues.erase(value);
   return result;
@@ -1095,40 +1149,113 @@ static unsigned getStaticReadyPriority(mlir::Operation *operation) {
   llvm_unreachable("unknown instruction family");
 }
 
-static bool hasUnsupportedDependencyControlFlow(mlir::func::FuncOp function) {
-  bool unsupported = false;
-  function.walk([&](mlir::Operation *operation) {
-    if (mlir::isa<mlir::scf::ForOp, mlir::scf::IfOp, mlir::func::CallOp>(
-            operation))
-      unsupported = true;
-  });
-  return unsupported;
-}
+class StructuralScheduleAnalyzer {
+public:
+  explicit StructuralScheduleAnalyzer(mlir::func::FuncOp function)
+      : function(function) {}
 
-static std::optional<StructuralScheduleFacts>
-analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
-  if (function.isDeclaration() || !function.getBody().hasOneBlock() ||
-      hasUnsupportedDependencyControlFlow(function))
-    return std::nullopt;
+  std::optional<StructuralScheduleFacts> analyze() {
+    if (function.isDeclaration() || !function.getBody().hasOneBlock() ||
+        !walkBlock(function.getBody().front()))
+      return std::nullopt;
+    return StructuralScheduleFacts{maximumDepth, readyPriorityInversions};
+  }
 
-  llvm::DenseMap<mlir::Value, BufferDependencyState> buffers;
-  llvm::DenseMap<mlir::Operation *, uint64_t> operationDepths;
-  std::array<NCCWorkerScheduleState, kNCCWorkerCount> nccWorkers;
-  uint64_t maximumDepth = 0;
-  uint64_t readyPriorityInversions = 0;
-  uint64_t seenReadyPriorities[3] = {};
-  mlir::Block *readyBlock = nullptr;
-  bool overflow = false;
+private:
+  // This is a production-analysis work bound, not an IR or shape protocol.
+  // Fixed loops usually converge after a small structural body; the generous
+  // cap prevents malformed accepted IR from turning selection into unbounded
+  // dynamic expansion while covering normal final instruction programs.
+  static constexpr uint64_t kMaximumExpandedInstructions = 1ULL << 20;
 
-  function.walk([&](mlir::Operation *operation) {
-    if (overflow || !isInstructionProgramOperation(operation))
-      return;
+  mlir::Value canonicalResource(mlir::Value value) const {
+    if (!value)
+      return value;
+    auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
+    if (!argument)
+      return value;
+    auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+        argument.getOwner()->getParentOp());
+    if (!loop)
+      return value;
+    auto iterArgs = loop.getRegionIterArgs();
+    auto found = llvm::find(iterArgs, argument);
+    if (found == iterArgs.end())
+      return value;
+    return canonicalResource(
+        loop.getInitArgs()[static_cast<size_t>(found - iterArgs.begin())]);
+  }
+
+  void resetLoopLocalState(mlir::scf::ForOp loop) {
+    loop.getRegion().walk([&](mlir::Operation *operation) {
+      operationDepths.erase(operation);
+      for (mlir::Value result : operation->getResults())
+        buffers.erase(result);
+    });
+    for (mlir::Block &block : loop.getRegion())
+      for (mlir::BlockArgument argument : block.getArguments())
+        buffers.erase(argument);
+  }
+
+  bool walkBlock(mlir::Block &block) {
+    // A structured block invocation has a fresh ready queue. Re-entering a
+    // fixed loop body therefore does not compare priorities across dynamic
+    // iterations, while the inversion count still accumulates exactly.
+    readyBlock = nullptr;
+    std::fill_n(seenReadyPriorities, 3, 0);
+    for (mlir::Operation &operation : block)
+      if (!walkOperation(&operation))
+        return false;
+    return true;
+  }
+
+  bool walkOperation(mlir::Operation *operation) {
+    if (isInstructionProgramOperation(operation))
+      return analyzeInstruction(operation);
+
+    if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(operation)) {
+      Quantity tripCount = getTripCount(loop);
+      if (tripCount.knowledge != ScheduleCostKnowledge::Known)
+        return false;
+      if (tripCount.value == 0)
+        return true;
+      // Dependency depth is a structural path metric, not dynamic consumed
+      // work. A fixed loop contributes its verified body graph once; exact
+      // execution multiplicity is already owned by InstructionProgramWork.
+      // Loop-carried memrefs are canonicalized to their init resources, so
+      // real carried hazards remain visible without expanding by trip count.
+      resetLoopLocalState(loop);
+      return walkBlock(*loop.getBody());
+    }
+
+    if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(operation)) {
+      std::optional<int64_t> condition = mlir::getConstantIntValue(
+          mlir::getAsOpFoldResult(ifOp.getCondition()));
+      if (!condition)
+        return false;
+      mlir::Region &selected =
+          *condition ? ifOp.getThenRegion() : ifOp.getElseRegion();
+      return selected.empty() ||
+             (selected.hasOneBlock() && walkBlock(selected.front()));
+    }
+
+    if (mlir::isa<mlir::func::CallOp>(operation))
+      return false;
+    for (mlir::Region &region : operation->getRegions()) {
+      if (!region.hasOneBlock() || !walkBlock(region.front()))
+        return false;
+    }
+    return true;
+  }
+
+  bool analyzeInstruction(mlir::Operation *operation) {
+    if (expandedInstructions == kMaximumExpandedInstructions)
+      return false;
+    ++expandedInstructions;
 
     auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
-    if (!effects) {
-      overflow = true;
-      return;
-    }
+    if (!effects)
+      return false;
 
     uint64_t predecessorDepth = 0;
     for (mlir::Value operand : operation->getOperands()) {
@@ -1141,7 +1268,7 @@ analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
     llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> instances;
     effects.getEffects(instances);
     for (const auto &effect : instances) {
-      mlir::Value value = effect.getValue();
+      mlir::Value value = canonicalResource(effect.getValue());
       if (!value)
         continue;
       unsigned &flags = accesses[value];
@@ -1166,10 +1293,8 @@ analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
     if (completion.behavior == LocalInstructionCompletion::OrderedPending &&
         completion.issueWorker) {
       const auto worker = static_cast<uint32_t>(*completion.issueWorker);
-      if (worker >= nccWorkers.size()) {
-        overflow = true;
-        return;
-      }
+      if (worker >= nccWorkers.size())
+        return false;
       predecessorDepth =
           std::max(predecessorDepth, nccWorkers[worker].completionDepth);
     } else if (isCompletionBarrier) {
@@ -1183,10 +1308,8 @@ analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
       }
     }
     uint64_t depth = 0;
-    if (!checkedAdd(predecessorDepth, 1, depth)) {
-      overflow = true;
-      return;
-    }
+    if (!checkedAdd(predecessorDepth, 1, depth))
+      return false;
     operationDepths[operation] = depth;
     maximumDepth = std::max(maximumDepth, depth);
 
@@ -1223,23 +1346,32 @@ analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
       uint64_t precedingLowerPriority = 0;
       for (unsigned index = priority + 1; index < 3; ++index)
         if (!checkedAdd(precedingLowerPriority, seenReadyPriorities[index],
-                        precedingLowerPriority)) {
-          overflow = true;
-          return;
-        }
+                        precedingLowerPriority))
+          return false;
       if (!checkedAdd(readyPriorityInversions, precedingLowerPriority,
-                      readyPriorityInversions)) {
-        overflow = true;
-        return;
-      }
+                      readyPriorityInversions))
+        return false;
       if (!checkedAdd(seenReadyPriorities[priority], 1,
                       seenReadyPriorities[priority]))
-        overflow = true;
+        return false;
     }
-  });
-  if (overflow)
-    return std::nullopt;
-  return StructuralScheduleFacts{maximumDepth, readyPriorityInversions};
+    return true;
+  }
+
+  mlir::func::FuncOp function;
+  llvm::DenseMap<mlir::Value, BufferDependencyState> buffers;
+  llvm::DenseMap<mlir::Operation *, uint64_t> operationDepths;
+  std::array<NCCWorkerScheduleState, kNCCWorkerCount> nccWorkers;
+  uint64_t maximumDepth = 0;
+  uint64_t readyPriorityInversions = 0;
+  uint64_t seenReadyPriorities[3] = {};
+  mlir::Block *readyBlock = nullptr;
+  uint64_t expandedInstructions = 0;
+};
+
+static std::optional<StructuralScheduleFacts>
+analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
+  return StructuralScheduleAnalyzer(function).analyze();
 }
 
 } // namespace
@@ -1449,6 +1581,24 @@ isQualifiedDirectDTEComputeWindow(mlir::Operation *issue,
   return hasQualifiedCompute;
 }
 
+static bool isUnreachableUnderConstantConditional(mlir::Operation *operation) {
+  for (mlir::Operation *child = operation; child && child->getParentOp();) {
+    mlir::Operation *parent = child->getParentOp();
+    if (auto conditional = mlir::dyn_cast<mlir::scf::IfOp>(parent)) {
+      std::optional<int64_t> condition = mlir::getConstantIntValue(
+          mlir::getAsOpFoldResult(conditional.getCondition()));
+      if (condition) {
+        mlir::Region *selected = *condition ? &conditional.getThenRegion()
+                                            : &conditional.getElseRegion();
+        if (child->getParentRegion() != selected)
+          return true;
+      }
+    }
+    child = parent;
+  }
+  return false;
+}
+
 } // namespace
 
 void collectQualifiedOverlapWindows(mlir::Operation *root,
@@ -1456,7 +1606,15 @@ void collectQualifiedOverlapWindows(mlir::Operation *root,
                                     const TargetScheduleCostPolicy &policy) {
   bool unsupportedControlFlow = false;
   root->walk([&](mlir::Operation *operation) {
-    if (mlir::isa<mlir::scf::IfOp, mlir::func::CallOp>(operation)) {
+    if (isUnreachableUnderConstantConditional(operation))
+      return;
+    if (auto conditional = mlir::dyn_cast<mlir::scf::IfOp>(operation)) {
+      if (!mlir::getConstantIntValue(
+              mlir::getAsOpFoldResult(conditional.getCondition())))
+        unsupportedControlFlow = true;
+      return;
+    }
+    if (mlir::isa<mlir::func::CallOp>(operation)) {
       unsupportedControlFlow = true;
       return;
     }

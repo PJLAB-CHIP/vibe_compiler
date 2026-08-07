@@ -649,14 +649,20 @@ public:
       return failPattern(
           rewriter, op, failureReason,
           "tile.reduce reduction tuple count overflows or is not positive");
-    constexpr uint64_t budget = wafer::detail::kStaticTerminalOperationBudget;
-    if (static_cast<uint64_t>(*reductionTupleCount) > (budget - 4) / 4) {
-      // The terminal CT reduction encodes a complete logical reduction rather
-      // than one scalar tuple at a time.  Select it only when the source init
+    // This is a profitability/materialization preference, not a legality
+    // limit. The exact final instruction count is fed to schedule cost; a
+    // larger ordered program remains representable when native reduction
+    // cannot preserve the source identity or target contract.
+    constexpr uint64_t preferredMaximumOrderedReductionOperations = 4096;
+    uint64_t tupleCount = static_cast<uint64_t>(*reductionTupleCount);
+    bool preferNativeReduction =
+        tupleCount > (preferredMaximumOrderedReductionOperations - 4) / 4;
+    if (preferNativeReduction) {
+      // The native CT reduction encodes a complete logical reduction rather
+      // than one scalar tuple at a time. Select it only when the source init
       // is the exact identity, the logical dimensions have one typed target
       // selector, and both layouts already satisfy that instruction's rank
-      // contract.  Small reductions deliberately retain the ordered baseline
-      // below so this scale path cannot silently change existing semantics.
+      // contract.
       std::optional<int64_t> targetDim;
       for (int64_t candidate = 0; candidate <= 5; ++candidate) {
         llvm::SmallVector<int64_t, 3> candidateDims =
@@ -667,12 +673,48 @@ public:
           break;
         }
       }
-      bool isPositiveZeroIdentity = false;
-      if (auto floatInit = mlir::dyn_cast<mlir::FloatAttr>(typedInit))
-        isPositiveZeroIdentity =
-            floatInit.getValue().isZero() && !floatInit.getValue().isNegative();
-      else if (auto integerInit = mlir::dyn_cast<mlir::IntegerAttr>(typedInit))
-        isPositiveZeroIdentity = integerInit.getValue().isZero();
+      std::optional<InstrReduceKind> nativeKind;
+      bool hasExactNativeIdentity = false;
+      if (auto floatInit = mlir::dyn_cast<mlir::FloatAttr>(typedInit)) {
+        const llvm::APFloat &value = floatInit.getValue();
+        switch (op.getKind()) {
+        case ComputeReduceKind::Sum:
+          nativeKind = InstrReduceKind::Sum;
+          hasExactNativeIdentity = value.isZero() && !value.isNegative();
+          break;
+        case ComputeReduceKind::Max:
+          nativeKind = InstrReduceKind::Max;
+          hasExactNativeIdentity = value.isInfinity() && value.isNegative();
+          break;
+        case ComputeReduceKind::Min:
+          nativeKind = InstrReduceKind::Min;
+          hasExactNativeIdentity = value.isInfinity() && !value.isNegative();
+          break;
+        case ComputeReduceKind::Avg:
+          break;
+        }
+      } else if (auto integerInit =
+                     mlir::dyn_cast<mlir::IntegerAttr>(typedInit)) {
+        const llvm::APInt &value = integerInit.getValue();
+        switch (op.getKind()) {
+        case ComputeReduceKind::Sum:
+          nativeKind = InstrReduceKind::Sum;
+          hasExactNativeIdentity = value.isZero();
+          break;
+        case ComputeReduceKind::Max:
+          nativeKind = InstrReduceKind::Max;
+          hasExactNativeIdentity =
+              value == llvm::APInt::getSignedMinValue(value.getBitWidth());
+          break;
+        case ComputeReduceKind::Min:
+          nativeKind = InstrReduceKind::Min;
+          hasExactNativeIdentity =
+              value == llvm::APInt::getSignedMaxValue(value.getBitWidth());
+          break;
+        case ComputeReduceKind::Avg:
+          break;
+        }
+      }
 
       MemLayout expectedInputLayout =
           inputType.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
@@ -689,30 +731,25 @@ public:
         logicalFormat = LogicalFormat::F32;
       const TargetFormatEncodingRecord *reduceFormat =
           logicalFormat
-              ? findTargetFormatEncoding(TargetFormatEngine::CT,
-                                         *logicalFormat)
+              ? findTargetFormatEncoding(TargetFormatEngine::CT, *logicalFormat)
               : nullptr;
       const bool targetAllowsNativeReduce = reduceFormat != nullptr;
-      if (op.getKind() == ComputeReduceKind::Sum && isPositiveZeroIdentity &&
-          targetDim && targetAllowsNativeReduce && inputMemory &&
+      if (nativeKind && hasExactNativeIdentity && targetDim &&
+          targetAllowsNativeReduce && inputMemory &&
           inputMemory.getLayout() == expectedInputLayout && resultMemory &&
           resultMemory.getLayout() == expectedResultLayout) {
         mlir::FailureOr<mlir::Value> dest = createDestAlloc(
             op.getLoc(), resultType, rewriter, op, failureReason);
         if (mlir::failed(dest))
           return mlir::failure();
-        auto kind = InstrReduceKindAttr::get(rewriter.getContext(),
-                                             InstrReduceKind::Sum);
+        auto kind =
+            InstrReduceKindAttr::get(rewriter.getContext(), *nativeKind);
         rewriter.create<InstrReduceOp>(op.getLoc(), kind, op.getInput(), *dest,
                                        getI64Attr(rewriter, *targetDim),
                                        getDefaultNCCWorkerAttr(rewriter));
         rewriter.replaceOp(op, *dest);
         return mlir::success();
       }
-      return failPattern(
-          rewriter, op, failureReason,
-          "static_terminal_budget_exceeded: ordered tile.reduce minimum "
-          "terminal operation count exceeds 4096");
     }
 
     auto tensorType = mlir::MemRefType::get(
@@ -725,8 +762,6 @@ public:
     };
     llvm::SmallVector<SlicePlan, 8> slicePlans;
     slicePlans.reserve(static_cast<size_t>(*reductionTupleCount));
-    uint64_t terminalOperationCount = 1; // Initial fill.
-
     for (int64_t linearTuple = 0; linearTuple < *reductionTupleCount;
          ++linearTuple) {
       mlir::FailureOr<llvm::SmallVector<int64_t>> tuple =
@@ -766,15 +801,7 @@ public:
               "tile.reduce ordered slice movement");
       if (mlir::failed(relationDescriptors))
         return mlir::failure();
-      uint64_t commandCount = relationDescriptors->size();
       plan.descriptors = std::move(*relationDescriptors);
-      if (commandCount > budget - terminalOperationCount ||
-          1 > budget - terminalOperationCount - commandCount)
-        return failPattern(
-            rewriter, op, failureReason,
-            "static_terminal_budget_exceeded: ordered tile.reduce terminal "
-            "operation count exceeds 4096");
-      terminalOperationCount += commandCount + 1;
       slicePlans.push_back(std::move(plan));
     }
 
@@ -791,13 +818,7 @@ public:
             "tile.reduce final logical movement");
     if (mlir::failed(finalDescriptors))
       return mlir::failure();
-    if (finalDescriptors->size() > budget - terminalOperationCount)
-      return failPattern(
-          rewriter, op, failureReason,
-          "static_terminal_budget_exceeded: ordered tile.reduce terminal "
-          "operation count exceeds 4096");
-
-    // All legality, geometry, packing and budget checks above are deliberately
+    // All legality, geometry and packing checks above are deliberately
     // completed before creating any effectful instruction.
     mlir::Value init = op.getInit();
     if (!init)
@@ -931,6 +952,9 @@ static mlir::FailureOr<InstrElementwiseKindAttr> getInstrElementwiseKindAttr(
     break;
   case ComputeElementwiseKind::Exp:
     instrKind = InstrElementwiseKind::Exp;
+    break;
+  case ComputeElementwiseKind::Ln:
+    instrKind = InstrElementwiseKind::Ln;
     break;
   case ComputeElementwiseKind::Tanh:
     instrKind = InstrElementwiseKind::Tanh;

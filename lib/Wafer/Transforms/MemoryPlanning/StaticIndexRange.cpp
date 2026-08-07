@@ -2,9 +2,12 @@
 
 #include "MemoryPlanning/StaticIndexRange.h"
 
+#include "Wafer/IR/WaferDialect.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -203,6 +206,24 @@ private:
       return Result{StaticIndexRange{*constant, *constant, /*empty=*/false}};
 
     auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value);
+    if (blockArg && blockArg.getOwner()) {
+      mlir::Block *owner = blockArg.getOwner();
+      auto tileRegion =
+          mlir::dyn_cast_or_null<TileRegionOp>(owner->getParentOp());
+      unsigned index = blockArg.getArgNumber();
+      if (tileRegion && owner == &tileRegion.getBody().front() &&
+          index < tileRegion.getInputs().size())
+        return evaluate(tileRegion.getInputs()[index]);
+    }
+    if (auto opResult = mlir::dyn_cast<mlir::OpResult>(value)) {
+      if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(opResult.getOwner())) {
+        auto yield = mlir::dyn_cast<TileYieldOp>(
+            tileRegion.getBody().front().getTerminator());
+        unsigned index = opResult.getResultNumber();
+        if (yield && index < yield.getValues().size())
+          return evaluate(yield.getValues()[index]);
+      }
+    }
     auto loop = blockArg && blockArg.getOwner()
                     ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(
                           blockArg.getOwner()->getParentOp())
@@ -218,31 +239,58 @@ private:
       return evaluateMultiply(multiply);
     if (auto divide = value.getDefiningOp<mlir::arith::DivUIOp>())
       return evaluateUnsignedDivide(divide);
-    return failed(Failure::UnsupportedExpression);
+    // Keep the hand-written arithmetic cases above for precise failure
+    // classification, then accept any other current-IR index expression whose
+    // registered ValueBounds model proves a finite closed interval. This
+    // covers affine.apply without treating an unbounded block argument as a
+    // zero or guessed range.
+    return evaluateInterfaceBounds(value);
+  }
+
+  Result evaluateInterfaceBounds(mlir::Value value) {
+    if (!value.getType().isIndex())
+      return failed(Failure::UnsupportedExpression);
+
+    using mlir::ValueBoundsConstraintSet;
+    using mlir::presburger::BoundType;
+    ValueBoundsConstraintSet::Variable variable(value);
+    mlir::FailureOr<int64_t> lower =
+        ValueBoundsConstraintSet::computeConstantBound(
+            BoundType::LB, variable, nullptr, /*closedUB=*/true);
+    mlir::FailureOr<int64_t> upper =
+        ValueBoundsConstraintSet::computeConstantBound(
+            BoundType::UB, variable, nullptr, /*closedUB=*/true);
+    if (mlir::failed(lower) || mlir::failed(upper) || *lower > *upper)
+      return failed(Failure::UnsupportedExpression);
+    return Result{StaticIndexRange{*lower, *upper, /*empty=*/false}};
   }
 
   Result evaluateLoopInductionVariable(mlir::scf::ForOp loop) {
-    std::optional<int64_t> lower =
-        mlir::getConstantIntValue(loop.getLowerBound());
-    std::optional<int64_t> upper =
-        mlir::getConstantIntValue(loop.getUpperBound());
-    std::optional<int64_t> step = mlir::getConstantIntValue(loop.getStep());
-    if (!lower || !upper || !step)
+    Result lowerRange = evaluate(loop.getLowerBound());
+    Result upperRange = evaluate(loop.getUpperBound());
+    Result stepRange = evaluate(loop.getStep());
+    if (!lowerRange.succeeded() || !upperRange.succeeded() ||
+        !stepRange.succeeded() || lowerRange.range.empty ||
+        upperRange.range.empty || stepRange.range.empty ||
+        lowerRange.range.min != lowerRange.range.max ||
+        upperRange.range.min != upperRange.range.max ||
+        stepRange.range.min != stepRange.range.max)
       return failed(Failure::DynamicLoopBounds);
-    if (*lower < 0 || *upper < 0 || *step <= 0)
+    int64_t lower = lowerRange.range.min;
+    int64_t upper = upperRange.range.min;
+    int64_t step = stepRange.range.min;
+    if (lower < 0 || upper < 0 || step <= 0)
       return failed(Failure::InvalidLoopBounds);
-    if (*upper <= *lower)
-      return Result{
-          StaticIndexRange{*lower, *lower, /*empty=*/true}};
+    if (upper <= lower)
+      return Result{StaticIndexRange{lower, lower, /*empty=*/true}};
 
-    const int64_t distance = *upper - *lower - 1;
+    const int64_t distance = upper - lower - 1;
     int64_t delta = 0;
     int64_t maximum = 0;
-    if (llvm::MulOverflow(distance / *step, *step, delta) ||
-        llvm::AddOverflow(*lower, delta, maximum))
+    if (llvm::MulOverflow(distance / step, step, delta) ||
+        llvm::AddOverflow(lower, delta, maximum))
       return failed(Failure::ArithmeticOverflow);
-    return Result{
-        StaticIndexRange{*lower, maximum, /*empty=*/false}};
+    return Result{StaticIndexRange{lower, maximum, /*empty=*/false}};
   }
 
   std::optional<std::pair<StaticIndexRange, StaticIndexRange>>
@@ -323,8 +371,7 @@ private:
 
   Result evaluateUnsignedDivide(mlir::arith::DivUIOp divide) {
     Failure failure = Failure::None;
-    auto operands =
-        evaluateOperands(divide.getLhs(), divide.getRhs(), failure);
+    auto operands = evaluateOperands(divide.getLhs(), divide.getRhs(), failure);
     if (!operands)
       return failed(failure);
     if (operands->first.empty || operands->second.empty)
@@ -334,11 +381,10 @@ private:
         operands->first.min < 0 || operands->second.min <= 0)
       return failed(Failure::InvalidUnsignedDivision);
 
-    const int64_t quotient = static_cast<int64_t>(
-        static_cast<uint64_t>(operands->first.min) /
-        static_cast<uint64_t>(operands->second.min));
-    return Result{
-        StaticIndexRange{quotient, quotient, /*empty=*/false}};
+    const int64_t quotient =
+        static_cast<int64_t>(static_cast<uint64_t>(operands->first.min) /
+                             static_cast<uint64_t>(operands->second.min));
+    return Result{StaticIndexRange{quotient, quotient, /*empty=*/false}};
   }
 
   llvm::DenseMap<mlir::Value, Result> cache;

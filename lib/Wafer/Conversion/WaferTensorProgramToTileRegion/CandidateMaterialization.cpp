@@ -2,11 +2,11 @@
 
 #include "Internal.h"
 
+
 using namespace wafer;
 using namespace wafer::tensor_program_to_tile_region;
 
 namespace {
-
 static mlir::FailureOr<mlir::func::FuncOp>
 cloneVerifiedTensorProgram(mlir::func::FuncOp function,
                            mlir::OwningOpRef<mlir::ModuleOp> &module,
@@ -71,9 +71,14 @@ wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
   if (mlir::failed(cloned))
     return mlir::failure();
   TensorProgramScope scope(*cloned);
-  if (mlir::failed(materializeCompleteCandidateTraversal(
-          scope, candidateTileSizes, candidateReductionTileSizes,
-          traversalKind, failureReason)))
+  mlir::LogicalResult materialized = materializeCompleteCandidateTraversal(
+      scope, candidateTileSizes, candidateReductionTileSizes, traversalKind,
+      failureReason);
+  if (mlir::failed(materialized))
+    return mlir::failure();
+  mlir::func::FuncOp completedFunction =
+      findSingleStandaloneTensorProgram(*candidateModule);
+  if (!completedFunction)
     return mlir::failure();
   if (mlir::failed(convertTensorProgramToTileRegionModuleInPlace(
           *candidateModule, function.getContext(), currentLogicalRank,

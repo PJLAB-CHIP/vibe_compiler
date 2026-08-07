@@ -55,24 +55,8 @@ mlir::LogicalResult publishPackageAndCompanionNoReplace(
 
 static void printOptimizationConfig(OptimizationConfig config,
                                     llvm::raw_ostream &diagnostics) {
-  auto printSet = [&](bool enabled) {
-    diagnostics << '[';
-    bool first = true;
-    for (OptimizationKind kind : getSupportedOptimizationKinds()) {
-      if (config.isEnabled(kind) != enabled)
-        continue;
-      if (!first)
-        diagnostics << ',';
-      diagnostics << stringifyOptimizationKind(kind);
-      first = false;
-    }
-    diagnostics << ']';
-  };
-  diagnostics << "wafer-compile: optimization-config enabled=";
-  printSet(/*enabled=*/true);
-  diagnostics << " disabled=";
-  printSet(/*enabled=*/false);
-  diagnostics << "\n";
+  diagnostics << "wafer-compile: optimization-policy="
+              << (config.isProduction() ? "production" : "none") << '\n';
 }
 
 mlir::LogicalResult runCompilationTransaction(
@@ -119,9 +103,10 @@ mlir::LogicalResult runCompilationTransaction(
     wafer::support::CompileWorkStatistics work = compileWorkSession->snapshot();
     diagnostics << "wafer-compile: compile-work"
                 << " candidate_expanded_states=" << work.candidateExpandedStates
-                << " terminal_candidate_clones=" << work.terminalCandidateClones
-                << " terminal_instr_lowerings="
-                << work.terminalInstructionLowerings
+                << " finalization_candidate_clones="
+                << work.finalizationCandidateClones
+                << " finalization_instr_lowerings="
+                << work.finalizationInstructionLowerings
                 << " spm_planning_invocations=" << work.spmPlanningInvocations
                 << " ddr_planning_invocations=" << work.ddrPlanningInvocations
                 << "\n";

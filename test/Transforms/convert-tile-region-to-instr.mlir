@@ -43,8 +43,8 @@ func.func @load_compute_store(
 // CHECK: %[[SUM:.+]] = memref.alloc() : memref<4x8xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.elementwise <add> %[[LOAD_DST]], %[[LOAD_DST]] into %[[SUM]]
 // CHECK: wafer.instr.wdma %[[SUM]] to %{{.+}}
-// CHECK: wafer.tile.yield
 // CHECK: wafer.instr.ncc_join [0]
+// CHECK-NEXT: wafer.tile.yield
 
 func.func @strided_ddr_tile_load_store(
     %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
@@ -389,10 +389,8 @@ func.func @movement_extract_insert_broadcast_transpose(%zero: f16) {
 // CHECK: wafer.instr.gather_scatter %[[WIDE]] to %[[SLICE]]
 // CHECK-SAME: byte_count = 8 : i64
 // CHECK-SAME: src_offset = 4 : i64
-// CHECK: %[[INSERTED:.+]] = memref.alloc() : memref<8xf16, #wafer.memory<spm, tensor>>
-// CHECK: wafer.instr.gather_scatter %[[WIDE]] to %[[INSERTED]]
-// CHECK-SAME: byte_count = 16 : i64
-// CHECK: wafer.instr.gather_scatter %[[SLICE]] to %[[INSERTED]]
+// CHECK-NOT: memref.alloc() : memref<8xf16, #wafer.memory<spm, tensor>>
+// CHECK: wafer.instr.gather_scatter %[[SLICE]] to %[[WIDE]]
 // CHECK-SAME: byte_count = 8 : i64
 // CHECK-SAME: dst_offset = 4 : i64
 // CHECK: %[[MATRIX:.+]] = memref.alloc() : memref<2x3xf16, #wafer.memory<spm, tensor>>

@@ -1,6 +1,6 @@
 #include "../../lib/Wafer/Compiler/NoCIntermediateDataflow.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
-#include "../../lib/Wafer/Compiler/NoCResidentDataflow.h"
+#include "../../lib/Wafer/Compiler/NoCCommunicationAction.h"
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/Common/OpVerifierUtils.h"
@@ -57,21 +57,21 @@ static unsigned countDDRAllocations(mlir::ModuleOp module) {
   return count;
 }
 
-static uint64_t countTerminalOperations(mlir::ModuleOp module) {
-  uint64_t count = 0;
-  module.walk([&](mlir::Operation *operation) {
-    if (mlir::isa<wafer::WaferInstructionOpInterface, wafer::SyncNCCJoinOp,
-                  wafer::SyncNCCJoinOp>(operation))
-      ++count;
-  });
-  return count;
-}
-
 static std::string moduleSnapshot(mlir::ModuleOp module) {
   std::string text;
   llvm::raw_string_ostream stream(text);
   module.print(stream);
   return text;
+}
+
+static const wafer::compiler::detail::CoordinatedCommunicationActionPoint *
+findCommunicationPoint(
+    const wafer::compiler::detail::CoordinatedCommunicationActionPoints &points,
+    uint32_t stableOrdinal) {
+  for (const auto &point : points)
+    if (point->getIdentity().stableOrdinal == stableOrdinal)
+      return point.get();
+  return nullptr;
 }
 
 class NoCIntermediateDataflowTest : public ::testing::Test {
@@ -107,18 +107,14 @@ module {
          to memref<4xf32, strided<[1], offset: 4>,
                    #wafer.memory<ddr, tensor>>
       %loaded0 = memref.alloc()
-          {wafer.spm.offset = #wafer.spm_offset<65536>}
           : memref<4xf32, #wafer.memory<spm, tensor>>
       %produced0 = memref.alloc()
-          {wafer.spm.offset = #wafer.spm_offset<65792>}
           : memref<4xf32, #wafer.memory<spm, tensor>>
       %spill0 = memref.alloc()
           : memref<4xf32, #wafer.memory<ddr, tensor>>
       %consumed0 = memref.alloc()
-          {wafer.spm.offset = #wafer.spm_offset<66048>}
           : memref<4xf32, #wafer.memory<spm, tensor>>
       %result0 = memref.alloc()
-          {wafer.spm.offset = #wafer.spm_offset<66304>}
           : memref<4xf32, #wafer.memory<spm, tensor>>
       wafer.instr.rdma %tile0 to %loaded0
           {byte_count = 16 : i64, inner_bytes = 16 : i64,
@@ -151,18 +147,14 @@ module {
           : memref<4xf32, #wafer.memory<ddr, tensor>>
 
       %loaded1 = memref.alloc()
-          {wafer.spm.offset = #wafer.spm_offset<66560>}
           : memref<4xf32, #wafer.memory<spm, tensor>>
       %produced1 = memref.alloc()
-          {wafer.spm.offset = #wafer.spm_offset<66816>}
           : memref<4xf32, #wafer.memory<spm, tensor>>
       %spill1 = memref.alloc()
           : memref<4xf32, #wafer.memory<ddr, tensor>>
       %consumed1 = memref.alloc()
-          {wafer.spm.offset = #wafer.spm_offset<67072>}
           : memref<4xf32, #wafer.memory<spm, tensor>>
       %result1 = memref.alloc()
-          {wafer.spm.offset = #wafer.spm_offset<67328>}
           : memref<4xf32, #wafer.memory<spm, tensor>>
       wafer.instr.rdma %tile1 to %loaded1
           {byte_count = 16 : i64, inner_bytes = 16 : i64,
@@ -304,11 +296,6 @@ module {
     return result;
   }
 
-  llvm::Expected<wafer::compiler::ExecutionConfig> makeConfig() {
-    return wafer::compiler::ExecutionConfig::createForSingleCard(
-        16, wafer::RuntimeLaunchKind::Kernel);
-  }
-
   void makeFirstProducerDifferent(mlir::ModuleOp module) {
     wafer::InstrWDMAOp firstStore;
     module.walk([&](wafer::InstrWDMAOp store) {
@@ -391,91 +378,39 @@ module {
     ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
   }
 
-  size_t findDirectIntermediateOwner() {
-    std::vector<mlir::OwningOpRef<mlir::ModuleOp>> ownedModules;
-    llvm::SmallVector<mlir::ModuleOp, 16> modules;
-    for (size_t rank = 0; rank < 16; ++rank) {
-      auto module = parseTwoCutRank();
-      EXPECT_TRUE(module);
-      if (!module)
-        return 0;
-      modules.push_back(*module);
-      ownedModules.push_back(std::move(module));
-    }
-    int64_t communicationId = 0;
-    EXPECT_EQ(wafer::compiler::detail::materializeNoCIntermediateHandoffs(
-                  modules, makeProgram(), communicationId,
-                  wafer::compiler::detail::NoCFanoutKind::Direct),
-              2u);
-    for (auto [rank, module] : llvm::enumerate(modules)) {
-      unsigned sends = 0;
-      module.walk([&](wafer::CommPeerSendOp send) {
-        if (send.getMessage().getRound() == 1)
-          ++sends;
-      });
-      if (sends > 1)
-        return rank;
-    }
-    ADD_FAILURE() << "direct intermediate materialization had no fanout owner";
-    return 0;
-  }
-
-  void padToTerminalBudget(mlir::ModuleOp module) {
-    wafer::InstrElementwiseOp paddingTemplate;
-    module.walk([&](wafer::InstrElementwiseOp candidate) {
-      paddingTemplate = candidate;
-    });
-    ASSERT_TRUE(paddingTemplate);
-    const uint64_t initial = countTerminalOperations(module);
-    ASSERT_LE(initial, wafer::detail::kStaticTerminalOperationBudget);
-    mlir::OpBuilder builder(paddingTemplate);
-    builder.setInsertionPointAfter(paddingTemplate);
-    for (uint64_t count = initial;
-         count < wafer::detail::kStaticTerminalOperationBudget; ++count)
-      builder.clone(*paddingTemplate.getOperation());
-    ASSERT_EQ(countTerminalOperations(module),
-              wafer::detail::kStaticTerminalOperationBudget);
-  }
-
   mlir::DialectRegistry registry;
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
 TEST_F(NoCIntermediateDataflowTest,
        ReplacesReplicatedIntermediateSpillsAndRotatesOwners) {
-  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
-  for (auto &frontier : frontiers) {
+  std::vector<mlir::OwningOpRef<mlir::ModuleOp>> owners;
+  llvm::SmallVector<mlir::ModuleOp, 16> parents;
+  for (size_t rank = 0; rank < 16; ++rank) {
     auto module = parseTwoCutRank();
     ASSERT_TRUE(module);
-    frontier.push_back(
-        {std::move(module), /*stableOrdinal=*/0, wafer::RankArtifactKind::Spill,
-         /*reservedBaseline=*/true, wafer::RankBufferingKind::Single,
-         /*bufferingPlanOrdinal=*/0});
+    parents.push_back(*module);
+    owners.push_back(std::move(module));
   }
-  auto config = makeConfig();
-  ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
-  std::string failure;
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::appendNoCResidentDataflowCandidates(
-          frontiers, makeProgram(), *config, &failure)))
-      << failure;
-  for (const auto &frontier : frontiers) {
-    ASSERT_EQ(frontier.size(), 5u);
-    for (size_t unplacedIndex : {1u, 3u}) {
-      const auto &unplaced = frontier[unplacedIndex];
-      const auto &workerPlaced = frontier[unplacedIndex + 1];
-      EXPECT_EQ(unplaced.stableOrdinal, workerPlaced.stableOrdinal);
-      EXPECT_EQ(unplaced.artifactKind, wafer::RankArtifactKind::Resident);
-      EXPECT_EQ(workerPlaced.artifactKind, wafer::RankArtifactKind::Resident);
-      EXPECT_EQ(unplaced.workerPlacementKind,
-                wafer::RankWorkerPlacementKind::Unplaced);
-      EXPECT_EQ(workerPlaced.workerPlacementKind,
-                wafer::RankWorkerPlacementKind::DisjointComponents);
-      EXPECT_EQ(workerPlaced.workerPlacementPlanOrdinal, 1u);
-    }
-  }
+  std::vector<std::string> snapshots;
+  for (mlir::ModuleOp parent : parents)
+    snapshots.push_back(moduleSnapshot(parent));
 
-  constexpr size_t kIntermediateDirect = 1;
+  auto program = makeProgram();
+  wafer::compiler::detail::NoCCommunicationActionProvider provider;
+  wafer::compiler::detail::CoordinatedCommunicationActionPoints points;
+  std::string failure;
+  ASSERT_TRUE(
+      mlir::succeeded(provider.query(parents, program, points, &failure)))
+      << failure;
+  const auto *direct = findCommunicationPoint(points, /*stableOrdinal=*/1);
+  ASSERT_NE(direct, nullptr);
+  auto action =
+      wafer::compiler::detail::materializeCoordinatedCommunicationAction(
+          parents, program, *direct, &failure);
+  ASSERT_TRUE(mlir::succeeded(action)) << failure;
+  ASSERT_EQ(action->rankModules.size(), parents.size());
+
   unsigned baselineRDMA = 0;
   unsigned baselineWDMA = 0;
   unsigned baselineDDRAllocations = 0;
@@ -488,9 +423,9 @@ TEST_F(NoCIntermediateDataflowTest,
   unsigned recvs = 0;
   std::set<size_t> ownerRanks;
   std::set<std::pair<int64_t, size_t>> ownerByCommunicationId;
-  for (size_t rank = 0; rank < frontiers.size(); ++rank) {
-    mlir::ModuleOp baseline = *frontiers[rank][0].module;
-    mlir::ModuleOp resident = *frontiers[rank][kIntermediateDirect].module;
+  for (size_t rank = 0; rank < parents.size(); ++rank) {
+    mlir::ModuleOp baseline = parents[rank];
+    mlir::ModuleOp resident = *action->rankModules[rank];
     baselineRDMA += countRDMA(baseline);
     baselineWDMA += countWDMA(baseline);
     baselineDDRAllocations += countDDRAllocations(baseline);
@@ -530,6 +465,8 @@ TEST_F(NoCIntermediateDataflowTest,
   // are removed from the same accepted IR.
   EXPECT_EQ(residentProducers, 2u);
   EXPECT_EQ(residentConsumers, 32u);
+  for (size_t rank = 0; rank < parents.size(); ++rank)
+    EXPECT_EQ(moduleSnapshot(parents[rank]), snapshots[rank]);
 }
 
 TEST_F(NoCIntermediateDataflowTest,
@@ -616,64 +553,79 @@ TEST_F(NoCIntermediateDataflowTest,
 
 TEST_F(NoCIntermediateDataflowTest,
        KeepsNonEquivalentProducerSpillOutsideCompatibleGroup) {
-  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
-  for (size_t rank = 0; rank < frontiers.size(); ++rank) {
+  std::vector<mlir::OwningOpRef<mlir::ModuleOp>> owners;
+  llvm::SmallVector<mlir::ModuleOp, 16> parents;
+  for (size_t rank = 0; rank < 16; ++rank) {
     auto module = parseTwoCutRank();
     ASSERT_TRUE(module);
     if (rank == 15)
       makeFirstProducerDifferent(*module);
-    frontiers[rank].push_back(
-        {std::move(module), /*stableOrdinal=*/0, wafer::RankArtifactKind::Spill,
-         /*reservedBaseline=*/true, wafer::RankBufferingKind::Single,
-         /*bufferingPlanOrdinal=*/0});
+    parents.push_back(*module);
+    owners.push_back(std::move(module));
   }
-  auto config = makeConfig();
-  ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
-  std::string failure;
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::appendNoCResidentDataflowCandidates(
-          frontiers, makeProgram(), *config, &failure)))
-      << failure;
-  for (const auto &frontier : frontiers)
-    ASSERT_EQ(frontier.size(), 3u);
 
-  constexpr size_t kIntermediateDirect = 1;
+  auto program = makeProgram();
+  wafer::compiler::detail::NoCCommunicationActionProvider provider;
+  wafer::compiler::detail::CoordinatedCommunicationActionPoints points;
+  std::string failure;
+  ASSERT_TRUE(
+      mlir::succeeded(provider.query(parents, program, points, &failure)))
+      << failure;
+  const auto *direct = findCommunicationPoint(points, /*stableOrdinal=*/1);
+  ASSERT_NE(direct, nullptr);
+  auto action =
+      wafer::compiler::detail::materializeCoordinatedCommunicationAction(
+          parents, program, *direct, &failure);
+  ASSERT_TRUE(mlir::succeeded(action)) << failure;
+  ASSERT_EQ(action->rankModules.size(), parents.size());
+
   unsigned aggregateWDMA = 0;
   unsigned aggregateDDRAllocations = 0;
-  for (const auto &frontier : frontiers) {
-    aggregateWDMA += countWDMA(*frontier[kIntermediateDirect].module);
-    aggregateDDRAllocations +=
-        countDDRAllocations(*frontier[kIntermediateDirect].module);
+  for (const auto &owner : action->rankModules) {
+    aggregateWDMA += countWDMA(*owner);
+    aggregateDDRAllocations += countDDRAllocations(*owner);
   }
   EXPECT_EQ(aggregateWDMA, 1u);
   EXPECT_EQ(aggregateDDRAllocations, 1u);
-  EXPECT_EQ(countWDMA(*frontiers[15][kIntermediateDirect].module), 1u);
-  EXPECT_EQ(countDDRAllocations(*frontiers[15][kIntermediateDirect].module),
-            1u);
+  EXPECT_EQ(countWDMA(*action->rankModules[15]), 1u);
+  EXPECT_EQ(countDDRAllocations(*action->rankModules[15]), 1u);
 }
 
 TEST_F(NoCIntermediateDataflowTest,
        DoesNotInventIntermediateReuseAcrossPartitionedGlobalTiles) {
-  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
-  for (auto &frontier : frontiers) {
+  std::vector<mlir::OwningOpRef<mlir::ModuleOp>> owners;
+  llvm::SmallVector<mlir::ModuleOp, 16> parents;
+  for (size_t rank = 0; rank < 16; ++rank) {
     auto module = parseTwoCutRank();
     ASSERT_TRUE(module);
-    frontier.push_back(
-        {std::move(module), /*stableOrdinal=*/0, wafer::RankArtifactKind::Spill,
-         /*reservedBaseline=*/true, wafer::RankBufferingKind::Single,
-         /*bufferingPlanOrdinal=*/0});
+    parents.push_back(*module);
+    owners.push_back(std::move(module));
   }
-  auto config = makeConfig();
-  ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
+  std::vector<std::string> snapshots;
+  for (mlir::ModuleOp parent : parents)
+    snapshots.push_back(moduleSnapshot(parent));
+
+  auto program = makeProgram(/*partitioned=*/true);
+  EXPECT_FALSE(wafer::compiler::detail::hasNoCIntermediateHandoffOpportunity(
+      parents, program));
+  int64_t communicationId = 0;
+  EXPECT_EQ(wafer::compiler::detail::materializeNoCIntermediateHandoffs(
+                parents, program, communicationId,
+                wafer::compiler::detail::NoCFanoutKind::Direct),
+            0u);
+  EXPECT_EQ(communicationId, 0);
+
+  wafer::compiler::detail::NoCCommunicationActionProvider provider;
+  wafer::compiler::detail::CoordinatedCommunicationActionPoints points;
   std::string failure;
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::appendNoCResidentDataflowCandidates(
-          frontiers, makeProgram(/*partitioned=*/true), *config, &failure)))
+  ASSERT_TRUE(
+      mlir::succeeded(provider.query(parents, program, points, &failure)))
       << failure;
-  for (const auto &frontier : frontiers) {
-    ASSERT_EQ(frontier.size(), 1u);
-    EXPECT_EQ(countWDMA(*frontier.front().module), 2u);
-    EXPECT_EQ(countDDRAllocations(*frontier.front().module), 2u);
+  EXPECT_TRUE(points.empty());
+  for (size_t rank = 0; rank < parents.size(); ++rank) {
+    EXPECT_EQ(moduleSnapshot(parents[rank]), snapshots[rank]);
+    EXPECT_EQ(countWDMA(parents[rank]), 2u);
+    EXPECT_EQ(countDDRAllocations(parents[rank]), 2u);
   }
 }
 
@@ -708,32 +660,36 @@ TEST_F(NoCIntermediateDataflowTest,
 
 TEST_F(NoCIntermediateDataflowTest,
        BoundaryFreePureDefinitionsCanShareResidentIntermediate) {
-  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
-  for (auto &frontier : frontiers) {
+  std::vector<mlir::OwningOpRef<mlir::ModuleOp>> owners;
+  llvm::SmallVector<mlir::ModuleOp, 16> parents;
+  for (size_t rank = 0; rank < 16; ++rank) {
     auto module = parseTwoCutRank();
     ASSERT_TRUE(module);
     replaceProducersWithConstantFills(*module, 1.0f);
-    frontier.push_back(
-        {std::move(module), /*stableOrdinal=*/0, wafer::RankArtifactKind::Spill,
-         /*reservedBaseline=*/true, wafer::RankBufferingKind::Single,
-         /*bufferingPlanOrdinal=*/0});
+    parents.push_back(*module);
+    owners.push_back(std::move(module));
   }
   wafer::frontend::FrontendProgramVerificationResult program;
   program.logicalRankCount = 16;
-  auto config = makeConfig();
-  ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
+  EXPECT_TRUE(wafer::compiler::detail::hasNoCIntermediateHandoffOpportunity(
+      parents, program));
+
+  wafer::compiler::detail::NoCCommunicationActionProvider provider;
+  wafer::compiler::detail::CoordinatedCommunicationActionPoints points;
   std::string failure;
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::appendNoCResidentDataflowCandidates(
-          frontiers, program, *config, &failure)))
+  ASSERT_TRUE(
+      mlir::succeeded(provider.query(parents, program, points, &failure)))
       << failure;
-  for (const auto &frontier : frontiers) {
-    ASSERT_GT(frontier.size(), 1u);
-    bool foundZeroSpill = false;
-    for (const auto &candidate : llvm::drop_begin(frontier))
-      foundZeroSpill |= countWDMA(*candidate.module) == 0 &&
-                        countDDRAllocations(*candidate.module) == 0;
-    EXPECT_TRUE(foundZeroSpill);
+  const auto *direct = findCommunicationPoint(points, /*stableOrdinal=*/1);
+  ASSERT_NE(direct, nullptr);
+  auto action =
+      wafer::compiler::detail::materializeCoordinatedCommunicationAction(
+          parents, program, *direct, &failure);
+  ASSERT_TRUE(mlir::succeeded(action)) << failure;
+  ASSERT_EQ(action->rankModules.size(), parents.size());
+  for (const auto &owner : action->rankModules) {
+    EXPECT_EQ(countWDMA(*owner), 0u);
+    EXPECT_EQ(countDDRAllocations(*owner), 0u);
   }
 }
 
@@ -787,45 +743,6 @@ TEST_F(NoCIntermediateDataflowTest,
                 wafer::compiler::detail::NoCFanoutKind::Direct),
             1u);
   EXPECT_EQ(communicationId, -1);
-}
-
-TEST_F(NoCIntermediateDataflowTest,
-       LateTerminalGateRejectsDirectTupleWithoutMutatingItsSeeds) {
-  const size_t paddedOwner = findDirectIntermediateOwner();
-  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
-  for (size_t rank = 0; rank < frontiers.size(); ++rank) {
-    auto module = parseTwoCutRank();
-    ASSERT_TRUE(module);
-    if (rank == paddedOwner)
-      padToTerminalBudget(*module);
-    frontiers[rank].push_back(
-        {std::move(module), /*stableOrdinal=*/0, wafer::RankArtifactKind::Spill,
-         /*reservedBaseline=*/true, wafer::RankBufferingKind::Single,
-         /*bufferingPlanOrdinal=*/0});
-  }
-  std::vector<std::string> snapshots;
-  for (const auto &frontier : frontiers)
-    snapshots.push_back(moduleSnapshot(*frontier.front().module));
-
-  auto config = makeConfig();
-  ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
-  std::string failure;
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::appendNoCResidentDataflowCandidates(
-          frontiers, makeProgram(), *config, &failure)))
-      << failure;
-  for (size_t rank = 0; rank < frontiers.size(); ++rank) {
-    ASSERT_GE(frontiers[rank].size(), 1u);
-    EXPECT_EQ(moduleSnapshot(*frontiers[rank].front().module), snapshots[rank]);
-    for (const auto &candidate : llvm::drop_begin(frontiers[rank])) {
-      unsigned roundOneSends = 0;
-      (*candidate.module).walk([&](wafer::InstrDTESendOp send) {
-        if (send.getMessage().getRound() == 1)
-          ++roundOneSends;
-      });
-      EXPECT_LE(roundOneSends, 1u);
-    }
-  }
 }
 
 } // namespace

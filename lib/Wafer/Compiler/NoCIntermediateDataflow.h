@@ -17,6 +17,17 @@ enum class NoCFanoutKind {
   ReceiveForward,
 };
 
+/// Read-only capability queries over current all-rank canonical Instr SSA.
+/// They retain no Operation pointers and materialization must re-prove the
+/// opportunity on its discardable clone.
+bool hasNoCIntermediateHandoffOpportunity(
+    llvm::ArrayRef<mlir::ModuleOp> modules,
+    const frontend::FrontendProgramVerificationResult &program);
+
+bool hasNoCOutputPublicationOpportunity(
+    llvm::ArrayRef<mlir::ModuleOp> modules,
+    const frontend::FrontendProgramVerificationResult &program);
+
 /// Rewrites exact, replicated producer/intermediate spill cuts in one actual
 /// complete-rank tuple. Equivalence is proved from typed boundary tiles,
 /// current SSA, operation interfaces, and value-associated effects. The

@@ -2,6 +2,7 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitAll.h"
+#include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
 
@@ -277,6 +278,59 @@ module {
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
+     BatchedMatmulInitScalarSurvivesExactLeadingDimensionCollapse) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @collapsed_batch_matmul(
+      %lhs: tensor<1x2x3x4xf16>, %rhs: tensor<1x2x4x5xf16>,
+      %out: tensor<1x2x3x5xf16>) -> tensor<1x2x3x5xf16> {
+    %zero = arith.constant 0.0 : f16
+    %init = linalg.fill ins(%zero : f16)
+        outs(%out : tensor<1x2x3x5xf16>) -> tensor<1x2x3x5xf16>
+    %lhs3 = tensor.collapse_shape %lhs [[0, 1], [2], [3]]
+        : tensor<1x2x3x4xf16> into tensor<2x3x4xf16>
+    %rhs3 = tensor.collapse_shape %rhs [[0, 1], [2], [3]]
+        : tensor<1x2x4x5xf16> into tensor<2x4x5xf16>
+    %init3 = tensor.collapse_shape %init [[0, 1], [2], [3]]
+        : tensor<1x2x3x5xf16> into tensor<2x3x5xf16>
+    %product = linalg.batch_matmul
+        ins(%lhs3, %rhs3 : tensor<2x3x4xf16>, tensor<2x4x5xf16>)
+        outs(%init3 : tensor<2x3x5xf16>) -> tensor<2x3x5xf16>
+    %result = tensor.expand_shape %product [[0, 1], [2], [3]]
+        output_shape [1, 2, 3, 5]
+        : tensor<2x3x5xf16> into tensor<1x2x3x5xf16>
+    return %result : tensor<1x2x3x5xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  ASSERT_TRUE(function);
+
+  mlir::OwningOpRef<mlir::ModuleOp> lowered;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToTileRegionModule(
+      function, lowered, &failureReason, /*currentLogicalRank=*/0)))
+      << failureReason;
+  ASSERT_TRUE(lowered);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+  llvm::SmallVector<wafer::ComputeGemmOp, 1> gemms;
+  lowered->walk([&](wafer::ComputeGemmOp op) { gemms.push_back(op); });
+  ASSERT_EQ(gemms.size(), 1u);
+  auto batchCount =
+      gemms.front()->getAttrOfType<mlir::IntegerAttr>("batch_count");
+  ASSERT_TRUE(batchCount);
+  EXPECT_EQ(batchCount.getInt(), 2);
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
      DirectMappedBoundaryRouteEliminatesStagedCxMaterialization) {
   mlir::DialectRegistry registry;
   registerConversionDialects(registry);
@@ -334,15 +388,17 @@ TEST(WaferTensorProgramToTileRegionTest,
 module {
   func.func @reciprocal(%input: tensor<4xf32>, %out: tensor<4xf32>)
       -> tensor<4xf32> {
+    %ones = arith.constant dense<1.0> : tensor<4xf32>
     %result = linalg.generic {
         indexing_maps = [
+          affine_map<(d0) -> (d0)>,
           affine_map<(d0) -> (d0)>,
           affine_map<(d0) -> (d0)>
         ],
         iterator_types = ["parallel"]
-      } ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
-    ^bb0(%value: f32, %init: f32):
-      %one = arith.constant 1.0 : f32
+      } ins(%ones, %input : tensor<4xf32>, tensor<4xf32>)
+        outs(%out : tensor<4xf32>) {
+    ^bb0(%one: f32, %value: f32, %init: f32):
       %reciprocal = arith.divf %one, %value : f32
       linalg.yield %reciprocal : f32
     } -> tensor<4xf32>
@@ -651,6 +707,53 @@ module {
   EXPECT_GT(countOps<wafer::InstrDTEWaitOp>(*lowered), 0u);
 }
 
+TEST(WaferTensorProgramToTileRegionTest,
+     LowersNestedCollectivePermuteThroughTypedCollectiveDispatcher) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @main(%input: tensor<4xf32>) -> tensor<4xf32> {
+    %condition = arith.constant true
+    scf.if %condition {
+      %out = tensor.empty() : tensor<4xf32>
+      %permuted = wafer.linalg_ext.collective.collective_permute
+          ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>)
+          {source_target_pairs = array<i64: 0, 1, 1, 0>,
+           channel_id = 91 : i64} -> tensor<4xf32>
+      scf.yield
+    }
+    %result_out = tensor.empty() : tensor<4xf32>
+    %result = linalg.map ins(%input : tensor<4xf32>)
+        outs(%result_out : tensor<4xf32>)
+        (%value: f32) {
+          linalg.yield %value : f32
+        }
+    return %result : tensor<4xf32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+
+  mlir::OwningOpRef<mlir::ModuleOp> lowered;
+  std::string failureReason;
+  ASSERT_TRUE(
+      mlir::succeeded(wafer::lowerCompleteRankTensorProgramToTileRegionModule(
+          *source, lowered, &failureReason, /*currentLogicalRank=*/0)))
+      << failureReason;
+  ASSERT_TRUE(lowered);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(*lowered), 1u);
+  EXPECT_EQ(countOps<wafer::CommPeerSendOp>(*lowered), 1u);
+  EXPECT_EQ(countOps<wafer::CommPeerRecvOp>(*lowered), 1u);
+}
+
 TEST(WaferTensorProgramToTileRegionTest, LowersF16GenericReductionChunks) {
   mlir::DialectRegistry registry;
   registerConversionDialects(registry);
@@ -699,24 +802,39 @@ module {
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
 
   llvm::SmallVector<wafer::ComputeReduceOp, 2> reductions;
-  llvm::SmallVector<wafer::ComputeElementwiseOp, 1> combines;
+  llvm::SmallVector<wafer::ComputeElementwiseOp, 2> chunkBodies;
+  llvm::SmallVector<wafer::ComputeElementwiseOp, 1> merges;
   lowered->walk([&](wafer::ComputeReduceOp op) { reductions.push_back(op); });
-  lowered->walk(
-      [&](wafer::ComputeElementwiseOp op) { combines.push_back(op); });
+  lowered->walk([&](wafer::ComputeElementwiseOp op) {
+    auto type = mlir::cast<mlir::MemRefType>(op.getResult().getType());
+    if (type.getRank() == 2)
+      chunkBodies.push_back(op);
+    if (type.getRank() == 1)
+      merges.push_back(op);
+  });
   ASSERT_EQ(reductions.size(), 2u);
-  ASSERT_EQ(combines.size(), 1u);
+  ASSERT_EQ(chunkBodies.size(), 2u);
+  ASSERT_EQ(merges.size(), 1u);
   auto firstInputType =
       mlir::cast<mlir::MemRefType>(reductions[0].getInput().getType());
   auto tailInputType =
       mlir::cast<mlir::MemRefType>(reductions[1].getInput().getType());
   EXPECT_EQ(firstInputType.getDimSize(1), 3);
   EXPECT_EQ(tailInputType.getDimSize(1), 2);
-  EXPECT_EQ(combines[0].getKind(), wafer::ComputeElementwiseKind::Add);
-  ASSERT_EQ(combines[0].getInputs().size(), 2u);
+  for (auto [chunkBody, reduction] :
+       llvm::zip_equal(chunkBodies, reductions)) {
+    EXPECT_EQ(chunkBody.getKind(), wafer::ComputeElementwiseKind::Add);
+    auto reductionInput =
+        reduction.getInput().getDefiningOp<wafer::LayoutMaterializeOp>();
+    ASSERT_TRUE(reductionInput);
+    EXPECT_EQ(reductionInput.getSource(), chunkBody.getResult());
+  }
+  EXPECT_EQ(merges[0].getKind(), wafer::ComputeElementwiseKind::Add);
+  ASSERT_EQ(merges[0].getInputs().size(), 2u);
   auto previousLayout =
-      combines[0].getInputs()[0].getDefiningOp<wafer::LayoutMaterializeOp>();
+      merges[0].getInputs()[0].getDefiningOp<wafer::LayoutMaterializeOp>();
   auto partialLayout =
-      combines[0].getInputs()[1].getDefiningOp<wafer::LayoutMaterializeOp>();
+      merges[0].getInputs()[1].getDefiningOp<wafer::LayoutMaterializeOp>();
   ASSERT_TRUE(previousLayout);
   ASSERT_TRUE(partialLayout);
   EXPECT_EQ(previousLayout.getSource(), reductions[0].getResult());
@@ -728,7 +846,6 @@ module {
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
   EXPECT_EQ(countOps<wafer::ComputeReduceOp>(*lowered), 0u);
   EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(*lowered), 0u);
-  EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*lowered), 6u);
 
   mlir::OwningOpRef<mlir::ModuleOp> singleTile;
   failureReason.clear();
@@ -742,7 +859,7 @@ module {
   ASSERT_TRUE(singleTile);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*singleTile)));
   EXPECT_EQ(countOps<wafer::ComputeReduceOp>(*singleTile), 2u);
-  EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(*singleTile), 1u);
+  EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(*singleTile), 3u);
 }
 
 TEST(WaferTensorProgramToTileRegionTest, LowersBF16MaximumChunks) {
@@ -792,12 +909,43 @@ module {
   ASSERT_TRUE(lowered);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
   llvm::SmallVector<wafer::ComputeReduceOp, 2> reductions;
-  llvm::SmallVector<wafer::ComputeElementwiseOp, 1> combines;
+  llvm::SmallVector<wafer::ComputeElementwiseOp, 2> chunkBodies;
+  llvm::SmallVector<wafer::ComputeElementwiseOp, 1> merges;
   lowered->walk([&](wafer::ComputeReduceOp op) { reductions.push_back(op); });
-  lowered->walk(
-      [&](wafer::ComputeElementwiseOp op) { combines.push_back(op); });
+  lowered->walk([&](wafer::ComputeElementwiseOp op) {
+    auto type = mlir::cast<mlir::MemRefType>(op.getResult().getType());
+    if (type.getRank() == 2)
+      chunkBodies.push_back(op);
+    if (type.getRank() == 1)
+      merges.push_back(op);
+  });
   ASSERT_EQ(reductions.size(), 2u);
-  ASSERT_EQ(combines.size(), 1u);
+  ASSERT_EQ(chunkBodies.size(), 2u);
+  ASSERT_EQ(merges.size(), 1u);
+  llvm::SmallVector<int64_t, 2> chunkExtents;
+  for (auto [chunkBody, reduction] :
+       llvm::zip_equal(chunkBodies, reductions)) {
+    EXPECT_EQ(chunkBody.getKind(), wafer::ComputeElementwiseKind::Max);
+    auto reductionInput =
+        reduction.getInput().getDefiningOp<wafer::LayoutMaterializeOp>();
+    ASSERT_TRUE(reductionInput);
+    EXPECT_EQ(reductionInput.getSource(), chunkBody.getResult());
+    auto inputType =
+        mlir::cast<mlir::MemRefType>(reduction.getInput().getType());
+    EXPECT_TRUE(mlir::isa<mlir::BFloat16Type>(inputType.getElementType()));
+    chunkExtents.push_back(inputType.getDimSize(1));
+  }
+  EXPECT_EQ(chunkExtents, (llvm::SmallVector<int64_t, 2>{3, 2}));
+  EXPECT_EQ(merges[0].getKind(), wafer::ComputeElementwiseKind::Max);
+  ASSERT_EQ(merges[0].getInputs().size(), 2u);
+  auto previousLayout =
+      merges[0].getInputs()[0].getDefiningOp<wafer::LayoutMaterializeOp>();
+  auto partialLayout =
+      merges[0].getInputs()[1].getDefiningOp<wafer::LayoutMaterializeOp>();
+  ASSERT_TRUE(previousLayout);
+  ASSERT_TRUE(partialLayout);
+  EXPECT_EQ(previousLayout.getSource(), reductions[0].getResult());
+  EXPECT_EQ(partialLayout.getSource(), reductions[1].getResult());
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
@@ -838,37 +986,62 @@ module {
   ASSERT_TRUE(lowered);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
 
-  llvm::SmallVector<wafer::ComputeGemmOp, 2> gemms;
-  llvm::SmallVector<wafer::ComputeElementwiseOp, 1> combines;
-  lowered->walk([&](wafer::ComputeGemmOp op) { gemms.push_back(op); });
-  lowered->walk(
-      [&](wafer::ComputeElementwiseOp op) { combines.push_back(op); });
-  ASSERT_EQ(gemms.size(), 2u);
-  ASSERT_EQ(combines.size(), 1u);
-  auto firstLhsType = mlir::cast<mlir::MemRefType>(gemms[0].getLhs().getType());
-  auto tailLhsType = mlir::cast<mlir::MemRefType>(gemms[1].getLhs().getType());
-  EXPECT_EQ(firstLhsType.getDimSize(1), 3);
-  EXPECT_EQ(tailLhsType.getDimSize(1), 2);
-  EXPECT_EQ(combines[0].getKind(), wafer::ComputeElementwiseKind::Add);
-  ASSERT_EQ(combines[0].getInputs().size(), 2u);
+  llvm::SmallVector<wafer::ComputeReduceOp, 2> reductions;
+  llvm::SmallVector<wafer::ComputeElementwiseOp, 2> products;
+  llvm::SmallVector<wafer::ComputeElementwiseOp, 2> chunkBodies;
+  llvm::SmallVector<wafer::ComputeElementwiseOp, 1> merges;
+  lowered->walk([&](wafer::ComputeReduceOp op) { reductions.push_back(op); });
+  lowered->walk([&](wafer::ComputeElementwiseOp op) {
+    auto type = mlir::cast<mlir::MemRefType>(op.getResult().getType());
+    if (type.getRank() == 3 &&
+        op.getKind() == wafer::ComputeElementwiseKind::Mul)
+      products.push_back(op);
+    if (type.getRank() == 3 &&
+        op.getKind() == wafer::ComputeElementwiseKind::Add)
+      chunkBodies.push_back(op);
+    if (type.getRank() == 2 &&
+        op.getKind() == wafer::ComputeElementwiseKind::Add)
+      merges.push_back(op);
+  });
+  ASSERT_EQ(reductions.size(), 2u);
+  ASSERT_EQ(products.size(), 2u);
+  ASSERT_EQ(chunkBodies.size(), 2u);
+  ASSERT_EQ(merges.size(), 1u);
+
+  llvm::SmallVector<int64_t, 2> contractingSizes;
+  for (auto [product, chunkBody, reduction] :
+       llvm::zip_equal(products, chunkBodies, reductions)) {
+    auto productType =
+        mlir::cast<mlir::MemRefType>(product.getResult().getType());
+    contractingSizes.push_back(productType.getDimSize(2));
+    EXPECT_TRUE(mlir::isa<mlir::IntegerType>(productType.getElementType()));
+    ASSERT_EQ(product.getInputs().size(), 2u);
+    EXPECT_TRUE(product.getInputs()[0].getDefiningOp<wafer::MoveBroadcastOp>());
+    EXPECT_TRUE(product.getInputs()[1].getDefiningOp<wafer::MoveBroadcastOp>());
+    EXPECT_TRUE(llvm::is_contained(chunkBody.getInputs(), product.getResult()));
+    auto reductionInput =
+        reduction.getInput().getDefiningOp<wafer::LayoutMaterializeOp>();
+    ASSERT_TRUE(reductionInput);
+    EXPECT_EQ(reductionInput.getSource(), chunkBody.getResult());
+  }
+  EXPECT_EQ(contractingSizes, (llvm::SmallVector<int64_t, 2>{3, 2}));
+
+  ASSERT_EQ(merges[0].getInputs().size(), 2u);
   auto previousLayout =
-      combines[0].getInputs()[0].getDefiningOp<wafer::LayoutMaterializeOp>();
+      merges[0].getInputs()[0].getDefiningOp<wafer::LayoutMaterializeOp>();
   auto partialLayout =
-      combines[0].getInputs()[1].getDefiningOp<wafer::LayoutMaterializeOp>();
+      merges[0].getInputs()[1].getDefiningOp<wafer::LayoutMaterializeOp>();
   ASSERT_TRUE(previousLayout);
   ASSERT_TRUE(partialLayout);
-  EXPECT_EQ(previousLayout.getSource(), gemms[0].getResult());
-  EXPECT_EQ(partialLayout.getSource(), gemms[1].getResult());
+  EXPECT_EQ(previousLayout.getSource(), reductions[0].getResult());
+  EXPECT_EQ(partialLayout.getSource(), reductions[1].getResult());
 
   ASSERT_TRUE(mlir::succeeded(
       wafer::convertTileRegionToInstrModule(*lowered, &failureReason)))
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
-  llvm::SmallVector<int64_t, 2> contractingSizes;
-  lowered->walk(
-      [&](wafer::InstrGemmOp op) { contractingSizes.push_back(op.getK()); });
-  EXPECT_EQ(contractingSizes, (llvm::SmallVector<int64_t, 2>{3, 2}));
-  EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*lowered), 1u);
+  EXPECT_EQ(countOps<wafer::ComputeReduceOp>(*lowered), 0u);
+  EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(*lowered), 0u);
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
@@ -915,27 +1088,72 @@ module {
     ASSERT_TRUE(lowered);
     ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
 
-    llvm::SmallVector<wafer::ComputeGemmOp, 2> gemms;
-    lowered->walk([&](wafer::ComputeGemmOp op) { gemms.push_back(op); });
-    ASSERT_EQ(gemms.size(), 2u);
-    auto firstLhsType =
-        mlir::cast<mlir::MemRefType>(gemms[0].getLhs().getType());
-    auto tailLhsType =
-        mlir::cast<mlir::MemRefType>(gemms[1].getLhs().getType());
-    EXPECT_EQ(firstLhsType.getDimSize(1), 3);
-    EXPECT_EQ(tailLhsType.getDimSize(1), 2);
-    EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(*lowered), 1u);
+    llvm::SmallVector<wafer::ComputeReduceOp, 2> reductions;
+    llvm::SmallVector<wafer::ComputeElementwiseOp, 2> products;
+    llvm::SmallVector<wafer::ComputeElementwiseOp, 2> chunkBodies;
+    llvm::SmallVector<wafer::ComputeElementwiseOp, 1> merges;
+    lowered->walk(
+        [&](wafer::ComputeReduceOp op) { reductions.push_back(op); });
+    lowered->walk([&](wafer::ComputeElementwiseOp op) {
+      auto type = mlir::cast<mlir::MemRefType>(op.getResult().getType());
+      if (type.getRank() == 3 &&
+          op.getKind() == wafer::ComputeElementwiseKind::Mul)
+        products.push_back(op);
+      if (type.getRank() == 3 &&
+          op.getKind() == wafer::ComputeElementwiseKind::Add)
+        chunkBodies.push_back(op);
+      if (type.getRank() == 2 &&
+          op.getKind() == wafer::ComputeElementwiseKind::Add)
+        merges.push_back(op);
+    });
+    ASSERT_EQ(reductions.size(), 2u) << typeSpelling.str();
+    ASSERT_EQ(products.size(), 2u) << typeSpelling.str();
+    ASSERT_EQ(chunkBodies.size(), 2u) << typeSpelling.str();
+    ASSERT_EQ(merges.size(), 1u) << typeSpelling.str();
+
+    llvm::SmallVector<int64_t, 2> contractingSizes;
+    for (auto [product, chunkBody, reduction] :
+         llvm::zip_equal(products, chunkBodies, reductions)) {
+      auto productType =
+          mlir::cast<mlir::MemRefType>(product.getResult().getType());
+      contractingSizes.push_back(productType.getDimSize(2));
+      if (typeSpelling == "f16")
+        EXPECT_TRUE(
+            mlir::isa<mlir::Float16Type>(productType.getElementType()));
+      else
+        EXPECT_TRUE(
+            mlir::isa<mlir::BFloat16Type>(productType.getElementType()));
+      ASSERT_EQ(product.getInputs().size(), 2u);
+      EXPECT_TRUE(
+          product.getInputs()[0].getDefiningOp<wafer::MoveBroadcastOp>());
+      EXPECT_TRUE(
+          product.getInputs()[1].getDefiningOp<wafer::MoveBroadcastOp>());
+      EXPECT_TRUE(
+          llvm::is_contained(chunkBody.getInputs(), product.getResult()));
+      auto reductionInput =
+          reduction.getInput().getDefiningOp<wafer::LayoutMaterializeOp>();
+      ASSERT_TRUE(reductionInput);
+      EXPECT_EQ(reductionInput.getSource(), chunkBody.getResult());
+    }
+    EXPECT_EQ(contractingSizes, (llvm::SmallVector<int64_t, 2>{3, 2}))
+        << typeSpelling.str();
+
+    ASSERT_EQ(merges[0].getInputs().size(), 2u);
+    auto previousLayout =
+        merges[0].getInputs()[0].getDefiningOp<wafer::LayoutMaterializeOp>();
+    auto partialLayout =
+        merges[0].getInputs()[1].getDefiningOp<wafer::LayoutMaterializeOp>();
+    ASSERT_TRUE(previousLayout);
+    ASSERT_TRUE(partialLayout);
+    EXPECT_EQ(previousLayout.getSource(), reductions[0].getResult());
+    EXPECT_EQ(partialLayout.getSource(), reductions[1].getResult());
 
     ASSERT_TRUE(mlir::succeeded(
         wafer::convertTileRegionToInstrModule(*lowered, &failureReason)))
         << failureReason;
     ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
-    llvm::SmallVector<wafer::InstrGemmOp, 2> instrGemms;
-    lowered->walk([&](wafer::InstrGemmOp op) { instrGemms.push_back(op); });
-    ASSERT_EQ(instrGemms.size(), 2u);
-    EXPECT_EQ(instrGemms[0].getK(), 3);
-    EXPECT_EQ(instrGemms[1].getK(), 2);
-    EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*lowered), 1u);
+    EXPECT_EQ(countOps<wafer::ComputeReduceOp>(*lowered), 0u);
+    EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(*lowered), 0u);
   }
 }
 
@@ -981,8 +1199,6 @@ module {
   // accounting must not restore one blocking wait after every operation.
   EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(*module), 1u);
   EXPECT_EQ(terminalOperationCount, 2049u);
-  EXPECT_LT(terminalOperationCount,
-            wafer::detail::kStaticTerminalOperationBudget);
   EXPECT_EQ(countOps<wafer::ComputeReduceOp>(*module), 0u);
   EXPECT_EQ(countOps<wafer::InstrReduceOp>(*module), 0u);
 }
@@ -1044,6 +1260,72 @@ module {
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
+     MaterializesSplatConstantsAtTheirConcreteFullOrSlicedDemand) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @scale(%input: tensor<8xf32>, %out: tensor<8xf32>)
+      -> tensor<8xf32> {
+    %scale = arith.constant dense<1.250000e-01> : tensor<8xf32>
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0) -> (d0)>,
+          affine_map<(d0) -> (d0)>,
+          affine_map<(d0) -> (d0)>
+        ],
+        iterator_types = ["parallel"]
+      } ins(%input, %scale : tensor<8xf32>, tensor<8xf32>)
+        outs(%out : tensor<8xf32>) {
+    ^bb0(%value: f32, %factor: f32, %init: f32):
+      %scaled = arith.mulf %value, %factor : f32
+      linalg.yield %scaled : f32
+    } -> tensor<8xf32>
+    return %result : tensor<8xf32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  ASSERT_TRUE(function);
+
+  mlir::OwningOpRef<mlir::ModuleOp> full;
+  mlir::OwningOpRef<mlir::ModuleOp> tiled;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToTileRegionModule(
+      function, full, &failureReason, /*currentLogicalRank=*/0)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+          function, /*candidateTileSizes=*/{2},
+          /*candidateReductionTileSizes=*/{}, tiled, &failureReason,
+          /*currentLogicalRank=*/0)))
+      << failureReason;
+
+  auto collectFillShapes = [](mlir::ModuleOp module) {
+    llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 2> shapes;
+    module.walk([&](wafer::ComputeFillOp fill) {
+      auto type = mlir::dyn_cast<mlir::MemRefType>(fill.getDest().getType());
+      if (type)
+        shapes.emplace_back(type.getShape().begin(), type.getShape().end());
+    });
+    return shapes;
+  };
+  auto fullFillShapes = collectFillShapes(*full);
+  auto tiledFillShapes = collectFillShapes(*tiled);
+  ASSERT_EQ(fullFillShapes.size(), 1u);
+  ASSERT_EQ(tiledFillShapes.size(), 1u);
+  EXPECT_TRUE(llvm::equal(fullFillShapes.front(), llvm::ArrayRef<int64_t>{8}));
+  EXPECT_TRUE(
+      llvm::equal(tiledFillShapes.front(), llvm::ArrayRef<int64_t>{2}));
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
      LowersRankReducedStaticExtractAndOutputInsert) {
   mlir::DialectRegistry registry;
   registerConversionDialects(registry);
@@ -1077,44 +1359,73 @@ module {
   ASSERT_TRUE(lowered);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
 
-  std::vector<std::string> rankReducedSlices;
-  lowered->walk([&](mlir::memref::SubViewOp subview) {
-    ASSERT_EQ(subview.getSourceType().getRank(), 2);
-    ASSERT_EQ(subview.getType().getRank(), 1);
-    rankReducedSlices.push_back(formatStaticSlice(subview));
-  });
-  std::sort(rankReducedSlices.begin(), rankReducedSlices.end());
-  EXPECT_EQ(rankReducedSlices, (std::vector<std::string>{"0,0:1,4"}));
-  EXPECT_EQ(countOps<wafer::StorageLoadOp>(*lowered), 2u);
-  EXPECT_EQ(countOps<wafer::StorageStoreOp>(*lowered), 1u);
+  // The extract and insert are both external DDR views.  Preserve their
+  // source/destination identity and carry the row through one rank-one SPM
+  // value; materializing the full output in SPM would be redundant.
+  llvm::SmallVector<wafer::StorageLoadOp, 1> loads;
+  llvm::SmallVector<wafer::StorageStoreOp, 1> stores;
+  llvm::SmallVector<wafer::TileRegionOp, 1> regions;
+  lowered->walk([&](wafer::StorageLoadOp load) { loads.push_back(load); });
+  lowered->walk([&](wafer::StorageStoreOp store) { stores.push_back(store); });
+  lowered->walk([&](wafer::TileRegionOp region) { regions.push_back(region); });
+  ASSERT_EQ(loads.size(), 1u);
+  ASSERT_EQ(stores.size(), 1u);
+  ASSERT_EQ(regions.size(), 1u);
+
+  auto inputSubview =
+      loads.front().getSource().getDefiningOp<mlir::memref::SubViewOp>();
+  auto outputSubview =
+      stores.front().getDest().getDefiningOp<mlir::memref::SubViewOp>();
+  ASSERT_TRUE(inputSubview);
+  ASSERT_TRUE(outputSubview);
+  EXPECT_EQ(formatStaticSlice(inputSubview), "0,0:1,4");
+  EXPECT_EQ(formatStaticSlice(outputSubview), "1,0:1,4");
+  EXPECT_EQ(inputSubview.getSourceType().getRank(), 2);
+  EXPECT_EQ(inputSubview.getType().getRank(), 1);
+  EXPECT_EQ(outputSubview.getSourceType().getRank(), 2);
+  EXPECT_EQ(outputSubview.getType().getRank(), 1);
+
+  mlir::Block &body = regions.front().getBody().front();
+  ASSERT_EQ(body.getNumArguments(), 2u);
+  EXPECT_EQ(inputSubview.getSource(), body.getArgument(0));
+  EXPECT_EQ(outputSubview.getSource(), body.getArgument(1));
+  EXPECT_EQ(loads.front().getDest(), stores.front().getSource());
+  auto rowBufferType =
+      mlir::cast<mlir::MemRefType>(loads.front().getDest().getType());
+  EXPECT_TRUE(wafer::isWaferSPMMemRefType(rowBufferType));
+  EXPECT_EQ(rowBufferType.getShape(), llvm::ArrayRef<int64_t>({4}));
+  EXPECT_TRUE(loads.front().getDest().getDefiningOp<mlir::memref::AllocOp>());
+
+  auto yield = mlir::dyn_cast<wafer::TileYieldOp>(body.getTerminator());
+  ASSERT_TRUE(yield);
+  ASSERT_EQ(yield.getValues().size(), 1u);
+  EXPECT_EQ(yield.getValues().front(), body.getArgument(1));
+  ASSERT_EQ(regions.front().getNumResults(), 1u);
+  ASSERT_TRUE(regions.front().getResult(0).hasOneUse());
+  auto toTensor = mlir::dyn_cast<mlir::bufferization::ToTensorOp>(
+      *regions.front().getResult(0).getUsers().begin());
+  ASSERT_TRUE(toTensor);
+  ASSERT_TRUE(toTensor.getResult().hasOneUse());
+  EXPECT_TRUE(mlir::isa<mlir::func::ReturnOp>(
+      *toTensor.getResult().getUsers().begin()));
+
   EXPECT_EQ(countOps<wafer::MoveExtractSliceOp>(*lowered), 0u);
-  llvm::SmallVector<wafer::MoveInsertSliceOp, 1> inserts;
-  lowered->walk(
-      [&](wafer::MoveInsertSliceOp insert) { inserts.push_back(insert); });
-  ASSERT_EQ(inserts.size(), 1u);
-  const llvm::SmallVector<int64_t, 2> expectedOffsets{1, 0};
-  const llvm::SmallVector<int64_t, 2> expectedSizes{1, 4};
-  const llvm::SmallVector<int64_t, 2> expectedStrides{1, 1};
-  EXPECT_TRUE(inserts.front().getOffsets() ==
-              llvm::ArrayRef<int64_t>(expectedOffsets));
-  EXPECT_TRUE(inserts.front().getSizes() ==
-              llvm::ArrayRef<int64_t>(expectedSizes));
-  EXPECT_TRUE(inserts.front().getStrides() ==
-              llvm::ArrayRef<int64_t>(expectedStrides));
-  auto insertedSourceType =
-      mlir::cast<mlir::MemRefType>(inserts.front().getSource().getType());
-  auto insertedDestType =
-      mlir::cast<mlir::MemRefType>(inserts.front().getDest().getType());
-  EXPECT_EQ(insertedSourceType.getRank(), 1);
-  EXPECT_EQ(insertedDestType.getRank(), 2);
+  EXPECT_EQ(countOps<wafer::MoveInsertSliceOp>(*lowered), 0u);
 
   ASSERT_TRUE(mlir::succeeded(
       wafer::convertTileRegionToInstrModule(*lowered, &failureReason)))
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
-  EXPECT_EQ(countOps<wafer::InstrRDMAOp>(*lowered), 2u);
-  EXPECT_EQ(countOps<wafer::InstrWDMAOp>(*lowered), 1u);
-  EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*lowered), 2u);
+  llvm::SmallVector<wafer::InstrRDMAOp, 1> rdmas;
+  llvm::SmallVector<wafer::InstrWDMAOp, 1> wdmas;
+  lowered->walk([&](wafer::InstrRDMAOp rdma) { rdmas.push_back(rdma); });
+  lowered->walk([&](wafer::InstrWDMAOp wdma) { wdmas.push_back(wdma); });
+  ASSERT_EQ(rdmas.size(), 1u);
+  ASSERT_EQ(wdmas.size(), 1u);
+  EXPECT_EQ(rdmas.front().getSource(), inputSubview.getResult());
+  EXPECT_EQ(rdmas.front().getDest(), wdmas.front().getSource());
+  EXPECT_EQ(wdmas.front().getDest(), outputSubview.getResult());
+  EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*lowered), 0u);
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
@@ -1167,6 +1478,88 @@ module {
   EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(*lowered), 2u);
   EXPECT_EQ(countOps<wafer::StorageLoadOp>(*lowered), 2u);
   EXPECT_EQ(countOps<wafer::StorageStoreOp>(*lowered), 1u);
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     StreamsLargeExternalInsertChainThroughBoundedSPMTiles) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @cache_append(
+      %past: tensor<1x32x1023x128xf16>,
+      %next: tensor<1x32x1x128xf16>)
+      -> (tensor<1x32x1024x128xf16>, tensor<1x32x1x128xf16>) {
+    %cache_empty = tensor.empty() : tensor<1x32x1024x128xf16>
+    %prefix = tensor.insert_slice %past into %cache_empty[0, 0, 0, 0]
+        [1, 32, 1023, 128] [1, 1, 1, 1]
+        : tensor<1x32x1023x128xf16> into tensor<1x32x1024x128xf16>
+    %updated = tensor.insert_slice %next into %prefix[0, 0, 1023, 0]
+        [1, 32, 1, 128] [1, 1, 1, 1]
+        : tensor<1x32x1x128xf16> into tensor<1x32x1024x128xf16>
+    %tail = tensor.extract_slice %updated[0, 0, 1023, 0]
+        [1, 32, 1, 128] [1, 1, 1, 1]
+        : tensor<1x32x1024x128xf16> to tensor<1x32x1x128xf16>
+    %mapped_empty = tensor.empty() : tensor<1x32x1x128xf16>
+    %mapped = linalg.map
+        ins(%tail : tensor<1x32x1x128xf16>)
+        outs(%mapped_empty : tensor<1x32x1x128xf16>)
+        (%value: f16) {
+          linalg.yield %value : f16
+        }
+    return %updated, %mapped
+        : tensor<1x32x1024x128xf16>, tensor<1x32x1x128xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+
+  mlir::OwningOpRef<mlir::ModuleOp> lowered;
+  std::string failureReason;
+  ASSERT_TRUE(
+      mlir::succeeded(wafer::lowerCompleteRankTensorProgramToTileRegionModule(
+          *source, lowered, &failureReason, /*currentLogicalRank=*/0)))
+      << failureReason;
+  ASSERT_TRUE(lowered);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+
+  unsigned fullCacheSPMAllocations = 0;
+  uint64_t largestSPMAllocationBytes = 0;
+  lowered->walk([&](mlir::memref::AllocOp alloc) {
+    mlir::MemRefType type = alloc.getType();
+    if (!wafer::isWaferSPMMemRefType(type))
+      return;
+    uint64_t elements = 1;
+    for (int64_t extent : type.getShape())
+      elements *= static_cast<uint64_t>(extent);
+    uint64_t bytes =
+        elements * static_cast<uint64_t>(
+                       type.getElementType().getIntOrFloatBitWidth() / 8);
+    largestSPMAllocationBytes = std::max(largestSPMAllocationBytes, bytes);
+    fullCacheSPMAllocations +=
+        type.getShape() == llvm::ArrayRef<int64_t>({1, 32, 1024, 128});
+  });
+  EXPECT_EQ(fullCacheSPMAllocations, 0u);
+  EXPECT_LE(largestSPMAllocationBytes, (3080192u - 65536u) / 4u);
+  EXPECT_GT(countOps<wafer::StorageLoadOp>(*lowered), 0u);
+  EXPECT_GT(countOps<wafer::StorageStoreOp>(*lowered), 0u);
+
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*lowered, &failureReason)))
+      << failureReason;
+  mlir::PassManager preparation(&context);
+  wafer::buildPrepareScheduledRankCandidatePipeline(preparation);
+  ASSERT_TRUE(mlir::succeeded(preparation.run(*lowered)));
+  ASSERT_TRUE(mlir::succeeded(wafer::rebuildMinimumNCCJoins(*lowered)));
+  EXPECT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
+      *lowered, /*spmBase=*/65536, /*spmLimit=*/3080192,
+      /*spmAlignment=*/256)));
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
@@ -1352,7 +1745,8 @@ module {
           /*candidateReductionTileSizes=*/{2, 3}, lowered, &failureReason,
           /*currentLogicalRank=*/0)));
   EXPECT_EQ(failureReason,
-            "candidate reduction split requires exactly one reduction axis");
+            "ordered reduction chunk chain requires exactly one reduction "
+            "axis");
   EXPECT_FALSE(lowered);
 }
 
@@ -1572,7 +1966,7 @@ module {
           /*candidateReductionTileSizes=*/{4}, lowered, &failureReason,
           /*currentLogicalRank=*/0, /*selectedAlternative=*/std::nullopt,
           /*useDirectMappedBoundaryTransfer=*/false,
-          wafer::CandidateTileTraversalKind::PartialReduction)))
+          wafer::CandidateTileTraversalKind::ResultDriven)))
       << failureReason;
   ASSERT_TRUE(lowered);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
@@ -1636,7 +2030,7 @@ module {
           /*candidateReductionTileSizes=*/{4}, lowered, &failureReason,
           /*currentLogicalRank=*/0, /*selectedAlternative=*/std::nullopt,
           /*useDirectMappedBoundaryTransfer=*/false,
-          wafer::CandidateTileTraversalKind::PartialReduction)));
+          wafer::CandidateTileTraversalKind::ResultDriven)));
   EXPECT_EQ(failureReason,
             "candidate reduction split cannot preserve unsigned min/max "
             "semantics with the current reduce kind");
@@ -1705,7 +2099,7 @@ module {
           /*candidateReductionTileSizes=*/{4}, lowered, &failureReason,
           /*currentLogicalRank=*/0, /*selectedAlternative=*/std::nullopt,
           /*useDirectMappedBoundaryTransfer=*/false,
-          wafer::CandidateTileTraversalKind::PartialReduction)))
+          wafer::CandidateTileTraversalKind::ResultDriven)))
       << failureReason;
   ASSERT_TRUE(lowered);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
@@ -1788,7 +2182,7 @@ module {
           /*candidateReductionTileSizes=*/{4}, lowered, &failureReason,
           /*currentLogicalRank=*/0, /*selectedAlternative=*/std::nullopt,
           /*useDirectMappedBoundaryTransfer=*/false,
-          wafer::CandidateTileTraversalKind::PartialReduction)));
+          wafer::CandidateTileTraversalKind::ResultDriven)));
   EXPECT_EQ(failureReason,
             "candidate reduction split cannot preserve unsigned min/max "
             "semantics with the current reduce kind");
@@ -1877,6 +2271,346 @@ module {
       << failureReason;
   EXPECT_EQ(countOps<wafer::ComputeConvertOp>(*module), 1u);
   EXPECT_EQ(countOps<wafer::InstrConvertOp>(*module), 0u);
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     ConnectionIdentityDistinguishesTwoOperandsOfOneConsumer) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @two_edges(%input: tensor<8xf16>) -> tensor<8xf16> {
+    %producer_out = tensor.empty() : tensor<8xf16>
+    %producer = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]}
+      ins(%input : tensor<8xf16>) outs(%producer_out : tensor<8xf16>) {
+    ^bb0(%value: f16, %unused: f16):
+      %negated = arith.negf %value : f16
+      linalg.yield %negated : f16
+    } -> tensor<8xf16>
+    %consumer_out = tensor.empty() : tensor<8xf16>
+    %consumer = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]}
+      ins(%producer, %producer : tensor<8xf16>, tensor<8xf16>)
+      outs(%consumer_out : tensor<8xf16>) {
+    ^bb0(%left: f16, %right: f16, %unused: f16):
+      %sum = arith.addf %left, %right : f16
+      linalg.yield %sum : f16
+    } -> tensor<8xf16>
+    return %consumer : tensor<8xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+
+  std::string failureReason;
+  auto topology = wafer::getCompleteRankCandidateConnectionTopology(
+      *source, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(topology)) << failureReason;
+  ASSERT_EQ(topology->domains.size(), 2u);
+  EXPECT_EQ(topology->connectionCount, 2u);
+  EXPECT_TRUE(topology->requiresGeneralDAGBeam);
+  const auto &left = topology->domains[0];
+  const auto &right = topology->domains[1];
+  EXPECT_EQ(left.producerOperationOrdinal, right.producerOperationOrdinal);
+  EXPECT_EQ(left.producerResultNumber, 0u);
+  EXPECT_EQ(right.producerResultNumber, 0u);
+  EXPECT_EQ(left.consumerOperationOrdinal, right.consumerOperationOrdinal);
+  EXPECT_EQ(left.consumerOperandNumber, 0u);
+  EXPECT_EQ(right.consumerOperandNumber, 1u);
+  EXPECT_EQ(left.producerResultShape,
+            (llvm::SmallVector<int64_t, 4>{8}));
+  EXPECT_EQ(left.consumerOperandShape,
+            (llvm::SmallVector<int64_t, 4>{8}));
+  EXPECT_EQ(left.consumerResultShape,
+            (llvm::SmallVector<int64_t, 4>{8}));
+
+  wafer::CandidateTraversalConnectionChoice invalidCoupled;
+  invalidCoupled.action =
+      wafer::CandidateTraversalConnectionAction::CoupledResident;
+  invalidCoupled.producerTileSizes = {2};
+  invalidCoupled.consumerTileSizes = {4};
+  wafer::CandidateTraversalConnectionChoice separated;
+  separated.action =
+      wafer::CandidateTraversalConnectionAction::SeparatedDDR;
+  separated.producerTileSizes = {2};
+  separated.consumerTileSizes = {4};
+  mlir::OwningOpRef<mlir::ModuleOp> rejected;
+  llvm::SmallVector<wafer::CandidateTraversalConnectionChoice, 2>
+      invalidChoices{invalidCoupled, separated};
+  EXPECT_TRUE(mlir::failed(
+      wafer::lowerCompleteRankConnectionChoicesTensorProgramToTileRegionModule(
+          *source, invalidChoices, rejected, &failureReason,
+          /*currentLogicalRank=*/0)));
+  EXPECT_NE(failureReason.find("cannot select a producer tile independently"),
+            std::string::npos)
+      << failureReason;
+
+  wafer::CandidateTraversalConnectionChoice coupled;
+  coupled.action = wafer::CandidateTraversalConnectionAction::CoupledResident;
+  coupled.consumerTileSizes = {4};
+  llvm::SmallVector<wafer::CandidateTraversalConnectionChoice, 2> choices{
+      coupled, separated};
+  mlir::OwningOpRef<mlir::ModuleOp> lowered;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::lowerCompleteRankConnectionChoicesTensorProgramToTileRegionModule(
+          *source, choices, lowered, &failureReason,
+          /*currentLogicalRank=*/0)))
+      << failureReason;
+  ASSERT_TRUE(lowered);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+  llvm::SmallVector<int64_t, 4> loopSteps;
+  lowered->walk([&](mlir::scf::ForOp loop) {
+    std::optional<int64_t> step = mlir::getConstantIntValue(loop.getStep());
+    if (step)
+      loopSteps.push_back(*step);
+  });
+  EXPECT_TRUE(llvm::is_contained(loopSteps, 4));
+  EXPECT_TRUE(llvm::is_contained(loopSteps, 2));
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     LowersGenericNaturalLogThroughTypedInstructionKind) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @natural_log(%input: tensor<4xf32>, %out: tensor<4xf32>)
+      -> tensor<4xf32> {
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
+    ^bb0(%value: f32, %unused: f32):
+      %logged = math.log %value : f32
+      linalg.yield %logged : f32
+    } -> tensor<4xf32>
+    return %result : tensor<4xf32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  mlir::OwningOpRef<mlir::ModuleOp> lowered;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToTileRegionModule(
+      function, lowered, &failureReason, /*currentLogicalRank=*/0)))
+      << failureReason;
+  ASSERT_TRUE(lowered);
+  llvm::SmallVector<wafer::ComputeElementwiseOp, 1> tileOps;
+  lowered->walk([&](wafer::ComputeElementwiseOp op) { tileOps.push_back(op); });
+  ASSERT_EQ(tileOps.size(), 1u);
+  EXPECT_EQ(tileOps.front().getKind(), wafer::ComputeElementwiseKind::Ln);
+
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*lowered, &failureReason)))
+      << failureReason;
+  llvm::SmallVector<wafer::InstrElementwiseOp, 1> instrOps;
+  lowered->walk([&](wafer::InstrElementwiseOp op) { instrOps.push_back(op); });
+  ASSERT_EQ(instrOps.size(), 1u);
+  EXPECT_EQ(instrOps.front().getKind(), wafer::InstrElementwiseKind::Ln);
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     StandaloneFlashAttention2PassMaterializesStateWithoutProbabilityStorage) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @attention(%scores: tensor<2x7xf16>,
+                       %values: tensor<7x3xf16>,
+                       %projection: tensor<3x4xf16>,
+                       %out: tensor<2x4xf16>) -> tensor<2x4xf16> {
+    %zero = arith.constant 0.0 : f16
+    %lowest = arith.constant -6.550400e+04 : f16
+    %max_empty = tensor.empty() : tensor<2xf16>
+    %max_init = linalg.fill ins(%lowest : f16)
+        outs(%max_empty : tensor<2xf16>) -> tensor<2xf16>
+    %row_max = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0)>],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%scores : tensor<2x7xf16>)
+        outs(%max_init : tensor<2xf16>) {
+    ^bb0(%value: f16, %acc: f16):
+      %next = arith.maximumf %acc, %value : f16
+      linalg.yield %next : f16
+    } -> tensor<2xf16>
+    %max_broadcast_empty = tensor.empty() : tensor<2x7xf16>
+    %max_broadcast = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0)>,
+          affine_map<(d0, d1) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%row_max : tensor<2xf16>)
+        outs(%max_broadcast_empty : tensor<2x7xf16>) {
+    ^bb0(%value: f16, %unused: f16):
+      linalg.yield %value : f16
+    } -> tensor<2x7xf16>
+    %shift_empty = tensor.empty() : tensor<2x7xf16>
+    %shifted = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%scores, %max_broadcast : tensor<2x7xf16>, tensor<2x7xf16>)
+        outs(%shift_empty : tensor<2x7xf16>) {
+    ^bb0(%value: f16, %maximum: f16, %unused: f16):
+      %next = arith.subf %value, %maximum : f16
+      linalg.yield %next : f16
+    } -> tensor<2x7xf16>
+    %exp_empty = tensor.empty() : tensor<2x7xf16>
+    %exponential = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%shifted : tensor<2x7xf16>)
+        outs(%exp_empty : tensor<2x7xf16>) {
+    ^bb0(%value: f16, %unused: f16):
+      %next = math.exp %value : f16
+      linalg.yield %next : f16
+    } -> tensor<2x7xf16>
+    %sum_empty = tensor.empty() : tensor<2xf16>
+    %sum_init = linalg.fill ins(%zero : f16)
+        outs(%sum_empty : tensor<2xf16>) -> tensor<2xf16>
+    %row_sum = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0)>],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%exponential : tensor<2x7xf16>)
+        outs(%sum_init : tensor<2xf16>) {
+    ^bb0(%value: f16, %acc: f16):
+      %next = arith.addf %acc, %value : f16
+      linalg.yield %next : f16
+    } -> tensor<2xf16>
+    %sum_broadcast_empty = tensor.empty() : tensor<2x7xf16>
+    %sum_broadcast = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0)>,
+          affine_map<(d0, d1) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%row_sum : tensor<2xf16>)
+        outs(%sum_broadcast_empty : tensor<2x7xf16>) {
+    ^bb0(%value: f16, %unused: f16):
+      linalg.yield %value : f16
+    } -> tensor<2x7xf16>
+    %prob_empty = tensor.empty() : tensor<2x7xf16>
+    %probability = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%exponential, %sum_broadcast
+          : tensor<2x7xf16>, tensor<2x7xf16>)
+        outs(%prob_empty : tensor<2x7xf16>) {
+    ^bb0(%numerator: f16, %denominator: f16, %unused: f16):
+      %next = arith.divf %numerator, %denominator : f16
+      linalg.yield %next : f16
+    } -> tensor<2x7xf16>
+    %attention_empty = tensor.empty() : tensor<2x3xf16>
+    %attention_init = linalg.fill ins(%zero : f16)
+        outs(%attention_empty : tensor<2x3xf16>) -> tensor<2x3xf16>
+    %attention_output = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1, d2) -> (d0, d2)>,
+          affine_map<(d0, d1, d2) -> (d2, d1)>,
+          affine_map<(d0, d1, d2) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel", "reduction"]
+      } ins(%probability, %values : tensor<2x7xf16>, tensor<7x3xf16>)
+        outs(%attention_init : tensor<2x3xf16>) {
+    ^bb0(%prob: f16, %value: f16, %acc: f16):
+      %product = arith.mulf %prob, %value : f16
+      %next = arith.addf %acc, %product : f16
+      linalg.yield %next : f16
+    } -> tensor<2x3xf16>
+    %out_init = linalg.fill ins(%zero : f16)
+        outs(%out : tensor<2x4xf16>) -> tensor<2x4xf16>
+    %output = linalg.matmul
+        ins(%attention_output, %projection
+            : tensor<2x3xf16>, tensor<3x4xf16>)
+        outs(%out_init : tensor<2x4xf16>) -> tensor<2x4xf16>
+    return %output : tensor<2x4xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+
+  wafer::MaterializeFlashAttention2PassOptions options;
+  options.outputTileSizes = "1,3";
+  options.keyValueTileSize = 3;
+  mlir::PassManager materialization(&context);
+  materialization.addPass(wafer::createMaterializeFlashAttention2Pass(options));
+  ASSERT_TRUE(mlir::succeeded(materialization.run(*source)));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
+  EXPECT_EQ(countOps<mlir::scf::IfOp>(*source), 0u);
+  unsigned loopCarriedFlashStates = 0;
+  source->walk([&](mlir::scf::ForOp loop) {
+    loopCarriedFlashStates += loop.getRegionIterArgs().size() == 3;
+  });
+  EXPECT_GT(loopCarriedFlashStates, 0u);
+
+  unsigned fullProbabilityDestinations = 0;
+  source->walk([&](mlir::tensor::EmptyOp empty) {
+    mlir::RankedTensorType type = empty.getType();
+    fullProbabilityDestinations +=
+        type.getRank() == 2 && type.getDimSize(0) == 2 &&
+        type.getDimSize(1) == 7;
+  });
+  EXPECT_EQ(fullProbabilityDestinations, 0u);
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     StandaloneFlashAttention2PassRejectsSemanticNonMatch) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @standalone_probability(%probability: tensor<2x7xf16>)
+      -> tensor<2x7xf16> {
+    return %probability : tensor<2x7xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  wafer::MaterializeFlashAttention2PassOptions options;
+  options.outputTileSizes = "1,3";
+  options.keyValueTileSize = 3;
+  mlir::PassManager materialization(&context);
+  materialization.addPass(wafer::createMaterializeFlashAttention2Pass(options));
+  EXPECT_TRUE(mlir::failed(materialization.run(*source)));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
 }
 
 } // namespace

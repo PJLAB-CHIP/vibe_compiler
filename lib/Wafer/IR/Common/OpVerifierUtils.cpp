@@ -467,6 +467,7 @@ static unsigned getElementwiseArity(ComputeElementwiseKind kind) {
   case ComputeElementwiseKind::Sqrt:
   case ComputeElementwiseKind::Rsqrt:
   case ComputeElementwiseKind::Exp:
+  case ComputeElementwiseKind::Ln:
   case ComputeElementwiseKind::Tanh:
     return 1;
   }

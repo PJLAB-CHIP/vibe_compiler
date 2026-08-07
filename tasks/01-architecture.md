@@ -53,8 +53,9 @@ Pipeline position:
 - Current stage responsibility:
   在transaction-owned source snapshot上完成frontend admission；调用pinned XLA helper完成Shardy/XLA SPMD并重新验证输出；
   normalization到rank-local Linalg/Tensor/SCF structured program，并形成经过显式required normalization的
-  optimizer-ready structured IR；为每rank在隔离complete-rank clone中以consumer-driven方式联合物化完整selected
-  tile/dataflow IR，只有terminal candidates才统一lower instruction并派生worker/slot/completion，随后闭合
+  optimizer-ready structured IR；先在query-local structural frontier中以consumer-driven方式联合搜索，只把统一预算准入的
+  有界代表物化为隔离complete-rank selected tile/dataflow clone；只有进入executable finalization的actual candidates才统一
+  lower instruction并派生worker/slot/completion，随后闭合
   SPM/DDR/transport/target legality并原子形成ExecutableBundle；从同一bundle只做一次
   target conversion形成TargetLLVMModuleBundle，分支给repo-owned CModel与device link；device-linked artifacts再与
   ExecutableBundle一起形成typed manifest/package并原子发布。
@@ -76,9 +77,9 @@ Pipeline position:
   configured board RuntimeProvider链保持有效。implementation、tile/relation、encoding/view/route、storage/residency、
   fixed-Cx/NCx absorption、share-vs-recompute、static loop-invariant hoist、supported integer/floating algebra、
   buffering/order以及collective tile/payload relation均在complete-rank、pre-Instr actual clones中由真实production
-  mutation表达；Direct/Ring/ordered-Tree参数只在terminal Tile→Instr transition中生成actual sibling并立即销毁；terminal
-  Instr siblings在worker/order确定后fresh重建completion，随后经过共同frontier、
-  rank/whole-variant exact gate和默认driver原子提交；required closure的mutation保留在committed winner。
+  mutation表达；Direct/Ring/ordered-Tree参数只在executable-finalization Tile→Instr transition中生成actual sibling并立即销毁；
+  finalized Instr candidates在worker/order确定后fresh重建completion，随后经过共同rank/whole-variant exact gates
+  和默认driver原子提交；required closure的mutation保留在committed winner。
   winner capability projection只在真实package/runtime consumer需要时派生，model/board admission不参与candidate选择。
   新的profiling证据或multi-engine software pipeline只有通过自己的production vertical后才能扩展该基线。
 ```
@@ -134,7 +135,7 @@ manifest的move-only lifetime/container artifact，不是另一份program或pack
 | Execution configuration | factory-only `ExecutionConfig` | 显式1/16 rank domain；current target identity由compiler固定提供 | tensor sharding、topology IR、planner policy |
 | Topology/SPMD | `wafer.target.topology`、`wafer.execution.mesh`、post-SPMD StableHLO | compiler内部single-card endpoint与logical rank domain、rank-local partition | candidate、SPM/DDR、physical transport |
 | Structured tensor program | Linalg/Tensor/SCF/Arith/Math与typed logical collective | rank-local数学语义、iterator/indexing relation、effect/control及native numeric semantics/permissions | target implementation、physical encoding、offset |
-| Candidate analysis | transformation-local component/edge legality、IndexRelation、complete-rank actual clones、structured bounds与terminal final cost | consumer-driven region partition、traversal fusion/separation、tile/loop、layout/route/residency alternatives；每个frontier survivor的选择已物化进clone；worker/join/critical-path exact cost只在terminal Instr后Known | accepted事实、package字段、shadow schedule、长期side table |
+| Candidate analysis | transformation-local component/edge legality、IndexRelation、query-local structural proposals、structured bounds与executable-finalization cost | consumer-driven region partition、traversal fusion/separation、tile/loop、layout/route/residency alternatives；invocation-wide structural frontier最多64项；mandatory baseline canonical seed外置于A/B轮转，但计入全局16次actual materialization attempt/8个successful exact action；其余action按stable A-first在new-Tile canonical seed和exact-seeded cursor expansion之间轮转，live cursor最多8且peak action clone为1；worker/join/critical-path exact cost只在finalized Instr后Known | accepted事实、package字段、shadow schedule、长期side table |
 | Selected tile/dataflow IR（stage-internal） | 每个static rank entry一个或多个non-nested `wafer.tile.region`、Wafer memref/view、SCF/SSA、typed compute/movement/collective/event | 完整static traversal、selected residency partition、traversal coupling/tile schedules、implementation/physical versions、逐root residency与显式DDR materialization；必须继续lower，不是accepted artifact | rejected candidates、私有arena、runtime launch |
 | Instruction/memory program | `wafer.instr.*`、accepted SPM/DDR offsets、completion/Direct DTE | target-abstract invocation、physical geometry、range/lifetime/effect | raw host handle、package schedule |
 | Executable bundle | move-only `RankExecutable[]`/`ExecutableBundle` | all-and-only rank modules、entry、program bindings、completion、transport、atomic acceptance | target object、runtime session、rejected choice |
@@ -158,13 +159,20 @@ OpInterface读取当前IR语义，跨value关系由可失效、可重算的`Inde
 
 1. source op interface/external model给出有界typed implementation参数；encoding行为属于attr/type interface；跨两端buffer的
    transfer route属于普通analysis/helper；
-2. PatternRewriter在隔离complete-rank clone中立即应用relation/view、联合traversal fusion/separation与tiling、implementation、
-   encoding/route、physical-version reuse、movement/residency、buffering/order或collective tile/payload relation selection；Direct/Ring/Tree参数只在
-   terminal Tile→Instr transition中逐点展开成actual Instr sibling并立即销毁；applied后旧relation/alias/effect/
+2. query-local structural proposals先由typed legality、关系和cost lower bound在DP/Pareto frontier中剪枝；一次invocation的
+   structural frontier最多64项。PatternRewriter随后只在统一budget准入的隔离complete-rank clone中应用relation/view、联合traversal
+   fusion/separation与tiling、implementation、encoding/route、physical-version reuse、movement/residency、buffering/order
+   或collective tile/payload relation selection；Direct/Ring/Tree参数只在被invocation scheduler选中后，于
+   executable-finalization Tile→Instr transition中展开到唯一actual action clone；applied后旧relation/alias/effect/
    lifetime/resource/cost全部失效；
-3. generation worklist保留无owner-produced offset/binding的complete-rank actual Tile clones；只有terminal Tile survivors
-   才通过一次DialectConversion变成typed Instr IR，不接受standalone task module或side-table隐含决策；
-4. C2 coordinated all-rank Tile variant中的每个terminal complete-rank Instr parent派生worker/fixed-slot siblings，从current
+3. generation worklist同时拥有未物化的query-local structural frontier和无owner-produced offset/binding的有界actual Tile
+   representatives，但不为每个Tile或provider建立独立quota。common coordinator只消费typed facts与opaque identity，不按
+   workload或provider key分支。mandatory baseline canonical seed外置于轮转；其余action按stable
+   A-first在new-Tile canonical seed（A）与已有exact-seeded cursor expansion（B）之间轮转。baseline仍计入全invocation总计
+   最多16次actual materialization attempt和8个successful exact action；setup前failure不计attempt，已开始action的成功或
+   materialization/exact failure都消耗attempt并换lane，live cursor最多8且peak action clone为1；
+4. 只有上述invocation scheduler选中的all-rank Tile action才通过DialectConversion形成complete-rank canonical/unplaced Instr
+   parents并派生匹配的worker/fixed-slot siblings，从current
    effects/event/ranges fresh重建completion；再从全部SPM roots、lifetime/coexistence/conflict派生fixed SPM
    allocation problems并all-and-only验证，不形成rank-local winner；
 5. C3只在all-and-only rank entries属于同一个coordinated variant时原子验证DDR placement domains、post-memory transport/all-rank
@@ -261,7 +269,7 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | communication | 不超过16 rank的topology-derived Direct/Ring/ordered-Tree，显式p2p/local work/completion和all-rank Direct DTE acceptance | ragged/segmented peer exchange、subgroup full-card barrier替代、cross-card transport |
 | artifact/runtime | all-and-only rank `ExecutableBundle`、same-lowering Target LLVM、schema-v7 verified package、no-card、TargetCall/SystemC和configured TX81 RuntimeProvider | exact-package ISS/vendor simulator |
 | hardware evidence | 当前profile的compiler-sensitive行为按supported/board-observed/unknown/excluded闭合；unknown采用保守compiler策略 | 通用model/board numeric correlation、packet/MMIO provenance、cycle-accurate timing |
-| performance evidence | compiler只消费final IR可证明的静态work；板端样本不自动回写candidate ranking | Q49删除历史SPM0/RAM_ACC `128 GB/s` per-tile flat-duration项；production-artifact profiler完成资格化，以及其后独立的hardware-informed ranking |
+| performance evidence | compiler只消费final IR可证明的静态work；板端样本不自动回写candidate ranking | Q49删除历史SPM0/RAM_ACC `128 GB/s` flat-duration，SPM1 explicit movement改用带assumption的单bank `256 GB/s/tile` nominal point prior；它不冒充lower bound或proof，后续由production-artifact profiler独立校准 |
 
 本表固定长期边界，不记录施工顺序。当前实现状态、启动前置和外部板端门禁只读`tasks/progress.md`。
 

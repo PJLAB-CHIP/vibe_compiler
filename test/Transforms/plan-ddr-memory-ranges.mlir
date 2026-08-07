@@ -58,6 +58,38 @@ func.func @plan_stage_shifted_loop_ddr_view() {
 // CHECK: %[[SHIFTED:.+]] = arith.addi %{{.+}}, %{{.+}} : index
 // CHECK: memref.subview %{{.+}}[%[[SHIFTED]]]
 
+func.func @plan_affine_apply_loop_ddr_view() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %ddr = memref.alloc()
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+  %spm = memref.alloc()
+      {wafer.spm.offset = #wafer.spm_offset<65536>}
+      : memref<1xf16, #wafer.memory<spm, tensor>>
+  scf.for %iv = %c0 to %c4 step %c1 {
+    %offset = affine.apply affine_map<(d0) -> (d0 * 2)> (%iv)
+    %tile = memref.subview %ddr[%offset] [1] [1]
+        : memref<8xf16, #wafer.memory<ddr, tensor>>
+       to memref<1xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+    wafer.instr.rdma %tile to %spm
+        {byte_count = 2 : i64, inner_bytes = 2 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<1xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+       to memref<1xf16, #wafer.memory<spm, tensor>>
+  }
+  wafer.instr.ncc_join [0]
+  return
+}
+
+// CHECK-LABEL: func.func @plan_affine_apply_loop_ddr_view
+// CHECK: memref.alloc() {wafer.ddr.offset = #wafer.ddr_offset<0>} : memref<8xf16, #wafer.memory<ddr, tensor>>
+// CHECK: affine.apply
+// CHECK: wafer.instr.rdma
+
 func.func @plan_branch_refined_loop_ddr_view(
     %input: memref<4xf16, #wafer.memory<ddr, tensor>>) {
   %c0 = arith.constant 0 : index

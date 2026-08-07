@@ -16,6 +16,7 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -354,8 +355,47 @@ getAliasingMask(mlir::Value value,
 static bool areManagedRoots(llvm::ArrayRef<mlir::Value> roots,
                             bool (*isExpectedType)(mlir::Type)) {
   return !roots.empty() && llvm::all_of(roots, [&](mlir::Value root) {
-           return root.getDefiningOp<mlir::memref::AllocOp>() &&
-                  isExpectedType(root.getType());
+    return root.getDefiningOp<mlir::memref::AllocOp>() &&
+           isExpectedType(root.getType());
+  });
+}
+
+static bool hasPriorLocalMaterializationStore(mlir::Value ddrRoot,
+                                              InstrRDMAOp reload) {
+  auto allocation = ddrRoot.getDefiningOp<mlir::memref::AllocOp>();
+  mlir::Block *block = reload->getBlock();
+  if (!allocation || !block || allocation->getBlock() != block)
+    return false;
+
+  for (mlir::Operation &operation : *block) {
+    if (&operation == reload.getOperation())
+      break;
+    auto store = mlir::dyn_cast<InstrWDMAOp>(operation);
+    if (!store)
+      continue;
+    llvm::SmallVector<mlir::Value, 4> sourceRoots =
+        getAccessRoots(store.getSource());
+    llvm::SmallVector<mlir::Value, 4> destinationRoots =
+        getAccessRoots(store.getDest());
+    if (areManagedRoots(sourceRoots, isWaferSPMMemRefType) &&
+        llvm::is_contained(destinationRoots, ddrRoot))
+      return true;
+  }
+  return false;
+}
+
+static bool isLocalManagedMaterializationReload(
+    InstrRDMAOp reload, llvm::ArrayRef<mlir::Value> sourceRoots,
+    llvm::ArrayRef<mlir::Value> destinationRoots) {
+  // A selective spill is represented by one finite local interval: a store
+  // into a fresh DDR allocation and a later reload into a fresh SPM root in
+  // the same block. Ordinary producer/consumer DDR edges across traversal
+  // loops are not lifetime cuts; same-worker busytable ordering is sufficient
+  // for those edges and fresh completion must not invent loop-local joins.
+  return areManagedRoots(sourceRoots, isWaferDDRMemRefType) &&
+         areManagedRoots(destinationRoots, isWaferSPMMemRefType) &&
+         llvm::all_of(sourceRoots, [&](mlir::Value root) {
+           return hasPriorLocalMaterializationStore(root, reload);
          });
 }
 
@@ -390,9 +430,10 @@ static bool isManagedMaterializationStore(
          });
 }
 
-static mlir::Operation *getManagedReloadCompletionAnchor(
-    mlir::Operation *operation, const PendingNCCState &state,
-    uint32_t workerMask) {
+static mlir::Operation *
+getManagedReloadCompletionAnchor(mlir::Operation *operation,
+                                 const PendingNCCState &state,
+                                 uint32_t workerMask) {
   auto rdma = mlir::dyn_cast<InstrRDMAOp>(operation);
   if (!rdma || llvm::popcount(workerMask) != 1)
     return operation;
@@ -517,6 +558,55 @@ getExternalConflictMask(mlir::Operation *operation,
   return conflicts;
 }
 
+/// Resolve a scalar carried into a tile residency region back to the enclosing
+/// SSA value. Region partitioning may turn a previously local loop bound into
+/// a region input; that transport does not make a static bound dynamic and
+/// must not change completion legality.
+static mlir::Value resolveTileRegionScalarForwarding(mlir::Value value) {
+  llvm::DenseSet<mlir::Value> seen;
+  while (value && seen.insert(value).second) {
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+      mlir::Block *owner = argument.getOwner();
+      auto region =
+          owner ? mlir::dyn_cast_or_null<TileRegionOp>(owner->getParentOp())
+                : TileRegionOp{};
+      if (!region || region.getBody().empty() ||
+          owner != &region.getBody().front() ||
+          argument.getArgNumber() >= region.getInputs().size())
+        break;
+      value = region.getInputs()[argument.getArgNumber()];
+      continue;
+    }
+    auto result = mlir::dyn_cast<mlir::OpResult>(value);
+    auto region = result ? mlir::dyn_cast<TileRegionOp>(result.getOwner())
+                         : TileRegionOp{};
+    if (!region || region.getBody().empty())
+      break;
+    auto yield =
+        mlir::dyn_cast<TileYieldOp>(region.getBody().front().getTerminator());
+    if (!yield || result.getResultNumber() >= yield.getValues().size())
+      break;
+    value = yield.getValues()[result.getResultNumber()];
+  }
+  return value;
+}
+
+static uint32_t getRegionLocalPendingWorkerMask(TileRegionOp region,
+                                                const PendingNCCState &state) {
+  auto isRegionLocalRoot = [&](mlir::Value root) {
+    auto allocation = root.getDefiningOp<mlir::memref::AllocOp>();
+    return allocation && allocation->getParentOfType<TileRegionOp>() == region;
+  };
+  uint32_t workers = 0;
+  for (const auto &entry : state.readers)
+    if (isRegionLocalRoot(entry.first))
+      workers |= entry.second;
+  for (const auto &entry : state.writers)
+    if (isRegionLocalRoot(entry.first))
+      workers |= entry.second;
+  return workers;
+}
+
 class NCCJoinPlacement {
 public:
   mlir::LogicalResult run(mlir::ModuleOp module) {
@@ -526,8 +616,8 @@ public:
           getAccessRoots(rdma.getSource());
       llvm::SmallVector<mlir::Value, 4> destinationRoots =
           getAccessRoots(rdma.getDest());
-      if (!areManagedRoots(sourceRoots, isWaferDDRMemRefType) ||
-          !areManagedRoots(destinationRoots, isWaferSPMMemRefType))
+      if (!isLocalManagedMaterializationReload(rdma, sourceRoots,
+                                               destinationRoots))
         return;
       materializationRoots.insert(sourceRoots.begin(), sourceRoots.end());
     });
@@ -571,7 +661,16 @@ private:
         return tileRegion.emitError()
                << "instruction_completion_failure: NCC pending-frontier "
                   "placement requires a single-block wafer.tile.region";
-      return processBlock(tileRegion.getBody().front(), state);
+      if (mlir::failed(processBlock(tileRegion.getBody().front(), state)))
+        return mlir::failure();
+      // Region partitioning is a selected residency cut, but the structural
+      // boundary alone is not a completion event. Complete exactly those
+      // participant domains that still access roots owned by this region;
+      // unrelated pending work remains live across the boundary.
+      insertNCCJoinBefore(tileRegion.getBody().front().getTerminator(),
+                          getRegionLocalPendingWorkerMask(tileRegion, state),
+                          state);
+      return mlir::success();
     }
 
     if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(operation)) {
@@ -588,11 +687,22 @@ private:
     }
 
     if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(operation)) {
-      std::optional<int64_t> lower =
-          mlir::getConstantIntValue(forOp.getLowerBound());
-      std::optional<int64_t> upper =
-          mlir::getConstantIntValue(forOp.getUpperBound());
-      std::optional<int64_t> step = mlir::getConstantIntValue(forOp.getStep());
+      auto getConstantIndex = [](mlir::Value value) -> std::optional<int64_t> {
+        value = resolveTileRegionScalarForwarding(value);
+        if (std::optional<int64_t> constant = mlir::getConstantIntValue(value))
+          return constant;
+        if (!value || !value.getType().isIndex())
+          return std::nullopt;
+        mlir::FailureOr<int64_t> constant =
+            mlir::ValueBoundsConstraintSet::computeConstantBound(
+                mlir::presburger::BoundType::EQ,
+                mlir::ValueBoundsConstraintSet::Variable(value));
+        return mlir::succeeded(constant) ? std::optional<int64_t>(*constant)
+                                         : std::nullopt;
+      };
+      std::optional<int64_t> lower = getConstantIndex(forOp.getLowerBound());
+      std::optional<int64_t> upper = getConstantIndex(forOp.getUpperBound());
+      std::optional<int64_t> step = getConstantIndex(forOp.getStep());
       if (lower && upper && step && *step > 0 && *lower >= *upper)
         return mlir::success();
 
@@ -679,8 +789,8 @@ private:
           ~workerMask;
       insertNCCJoinBefore(operation, crossWorkerConflicts, state);
       if (isManagedMaterializationReload(operation, materializationRoots)) {
-        mlir::Operation *anchor = getManagedReloadCompletionAnchor(
-            operation, state, workerMask);
+        mlir::Operation *anchor =
+            getManagedReloadCompletionAnchor(operation, state, workerMask);
         insertNCCJoinBefore(anchor, workerMask, state);
       }
       recordNCCIssue(operation, workerMask, state);
@@ -787,8 +897,7 @@ mlir::LogicalResult wafer::rebuildMinimumNCCJoins(mlir::ModuleOp module) {
   if (!module)
     return mlir::failure();
   wafer::support::ScopedCompileTimingSpan timing(
-      "lowering-phase", "tile-region-to-instr",
-      "fresh-ncc-join-rebuild");
+      "lowering-phase", "tile-region-to-instr", "fresh-ncc-join-rebuild");
   llvm::SmallVector<SyncNCCJoinOp, 16> staleJoins;
   module.walk([&](SyncNCCJoinOp join) { staleJoins.push_back(join); });
   for (SyncNCCJoinOp join : llvm::reverse(staleJoins))
@@ -812,9 +921,9 @@ bool wafer::containsTileDataflowOperations(mlir::Operation *root) {
   return found;
 }
 
-wafer::detail::StaticTerminalOperationBudgetStatus
-wafer::detail::checkStaticTerminalOperationBudget(mlir::Operation *root,
-                                                  uint64_t &operationCount) {
+wafer::detail::StaticExecutableOperationCountStatus
+wafer::detail::countStaticExecutableOperations(mlir::Operation *root,
+                                               uint64_t &operationCount) {
   operationCount = 0;
   bool overflow = false;
   root->walk([&](mlir::Operation *operation) {
@@ -828,10 +937,8 @@ wafer::detail::checkStaticTerminalOperationBudget(mlir::Operation *root,
     ++operationCount;
   });
   if (overflow)
-    return StaticTerminalOperationBudgetStatus::CountOverflow;
-  if (operationCount > kStaticTerminalOperationBudget)
-    return StaticTerminalOperationBudgetStatus::BudgetExceeded;
-  return StaticTerminalOperationBudgetStatus::WithinBudget;
+    return StaticExecutableOperationCountStatus::CountOverflow;
+  return StaticExecutableOperationCountStatus::Counted;
 }
 
 mlir::LogicalResult
@@ -845,7 +952,7 @@ mlir::LogicalResult wafer::tile_region_to_instr::convertTileRegionToInstrModule(
     mlir::ModuleOp module, const TileRegionToInstrOptions &options,
     std::string *failureReason) {
   wafer::support::recordCompileWork(
-      wafer::support::CompileWorkKind::TerminalInstructionLowering);
+      wafer::support::CompileWorkKind::FinalizationInstructionLowering);
   wafer::support::ScopedCompileTimingSpan conversionTiming(
       "conversion", "tile-region-to-instr", "module-conversion");
   if (failureReason)

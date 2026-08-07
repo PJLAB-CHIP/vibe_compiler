@@ -8,7 +8,6 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
-#include <set>
 
 #ifndef WAFER_XLA_SPMD_PARTITIONER_HELPER
 #define WAFER_XLA_SPMD_PARTITIONER_HELPER ""
@@ -22,8 +21,6 @@ void printHelp() {
                   "--launch-kind <kernel|model> "
                   "[--dump-compiler-ir <dir>] "
                   "[--optimization-preset <production|none>] "
-                  "[--enable-optimization <semantic-name>]... "
-                  "[--disable-optimization <semantic-name>]... "
                   "[--compile-timing] "
                   "[--profile] "
                   "[--target-model "
@@ -40,10 +37,7 @@ void printHelp() {
                   "[--target-model-bulk-record <record>] "
                   "--target-model-max-bulk-total-bytes <bytes> "
                   "--target-model-max-bulk-scratchpad-bytes <bytes> "
-                  "--target-model-max-bulk-reorder-bytes <bytes>]]\n"
-                  "semantic optimization names:\n";
-  for (OptimizationKind kind : getSupportedOptimizationKinds())
-    llvm::outs() << "  " << stringifyOptimizationKind(kind) << "\n";
+                  "--target-model-max-bulk-reorder-bytes <bytes>]]\n";
 }
 
 namespace {
@@ -140,22 +134,6 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         arg.starts_with("--optimization-preset=")) {
       if (parseValueOption(argc, argv, index, arg, "--optimization-preset",
                            options.optimizationPreset))
-        return false;
-      continue;
-    }
-    if (arg == "--enable-optimization" ||
-        arg.starts_with("--enable-optimization=")) {
-      if (parseRepeatedValueOption(argc, argv, index, arg,
-                                   "--enable-optimization",
-                                   options.enabledOptimizations))
-        return false;
-      continue;
-    }
-    if (arg == "--disable-optimization" ||
-        arg.starts_with("--disable-optimization=")) {
-      if (parseRepeatedValueOption(argc, argv, index, arg,
-                                   "--disable-optimization",
-                                   options.disabledOptimizations))
         return false;
       continue;
     }
@@ -369,43 +347,6 @@ parseOptimizationConfig(const CommandLineOptions &options) {
     }
   }
 
-  std::set<OptimizationKind> enabled;
-  std::set<OptimizationKind> disabled;
-  auto parseSet = [&](llvm::ArrayRef<std::string> values,
-                      llvm::StringRef option,
-                      std::set<OptimizationKind> &result) {
-    for (const std::string &value : values) {
-      std::optional<OptimizationKind> kind = parseOptimizationKind(value);
-      if (!kind) {
-        llvm::errs() << "wafer-compile: unknown " << option
-                     << " value: " << value << "\n";
-        return false;
-      }
-      if (!result.insert(*kind).second) {
-        llvm::errs() << "wafer-compile: duplicate " << option
-                     << " value: " << value << "\n";
-        return false;
-      }
-    }
-    return true;
-  };
-  if (!parseSet(options.enabledOptimizations, "--enable-optimization",
-                enabled) ||
-      !parseSet(options.disabledOptimizations, "--disable-optimization",
-                disabled))
-    return std::nullopt;
-
-  for (OptimizationKind kind : enabled) {
-    if (disabled.count(kind) != 0) {
-      llvm::errs() << "wafer-compile: optimization is both enabled and "
-                      "disabled: "
-                   << stringifyOptimizationKind(kind) << "\n";
-      return std::nullopt;
-    }
-    config.enable(kind);
-  }
-  for (OptimizationKind kind : disabled)
-    config.disable(kind);
   return config;
 }
 

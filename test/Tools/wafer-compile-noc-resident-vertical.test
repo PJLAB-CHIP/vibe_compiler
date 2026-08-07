@@ -23,7 +23,7 @@
 # RUN: %python -c 'import copy,json,pathlib; roots=[pathlib.Path("%t.outputs/winner"),pathlib.Path("%t.outputs/profiled")]; manifests=[json.loads((root/"manifest.json").read_text()) for root in roots]; normalized=[copy.deepcopy(manifest) for manifest in manifests]; [[module.pop("digest") for module in manifest["modules"]] for manifest in normalized]; assert normalized[0]==normalized[1]; assert all((root/manifest["modules"][0]["path"]).read_bytes().startswith(b"\x7fELF") for root,manifest in zip(roots,manifests))'
 
 # The public none preset replays the exact same source/config through the
-# fully gated baseline.  The final artifacts below prove that normal
+# admitted baseline.  The final artifacts below prove that normal
 # production did not select the unprofitable communication tradeoff.
 # RUN: env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-spmd-helper %wafer_compile_test --input-program-dir %t.input.program --output-program-dir %t.outputs/baseline --execution-ranks=16 --launch-kind=kernel --optimization-preset=none --model-input 0=%t.input.npy --model-expected 0=%t.expected.npy --model-atol=0 --model-rtol=0 --target-model --target-model-max-scalar-evaluations=4000000 --target-model-max-fused-multiply-adds=4000000 --target-model-max-movement-bytes=100000000 --target-model-max-movement-segments=1000000 | FileCheck %s --check-prefix=BASELINE
 

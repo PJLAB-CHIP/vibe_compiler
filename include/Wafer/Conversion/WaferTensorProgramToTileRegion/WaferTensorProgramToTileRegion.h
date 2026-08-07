@@ -38,7 +38,6 @@ classifyCandidateTraversalRoot(mlir::Operation *operation);
 enum class CandidateTileTraversalKind : uint8_t {
   ResultDriven,
   OperandDriven,
-  PartialReduction,
 };
 
 /// Selects how one complete-rank candidate composes structured traversals.
@@ -47,6 +46,79 @@ enum class CompleteRankTraversalComposition : uint8_t {
   Coupled,
   Separated,
 };
+
+/// One atomic realization of a producer-result to consumer-op connection.
+/// The vector of choices passed to complete-rank materialization is ordered by
+/// current SSA/block traversal and is destroyed with that invocation.  The
+/// selected realization is represented only by the resulting Tile IR.
+enum class CandidateTraversalConnectionAction : uint8_t {
+  CoupledResident,
+  SeparatedResident,
+  SeparatedDDR,
+  CrossRegion,
+  SelectiveSpill,
+};
+
+/// Complete transient parameters for one current-SSA connection.  The
+/// producer vector is in the identified producer-result domain; the consumer
+/// vector is in the consumer result traversal domain.  An empty vector selects
+/// that side's full static result shape.  Coupled realization is driven only
+/// by the consumer traversal: its producer vector must be empty and the exact
+/// demand for the identified consumer operand is derived by TilingInterface
+/// and the intervening typed SSA view relation.  Separated realizations may
+/// select the two traversal vectors independently.  Nothing in this object is
+/// persisted after the actual Tile clone is materialized.
+struct CandidateTraversalConnectionChoice {
+  CandidateTraversalConnectionAction action =
+      CandidateTraversalConnectionAction::CoupledResident;
+  llvm::SmallVector<int64_t, 4> producerTileSizes;
+  llvm::SmallVector<int64_t, 4> consumerTileSizes;
+};
+
+/// Query-local identity and static domains for one exact
+/// producer-result-to-consumer-operand SSA connection.  Operation ordinals are
+/// positions in the queried standalone function block; together with the
+/// result/operand numbers they provide a deterministic identity without using
+/// symbols or operation names.  They are invalidated by IR mutation and are
+/// never persisted as candidate metadata.
+struct CandidateTraversalConnectionDomain {
+  unsigned producerOperationOrdinal = 0;
+  unsigned producerResultNumber = 0;
+  unsigned consumerOperationOrdinal = 0;
+  unsigned consumerOperandNumber = 0;
+  /// Conservative byte-addressable storage width derived from each exact SSA
+  /// type. Sub-byte integer widths occupy one storage byte for this structural
+  /// estimate; unsupported element types make the topology query fail closed.
+  uint64_t producerResultElementBytes = 0;
+  uint64_t consumerOperandElementBytes = 0;
+  uint64_t consumerResultElementBytes = 0;
+  llvm::SmallVector<int64_t, 4> producerResultShape;
+  llvm::SmallVector<int64_t, 4> consumerOperandShape;
+  llvm::SmallVector<int64_t, 4> consumerResultShape;
+};
+
+struct CandidateTraversalConnectionTopology {
+  unsigned connectionCount = 0;
+  /// True when one producer result reaches more than one structured consumer
+  /// operand; such a fanout can reconverge (including at two operands of the
+  /// same operation) and therefore requires the general-DAG beam instead of
+  /// the chain/tree DP table.
+  bool requiresGeneralDAGBeam = false;
+  /// Current-IR result domains in the same stable order as connection
+  /// choices.  These are query-local analysis facts, not candidate metadata.
+  llvm::SmallVector<CandidateTraversalConnectionDomain, 16> domains;
+};
+
+mlir::FailureOr<CandidateTraversalConnectionTopology>
+getCompleteRankCandidateConnectionTopology(
+    mlir::ModuleOp sourceModule, std::string *failureReason = nullptr);
+
+/// Counts the finite structured producer-result to consumer-op connections in
+/// one standalone complete-rank tensor program.  View chains are followed by
+/// typed SSA; symbol names and operation spelling are not correspondence keys.
+mlir::FailureOr<unsigned>
+getCompleteRankCandidateConnectionCount(mlir::ModuleOp sourceModule,
+                                        std::string *failureReason = nullptr);
 
 /// The iteration-domain tile corresponding to one operand tile. This is a
 /// transient analysis result derived from the current TilingInterface; callers
@@ -158,7 +230,36 @@ mlir::LogicalResult lowerCompleteRankCandidateTensorProgramToTileRegionModule(
     CandidateTileTraversalKind traversalKind,
     CompleteRankTraversalComposition composition,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank, bool useDirectMappedBoundaryTransfer = false);
+    int64_t currentLogicalRank,
+    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
+    bool useDirectMappedBoundaryTransfer = false);
+
+/// As above, but materializes one current-SSA-derived action for every
+/// structured connection. Coupled edges are fused into the consumer traversal;
+/// separated edges materialize a shared physical version in SPM or DDR. A
+/// cross-region choice first materializes a DDR-clean boundary; region
+/// partition itself remains a Tile-IR transformation after this conversion.
+/// An empty tile vector selects each connected traversal's own full static
+/// result shape; this is the independent-retile form for mixed-shape graphs.
+mlir::LogicalResult lowerCompleteRankConnectionTensorProgramToTileRegionModule(
+    mlir::ModuleOp sourceModule, llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<CandidateTraversalConnectionAction> connectionActions,
+    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
+    int64_t currentLogicalRank,
+    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
+    bool useDirectMappedBoundaryTransfer = false);
+
+/// Materializes explicit per-side tile parameters for every current-SSA
+/// connection.  This is the joint-search entry point; choices are consumed
+/// atomically and only their realized Tile IR survives.
+mlir::LogicalResult
+lowerCompleteRankConnectionChoicesTensorProgramToTileRegionModule(
+    mlir::ModuleOp sourceModule,
+    llvm::ArrayRef<CandidateTraversalConnectionChoice> connectionChoices,
+    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
+    int64_t currentLogicalRank,
+    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
+    bool useDirectMappedBoundaryTransfer = false);
 
 /// Verifies that replacing one structured reduction by more than one ordered
 /// chunk, including neutral-initialized partials and chunk-result combines, is

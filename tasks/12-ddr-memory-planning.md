@@ -71,7 +71,7 @@ Pipeline position:
   每个rank program必须来自完整rank tile-dataflow的一次统一lowering；不得把逐task已经决定spill/reload/offset的artifact
   拼接后作为终态输入。
 - Current stage responsibility:
-  对complete all-rank terminal variant原子执行whole-variant exact evaluation：从同一clone逐rank重算DDR access demand、
+  对finalized complete all-rank candidate原子执行whole-variant exact evaluation：从同一clone逐rank重算DDR access demand、
   compiler-managed allocation demand、explicit arenas/placement domains和完整entry lifetime，并形成all-and-only fixed-capacity problems；
   验证external DDR descriptor与view/root range；为compiler-managed/resident/explicit-spill allocation在当前rank
   default arena内规划symbolic offset；验证range overlap、capacity、largest-contiguous和alignment
@@ -124,7 +124,7 @@ canonical search。精确pairwise conflict graph通过已验证的deterministic 
 component-local fixed prefix；共享policy使用宽松确定的全局node budget且不设wall-clock timeout，只在
 `ResourceExhausted`时允许first-fit fallback。typed outcome和独立placement validator也由该共享边界拥有。
 shared `MemoryPlanning` fixed-capacity primitive在类型上可复用同一owner-independent DDR problem，且不认识SPM/DDR、workload或
-op名。DDR在whole-variant后置stage对complete all-rank terminal variant执行原子exact evaluation；该evaluation从同一
+op名。DDR在whole-variant后置stage对finalized complete all-rank candidate执行原子exact evaluation；该evaluation从同一
 variant逐rank构造current explicit arena/placement-domain problems并将all-and-only roots/ranks结果原子汇总，
 不构造cross-rank shared arena。每个validated placement提交该rank的`wafer.ddr.offset`；actual high-water/headroom从placement
 重算，作为capacity/resource diagnostic，不通过缩小capacity重复probe，也不替代06按all-rank aggregate movement
@@ -252,8 +252,10 @@ launch-facing binding，Q16必须把上述验证结果与frontend parameter boun
 ## 4. Demand Classes
 
 当前active contract只覆盖external IO/imported parameter view validation与default-arena compiler-managed
-workspace/temp/explicit-spill allocations。下表中的streamed immutable、persistent state和多scope resource行为只作
-future extension约束，不是当前planner或Q16 typed fields。
+workspace/temp/explicit-spill allocations。函数式状态线程仍属于external IO：例如decode把past cache作为只读输入、updated cache
+作为可观察输出，跨invocation连续性由caller显式传值；planner按各自descriptor/range/effect验证，不赋予隐式alias、page或lifetime。
+下表中的runtime-owned streamed immutable、persistent state和多scope resource行为只作future extension约束，不是当前planner或
+Q16 typed fields。
 
 | class | DDR memory planning responsibility | committed executable resource responsibility |
 | --- | --- | --- |
@@ -352,7 +354,7 @@ Rules:
 
 DDR memory planning is an analysis + transformation pair:
 
-调用边界固定为：对每个complete all-rank terminal variant原子执行whole-variant exact evaluation；下列步骤按current
+调用边界固定为：对每个finalized complete all-rank candidate原子执行whole-variant exact evaluation；下列步骤按current
 explicit arenas/placement domains形成fixed-capacity problems。problem/query数量只作budget diagnostic，逐rank结果
 不形成survivor或commit，只有all-and-only rank全部通过才原子接受整个variant。
 

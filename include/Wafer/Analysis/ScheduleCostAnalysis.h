@@ -114,6 +114,11 @@ struct TargetScheduleCostPolicy {
   uint64_t f16Bf16NPULogicalOpsPerSecondPerTile = 8'000'000'000'000ULL;
   uint64_t f16Bf16VectorLogicalOpsPerSecondPerTile = 64'000'000'000ULL;
   uint64_t f32VectorLogicalOpsPerSecondPerTile = 32'000'000'000ULL;
+  /// Nominal service point for explicit SPM1 movement accounted by the
+  /// instruction cost model. It comes from one 2048-bit bank at 1 GHz
+  /// (256 GB/s per tile); it is a planning prior, not a sustained lower bound.
+  uint64_t spmExplicitMovementBytesPerSecondPerTileEstimate =
+      256'000'000'000ULL;
 
   /// Optional conservative bounds used only by production profitability.
   /// The current profile intentionally leaves these absent: existing board
@@ -130,9 +135,9 @@ struct TargetScheduleCostPolicy {
   std::optional<uint64_t> f16Bf16NPULogicalOpsPerSecondPerTileLowerBound;
   std::optional<uint64_t> f16Bf16VectorLogicalOpsPerSecondPerTileLowerBound;
   std::optional<uint64_t> f32VectorLogicalOpsPerSecondPerTileLowerBound;
-  /// Future matched-board calibration may establish a sustained SPM service
-  /// lower bound. It is intentionally absent from the current point model;
-  /// no historical SPM0/RAM_ACC interface rate is used as a substitute.
+  /// Future matched-board calibration may establish a sustained explicit-SPM
+  /// movement service lower bound. It is intentionally absent from the
+  /// current conservative model; the nominal point above is not a substitute.
   std::optional<uint64_t> spmBytesPerSecondPerTileLowerBound;
   /// Maximum fixed non-service time per statically executed instruction.
   /// Resource service time is modeled separately; this bound covers issue,
@@ -143,8 +148,11 @@ struct TargetScheduleCostPolicy {
   std::optional<uint64_t> dteWaitedEventPicosecondsUpperBound;
   std::optional<uint64_t> nccParticipantWaitPicosecondsUpperBound;
 
-  /// Compiler safety margin, not a measured hardware rate. Estimated winners
-  /// must retain at least a 20% advantage under the central point model.
+  /// Compiler safety margin, not a measured hardware rate. Estimated
+  /// cross-resource winners must retain at least a 20% whole-model advantage.
+  /// A same-sequential-schedule candidate whose Known primitive resource work
+  /// never regresses may instead apply this margin to changed work traded
+  /// within one modeled resource; that remains Estimated, never Proven.
   uint32_t productionBenefitMarginPermille = 200;
   uint64_t spmAddressBase = static_cast<uint64_t>(TargetMemoryPolicy{}.spmBase);
   uint64_t spmAddressLimit =

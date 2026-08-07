@@ -100,6 +100,52 @@ def NormalizeStablehloCollectivesPass
   ];
 }
 
+def MaterializeFlashAttention2Pass
+    : Pass<"wafer-materialize-flash-attention-2", "mlir::ModuleOp"> {
+  let summary =
+      "Materialize selected FlashAttention-2 recurrence in structured tensor IR";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::bufferization::BufferizationDialect",
+                           "mlir::func::FuncDialect",
+                           "mlir::linalg::LinalgDialect",
+                           "mlir::math::MathDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::tensor::TensorDialect",
+                           "wafer::WaferDialect"];
+  let options = [
+    Option<"outputTileSizes", "output-tile-sizes", "std::string",
+           /*default=*/"\"\"",
+           "Comma-separated output iteration tile sizes">,
+    Option<"keyValueTileSize", "key-value-tile-size", "int64_t",
+           /*default=*/"0", "Positive K/V reduction tile size">
+  ];
+}
+
+def MaterializeFlashDecodingPass
+    : Pass<"wafer-materialize-flash-decoding", "mlir::ModuleOp"> {
+  let summary =
+      "Materialize selected decode-only split-KV partials and LSE merge";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::bufferization::BufferizationDialect",
+                           "mlir::func::FuncDialect",
+                           "mlir::linalg::LinalgDialect",
+                           "mlir::math::MathDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::tensor::TensorDialect",
+                           "wafer::WaferDialect"];
+  let options = [
+    Option<"outputTileSizes", "output-tile-sizes", "std::string",
+           /*default=*/"\"\"",
+           "Comma-separated output iteration tile sizes">,
+    Option<"keyValueTileSize", "key-value-tile-size", "int64_t",
+           /*default=*/"0", "Positive K/V reduction tile size">,
+    Option<"splitCount", "split-count", "int64_t", /*default=*/"0",
+           "Number of independent nonempty K/V splits">
+  ];
+}
+
 def ConvertTileRegionToInstrPass
     : Pass<"wafer-convert-tile-region-to-instr", "mlir::ModuleOp"> {
   let summary = "Convert executable wafer.tile.region ops to wafer.instr IR";

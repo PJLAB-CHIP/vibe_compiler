@@ -117,7 +117,6 @@ class CampaignCase:
     ]
     output_comparison: PairedOutputComparisonPolicy = RAW_EXACT_OUTPUT
     expected_launch: dict[str, object] | None = None
-    winner_optimizations: tuple[str, ...] = ()
 
     @property
     def launch_contract(self) -> dict[str, object]:
@@ -321,37 +320,6 @@ module {{
 """
 
 
-def layout_movement_chain_module() -> str:
-    m, k, n = 64, 128, 128
-    return f"""\
-module {{
-  func.func @main(
-      %lhs: tensor<{m}x{k}xf16>,
-      %rhs0: tensor<{k}x{n}xf16>,
-      %rhs1: tensor<{n}x{n}xf16>) -> tensor<{m}x{n}xf16> {{
-    %first = "stablehlo.dot_general"(%lhs, %rhs0) {{
-      dot_dimension_numbers = #stablehlo.dot<
-        lhs_contracting_dimensions = [1],
-        rhs_contracting_dimensions = [0]>,
-      precision_config = [#stablehlo<precision DEFAULT>,
-                          #stablehlo<precision DEFAULT>]
-    }} : (tensor<{m}x{k}xf16>, tensor<{k}x{n}xf16>)
-        -> tensor<{m}x{n}xf16>
-    %pointwise = stablehlo.multiply %first, %first : tensor<{m}x{n}xf16>
-    %second = "stablehlo.dot_general"(%pointwise, %rhs1) {{
-      dot_dimension_numbers = #stablehlo.dot<
-        lhs_contracting_dimensions = [1],
-        rhs_contracting_dimensions = [0]>,
-      precision_config = [#stablehlo<precision DEFAULT>,
-                          #stablehlo<precision DEFAULT>]
-    }} : (tensor<{m}x{n}xf16>, tensor<{n}x{n}xf16>)
-        -> tensor<{m}x{n}xf16>
-    return %second : tensor<{m}x{n}xf16>
-  }}
-}}
-"""
-
-
 def all_reduce_module() -> str:
     devices = ",".join(str(rank) for rank in range(16))
     return f"""\
@@ -540,18 +508,6 @@ def gemm_payloads(
         expected = torch.matmul(lhs, rhs)
     return unchanged_numeric_payloads(
         replicated([lhs, rhs]), replicated([expected])
-    )
-
-
-def layout_movement_chain_payloads() -> PairedPayloads:
-    lhs = random_f16((64, 128), 80) * 0.125
-    rhs0 = random_f16((128, 128), 81) * 0.125
-    rhs1 = random_f16((128, 128), 82) * 0.125
-    with torch.no_grad():
-        first = torch.matmul(lhs, rhs0)
-        expected = torch.matmul(first * first, rhs1)
-    return unchanged_numeric_payloads(
-        replicated([lhs, rhs0, rhs1]), replicated([expected])
     )
 
 
@@ -780,46 +736,6 @@ def gemm_route_oracle(
         )
 
 
-def layout_movement_chain_oracle(
-    baseline: TargetStructure, winner: TargetStructure
-) -> None:
-    for structure in (baseline, winner):
-        if count_fragment(structure, "_gemm") < 2:
-            raise RuntimeError("layout-movement chain omitted GEMM callsites")
-        pointwise = (
-            count_fragment(structure, "elementwise_square")
-            + count_fragment(structure, "elementwise_mul")
-        )
-        if pointwise != 1:
-            raise RuntimeError(
-                "layout-movement chain must retain one square/multiply "
-                "pointwise callsite"
-            )
-
-    def without_layout(
-        counts: collections.Counter[str],
-    ) -> collections.Counter[str]:
-        return collections.Counter(
-            {
-                name: count
-                for name, count in counts.items()
-                if "gather_scatter" not in name
-            }
-        )
-
-    if without_layout(baseline.counts) != without_layout(winner.counts):
-        raise RuntimeError(
-            "layout-movement pair changed non-layout target callsites"
-        )
-    baseline_layout = count_fragment(baseline, "gather_scatter")
-    winner_layout = count_fragment(winner, "gather_scatter")
-    if not (winner_layout < baseline_layout):
-        raise RuntimeError(
-            "layout-movement winner did not remove final physical movement "
-            f"callsites: baseline={baseline_layout} winner={winner_layout}"
-        )
-
-
 def collective_oracle(
     baseline: TargetStructure, winner: TargetStructure
 ) -> None:
@@ -1012,18 +928,6 @@ CASES = {
             gemm_route_oracle,
         ),
         CampaignCase(
-            "layout-movement-chain",
-            "layout-movement-elimination",
-            1,
-            RANK_ONE_LAUNCH_KIND,
-            (F16_64_128, F16_128_128, F16_128_128),
-            (F16_64_128_OUT,),
-            layout_movement_chain_module,
-            layout_movement_chain_payloads,
-            layout_movement_chain_oracle,
-            winner_optimizations=("implementation-selection",),
-        ),
-        CampaignCase(
             "tree-all-reduce",
             "collective-algorithm",
             16,
@@ -1211,14 +1115,10 @@ def compile_package(
         f"--execution-ranks={case.rank_count}",
         f"--launch-kind={case.launch_kind}",
     ]
-    if reserved_baseline:
-        command.append("--optimization-preset=none")
-    elif case.winner_optimizations:
-        command.append("--optimization-preset=none")
-        command.extend(
-            f"--enable-optimization={optimization}"
-            for optimization in case.winner_optimizations
-        )
+    command.append(
+        "--optimization-preset="
+        + ("none" if reserved_baseline else "production")
+    )
     if profile:
         command.append("--profile")
     result = run(command, environment=environment)

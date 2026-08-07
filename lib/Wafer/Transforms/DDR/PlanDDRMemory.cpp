@@ -365,9 +365,10 @@ getStaticIndexRange(mlir::Operation *anchor, mlir::OpFoldResult offset,
     return StaticIndexRange{value, value};
   }
 
+  mlir::Value dynamicOffset = mlir::cast<mlir::Value>(offset);
   memory_planning::StaticIndexRangeResult result =
-      memory_planning::evaluateNonNegativeStaticIndexRange(
-          mlir::cast<mlir::Value>(offset), anchor);
+      memory_planning::evaluateNonNegativeStaticIndexRange(dynamicOffset,
+                                                           anchor);
   using Failure = memory_planning::StaticIndexRangeFailureKind;
   switch (result.failure) {
   case Failure::None:
@@ -403,7 +404,10 @@ getStaticIndexRange(mlir::Operation *anchor, mlir::OpFoldResult offset,
     return anchor->emitError()
            << "unsupported_ddr_view: " << role
            << " dynamic offset must be a supported statically bounded index "
-              "expression";
+              "expression; root expression is "
+           << (dynamicOffset.getDefiningOp()
+                   ? dynamicOffset.getDefiningOp()->getName().getStringRef()
+                   : llvm::StringRef("block argument"));
   }
   llvm_unreachable("unhandled static index range failure");
 }

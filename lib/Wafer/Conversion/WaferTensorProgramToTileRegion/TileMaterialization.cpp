@@ -3,6 +3,7 @@
 #include "Internal.h"
 
 #include "mlir/Dialect/Affine/ViewLikeInterfaceUtils.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -15,54 +16,189 @@ namespace wafer::tensor_program_to_tile_region {
 static bool isCandidateOutputDestination(TensorProgramScope scope,
                                          mlir::Value value,
                                          unsigned outputIndex) {
-  if (isTensorProgramOutputBoundary(scope, value, outputIndex))
-    return true;
-  auto toTensor = value.getDefiningOp<mlir::bufferization::ToTensorOp>();
-  return toTensor && toTensor.getWritable() &&
-         wafer::isWaferDDRMemRefType(toTensor.getMemref().getType());
+  llvm::DenseSet<mlir::Value> visited;
+  mlir::Value current = value;
+  while (current && visited.insert(current).second) {
+    if (isTensorProgramOutputBoundary(scope, current, outputIndex))
+      return true;
+    // A joint complete-rank traversal may end at an internal same-region
+    // physical version. tensor.empty is the typed destination for that
+    // version; bufferization later materializes the corresponding SPM root in
+    // the actual Tile clone. This does not make an arbitrary producer result a
+    // boundary.
+    if (auto empty = current.getDefiningOp<mlir::tensor::EmptyOp>())
+      return mlir::isa<mlir::RankedTensorType>(empty.getType());
+    if (auto toTensor =
+            current.getDefiningOp<mlir::bufferization::ToTensorOp>())
+      return toTensor.getWritable() &&
+             wafer::isWaferDDRMemRefType(toTensor.getMemref().getType());
+    if (auto expand = current.getDefiningOp<mlir::tensor::ExpandShapeOp>()) {
+      current = expand.getSrc();
+      continue;
+    }
+    if (auto collapse =
+            current.getDefiningOp<mlir::tensor::CollapseShapeOp>()) {
+      current = collapse.getSrc();
+      continue;
+    }
+    if (auto cast = current.getDefiningOp<mlir::tensor::CastOp>()) {
+      current = cast.getSource();
+      continue;
+    }
+    return false;
+  }
+  return false;
 }
 
-static std::optional<ComputeReduceKind>
-inferCandidateReduceKind(mlir::linalg::GenericOp generic,
-                         std::string *failureReason) {
-  if (generic.getRegionInputArgs().size() != 1 ||
-      generic.getRegionOutputArgs().size() != 1) {
-    setFailureReason(
-        failureReason,
-        "candidate reduction split requires one input and one accumulator");
+/// Pushes a non-rank-reducing slice through a static expand_shape when every
+/// reassociation group only inserts unit dimensions.  This is an exact view
+/// rewrite: the resulting source slice has the same linear element interval,
+/// and expanding that tile recreates the original slice type.  More general
+/// rectangular slices of a linearized multi-dimensional group are deliberately
+/// left as view barriers because they need a separate contiguity proof.
+static std::optional<mlir::tensor::ExtractSliceOp>
+bubbleSliceThroughUnitExpand(mlir::IRRewriter &rewriter,
+                             mlir::tensor::ExtractSliceOp slice,
+                             mlir::tensor::ExpandShapeOp expand) {
+  auto sourceType =
+      mlir::dyn_cast<mlir::RankedTensorType>(expand.getSrc().getType());
+  auto expandedType =
+      mlir::dyn_cast<mlir::RankedTensorType>(expand.getResult().getType());
+  auto tileType = mlir::dyn_cast<mlir::RankedTensorType>(slice.getType());
+  if (!sourceType || !expandedType || !tileType ||
+      !sourceType.hasStaticShape() || !expandedType.hasStaticShape() ||
+      !tileType.hasStaticShape() ||
+      tileType.getRank() != expandedType.getRank() ||
+      slice.getMixedOffsets().size() !=
+          static_cast<size_t>(expandedType.getRank()) ||
+      slice.getMixedSizes().size() !=
+          static_cast<size_t>(expandedType.getRank()) ||
+      !slice.hasUnitStride())
     return std::nullopt;
+
+  llvm::SmallVector<mlir::OpFoldResult, 6> sourceOffsets;
+  llvm::SmallVector<mlir::OpFoldResult, 6> sourceSizes;
+  llvm::SmallVector<mlir::OpFoldResult, 6> sourceStrides;
+  llvm::SmallVector<int64_t, 6> sourceTileShape;
+  sourceOffsets.reserve(sourceType.getRank());
+  sourceSizes.reserve(sourceType.getRank());
+  sourceStrides.reserve(sourceType.getRank());
+  sourceTileShape.reserve(sourceType.getRank());
+  llvm::SmallVector<mlir::ReassociationIndices, 4> reassociation =
+      expand.getReassociationIndices();
+  if (reassociation.size() != static_cast<size_t>(sourceType.getRank()))
+    return std::nullopt;
+
+  for (auto [sourceDim, group] : llvm::enumerate(reassociation)) {
+    std::optional<unsigned> nonUnitExpandedDim;
+    for (int64_t expandedDim : group) {
+      if (expandedDim < 0 || expandedDim >= expandedType.getRank())
+        return std::nullopt;
+      if (expandedType.getDimSize(expandedDim) != 1) {
+        if (nonUnitExpandedDim)
+          return std::nullopt;
+        nonUnitExpandedDim = static_cast<unsigned>(expandedDim);
+        continue;
+      }
+      std::optional<int64_t> offset =
+          mlir::getConstantIntValue(slice.getMixedOffsets()[expandedDim]);
+      std::optional<int64_t> size =
+          mlir::getConstantIntValue(slice.getMixedSizes()[expandedDim]);
+      if (!offset || *offset != 0 || !size || *size != 1)
+        return std::nullopt;
+    }
+
+    int64_t tileExtent = 1;
+    mlir::OpFoldResult offset = rewriter.getIndexAttr(0);
+    if (nonUnitExpandedDim) {
+      tileExtent = tileType.getDimSize(*nonUnitExpandedDim);
+      offset = slice.getMixedOffsets()[*nonUnitExpandedDim];
+      if (sourceType.getDimSize(sourceDim) !=
+          expandedType.getDimSize(*nonUnitExpandedDim))
+        return std::nullopt;
+    } else if (sourceType.getDimSize(sourceDim) != 1) {
+      return std::nullopt;
+    }
+    sourceOffsets.push_back(offset);
+    sourceSizes.push_back(rewriter.getIndexAttr(tileExtent));
+    sourceStrides.push_back(rewriter.getIndexAttr(1));
+    sourceTileShape.push_back(tileExtent);
   }
-  return matchExactReductionKind(generic.getRegionOutputArgs(), /*redPos=*/0,
-                                 generic.getRegionInputArgs().front(),
-                                 "candidate reduction split", failureReason);
+
+  auto sourceTileType = mlir::RankedTensorType::get(
+      sourceTileShape, sourceType.getElementType(), sourceType.getEncoding());
+  rewriter.setInsertionPoint(slice);
+  auto sourceSlice = rewriter.create<mlir::tensor::ExtractSliceOp>(
+      slice.getLoc(), sourceTileType, expand.getSrc(), sourceOffsets,
+      sourceSizes, sourceStrides);
+  auto tileExpand = rewriter.create<mlir::tensor::ExpandShapeOp>(
+      slice.getLoc(), tileType, sourceSlice.getResult(), reassociation);
+  rewriter.replaceOp(slice, tileExpand.getResult());
+  return sourceSlice;
 }
 
-static mlir::FailureOr<ComputeReduceKind>
-getCandidateCombineKind(mlir::linalg::LinalgOp root,
-                        std::string *failureReason) {
-  if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
-                mlir::linalg::MatmulTransposeBOp, mlir::linalg::BatchMatmulOp,
-                mlir::linalg::BatchMatmulTransposeAOp,
-                mlir::linalg::BatchMatmulTransposeBOp>(root.getOperation()))
-    return ComputeReduceKind::Sum;
-  if (auto generic =
-          mlir::dyn_cast<mlir::linalg::GenericOp>(root.getOperation())) {
-    std::optional<ComputeReduceKind> kind =
-        inferCandidateReduceKind(generic, failureReason);
-    if (!kind)
+/// `tileAndFuseProducerOfSlice` may tie a tensor-semantics DPS producer tile
+/// to a slice of the producer's original result.  That value is a convenient
+/// reconstruction destination, but it is not the producer's semantic init:
+/// retaining it keeps the full untiled producer live and a reduction-like DPS
+/// op would consume the already-computed result a second time.  Rebind the
+/// tiled result to the exact same slice of the original tied init.  The slice
+/// remains in the ordinary upstream fusion worklist, so a fill/empty or any
+/// other typed producer keeps its real SSA provenance.
+static mlir::LogicalResult rebaseFusedDPSInit(
+    mlir::scf::SCFFuseProducerOfSliceResult &fused,
+    std::string *failureReason) {
+  auto originalDps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(
+      fused.origProducer.getOwner());
+  auto tiledResult =
+      mlir::dyn_cast<mlir::OpResult>(fused.tiledAndFusedProducer);
+  auto tiledDps =
+      tiledResult
+          ? mlir::dyn_cast<mlir::DestinationStyleOpInterface>(
+                tiledResult.getOwner())
+          : mlir::DestinationStyleOpInterface{};
+  if (!originalDps || !tiledDps)
+    return mlir::success();
+
+  mlir::OpOperand *originalInit =
+      originalDps.getDpsInitOperand(fused.origProducer.getResultNumber());
+  mlir::OpOperand *tiledInit =
+      tiledDps.getDpsInitOperand(tiledResult.getResultNumber());
+  if (!originalInit || !tiledInit)
+    return mlir::success();
+
+  mlir::Value originalResult = fused.origProducer;
+  mlir::Value originalInitValue = originalInit->get();
+  mlir::Value tiledInitValue = tiledInit->get();
+  if (tiledInitValue == originalResult) {
+    if (originalInitValue.getType() != tiledInitValue.getType()) {
+      setFailureReason(failureReason,
+                       "fused DPS result and original init types differ");
       return mlir::failure();
-    return *kind;
+    }
+    tiledInit->set(originalInitValue);
+    return mlir::success();
   }
 
-  setFailureReason(
-      failureReason,
-      "candidate reduction split requires matmul, batch_matmul, or generic "
-      "reduction root");
-  return mlir::failure();
+  auto initSlice =
+      tiledInitValue.getDefiningOp<mlir::tensor::ExtractSliceOp>();
+  if (!initSlice || initSlice.getSource() != originalResult)
+    return mlir::success();
+  if (originalInitValue.getType() != originalResult.getType()) {
+    setFailureReason(failureReason,
+                     "fused DPS init cannot use the result tile relation");
+    return mlir::failure();
+  }
+  initSlice->setOperand(0, originalInitValue);
+  if (!llvm::is_contained(fused.generatedSlices,
+                          initSlice.getOperation()))
+    fused.generatedSlices.push_back(initSlice.getOperation());
+  return mlir::success();
 }
 
-static mlir::LogicalResult fuseCandidateProducerSlices(
-    mlir::Operation *tiledConsumer, TensorProgramScope scope,
+mlir::LogicalResult fuseCandidateProducerSlices(
+    mlir::Operation *tiledConsumer, mlir::Operation *sourceConsumer,
+    TensorProgramScope scope,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     std::string *failureReason) {
   // With a structured loop nest, a fused tile is created in a nested block and
@@ -76,10 +212,29 @@ static mlir::LogicalResult fuseCandidateProducerSlices(
         mlir::isa<mlir::TilingInterface>(&operation))
       sourceProducers.insert(&operation);
 
-  std::deque<mlir::tensor::ExtractSliceOp> worklist;
-  llvm::DenseSet<mlir::Operation *> seen;
+  struct PendingProducerSlice {
+    mlir::tensor::ExtractSliceOp slice;
+    mlir::Operation *sourceConsumer = nullptr;
+    mlir::Operation *sourceProducer = nullptr;
+    llvm::SmallVector<unsigned, 2> sourceConsumerOperandNumbers;
+  };
+  struct MaterializedCoupledProducerTile {
+    mlir::OpResult producerResult;
+    mlir::Block *block = nullptr;
+    mlir::Type tileType;
+    llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+    llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
+    llvm::SmallVector<mlir::OpFoldResult, 4> strides;
+    mlir::Value tiledValue;
+  };
+  std::deque<PendingProducerSlice> worklist;
+  llvm::SmallVector<PendingProducerSlice, 8> seenRelations;
+  llvm::SmallVector<PendingProducerSlice, 4> pendingSlices;
+  llvm::SmallVector<MaterializedCoupledProducerTile, 4>
+      materializedCoupledTiles;
   auto enqueueSlices = [&](llvm::ArrayRef<mlir::Operation *> operations,
-                           mlir::Operation *downstreamProducer = nullptr) {
+                           mlir::Operation *downstreamProducer,
+                           llvm::ArrayRef<mlir::Operation *> tiledConsumers) {
     for (mlir::Operation *operation : operations) {
       auto slice =
           mlir::dyn_cast_or_null<mlir::tensor::ExtractSliceOp>(operation);
@@ -94,21 +249,90 @@ static mlir::LogicalResult fuseCandidateProducerSlices(
           sourceProducer->getBlock() == downstreamProducer->getBlock() &&
           !sourceProducer->isBeforeInBlock(downstreamProducer))
         continue;
-      if (slice && seen.insert(operation).second)
-        worklist.push_back(slice);
+      if (!slice)
+        continue;
+      llvm::SmallVector<unsigned, 2> operandNumbers;
+      for (mlir::OpOperand &use : slice.getResult().getUses()) {
+        if (!llvm::is_contained(tiledConsumers, use.getOwner()))
+          continue;
+        operandNumbers.push_back(use.getOperandNumber());
+      }
+      llvm::sort(operandNumbers);
+      operandNumbers.erase(
+          std::unique(operandNumbers.begin(), operandNumbers.end()),
+          operandNumbers.end());
+      if (operandNumbers.empty())
+        continue;
+      // tileAndFuseProducerOfSlice may reuse the same extract_slice operation
+      // while retargeting it to the next producer upstream.  A slice is only
+      // duplicate work when its exact source-consumer operand relation and its
+      // current source producer have already been visited; remembering only
+      // the operation pair conflates two operands of the same consumer.
+      PendingProducerSlice relation{slice, downstreamProducer, sourceProducer,
+                                    operandNumbers};
+      auto seen = llvm::find_if(
+          seenRelations, [&](const PendingProducerSlice &existing) {
+            return existing.slice == relation.slice &&
+                   existing.sourceConsumer == relation.sourceConsumer &&
+                   existing.sourceProducer == relation.sourceProducer &&
+                   llvm::equal(existing.sourceConsumerOperandNumbers,
+                               relation.sourceConsumerOperandNumbers);
+          });
+      if (seen != seenRelations.end())
+        continue;
+      seenRelations.push_back(relation);
+      auto equivalent = llvm::find_if(
+          pendingSlices, [&](PendingProducerSlice &existing) {
+            return existing.sourceConsumer == downstreamProducer &&
+                   llvm::equal(existing.sourceConsumerOperandNumbers,
+                               operandNumbers) &&
+                   existing.slice->getBlock() == slice->getBlock() &&
+                   existing.slice->isBeforeInBlock(slice) &&
+                   existing.slice.getSource() == slice.getSource() &&
+                   existing.slice.getType() == slice.getType() &&
+                   llvm::equal(existing.slice.getMixedOffsets(),
+                               slice.getMixedOffsets()) &&
+                   llvm::equal(existing.slice.getMixedSizes(),
+                               slice.getMixedSizes()) &&
+                   llvm::equal(existing.slice.getMixedStrides(),
+                               slice.getMixedStrides());
+          });
+      if (equivalent != pendingSlices.end()) {
+        slice.getResult().replaceAllUsesWith(equivalent->slice.getResult());
+        if (slice->use_empty())
+          slice->erase();
+        continue;
+      }
+      pendingSlices.push_back(relation);
+      worklist.push_back(std::move(relation));
     }
   };
 
+  // Tiling a consumer with the same SSA producer on more than one operand can
+  // create equivalent extract_slice operations.  Keep distinct operand
+  // identities separate so their connection actions remain independent;
+  // only slices for the same exact endpoint relation are folded.
   llvm::SmallVector<mlir::Operation *, 4> initialSlices;
   for (mlir::Value operand : tiledConsumer->getOperands())
     if (auto slice = operand.getDefiningOp<mlir::tensor::ExtractSliceOp>())
       initialSlices.push_back(slice.getOperation());
-  enqueueSlices(initialSlices);
+  llvm::SmallVector<mlir::Operation *, 1> initialTiledConsumers{tiledConsumer};
+  enqueueSlices(initialSlices, sourceConsumer, initialTiledConsumers);
 
   mlir::IRRewriter rewriter(scope.getContext());
   while (!worklist.empty()) {
-    mlir::tensor::ExtractSliceOp slice = worklist.front();
+    PendingProducerSlice pendingSlice = worklist.front();
     worklist.pop_front();
+    mlir::tensor::ExtractSliceOp slice = pendingSlice.slice;
+    auto pending = llvm::find_if(
+        pendingSlices, [&](const PendingProducerSlice &existing) {
+          return existing.slice == pendingSlice.slice &&
+                 existing.sourceConsumer == pendingSlice.sourceConsumer &&
+                 llvm::equal(existing.sourceConsumerOperandNumbers,
+                             pendingSlice.sourceConsumerOperandNumbers);
+        });
+    if (pending != pendingSlices.end())
+      pendingSlices.erase(pending);
     // Tiling a consumer of an existing view creates an extract_slice of that
     // extract_slice. Compose the exact relation first so fusion sees the
     // actual structured producer. Each fanout branch can then materialize a
@@ -136,6 +360,35 @@ static mlir::LogicalResult fuseCandidateProducerSlices(
       rewriter.replaceOp(slice, composed.getResult());
       slice = composed;
     }
+    if (auto expand =
+            slice.getSource().getDefiningOp<mlir::tensor::ExpandShapeOp>()) {
+      std::optional<mlir::tensor::ExtractSliceOp> sourceSlice =
+          bubbleSliceThroughUnitExpand(rewriter, slice, expand);
+      if (sourceSlice)
+        slice = *sourceSlice;
+    }
+    // A tiled DPS producer can expose a slice of its original tensor.empty
+    // destination while producer fusion walks upstream.  Keeping that slice
+    // would retain (and later bufferize) the full untiled destination even
+    // though its contents are undefined and every fused tile overwrites its
+    // own result.  A fresh tile-local tensor.empty is exactly equivalent and
+    // keeps physical storage proportional to the selected tile.  This is a
+    // generic tensor-semantics fold; it does not depend on the producer kind
+    // or workload.
+    if (slice.getSource().getDefiningOp<mlir::tensor::EmptyOp>()) {
+      auto tileType = mlir::dyn_cast<mlir::RankedTensorType>(slice.getType());
+      if (tileType && tileType.hasStaticShape()) {
+        rewriter.setInsertionPoint(slice);
+        mlir::Value tileEmpty =
+            rewriter
+                .create<mlir::tensor::EmptyOp>(
+                    slice.getLoc(), tileType.getShape(),
+                    tileType.getElementType())
+                .getResult();
+        rewriter.replaceOp(slice, tileEmpty);
+        continue;
+      }
+    }
     auto producerResult = mlir::dyn_cast<mlir::OpResult>(slice.getSource());
     if (!producerResult ||
         producerResult.getOwner()->getBlock() != &scope.getBody() ||
@@ -158,6 +411,61 @@ static mlir::LogicalResult fuseCandidateProducerSlices(
           "to remain a separate scheduling task");
       return mlir::failure();
     }
+    if (!pendingSlice.sourceConsumer ||
+        pendingSlice.sourceConsumerOperandNumbers.empty())
+      continue;
+    std::optional<bool> shouldFuse;
+    for (unsigned operandNumber :
+         pendingSlice.sourceConsumerOperandNumbers) {
+      if (operandNumber >= pendingSlice.sourceConsumer->getNumOperands()) {
+        setFailureReason(
+            failureReason,
+            "tiled consumer operand identity left the source operation");
+        return mlir::failure();
+      }
+      bool current = scope.shouldFuseCandidateConnection(
+          producerResult,
+          pendingSlice.sourceConsumer->getOpOperand(operandNumber));
+      if (shouldFuse && *shouldFuse != current) {
+        setFailureReason(
+            failureReason,
+            "one tiled operand slice spans incompatible connection actions");
+        return mlir::failure();
+      }
+      shouldFuse = current;
+    }
+    if (!shouldFuse.value_or(false))
+      continue;
+
+    // Connection identity is per producer-result/consumer-operand edge, but
+    // physical tile identity is per exact producer-result demand.  Two
+    // independently accepted Coupled edges that request the same slice in the
+    // same block must consume one producer tile/version.  Retaining the edge
+    // identities through policy evaluation prevents a Coupled edge from
+    // absorbing a Separated edge, while this post-policy cache avoids cloning
+    // the same immutable SSA producer once per equivalent operand use.
+    auto reusable = llvm::find_if(
+        materializedCoupledTiles,
+        [&](const MaterializedCoupledProducerTile &materialized) {
+          mlir::Operation *tiledOwner =
+              materialized.tiledValue.getDefiningOp();
+          return materialized.producerResult == producerResult &&
+                 materialized.block == slice->getBlock() && tiledOwner &&
+                 tiledOwner->getBlock() == slice->getBlock() &&
+                 tiledOwner->isBeforeInBlock(slice) &&
+                 materialized.tileType == slice.getType() &&
+                 llvm::equal(materialized.offsets,
+                             slice.getMixedOffsets()) &&
+                 llvm::equal(materialized.sizes, slice.getMixedSizes()) &&
+                 llvm::equal(materialized.strides,
+                             slice.getMixedStrides());
+        });
+    if (reusable != materializedCoupledTiles.end()) {
+      slice.getResult().replaceAllUsesWith(reusable->tiledValue);
+      if (slice->use_empty())
+        rewriter.eraseOp(slice);
+      continue;
+    }
 
     std::optional<mlir::scf::SCFFuseProducerOfSliceResult> fused =
         mlir::scf::tileAndFuseProducerOfSlice(rewriter, slice, loops);
@@ -165,7 +473,16 @@ static mlir::LogicalResult fuseCandidateProducerSlices(
       setFailureReason(failureReason, "candidate producer tile fusion failed");
       return mlir::failure();
     }
-    enqueueSlices(fused->generatedSlices, producerResult.getOwner());
+    if (mlir::failed(rebaseFusedDPSInit(*fused, failureReason)))
+      return mlir::failure();
+    materializedCoupledTiles.push_back(MaterializedCoupledProducerTile{
+        producerResult, slice->getBlock(), slice.getType(),
+        llvm::to_vector(slice.getMixedOffsets()),
+        llvm::to_vector(slice.getMixedSizes()),
+        llvm::to_vector(slice.getMixedStrides()),
+        fused->tiledAndFusedProducer});
+    enqueueSlices(fused->generatedSlices, fused->origProducer.getOwner(),
+                  fused->tiledOps);
     if (slice->use_empty())
       rewriter.eraseOp(slice);
   }
@@ -218,150 +535,6 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
   return materializeCandidateRootTileValue(
       builder, scope, root, outputIndex, mixedOffsets, candidateTileSizes,
       candidateReductionTileSizes, loops, failureReason);
-}
-
-static mlir::FailureOr<mlir::Value> materializeCandidateLinalgRootTileValue(
-    mlir::OpBuilder &builder, TensorProgramScope scope,
-    mlir::linalg::LinalgOp root, unsigned outputIndex,
-    llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
-    llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
-    std::string *failureReason) {
-  if (root.getNumDpsInits() != 1 || root->getNumResults() != 1) {
-    setFailureReason(failureReason,
-                     "candidate tile materialization requires one DPS output");
-    return mlir::failure();
-  }
-  if (!root.hasOnlyProjectedPermutations()) {
-    setFailureReason(
-        failureReason,
-        "candidate tile materialization requires permutation-only maps");
-    return mlir::failure();
-  }
-
-  llvm::SmallVector<unsigned, 2> reductionLoopDims = getReductionLoopDims(root);
-  bool hasDirectOutputInit = isCandidateOutputDestination(
-      scope, root.getDpsInits().front(), outputIndex);
-  if (!hasDirectOutputInit && reductionLoopDims.empty()) {
-    setFailureReason(failureReason,
-                     "candidate tile materialization requires direct output "
-                     "boundary init for non-reduction roots");
-    return mlir::failure();
-  }
-
-  auto resultType =
-      mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
-  if (!resultType) {
-    setFailureReason(failureReason,
-                     "candidate tile materialization result is not ranked");
-    return mlir::failure();
-  }
-  if (candidateTileOffsets.size() != candidateTileSizes.size() ||
-      candidateTileSizes.size() != static_cast<size_t>(resultType.getRank()) ||
-      llvm::any_of(candidateTileSizes,
-                   [](int64_t size) { return size <= 0; })) {
-    setFailureReason(failureReason,
-                     "candidate tile materialization rank or size mismatch");
-    return mlir::failure();
-  }
-
-  llvm::SmallVector<mlir::AffineMap, 4> indexingMaps =
-      root.getIndexingMapsArray();
-  unsigned outputMapIndex = static_cast<unsigned>(root.getNumDpsInputs());
-  if (outputMapIndex >= indexingMaps.size()) {
-    setFailureReason(failureReason,
-                     "candidate tile materialization missing output map");
-    return mlir::failure();
-  }
-
-  llvm::SmallVector<int64_t, 2> rootReductionTileSizes;
-  if (!reductionLoopDims.empty())
-    rootReductionTileSizes.assign(candidateReductionTileSizes.begin(),
-                                  candidateReductionTileSizes.end());
-
-  if (!rootReductionTileSizes.empty()) {
-    if (reductionLoopDims.size() != 1) {
-      setFailureReason(
-          failureReason,
-          "candidate reduction split requires exactly one reduction axis");
-      return mlir::failure();
-    }
-  }
-
-  mlir::FailureOr<llvm::SmallVector<ReductionChunk, 8>> reductionChunks =
-      buildReductionChunks(root, rootReductionTileSizes, failureReason);
-  if (mlir::failed(reductionChunks))
-    return mlir::failure();
-  if (reductionChunks->size() > 1) {
-    if (mlir::failed(
-            verifyCandidateReductionSplitNumericLegality(root, failureReason)))
-      return mlir::failure();
-    mlir::FailureOr<ComputeReduceKind> kind =
-        getCandidateCombineKind(root, failureReason);
-    if (mlir::failed(kind))
-      return mlir::failure();
-  }
-
-  llvm::SmallVector<mlir::Value, 4> valuesToTile(root->operand_begin(),
-                                                 root->operand_end());
-  unsigned initOperandIndex = static_cast<unsigned>(root.getNumDpsInputs());
-  mlir::Value accumulator;
-
-  for (const ReductionChunk &chunk : *reductionChunks) {
-    CandidateLoopTile loopTile;
-    if (mlir::failed(buildCandidateLoopTile(
-            builder, root.getLoc(), root, indexingMaps[outputMapIndex],
-            candidateTileOffsets, candidateTileSizes, chunk.offsets,
-            chunk.sizes, loopTile, failureReason)))
-      return mlir::failure();
-
-    llvm::SmallVector<mlir::Value, 4> tiledOperands =
-        mlir::linalg::makeTiledShapes(builder, root.getLoc(), root,
-                                      valuesToTile, loopTile.ivs,
-                                      loopTile.tileSizes, loopTile.sizeBounds,
-                                      /*omitPartialTileCheck=*/true);
-    if (accumulator && initOperandIndex < tiledOperands.size()) {
-      mlir::Operation *unusedInitSlice =
-          tiledOperands[initOperandIndex].getDefiningOp();
-      if (accumulator.getType() != tiledOperands[initOperandIndex].getType()) {
-        setFailureReason(failureReason,
-                         "candidate reduction split accumulator type mismatch");
-        return mlir::failure();
-      }
-      tiledOperands[initOperandIndex] = accumulator;
-      if (unusedInitSlice && unusedInitSlice->use_empty())
-        unusedInitSlice->erase();
-    }
-
-    llvm::SmallVector<mlir::Type, 2> resultTypes =
-        mlir::linalg::getTensorOutputTypes(root, tiledOperands);
-    if (resultTypes.size() != 1) {
-      setFailureReason(
-          failureReason,
-          "candidate tile materialization expected one tiled result type");
-      return mlir::failure();
-    }
-
-    mlir::Operation *tiled =
-        mlir::clone(builder, root.getOperation(), resultTypes, tiledOperands);
-    auto tiledLinalg = mlir::cast<mlir::linalg::LinalgOp>(tiled);
-    mlir::linalg::offsetIndices(builder, tiledLinalg, loopTile.loopOffsets);
-
-    if (mlir::failed(
-            fuseCandidateProducerSlices(tiled, scope, loops, failureReason)))
-      return mlir::failure();
-
-    builder.setInsertionPointAfter(tiled);
-    accumulator = tiled->getResult(0);
-  }
-
-  if (!accumulator) {
-    setFailureReason(failureReason,
-                     "candidate tile materialization produced no tiled result");
-    return mlir::failure();
-  }
-  return accumulator;
 }
 
 mlir::FailureOr<mlir::Value> materializeCandidateOperandConsumerTileValue(
@@ -422,8 +595,8 @@ mlir::FailureOr<mlir::Value> materializeCandidateOperandConsumerTileValue(
   }
 
   mlir::Operation *tiledConsumer = materialized->tiledOperations.front();
-  if (mlir::failed(fuseCandidateProducerSlices(tiledConsumer, scope, loops,
-                                               failureReason)))
+  if (mlir::failed(fuseCandidateProducerSlices(tiledConsumer, root, scope,
+                                               loops, failureReason)))
     return mlir::failure();
   builder.setInsertionPointAfter(tiledConsumer);
   return materialized->tiledValues.front();
@@ -557,12 +730,12 @@ mlir::FailureOr<mlir::Value> materializeCandidatePartialReductionRootTileValue(
     }
 
     for (mlir::Operation *operation : materialized->partialOperations)
-      if (mlir::failed(fuseCandidateProducerSlices(operation, scope, loops,
-                                                   failureReason)))
+      if (mlir::failed(fuseCandidateProducerSlices(
+              operation, linalg.getOperation(), scope, loops, failureReason)))
         return mlir::failure();
     for (mlir::Operation *operation : materialized->mergeOperations)
-      if (mlir::failed(fuseCandidateProducerSlices(operation, scope, loops,
-                                                   failureReason)))
+      if (mlir::failed(fuseCandidateProducerSlices(
+              operation, linalg.getOperation(), scope, loops, failureReason)))
         return mlir::failure();
 
     builder.setInsertionPointAfter(materialized->mergeOperations.back());
@@ -642,16 +815,11 @@ static mlir::FailureOr<mlir::Value> materializeCandidateInterfaceRootTileValue(
   if (!candidateReductionTileSizes.empty()) {
     setFailureReason(
         failureReason,
-        "candidate reduction split requires a yielded linalg reduction root");
+        "candidate reduction split requires PartialReductionOpInterface");
     return mlir::failure();
   }
-  if (!isCandidateOutputDestination(scope, dps.getDpsInits().front(),
-                                    outputIndex)) {
-    setFailureReason(failureReason,
-                     "candidate interface root requires direct output "
-                     "boundary init");
-    return mlir::failure();
-  }
+  (void)scope;
+  (void)outputIndex;
 
   auto resultType =
       mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
@@ -668,8 +836,78 @@ static mlir::FailureOr<mlir::Value> materializeCandidateInterfaceRootTileValue(
   mixedSizes.reserve(candidateTileSizes.size());
   for (int64_t size : candidateTileSizes)
     mixedSizes.push_back(builder.getIndexAttr(size));
+
+  // Candidate coordinates are expressed in the result domain. Recover an
+  // exact iteration-domain tile through TilingInterface result/operand
+  // relations and verify the round trip before materialization. Passing
+  // result offsets directly to getTiledImplementation without that proof
+  // would silently assume an identity indexing map.
+  std::optional<OperandTileIterationDomain> iteration;
+  auto hasExactResultTile = [&](llvm::ArrayRef<mlir::OpFoldResult> offsets,
+                                llvm::ArrayRef<mlir::OpFoldResult> sizes) {
+    llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
+    llvm::SmallVector<mlir::OpFoldResult> resultSizes;
+    return mlir::succeeded(tiling.getResultTilePosition(
+               builder, /*resultNumber=*/0, offsets, sizes, resultOffsets,
+               resultSizes)) &&
+           llvm::equal(resultOffsets, candidateTileOffsets) &&
+           llvm::equal(resultSizes, mixedSizes);
+  };
+  auto retainIteration = [&](llvm::ArrayRef<mlir::OpFoldResult> offsets,
+                             llvm::ArrayRef<mlir::OpFoldResult> sizes) {
+    if (!hasExactResultTile(offsets, sizes))
+      return false;
+    iteration.emplace();
+    iteration->offsets.assign(offsets.begin(), offsets.end());
+    iteration->sizes.assign(sizes.begin(), sizes.end());
+    return true;
+  };
+
+  // Prefer the interface's explicit result-to-iteration relation. The
+  // verified round-trip fallback admits identity iteration/result domains
+  // exposed by simpler TilingInterface implementations without assuming that
+  // every equal-rank operation is identity-mapped.
+  llvm::SmallVector<mlir::OpFoldResult> resultIterationOffsets;
+  llvm::SmallVector<mlir::OpFoldResult> resultIterationSizes;
+  if (mlir::succeeded(tiling.getIterationDomainTileFromResultTile(
+          builder, /*resultNumber=*/0, candidateTileOffsets, mixedSizes,
+          resultIterationOffsets, resultIterationSizes)))
+    (void)retainIteration(resultIterationOffsets, resultIterationSizes);
+  if (!iteration && candidateTileOffsets.size() ==
+                        tiling.getLoopIteratorTypes().size())
+    (void)retainIteration(candidateTileOffsets, mixedSizes);
+
+  llvm::SmallVector<unsigned, 4> relationOperands;
+  if (mlir::OpOperand *resultDestination = dps.getDpsInitOperand(0))
+    relationOperands.push_back(resultDestination->getOperandNumber());
+  for (unsigned operandNumber = 0; operandNumber < root->getNumOperands();
+       ++operandNumber)
+    if (!llvm::is_contained(relationOperands, operandNumber))
+      relationOperands.push_back(operandNumber);
+  for (unsigned operandNumber : relationOperands) {
+    if (iteration)
+      break;
+    std::string relationFailure;
+    mlir::FailureOr<OperandTileIterationDomain> candidateIteration =
+        mapOperandTileToIterationDomain(
+            root, builder, operandNumber, candidateTileOffsets, mixedSizes,
+            &relationFailure);
+    if (mlir::failed(candidateIteration))
+      continue;
+    (void)retainIteration(candidateIteration->offsets,
+                          candidateIteration->sizes);
+  }
+  if (!iteration) {
+    setFailureReason(
+        failureReason,
+        "TilingInterface provides no operand relation that exactly covers "
+        "the requested result tile");
+    return mlir::failure();
+  }
+
   mlir::FailureOr<mlir::TilingResult> tiled =
-      tiling.getTiledImplementation(builder, candidateTileOffsets, mixedSizes);
+      tiling.getTiledImplementation(builder, iteration->offsets,
+                                    iteration->sizes);
   if (mlir::failed(tiled)) {
     setFailureReason(failureReason,
                      "candidate interface root rejected the requested tile");
@@ -685,8 +923,8 @@ static mlir::FailureOr<mlir::Value> materializeCandidateInterfaceRootTileValue(
   }
 
   mlir::Operation *tiledRoot = tiled->tiledOps.front();
-  if (mlir::failed(
-          fuseCandidateProducerSlices(tiledRoot, scope, loops, failureReason)))
+  if (mlir::failed(fuseCandidateProducerSlices(tiledRoot, root, scope, loops,
+                                               failureReason)))
     return mlir::failure();
   builder.setInsertionPointAfter(tiledRoot);
   return tiled->tiledValues.front();
@@ -700,16 +938,16 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     std::string *failureReason) {
-  if (auto linalg = mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(root))
-    return materializeCandidateLinalgRootTileValue(
-        builder, scope, linalg, outputIndex, candidateTileOffsets,
-        candidateTileSizes, candidateReductionTileSizes, loops, failureReason);
   if (classifyCandidateTraversalRoot(root) !=
       CandidateTraversalRootCapability::Tiled) {
     setFailureReason(failureReason,
                      "candidate traversal root does not support tiling");
     return mlir::failure();
   }
+  if (!candidateReductionTileSizes.empty())
+    return materializeCandidatePartialReductionRootTileValue(
+        builder, scope, root, candidateTileOffsets, candidateTileSizes,
+        candidateReductionTileSizes, loops, failureReason);
   return materializeCandidateInterfaceRootTileValue(
       builder, scope, root, outputIndex, candidateTileOffsets,
       candidateTileSizes, candidateReductionTileSizes, loops, failureReason);

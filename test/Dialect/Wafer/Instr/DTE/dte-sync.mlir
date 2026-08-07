@@ -2,9 +2,12 @@
 // RUN: wafer-opt --canonicalize %s | FileCheck %s --check-prefix=CANONICAL
 
 module {
-  %source = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
-  %0 = wafer.tile.region(%source : tensor<4xf32>) -> (tensor<4xf32>) {
-  ^bb0(%arg0: tensor<4xf32>):
+  %source = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4xf32, #wafer.memory<ddr, tensor>>
+  %0 = wafer.tile.region(
+      %source : memref<4xf32, #wafer.memory<ddr, tensor>>)
+      -> (memref<4xf32, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<4xf32, #wafer.memory<ddr, tensor>>):
     %buf = "builtin.unrealized_conversion_cast"()
         : () -> memref<4xf32, #wafer.memory<spm, tensor>>
     wafer.instr.ncc_join [0]
@@ -15,7 +18,8 @@ module {
         message = #wafer.dte_message<communication = 7, phase = collective_permute, round = 0, slice = 0>}
         : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
     wafer.instr.dte_wait %send, %recv : !async.token, !async.token
-    wafer.tile.yield %arg0 : tensor<4xf32>
+    wafer.tile.yield %arg0
+        : memref<4xf32, #wafer.memory<ddr, tensor>>
   }
 }
 

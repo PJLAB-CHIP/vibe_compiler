@@ -22,7 +22,7 @@
 # RUN: env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-spmd-helper %wafer_compile_test --input-program-dir %t.source --output-program-dir %t.outputs/profiled --execution-ranks=16 --launch-kind=kernel --profile | FileCheck %s --check-prefix=PROFILED
 # RUN: %python -c 'import copy,json,pathlib; roots=[pathlib.Path("%t.outputs/winner"),pathlib.Path("%t.outputs/profiled")]; manifests=[json.loads((root/"manifest.json").read_text()) for root in roots]; normalized=[copy.deepcopy(manifest) for manifest in manifests]; [[module.pop("digest") for module in manifest["modules"]] for manifest in normalized]; assert normalized[0]==normalized[1]'
 
-# The public none preset produces the fully gated baseline from the exact same
+# The public none preset produces the admitted baseline from the exact same
 # source/config.  Final artifact facts prove the combined candidate, not a
 # role label or fixture.
 # RUN: env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-spmd-helper %wafer_compile_test --input-program-dir %t.source --output-program-dir %t.outputs/baseline --execution-ranks=16 --launch-kind=kernel --optimization-preset=none --model-input 0=%t.lhs.npy --model-input 1=%t.rhs.npy --model-input 2=%t.bias.npy --model-expected 0=%t.expected.npy --model-atol=0 --model-rtol=0 --target-model --target-model-max-scalar-evaluations=10000000 --target-model-max-fused-multiply-adds=10000000 --target-model-max-movement-bytes=100000000 --target-model-max-movement-segments=2000000 | FileCheck %s --check-prefix=BASELINE

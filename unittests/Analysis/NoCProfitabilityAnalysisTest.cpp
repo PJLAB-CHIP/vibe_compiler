@@ -122,19 +122,47 @@ TEST(NoCProfitabilityAnalysisTest,
 }
 
 TEST(NoCProfitabilityAnalysisTest,
-     SPMMovementHasNoHistoricalFlatDurationInMakespan) {
+     SPMExplicitMovementUsesAnAssumptionMarkedNominalPrior) {
   WholeCardInstructionProgramCost cost = makeCost(0, 0);
   cost.aggregateSPMMovementBytes.value = 4096;
   cost.maximumRankSPMMovementBytes.value = 4096;
 
   auto estimate =
       wafer::analysis::estimateWholeCardResourceDuration(cost, defaultPolicy());
-  EXPECT_EQ(estimate.spm.nominalPicoseconds.knowledge,
+  ASSERT_TRUE(estimate.spm.nominalPicoseconds.isKnown());
+  EXPECT_EQ(estimate.spm.nominalPicoseconds.value, 16'000u);
+  const auto spmRateAssumption = staticDurationAssumptionMask(
+      StaticDurationAssumption::SPMServiceRatePrior);
+  EXPECT_EQ(estimate.spm.nominalAssumptions & spmRateAssumption,
+            spmRateAssumption);
+  EXPECT_EQ(estimate.makespan.nominalAssumptions & spmRateAssumption,
+            spmRateAssumption);
+  EXPECT_EQ(estimate.spm.upperBoundPicoseconds.knowledge,
             ScheduleCostKnowledge::Unknown);
-  EXPECT_EQ(estimate.spm.nominalPicoseconds.reason,
+  EXPECT_EQ(estimate.spm.upperBoundPicoseconds.reason,
             ScheduleCostReason::MissingPerformanceCalibration);
   ASSERT_TRUE(estimate.makespan.nominalPicoseconds.isKnown());
-  EXPECT_EQ(estimate.makespan.nominalPicoseconds.value, 0u);
+  EXPECT_EQ(estimate.makespan.nominalPicoseconds.value, 16'000u);
+  EXPECT_EQ(estimate.makespan.upperBoundPicoseconds.knowledge,
+            ScheduleCostKnowledge::Unknown);
+}
+
+TEST(NoCProfitabilityAnalysisTest,
+     SPMAndExternalMovementShareAServiceEnvelope) {
+  WholeCardInstructionProgramCost cost =
+      makeCost(/*ddrReadBytes=*/150'000, /*ddrWriteBytes=*/0);
+  cost.aggregateSPMMovementBytes.value = 256'000;
+  cost.maximumRankSPMMovementBytes.value = 256'000;
+
+  auto estimate =
+      wafer::analysis::estimateWholeCardResourceDuration(cost, defaultPolicy());
+  ASSERT_TRUE(estimate.ddr.nominalPicoseconds.isKnown());
+  ASSERT_TRUE(estimate.spm.nominalPicoseconds.isKnown());
+  ASSERT_TRUE(estimate.makespan.nominalPicoseconds.isKnown());
+  EXPECT_EQ(estimate.ddr.nominalPicoseconds.value, 1'000'000u);
+  EXPECT_EQ(estimate.spm.nominalPicoseconds.value, 1'000'000u);
+  // Both demands constrain the same interval; they are not charged twice.
+  EXPECT_EQ(estimate.makespan.nominalPicoseconds.value, 1'000'000u);
 }
 
 TEST(NoCProfitabilityAnalysisTest,

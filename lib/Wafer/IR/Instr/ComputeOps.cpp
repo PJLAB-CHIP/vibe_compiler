@@ -352,6 +352,8 @@ toComputeElementwiseKind(InstrElementwiseKind kind) {
     return ComputeElementwiseKind::Rsqrt;
   case InstrElementwiseKind::Exp:
     return ComputeElementwiseKind::Exp;
+  case InstrElementwiseKind::Ln:
+    return ComputeElementwiseKind::Ln;
   case InstrElementwiseKind::Tanh:
     return ComputeElementwiseKind::Tanh;
   case InstrElementwiseKind::Eq:
@@ -369,7 +371,6 @@ toComputeElementwiseKind(InstrElementwiseKind kind) {
   case InstrElementwiseKind::Abs:
   case InstrElementwiseKind::Square:
   case InstrElementwiseKind::Log2:
-  case InstrElementwiseKind::Ln:
   case InstrElementwiseKind::Pow2:
   case InstrElementwiseKind::ExpLp:
   case InstrElementwiseKind::Sin:

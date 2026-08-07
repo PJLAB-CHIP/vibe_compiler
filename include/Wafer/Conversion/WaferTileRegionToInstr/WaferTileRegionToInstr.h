@@ -15,25 +15,19 @@ namespace wafer {
 
 namespace detail {
 
-/// Maximum number of statically materialized terminal instruction issues and
-/// explicit local completions accepted for one logical rank.  This is an
-/// independent target-program bound, not the candidate traversal expansion
-/// budget used by structured tensor scheduling.
-inline constexpr uint64_t kStaticTerminalOperationBudget = 4096;
-
-enum class StaticTerminalOperationBudgetStatus {
-  WithinBudget,
+enum class StaticExecutableOperationCountStatus {
+  Counted,
   CountOverflow,
-  BudgetExceeded,
 };
 
-/// Counts every terminal instruction issue and explicit local completion in
-/// `root` without mutating IR, then checks the per-rank static program bound.
+/// Counts every instruction issue and explicit local completion in `root`
+/// without mutating IR.  Program size is a ranking/cost fact rather than a
+/// fixed workload-legality gate; only an unrepresentable count fails closed.
 /// `operationCount` is reset before traversal and contains the exact count
 /// unless the count itself overflows uint64_t.
-StaticTerminalOperationBudgetStatus
-checkStaticTerminalOperationBudget(mlir::Operation *root,
-                                   uint64_t &operationCount);
+StaticExecutableOperationCountStatus
+countStaticExecutableOperations(mlir::Operation *root,
+                                uint64_t &operationCount);
 
 } // namespace detail
 

@@ -231,7 +231,6 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     ready-order-movement-first
     gemm-aligned-physical-route
     gemm-tail-physical-route
-    layout-movement-chain
   )
   set(_wafer_compiler_optimization_collective_cases
     tree-all-reduce
@@ -341,24 +340,6 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
       "runtime;no-card;all-rank;cluster;direct-dte;compute-overlap;paired;heavy"
     TIMEOUT 1800
   )
-  add_test(NAME wafer-runtime-layout-movement-elimination-no-card
-    COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_compiler_optimization_campaign_test.py
-      --wafer-compile $<TARGET_FILE:wafer-compile>
-      --wafer-compile-test $<TARGET_FILE:wafer-compile-test>
-      --wafer-run $<TARGET_FILE:wafer-run>
-      --tx8-objdump ${_wafer_tx81_objdump}
-      --work-dir
-        ${CMAKE_CURRENT_BINARY_DIR}/runtime-layout-movement-elimination
-      --case layout-movement-chain
-      --no-card
-  )
-  set_tests_properties(
-    wafer-runtime-layout-movement-elimination-no-card PROPERTIES
-    LABELS
-      "runtime;no-card;source;compiler-optimization;paired;layout-movement;fp16;heavy"
-    TIMEOUT 1800
-  )
   if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
     add_test(NAME wafer-runtime-pytorch-rank-one-gemm-no-card
       COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
@@ -376,6 +357,122 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
       wafer-runtime-pytorch-rank-one-gemm-no-card PROPERTIES
       LABELS "runtime;no-card;pytorch;source;gemm"
       TIMEOUT 600
+    )
+    add_test(NAME wafer-runtime-pytorch-heterogeneous-tiling-dataflow-fp16-no-card
+      COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case heterogeneous-tiling-dataflow
+        --dtype float16
+        --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-heterogeneous-tiling-dataflow-fp16-no-card
+        --compile-timing
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-pytorch-heterogeneous-tiling-dataflow-fp16-no-card PROPERTIES
+      LABELS "runtime;no-card;pytorch;source;heterogeneous;tiling-interface;fp16"
+      TIMEOUT 900
+    )
+    add_test(NAME wafer-runtime-pytorch-heterogeneous-tiling-dataflow-tp16-bf16-no-card
+      COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case heterogeneous-tiling-dataflow-tp16
+        --dtype bfloat16
+        --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-heterogeneous-tiling-dataflow-tp16-bf16-no-card
+        --compile-timing
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-pytorch-heterogeneous-tiling-dataflow-tp16-bf16-no-card PROPERTIES
+      LABELS "runtime;no-card;pytorch;source;heterogeneous;tiling-interface;all-rank;bf16"
+      TIMEOUT 1800
+    )
+    add_test(NAME wafer-runtime-pytorch-attention-prefill-fp16-no-card
+      COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case attention-prefill
+        --dtype float16
+        --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-attention-prefill-fp16-no-card
+        --dump-compiler-ir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-attention-prefill-fp16-no-card/compiler-ir
+        --require-implementation-alternative
+        --compile-timing
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-pytorch-attention-prefill-fp16-no-card PROPERTIES
+      LABELS "runtime;no-card;heavy;pytorch;source;huggingface;attention;prefill;fp16"
+      TIMEOUT 3600
+    )
+    add_test(NAME wafer-runtime-pytorch-attention-prefill-bf16-no-card
+      COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case attention-prefill
+        --dtype bfloat16
+        --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-attention-prefill-bf16-no-card
+        --require-implementation-alternative
+        --compile-timing
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-pytorch-attention-prefill-bf16-no-card PROPERTIES
+      LABELS "runtime;no-card;heavy;pytorch;source;huggingface;attention;prefill;bf16"
+      TIMEOUT 3600
+    )
+    add_test(NAME wafer-runtime-pytorch-attention-decode-kv-cache-no-card
+      COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case attention-decode-kv-cache
+        --dtype float16
+        --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-attention-decode-kv-cache-no-card
+        --dump-compiler-ir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-attention-decode-kv-cache-no-card/compiler-ir
+        --require-implementation-alternative
+        --compile-timing
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-pytorch-attention-decode-kv-cache-no-card PROPERTIES
+      LABELS "runtime;no-card;heavy;pytorch;source;huggingface;attention;decode;kv-cache;fp16"
+      TIMEOUT 3600
+    )
+    add_test(NAME wafer-runtime-pytorch-attention-decode-kv-cache-bf16-no-card
+      COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case attention-decode-kv-cache
+        --dtype bfloat16
+        --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-attention-decode-kv-cache-bf16-no-card
+        --require-implementation-alternative
+        --compile-timing
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-pytorch-attention-decode-kv-cache-bf16-no-card PROPERTIES
+      LABELS "runtime;no-card;heavy;pytorch;source;huggingface;attention;decode;kv-cache;bf16"
+      TIMEOUT 3600
     )
     add_test(NAME wafer-runtime-pytorch-k-sharded-gemm-all-reduce-no-card
       COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
@@ -406,12 +503,32 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
           ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-hf-megatron-transformer-block-no-card
         --dump-compiler-ir
           ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-hf-megatron-transformer-block-no-card/compiler-ir
+        --compile-timing
         --no-card
     )
     set_tests_properties(
       wafer-runtime-pytorch-hf-megatron-transformer-block-no-card PROPERTIES
       LABELS
         "runtime;no-card;heavy;pytorch;source;large;huggingface;llama2-7b;transformer;megatron;all-rank;all-reduce;direct-dte"
+      TIMEOUT 9000
+    )
+    add_test(NAME wafer-runtime-pytorch-hf-megatron-transformer-block-bf16-no-card
+      COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case hf-megatron-transformer-block
+        --dtype bfloat16
+        --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-pytorch-hf-megatron-transformer-block-bf16-no-card
+        --compile-timing
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-pytorch-hf-megatron-transformer-block-bf16-no-card PROPERTIES
+      LABELS
+        "runtime;no-card;heavy;pytorch;source;large;huggingface;llama2-7b;transformer;megatron;all-rank;all-reduce;direct-dte;bf16"
       TIMEOUT 9000
     )
   endif()
@@ -2070,6 +2187,33 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
       TIMEOUT 600
+    )
+    add_test(NAME wafer-board-pytorch-attention-decode-kv-cache
+      COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case attention-decode-kv-cache
+        --dtype float16
+        --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-pytorch-attention-decode-kv-cache
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 60000
+        --repeat 1
+    )
+    set_tests_properties(
+      wafer-board-pytorch-attention-decode-kv-cache PROPERTIES
+      LABELS "board;hardware;pytorch;source;huggingface;attention;decode;kv-cache;fp16"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 1800
     )
   endif()
   add_test(NAME wafer-board-mn-tiled-gemm

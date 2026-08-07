@@ -110,7 +110,9 @@ func.func @unsupported_parallel_spm(
   ^bb0(%arg0: memref<128xf16, #wafer.memory<ddr, tensor>>):
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    // expected-error @below {{unsupported_lifetime_control_flow: tile-region terminal completion proof requires single-block scf.if/scf.for structured control flow}}
+    // Shared structured lifetime legality owns unsupported control flow before
+    // any owner-specific completion tracker can consume the timeline.
+    // expected-error @below {{unsupported_lifetime_control_flow: SPM memory planning only supports single-block func.func, non-nested wafer.tile.region, scf.if and scf.for structured regions}}
     scf.parallel (%index) = (%c0) to (%c1) step (%c1) {
       scf.reduce
     }
@@ -199,15 +201,14 @@ func.func @unsupported_spm_to_memref_without_origin(
 // -----
 
 func.func @unsupported_generic_to_spm_space_cast(
-    %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>,
-    %generic: memref<128xf16>) {
-  %region = wafer.tile.region(%boundary, %generic
-      : memref<128xf16, #wafer.memory<ddr, tensor>>, memref<128xf16>)
+    %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  %region = wafer.tile.region(%boundary
+      : memref<128xf16, #wafer.memory<ddr, tensor>>)
       -> (memref<128xf16, #wafer.memory<ddr, tensor>>) {
-  ^bb0(%arg0: memref<128xf16, #wafer.memory<ddr, tensor>>,
-       %arg1: memref<128xf16>):
+  ^bb0(%arg0: memref<128xf16, #wafer.memory<ddr, tensor>>):
+    %generic = memref.alloc() : memref<128xf16>
     // expected-error @below {{unsupported_lifetime_alias: SPM memref producers must be memref.alloc or implement a supported alias/control-flow interface}}
-    %spm = memref.memory_space_cast %arg1
+    %spm = memref.memory_space_cast %generic
         : memref<128xf16>
        to memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.tile.yield %arg0

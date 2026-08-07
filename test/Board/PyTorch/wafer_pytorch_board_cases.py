@@ -30,6 +30,8 @@ HF_LLAMA2_7B_CONFIG = (
 )
 HF_LLAMA2_7B_SEQUENCE_LENGTH = 16
 HF_LLAMA2_7B_COMPARISON = common.ComparisonPolicy(rtol=0.002, atol=0.004)
+ATTENTION_COMPARISON = common.ComparisonPolicy(rtol=0.006, atol=0.008)
+ATTENTION_HEAD_DIM = 64
 
 
 @dataclasses.dataclass(frozen=True)
@@ -38,16 +40,116 @@ class PyTorchBoardCase:
     rank_count: int
     dtype: torch.dtype
     inputs: tuple[torch.Tensor, ...]
-    expected_outputs: tuple[torch.Tensor, ...]
+    expected_outputs_factory: Callable[[], tuple[torch.Tensor, ...]]
     export_program: Callable[[pathlib.Path], None]
     required_structured_ir: tuple[str, ...]
     expected_all_reduce_count: int
     comparison_policy: common.ComparisonPolicy
+    continuation_factory: (
+        Callable[[tuple[torch.Tensor, ...]], "PyTorchBoardCase"] | None
+    ) = None
+
+    def materialize_expected_outputs(self) -> tuple[torch.Tensor, ...]:
+        outputs = self.expected_outputs_factory()
+        if not outputs:
+            raise RuntimeError(f"PyTorch board case {self.name} has no outputs")
+        for tensor in outputs:
+            if tensor.device.type != "cpu" or tensor.dtype != self.dtype:
+                raise RuntimeError(
+                    f"PyTorch board case {self.name} eager oracle must preserve "
+                    f"CPU dtype {self.dtype}"
+                )
+        return outputs
+
+
+@dataclasses.dataclass(frozen=True)
+class BoardReadyWorkload:
+    """One explicitly callable Q49 source/oracle/package/no-card vertical."""
+
+    ctest_name: str
+    case_name: str
+    dtype_name: str
+    rank_count: int
+    require_implementation_alternative: bool = False
+    package_count: int = 1
+
+
+Q49_BOARD_READY_WORKLOADS = (
+    BoardReadyWorkload(
+        "wafer-runtime-pytorch-heterogeneous-tiling-dataflow-fp16-no-card",
+        "heterogeneous-tiling-dataflow",
+        "float16",
+        1,
+    ),
+    BoardReadyWorkload(
+        "wafer-runtime-pytorch-heterogeneous-tiling-dataflow-tp16-bf16-no-card",
+        "heterogeneous-tiling-dataflow-tp16",
+        "bfloat16",
+        RANK_COUNT,
+    ),
+    BoardReadyWorkload(
+        "wafer-runtime-pytorch-attention-prefill-fp16-no-card",
+        "attention-prefill",
+        "float16",
+        1,
+        require_implementation_alternative=True,
+    ),
+    BoardReadyWorkload(
+        "wafer-runtime-pytorch-attention-prefill-bf16-no-card",
+        "attention-prefill",
+        "bfloat16",
+        1,
+        require_implementation_alternative=True,
+    ),
+    BoardReadyWorkload(
+        "wafer-runtime-pytorch-attention-decode-kv-cache-no-card",
+        "attention-decode-kv-cache",
+        "float16",
+        1,
+        require_implementation_alternative=True,
+        package_count=2,
+    ),
+    BoardReadyWorkload(
+        "wafer-runtime-pytorch-attention-decode-kv-cache-bf16-no-card",
+        "attention-decode-kv-cache",
+        "bfloat16",
+        1,
+        require_implementation_alternative=True,
+        package_count=2,
+    ),
+    BoardReadyWorkload(
+        "wafer-runtime-pytorch-hf-megatron-transformer-block-no-card",
+        "hf-megatron-transformer-block",
+        "float16",
+        RANK_COUNT,
+    ),
+    BoardReadyWorkload(
+        "wafer-runtime-pytorch-hf-megatron-transformer-block-bf16-no-card",
+        "hf-megatron-transformer-block",
+        "bfloat16",
+        RANK_COUNT,
+    ),
+)
 
 
 class Gemm(torch.nn.Module):
     def forward(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
         return torch.matmul(lhs, rhs)
+
+
+class HeterogeneousTilingDataflow(torch.nn.Module):
+    """Mixed-shape structured dataflow with no compiler-facing markers."""
+
+    def forward(
+        self,
+        lhs: torch.Tensor,
+        rhs: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        projected = torch.matmul(lhs, rhs)
+        activated = torch.relu(projected + bias)
+        mixed = activated * (projected - bias)
+        return mixed, torch.sum(mixed, dim=1)
 
 
 def parse_torch_dtype(name: str) -> torch.dtype:
@@ -89,8 +191,11 @@ def _save_exported_program(
     options = _stablehlo_export_options(stablehlo_module)
     with torch_module.no_grad():
         exported = torch_module.export.export(module, inputs)
-        program = stablehlo_module.exported_program_to_stablehlo(
-            exported, options=options
+        program = capture.exported_program_to_stablehlo(
+            torch_module,
+            stablehlo_module,
+            exported,
+            options=options,
         )
     if program_dir.exists():
         shutil.rmtree(program_dir)
@@ -105,14 +210,17 @@ def _rank_one_gemm(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
     lhs = _random_tensor((m, k), dtype=dtype, generator=generator)
     rhs = _random_tensor((k, n), dtype=dtype, generator=generator)
     module = Gemm().eval()
-    with torch.no_grad():
-        expected = module(lhs, rhs)
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            return (module(lhs, rhs),)
+
     return PyTorchBoardCase(
         name="rank-one-gemm",
         rank_count=1,
         dtype=dtype,
         inputs=(lhs, rhs),
-        expected_outputs=(expected,),
+        expected_outputs_factory=expected_outputs_factory,
         export_program=lambda output: _save_exported_program(
             output, module, (lhs, rhs)
         ),
@@ -121,6 +229,438 @@ def _rank_one_gemm(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
         ),
         expected_all_reduce_count=0,
         comparison_policy=common.PYTORCH_DEFAULT,
+    )
+
+
+def _heterogeneous_tiling_dataflow(
+    dtype: torch.dtype,
+    seed: int,
+    *,
+    name: str,
+    rank_count: int,
+) -> PyTorchBoardCase:
+    if dtype not in {torch.float16, torch.bfloat16}:
+        raise RuntimeError(
+            "heterogeneous tiling dataflow requires float16 or bfloat16"
+        )
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    lhs = _random_tensor(
+        (96, 64), dtype=dtype, generator=generator
+    ) * 0.125
+    rhs = _random_tensor(
+        (64, 80), dtype=dtype, generator=generator
+    ) * 0.125
+    bias = _random_tensor((80,), dtype=dtype, generator=generator) * 0.0625
+    module = HeterogeneousTilingDataflow().eval()
+    inputs = (lhs, rhs, bias)
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            outputs = module(*inputs)
+        if any(output.dtype != dtype for output in outputs) or any(
+            not torch.isfinite(output).all() for output in outputs
+        ):
+            raise RuntimeError(
+                "heterogeneous tiling eager reference must be finite and "
+                "preserve dtype"
+            )
+        return outputs
+
+    return PyTorchBoardCase(
+        name=name,
+        rank_count=rank_count,
+        dtype=dtype,
+        inputs=inputs,
+        expected_outputs_factory=expected_outputs_factory,
+        export_program=lambda output: _save_exported_program(
+            output, module, inputs
+        ),
+        required_structured_ir=("linalg.matmul", "linalg.generic"),
+        expected_all_reduce_count=0,
+        comparison_policy=common.PYTORCH_DEFAULT,
+    )
+
+
+def _heterogeneous_tiling_rank_one(
+    dtype: torch.dtype, seed: int
+) -> PyTorchBoardCase:
+    return _heterogeneous_tiling_dataflow(
+        dtype,
+        seed,
+        name="heterogeneous-tiling-dataflow",
+        rank_count=1,
+    )
+
+
+def _heterogeneous_tiling_tp16(
+    dtype: torch.dtype, seed: int
+) -> PyTorchBoardCase:
+    return _heterogeneous_tiling_dataflow(
+        dtype,
+        seed,
+        name="heterogeneous-tiling-dataflow-tp16",
+        rank_count=RANK_COUNT,
+    )
+
+
+def _read_only_attention(
+    dtype: torch.dtype,
+    seed: int,
+    *,
+    name: str,
+    query_length: int,
+    key_value_length: int,
+    causal: bool,
+) -> PyTorchBoardCase:
+    if dtype not in {torch.float16, torch.bfloat16}:
+        raise RuntimeError(
+            "read-only attention board cases require float16 or bfloat16"
+        )
+    try:
+        from transformers import LlamaConfig
+        from transformers.masking_utils import create_causal_mask
+        from transformers.models.llama.modeling_llama import (
+            LlamaAttention,
+            eager_attention_forward,
+        )
+    except ImportError as error:
+        raise RuntimeError(
+            "read-only attention board cases require the pinned Hugging Face "
+            "Transformers importer dependency"
+        ) from error
+
+    config = LlamaConfig(
+        hidden_size=ATTENTION_HEAD_DIM,
+        intermediate_size=ATTENTION_HEAD_DIM * 4,
+        num_attention_heads=1,
+        num_key_value_heads=1,
+        attention_dropout=0.0,
+    )
+    config._attn_implementation = "eager"
+
+    class HuggingFaceLlamaEagerAttention(torch.nn.Module):
+        """Export adapter around the official HF Llama eager backend."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.attention = LlamaAttention(config, layer_idx=0).eval()
+
+        def forward(
+            self,
+            query: torch.Tensor,
+            key: torch.Tensor,
+            value: torch.Tensor,
+            attention_mask: torch.Tensor,
+        ) -> torch.Tensor:
+            output, _ = eager_attention_forward(
+                self.attention,
+                query,
+                key,
+                value,
+                attention_mask,
+                scaling=self.attention.scaling,
+                dropout=0.0,
+            )
+            # HF returns [batch, query, heads, dim]. The compiler attention
+            # boundary consumes the canonical [batch, heads, query, dim]
+            # result; this adapter is only a layout view around the official
+            # backend and contains no attention arithmetic.
+            return output.transpose(1, 2).contiguous()
+
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    query = _random_tensor(
+        (1, 1, query_length, ATTENTION_HEAD_DIM),
+        dtype=dtype,
+        generator=generator,
+    ) * 0.125
+    key = _random_tensor(
+        (1, 1, key_value_length, ATTENTION_HEAD_DIM),
+        dtype=dtype,
+        generator=generator,
+    ) * 0.125
+    value = _random_tensor(
+        (1, 1, key_value_length, ATTENTION_HEAD_DIM),
+        dtype=dtype,
+        generator=generator,
+    )
+    if causal:
+        positions = torch.arange(query_length, dtype=torch.long).unsqueeze(0)
+        mask_input = query.transpose(1, 2).reshape(
+            1, query_length, ATTENTION_HEAD_DIM
+        )
+        additive_mask = create_causal_mask(
+            config=config,
+            inputs_embeds=mask_input,
+            attention_mask=None,
+            past_key_values=None,
+            position_ids=positions,
+        )
+        if not isinstance(additive_mask, torch.Tensor):
+            raise RuntimeError(
+                "the official HF eager prefill path did not produce an "
+                "additive tensor mask"
+            )
+    else:
+        additive_mask = torch.zeros(
+            (1, 1, query_length, key_value_length), dtype=dtype
+        )
+    module = HuggingFaceLlamaEagerAttention().eval()
+    inputs = (query, key, value, additive_mask)
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            expected = module(*inputs)
+        if expected.dtype != dtype or not torch.isfinite(expected).all():
+            raise RuntimeError(
+                f"PyTorch {name} eager reference must be finite and preserve dtype"
+            )
+        return (expected,)
+
+    def export_program(output: pathlib.Path) -> None:
+        _save_exported_program(output, module, inputs)
+
+    return PyTorchBoardCase(
+        name=name,
+        rank_count=1,
+        dtype=dtype,
+        inputs=inputs,
+        expected_outputs_factory=expected_outputs_factory,
+        export_program=export_program,
+        required_structured_ir=("linalg.generic", "math.exp"),
+        expected_all_reduce_count=0,
+        comparison_policy=ATTENTION_COMPARISON,
+    )
+
+
+def _cached_attention(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
+    return _read_only_attention(
+        dtype,
+        seed,
+        name="cached-attention",
+        query_length=1,
+        key_value_length=1024,
+        causal=False,
+    )
+
+
+def _attention_prefill(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
+    return _read_only_attention(
+        dtype,
+        seed,
+        name="attention-prefill",
+        query_length=1024,
+        key_value_length=1024,
+        causal=True,
+    )
+
+
+def _attention_decode_kv_cache_step(
+    dtype: torch.dtype,
+    seed: int,
+    *,
+    past_length: int,
+    past_key_input: torch.Tensor | None,
+    past_value_input: torch.Tensor | None,
+    step_ordinal: int,
+    add_continuation: bool,
+) -> PyTorchBoardCase:
+    if dtype not in {torch.float16, torch.bfloat16}:
+        raise RuntimeError(
+            "decode attention board cases require float16 or bfloat16"
+        )
+    try:
+        from transformers import LlamaConfig
+        from transformers.cache_utils import DynamicCache
+        from transformers.models.llama.modeling_llama import (
+            LlamaAttention,
+            LlamaRotaryEmbedding,
+        )
+    except ImportError as error:
+        raise RuntimeError(
+            "decode attention board cases require the pinned Hugging Face "
+            "Transformers importer dependency"
+        ) from error
+
+    class HuggingFaceLlamaFunctionalDecode(torch.nn.Module):
+        """Explicit-state adapter over the official HF attention layer."""
+
+        def __init__(self, position_id: int) -> None:
+            super().__init__()
+            config = LlamaConfig.from_dict(
+                capture.load_hf_transformer_config(HF_LLAMA2_7B_CONFIG)
+            )
+            config._attn_implementation = "eager"
+            self.hidden_size = int(config.hidden_size)
+            self.head_dim = int(config.head_dim)
+            self.num_key_value_heads = int(config.num_key_value_heads)
+            self.attention = LlamaAttention(config, layer_idx=0).to(
+                dtype=dtype
+            ).eval()
+            rotary = LlamaRotaryEmbedding(config).eval()
+            rotary_input = torch.empty(
+                (1, 1, self.head_dim), dtype=dtype
+            )
+            position_ids = torch.tensor([[position_id]], dtype=torch.long)
+            with torch.no_grad():
+                rotary_cos, rotary_sin = rotary(rotary_input, position_ids)
+            self.register_buffer("rotary_cos", rotary_cos)
+            self.register_buffer("rotary_sin", rotary_sin)
+
+        def forward(
+            self,
+            hidden_states: torch.Tensor,
+            past_key: torch.Tensor,
+            past_value: torch.Tensor,
+            attention_mask: torch.Tensor,
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            cache = DynamicCache([(past_key, past_value)])
+            output, _ = self.attention(
+                hidden_states,
+                position_embeddings=(self.rotary_cos, self.rotary_sin),
+                attention_mask=attention_mask,
+                past_key_values=cache,
+            )
+            return (
+                output,
+                cache.layers[0].keys,
+                cache.layers[0].values,
+            )
+
+    updated_length = past_length + 1
+    hidden_generator = torch.Generator(device="cpu").manual_seed(
+        seed + step_ordinal
+    )
+    with torch.random.fork_rng():
+        torch.manual_seed(seed)
+        module = HuggingFaceLlamaFunctionalDecode(past_length).eval()
+    hidden_states = _random_tensor(
+        (1, 1, module.hidden_size),
+        dtype=dtype,
+        generator=hidden_generator,
+    ) * 0.125
+    if (past_key_input is None) != (past_value_input is None):
+        raise RuntimeError(
+            "functional decode continuation requires both K and V state"
+        )
+    if past_key_input is None:
+        cache_generator = torch.Generator(device="cpu").manual_seed(
+            seed + 4096
+        )
+        past_key = _random_tensor(
+            (1, module.num_key_value_heads, past_length, module.head_dim),
+            dtype=dtype,
+            generator=cache_generator,
+        ) * 0.125
+        past_value = _random_tensor(
+            (1, module.num_key_value_heads, past_length, module.head_dim),
+            dtype=dtype,
+            generator=cache_generator,
+        )
+    else:
+        past_key = past_key_input.detach().clone().contiguous()
+        past_value = past_value_input.detach().clone().contiguous()
+        expected_cache_shape = (
+            1,
+            module.num_key_value_heads,
+            past_length,
+            module.head_dim,
+        )
+        if (
+            tuple(past_key.shape) != expected_cache_shape
+            or tuple(past_value.shape) != expected_cache_shape
+            or past_key.dtype != dtype
+            or past_value.dtype != dtype
+            or past_key.device.type != "cpu"
+            or past_value.device.type != "cpu"
+        ):
+            raise RuntimeError(
+                "functional decode continuation state differs from the "
+                "official layer boundary"
+            )
+    attention_mask = torch.zeros(
+        (1, 1, 1, updated_length), dtype=dtype
+    )
+    inputs = (
+        hidden_states,
+        past_key,
+        past_value,
+        attention_mask,
+    )
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            outputs = module(*inputs)
+        if any(output.dtype != dtype for output in outputs) or any(
+            not torch.isfinite(output).all() for output in outputs
+        ):
+            raise RuntimeError(
+                "HF functional decode reference must be finite and preserve dtype"
+            )
+        if not torch.equal(outputs[1][..., :-1, :], past_key) or not torch.equal(
+            outputs[2][..., :-1, :], past_value
+        ):
+            raise RuntimeError("HF functional decode did not preserve past cache")
+        if (
+            outputs[1].shape[-2] != updated_length
+            or outputs[2].shape[-2] != updated_length
+        ):
+            raise RuntimeError("HF functional decode did not append one K/V token")
+        return outputs
+
+    continuation_factory = None
+    if add_continuation:
+
+        def continuation_factory(
+            outputs: tuple[torch.Tensor, ...],
+        ) -> PyTorchBoardCase:
+            if len(outputs) != 3:
+                raise RuntimeError(
+                    "functional decode continuation requires attention, K, V"
+                )
+            return _attention_decode_kv_cache_step(
+                dtype,
+                seed,
+                past_length=updated_length,
+                past_key_input=outputs[1],
+                past_value_input=outputs[2],
+                step_ordinal=step_ordinal + 1,
+                add_continuation=False,
+            )
+
+    return PyTorchBoardCase(
+        name=(
+            "attention-decode-kv-cache"
+            if step_ordinal == 1
+            else "attention-decode-kv-cache-continuation"
+        ),
+        rank_count=1,
+        dtype=dtype,
+        inputs=inputs,
+        expected_outputs_factory=expected_outputs_factory,
+        export_program=lambda output: _save_exported_program(
+            output, module, inputs
+        ),
+        required_structured_ir=(
+            "tensor.insert_slice",
+            "math.exp",
+        ),
+        expected_all_reduce_count=0,
+        comparison_policy=ATTENTION_COMPARISON,
+        continuation_factory=continuation_factory,
+    )
+
+
+def _attention_decode_kv_cache(
+    dtype: torch.dtype, seed: int
+) -> PyTorchBoardCase:
+    return _attention_decode_kv_cache_step(
+        dtype,
+        seed,
+        past_length=1023,
+        past_key_input=None,
+        past_value_input=None,
+        step_ordinal=1,
+        add_continuation=True,
     )
 
 
@@ -148,9 +688,10 @@ def _k_sharded_gemm_all_reduce(
     def module_factory() -> torch.nn.Module:
         return KShardedGemm()
 
-    eager_module = module_factory().eval()
-    with torch.no_grad():
-        expected = eager_module(input_tensor)
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        eager_module = module_factory().eval()
+        with torch.no_grad():
+            return (eager_module(input_tensor),)
 
     def export_program(output: pathlib.Path) -> None:
         capture.emit_sharded_stablehlo_program(
@@ -159,6 +700,10 @@ def _k_sharded_gemm_all_reduce(
             reference_module_factory=module_factory,
             example_input_tensor=input_tensor,
             size=size,
+            timing_callback=lambda stage, wall_ms: print(
+                "wafer-pytorch-export-timing "
+                f"stage={stage} wall_ms={wall_ms}"
+            ),
         )
 
     return PyTorchBoardCase(
@@ -166,7 +711,7 @@ def _k_sharded_gemm_all_reduce(
         rank_count=RANK_COUNT,
         dtype=dtype,
         inputs=(input_tensor,),
-        expected_outputs=(expected,),
+        expected_outputs_factory=expected_outputs_factory,
         export_program=export_program,
         required_structured_ir=(
             "linalg.matmul",
@@ -182,22 +727,17 @@ def _hf_megatron_transformer_block(
 ) -> PyTorchBoardCase:
     dtype_names = {
         torch.float16: "float16",
-        torch.float32: "float32",
+        torch.bfloat16: "bfloat16",
     }
     try:
         dtype_name = dtype_names[dtype]
     except KeyError as error:
         raise RuntimeError(
-            "HuggingFace Llama board case supports float16 or float32"
+            "HuggingFace Llama board case requires float16 or bfloat16"
         ) from error
 
     config = dict(capture.load_hf_transformer_config(HF_LLAMA2_7B_CONFIG))
     config["torch_dtype"] = dtype_name
-    # The closed board profile has FP16 reduction/elementwise evidence but no
-    # F32 reduction tuple. Keep the precision choice in the PyTorch source
-    # contract so eager expected and exported StableHLO use the same dtype;
-    # the general HF emitter still defaults to the standard F32 accumulation.
-    config["wafer_accumulation_dtype"] = dtype_name
     batch_size = 1
     sequence_length = HF_LLAMA2_7B_SEQUENCE_LENGTH
     hidden_size = int(config["hidden_size"])
@@ -245,15 +785,19 @@ def _hf_megatron_transformer_block(
                 raise RuntimeError(
                     "HuggingFace Megatron parameter dtype differs from the case"
                 )
-    with torch.no_grad():
-        expected = module(input_tensor)
-    if (
-        not torch.isfinite(input_tensor).all()
-        or not torch.isfinite(expected).all()
-    ):
+    if not torch.isfinite(input_tensor).all():
         raise RuntimeError(
-            "HuggingFace Megatron random input/reference must be finite"
+            "HuggingFace Megatron random input must be finite"
         )
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            expected = module(input_tensor)
+        if not torch.isfinite(expected).all():
+            raise RuntimeError(
+                "HuggingFace Megatron eager reference must be finite"
+            )
+        return (expected,)
 
     def export_program(output: pathlib.Path) -> None:
         resolved_config = output.parent / "hf-megatron-tp16-config.json"
@@ -275,7 +819,7 @@ def _hf_megatron_transformer_block(
         rank_count=RANK_COUNT,
         dtype=dtype,
         inputs=(input_tensor,),
-        expected_outputs=(expected,),
+        expected_outputs_factory=expected_outputs_factory,
         export_program=export_program,
         required_structured_ir=(
             "linalg.matmul",
@@ -290,6 +834,11 @@ CASE_FACTORIES: dict[
     str, Callable[[torch.dtype, int], PyTorchBoardCase]
 ] = {
     "rank-one-gemm": _rank_one_gemm,
+    "heterogeneous-tiling-dataflow": _heterogeneous_tiling_rank_one,
+    "heterogeneous-tiling-dataflow-tp16": _heterogeneous_tiling_tp16,
+    "cached-attention": _cached_attention,
+    "attention-prefill": _attention_prefill,
+    "attention-decode-kv-cache": _attention_decode_kv_cache,
     "k-sharded-gemm-all-reduce": _k_sharded_gemm_all_reduce,
     "hf-megatron-transformer-block": _hf_megatron_transformer_block,
 }
@@ -300,7 +849,7 @@ def make_case(name: str, *, dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
         case = CASE_FACTORIES[name](dtype, seed)
     except KeyError as error:
         raise RuntimeError(f"unknown PyTorch board case: {name}") from error
-    for tensor in (*case.inputs, *case.expected_outputs):
+    for tensor in case.inputs:
         if tensor.device.type != "cpu" or tensor.dtype != dtype:
             raise RuntimeError(
                 f"PyTorch board case {name} must preserve CPU dtype {dtype}"

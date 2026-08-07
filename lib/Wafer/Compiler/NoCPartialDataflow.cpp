@@ -1647,13 +1647,19 @@ static void applyCut(CutProtocolProof &proof) {
 
 } // namespace
 
-unsigned materializeNoCPartialReductions(
+static unsigned processNoCPartialReductions(
     llvm::MutableArrayRef<mlir::ModuleOp> modules,
-    const frontend::FrontendProgramVerificationResult &program) {
+    const frontend::FrontendProgramVerificationResult &program,
+    bool applyRewrites) {
   wafer::support::ScopedCompileTimingSpan timing(
-      "transformation", "materializeNoCPartialReductions", "total");
+      applyRewrites ? "transformation" : "analysis",
+      applyRewrites ? "materializeNoCPartialReductions"
+                    : "queryNoCPartialReductionOpportunity",
+      "total");
   auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-      "analysis-phase", "materializeNoCPartialReductions",
+      "analysis-phase",
+      applyRewrites ? "materializeNoCPartialReductions"
+                    : "queryNoCPartialReductionOpportunity",
       "collectPartialSpillCuts");
   if (modules.size() < 2 ||
       modules.size() != static_cast<size_t>(program.logicalRankCount) ||
@@ -1685,7 +1691,9 @@ unsigned materializeNoCPartialReductions(
     }
   }
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-      "analysis-phase", "materializeNoCPartialReductions",
+      "analysis-phase",
+      applyRewrites ? "materializeNoCPartialReductions"
+                    : "queryNoCPartialReductionOpportunity",
       "prove-and-verify-protocol");
   for (const ReductionProtocolKey &protocol : commonProtocols) {
     ProvenanceArena arena;
@@ -1715,6 +1723,9 @@ unsigned materializeNoCPartialReductions(
     if (!complete)
       continue;
 
+    if (!applyRewrites)
+      return static_cast<unsigned>(proofs.size());
+
     // All proof and complete-domain checks precede the first mutation.  The
     // caller can therefore discard later-gate failures without exposing a
     // partially rewritten rank tuple.
@@ -1725,6 +1736,22 @@ unsigned materializeNoCPartialReductions(
     return static_cast<unsigned>(proofs.size());
   }
   return 0;
+}
+
+bool hasNoCPartialReductionOpportunity(
+    llvm::ArrayRef<mlir::ModuleOp> modules,
+    const frontend::FrontendProgramVerificationResult &program) {
+  llvm::SmallVector<mlir::ModuleOp, 16> moduleViews(modules.begin(),
+                                                    modules.end());
+  return processNoCPartialReductions(moduleViews, program,
+                                     /*applyRewrites=*/false) != 0;
+}
+
+unsigned materializeNoCPartialReductions(
+    llvm::MutableArrayRef<mlir::ModuleOp> modules,
+    const frontend::FrontendProgramVerificationResult &program) {
+  return processNoCPartialReductions(modules, program,
+                                     /*applyRewrites=*/true);
 }
 
 } // namespace wafer::compiler::detail

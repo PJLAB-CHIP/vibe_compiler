@@ -5,16 +5,13 @@
 #define WAFER_COMPILER_EXECUTABLEBUNDLEINTERNAL_H
 
 #include "Wafer/Compiler/Compilation.h"
-#include "WholeVariantCoordinator.h"
 #include "WholeVariantSelection.h"
 
-#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -45,43 +42,6 @@ struct ExecutableBundleBuilder {
 };
 
 namespace detail {
-
-/// Invocation-local cross-context transport for one finalized rank candidate.
-/// The module data is parsed only when the fixed whole-variant attempt plan can
-/// reach this original frontier slot through its correspondence precheck.
-/// Production writes MLIR bytecode; tests may also use textual MLIR because the
-/// canonical MLIR parser accepts both representations.
-struct SerializedRankVariantCandidate {
-  std::shared_ptr<const std::string> moduleData;
-  int64_t stableOrdinal = 0;
-  wafer::RankArtifactKind artifactKind = wafer::RankArtifactKind::Spill;
-  bool reservedBaseline = false;
-  wafer::RankBufferingKind bufferingKind = wafer::RankBufferingKind::Single;
-  uint32_t bufferingPlanOrdinal = 0;
-  wafer::RankWorkerPlacementKind workerPlacementKind =
-      wafer::RankWorkerPlacementKind::Unplaced;
-  uint32_t workerPlacementPlanOrdinal = 0;
-  std::shared_ptr<const std::string> selectedTileIR;
-};
-
-using SerializedRankVariantFrontier =
-    std::vector<SerializedRankVariantCandidate>;
-
-/// Imports exactly the module slots required by the existing bounded
-/// whole-variant attempt sequence. Every original slot and its metadata remain
-/// in the returned frontiers only through this import-audit boundary; an
-/// unreachable slot retains a null module.
-llvm::Expected<std::vector<RankVariantFrontier>>
-importRankVariantFrontiersIntoOwnerContext(
-    mlir::MLIRContext &ownerContext,
-    llvm::ArrayRef<SerializedRankVariantFrontier> serializedFrontiers,
-    int64_t expectedRankCount);
-
-/// Ends the import-audit boundary by removing metadata-only tombstones.
-/// Frontier indices after this point name actual owner-context artifacts and
-/// intentionally do not preserve original serialized slot positions.
-void compactImportedRankVariantFrontiers(
-    std::vector<RankVariantFrontier> &frontiers);
 
 mlir::LogicalResult
 verifyExactExecutionConfig(mlir::ModuleOp module,

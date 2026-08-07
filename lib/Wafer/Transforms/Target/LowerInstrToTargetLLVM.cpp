@@ -43,23 +43,15 @@ struct LowerInstrToTargetLLVMPass
     }
 
     mlir::OwningOpRef<mlir::ModuleOp> loweredModule = moduleOp.clone();
-    uint64_t terminalOperationCount = 0;
-    switch (detail::checkStaticTerminalOperationBudget(
-        loweredModule->getOperation(), terminalOperationCount)) {
-    case detail::StaticTerminalOperationBudgetStatus::WithinBudget:
+    uint64_t executableOperationCount = 0;
+    switch (detail::countStaticExecutableOperations(
+        loweredModule->getOperation(), executableOperationCount)) {
+    case detail::StaticExecutableOperationCountStatus::Counted:
       break;
-    case detail::StaticTerminalOperationBudgetStatus::CountOverflow:
+    case detail::StaticExecutableOperationCountStatus::CountOverflow:
       moduleOp.emitError()
-          << "static_terminal_budget_exceeded: final target module terminal "
-             "operation count overflowed uint64_t";
-      signalPassFailure();
-      return;
-    case detail::StaticTerminalOperationBudgetStatus::BudgetExceeded:
-      moduleOp.emitError()
-          << "static_terminal_budget_exceeded: final target module contains "
-          << terminalOperationCount
-          << " terminal instruction issues/completions; maximum is "
-          << detail::kStaticTerminalOperationBudget;
+          << "static_executable_operation_count_overflow: final target "
+             "module operation count overflowed uint64_t";
       signalPassFailure();
       return;
     }

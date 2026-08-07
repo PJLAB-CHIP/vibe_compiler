@@ -11,7 +11,6 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
-#include <set>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -180,34 +179,16 @@ TEST(CompilationTest, ProfileOptionsRequireCompleteSingleCardRankDomain) {
                   .shouldReportDetailedTiming());
 }
 
-TEST(CompilationTest, OptimizationKindsHaveStableUniqueRoundTripNames) {
-  std::set<std::string> names;
-  EXPECT_EQ(wafer::getSupportedOptimizationKinds().size(),
-            static_cast<size_t>(wafer::OptimizationKind::Count));
-  for (wafer::OptimizationKind kind : wafer::getSupportedOptimizationKinds()) {
-    llvm::StringRef name = wafer::stringifyOptimizationKind(kind);
-    EXPECT_FALSE(name.empty());
-    EXPECT_TRUE(names.insert(name.str()).second);
-    EXPECT_EQ(wafer::parseOptimizationKind(name), kind);
-  }
-  EXPECT_FALSE(wafer::parseOptimizationKind("not-an-optimization"));
-}
-
-TEST(CompilationTest, OptimizationConfigSupportsPresetsAndComposition) {
+TEST(CompilationTest, OptimizationConfigHasExactlyProductionAndNonePolicies) {
   wafer::OptimizationConfig production =
       wafer::OptimizationConfig::production();
   wafer::OptimizationConfig none = wafer::OptimizationConfig::none();
-  for (wafer::OptimizationKind kind : wafer::getSupportedOptimizationKinds()) {
-    EXPECT_TRUE(production.isEnabled(kind));
-    EXPECT_FALSE(none.isEnabled(kind));
-  }
 
-  none.enable(wafer::OptimizationKind::FullBufferResidency);
-  none.enable(wafer::OptimizationKind::ReadyOrderScheduling);
-  EXPECT_TRUE(none.isEnabled(wafer::OptimizationKind::FullBufferResidency));
-  EXPECT_TRUE(none.isEnabled(wafer::OptimizationKind::ReadyOrderScheduling));
-  none.disable(wafer::OptimizationKind::FullBufferResidency);
-  EXPECT_FALSE(none.isEnabled(wafer::OptimizationKind::FullBufferResidency));
+  EXPECT_TRUE(production.isProduction());
+  EXPECT_FALSE(production.isNone());
+  EXPECT_FALSE(none.isProduction());
+  EXPECT_TRUE(none.isNone());
+  EXPECT_NE(production, none);
 
   wafer::compiler::CompilationOptions options =
       wafer::compiler::CompilationOptions::standard(none);

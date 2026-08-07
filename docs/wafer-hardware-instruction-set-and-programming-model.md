@@ -471,8 +471,9 @@ service-envelope上界算术为：
 ```
 
 `2.048 * 0.9 = 1.8432 TB/s`只是一项条件算术说明，还额外假设per-port效率目标能够聚合为全bank
-利用率；它不是operating point或sustained bandwidth guarantee，也不能直接除candidate bytes得到执行时间。端口仲裁、真实stride访问分布、
-DIDT配置和冲突penalty仍需profile evidence。
+利用率；它不是operating point或sustained bandwidth guarantee。compiler的versioned nominal point model因此不取8-bank
+聚合值，只取单个bank的`256 B * 1 GHz = 256 GB/s/tile`为explicit-movement service prior；该值不参与legality、
+不填lower-bound字段，也不能签发calibrated proof。端口仲裁、真实stride访问分布、DIDT配置和冲突penalty仍需profile evidence。
 
 由2048-bit即256B bank宽度和LSB interleaving可建立目标allocator使用的粗粒度working inference：对256B对齐的
 线性buffer base，起始bank phase近似为`(offset / 256) mod 8`，周期为2 KiB。compiler设计只允许在单次

@@ -7,7 +7,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Verifier.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -40,7 +39,6 @@ wafer::detail::checkedStaticTileProduct(llvm::ArrayRef<int64_t> ranges,
 }
 
 namespace {
-
 static void normalizeMapOps(mlir::func::FuncOp function) {
   llvm::SmallVector<mlir::linalg::MapOp, 8> maps;
   function.walk([&](mlir::linalg::MapOp map) { maps.push_back(map); });
@@ -74,25 +72,72 @@ static void normalizeMapOps(mlir::func::FuncOp function) {
   }
 }
 
-static mlir::FailureOr<mlir::Value>
+struct FunctionalOutputDestination {
+  mlir::Value empty;
+  /// View operations in returned-to-base order.  Reversing each relation in
+  /// this order maps the public output destination back to the exact DPS init
+  /// type without recovering anything from a symbol or operation name.
+  llvm::SmallVector<mlir::Operation *, 4> returnedViews;
+};
+
+static mlir::FailureOr<FunctionalOutputDestination>
 findFunctionalOutputDestination(mlir::Value returned) {
   llvm::DenseSet<mlir::Value> visited;
   mlir::Value current = returned;
+  FunctionalOutputDestination destination;
   while (visited.insert(current).second) {
     auto result = mlir::dyn_cast<mlir::OpResult>(current);
     if (!result)
       return mlir::failure();
+    if (mlir::isa<mlir::tensor::ExpandShapeOp, mlir::tensor::CollapseShapeOp>(
+            result.getOwner())) {
+      if (!current.hasOneUse())
+        return mlir::failure();
+      destination.returnedViews.push_back(result.getOwner());
+      current = result.getOwner()->getOperand(0);
+      continue;
+    }
     auto dps =
         mlir::dyn_cast<mlir::DestinationStyleOpInterface>(result.getOwner());
     if (!dps ||
         result.getResultNumber() >= static_cast<unsigned>(dps.getNumDpsInits()))
       return mlir::failure();
     mlir::Value init = dps.getDpsInitOperand(result.getResultNumber())->get();
-    if (init.getDefiningOp<mlir::tensor::EmptyOp>())
-      return init;
+    if (init.getDefiningOp<mlir::tensor::EmptyOp>()) {
+      destination.empty = init;
+      return destination;
+    }
     current = init;
   }
   return mlir::failure();
+}
+
+static mlir::FailureOr<mlir::Value> materializeFunctionalOutputDestination(
+    mlir::OpBuilder &builder, mlir::Value publicDestination,
+    const FunctionalOutputDestination &destination) {
+  mlir::Value current = publicDestination;
+  for (mlir::Operation *view : destination.returnedViews) {
+    if (auto expand = mlir::dyn_cast<mlir::tensor::ExpandShapeOp>(view)) {
+      current = builder
+                    .create<mlir::tensor::CollapseShapeOp>(
+                        view->getLoc(), expand.getSrcType(), current,
+                        expand.getReassociationIndices())
+                    .getResult();
+      continue;
+    }
+    if (auto collapse = mlir::dyn_cast<mlir::tensor::CollapseShapeOp>(view)) {
+      current = builder
+                    .create<mlir::tensor::ExpandShapeOp>(
+                        view->getLoc(), collapse.getSrcType(), current,
+                        collapse.getReassociationIndices())
+                    .getResult();
+      continue;
+    }
+    return mlir::failure();
+  }
+  if (!destination.empty || current.getType() != destination.empty.getType())
+    return mlir::failure();
+  return current;
 }
 
 static mlir::LogicalResult rewriteTensorProgramInPlace(
@@ -269,26 +314,22 @@ mlir::LogicalResult wafer::lowerTensorProgramToTileRegionModule(
       useDirectMappedBoundaryTransfer);
 }
 
-static mlir::LogicalResult lowerCompleteRankTensorProgramToTileRegionImpl(
-    mlir::ModuleOp sourceModule, mlir::OwningOpRef<mlir::ModuleOp> &module,
-    std::string *failureReason, int64_t currentLogicalRank,
-    llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    std::optional<wafer::CandidateTileTraversalKind> traversalKind,
-    std::optional<wafer::CompleteRankTraversalComposition> composition,
-    bool useDirectMappedBoundaryTransfer) {
+mlir::LogicalResult
+wafer::tensor_program_to_tile_region::prepareCompleteRankTensorProgram(
+    mlir::ModuleOp sourceModule, PreparedCompleteRankTensorProgram &candidate,
+    std::string *failureReason) {
   if (failureReason)
     failureReason->clear();
-  if (!sourceModule || currentLogicalRank < 0) {
+  if (!sourceModule) {
     if (failureReason)
-      *failureReason =
-          "complete-rank Tile lowering requires a module and non-negative "
-          "logical rank";
+      *failureReason = "complete-rank preparation requires a module";
     return mlir::failure();
   }
-  module = mlir::cast<mlir::ModuleOp>(sourceModule->clone());
+  candidate = {};
+  candidate.module = mlir::cast<mlir::ModuleOp>(sourceModule->clone());
   mlir::func::FuncOp function =
-      tensor_program_to_tile_region::findSingleStandaloneTensorProgram(*module);
+      tensor_program_to_tile_region::findSingleStandaloneTensorProgram(
+          *candidate.module);
   if (!function || function.isExternal() ||
       !llvm::hasSingleElement(function.getBody())) {
     if (failureReason)
@@ -298,29 +339,28 @@ static mlir::LogicalResult lowerCompleteRankTensorProgramToTileRegionImpl(
     return mlir::failure();
   }
 
-  mlir::FunctionType functionalType = function.getFunctionType();
-  const unsigned inputCount = function.getNumArguments();
-  const unsigned outputCount = function.getNumResults();
+  candidate.functionalType = function.getFunctionType();
+  candidate.inputCount = function.getNumArguments();
+  candidate.outputCount = function.getNumResults();
   auto returnOp = mlir::dyn_cast<mlir::func::ReturnOp>(
       function.getBody().front().getTerminator());
-  if (!returnOp || returnOp.getNumOperands() != outputCount ||
-      outputCount == 0) {
+  if (!returnOp || returnOp.getNumOperands() != candidate.outputCount ||
+      candidate.outputCount == 0) {
     if (failureReason)
       *failureReason = "complete-rank functional result boundary is invalid";
     return mlir::failure();
   }
 
-  llvm::SmallVector<mlir::Value, 4> outputDestinations;
+  llvm::SmallVector<FunctionalOutputDestination, 4> outputDestinations;
   llvm::DenseSet<mlir::Value> uniqueDestinations;
-  outputDestinations.reserve(outputCount);
+  outputDestinations.reserve(candidate.outputCount);
   for (auto [index, returned] : llvm::enumerate(returnOp.getOperands())) {
-    auto resultType =
-        mlir::dyn_cast<mlir::RankedTensorType>(functionalType.getResult(index));
-    mlir::FailureOr<mlir::Value> destination =
+    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
+        candidate.functionalType.getResult(index));
+    mlir::FailureOr<FunctionalOutputDestination> destination =
         findFunctionalOutputDestination(returned);
-    if (!resultType || mlir::failed(destination) ||
-        (*destination).getType() != resultType ||
-        !uniqueDestinations.insert(*destination).second) {
+    if (!resultType || mlir::failed(destination) || !destination->empty ||
+        !uniqueDestinations.insert(destination->empty).second) {
       if (failureReason)
         *failureReason =
             "complete-rank functional result has no unique tensor.empty "
@@ -337,21 +377,104 @@ static mlir::LogicalResult lowerCompleteRankTensorProgramToTileRegionImpl(
     outputDestinations.push_back(*destination);
   }
 
-  for (mlir::Type resultType : functionalType.getResults())
+  for (mlir::Type resultType : candidate.functionalType.getResults())
     function.insertArgument(function.getNumArguments(), resultType,
                             mlir::DictionaryAttr{}, function.getLoc());
+  mlir::OpBuilder outputViewBuilder(&function.getBody().front(),
+                                    function.getBody().front().begin());
   for (auto [index, destination] : llvm::enumerate(outputDestinations)) {
-    destination.replaceAllUsesWith(function.getArgument(inputCount + index));
-    if (mlir::Operation *producer = destination.getDefiningOp();
+    mlir::FailureOr<mlir::Value> restoredDestination =
+        materializeFunctionalOutputDestination(
+            outputViewBuilder,
+            function.getArgument(candidate.inputCount + index), destination);
+    if (mlir::failed(restoredDestination)) {
+      if (failureReason)
+        *failureReason = "complete-rank functional output view relation cannot "
+                         "be inverted for its DPS destination";
+      return mlir::failure();
+    }
+    destination.empty.replaceAllUsesWith(*restoredDestination);
+    if (mlir::Operation *producer = destination.empty.getDefiningOp();
         producer && producer->use_empty())
       producer->erase();
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult lowerPreparedCompleteRankTensorProgramImpl(
+    wafer::tensor_program_to_tile_region::PreparedCompleteRankTensorProgram
+        &&candidate,
+    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
+    int64_t currentLogicalRank, llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    std::optional<wafer::CandidateTileTraversalKind> traversalKind,
+    std::optional<wafer::CompleteRankTraversalComposition> composition,
+    llvm::ArrayRef<wafer::CandidateTraversalConnectionChoice> connectionChoices,
+    std::optional<wafer::TargetImplementationKind> selectedAlternative,
+    bool useDirectMappedBoundaryTransfer,
+    bool materializeOnlyRemainingConservativeRoots,
+    llvm::ArrayRef<mlir::Operation *> coveredTopLevelOperations) {
+  if (failureReason)
+    failureReason->clear();
+  if (!candidate.module || !candidate.functionalType ||
+      candidate.outputCount == 0 || currentLogicalRank < 0) {
+    if (failureReason)
+      *failureReason =
+          "prepared complete-rank lowering requires a valid artifact and "
+          "non-negative logical rank";
+    return mlir::failure();
+  }
+  mlir::FunctionType functionalType = candidate.functionalType;
+  const unsigned inputCount = candidate.inputCount;
+  const unsigned outputCount = candidate.outputCount;
+  module = std::move(candidate.module);
+  mlir::func::FuncOp function =
+      tensor_program_to_tile_region::findSingleStandaloneTensorProgram(*module);
+  if (!function || function.isExternal() ||
+      !llvm::hasSingleElement(function.getBody()) ||
+      function.getNumArguments() != inputCount + outputCount ||
+      function.getNumResults() != outputCount) {
+    if (failureReason)
+      *failureReason = "prepared complete-rank structured boundary is invalid";
+    return mlir::failure();
   }
 
   mlir::LogicalResult traversalResult = mlir::failure();
   auto scope = tensor_program_to_tile_region::TensorProgramScope(function);
-  if (!composition) {
-    traversalResult = tensor_program_to_tile_region::
-        materializeConservativeCompleteRankTraversals(scope, failureReason);
+  for (mlir::Operation *operation : coveredTopLevelOperations) {
+    if (!operation || operation->getBlock() != &scope.getBody()) {
+      if (failureReason)
+        *failureReason =
+            "implementation coverage left the prepared top-level SSA scope";
+      return mlir::failure();
+    }
+  }
+  if (!connectionChoices.empty()) {
+    mlir::FailureOr<llvm::SmallVector<
+        tensor_program_to_tile_region::CandidateTraversalConnection, 16>>
+        connections =
+            tensor_program_to_tile_region::collectCandidateTraversalConnections(
+                function, failureReason);
+    if (mlir::failed(connections) ||
+        connections->size() != connectionChoices.size()) {
+      if (mlir::succeeded(connections) && failureReason)
+        *failureReason =
+            "connection action vector does not cover current SSA edges";
+      return mlir::failure();
+    }
+    traversalResult =
+        tensor_program_to_tile_region::materializeJointCompleteRankTraversals(
+            scope, candidateTileSizes, *connections, connectionChoices,
+            failureReason);
+  } else if (!composition) {
+    traversalResult =
+        materializeOnlyRemainingConservativeRoots
+            ? tensor_program_to_tile_region::
+                  materializeRemainingConservativeCompleteRankTraversals(
+                      scope, coveredTopLevelOperations, failureReason)
+            : tensor_program_to_tile_region::
+                  materializeConservativeCompleteRankTraversals(scope,
+                                                                failureReason);
   } else if (*composition == wafer::CompleteRankTraversalComposition::Coupled) {
     if (!traversalKind) {
       if (failureReason)
@@ -376,16 +499,19 @@ static mlir::LogicalResult lowerCompleteRankTensorProgramToTileRegionImpl(
   }
   if (mlir::failed(traversalResult))
     return mlir::failure();
-
-  if (mlir::failed(tensor_program_to_tile_region::
-                       convertTensorProgramToTileRegionModuleInPlace(
-                           *module, sourceModule.getContext(),
-                           currentLogicalRank, failureReason,
-                           /*suppressDiagnostics=*/true,
-                           /*verifyResult=*/true,
-                           /*populateFallbackFailureReason=*/true,
-                           /*selectedAlternative=*/std::nullopt,
-                           useDirectMappedBoundaryTransfer)))
+  function =
+      tensor_program_to_tile_region::findSingleStandaloneTensorProgram(*module);
+  if (!function)
+    return mlir::failure();
+  if (mlir::failed(
+          tensor_program_to_tile_region::
+              convertTensorProgramToTileRegionModuleInPlace(
+                  *module, module->getContext(), currentLogicalRank,
+                  failureReason,
+                  /*suppressDiagnostics=*/true,
+                  /*verifyResult=*/true,
+                  /*populateFallbackFailureReason=*/true, selectedAlternative,
+                  useDirectMappedBoundaryTransfer)))
     return mlir::failure();
 
   function =
@@ -441,6 +567,47 @@ static mlir::LogicalResult lowerCompleteRankTensorProgramToTileRegionImpl(
   return mlir::success();
 }
 
+mlir::LogicalResult wafer::tensor_program_to_tile_region::
+    lowerPreparedCompleteRankTensorProgramToTileRegion(
+        PreparedCompleteRankTensorProgram &&candidate,
+        mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
+        int64_t currentLogicalRank,
+        llvm::ArrayRef<mlir::Operation *> coveredTopLevelOperations) {
+  return lowerPreparedCompleteRankTensorProgramImpl(
+      std::move(candidate), module, failureReason, currentLogicalRank,
+      /*candidateTileSizes=*/{}, /*candidateReductionTileSizes=*/{},
+      /*traversalKind=*/std::nullopt, /*composition=*/std::nullopt,
+      /*connectionChoices=*/{}, /*selectedAlternative=*/std::nullopt,
+      /*useDirectMappedBoundaryTransfer=*/false,
+      /*materializeOnlyRemainingConservativeRoots=*/true,
+      coveredTopLevelOperations);
+}
+
+static mlir::LogicalResult lowerCompleteRankTensorProgramToTileRegionImpl(
+    mlir::ModuleOp sourceModule, mlir::OwningOpRef<mlir::ModuleOp> &module,
+    std::string *failureReason, int64_t currentLogicalRank,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    std::optional<wafer::CandidateTileTraversalKind> traversalKind,
+    std::optional<wafer::CompleteRankTraversalComposition> composition,
+    llvm::ArrayRef<wafer::CandidateTraversalConnectionChoice> connectionChoices,
+    std::optional<wafer::TargetImplementationKind> selectedAlternative,
+    bool useDirectMappedBoundaryTransfer) {
+  wafer::tensor_program_to_tile_region::PreparedCompleteRankTensorProgram
+      candidate;
+  if (mlir::failed(wafer::tensor_program_to_tile_region::
+                       prepareCompleteRankTensorProgram(sourceModule, candidate,
+                                                        failureReason)))
+    return mlir::failure();
+  return lowerPreparedCompleteRankTensorProgramImpl(
+      std::move(candidate), module, failureReason, currentLogicalRank,
+      candidateTileSizes, candidateReductionTileSizes, traversalKind,
+      composition, connectionChoices, selectedAlternative,
+      useDirectMappedBoundaryTransfer,
+      /*materializeOnlyRemainingConservativeRoots=*/false,
+      /*coveredTopLevelOperations=*/{});
+}
+
 mlir::LogicalResult wafer::lowerCompleteRankTensorProgramToTileRegionModule(
     mlir::ModuleOp sourceModule, mlir::OwningOpRef<mlir::ModuleOp> &module,
     std::string *failureReason, int64_t currentLogicalRank) {
@@ -448,6 +615,8 @@ mlir::LogicalResult wafer::lowerCompleteRankTensorProgramToTileRegionModule(
       sourceModule, module, failureReason, currentLogicalRank,
       /*candidateTileSizes=*/{}, /*candidateReductionTileSizes=*/{},
       /*traversalKind=*/std::nullopt, /*composition=*/std::nullopt,
+      /*connectionChoices=*/{},
+      /*selectedAlternative=*/std::nullopt,
       /*useDirectMappedBoundaryTransfer=*/false);
 }
 
@@ -458,7 +627,9 @@ wafer::lowerCompleteRankCandidateTensorProgramToTileRegionModule(
     CandidateTileTraversalKind traversalKind,
     CompleteRankTraversalComposition composition,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank, bool useDirectMappedBoundaryTransfer) {
+    int64_t currentLogicalRank,
+    std::optional<TargetImplementationKind> selectedAlternative,
+    bool useDirectMappedBoundaryTransfer) {
   if (candidateTileSizes.empty()) {
     if (failureReason)
       *failureReason = "complete-rank candidate tile sizes must be non-empty";
@@ -467,5 +638,182 @@ wafer::lowerCompleteRankCandidateTensorProgramToTileRegionModule(
   return lowerCompleteRankTensorProgramToTileRegionImpl(
       sourceModule, module, failureReason, currentLogicalRank,
       candidateTileSizes, candidateReductionTileSizes, traversalKind,
-      composition, useDirectMappedBoundaryTransfer);
+      composition, /*connectionChoices=*/{}, selectedAlternative,
+      useDirectMappedBoundaryTransfer);
+}
+
+mlir::LogicalResult
+wafer::lowerCompleteRankConnectionTensorProgramToTileRegionModule(
+    mlir::ModuleOp sourceModule, llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<CandidateTraversalConnectionAction> connectionActions,
+    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
+    int64_t currentLogicalRank,
+    std::optional<TargetImplementationKind> selectedAlternative,
+    bool useDirectMappedBoundaryTransfer) {
+  if (connectionActions.empty()) {
+    if (failureReason)
+      *failureReason =
+          "connection traversal requires finite current-SSA actions";
+    return mlir::failure();
+  }
+  llvm::SmallVector<CandidateTraversalConnectionChoice, 16> choices;
+  choices.reserve(connectionActions.size());
+  for (CandidateTraversalConnectionAction action : connectionActions) {
+    CandidateTraversalConnectionChoice choice;
+    choice.action = action;
+    if (action != CandidateTraversalConnectionAction::CoupledResident)
+      choice.producerTileSizes.assign(candidateTileSizes.begin(),
+                                      candidateTileSizes.end());
+    choice.consumerTileSizes.assign(candidateTileSizes.begin(),
+                                    candidateTileSizes.end());
+    choices.push_back(std::move(choice));
+  }
+  return lowerCompleteRankTensorProgramToTileRegionImpl(
+      sourceModule, module, failureReason, currentLogicalRank,
+      candidateTileSizes, /*candidateReductionTileSizes=*/{},
+      CandidateTileTraversalKind::ResultDriven,
+      /*composition=*/std::nullopt, choices, selectedAlternative,
+      useDirectMappedBoundaryTransfer);
+}
+
+mlir::LogicalResult
+wafer::lowerCompleteRankConnectionChoicesTensorProgramToTileRegionModule(
+    mlir::ModuleOp sourceModule,
+    llvm::ArrayRef<CandidateTraversalConnectionChoice> connectionChoices,
+    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
+    int64_t currentLogicalRank,
+    std::optional<TargetImplementationKind> selectedAlternative,
+    bool useDirectMappedBoundaryTransfer) {
+  if (connectionChoices.empty()) {
+    if (failureReason)
+      *failureReason =
+          "connection traversal requires finite current-SSA choices";
+    return mlir::failure();
+  }
+  return lowerCompleteRankTensorProgramToTileRegionImpl(
+      sourceModule, module, failureReason, currentLogicalRank,
+      /*candidateTileSizes=*/{}, /*candidateReductionTileSizes=*/{},
+      CandidateTileTraversalKind::ResultDriven,
+      /*composition=*/std::nullopt, connectionChoices, selectedAlternative,
+      useDirectMappedBoundaryTransfer);
+}
+
+mlir::FailureOr<unsigned>
+wafer::getCompleteRankCandidateConnectionCount(mlir::ModuleOp sourceModule,
+                                               std::string *failureReason) {
+  auto topology =
+      getCompleteRankCandidateConnectionTopology(sourceModule, failureReason);
+  if (mlir::failed(topology))
+    return mlir::failure();
+  return topology->connectionCount;
+}
+
+mlir::FailureOr<wafer::CandidateTraversalConnectionTopology>
+wafer::getCompleteRankCandidateConnectionTopology(mlir::ModuleOp sourceModule,
+                                                  std::string *failureReason) {
+  if (failureReason)
+    failureReason->clear();
+  mlir::func::FuncOp function =
+      sourceModule
+          ? tensor_program_to_tile_region::findSingleStandaloneTensorProgram(
+                sourceModule)
+          : mlir::func::FuncOp{};
+  if (!function || function.isExternal() || !function.getBody().hasOneBlock()) {
+    if (failureReason)
+      *failureReason =
+          "connection query requires one standalone tensor program";
+    return mlir::failure();
+  }
+  auto connections =
+      tensor_program_to_tile_region::collectCandidateTraversalConnections(
+          function, failureReason);
+  if (mlir::failed(connections))
+    return mlir::failure();
+  if (connections->size() > std::numeric_limits<unsigned>::max()) {
+    if (failureReason)
+      *failureReason = "connection count is not representable";
+    return mlir::failure();
+  }
+  CandidateTraversalConnectionTopology topology;
+  topology.connectionCount = static_cast<unsigned>(connections->size());
+  auto getElementBytes =
+      [](mlir::RankedTensorType type) -> std::optional<uint64_t> {
+    mlir::Type elementType = type.getElementType();
+    if (!elementType.isIntOrFloat())
+      return std::nullopt;
+    const uint64_t bitWidth = elementType.getIntOrFloatBitWidth();
+    if (bitWidth == 0)
+      return std::nullopt;
+    // This query feeds a byte-addressed structural estimate. Conservatively
+    // round sub-byte and other non-whole-byte scalar widths up to their storage
+    // byte count; exact post-materialization accounting still comes from IR.
+    return bitWidth / 8 + (bitWidth % 8 != 0);
+  };
+  llvm::DenseMap<mlir::Operation *, unsigned> operationOrdinals;
+  for (auto [ordinal, operation] :
+       llvm::enumerate(function.getBody().front().without_terminator()))
+    operationOrdinals[&operation] = static_cast<unsigned>(ordinal);
+  for (auto [index, connection] : llvm::enumerate(*connections)) {
+    mlir::Operation *producer = connection.getProducer();
+    mlir::Operation *consumer = connection.getConsumer();
+    auto producerType = connection.producerResult
+                            ? mlir::dyn_cast<mlir::RankedTensorType>(
+                                  connection.producerResult.getType())
+                            : mlir::RankedTensorType{};
+    auto consumerOperandType =
+        connection.consumerOperand
+            ? mlir::dyn_cast<mlir::RankedTensorType>(
+                  connection.consumerOperand->get().getType())
+            : mlir::RankedTensorType{};
+    auto consumerType = consumer && consumer->getNumResults() == 1
+                            ? mlir::dyn_cast<mlir::RankedTensorType>(
+                                  consumer->getResult(0).getType())
+                            : mlir::RankedTensorType{};
+    auto producerOrdinal = operationOrdinals.find(producer);
+    auto consumerOrdinal = operationOrdinals.find(consumer);
+    std::optional<uint64_t> producerElementBytes =
+        producerType ? getElementBytes(producerType) : std::nullopt;
+    std::optional<uint64_t> consumerOperandElementBytes =
+        consumerOperandType ? getElementBytes(consumerOperandType)
+                            : std::nullopt;
+    std::optional<uint64_t> consumerResultElementBytes =
+        consumerType ? getElementBytes(consumerType) : std::nullopt;
+    if (!connection.isValid() || !producerType || !consumerOperandType ||
+        !consumerType || !producerType.hasStaticShape() ||
+        !consumerOperandType.hasStaticShape() ||
+        !consumerType.hasStaticShape() || !producerElementBytes ||
+        !consumerOperandElementBytes || !consumerResultElementBytes ||
+        producerOrdinal == operationOrdinals.end() ||
+        consumerOrdinal == operationOrdinals.end()) {
+      if (failureReason)
+        *failureReason =
+            "connection query requires exact static byte-addressable "
+            "connection domains";
+      return mlir::failure();
+    }
+    CandidateTraversalConnectionDomain domain;
+    domain.producerOperationOrdinal = producerOrdinal->second;
+    domain.producerResultNumber = connection.producerResult.getResultNumber();
+    domain.consumerOperationOrdinal = consumerOrdinal->second;
+    domain.consumerOperandNumber =
+        connection.consumerOperand->getOperandNumber();
+    domain.producerResultElementBytes = *producerElementBytes;
+    domain.consumerOperandElementBytes = *consumerOperandElementBytes;
+    domain.consumerResultElementBytes = *consumerResultElementBytes;
+    domain.producerResultShape.assign(producerType.getShape().begin(),
+                                      producerType.getShape().end());
+    domain.consumerOperandShape.assign(consumerOperandType.getShape().begin(),
+                                       consumerOperandType.getShape().end());
+    domain.consumerResultShape.assign(consumerType.getShape().begin(),
+                                      consumerType.getShape().end());
+    topology.domains.push_back(std::move(domain));
+    topology.requiresGeneralDAGBeam |= llvm::any_of(
+        llvm::drop_begin(*connections, index + 1),
+        [&](const tensor_program_to_tile_region::CandidateTraversalConnection
+                &other) {
+          return connection.producerResult == other.producerResult &&
+                 connection.consumerOperand != other.consumerOperand;
+        });
+  }
+  return topology;
 }

@@ -26,8 +26,6 @@ struct CommandLineOptions {
   std::optional<std::string> runtimeLaunchKind;
   std::optional<std::string> compilerIRDumpDirectory;
   std::optional<std::string> optimizationPreset;
-  std::vector<std::string> enabledOptimizations;
-  std::vector<std::string> disabledOptimizations;
   bool compileTiming = false;
   bool profile = false;
   std::vector<std::string> modelInputs;

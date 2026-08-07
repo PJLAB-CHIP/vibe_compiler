@@ -1,6 +1,7 @@
 //===- CandidateRewritesTest.cpp - Actual-clone producer tests ---------===//
 
-#include "Scheduling/ScheduleTensorProgramInternal.h"
+#include "Wafer/Conversion/WaferTileRegionToInstr/Internal.h"
+#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -14,6 +15,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "gtest/gtest.h"
@@ -225,66 +227,6 @@ module {
   EXPECT_EQ(wafer::getWaferMemoryAttr(secondarySourceType).getLayout(),
             wafer::MemLayout::Cx);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
-}
-
-TEST_F(CandidateRewritesTest,
-       PhysicalLayoutProposalRunsThroughCompleteActualCloneGates) {
-  auto module = parse(R"mlir(
-module {
-  func.func @chain(
-      %lhs: tensor<4x64xf16>, %rhs0: tensor<64x64xf16>,
-      %rhs1: tensor<64x64xf16>, %out: tensor<4x64xf16>)
-      -> tensor<4x64xf16> {
-    %zero = arith.constant 0.0 : f16
-    %first_empty = tensor.empty() : tensor<4x64xf16>
-    %first_init = linalg.fill ins(%zero : f16)
-        outs(%first_empty : tensor<4x64xf16>) -> tensor<4x64xf16>
-    %first = linalg.matmul
-        ins(%lhs, %rhs0 : tensor<4x64xf16>, tensor<64x64xf16>)
-        outs(%first_init : tensor<4x64xf16>) -> tensor<4x64xf16>
-    %point_empty = tensor.empty() : tensor<4x64xf16>
-    %point = linalg.generic {
-        indexing_maps = [affine_map<(d0, d1)->(d0, d1)>,
-                         affine_map<(d0, d1)->(d0, d1)>],
-        iterator_types = ["parallel", "parallel"]}
-      ins(%first : tensor<4x64xf16>)
-      outs(%point_empty : tensor<4x64xf16>) {
-    ^bb0(%value: f16, %unused: f16):
-      %negated = arith.negf %value : f16
-      linalg.yield %negated : f16
-    } -> tensor<4x64xf16>
-    %second_init = linalg.fill ins(%zero : f16)
-        outs(%out : tensor<4x64xf16>) -> tensor<4x64xf16>
-    %second = linalg.matmul
-        ins(%point, %rhs1 : tensor<4x64xf16>, tensor<64x64xf16>)
-        outs(%second_init : tensor<4x64xf16>) -> tensor<4x64xf16>
-    return %second : tensor<4x64xf16>
-  }
-}
-)mlir");
-  ASSERT_TRUE(module);
-  auto task = module->lookupSymbol<mlir::func::FuncOp>("chain");
-  ASSERT_TRUE(task);
-
-  wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  wafer::tensor_program_scheduling::SelectionConfig baselineConfig(policy);
-  baselineConfig.logicalRank = 0;
-  wafer::tensor_program_scheduling::CandidateSpec candidate;
-  candidate.tileSizes = {4, 64};
-  auto baseline = wafer::tensor_program_scheduling::evaluateCompleteCandidate(
-      task, {4, 64}, candidate, baselineConfig);
-  ASSERT_TRUE(baseline.failureReason.empty()) << baseline.failureReason;
-  ASSERT_TRUE(baseline.stats.program.spmMovementBytes.isKnown());
-
-  auto optimizedConfig = baselineConfig;
-  optimizedConfig.physicalLayoutProposalOrdinal = 0;
-  auto optimized = wafer::tensor_program_scheduling::evaluateCompleteCandidate(
-      task, {4, 64}, candidate, optimizedConfig);
-  ASSERT_TRUE(optimized.failureReason.empty()) << optimized.failureReason;
-  ASSERT_TRUE(optimized.stats.program.spmMovementBytes.isKnown());
-  EXPECT_LT(optimized.stats.program.spmMovementBytes.value,
-            baseline.stats.program.spmMovementBytes.value);
-  EXPECT_TRUE(mlir::succeeded(mlir::verify(*optimized.module)));
 }
 
 TEST_F(CandidateRewritesTest,
@@ -812,25 +754,6 @@ module {
                 module->lookupSymbol<mlir::func::FuncOp>("factor")),
             1u);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
-
-  wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  wafer::tensor_program_scheduling::SelectionConfig config(policy);
-  config.logicalRank = 0;
-  wafer::tensor_program_scheduling::CandidateSpec candidate;
-  candidate.tileSizes = {4};
-  for (llvm::StringRef functionName :
-       {"reassociate", "tree", "distribute", "factor"}) {
-    auto acceptance =
-        wafer::tensor_program_scheduling::evaluateCandidateOnOriginalTask(
-            module->lookupSymbol<mlir::func::FuncOp>(functionName), {4},
-            candidate, config);
-    EXPECT_TRUE(acceptance.failureReason.empty())
-        << functionName.str() << ": " << acceptance.failureReason;
-    EXPECT_EQ(acceptance.artifactSource,
-              wafer::tensor_program_scheduling::CandidateArtifactSource::
-                  CompleteTraversalAPI)
-        << functionName.str();
-  }
 }
 
 TEST_F(CandidateRewritesTest,

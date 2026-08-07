@@ -206,8 +206,8 @@ private:
   TransportContract transportContract;
   DDRAllocationContract ddrAllocationContract;
   /// Same-invocation snapshot printed at the selected complete-rank Tile
-  /// decision boundary before terminal lowering. It is inspection evidence,
-  /// not a package member or a semantic side channel.
+  /// decision boundary before executable finalization. It is inspection
+  /// evidence, not a package member or a semantic side channel.
   std::string selectedTileIR;
 };
 
@@ -248,7 +248,7 @@ private:
 
 /// Reopens and verifies a structured tensor-program artifact, schedules every
 /// configured logical rank in an isolated clone, and returns the bundle only
-/// after the all-and-only rank domain has passed terminal legality.
+/// after the all-and-only rank domain has passed executable-admission legality.
 llvm::Expected<ExecutableBundle>
 compileTensorProgramToExecutableBundle(llvm::StringRef tensorProgramDirectory,
                                        ExecutionConfig executionConfig,

@@ -2,32 +2,24 @@
 
 #include "ExecutableBundleInternal.h"
 
-#include "CompilationInternal.h"
+#include "AttentionImplementationAlternative.h"
 #include "CompilationStatistics.h"
 #include "CoordinatedDataflowSearch.h"
-#include "CoordinatedTerminalEvaluation.h"
+#include "CoordinatedExecutableFinalization.h"
 #include "CoordinatedVariantSelection.h"
-#include "ScheduledRankFinalization.h"
-#include "WholeVariantAttemptPlan.h"
-#include "WholeVariantCoordinator.h"
+#include "NoCCommunicationAction.h"
 
 #include "Wafer/Support/CompileTiming.h"
-#include "Wafer/Support/CompileWorkStatistics.h"
-#include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
-
-#include "mlir/Bytecode/BytecodeWriter.h"
-#include "mlir/IR/Diagnostics.h"
-#include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/Parallel.h"
 #include "llvm/Support/Threading.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <limits>
+#include <algorithm>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <string>
@@ -35,82 +27,6 @@
 #include <vector>
 
 namespace wafer::compiler {
-
-llvm::Expected<std::vector<detail::RankVariantFrontier>>
-detail::importRankVariantFrontiersIntoOwnerContext(
-    mlir::MLIRContext &ownerContext,
-    llvm::ArrayRef<SerializedRankVariantFrontier> serializedFrontiers,
-    int64_t expectedRankCount) {
-  std::vector<RankVariantMetadataFrontier> frontierMetadata;
-  frontierMetadata.reserve(serializedFrontiers.size());
-  for (const SerializedRankVariantFrontier &frontier : serializedFrontiers) {
-    RankVariantMetadataFrontier metadata;
-    metadata.reserve(frontier.size());
-    for (const SerializedRankVariantCandidate &candidate : frontier)
-      metadata.push_back({candidate.stableOrdinal, candidate.artifactKind,
-                          candidate.reservedBaseline, candidate.bufferingKind,
-                          candidate.bufferingPlanOrdinal,
-                          candidate.workerPlacementKind,
-                          candidate.workerPlacementPlanOrdinal});
-    frontierMetadata.push_back(std::move(metadata));
-  }
-
-  WholeVariantAttemptPlan attemptPlan =
-      buildWholeVariantAttemptPlan(frontierMetadata, expectedRankCount);
-  if (attemptPlan.requiredModuleIndices.size() != serializedFrontiers.size())
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "internal rank-frontier import plan has an incomplete rank domain");
-
-  std::vector<RankVariantFrontier> frontiers;
-  frontiers.reserve(serializedFrontiers.size());
-  for (auto [rankIndex, serialized] : llvm::enumerate(serializedFrontiers)) {
-    RankVariantFrontier imported;
-    imported.reserve(serialized.size());
-    std::vector<bool> required(serialized.size(), false);
-    for (size_t index : attemptPlan.requiredModuleIndices[rankIndex]) {
-      if (index >= required.size())
-        return llvm::createStringError(
-            llvm::errc::invalid_argument,
-            "internal rank-frontier import plan references an invalid "
-            "candidate slot");
-      required[index] = true;
-    }
-    for (auto [candidateIndex, candidate] : llvm::enumerate(serialized)) {
-      mlir::OwningOpRef<mlir::ModuleOp> module;
-      if (required[candidateIndex]) {
-        if (!candidate.moduleData)
-          return llvm::createStringError(
-              llvm::errc::invalid_argument,
-              "required rank-frontier candidate has no serialized module "
-              "data");
-        module = mlir::parseSourceString<mlir::ModuleOp>(*candidate.moduleData,
-                                                         &ownerContext);
-        if (!module)
-          return llvm::createStringError(
-              llvm::errc::invalid_argument,
-              "failed to import a lowered scheduling candidate for logical "
-              "rank %zu",
-              static_cast<size_t>(rankIndex));
-      }
-      imported.push_back(
-          {std::move(module), candidate.stableOrdinal, candidate.artifactKind,
-           candidate.reservedBaseline, candidate.bufferingKind,
-           candidate.bufferingPlanOrdinal, candidate.workerPlacementKind,
-           candidate.workerPlacementPlanOrdinal, candidate.selectedTileIR});
-    }
-    frontiers.push_back(std::move(imported));
-  }
-  return frontiers;
-}
-
-void detail::compactImportedRankVariantFrontiers(
-    std::vector<RankVariantFrontier> &frontiers) {
-  for (RankVariantFrontier &frontier : frontiers)
-    llvm::erase_if(frontier, [](const RankVariantCandidate &candidate) {
-      return !candidate.module;
-    });
-}
 
 static void
 printInstructionWorkMetric(llvm::raw_ostream &os,
@@ -272,7 +188,10 @@ static llvm::Expected<ExecutableBundle> buildCoordinatedExecutableBundle(
   };
 
   mlir::FailureOr<detail::CoordinatedWorkLedger> ledger =
-      detail::CoordinatedWorkLedger::create(executionConfig.getRankCount());
+      detail::CoordinatedWorkLedger::create(
+          executionConfig.getRankCount(),
+          detail::CoordinatedWorkLedger::kDefaultCapacity,
+          /*repairReserve=*/0);
   if (mlir::failed(ledger))
     return fail("cannot reserve coordinated dataflow work ledger");
 
@@ -281,16 +200,32 @@ static llvm::Expected<ExecutableBundle> buildCoordinatedExecutableBundle(
   detail::CoordinatedDataflowSearchConfig searchConfig;
   searchConfig.rankCount = executionConfig.getRankCount();
   searchConfig.candidateParallelism =
-      std::max<unsigned>(1, std::min<unsigned>(4, heavyweightThreadCount));
+      std::max<unsigned>(1, heavyweightThreadCount);
   searchConfig.optimizations = optimizations;
+  searchConfig.reservedBaselineOnly =
+      selectionMode == detail::WholeVariantSelectionMode::ReservedBaseline;
+  detail::AttentionImplementationAlternativeProvider attentionAlternatives;
+  searchConfig.implementationAlternativeProviders.push_back(
+      &attentionAlternatives);
+  detail::NoCCommunicationActionProvider noCCommunicationActions;
+  llvm::SmallVector<const detail::CoordinatedCommunicationActionProvider *, 1>
+      communicationProviders;
+  if (optimizations != OptimizationConfig::none() &&
+      selectionMode != detail::WholeVariantSelectionMode::ReservedBaseline)
+    communicationProviders.push_back(&noCCommunicationActions);
 
   const detail::CompileClock::time_point generationStart =
       detail::CompileClock::now();
-  wafer::support::ScopedCompileTimingSpan generationTiming(
-      "stage", "tensor-program-to-executable", "coordinated-tile-frontier");
-  mlir::FailureOr<detail::CoordinatedTileFrontier> tileFrontier =
-      detail::buildCoordinatedTileFrontier(tensorModule, searchConfig, *ledger);
-  if (mlir::failed(tileFrontier))
+  detail::CoordinatedStructuredFrontierStatistics structuredStatistics;
+  mlir::FailureOr<std::unique_ptr<detail::CoordinatedDataflowSearchSession>>
+      searchSession = mlir::failure();
+  {
+    wafer::support::ScopedCompileTimingSpan generationTiming(
+        "stage", "tensor-program-to-executable", "coordinated-tile-frontier");
+    searchSession = detail::CoordinatedDataflowSearchSession::create(
+        tensorModule, searchConfig, *ledger, &structuredStatistics);
+  }
+  if (mlir::failed(searchSession))
     return fail("coordinated Tile frontier generation failed");
   const int64_t generationWallMs =
       detail::elapsedCompileMilliseconds(generationStart);
@@ -300,160 +235,448 @@ static llvm::Expected<ExecutableBundle> buildCoordinatedExecutableBundle(
                 std::to_string(*failAfterLogicalRank));
 
   detail::CoordinatedWorkLedgerSnapshot generationWork = ledger->getSnapshot();
-  diagnostics << "wafer-compile: compile-stats stage=coordinated-tile-frontier"
-              << " wall_ms=" << generationWallMs
-              << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
-              << " rank_count=" << executionConfig.getRankCount()
-              << " candidate_count=" << tileFrontier->size()
-              << " frontier_digest="
-              << detail::computeCoordinatedTileFrontierDigest(*tileFrontier)
-              << " work_capacity=" << generationWork.capacity
-              << " work_consumed=" << generationWork.consumed
-              << " terminal_reserved=" << generationWork.terminalReserved
-              << " repair_reserved=" << generationWork.repairReserved
-              << " work_unreserved=" << generationWork.unreserved << "\n";
+  diagnostics
+      << "wafer-compile: compile-stats stage=coordinated-tile-frontier"
+      << " wall_ms=" << generationWallMs
+      << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
+      << " rank_count=" << executionConfig.getRankCount()
+      << " candidate_count=" << structuredStatistics.structuralProposalsDerived
+      << " structural_pending_peak="
+      << structuredStatistics.structuralPendingPeak
+      << " structural_equivalent_merged="
+      << structuredStatistics.structuralEquivalentProposalsMerged
+      << " structural_dominated_pruned="
+      << structuredStatistics.structuralDominatedProposalsPruned
+      << " structural_coverage_pruned="
+      << structuredStatistics.structuralCoverageBeamPruned
+      << " implementation_provider_queries="
+      << structuredStatistics.implementationAlternativeQueries
+      << " implementation_provider_proposals="
+      << structuredStatistics.implementationAlternativeProposals
+      << " derived_candidates=" << structuredStatistics.derivedCandidates
+      << " materialized_candidates="
+      << structuredStatistics.materializedCandidates
+      << " candidate_materialization_failures="
+      << structuredStatistics.candidateMaterializationFailures
+      << " promotion_ineligible_rejections="
+      << structuredStatistics.promotionIneligibleCandidatesRejected
+      << " equivalent_rejections="
+      << structuredStatistics.equivalentCandidatesRejected
+      << " dominated_rejections="
+      << structuredStatistics.dominatedCandidatesRejected
+      << " dominated_states_erased="
+      << structuredStatistics.dominatedStatesErased
+      << " finalization_admission_denied="
+      << structuredStatistics.finalizationAdmissionDenied
+      << " generation_admission_denied="
+      << structuredStatistics.generationAdmissionDenied
+      << " structured_connections="
+      << structuredStatistics.structuredConnections
+      << " connection_proposal_estimate_model="
+      << detail::kCoordinatedConnectionProposalEstimateModel
+      << " connection_proposal_expansions="
+      << structuredStatistics.connectionProposalExpansions
+      << " connection_action_materializations="
+      << structuredStatistics.connectionActionMaterializations
+      << " connection_dp_states_merged="
+      << structuredStatistics.connectionDPStatesMerged
+      << " connection_dominated_states_pruned="
+      << structuredStatistics.connectionDominatedStatesPruned
+      << " connection_beam_states_pruned="
+      << structuredStatistics.connectionBeamStatesPruned
+      << " maximum_connection_states="
+      << structuredStatistics.maximumConnectionStates
+      << " retained_connection_candidates="
+      << structuredStatistics.retainedConnectionCandidates
+      << " connection_workers=" << structuredStatistics.connectionWorkerCount
+      << " connection_solver="
+      << (structuredStatistics.usedGeneralDAGBeam ? "dag-beam"
+                                                  : "chain-tree-dp")
+      << " frontier_digest=" << (*searchSession)->getStructuralFrontierDigest()
+      << " work_capacity=" << generationWork.capacity
+      << " work_consumed=" << generationWork.consumed
+      << " finalization_reserved=" << generationWork.finalizationReserved
+      << " schedule_attempt_capacity="
+      << generationWork.scheduleAttemptCapacity
+      << " schedule_attempts_reserved="
+      << generationWork.scheduleAttemptsReserved
+      << " schedule_attempts_consumed="
+      << generationWork.scheduleAttemptsConsumed
+      << " repair_reserved=" << generationWork.repairReserved
+      << " work_unreserved=" << generationWork.unreserved << "\n";
 
-  const detail::CompileClock::time_point terminalStart =
+  const detail::CompileClock::time_point finalizationStart =
       detail::CompileClock::now();
-  wafer::support::ScopedCompileTimingSpan terminalTiming(
-      "stage", "tensor-program-to-executable", "coordinated-terminal-gate");
-  std::vector<detail::FullyGatedCoordinatedVariant> fullyGated;
-  fullyGated.reserve(tileFrontier->size());
-  detail::WholeVariantSelectionStatistics terminalStatistics;
-  llvm::StringSet<> terminalTileDigests;
-  int64_t nextStableSemanticOrdinal = 0;
-  for (const detail::CoordinatedTileVariant &variant : *tileFrontier) {
-    terminalTileDigests.insert(
-        detail::computeCoordinatedTileVariantContentDigest(variant));
-    if (variant.stableSemanticOrdinal == std::numeric_limits<int64_t>::max())
-      return fail("coordinated Tile semantic ordinal is exhausted");
-    nextStableSemanticOrdinal =
-        std::max(nextStableSemanticOrdinal, variant.stableSemanticOrdinal + 1);
-  }
-  uint64_t repairCandidateCount = 0;
-  for (size_t variantIndex = 0; variantIndex < tileFrontier->size();
-       ++variantIndex) {
-    const detail::CoordinatedTileVariant &variant =
-        (*tileFrontier)[variantIndex];
-    detail::CoordinatedTerminalFailure failure;
-    mlir::FailureOr<std::vector<detail::FullyGatedCoordinatedVariant>>
-        evaluated =
-        detail::evaluateCoordinatedTileVariant(
-            variant, program, executionConfig, optimizations, *ledger,
-            diagnostics, failure, &terminalStatistics);
-    if (mlir::succeeded(evaluated)) {
-      for (detail::FullyGatedCoordinatedVariant &survivor : *evaluated)
-        fullyGated.push_back(std::move(survivor));
-      continue;
-    }
-    diagnostics << "wafer-compile: coordinated terminal rejection"
-                << " semantic_ordinal=" << variant.stableSemanticOrdinal
-                << " logical_rank=" << failure.logicalRank
-                << " gate=" << failure.gate << "\n";
-    if (variant.reservedBaseline)
-      return fail("reserved coordinated baseline failed terminal exact gates");
+  std::vector<detail::AdmittedCoordinatedExecutable> admittedExecutables;
+  detail::WholeVariantSelectionStatistics finalizationStatistics;
+  int64_t finalizationWallMs = 0;
+  {
+    wafer::support::ScopedCompileTimingSpan finalizationTiming(
+        "stage", "tensor-program-to-executable",
+        "coordinated-executable-finalization");
+    using FinalizationCursor =
+        detail::CoordinatedExecutableFinalizationCursor;
+    std::deque<std::unique_ptr<FinalizationCursor>> expansionCursors;
+    uint64_t liveCanonicalParents = 0;
+    bool structuralSeedsExhausted = false;
 
-    if (failure.kind != detail::CoordinatedTerminalFailureKind::SPMAllocation ||
-        variant.repairDepth >= detail::kMaximumCoordinatedRepairDepth)
-      continue;
-    const detail::CoordinatedTileRepairAction repairActions[] = {
-        detail::CoordinatedTileRepairAction::SelectiveSpill,
-        detail::CoordinatedTileRepairAction::SplitAtExplicitDDRBoundary,
+    auto updateCursorPeaks = [&](uint64_t additionalCursors = 0,
+                                 uint64_t additionalParents = 0) {
+      finalizationStatistics.peakLiveFinalizationCursors =
+          std::max<uint64_t>(
+              finalizationStatistics.peakLiveFinalizationCursors,
+              expansionCursors.size() + additionalCursors);
+      finalizationStatistics.peakLiveCanonicalInstrParents =
+          std::max<uint64_t>(
+              finalizationStatistics.peakLiveCanonicalInstrParents,
+              liveCanonicalParents + additionalParents);
     };
-    std::vector<detail::CoordinatedTileVariant> repairs;
-    for (detail::CoordinatedTileRepairAction action : repairActions) {
-      if (nextStableSemanticOrdinal == std::numeric_limits<int64_t>::max())
+    auto retainAccepted =
+        [&](detail::AdmittedCoordinatedExecutable accepted) -> mlir::LogicalResult {
+      admittedExecutables.push_back(std::move(accepted));
+      return detail::reduceAdmittedExecutableFrontier(admittedExecutables,
+                                                       selectionMode);
+    };
+
+    enum class FinalizationLaneDisposition : uint8_t {
+      AttemptedAccepted,
+      AttemptedRejected,
+      Exhausted,
+      BudgetExhausted,
+    };
+    struct FinalizationLaneResult {
+      FinalizationLaneDisposition disposition =
+          FinalizationLaneDisposition::Exhausted;
+
+      bool attempted() const {
+        return disposition == FinalizationLaneDisposition::AttemptedAccepted ||
+               disposition == FinalizationLaneDisposition::AttemptedRejected;
+      }
+      bool accepted() const {
+        return disposition == FinalizationLaneDisposition::AttemptedAccepted;
+      }
+    };
+    auto runSeedLane = [&]() -> mlir::FailureOr<FinalizationLaneResult> {
+      while (true) {
+        mlir::FailureOr<std::unique_ptr<detail::CoordinatedTileVariant>> next =
+            (*searchSession)->admitNextActualCandidate();
+        if (mlir::failed(next))
+          return mlir::failure();
+        if (!*next) {
+          structuralSeedsExhausted = true;
+          return FinalizationLaneResult{
+              FinalizationLaneDisposition::Exhausted};
+        }
+        std::unique_ptr<detail::CoordinatedTileVariant> variant =
+            std::move(*next);
+        const int64_t semanticOrdinal = variant->stableSemanticOrdinal;
+        const bool reservedBaseline = variant->reservedBaseline;
+        detail::CoordinatedExecutableAdmissionFailure failure;
+        auto cursor = detail::beginCoordinatedExecutableFinalization(
+            *variant, program, executionConfig, optimizations, *ledger,
+            diagnostics, failure, &finalizationStatistics, selectionMode,
+            /*rankPipelineParallelism=*/0, communicationProviders);
+        if (mlir::failed(cursor)) {
+          if (reservedBaseline ||
+              !detail::isRecoverableCoordinatedExecutableSetupFailure(
+                  failure))
+            return mlir::failure();
+          if (mlir::failed((*searchSession)
+                               ->completeActiveCandidate(
+                                   semanticOrdinal,
+                                   detail::CoordinatedActualCandidateDisposition::
+                                       ExactRejected,
+                                   failure.gate)))
+            return mlir::failure();
+          diagnostics << "wafer-compile: coordinated executable rejection"
+                      << " semantic_ordinal=" << semanticOrdinal
+                      << " logical_rank=" << failure.logicalRank
+                      << " gate=" << failure.gate << "\n";
+          // Tile-to-Instr/setup rejection never started a schedule action and
+          // therefore does not rotate the invocation-wide A/B attempt lanes.
+          continue;
+        }
+
+        updateCursorPeaks(/*additionalCursors=*/1,
+                          (*cursor)->getCanonicalParentCount());
+        auto step = detail::advanceCoordinatedExecutableFinalization(
+            **cursor, variant->finalizationReservation);
+        if (mlir::failed(step))
+          return mlir::failure();
+        FinalizationLaneResult result{
+            FinalizationLaneDisposition::AttemptedRejected};
+        if (step->kind == detail::CoordinatedExecutableFinalizationStepKind::
+                              Accepted) {
+          if (!step->admitted ||
+              mlir::failed(retainAccepted(std::move(*step->admitted))) ||
+              mlir::failed((*searchSession)
+                               ->completeActiveCandidate(
+                                   semanticOrdinal,
+                                   detail::CoordinatedActualCandidateDisposition::
+                                       ExactAccepted)))
+            return mlir::failure();
+          result.disposition =
+              FinalizationLaneDisposition::AttemptedAccepted;
+          if (!(*cursor)->exactSeedAccepted())
+            return mlir::failure();
+          if (!(*cursor)->exhausted() &&
+              expansionCursors.size() <
+                  detail::kMaximumCoordinatedLiveFinalizationCursors) {
+            liveCanonicalParents += (*cursor)->getCanonicalParentCount();
+            expansionCursors.push_back(std::move(*cursor));
+            updateCursorPeaks();
+          }
+          return result;
+        }
+
+        failure = step->failure;
+        if (mlir::failed((*searchSession)
+                             ->completeActiveCandidate(
+                                 semanticOrdinal,
+                                 detail::CoordinatedActualCandidateDisposition::
+                                     ExactRejected,
+                                 failure.gate)))
+          return mlir::failure();
+        diagnostics << "wafer-compile: coordinated executable rejection"
+                    << " semantic_ordinal=" << semanticOrdinal
+                    << " logical_rank=" << failure.logicalRank
+                    << " gate=" << failure.gate << "\n";
+        if (reservedBaseline)
+          return mlir::failure();
+        return result;
+      }
+    };
+
+    auto runExpansionLane = [&]()
+        -> mlir::FailureOr<FinalizationLaneResult> {
+      while (!expansionCursors.empty()) {
+        std::unique_ptr<FinalizationCursor> cursor =
+            std::move(expansionCursors.front());
+        expansionCursors.pop_front();
+        if (cursor->exhausted()) {
+          liveCanonicalParents -= cursor->getCanonicalParentCount();
+          continue;
+        }
+        std::optional<detail::ExecutableFinalizationReservation> reservation =
+            ledger->tryReserveExecutableScheduleAttempt();
+        if (!reservation) {
+          expansionCursors.push_front(std::move(cursor));
+          return FinalizationLaneResult{
+              FinalizationLaneDisposition::BudgetExhausted};
+        }
+        auto step = detail::advanceCoordinatedExecutableFinalization(
+            *cursor, *reservation);
+        if (mlir::failed(step))
+          return mlir::failure();
+        if (step->kind == detail::CoordinatedExecutableFinalizationStepKind::
+                              Accepted) {
+          if (!step->admitted ||
+              mlir::failed(retainAccepted(std::move(*step->admitted))))
+            return mlir::failure();
+        } else if (step->kind ==
+                   detail::CoordinatedExecutableFinalizationStepKind::
+                       RecoverableRejected) {
+          diagnostics << "wafer-compile: coordinated schedule rejection"
+                      << " semantic_ordinal="
+                      << cursor->getStableSemanticOrdinal()
+                      << " logical_rank=" << step->failure.logicalRank
+                      << " gate=" << step->failure.gate << "\n";
+        }
+        if (!cursor->exhausted())
+          expansionCursors.push_back(std::move(cursor));
+        else
+          liveCanonicalParents -= cursor->getCanonicalParentCount();
+        updateCursorPeaks();
+        return FinalizationLaneResult{
+            step->kind ==
+                    detail::CoordinatedExecutableFinalizationStepKind::Accepted
+                ? FinalizationLaneDisposition::AttemptedAccepted
+                : FinalizationLaneDisposition::AttemptedRejected};
+      }
+      return FinalizationLaneResult{FinalizationLaneDisposition::Exhausted};
+    };
+
+    // The mandatory canonical baseline is outside lane rotation. Once it is
+    // exact-admitted, both available lanes start with A (a new Tile seed), then
+    // alternate A/B after every expensive attempt, including rejection.
+    mlir::FailureOr<FinalizationLaneResult> baselineSeed = runSeedLane();
+    if (mlir::failed(baselineSeed) || !baselineSeed->accepted())
+      return fail("reserved coordinated baseline failed executable admission");
+    detail::CoordinatedExecutableFinalizationLaneCoordinator laneCoordinator;
+    if (mlir::failed(laneCoordinator.recordMandatoryBaselineAccepted()))
+      return fail("coordinated finalization lane baseline accounting failed");
+    while (laneCoordinator.canAttempt()) {
+      const bool canSeed =
+          !structuralSeedsExhausted &&
+          expansionCursors.size() <
+              detail::kMaximumCoordinatedLiveFinalizationCursors;
+      const bool canExpand = !expansionCursors.empty();
+      std::optional<detail::CoordinatedExecutableFinalizationLane> lane =
+          laneCoordinator.chooseNextLane(canSeed, canExpand);
+      if (!lane)
         break;
-      const int64_t repairOrdinal = nextStableSemanticOrdinal++;
-      std::string repairFailure;
-      mlir::FailureOr<detail::CoordinatedTileVariant> repaired =
-          detail::materializeCoordinatedTileRepair(
-              variant, action, repairOrdinal, *ledger, &repairFailure);
-      if (mlir::failed(repaired)) {
-        diagnostics << "wafer-compile: coordinated repair rejection"
-                    << " parent_ordinal=" << variant.stableSemanticOrdinal
-                    << " action="
-                    << (action ==
-                                detail::CoordinatedTileRepairAction::
-                                    SelectiveSpill
-                            ? "selective-spill"
-                            : "split-ddr-boundary")
-                    << " reason=" << repairFailure << "\n";
+
+      const bool chooseSeed =
+          *lane == detail::CoordinatedExecutableFinalizationLane::Seed;
+      mlir::FailureOr<FinalizationLaneResult> laneResult = mlir::failure();
+      if (chooseSeed) {
+        laneResult = runSeedLane();
+        if (mlir::failed(laneResult))
+          return fail("coordinated Tile seed finalization failed");
+      } else {
+        laneResult = runExpansionLane();
+        if (mlir::failed(laneResult))
+          return fail("coordinated schedule expansion failed");
+      }
+      if (laneResult->disposition ==
+          FinalizationLaneDisposition::BudgetExhausted)
+        break;
+      if (!laneResult->attempted()) {
+        if (chooseSeed)
+          structuralSeedsExhausted = true;
+        else if (!canSeed)
+          break;
         continue;
       }
-      std::string digest =
-          detail::computeCoordinatedTileVariantContentDigest(*repaired);
-      if (!terminalTileDigests.insert(digest).second) {
-        if (mlir::failed(ledger->releaseTerminalAction(
-                repaired->terminalReservation)))
-          return fail("cannot release duplicate coordinated repair");
-        continue;
-      }
-      diagnostics << "wafer-compile: coordinated repair admitted"
-                  << " parent_ordinal=" << variant.stableSemanticOrdinal
-                  << " repair_ordinal=" << repaired->stableSemanticOrdinal
-                  << " action="
-                  << (action ==
-                              detail::CoordinatedTileRepairAction::
-                                  SelectiveSpill
-                          ? "selective-spill"
-                          : "split-ddr-boundary")
-                  << "\n";
-      repairs.push_back(std::move(*repaired));
+      if (mlir::failed(
+              laneCoordinator.recordAttempt(*lane, laneResult->accepted())))
+        return fail("coordinated finalization lane accounting failed");
     }
-    repairCandidateCount += repairs.size();
-    for (detail::CoordinatedTileVariant &repair : repairs)
-      tileFrontier->push_back(std::move(repair));
+    if (laneCoordinator.getAttemptCount() !=
+            finalizationStatistics.scheduleMaterializationAttempts ||
+        laneCoordinator.getExactAcceptedCount() !=
+            finalizationStatistics.scheduleExactActions)
+      return fail("coordinated finalization accounting diverged");
+    finalizationWallMs = detail::elapsedCompileMilliseconds(finalizationStart);
   }
-  const int64_t terminalWallMs =
-      detail::elapsedCompileMilliseconds(terminalStart);
-  if (llvm::count_if(fullyGated, [](const auto &variant) {
+  if (llvm::count_if(admittedExecutables, [](const auto &variant) {
         return variant.reservedBaseline;
       }) != 1)
-    return fail("fully gated frontier has no unique conservative baseline");
+    return fail(
+        "admitted executable frontier has no unique conservative baseline");
 
-  detail::CoordinatedWorkLedgerSnapshot terminalWork = ledger->getSnapshot();
-  const std::string terminalFrontierDigest =
-      detail::computeCoordinatedTileFrontierDigest(*tileFrontier);
-  for (detail::CoordinatedTileVariant &variant : *tileFrontier)
-    variant.frontierDigest = terminalFrontierDigest;
-  diagnostics << "wafer-compile: compile-stats stage=coordinated-terminal-gate"
-              << " wall_ms=" << terminalWallMs
-              << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
-              << " fully_gated=" << fullyGated.size()
-              << " repair_candidates=" << repairCandidateCount
-              << " terminal_frontier_digest=" << terminalFrontierDigest
-              << " terminal_reserved=" << terminalWork.terminalReserved
-              << " work_consumed=" << terminalWork.consumed << " tile_to_instr="
-              << terminalWork.consumedByKind[static_cast<size_t>(
-                     detail::CoordinatedWorkKind::TileToInstrLowering)]
-              << " spm_problems="
-              << terminalWork.consumedByKind[static_cast<size_t>(
-                     detail::CoordinatedWorkKind::SPMAllocationProblem)]
-              << " ddr_domains="
-              << terminalWork.consumedByKind[static_cast<size_t>(
-                     detail::CoordinatedWorkKind::DDRAllocationDomain)]
-              << " transport_gates="
-              << terminalWork.consumedByKind[static_cast<size_t>(
-                     detail::CoordinatedWorkKind::TransportValidation)]
-              << " abi_gates="
-              << terminalWork.consumedByKind[static_cast<size_t>(
-                     detail::CoordinatedWorkKind::ABIValidation)]
-              << "\n";
+  detail::CoordinatedWorkLedgerSnapshot finalizationWork =
+      ledger->getSnapshot();
+  if (finalizationWork.finalizationReserved != 0 ||
+      finalizationWork.scheduleAttemptsReserved != 0 ||
+      finalizationWork.scheduleAttemptsConsumed !=
+          finalizationStatistics.scheduleMaterializationAttempts)
+    return fail("coordinated executable finalization left open work");
+  const std::string finalizationTileFrontierDigest =
+      (*searchSession)->getActualAdmissionDigest().str();
+  const std::string admittedExecutableFrontierDigest =
+      detail::computeAdmittedCoordinatedExecutableFrontierDigest(
+          admittedExecutables);
+  diagnostics
+      << "wafer-compile: compile-stats "
+         "stage=coordinated-executable-finalization"
+      << " wall_ms=" << finalizationWallMs
+      << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
+      << " admitted_executables="
+      << finalizationStatistics.admittedExecutableCount
+      << " schedule_estimate_model="
+      << detail::kCoordinatedScheduleActionEstimateModelIdentity
+      << " schedule_estimated_actions="
+      << finalizationStatistics.scheduleEstimatedActions
+      << " schedule_coverage_retained="
+      << finalizationStatistics.scheduleCoverageRetainedActions
+      << " schedule_materialization_attempts="
+      << finalizationStatistics.scheduleMaterializationAttempts
+      << " schedule_materialization_failures="
+      << finalizationStatistics.scheduleMaterializationFailures
+      << " schedule_materialization_backfills="
+      << finalizationStatistics.scheduleMaterializationBackfills
+      << " schedule_accepted_action_clones="
+      << finalizationStatistics.scheduleSuccessfulActionClones
+      << " schedule_actual_rank_clones="
+      << finalizationStatistics.scheduleActualRankClones
+      << " schedule_exact_actions="
+      << finalizationStatistics.scheduleExactActions
+      << " schedule_seed_attempts="
+      << finalizationStatistics.scheduleSeedAttempts
+      << " schedule_expansion_attempts="
+      << finalizationStatistics.scheduleExpansionAttempts
+      << " peak_live_finalization_cursors="
+      << finalizationStatistics.peakLiveFinalizationCursors
+      << " peak_live_canonical_instr_parents="
+      << finalizationStatistics.peakLiveCanonicalInstrParents
+      << " peak_live_schedule_action_clones="
+      << finalizationStatistics.peakLiveScheduleActionClones
+      << " rank_pipeline_workers="
+      << finalizationStatistics.maximumRankPipelineWorkers
+      << " selection_live=" << admittedExecutables.size()
+      << " repair_candidates=0"
+      << " actual_candidate_attempts="
+      << structuredStatistics.actualCandidateAttempts
+      << " materialized_candidates="
+      << structuredStatistics.materializedCandidates
+      << " candidate_materialization_failures="
+      << structuredStatistics.candidateMaterializationFailures
+      << " promotion_ineligible_rejections="
+      << structuredStatistics.promotionIneligibleCandidatesRejected
+      << " equivalent_rejections="
+      << structuredStatistics.equivalentCandidatesRejected
+      << " dominated_rejections="
+      << structuredStatistics.dominatedCandidatesRejected
+      << " implementation_provider_materializations="
+      << structuredStatistics.implementationAlternativeMaterializations
+      << " retained_implementation_provider_candidates="
+      << structuredStatistics.retainedImplementationAlternativeCandidates
+      << " actual_candidate_admissions="
+      << structuredStatistics.actualCandidateAdmissions
+      << " actual_rank_clones=" << structuredStatistics.actualRankClones
+      << " successful_actual_candidates="
+      << structuredStatistics.successfulActualCandidates
+      << " exact_failure_backfills="
+      << structuredStatistics.exactFailureBackfills
+      << " materialization_failure_backfills="
+      << structuredStatistics.materializationFailureBackfills
+      << " peak_live_actual_candidates="
+      << structuredStatistics.peakLiveActualCandidates
+      << " structural_pending_at_stop="
+      << structuredStatistics.structuralPendingAtStop
+      << " tile_frontier_digest=" << finalizationTileFrontierDigest
+      << " admitted_executable_frontier_digest="
+      << admittedExecutableFrontierDigest
+      << " finalization_reserved=" << finalizationWork.finalizationReserved
+      << " schedule_attempt_capacity="
+      << finalizationWork.scheduleAttemptCapacity
+      << " schedule_attempts_reserved="
+      << finalizationWork.scheduleAttemptsReserved
+      << " schedule_attempts_consumed="
+      << finalizationWork.scheduleAttemptsConsumed
+      << " work_consumed=" << finalizationWork.consumed << " tile_to_instr="
+      << finalizationWork.consumedByKind[static_cast<size_t>(
+             detail::CoordinatedWorkKind::TileToInstrLowering)]
+      << " spm_problems="
+      << finalizationWork.consumedByKind[static_cast<size_t>(
+             detail::CoordinatedWorkKind::SPMAllocationProblem)]
+      << " ddr_domains="
+      << finalizationWork.consumedByKind[static_cast<size_t>(
+             detail::CoordinatedWorkKind::DDRAllocationDomain)]
+      << " transport_gates="
+      << finalizationWork.consumedByKind[static_cast<size_t>(
+             detail::CoordinatedWorkKind::TransportValidation)]
+      << " abi_gates="
+      << finalizationWork.consumedByKind[static_cast<size_t>(
+             detail::CoordinatedWorkKind::ABIValidation)]
+      << "\n";
 
-  const size_t fullyGatedCount = fullyGated.size();
+  const size_t admittedExecutableCount =
+      finalizationStatistics.admittedExecutableCount;
   const detail::CoordinatedWorkLedgerSnapshot selectionWorkBefore =
       ledger->getSnapshot();
   const detail::CompileClock::time_point selectionStart =
       detail::CompileClock::now();
-  mlir::FailureOr<detail::FullyGatedCoordinatedVariant> selected =
+  mlir::FailureOr<detail::AdmittedCoordinatedExecutable> selected =
       mlir::failure();
   {
     wafer::support::ScopedCompileTimingSpan selectionTiming(
         "stage", "tensor-program-to-executable",
         "coordinated-hardware-cost-selection");
-    selected = detail::selectFullyGatedCoordinatedVariant(
-        std::move(fullyGated), selectionMode, diagnostics, &terminalStatistics);
+    selected = detail::selectAdmittedCoordinatedExecutable(
+        std::move(admittedExecutables), selectionMode, diagnostics,
+        &finalizationStatistics);
   }
   if (mlir::failed(selected))
     return fail("coordinated whole-rank hardware-cost selection failed");
@@ -463,9 +686,15 @@ static llvm::Expected<ExecutableBundle> buildCoordinatedExecutableBundle(
       selectionWorkBefore.consumed != selectionWorkAfter.consumed ||
       selectionWorkBefore.mandatoryGenerationReserved !=
           selectionWorkAfter.mandatoryGenerationReserved ||
-      selectionWorkBefore.terminalReserved !=
-          selectionWorkAfter.terminalReserved ||
+      selectionWorkBefore.finalizationReserved !=
+          selectionWorkAfter.finalizationReserved ||
       selectionWorkBefore.repairReserved != selectionWorkAfter.repairReserved ||
+      selectionWorkBefore.scheduleAttemptCapacity !=
+          selectionWorkAfter.scheduleAttemptCapacity ||
+      selectionWorkBefore.scheduleAttemptsReserved !=
+          selectionWorkAfter.scheduleAttemptsReserved ||
+      selectionWorkBefore.scheduleAttemptsConsumed !=
+          selectionWorkAfter.scheduleAttemptsConsumed ||
       selectionWorkBefore.unreserved != selectionWorkAfter.unreserved ||
       selectionWorkBefore.consumedByKind != selectionWorkAfter.consumedByKind)
     return fail("coordinated hardware-cost selection mutated the work ledger");
@@ -473,8 +702,8 @@ static llvm::Expected<ExecutableBundle> buildCoordinatedExecutableBundle(
       << "wafer-compile: compile-stats stage=coordinated-hardware-selection"
       << " wall_ms=" << detail::elapsedCompileMilliseconds(selectionStart)
       << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
-      << " fully_gated=" << fullyGatedCount
-      << " pareto_retained=" << terminalStatistics.paretoRetainedVariants
+      << " admitted_executables=" << admittedExecutableCount
+      << " pareto_retained=" << finalizationStatistics.paretoRetainedVariants
       << " work_consumed_delta=0 tile_to_instr_delta=0"
       << " spm_problems_delta=0 ddr_domains_delta=0"
       << " transport_gates_delta=0 abi_gates_delta=0\n";
@@ -505,508 +734,9 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
       detail::CompileClock::now();
   wafer::support::ScopedCompileTimingSpan executableBundleTiming(
       "stage", "tensor-program-to-executable", "executable-bundle");
-  constexpr uint32_t rankRequestShardLimit = 16;
-  auto fail = [&](llvm::StringRef message) -> llvm::Error {
-    diagnostics << "wafer-compile: " << message << "\n";
-    return llvm::createStringError(llvm::errc::invalid_argument, "%s",
-                                   message.str().c_str());
-  };
-
-  if (selectionMode == detail::WholeVariantSelectionMode::Production ||
-      selectionMode == detail::WholeVariantSelectionMode::ReservedBaseline)
-    return buildCoordinatedExecutableBundle(
-        context, tensorModule, program, executionConfig, optimizations,
-        diagnostics, selectionMode, failAfterLogicalRank, totalStart);
-
-  struct RankSearchShardResult {
-    int64_t logicalRank;
-    uint32_t generationClass;
-    uint32_t requestShardIndex;
-    bool succeeded = false;
-    int64_t wallMs = 0;
-    // Modules must be destroyed before the context that owns their uniqued
-    // state. Member destruction is reverse declaration order.
-    std::unique_ptr<mlir::MLIRContext> context;
-    std::vector<wafer::ScheduledRankCandidate> candidates;
-    std::vector<detail::FinalizedRankCandidate> finalizedCandidates;
-    std::string diagnostics;
-    bool finalizationSucceeded = false;
-  };
-
-  std::string tensorModuleData;
-  llvm::raw_string_ostream tensorModuleStream(tensorModuleData);
-  if (mlir::failed(mlir::writeBytecodeToFile(tensorModule.getOperation(),
-                                             tensorModuleStream)))
-    return fail("failed to encode the verified tensor program for rank "
-                "lowering");
-  tensorModuleStream.flush();
-
-  const bool rankInvariant =
-      wafer::isTensorProgramSchedulingRankInvariant(tensorModule);
-  const int64_t rankGenerationClassCount =
-      rankInvariant ? 1 : executionConfig.getRankCount();
-  const unsigned heavyweightThreadCount =
-      llvm::heavyweight_hardware_concurrency().compute_thread_count();
-  const int64_t candidateEvaluationWorkerLimit =
-      std::max<unsigned>(1, std::min<unsigned>(4, heavyweightThreadCount));
-  const uint32_t requestShardCount = std::min<uint32_t>(
-      rankRequestShardLimit,
-      std::max<uint32_t>(1,
-                         heavyweightThreadCount /
-                             static_cast<uint32_t>(rankGenerationClassCount)));
-  std::vector<RankSearchShardResult> searchShardResults;
-  searchShardResults.reserve(static_cast<size_t>(rankGenerationClassCount) *
-                             requestShardCount);
-  for (int64_t generationClass = 0; generationClass < rankGenerationClassCount;
-       ++generationClass)
-    for (uint32_t requestShardIndex = 0; requestShardIndex < requestShardCount;
-         ++requestShardIndex)
-      searchShardResults.push_back({generationClass,
-                                    static_cast<uint32_t>(generationClass),
-                                    requestShardIndex});
-
-  // Candidate evaluation installs diagnostic handlers and creates transient
-  // IR. Give every rank-dependent generation class its own request shard(s)
-  // and context. A tensor program without typed collectives has one generation
-  // class whose deterministic request groups can run independently. Shard
-  // results are merged in the original request order and pass the original
-  // global admission policy before rank finalization.
-  const detail::CompileClock::time_point rankGenerationStart =
-      detail::CompileClock::now();
-  auto rankGenerationTiming =
-      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-          "stage", "tensor-program-to-executable", "rank-candidate-generation");
-  std::shared_ptr<wafer::support::CompileTimingSession> timingSession =
-      wafer::support::getActiveCompileTimingSession();
-  std::shared_ptr<wafer::support::CompileWorkStatisticsSession>
-      workStatisticsSession =
-          wafer::support::getActiveCompileWorkStatisticsSession();
-  llvm::parallelFor(0, searchShardResults.size(), [&](size_t index) {
-    wafer::support::ScopedCompileTimingActivation timingActivation(
-        timingSession);
-    wafer::support::ScopedCompileWorkStatisticsActivation
-        workStatisticsActivation(workStatisticsSession);
-    RankSearchShardResult &result = searchShardResults[index];
-    const detail::CompileClock::time_point shardStart =
-        detail::CompileClock::now();
-    std::string timingDetail;
-    llvm::raw_string_ostream timingDetailStream(timingDetail);
-    timingDetailStream << "logical-rank=" << result.logicalRank
-                       << ",generation-class=" << result.generationClass
-                       << ",request-shard=" << result.requestShardIndex;
-    wafer::support::ScopedCompileTimingSpan shardTiming(
-        "search", "rank-candidate-generation", "rank-request-shard",
-        timingDetailStream.str());
-    mlir::DialectRegistry registry;
-    detail::registerCompilationDialects(registry);
-    auto rankContext = std::make_unique<mlir::MLIRContext>(registry);
-    // Rank pipelines are already the unit of parallelism. Avoid creating a
-    // nested context thread pool for each of the 16 concurrent workers.
-    rankContext->disableMultithreading();
-    rankContext->loadAllAvailableDialects();
-    mlir::ScopedDiagnosticHandler diagnosticHandler(
-        rankContext.get(), [&](mlir::Diagnostic &diagnostic) {
-          llvm::raw_string_ostream os(result.diagnostics);
-          diagnostic.print(os);
-          os << "\n";
-          return mlir::success();
-        });
-
-    mlir::OwningOpRef<mlir::ModuleOp> sourceModule =
-        mlir::parseSourceString<mlir::ModuleOp>(tensorModuleData,
-                                                rankContext.get());
-    if (!sourceModule)
-      return;
-    wafer::TensorProgramSchedulingConfig schedulingConfig;
-    schedulingConfig.logicalRank = result.logicalRank;
-    schedulingConfig.candidateParallelism = candidateEvaluationWorkerLimit;
-    schedulingConfig.requestShardIndex = result.requestShardIndex;
-    schedulingConfig.requestShardCount = requestShardCount;
-    schedulingConfig.optimizations = optimizations;
-    mlir::FailureOr<std::vector<wafer::ScheduledRankCandidate>> frontier =
-        wafer::buildScheduledRankCandidateFrontier(*sourceModule,
-                                                   schedulingConfig);
-    if (mlir::failed(frontier) || frontier->empty()) {
-      if (result.requestShardIndex == 0)
-        return;
-    }
-    if (mlir::failed(frontier))
-      return;
-
-    result.candidates = std::move(*frontier);
-    result.context = std::move(rankContext);
-    result.wallMs = detail::elapsedCompileMilliseconds(shardStart);
-    result.succeeded = true;
-  });
-
-  for (RankSearchShardResult &result : searchShardResults) {
-    if (!result.succeeded) {
-      diagnostics << result.diagnostics;
-      return fail("rank scheduling search failed for logical rank " +
-                  std::to_string(result.logicalRank) + " request shard " +
-                  std::to_string(result.requestShardIndex));
-    }
-    diagnostics << "wafer-compile: compile-stats stage=rank-request-shard"
-                << " logical_rank=" << result.logicalRank
-                << " request_shard=" << result.requestShardIndex
-                << " request_shard_count=" << requestShardCount
-                << " wall_ms=" << result.wallMs
-                << " candidate_count=" << result.candidates.size() << "\n";
-  }
-  if (failAfterLogicalRank && *failAfterLogicalRank >= 0 &&
-      *failAfterLogicalRank < executionConfig.getRankCount())
-    return fail("test-only injected failure after logical rank " +
-                std::to_string(*failAfterLogicalRank));
-
-  // Reapply the one canonical rank-frontier admission policy across request
-  // shards before finalization. The selected candidates stay in their
-  // disjoint shard contexts, so expensive bufferization and SPM replanning can
-  // use the same request-shard parallelism as search without changing which
-  // frontier members are admitted.
-  struct CandidateLocation {
-    size_t shardIndex;
-    size_t candidateIndex;
-  };
-  std::vector<std::vector<bool>> admittedMasks;
-  admittedMasks.reserve(searchShardResults.size());
-  for (const RankSearchShardResult &result : searchShardResults)
-    admittedMasks.emplace_back(result.candidates.size(), false);
-  for (size_t generationClass = 0;
-       generationClass < static_cast<size_t>(rankGenerationClassCount);
-       ++generationClass) {
-    std::vector<CandidateLocation> locations;
-    for (auto [shardIndex, shard] : llvm::enumerate(searchShardResults))
-      if (shard.generationClass == generationClass)
-        for (size_t candidateIndex = 0;
-             candidateIndex < shard.candidates.size(); ++candidateIndex)
-          locations.push_back({shardIndex, candidateIndex});
-    llvm::stable_sort(
-        locations, [&](CandidateLocation lhs, CandidateLocation rhs) {
-          return searchShardResults[lhs.shardIndex]
-                     .candidates[lhs.candidateIndex]
-                     .frontierOrderOrdinal < searchShardResults[rhs.shardIndex]
-                                                 .candidates[rhs.candidateIndex]
-                                                 .frontierOrderOrdinal;
-        });
-    wafer::RankFrontierAdmissionState admission;
-    unsigned baselineCount = 0;
-    for (CandidateLocation location : locations) {
-      const wafer::ScheduledRankCandidate &candidate =
-          searchShardResults[location.shardIndex]
-              .candidates[location.candidateIndex];
-      baselineCount += candidate.reservedBaseline;
-      if (!candidate.reservedBaseline &&
-          !admission.tryAdmit(candidate.bufferingKind,
-                              candidate.workerPlacementKind))
-        continue;
-      admittedMasks[location.shardIndex][location.candidateIndex] = true;
-    }
-    if (baselineCount != 1)
-      return fail("rank scheduling search did not produce exactly one "
-                  "reserved baseline for generation class " +
-                  std::to_string(generationClass));
-  }
-  for (auto [shardIndex, result] : llvm::enumerate(searchShardResults)) {
-    std::vector<wafer::ScheduledRankCandidate> admitted;
-    admitted.reserve(result.candidates.size());
-    for (auto [candidateIndex, candidate] : llvm::enumerate(result.candidates))
-      if (admittedMasks[shardIndex][candidateIndex])
-        admitted.push_back(std::move(candidate));
-    result.candidates = std::move(admitted);
-  }
-
-  llvm::parallelFor(0, searchShardResults.size(), [&](size_t shardIndex) {
-    RankSearchShardResult &result = searchShardResults[shardIndex];
-    wafer::support::ScopedCompileTimingActivation timingActivation(
-        timingSession);
-    wafer::support::ScopedCompileWorkStatisticsActivation
-        workStatisticsActivation(workStatisticsSession);
-    std::string timingDetail;
-    llvm::raw_string_ostream timingDetailStream(timingDetail);
-    timingDetailStream << "generation-class=" << result.generationClass
-                       << ",request-shard=" << result.requestShardIndex;
-    wafer::support::ScopedCompileTimingSpan finalizationTiming(
-        "search", "rank-candidate-generation", "rank-frontier-finalization",
-        timingDetailStream.str());
-    mlir::ScopedDiagnosticHandler diagnosticHandler(
-        result.context.get(), [&](mlir::Diagnostic &diagnostic) {
-          llvm::raw_string_ostream os(result.diagnostics);
-          diagnostic.print(os);
-          os << "\n";
-          return mlir::success();
-        });
-    mlir::FailureOr<std::vector<detail::FinalizedRankCandidate>> finalized =
-        detail::finalizeScheduledRankCandidateFrontier(
-            std::move(result.candidates),
-            /*requireReservedBaseline=*/false);
-    if (mlir::failed(finalized))
-      return;
-    result.finalizedCandidates = std::move(*finalized);
-    result.finalizationSucceeded = true;
-  });
-
-  struct FinalizedCandidateLocation {
-    RankSearchShardResult *shard;
-    size_t candidateIndex;
-  };
-  std::vector<std::vector<FinalizedCandidateLocation>>
-      finalizedGenerationCandidates(
-          static_cast<size_t>(rankGenerationClassCount));
-  for (RankSearchShardResult &result : searchShardResults) {
-    if (!result.finalizationSucceeded) {
-      diagnostics << result.diagnostics;
-      return fail("rank scheduling finalization failed for logical rank " +
-                  std::to_string(result.logicalRank) + " request shard " +
-                  std::to_string(result.requestShardIndex));
-    }
-    for (size_t candidateIndex = 0;
-         candidateIndex < result.finalizedCandidates.size(); ++candidateIndex)
-      finalizedGenerationCandidates[result.generationClass].push_back(
-          {&result, candidateIndex});
-  }
-  uint64_t generatedCandidateCount = 0;
-  for (auto [generationClass, locations] :
-       llvm::enumerate(finalizedGenerationCandidates)) {
-    llvm::stable_sort(locations, [](FinalizedCandidateLocation lhs,
-                                    FinalizedCandidateLocation rhs) {
-      return lhs.shard->finalizedCandidates[lhs.candidateIndex]
-                 .frontierOrderOrdinal <
-             rhs.shard->finalizedCandidates[rhs.candidateIndex]
-                 .frontierOrderOrdinal;
-    });
-    unsigned baselineCount = 0;
-    for (FinalizedCandidateLocation location : locations)
-      baselineCount +=
-          location.shard->finalizedCandidates[location.candidateIndex]
-              .reservedBaseline;
-    if (locations.empty() || baselineCount != 1)
-      return fail("rank lowering failed for logical rank " +
-                  std::to_string(generationClass));
-    generatedCandidateCount += locations.size();
-  }
-  const int64_t rankGenerationWallMs =
-      detail::elapsedCompileMilliseconds(rankGenerationStart);
-  rankGenerationTiming.reset();
-
-  // Compute the exact bounded context-transfer plan from cheap metadata while
-  // every finalized module still belongs to its worker context. Only modules
-  // reachable through that plan are encoded; original slot positions and all
-  // metadata remain available to the owner import audit.
-  const detail::CompileClock::time_point transferStart =
-      detail::CompileClock::now();
-  auto transferTiming =
-      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-          "stage", "tensor-program-to-executable", "frontier-transfer");
-  std::vector<detail::RankVariantMetadataFrontier> generatedMetadata;
-  generatedMetadata.reserve(finalizedGenerationCandidates.size());
-  for (const std::vector<FinalizedCandidateLocation> &locations :
-       finalizedGenerationCandidates) {
-    detail::RankVariantMetadataFrontier metadata;
-    metadata.reserve(locations.size());
-    for (FinalizedCandidateLocation location : locations) {
-      const detail::FinalizedRankCandidate &candidate =
-          location.shard->finalizedCandidates[location.candidateIndex];
-      metadata.push_back({candidate.stableOrdinal, candidate.artifactKind,
-                          candidate.reservedBaseline, candidate.bufferingKind,
-                          candidate.bufferingPlanOrdinal,
-                          candidate.workerPlacementKind,
-                          candidate.workerPlacementPlanOrdinal});
-    }
-    generatedMetadata.push_back(std::move(metadata));
-  }
-  uint64_t frontierCandidateSlotCount = 0;
-  std::vector<detail::RankVariantMetadataFrontier> frontierMetadata;
-  frontierMetadata.reserve(executionConfig.getRankCount());
-  for (int64_t logicalRank = 0; logicalRank < executionConfig.getRankCount();
-       ++logicalRank) {
-    const size_t generationClass =
-        rankInvariant ? 0 : static_cast<size_t>(logicalRank);
-    frontierCandidateSlotCount += generatedMetadata[generationClass].size();
-    frontierMetadata.push_back(generatedMetadata[generationClass]);
-  }
-  detail::WholeVariantAttemptPlan importPlan =
-      detail::buildWholeVariantAttemptPlan(frontierMetadata,
-                                           executionConfig.getRankCount());
-
-  std::vector<std::vector<bool>> requiredByGeneration;
-  requiredByGeneration.reserve(finalizedGenerationCandidates.size());
-  for (const std::vector<FinalizedCandidateLocation> &locations :
-       finalizedGenerationCandidates)
-    requiredByGeneration.emplace_back(locations.size(), false);
-  for (size_t rankIndex = 0;
-       rankIndex < importPlan.requiredModuleIndices.size(); ++rankIndex) {
-    const size_t generationClass = rankInvariant ? 0 : rankIndex;
-    std::vector<bool> &required = requiredByGeneration[generationClass];
-    for (size_t candidateIndex : importPlan.requiredModuleIndices[rankIndex]) {
-      if (candidateIndex >= required.size())
-        return fail("internal rank-frontier transfer plan references an "
-                    "invalid candidate slot");
-      required[candidateIndex] = true;
-    }
-  }
-
-  uint64_t serializedModuleBytes = 0;
-  uint64_t uniqueEncodedModuleCount = 0;
-  std::vector<detail::SerializedRankVariantFrontier>
-      serializedGenerationFrontiers;
-  serializedGenerationFrontiers.reserve(finalizedGenerationCandidates.size());
-  for (auto [generationClass, locations] :
-       llvm::enumerate(finalizedGenerationCandidates)) {
-    const std::vector<bool> &required = requiredByGeneration[generationClass];
-    detail::SerializedRankVariantFrontier serializedFrontier;
-    serializedFrontier.reserve(locations.size());
-    for (auto [candidateIndex, location] : llvm::enumerate(locations)) {
-      detail::FinalizedRankCandidate &candidate =
-          location.shard->finalizedCandidates[location.candidateIndex];
-      detail::SerializedRankVariantCandidate serialized;
-      serialized.stableOrdinal = candidate.stableOrdinal;
-      serialized.artifactKind = candidate.artifactKind;
-      serialized.reservedBaseline = candidate.reservedBaseline;
-      serialized.bufferingKind = candidate.bufferingKind;
-      serialized.bufferingPlanOrdinal = candidate.bufferingPlanOrdinal;
-      serialized.workerPlacementKind = candidate.workerPlacementKind;
-      serialized.workerPlacementPlanOrdinal =
-          candidate.workerPlacementPlanOrdinal;
-      serialized.selectedTileIR = candidate.selectedTileIR;
-      if (required[candidateIndex]) {
-        std::string moduleData;
-        llvm::raw_string_ostream moduleStream(moduleData);
-        if (mlir::failed(mlir::writeBytecodeToFile(
-                candidate.module.get().getOperation(), moduleStream)))
-          return fail("failed to encode a required rank scheduling candidate");
-        moduleStream.flush();
-        serializedModuleBytes += moduleData.size();
-        serialized.moduleData =
-            std::make_shared<const std::string>(std::move(moduleData));
-        ++uniqueEncodedModuleCount;
-      }
-      serializedFrontier.push_back(std::move(serialized));
-    }
-    serializedGenerationFrontiers.push_back(std::move(serializedFrontier));
-  }
-  for (RankSearchShardResult &result : searchShardResults) {
-    result.candidates.clear();
-    result.finalizedCandidates.clear();
-    result.context.reset();
-  }
-
-  std::vector<detail::SerializedRankVariantFrontier> serializedFrontiers;
-  serializedFrontiers.reserve(executionConfig.getRankCount());
-  for (int64_t logicalRank = 0; logicalRank < executionConfig.getRankCount();
-       ++logicalRank) {
-    const size_t generationClass =
-        rankInvariant ? 0 : static_cast<size_t>(logicalRank);
-    serializedFrontiers.push_back(
-        serializedGenerationFrontiers[generationClass]);
-  }
-  const int64_t transferWallMs =
-      detail::elapsedCompileMilliseconds(transferStart);
-  transferTiming.reset();
-
-  // Reproduce the coordinator's original bounded attempt sequence from cheap
-  // metadata before parsing any finalized module into the bundle-owner
-  // context. Original slot positions remain intact only for this import audit:
-  // slots referenced by a correspondence-valid attempted tuple (plus every
-  // reserved baseline) materialize their module.
-  const detail::CompileClock::time_point importStart =
-      detail::CompileClock::now();
-  auto importTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-      "stage", "tensor-program-to-executable", "owner-import");
-  llvm::Expected<std::vector<detail::RankVariantFrontier>> imported =
-      detail::importRankVariantFrontiersIntoOwnerContext(
-          *context, serializedFrontiers, executionConfig.getRankCount());
-  if (!imported)
-    return fail(llvm::toString(imported.takeError()));
-  std::vector<detail::RankVariantFrontier> frontiers = std::move(*imported);
-  const int64_t importWallMs = detail::elapsedCompileMilliseconds(importStart);
-  importTiming.reset();
-
-  // The import boundary preserves metadata-only slots long enough to audit
-  // the exact bounded context-transfer plan and diagnose a required parse
-  // failure. They are not artifacts, however, and must not enter a later
-  // attempt-plan recomputation after semantic transformations append fresh
-  // materialized candidates. Keep only actual owner-context IR before the
-  // transformation/selection frontier starts evolving.
-  detail::compactImportedRankVariantFrontiers(frontiers);
-
-  const detail::CompileClock::time_point selectionStart =
-      detail::CompileClock::now();
-  auto selectionTiming =
-      std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-          "stage", "tensor-program-to-executable", "whole-variant-selection");
-  detail::WholeVariantSelectionStatistics selectionStatistics;
-  mlir::FailureOr<detail::AcceptedWholeVariant> accepted =
-      detail::selectAcceptedWholeVariant(frontiers, program, executionConfig,
-                                         diagnostics, selectionMode,
-                                         &selectionStatistics);
-  if (mlir::failed(accepted))
-    return fail("whole-variant coordination failed");
-  const int64_t selectionWallMs =
-      detail::elapsedCompileMilliseconds(selectionStart);
-  selectionTiming.reset();
-
-  printAcceptedInstructionWork(diagnostics, *accepted);
-
-  diagnostics << "wafer-compile: compile-stats stage=rank-candidate-generation"
-              << " wall_ms=" << rankGenerationWallMs
-              << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
-              << " rank_count=" << executionConfig.getRankCount()
-              << " rank_generation_classes=" << rankGenerationClassCount
-              << " rank_invariant=" << (rankInvariant ? "true" : "false")
-              << " request_shards_per_class=" << requestShardCount
-              << " candidate_workers=" << candidateEvaluationWorkerLimit
-              << " candidate_count=" << generatedCandidateCount
-              << " per_rank_candidate_limit="
-              << wafer::kMaximumScheduledRankFrontierSize << "\n";
-  diagnostics << "wafer-compile: compile-stats stage=frontier-transfer"
-              << " wall_ms=" << transferWallMs
-              << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
-              << " candidate_slots=" << frontierCandidateSlotCount
-              << " encoded_modules=" << uniqueEncodedModuleCount
-              << " imported_modules=" << importPlan.getRequiredModuleCount()
-              << " encoded_bytes=" << serializedModuleBytes << "\n";
-  diagnostics << "wafer-compile: compile-stats stage=owner-import"
-              << " wall_ms=" << importWallMs
-              << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
-              << " imported_modules=" << importPlan.getRequiredModuleCount()
-              << "\n";
-  diagnostics << "wafer-compile: compile-stats stage=whole-variant-selection"
-              << " wall_ms=" << selectionWallMs
-              << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
-              << " planned_attempts=" << selectionStatistics.plannedAttemptCount
-              << " planned_attempt_limit="
-              << selectionStatistics.plannedAttemptLimit
-              << " pretarget_attempts=" << selectionStatistics.preTargetAttempts
-              << " pretarget_accepted=" << selectionStatistics.preTargetAccepted
-              << " target_gate_attempts="
-              << selectionStatistics.targetGateInvocations
-              << " target_rank_lowerings="
-              << selectionStatistics.targetRankGateInvocations
-              << " fully_accepted=" << selectionStatistics.fullyAcceptedVariants
-              << " pareto_retained="
-              << selectionStatistics.paretoRetainedVariants
-              << " rank_clone_upper_bound="
-              << selectionStatistics.preTargetAttempts *
-                     static_cast<uint64_t>(executionConfig.getRankCount())
-              << "\n";
-  diagnostics << "wafer-compile: compile-stats stage=executable-bundle"
-              << " wall_ms=" << detail::elapsedCompileMilliseconds(totalStart)
-              << " peak_rss_kib=" << detail::getCompilePeakRSSKiB() << "\n";
-
-  auto makeBundle = [&](detail::AcceptedWholeVariant variant)
-      -> llvm::Expected<ExecutableBundle> {
-    std::vector<RankExecutable> ranks = std::move(variant.ranks);
-    if (ranks.size() != static_cast<size_t>(executionConfig.getRankCount()))
-      return fail("executable bundle rank domain is incomplete");
-    for (auto [expectedRank, rank] : llvm::enumerate(ranks))
-      if (rank.getLogicalRank() != static_cast<int64_t>(expectedRank))
-        return fail("executable bundle rank domain is not canonical");
-    return ExecutableBundleBuilder::makeBundle(
-        executionConfig, std::move(variant.runtimeLaunchContract), context,
-        std::move(ranks));
-  };
-
-  return makeBundle(std::move(*accepted));
+  return buildCoordinatedExecutableBundle(
+      context, tensorModule, program, executionConfig, optimizations,
+      diagnostics, selectionMode, failAfterLogicalRank, totalStart);
 }
 
 llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(

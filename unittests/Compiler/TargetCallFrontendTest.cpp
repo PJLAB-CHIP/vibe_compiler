@@ -224,7 +224,7 @@ public:
   }
 
   llvm::Error terminal(int64_t logicalRank) override {
-    terminalRanks.push_back(logicalRank);
+    finalizedRanks.push_back(logicalRank);
     return llvm::Error::success();
   }
 
@@ -240,7 +240,7 @@ public:
     aborted = true;
     abortDiagnostic = diagnostic.str();
     transactions.clear();
-    terminalRanks.clear();
+    finalizedRanks.clear();
   }
 
   bool began = false;
@@ -257,7 +257,7 @@ public:
   std::string abortDiagnostic;
   std::vector<wafer::compiler::TargetCallRankDescriptor> rankDescriptors;
   std::vector<wafer::compiler::TargetTransaction> transactions;
-  std::vector<int64_t> terminalRanks;
+  std::vector<int64_t> finalizedRanks;
 };
 
 uint64_t supportedF32Code(wafer::TargetFormatEngine engine) {
@@ -1041,7 +1041,7 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
   EXPECT_EQ(sink.rankDescriptors[0].slotValues, arguments[0].slots);
   EXPECT_EQ(sink.rankDescriptors[0].kernelABISlots.front().dtype,
             bundle->getModules().front().getKernelABISlots().front().dtype);
-  EXPECT_EQ(sink.terminalRanks, std::vector<int64_t>({0}));
+  EXPECT_EQ(sink.finalizedRanks, std::vector<int64_t>({0}));
   EXPECT_EQ(result->completedRankCount, 1);
   EXPECT_EQ(result->issuedTransactionCount, sink.transactions.size());
   ASSERT_FALSE(sink.transactions.empty());
@@ -1230,7 +1230,7 @@ TEST(TargetCallFrontendTest, SinkFailureAbortsWithoutPartialResult) {
   EXPECT_TRUE(sink.aborted);
   EXPECT_FALSE(sink.committed);
   EXPECT_TRUE(sink.transactions.empty());
-  EXPECT_TRUE(sink.terminalRanks.empty());
+  EXPECT_TRUE(sink.finalizedRanks.empty());
 }
 
 TEST(TargetCallFrontendTest, ExecutesAllRanksWithExplicitDTEOpaqueEvents) {
@@ -1261,9 +1261,9 @@ TEST(TargetCallFrontendTest, ExecutesAllRanksWithExplicitDTEOpaqueEvents) {
       << diagnostics << llvm::toString(result.takeError());
   EXPECT_EQ(result->completedRankCount, 16);
   EXPECT_EQ(sink.invocationRankCount, 16u);
-  ASSERT_EQ(sink.terminalRanks.size(), 16u);
-  for (size_t index = 0; index < sink.terminalRanks.size(); ++index)
-    EXPECT_EQ(sink.terminalRanks[index], 15 - static_cast<int64_t>(index));
+  ASSERT_EQ(sink.finalizedRanks.size(), 16u);
+  for (size_t index = 0; index < sink.finalizedRanks.size(); ++index)
+    EXPECT_EQ(sink.finalizedRanks[index], 15 - static_cast<int64_t>(index));
 
   llvm::DenseSet<uint64_t> producedEvents;
   llvm::DenseSet<int64_t> beginRanks;
@@ -1369,7 +1369,7 @@ TEST(TargetCallFrontendTest, LateRankFailureAbortsTheWholeInvocation) {
   EXPECT_TRUE(sink.aborted);
   EXPECT_FALSE(sink.committed);
   EXPECT_TRUE(sink.transactions.empty());
-  EXPECT_TRUE(sink.terminalRanks.empty());
+  EXPECT_TRUE(sink.finalizedRanks.empty());
 }
 
 TEST(TargetCallFrontendTest, NativeIllegalInlineAssemblyFailsBeforeSinkBegin) {

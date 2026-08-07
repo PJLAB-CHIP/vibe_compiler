@@ -142,10 +142,10 @@ module {
   EXPECT_NE(
       diagnosticsText.find("compile-stats stage=coordinated-tile-frontier"),
       std::string::npos);
-  EXPECT_NE(
-      diagnosticsText.find("compile-stats stage=coordinated-terminal-gate"),
-      std::string::npos);
-  EXPECT_NE(diagnosticsText.find("terminal_reserved=0"), std::string::npos);
+  EXPECT_NE(diagnosticsText.find(
+                "compile-stats stage=coordinated-executable-finalization"),
+            std::string::npos);
+  EXPECT_NE(diagnosticsText.find("finalization_reserved=0"), std::string::npos);
   EXPECT_EQ(diagnosticsText.find("per_rank_candidate_limit="),
             std::string::npos);
   // The executable bundle becomes the MLIRContext owner on success. Destroy
@@ -166,25 +166,46 @@ module {
   llvm::raw_string_ostream scheduledStream(scheduledText);
   scheduled.print(scheduledStream);
   scheduledStream.flush();
-  ASSERT_EQ(regions.size(), 1u) << scheduledText;
+  ASSERT_FALSE(regions.empty()) << scheduledText;
   bool hasSPMResult = false;
   bool hasSPMOperand = false;
   for (wafer::TileRegionOp region : regions) {
+    EXPECT_FALSE(region->getParentOfType<wafer::TileRegionOp>())
+        << scheduledText;
     for (mlir::Value result : region.getResults())
       hasSPMResult |= wafer::isWaferSPMMemRefType(result.getType());
     for (mlir::Value operand : region.getOperands())
       hasSPMOperand |= wafer::isWaferSPMMemRefType(operand.getType());
   }
-  // The complete post-SPMD rank graph is one residency domain. Shaped data
-  // may cross its outer boundary only in DDR; SPM SSA stays internal.
+  // Each selected region is one SPM residency domain. Production may retain
+  // one domain or split the rank graph at an explicit DDR boundary, but SPM
+  // SSA never crosses or nests those boundaries.
   EXPECT_FALSE(hasSPMResult);
   EXPECT_FALSE(hasSPMOperand);
-  // The C1 conservative baseline materializes all three structured roots in
-  // this graph. The converted tensor is an explicit DDR boundary consumed by
-  // the reduction and square traversals, so each root has one exact load/store
-  // pair before later frontier actions consider residency fusion.
-  EXPECT_EQ(countOps<wafer::InstrRDMAOp>(scheduled), 3u);
-  EXPECT_EQ(countOps<wafer::InstrWDMAOp>(scheduled), 3u);
+  // The selected connection-aware realization keeps the only user input in
+  // SPM across both differently shaped consumers. The pure conversion is
+  // recomputed in each consumer traversal, so the old intermediate DDR
+  // store plus two reloads are absent and only user-visible outputs are
+  // published.
+  llvm::SmallVector<wafer::InstrRDMAOp, 2> loads;
+  llvm::SmallVector<wafer::InstrWDMAOp, 2> stores;
+  llvm::SmallVector<wafer::InstrConvertOp, 2> converts;
+  scheduled.walk([&](wafer::InstrRDMAOp load) { loads.push_back(load); });
+  scheduled.walk([&](wafer::InstrWDMAOp store) { stores.push_back(store); });
+  scheduled.walk(
+      [&](wafer::InstrConvertOp convert) { converts.push_back(convert); });
+  ASSERT_EQ(loads.size(), 1u) << scheduledText;
+  ASSERT_EQ(stores.size(), 2u) << scheduledText;
+  ASSERT_EQ(converts.size(), 2u) << scheduledText;
+  EXPECT_EQ(loads.front().getByteCountAttr().getInt(), 16);
+  EXPECT_EQ(converts[0].getSource(), loads.front().getDest());
+  EXPECT_EQ(converts[1].getSource(), loads.front().getDest());
+  EXPECT_TRUE(llvm::any_of(stores, [](wafer::InstrWDMAOp store) {
+    return store.getByteCountAttr().getInt() == 8;
+  }));
+  EXPECT_TRUE(llvm::any_of(stores, [](wafer::InstrWDMAOp store) {
+    return store.getByteCountAttr().getInt() == 32;
+  }));
   EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(scheduled), 1u);
 
   llvm::Expected<wafer::compiler::TargetLLVMModuleBundle> target =

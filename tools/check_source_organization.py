@@ -32,24 +32,38 @@ NUMERIC_SEMANTICS_SOURCES = (
 )
 TENSOR_PROGRAM_TO_TILE_REGION_SOURCES = (
     "BidirectionalTiling.cpp",
+    "AttentionSemantics.cpp",
     "BodyEmitter.cpp",
     "CandidateMaterialization.cpp",
     "CandidateSupport.cpp",
     "CollectiveLowering.cpp",
     "CompleteTraversal.cpp",
     "GenericLowering.cpp",
+    "MaterializeFlashAttention.cpp",
+    "MaterializeFlashDecoding.cpp",
     "NamedComputeLowering.cpp",
     "TensorControlFlowLowering.cpp",
     "TileMaterialization.cpp",
     "WaferTensorProgramToTileRegion.cpp",
 )
-CANDIDATE_SELECTION_SOURCES = (
+LEGACY_TASK_LOCAL_SELECTION_PATHS = (
     "CandidateAnalysis.cpp",
     "CandidateCommit.cpp",
     "CandidateEvaluation.cpp",
     "CandidateSelection.cpp",
+    "FullBufferHandoff.cpp",
     "ScheduleTensorProgram.cpp",
+    "ScheduleTensorProgramInternal.h",
     "StructuredSchedulingScope.cpp",
+    "StructuredSchedulingScope.h",
+)
+RETIRED_RANK_FRONTIER_PATHS = (
+    "lib/Wafer/Compiler/NoCResidentDataflow.cpp",
+    "lib/Wafer/Compiler/NoCResidentDataflow.h",
+    "lib/Wafer/Compiler/WholeVariantAttemptPlan.cpp",
+    "lib/Wafer/Compiler/WholeVariantAttemptPlan.h",
+    "lib/Wafer/Compiler/WholeVariantCoordinator.h",
+    "lib/Wafer/Transforms/Scheduling/RankCandidateFrontier.h",
 )
 MEMORY_PLANNING_SOURCES = (
     "LifetimeAnalysis.cpp",
@@ -850,48 +864,52 @@ def check_tensor_program_to_tile_region_owners(
             fail(errors, f"legacy group conversion directory must be removed: {legacy_root}")
 
 
-def check_candidate_selection_owners(root: Path, errors: list[str]) -> None:
+def check_legacy_task_local_selection_removed(
+    root: Path, errors: list[str]
+) -> None:
     source_root = root / "lib/Wafer/Transforms/Scheduling"
     cmake_path = root / "lib/Wafer/Transforms/CMakeLists.txt"
     cmake_text = read_required(cmake_path, errors)
 
-    for filename in CANDIDATE_SELECTION_SOURCES:
-        read_required(source_root / filename, errors)
-    check_private_header(
-        source_root / "ScheduleTensorProgramInternal.h",
-        root / "include/Wafer/Transforms/Scheduling/ScheduleTensorProgramInternal.h",
-        "candidate-selection internal",
-        errors,
-    )
-    check_private_header(
-        source_root / "StructuredSchedulingScope.h",
-        root / "include/Wafer/Transforms/Scheduling/StructuredSchedulingScope.h",
-        "structured scheduling scope",
-        errors,
-    )
+    for filename in LEGACY_TASK_LOCAL_SELECTION_PATHS:
+        path = source_root / filename
+        if path.exists():
+            fail(errors, f"legacy task-local selection path must be removed: {path}")
     target_body = cmake_target_body(
         cmake_text, "add_mlir_library", "WaferTransforms", cmake_path, errors
     )
-    check_cmake_sources(
-        body=target_body,
-        required=CANDIDATE_SELECTION_SOURCES,
-        prefix="Scheduling/",
-        cmake_path=cmake_path,
-        target="WaferTransforms",
-        errors=errors,
-    )
-    facade = read_required(source_root / "ScheduleTensorProgram.cpp", errors)
-    for implementation in (
-        "struct CandidateRecord",
-        "struct CandidateCost",
-        "class CandidateAnalysis",
-    ):
-        if implementation in facade:
-            fail(errors, f"candidate-selection facade still owns {implementation}")
+    for filename in LEGACY_TASK_LOCAL_SELECTION_PATHS:
+        if not filename.endswith(".cpp"):
+            continue
+        source = f"Scheduling/{filename}"
+        if source in target_body:
+            fail(
+                errors,
+                f"WaferTransforms still lists removed task-local selection source: {source}",
+            )
 
     legacy_root = root / "lib/Wafer/Transforms/Group"
     if legacy_root.exists():
         fail(errors, f"legacy group transform directory must be removed: {legacy_root}")
+
+
+def check_retired_rank_frontier_removed(root: Path, errors: list[str]) -> None:
+    for relative in RETIRED_RANK_FRONTIER_PATHS:
+        path = root / relative
+        if path.exists():
+            fail(errors, f"retired rank-frontier path must be removed: {path}")
+
+    cmake_path = root / "lib/Wafer/Compiler/CMakeLists.txt"
+    cmake_text = read_required(cmake_path, errors)
+    target_body = cmake_target_body(
+        cmake_text, "add_mlir_library", "WaferCompiler", cmake_path, errors
+    )
+    for filename in ("NoCResidentDataflow.cpp", "WholeVariantAttemptPlan.cpp"):
+        if filename in target_body:
+            fail(
+                errors,
+                f"WaferCompiler still lists retired rank-frontier source: {filename}",
+            )
 
 
 def check_memory_planning_owners(root: Path, errors: list[str]) -> None:
@@ -1858,7 +1876,8 @@ def main() -> int:
     check_tile_region_to_instr_owners(root, errors)
     check_numeric_semantics_owners(root, errors)
     check_tensor_program_to_tile_region_owners(root, errors)
-    check_candidate_selection_owners(root, errors)
+    check_legacy_task_local_selection_removed(root, errors)
+    check_retired_rank_frontier_removed(root, errors)
     check_memory_planning_owners(root, errors)
     check_target_llvm_owners(root, errors)
     check_numeric_dependency_owners(root, errors)

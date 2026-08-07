@@ -811,7 +811,7 @@ findRequiredOutputPublisher(mlir::ModuleOp module, int64_t logicalRank,
 }
 
 static llvm::SmallVector<RequiredOutputGroup, 4> collectRequiredOutputGroups(
-    llvm::MutableArrayRef<mlir::ModuleOp> modules,
+    llvm::ArrayRef<mlir::ModuleOp> modules,
     const frontend::FrontendProgramVerificationResult &program,
     llvm::ArrayRef<BoundaryDescriptor> boundaries) {
   llvm::SmallVector<RequiredOutputGroup, 4> groups;
@@ -1116,6 +1116,34 @@ static void materializeIntermediateGroup(const IntermediateGroup &group,
 }
 
 } // namespace
+
+bool hasNoCIntermediateHandoffOpportunity(
+    llvm::ArrayRef<mlir::ModuleOp> modules,
+    const frontend::FrontendProgramVerificationResult &program) {
+  if (modules.size() < 2 ||
+      modules.size() != static_cast<size_t>(program.logicalRankCount))
+    return false;
+  llvm::SmallVector<BoundaryDescriptor, 8> boundaries =
+      getBoundaryDescriptors(program);
+  llvm::SmallVector<llvm::SmallVector<IntermediateSpillCut, 4>, 16> cutsByRank;
+  cutsByRank.reserve(modules.size());
+  for (auto [rank, module] : llvm::enumerate(modules))
+    cutsByRank.push_back(
+        collectIntermediateSpillCuts(module, static_cast<int64_t>(rank)));
+  return !buildIntermediateGroups(cutsByRank, boundaries).empty();
+}
+
+bool hasNoCOutputPublicationOpportunity(
+    llvm::ArrayRef<mlir::ModuleOp> modules,
+    const frontend::FrontendProgramVerificationResult &program) {
+  if (modules.size() < 2 ||
+      modules.size() != static_cast<size_t>(program.logicalRankCount) ||
+      program.distributedOutputs.empty())
+    return false;
+  llvm::SmallVector<BoundaryDescriptor, 8> boundaries =
+      getBoundaryDescriptors(program);
+  return !collectRequiredOutputGroups(modules, program, boundaries).empty();
+}
 
 unsigned materializeNoCIntermediateHandoffs(
     llvm::MutableArrayRef<mlir::ModuleOp> modules,

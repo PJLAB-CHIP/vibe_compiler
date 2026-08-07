@@ -5,48 +5,53 @@
 # RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%one = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    %%0 = stablehlo.divide %%one, %%arg0 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.input/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
 
-# Production selects the accepted reciprocal implementation. The public none
-# preset keeps only the fully gated conservative baseline; the same semantic
-# axis can also be disabled from production or enabled on top of none.
-# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/production --execution-ranks=1 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
-# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/baseline --execution-ranks=1 --launch-kind=kernel --optimization-preset=none 2>&1 | FileCheck %s --check-prefixes=NONE-CONFIG,PUBLISHED
-# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/disabled-implementation --execution-ranks=1 --launch-kind=kernel --disable-optimization=implementation-selection | FileCheck %s --check-prefix=PUBLISHED
-# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/only-implementation --execution-ranks=1 --launch-kind=kernel --optimization-preset=none --enable-optimization=implementation-selection | FileCheck %s --check-prefix=PUBLISHED
-# RUN: test -s %t.outputs/production/modules/module_00000.so
-# RUN: test -s %t.outputs/baseline/modules/module_00000.so
-# RUN: test -s %t.outputs/disabled-implementation/modules/module_00000.so
-# RUN: test -s %t.outputs/only-implementation/modules/module_00000.so
-# RUN: not cmp -s %t.outputs/production/modules/module_00000.so %t.outputs/baseline/modules/module_00000.so
-# RUN: cmp -s %t.outputs/baseline/modules/module_00000.so %t.outputs/disabled-implementation/modules/module_00000.so
-# RUN: cmp -s %t.outputs/production/modules/module_00000.so %t.outputs/only-implementation/modules/module_00000.so
-# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm %t.outputs/production/modules/module_00000.so | FileCheck %s --check-prefix=PRODUCTION
-# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm %t.outputs/baseline/modules/module_00000.so | FileCheck %s --check-prefix=BASELINE
+# Default and explicit production are the same public policy. The only public
+# A/B counterpart is the explicit none preset, which keeps the admitted
+# conservative baseline without selecting individual implementation axes.
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/default-production --execution-ranks=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefixes=PRODUCTION-CONFIG,PUBLISHED
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/explicit-production --execution-ranks=1 --launch-kind=kernel --optimization-preset=production 2>&1 | FileCheck %s --check-prefixes=PRODUCTION-CONFIG,PUBLISHED
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/none --execution-ranks=1 --launch-kind=kernel --optimization-preset=none 2>&1 | FileCheck %s --check-prefixes=NONE-CONFIG,PUBLISHED
+# RUN: test -s %t.outputs/default-production/modules/module_00000.so
+# RUN: test -s %t.outputs/explicit-production/modules/module_00000.so
+# RUN: test -s %t.outputs/none/modules/module_00000.so
+# RUN: cmp -s %t.outputs/default-production/modules/module_00000.so %t.outputs/explicit-production/modules/module_00000.so
+
+# The real StableHLO tensor-splat-one form lowers through Linalg and complete
+# Tile materialization before implementation selection. Production must retain
+# that typed SSA proof across the tiled extract_slice, while none preserves the
+# ordinary division baseline.
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm --defined-only %t.outputs/default-production/modules/module_00000.so | FileCheck %s --check-prefix=PRODUCTION-RECIPROCAL
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm --defined-only %t.outputs/none/modules/module_00000.so | FileCheck %s --check-prefix=NONE-DIVISION
 
 # The production binary still does not consume the private testing seam.
 # RUN: env WAFER_TEST_SELECT_RESERVED_BASELINE=1 wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/production-with-env --execution-ranks=1 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
-# RUN: cmp -s %t.outputs/production/modules/module_00000.so %t.outputs/production-with-env/modules/module_00000.so
+# RUN: cmp -s %t.outputs/default-production/modules/module_00000.so %t.outputs/production-with-env/modules/module_00000.so
 
 # The private reserved-baseline seam remains only for failure-isolation tests
 # and cannot be combined with a failure injection.
 # RUN: not env WAFER_TEST_SELECT_RESERVED_BASELINE=1 WAFER_TEST_FAIL_AFTER_LOGICAL_RANK=0 %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/private-conflicting --execution-ranks=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=PRIVATE-CONFLICT
 
-# Unknown, duplicate and conflicting axis specifications fail before
-# compilation or publication.
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/unknown --execution-ranks=1 --launch-kind=kernel --enable-optimization=unknown-axis 2>&1 | FileCheck %s --check-prefix=UNKNOWN
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/duplicate --execution-ranks=1 --launch-kind=kernel --enable-optimization=implementation-selection --enable-optimization=implementation-selection 2>&1 | FileCheck %s --check-prefix=DUPLICATE
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/conflicting --execution-ranks=1 --launch-kind=kernel --enable-optimization=implementation-selection --disable-optimization=implementation-selection 2>&1 | FileCheck %s --check-prefix=CONFLICT
-# RUN: test ! -e %t.outputs/unknown
-# RUN: test ! -e %t.outputs/duplicate
-# RUN: test ! -e %t.outputs/conflicting
+# Invalid presets and both retired per-axis options fail before compilation or
+# publication. The old spellings are ordinary unknown arguments, not hidden
+# compatibility aliases.
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/invalid-preset --execution-ranks=1 --launch-kind=kernel --optimization-preset=custom 2>&1 | FileCheck %s --check-prefix=INVALID-PRESET
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/legacy-enable --execution-ranks=1 --launch-kind=kernel --enable-optimization=implementation-selection 2>&1 | FileCheck %s --check-prefix=LEGACY-ENABLE
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/legacy-disable --execution-ranks=1 --launch-kind=kernel --disable-optimization=implementation-selection 2>&1 | FileCheck %s --check-prefix=LEGACY-DISABLE
+# RUN: test ! -e %t.outputs/invalid-preset
+# RUN: test ! -e %t.outputs/legacy-enable
+# RUN: test ! -e %t.outputs/legacy-disable
 # RUN: test ! -e %t.outputs/private-conflicting
 
-# NONE-CONFIG: wafer-compile: optimization-config enabled=[] disabled=[consumer-local-recomputation,loop-invariant-code-motion,algebraic-reassociation,reduction-tree-balancing,algebraic-distribution,algebraic-factorization,implementation-selection,tile-search-alternatives,scope-composition,collective-algorithm-selection,direct-mapped-boundary-transfer,concurrent-working-set-selection,full-buffer-transfer-elision,full-buffer-residency,ready-order-scheduling,static-fixed-slot-buffering,disjoint-worker-placement,noc-resident-dataflow]
+# PRODUCTION-CONFIG: wafer-compile: optimization-policy=production
+# NONE-CONFIG: wafer-compile: optimization-policy=none
+# PRODUCTION-RECIPROCAL-NOT: wafer_tx81_elementwise_div_v3
+# PRODUCTION-RECIPROCAL: wafer_tx81_elementwise_recip_v3
+# PRODUCTION-RECIPROCAL-NOT: wafer_tx81_elementwise_div_v3
+# NONE-DIVISION-NOT: wafer_tx81_elementwise_recip_v3
+# NONE-DIVISION: wafer_tx81_elementwise_div_v3
+# NONE-DIVISION-NOT: wafer_tx81_elementwise_recip_v3
 # PUBLISHED: wafer-compile: published verified package with execution-ranks=1:
-# PRODUCTION: wafer_tx81_elementwise_recip_v3
-# PRODUCTION-NOT: wafer_tx81_elementwise_div_v3
-# BASELINE: wafer_tx81_elementwise_div_v3
-# BASELINE-NOT: wafer_tx81_elementwise_recip_v3
-# UNKNOWN: wafer-compile: unknown --enable-optimization value: unknown-axis
-# DUPLICATE: wafer-compile: duplicate --enable-optimization value: implementation-selection
-# CONFLICT: wafer-compile: optimization is both enabled and disabled: implementation-selection
+# INVALID-PRESET: wafer-compile: invalid --optimization-preset value: custom (expected production or none)
+# LEGACY-ENABLE: wafer-compile: unknown argument: --enable-optimization=implementation-selection
+# LEGACY-DISABLE: wafer-compile: unknown argument: --disable-optimization=implementation-selection
 # PRIVATE-CONFLICT: wafer-compile: test-only reserved-baseline selection cannot be combined with failure injection

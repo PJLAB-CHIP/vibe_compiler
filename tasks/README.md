@@ -63,7 +63,7 @@ Q47 Target ABI退役计划见`tasks/plans/target-abi-retirement.md`。它已在Q
 
 Q49 whole-rank tile dataflow synthesis计划见`tasks/plans/whole-rank-tile-dataflow-synthesis.md`。它由06作为唯一
 联合决策设计owner，复用01、07-13、16、18的selected IR、physical realization、memory、completion、communication和验证合同；
-目标是在Instr lowering前联合搜索SPM-residency region partition、tiling/residency/materialization/communication，并让candidate generation与terminal exact gate服从同一个all-rank
+目标是在Instr lowering前联合搜索SPM-residency region partition、tiling/residency/materialization/communication，并让candidate generation与executable-finalization exact gate服从同一个all-rank
 coordinator/global ledger，同时删除旧per-task提前物化路径。动态状态和完成门禁只看`tasks/progress.md`。
 
 Q48语义驱动superoptimizer计划见`tasks/plans/semantic-superoptimization.md`。它必须在Q49达到`board-ready`且C0–C6

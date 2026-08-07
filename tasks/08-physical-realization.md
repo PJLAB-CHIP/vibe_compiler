@@ -92,7 +92,7 @@ Pipeline position:
   selected physical-version、descriptor list 或重复 schedule。
 - Downstream consumer:
   complete-rank Tile→Instr DialectConversion、worker/fixed-slot/ready-order sibling、compiler-derived completion fresh
-  reconstruction、从 terminal actual IR 的 SPM root/lifetime/control-flow coexistence 派生的 allocation-domain
+  reconstruction、从 finalized actual IR 的 SPM root/lifetime/control-flow coexistence 派生的 allocation-domain
   fixed-capacity SPM planning、whole-variant DDR planning、post-memory transport/resource binding、
   ABI/artifact preflight和target conversion。
 - User-level driver / named pipeline:
@@ -143,7 +143,7 @@ Pipeline position:
 - Downstream consumer:
   typed worker/fixed-slot/ready-order sibling derivation与fresh whole-rank completion reconstruction/verifier；canonical/unplaced
   current Instr从SSA/effects/ranges原子派生siblings，删除全部compiler-derived`wafer.instr.ncc_join`并从current facts
-  fresh重建fixed-frontier latest-necessary completion；随后从完整terminal rank-entry的root、lifetime与可能并发关系
+  fresh重建fixed-frontier latest-necessary completion；随后从完整finalized rank-entry的root、lifetime与可能并发关系
   派生一个或多个fixed SPM allocation problems，验证all-and-only root coverage后进入whole-variant DDR、
   post-memory Direct-DTE binding/all-rank resource、fresh final-IR cost和target lowering。
 - User-level driver / named pipeline:
@@ -722,9 +722,10 @@ movement。TargetCall/SystemC 只执行最终命令，不能替 compiler 掩盖 
 
 ## 11. Candidate Materialization 与 Conversion
 
-每次 strategy 尝试遵循：
+query-local proposal先按typed legality、relation、lower bound和DP/Pareto dominance进入structural frontier；只有统一
+actual-clone budget准入的有界代表才进入下列materialization步骤，actual失败按稳定顺序从未物化frontier补位：
 
-1. 用 `IRMapping` clone 当前 rank-local IR；Q46可以消费一个只含stable state ordinal的PBQP proposal，但必须在
+1. 用 `IRMapping` clone 当前 rank-local IR；Q46可以消费一个只含stable state ordinal的已准入PBQP proposal，但必须在
    该clone上重新定位op/value并fresh重证全部relation与route；
 2. 在 clone 上构造 relation、bounds、alias、physical map 和 effect snapshot；
 3. 运行当前 view/transfer proof；
@@ -733,9 +734,10 @@ movement。TargetCall/SystemC 只执行最终命令，不能替 compiler 掩盖 
 6. 从新 clone 运行 verifier、descriptor、range、invalid-lane、lifetime 和 event gates；
 7. 成功则把 clone 交给candidate owner评估，失败则完整丢弃。
 
-frontier 中 candidate 的语义主体就是 clone。允许保存从 clone 派生的 Pareto/cost 摘要以便排序，但 rewrite
-后必须重算，且摘要不能参与 verifier 或 lowering。不得同时保存一份 selected implementation/encoding/route/
-physical-version list。PBQP projection和assignment在actual clone进入worklist前销毁，不属于frontier entry。
+structural frontier成员是query-local proposal，不拥有IR；actual frontier只保存统一预算准入并成功物化的有界clone。
+允许保存从proposal或clone派生的Pareto/cost摘要以便排序，但rewrite后必须重算，且摘要不能参与verifier或lowering。
+不得同时保存一份selected implementation/encoding/route/physical-version list。PBQP projection和assignment在actual clone
+进入worklist前销毁，不属于actual frontier entry。
 
 同一 IR level 的 view、tiling 和 movement creation 使用 rewrite patterns。跨 dialect/type legality 边界的
 source-to-tile 和 tile-to-instruction 使用 `DialectConversion`、`ConversionTarget`、conversion patterns 和
@@ -816,7 +818,7 @@ accepted physical-realization IR 至少验证：
 6. **descriptor tests**：one/multi-command RDMA/WDMA、GS、field overflow、alignment、range、broadcast read；
 7. **invalid-lane tests**：unknown、known splat、fill + segmented write、mask、negative consumer observation；
 8. **IR tests**：clone 内 materialization、DialectConversion legality、canonicalization、atomic rejection；
-9. **integrated tests**：terminal actual IR的SPM allocation-domain覆盖/冲突/容量、whole-variant DDR、event、
+9. **integrated tests**：finalized actual IR的SPM allocation-domain覆盖/冲突/容量、whole-variant DDR、event、
    instruction 和 SystemC logical round trip；problem/query数只作budget diagnostic，不作IR语义或固定test oracle。
 
 property tests 使用独立慢 oracle 与 interface/descriptor fast path differential。慢 oracle 可以逐元素；生产
@@ -885,7 +887,8 @@ whole-rank/whole-variant gates；该later工作不属于Q32或本文当前完成
   无vector-width/packing side parameter；
 - current zero-copy/compact DMA/GS/staged及Q32.V mapped route alternatives在isolated clones中成为不同typed
   view/movement/temp/event IR，并进入06同一candidate selection；
-- Q46的whole-graph proposal只由本层existing relation/encoding/realizability proof支持，proposal销毁后只有actual clone进入frontier；
+- Q46的whole-graph proposal只由本层existing relation/encoding/realizability proof支持；proposal先进入query-local structural
+  frontier，只有统一预算准入的有界代表才物化actual clone，成功后销毁对应proposal；
 - exact descriptor、invalid-lane、range、lifetime 和 completion 能只从 accepted IR 重建；
 - direct failure 不在 lowering 中隐式 fallback；
 - calculator、relation、descriptor、verifier 和 integrated tests 有本轮真实执行结果；

@@ -676,10 +676,27 @@ emitLifetimeFailure(mlir::func::FuncOp funcOp,
               "through raw metadata or an operation without supported "
               "alias/effect semantics (operation "
            << origin->getName() << ")";
-  case mp::LifetimeFailureKind::LoopCarriedAllocationInstance:
-    return origin->emitError()
-           << "unsupported_lifetime_alias: loop-body SPM allocation cannot be "
-              "loop-carried without multi-instance placement";
+  case mp::LifetimeFailureKind::LoopCarriedAllocationInstance: {
+    mlir::InFlightDiagnostic diagnostic = origin->emitError();
+    diagnostic
+        << "unsupported_lifetime_alias: loop-body SPM allocation cannot be "
+           "loop-carried without multi-instance placement";
+    if (auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(origin)) {
+      diagnostic << "; type=" << allocation.getType();
+      llvm::SmallVector<llvm::StringRef, 4> userNames;
+      for (mlir::Operation *user : allocation.getResult().getUsers()) {
+        if (userNames.size() == 4)
+          break;
+        userNames.push_back(user->getName().getStringRef());
+      }
+      if (!userNames.empty()) {
+        diagnostic << ", users=[";
+        llvm::interleaveComma(userNames, diagnostic);
+        diagnostic << "]";
+      }
+    }
+    return mlir::failure();
+  }
   case mp::LifetimeFailureKind::MissingAsyncCompletion:
     return origin->emitError()
            << "missing_async_completion: asynchronous SPM access has a "
@@ -689,12 +706,19 @@ emitLifetimeFailure(mlir::func::FuncOp funcOp,
     return origin->emitError()
            << "unsupported_async_completion_flow: SPM memory planning cannot "
               "prove completion identity through this async handle flow";
-  case mp::LifetimeFailureKind::MissingLocalCompletion:
-    return origin->emitError()
-           << "missing_local_completion: local Compute/Movement issue has a "
-              "reachable path to wafer.tile.region exit without "
-              "a matching participant in wafer.instr.ncc_join (operation "
-           << origin->getName() << ")";
+  case mp::LifetimeFailureKind::MissingLocalCompletion: {
+    std::string originIR;
+    llvm::raw_string_ostream originStream(originIR);
+    origin->print(originStream);
+    mlir::InFlightDiagnostic diagnostic = origin->emitError();
+    diagnostic
+        << "missing_local_completion: local Compute/Movement issue has a "
+           "reachable path to wafer.tile.region exit without "
+           "a matching participant in wafer.instr.ncc_join (operation "
+        << origin->getName() << "); origin_ir='";
+    diagnostic << originStream.str() << "'";
+    return mlir::failure();
+  }
   case mp::LifetimeFailureKind::LoopBackedgeCompletion:
     return origin->emitError()
            << "missing_local_completion: local Compute/Movement issue has a "
@@ -783,61 +807,18 @@ verifySPMAsyncFunctionClosures(mlir::ModuleOp moduleOp) {
 }
 
 static mlir::LogicalResult
-verifyTileRegionCompletion(TileRegionOp tileRegion, mlir::func::FuncOp funcOp) {
-  mp::TimelineFailure timelineFailure;
-  mlir::FailureOr<mp::StructuredTimeline> timeline =
-      mp::StructuredTimeline::build(tileRegion.getOperation(),
-                                    &timelineFailure);
-  if (mlir::failed(timeline)) {
-    mlir::Operation *origin = timelineFailure.origin
-                                  ? timelineFailure.origin
-                                  : tileRegion.getOperation();
-    return origin->emitError()
-           << "unsupported_lifetime_control_flow: tile-region terminal "
-              "completion proof requires single-block scf.if/scf.for "
-              "structured control flow";
-  }
-
-  DTECompletionTracker dteCompletion(*timeline);
-  if (mlir::failed(dteCompletion.run(tileRegion.getOperation())))
-    return mlir::failure();
-
-  llvm::SmallVector<mp::LifetimeDemand, 0> noPlacementDemands;
-  mp::LocalCompletionTracker localCompletion;
-  mp::LifetimeDataflow dataflow(
-      *timeline, noPlacementDemands,
-      [](mlir::Type type) { return isWaferSPMMemRefType(type); });
-  mp::LifetimeFailure lifetimeFailure;
-  if (mlir::failed(dataflow.run(tileRegion.getOperation(), &localCompletion,
-                                &lifetimeFailure)))
-    return emitLifetimeFailure(funcOp, lifetimeFailure);
-  return mlir::success();
-}
-
-static mlir::LogicalResult
 planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
              int64_t spmAlignment,
              const llvm::DenseSet<mlir::Operation *> &mayClobberFunctions,
              llvm::SmallVectorImpl<PendingSPMPlacement> &pendingPlacements) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "transformation-phase", "planFunction(SPM)", "total");
-  auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-      "analysis-phase", "planFunction(SPM)", "verify-completion");
   bool hasTileRegion = false;
   funcOp.walk([&](TileRegionOp) { hasTileRegion = true; });
   if (!hasTileRegion)
     return mlir::success();
 
-  mlir::LogicalResult completionResult = mlir::success();
-  funcOp.walk([&](TileRegionOp tileRegion) {
-    if (mlir::failed(completionResult))
-      return;
-    completionResult = verifyTileRegionCompletion(tileRegion, funcOp);
-  });
-  if (mlir::failed(completionResult))
-    return completionResult;
-
-  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+  auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "analysis-phase", "planFunction(SPM)", "StructuredTimeline::build");
   mp::TimelineFailure timelineFailure;
   mlir::FailureOr<mp::StructuredTimeline> timeline =

@@ -67,6 +67,8 @@ class FakeTorch(types.ModuleType):
         self.empty_calls = []
         self.no_grad_entered = False
         self.float32 = "float32"
+        self.bfloat16 = "bfloat16"
+        self.uint16 = "uint16"
 
         self.nn = types.SimpleNamespace(Module=FakeModule, Parameter=FakeParameter)
         self.export = types.SimpleNamespace(export=self.export_model)
@@ -385,6 +387,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
                 "simple-gemm-f16",
                 "simple-gemm-bf16",
                 "large-gemm-f32",
+                "large-gemm-f16",
                 "tiny-llama-decoder-f32",
             ],
         )
@@ -393,6 +396,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             "simple-gemm-f16": "float16",
             "simple-gemm-bf16": "bfloat16",
             "large-gemm-f32": "float32",
+            "large-gemm-f16": "float16",
             "tiny-llama-decoder-f32": "float32",
         }
         for case in spec["cases"]:
@@ -665,6 +669,78 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             self.tool._bfloat16_storage_to_float32(numpy, storage), values
         )
 
+    def test_lazy_bfloat16_constant_uses_canonical_workload_storage(self):
+        raw_words = numpy.array([0x3F80, 0xC000], dtype=numpy.uint16)
+
+        class FakeUInt16Tensor:
+            def numpy(self):
+                return raw_words
+
+        class FakeBFloat16Tensor:
+            shape = (2,)
+            dtype = self.fake_torch.bfloat16
+
+            def detach(self):
+                return self
+
+            def cpu(self):
+                return self
+
+            def view(self, dtype):
+                self_outer.assertEqual(dtype, self_outer.fake_torch.uint16)
+                return FakeUInt16Tensor()
+
+            def numpy(self):
+                raise AssertionError("BF16 must not use Tensor.numpy() directly")
+
+        self_outer = self
+        constant = FakeBFloat16Tensor()
+        input_tensor = FakeTensor((2,), self.fake_torch.bfloat16)
+        output_tensor = FakeTensor((2,), self.fake_torch.bfloat16)
+        input_location = types.SimpleNamespace(
+            input_arg=lambda position: ("input_arg", position),
+            parameter=lambda name: ("parameter", name),
+            constant=lambda position: ("constant", position),
+        )
+        stablehlo = types.SimpleNamespace(
+            InputLocation=input_location,
+            VariableSignature=lambda **kwargs: types.SimpleNamespace(**kwargs),
+            StableHLOFunctionMeta=lambda **kwargs: types.SimpleNamespace(**kwargs),
+            StableHLOFunc=lambda **kwargs: types.SimpleNamespace(**kwargs),
+            StableHLOModelBundle=lambda **kwargs: types.SimpleNamespace(**kwargs),
+        )
+        xla_model = types.SimpleNamespace(
+            get_stablehlo=lambda outputs: "module {}",
+            get_stablehlo_bytecode=lambda outputs: b"bytecode",
+        )
+        xlac = types.SimpleNamespace(
+            _xla_get_tensor_id=lambda tensor: id(tensor),
+            _get_tensors_xla_device_data_node=lambda outputs: (
+                [id(constant)],
+                [constant],
+            ),
+        )
+        reference_module = types.SimpleNamespace(named_parameters=lambda: [])
+
+        bundle = self.tool._build_lazy_stablehlo_program(
+            torch_module=self.fake_torch,
+            stablehlo_module=stablehlo,
+            xla_model_module=xla_model,
+            xlac_module=xlac,
+            output_tensor=output_tensor,
+            input_tensor=input_tensor,
+            reference_module=reference_module,
+            state_dict={},
+        )
+
+        self.assertEqual(len(bundle.additional_constants), 1)
+        saved = bundle.additional_constants[0]
+        self.assertEqual(saved.dtype, numpy.dtype("|V2"))
+        self.assertEqual(saved.tobytes(), b"\x80\x3f\x00\xc0")
+        metadata = bundle.stablehlo_funcs[0].meta
+        self.assertEqual(metadata.input_locations, [("constant", 0)])
+        self.assertEqual(metadata.input_signature[0].dtype, "bfloat16")
+
     def test_public_npy_payloads_are_canonical_little_endian(self):
         big_endian_f16 = numpy.array(
             [1.0, -2.0], dtype=numpy.dtype(">f2")
@@ -692,6 +768,40 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
         )
         self.assertEqual(canonical_bf16.dtype, numpy.dtype("|V2"))
         self.assertEqual(canonical_bf16.tobytes(), b"\x80\x3f\x00\xc0")
+
+    def test_public_npy_scalars_preserve_rank_zero(self):
+        scalar_payloads = (
+            (
+                numpy.array(1.0, dtype=numpy.dtype(">f4")),
+                numpy.dtype("<f4"),
+                b"\x00\x00\x80\x3f",
+            ),
+            (
+                numpy.array(b"\x80\x3f", dtype=numpy.dtype("|V2")),
+                numpy.dtype("|V2"),
+                b"\x80\x3f",
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            for index, (source, expected_dtype, expected_bytes) in enumerate(
+                scalar_payloads
+            ):
+                with self.subTest(dtype=expected_dtype):
+                    canonical = self.tool._canonical_little_endian_array(
+                        numpy, source
+                    )
+                    self.assertEqual(canonical.shape, ())
+                    self.assertEqual(canonical.dtype, expected_dtype)
+                    self.assertEqual(canonical.tobytes(), expected_bytes)
+
+                    destination = pathlib.Path(tmp) / f"scalar-{index}.npy"
+                    self.tool._save_workload_array(
+                        numpy, destination, source
+                    )
+                    saved = numpy.load(destination, allow_pickle=False)
+                    self.assertEqual(saved.shape, ())
+                    self.assertEqual(saved.dtype, expected_dtype)
+                    self.assertEqual(saved.tobytes(), expected_bytes)
 
     def test_cpu_reference_is_independent_and_byte_reproducible(self):
         with tempfile.TemporaryDirectory() as tmp:

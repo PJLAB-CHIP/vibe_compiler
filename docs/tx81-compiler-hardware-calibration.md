@@ -84,7 +84,9 @@ SPM1的静态硬件事实另行处理：每tile 3 MiB，由8个独立2048-bit ba
 本项目按1 GHz，并额外假设每个bank每周期贡献一个2048-bit传输，做粗略service-envelope算术得到2.048 TB/s；
 16个端口连续burst8的设计目标是平均per-port约90%效率，
 并存在可配置DIDT active-bank throttling。`1.8432 TB/s`只是额外假设该效率可聚合到全bank利用率后的条件算术，
-不是sustained lower bound或candidate duration。allocator可以从accepted offset使用
+不是sustained lower bound。Q49的versioned point model不使用该聚合值，而只取单个SPM1 bank的
+`256 B * 1 GHz = 256 GB/s/tile`作为保守nominal service prior；它不声称测得带宽、不形成proof，也不替代后续
+matched-board calibration。allocator可以从accepted offset使用
 由256B bank宽度和LSB interleaving推得`(offset / 256) mod 8`的working coarse phase。它只能在单次fixed-capacity
 solve自然遇到、且hard outcome、actual high-water与search work完全相同的placements之间作最后tie-break；
 不得另做query、扩展search node或post-solve relocation。当前校准没有给出可消费的
@@ -92,8 +94,10 @@ port/stride conflict penalty，因此phase不得影响legality、resident/spill�
 
 Q49终态hardware-cost selection同时消费fresh final IR的all-rank aggregate DDR、max-rank tile-local GS、max-rank
 steady/nonterminal/total participant completion及critical-path位置，并保留compute/recompute、NoC、Instr、descriptor/resource等
-exact work和当前校准的point/bound parameters；不含legacy SPM flat duration。若某个在candidate间变化的主要维度没有
-qualified comparison parameter，该tradeoff保持不可比/`Unknown`，不得被只含DDR/NoC/compute的局部公式绕过。
+exact work和当前校准的point/bound parameters；不含legacy SPM0/RAM_ACC flat duration。SPM1 exact movement按上述
+单bank nominal prior形成max-rank service envelope，并与DDR/NoC/compute service取资源最大值以避免对同一DMA重复计时；
+GS是SPM movement的可审计子集，不另加一遍duration。若其它在candidate间变化的主要维度没有qualified comparison parameter，
+该tradeoff保持不可比/`Unknown`，不得把Unknown当零。
 没有current-IR+target capability共同qualified的multi-buffer时，已具备qualified duration的DDR、NoC和compute phases按
 dependency order串行计费；只有fixed-slot/multi-buffer recurrence、exact wait/reuse cut和capability均闭合时，steady state才取
 可并行resource maximum。GS和completion始终按上述max-rank作用域进入统一selection tuple，不会因其duration

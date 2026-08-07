@@ -581,6 +581,97 @@ TEST_F(DirectDTETransportTest,
   EXPECT_EQ(recvCount, 2u);
 }
 
+TEST_F(DirectDTETransportTest,
+       ResolvesStaticLoopBoundsThroughNestedTileRegions) {
+  auto makeRank = [](bool isSend, int64_t peer, int64_t spmOffset) {
+    std::string source;
+    llvm::raw_string_ostream os(source);
+    os << "module {\n"
+          "  func.func @main() {\n"
+          "    %c0 = arith.constant 0 : index\n"
+          "    %c2 = arith.constant 2 : index\n"
+          "    %c4 = arith.constant 4 : index\n"
+          "    %bounds:3 = wafer.tile.region(%c0, %c4, %c2 : index, index, "
+          "index) -> (index, index, index) {\n"
+          "    ^bb0(%lower: index, %upper: index, %step: index):\n"
+          "      wafer.tile.yield %lower, %upper, %step : index, index, "
+          "index\n"
+          "    }\n"
+          "    %forwarded:3 = wafer.tile.region(%bounds#0, %bounds#1, "
+          "%bounds#2 : index, index, index) -> (index, index, index) {\n"
+          "    ^bb0(%lower: index, %upper: index, %step: index):\n"
+          "      %buffer = memref.alloc() {wafer.spm.offset = "
+          "#wafer.spm_offset<"
+       << spmOffset
+       << ">} : memref<4xf32, #wafer.memory<spm, tensor>>\n"
+          "      scf.for %iteration = %lower to %upper step %step {\n"
+          "        %token = wafer.instr.dte_"
+       << (isSend ? "send" : "recv") << " %buffer {peer = " << peer
+       << " : i64, bytes = 16 : i64, message = "
+          "#wafer.dte_message<communication = 9, phase = collective_permute, "
+          "round = 2, slice = 0>} : memref<4xf32, "
+          "#wafer.memory<spm, tensor>> -> !async.token\n"
+          "        wafer.instr.dte_wait %token : !async.token\n"
+          "      }\n"
+          "      wafer.tile.yield %lower, %upper, %step : index, index, "
+          "index\n"
+          "    }\n"
+          "    return\n"
+          "  }\n"
+          "}\n";
+    return source;
+  };
+  auto sendModule = parse(makeRank(/*isSend=*/true, /*peer=*/1,
+                                   /*spmOffset=*/65536));
+  auto recvModule = parse(makeRank(/*isSend=*/false, /*peer=*/0,
+                                   /*spmOffset=*/65792));
+  ASSERT_TRUE(sendModule);
+  ASSERT_TRUE(recvModule);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*sendModule, *recvModule};
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  ASSERT_TRUE(mlir::succeeded(contract));
+  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  sendModule->walk([](wafer::InstrDTESendOp operation) {
+    EXPECT_TRUE(operation.getBinding());
+  });
+  recvModule->walk([](wafer::InstrDTERecvOp operation) {
+    EXPECT_TRUE(operation.getBinding());
+  });
+}
+
+TEST_F(DirectDTETransportTest,
+       AcceptsInvariantEndpointsWithoutExpandingLargeTripCount) {
+  constexpr llvm::StringLiteral kLargeLoopPrefix = R"mlir(
+    %large = arith.constant 4294967296 : index
+    scf.for %iteration = %c0 to %large step %c2 {
+)mlir";
+  constexpr llvm::StringLiteral kLoopSuffix = R"mlir(
+    }
+)mlir";
+  auto sendModule = parse(makeControlledRank(
+      /*isSend=*/true, /*peer=*/1, /*spmOffset=*/65536,
+      /*functionArguments=*/"()", kLargeLoopPrefix, kLoopSuffix,
+      /*addStaticTail=*/false));
+  auto recvModule = parse(makeControlledRank(
+      /*isSend=*/false, /*peer=*/0, /*spmOffset=*/65792,
+      /*functionArguments=*/"()", kLargeLoopPrefix, kLoopSuffix,
+      /*addStaticTail=*/false));
+  ASSERT_TRUE(sendModule);
+  ASSERT_TRUE(recvModule);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*sendModule, *recvModule};
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  ASSERT_TRUE(mlir::succeeded(contract));
+  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  sendModule->walk([](wafer::InstrDTESendOp operation) {
+    EXPECT_TRUE(operation.getBinding());
+  });
+  recvModule->walk([](wafer::InstrDTERecvOp operation) {
+    EXPECT_TRUE(operation.getBinding());
+  });
+}
+
 TEST_F(DirectDTETransportTest, ReceivePreparationBreaksCrossRankSendWaitCycle) {
   std::string rank0 =
       makeLinearTransportRank({{false, 1, 65536, 31}, {true, 1, 65792, 30}},

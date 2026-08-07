@@ -390,15 +390,14 @@ estimateSPM(const WholeCardInstructionProgramCost &cost,
   if (cost.rankCosts.empty() && maximumRankMovement.isKnown() &&
       maximumRankMovement.value == 0)
     maximumRankMovement = cost.aggregateSPMMovementBytes;
-  ScheduleCostMetric nominal = maximumRankMovement;
-  if (nominal.isKnown() && nominal.value != 0)
-    nominal = unknown(ScheduleCostReason::MissingPerformanceCalibration);
   return {{},
-          nominal,
+          timeForWork(
+              maximumRankMovement,
+              policy.spmExplicitMovementBytesPerSecondPerTileEstimate),
           timeForWork(cost.aggregateSPMMovementBytes,
                       validatedSustainedRate(
                           policy.spmBytesPerSecondPerTileLowerBound)),
-          /*nominalAssumptions=*/0};
+          assumptions({StaticDurationAssumption::SPMServiceRatePrior})};
 }
 
 static StaticDurationInterval
@@ -486,18 +485,26 @@ estimateWholeCardResourceDuration(const WholeCardInstructionProgramCost &cost,
                           result.noc.nominalPicoseconds});
     break;
   }
-  result.makespan.nominalPicoseconds =
-      addMetric(service, result.control.nominalPicoseconds);
+  // RDMA/WDMA movement is visible in both the external DDR service and the
+  // local SPM port demand. Treat SPM as a simultaneous service envelope so
+  // those bytes constrain the estimate without being charged twice.
+  result.makespan.nominalPicoseconds = addMetric(
+      maxMetric(service, result.spm.nominalPicoseconds),
+      result.control.nominalPicoseconds);
   result.makespan.nominalAssumptions =
       result.ddr.nominalAssumptions | result.compute.nominalAssumptions |
-      result.noc.nominalAssumptions | result.control.nominalAssumptions |
+      result.noc.nominalAssumptions | result.spm.nominalAssumptions |
+      result.control.nominalAssumptions |
       staticDurationAssumptionMask(
           schedule == StaticCrossResourceSchedule::SequentialPhases
               ? StaticDurationAssumption::SequentialPhaseModel
               : StaticDurationAssumption::QualifiedPipelineModel);
-  result.makespan.upperBoundPicoseconds = sumMetrics(
+  ScheduleCostMetric externalUpper = sumMetrics(
       {result.ddr.upperBoundPicoseconds, result.compute.upperBoundPicoseconds,
-       result.noc.upperBoundPicoseconds, result.control.upperBoundPicoseconds});
+       result.noc.upperBoundPicoseconds});
+  result.makespan.upperBoundPicoseconds = addMetric(
+      maxMetric(externalUpper, result.spm.upperBoundPicoseconds),
+      result.control.upperBoundPicoseconds);
   return result;
 }
 

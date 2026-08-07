@@ -2,7 +2,11 @@
 
 #include "CoordinatedVariantSelection.h"
 
+#include "StaticFixedSlotQualification.h"
+
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
+#include "Wafer/IR/WaferDialect.h"
+#include "Wafer/IR/WaferInterfaces.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -10,10 +14,249 @@
 #include <algorithm>
 #include <limits>
 #include <optional>
+#include <set>
 #include <tuple>
 
 namespace wafer::compiler::detail {
 namespace {
+
+static bool isQualificationSelectionMode(WholeVariantSelectionMode mode) {
+  return mode != WholeVariantSelectionMode::Production &&
+         mode != WholeVariantSelectionMode::ReservedBaseline;
+}
+
+static bool hasValidAdmittedIdentities(
+    llvm::ArrayRef<AdmittedCoordinatedExecutable> variants,
+    bool requireBaseline) {
+  if (variants.empty())
+    return false;
+  std::optional<size_t> baselineIndex;
+  llvm::SmallVector<std::pair<int64_t, uint32_t>, 16> ordinals;
+  ordinals.reserve(variants.size());
+  for (auto [index, variant] : llvm::enumerate(variants)) {
+    std::pair<int64_t, uint32_t> ordinal{variant.stableSemanticOrdinal,
+                                         variant.scheduleActionOrdinal};
+    if (variant.stableSemanticOrdinal < 0 ||
+        llvm::is_contained(ordinals, ordinal))
+      return false;
+    ordinals.push_back(ordinal);
+    if (!variant.reservedBaseline)
+      continue;
+    if (baselineIndex)
+      return false;
+    baselineIndex = index;
+  }
+  return !requireBaseline || baselineIndex.has_value();
+}
+
+static bool
+hasNoReservedRankIdentity(const AdmittedCoordinatedExecutable &candidate) {
+  return !candidate.variant.ranks.empty() && !candidate.reservedBaseline;
+}
+
+static bool matchesStaticFixedSlotQualification(
+    const AdmittedCoordinatedExecutable &candidate) {
+  return hasNoReservedRankIdentity(candidate) &&
+         candidate.actionIdentity.bufferingKind ==
+             CoordinatedBufferingKind::StaticFixedSlot &&
+         candidate.actionIdentity.bufferingPlanOrdinal > 0 &&
+         llvm::all_of(candidate.variant.ranks, [](const RankExecutable &rank) {
+           return hasStaticFixedSlotQualificationEvidence(rank);
+         });
+}
+
+static bool matchesDirectDTEComputeOverlapQualification(
+    const AdmittedCoordinatedExecutable &candidate) {
+  if (!matchesStaticFixedSlotQualification(candidate) ||
+      candidate.variant.resourceCost.rankCosts.size() !=
+          candidate.variant.ranks.size())
+    return false;
+  return llvm::all_of(
+      candidate.variant.resourceCost.rankCosts,
+      [](const analysis::InstructionProgramCost &cost) {
+        return cost.directDTEComputeOverlapWindowCount.isKnown() &&
+               cost.directDTEComputeOverlapWindowCount.value > 0;
+      });
+}
+
+static bool matchesSerializedDirectDTEComputeQualification(
+    const AdmittedCoordinatedExecutable &candidate) {
+  if (candidate.actionIdentity.serializationKind !=
+          CoordinatedScheduleSerializationKind::DirectDTEComputeWindows ||
+      !matchesStaticFixedSlotQualification(candidate) ||
+      candidate.variant.resourceCost.rankCosts.size() !=
+          candidate.variant.ranks.size())
+    return false;
+  return llvm::all_of(
+      candidate.variant.resourceCost.rankCosts,
+      [](const analysis::InstructionProgramCost &cost) {
+        return cost.directDTEComputeOverlapWindowCount.isKnown() &&
+               cost.directDTEComputeOverlapWindowCount.value == 0;
+      });
+}
+
+static bool hasMultipleActualNCCWorkers(const RankExecutable &rank) {
+  std::set<NCCWorker> workers;
+  rank.getModule().walk([&](mlir::Operation *operation) {
+    if (std::optional<NCCWorker> worker = getNCCIssueWorker(operation))
+      workers.insert(*worker);
+  });
+  return workers.size() >= 2 && llvm::any_of(workers, [](NCCWorker worker) {
+           return worker != NCCWorker::Worker0;
+         });
+}
+
+static bool matchesWorkerPlacementQualification(
+    const AdmittedCoordinatedExecutable &candidate) {
+  return hasNoReservedRankIdentity(candidate) &&
+         candidate.actionIdentity.workerPlacementKind ==
+             CoordinatedWorkerPlacementKind::DisjointComponents &&
+         candidate.actionIdentity.workerPlacementPlanOrdinal > 0 &&
+         llvm::all_of(candidate.variant.ranks, [](const RankExecutable &rank) {
+           return hasMultipleActualNCCWorkers(rank);
+         });
+}
+
+static bool
+hasAllRankTypedNoCAndBidirectionalDomain(llvm::ArrayRef<RankExecutable> ranks) {
+  if (ranks.empty())
+    return false;
+  bool domainHasSend = false;
+  bool domainHasRecv = false;
+  for (const RankExecutable &rank : ranks) {
+    bool rankHasSend = false;
+    bool rankHasRecv = false;
+    rank.getModule().walk([&](mlir::Operation *operation) {
+      rankHasSend |= mlir::isa<InstrDTESendOp>(operation);
+      rankHasRecv |= mlir::isa<InstrDTERecvOp>(operation);
+    });
+    if (!rankHasSend && !rankHasRecv)
+      return false;
+    domainHasSend |= rankHasSend;
+    domainHasRecv |= rankHasRecv;
+  }
+  return domainHasSend && domainHasRecv;
+}
+
+static bool hasBoundaryOnlyDDRMovement(llvm::ArrayRef<RankExecutable> ranks) {
+  return !ranks.empty() && llvm::all_of(ranks, [](const RankExecutable &rank) {
+    return hasBoundaryOnlyDDRMovementEvidence(rank);
+  });
+}
+
+static std::set<DTEProtocolPhase>
+observeCollectivePhases(const RankExecutable &rank) {
+  std::set<DTEProtocolPhase> phases;
+  rank.getModule().walk(
+      [&](InstrDTESendOp op) { phases.insert(op.getMessage().getPhase()); });
+  rank.getModule().walk(
+      [&](InstrDTERecvOp op) { phases.insert(op.getMessage().getPhase()); });
+  return phases;
+}
+
+static std::optional<std::set<DTEProtocolPhase>>
+getExpectedCollectivePhases(WholeVariantSelectionMode mode) {
+  switch (mode) {
+  case WholeVariantSelectionMode::CharacterizeAllGatherDirect:
+    return std::set<DTEProtocolPhase>{DTEProtocolPhase::AllGatherDirect};
+  case WholeVariantSelectionMode::CharacterizeAllGatherRing:
+    return std::set<DTEProtocolPhase>{DTEProtocolPhase::AllGatherRing};
+  case WholeVariantSelectionMode::CharacterizeReduceScatterDirect:
+    return std::set<DTEProtocolPhase>{DTEProtocolPhase::ReduceScatterDirect};
+  case WholeVariantSelectionMode::CharacterizeReduceScatterRing:
+    return std::set<DTEProtocolPhase>{DTEProtocolPhase::ReduceScatterRing};
+  case WholeVariantSelectionMode::CharacterizeAllReduceRing:
+  case WholeVariantSelectionMode::QualifyNoCResidentAllReduceRing:
+    return std::set<DTEProtocolPhase>{DTEProtocolPhase::AllReduceRing};
+  case WholeVariantSelectionMode::CharacterizeAllReduceTree:
+    return std::set<DTEProtocolPhase>{DTEProtocolPhase::AllReduceTreeReduce,
+                                      DTEProtocolPhase::AllReduceTreeBroadcast};
+  case WholeVariantSelectionMode::Production:
+  case WholeVariantSelectionMode::ReservedBaseline:
+  case WholeVariantSelectionMode::QualifyStaticFixedSlot:
+  case WholeVariantSelectionMode::QualifyDirectDTEComputeOverlap:
+  case WholeVariantSelectionMode::SelectSerializedDirectDTEComputeBaseline:
+  case WholeVariantSelectionMode::QualifyWorkerPlacement:
+  case WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker:
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+static bool matchesCollectiveCharacterization(
+    const AdmittedCoordinatedExecutable &candidate,
+    WholeVariantSelectionMode mode) {
+  std::optional<std::set<DTEProtocolPhase>> expected =
+      getExpectedCollectivePhases(mode);
+  return expected && !candidate.variant.ranks.empty() &&
+         llvm::all_of(candidate.variant.ranks, [&](const RankExecutable &rank) {
+           return observeCollectivePhases(rank) == *expected;
+         });
+}
+
+static bool matchesQualification(const AdmittedCoordinatedExecutable &candidate,
+                                 WholeVariantSelectionMode mode) {
+  switch (mode) {
+  case WholeVariantSelectionMode::QualifyStaticFixedSlot:
+    return matchesStaticFixedSlotQualification(candidate);
+  case WholeVariantSelectionMode::QualifyDirectDTEComputeOverlap:
+    return matchesDirectDTEComputeOverlapQualification(candidate);
+  case WholeVariantSelectionMode::SelectSerializedDirectDTEComputeBaseline:
+    return matchesSerializedDirectDTEComputeQualification(candidate);
+  case WholeVariantSelectionMode::QualifyWorkerPlacement:
+    return matchesWorkerPlacementQualification(candidate);
+  case WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker:
+    return matchesStaticFixedSlotQualification(candidate) &&
+           matchesWorkerPlacementQualification(candidate) &&
+           hasBoundaryOnlyDDRMovement(candidate.variant.ranks) &&
+           hasAllRankTypedNoCAndBidirectionalDomain(candidate.variant.ranks);
+  case WholeVariantSelectionMode::QualifyNoCResidentAllReduceRing:
+    return hasNoReservedRankIdentity(candidate) &&
+           matchesCollectiveCharacterization(candidate, mode) &&
+           hasBoundaryOnlyDDRMovement(candidate.variant.ranks) &&
+           hasAllRankTypedNoCAndBidirectionalDomain(candidate.variant.ranks);
+  case WholeVariantSelectionMode::CharacterizeAllGatherDirect:
+  case WholeVariantSelectionMode::CharacterizeAllGatherRing:
+  case WholeVariantSelectionMode::CharacterizeReduceScatterDirect:
+  case WholeVariantSelectionMode::CharacterizeReduceScatterRing:
+  case WholeVariantSelectionMode::CharacterizeAllReduceRing:
+  case WholeVariantSelectionMode::CharacterizeAllReduceTree:
+    return matchesCollectiveCharacterization(candidate, mode);
+  case WholeVariantSelectionMode::Production:
+  case WholeVariantSelectionMode::ReservedBaseline:
+    return false;
+  }
+  return false;
+}
+
+static llvm::StringRef
+stringifyQualificationSelectionMode(WholeVariantSelectionMode mode) {
+  switch (mode) {
+  case WholeVariantSelectionMode::QualifyStaticFixedSlot:
+    return "static-fixed-slot";
+  case WholeVariantSelectionMode::QualifyDirectDTEComputeOverlap:
+    return "direct-dte-compute-overlap";
+  case WholeVariantSelectionMode::SelectSerializedDirectDTEComputeBaseline:
+    return "serialized-direct-dte-compute";
+  case WholeVariantSelectionMode::QualifyWorkerPlacement:
+    return "worker-placement";
+  case WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker:
+    return "noc-resident-fixed-slot-worker";
+  case WholeVariantSelectionMode::CharacterizeAllGatherDirect:
+  case WholeVariantSelectionMode::CharacterizeAllGatherRing:
+  case WholeVariantSelectionMode::CharacterizeReduceScatterDirect:
+  case WholeVariantSelectionMode::CharacterizeReduceScatterRing:
+  case WholeVariantSelectionMode::CharacterizeAllReduceRing:
+  case WholeVariantSelectionMode::QualifyNoCResidentAllReduceRing:
+  case WholeVariantSelectionMode::CharacterizeAllReduceTree:
+    return getCollectiveCharacterizationAlternative(mode);
+  case WholeVariantSelectionMode::Production:
+    return "production";
+  case WholeVariantSelectionMode::ReservedBaseline:
+    return "reserved-baseline";
+  }
+  return "";
+}
 
 enum class CostOrder : uint8_t {
   Equivalent,
@@ -32,14 +275,13 @@ struct CostOrderAccumulator {
   void compare(const analysis::ScheduleCostMetric &left,
                const analysis::ScheduleCostMetric &right,
                MetricPreference preference = MetricPreference::Lower) {
-    // Equal non-Known dispositions carry the same uncertainty. Different
-    // knowledge/reason pairs are not ordered and never become implicit zero.
-    if (left.knowledge != right.knowledge || left.reason != right.reason) {
+    // Unknown values remain incomparable even when their reason matches: a
+    // shared failure mode is not a proof that the hidden quantities are equal.
+    // No disposition is ever converted to an implicit zero.
+    if (!left.isKnown() || !right.isKnown()) {
       incomparable = true;
       return;
     }
-    if (!left.isKnown())
-      return;
     if (left.value == right.value)
       return;
     bool leftPreferred = left.value < right.value;
@@ -214,57 +456,6 @@ static CostOrder compareExactSelectionCost(
   return order.finish();
 }
 
-static bool
-metricIsNoWorse(const analysis::ScheduleCostMetric &candidate,
-                const analysis::ScheduleCostMetric &baseline,
-                MetricPreference preference = MetricPreference::Lower) {
-  if (candidate.knowledge != baseline.knowledge ||
-      candidate.reason != baseline.reason)
-    return false;
-  if (!candidate.isKnown() || candidate.value == baseline.value)
-    return true;
-  return preference == MetricPreference::Lower
-             ? candidate.value < baseline.value
-             : candidate.value > baseline.value;
-}
-
-/// The duration model deliberately has no fabricated SPM/local-movement rate,
-/// dependency-depth latency, or buffer-descriptor latency. Those dimensions
-/// may improve, but a regression cannot be hidden behind a DDR/NoC point
-/// estimate until calibration exists.
-static bool hasNoUncalibratedRegression(
-    const analysis::WholeCardInstructionProgramCost &candidate,
-    const analysis::WholeCardInstructionProgramCost &baseline) {
-  if (!metricIsNoWorse(candidate.aggregateSPMMovementBytes,
-                       baseline.aggregateSPMMovementBytes) ||
-      !metricIsNoWorse(candidate.aggregateGatherScatterBytes,
-                       baseline.aggregateGatherScatterBytes) ||
-      !metricIsNoWorse(candidate.maximumRankSPMMovementBytes,
-                       baseline.maximumRankSPMMovementBytes) ||
-      !metricIsNoWorse(candidate.maximumRankGatherScatterBytes,
-                       baseline.maximumRankGatherScatterBytes) ||
-      !metricIsNoWorse(candidate.maximumRankDataDependencyDepth,
-                       baseline.maximumRankDataDependencyDepth) ||
-      !metricIsNoWorse(candidate.aggregateReadyOrderPriorityInversions,
-                       baseline.aggregateReadyOrderPriorityInversions) ||
-      !metricIsNoWorse(candidate.aggregateEventCount,
-                       baseline.aggregateEventCount) ||
-      !metricIsNoWorse(candidate.maximumRankDDRHighWaterBytes,
-                       baseline.maximumRankDDRHighWaterBytes) ||
-      !metricIsNoWorse(candidate.summedRankDDRHighWaterBytes,
-                       baseline.summedRankDDRHighWaterBytes) ||
-      !metricIsNoWorse(candidate.aggregateCompilerOwnedSPMBufferCount,
-                       baseline.aggregateCompilerOwnedSPMBufferCount) ||
-      !metricIsNoWorse(candidate.aggregateCompilerOwnedDDRBufferCount,
-                       baseline.aggregateCompilerOwnedDDRBufferCount) ||
-      !metricIsNoWorse(candidate.maximumRankCompilerOwnedSPMBufferCount,
-                       baseline.maximumRankCompilerOwnedSPMBufferCount) ||
-      !metricIsNoWorse(candidate.maximumRankCompilerOwnedDDRBufferCount,
-                       baseline.maximumRankCompilerOwnedDDRBufferCount))
-    return false;
-  return true;
-}
-
 static analysis::StaticCrossResourceSchedule
 getScheduleContext(const analysis::WholeCardInstructionProgramCost &cost) {
   const analysis::ScheduleCostMetric windows[] = {
@@ -311,6 +502,245 @@ sameDurationEstimate(const analysis::WholeCardResourceDurationEstimate &left,
          sameInterval(left.makespan, right.makespan);
 }
 
+static bool compareKnownNoWorse(const analysis::ScheduleCostMetric &candidate,
+                                const analysis::ScheduleCostMetric &baseline,
+                                bool &improved) {
+  if (!candidate.isKnown() || !baseline.isKnown() ||
+      candidate.value > baseline.value)
+    return false;
+  improved |= candidate.value < baseline.value;
+  return true;
+}
+
+static bool isKnownZero(const analysis::ScheduleCostMetric &metric) {
+  return metric.isKnown() && metric.value == 0;
+}
+
+static bool
+accumulateKnownWeightedDelta(const analysis::ScheduleCostMetric &candidate,
+                             const analysis::ScheduleCostMetric &baseline,
+                             uint64_t weight, unsigned __int128 &benefit,
+                             unsigned __int128 &regression) {
+  if (!candidate.isKnown() || !baseline.isKnown())
+    return false;
+  if (candidate.value == baseline.value)
+    return true;
+  if (weight == 0)
+    return false;
+
+  const uint64_t difference = candidate.value < baseline.value
+                                  ? baseline.value - candidate.value
+                                  : candidate.value - baseline.value;
+  const unsigned __int128 term =
+      static_cast<unsigned __int128>(difference) * weight;
+  unsigned __int128 &destination =
+      candidate.value < baseline.value ? benefit : regression;
+  constexpr unsigned __int128 maximum = ~static_cast<unsigned __int128>(0);
+  if (term > maximum - destination)
+    return false;
+  destination += term;
+  return true;
+}
+
+static bool deltaMarginClears(unsigned __int128 benefit,
+                              unsigned __int128 regression,
+                              uint32_t marginPermille) {
+  if (benefit == 0)
+    return false;
+  if (regression == 0)
+    return true;
+  constexpr unsigned __int128 maximum = ~static_cast<unsigned __int128>(0);
+  const uint64_t regressionFactor = 1000ULL + marginPermille;
+  if (regression > maximum / regressionFactor || benefit > maximum / 1000ULL)
+    return false;
+  return regression * regressionFactor < benefit * 1000ULL;
+}
+
+static bool hasKnownPrimitiveWorkPromotion(
+    const analysis::WholeCardInstructionProgramCost &candidate,
+    const analysis::WholeCardInstructionProgramCost &baseline,
+    const analysis::TargetScheduleCostPolicy &policy) {
+  if (candidate.rankCosts.empty() ||
+      candidate.rankCosts.size() != baseline.rankCosts.size())
+    return false;
+
+  // This narrow sub-margin path is only valid under the same explicit
+  // sequential schedule contract. Pipelined variants keep the ordinary
+  // whole-model margin because dependency and wait placement can affect their
+  // overlap. Check both aggregate and rank-local witnesses so inconsistent
+  // synthetic cost views cannot manufacture a context change.
+  if (!isKnownZero(candidate.aggregateQualifiedOverlapWindowCount) ||
+      !isKnownZero(baseline.aggregateQualifiedOverlapWindowCount) ||
+      !isKnownZero(candidate.aggregateDirectDTEComputeOverlapWindowCount) ||
+      !isKnownZero(baseline.aggregateDirectDTEComputeOverlapWindowCount))
+    return false;
+
+  bool improved = false;
+  for (auto [candidateRank, baselineRank] :
+       llvm::zip_equal(candidate.rankCosts, baseline.rankCosts)) {
+    const analysis::ScheduleCostMetric *candidateCompute[] = {
+        &candidateRank.compute.npuF16Bf16LogicalOps,
+        &candidateRank.compute.npuOtherLogicalOps,
+        &candidateRank.compute.vectorF16Bf16LogicalOps,
+        &candidateRank.compute.vectorF32LogicalOps,
+        &candidateRank.compute.vectorOtherLogicalOps,
+    };
+    const analysis::ScheduleCostMetric *baselineCompute[] = {
+        &baselineRank.compute.npuF16Bf16LogicalOps,
+        &baselineRank.compute.npuOtherLogicalOps,
+        &baselineRank.compute.vectorF16Bf16LogicalOps,
+        &baselineRank.compute.vectorF32LogicalOps,
+        &baselineRank.compute.vectorOtherLogicalOps,
+    };
+    for (auto [candidateMetric, baselineMetric] :
+         llvm::zip_equal(candidateCompute, baselineCompute))
+      if (!compareKnownNoWorse(*candidateMetric, *baselineMetric, improved))
+        return false;
+
+    const analysis::ScheduleCostMetric *candidateMovement[] = {
+        &candidateRank.ddrReadBytes,
+        &candidateRank.ddrWriteBytes,
+        &candidateRank.spmMovementBytes,
+    };
+    const analysis::ScheduleCostMetric *baselineMovement[] = {
+        &baselineRank.ddrReadBytes,
+        &baselineRank.ddrWriteBytes,
+        &baselineRank.spmMovementBytes,
+    };
+    for (auto [candidateMetric, baselineMetric] :
+         llvm::zip_equal(candidateMovement, baselineMovement))
+      if (!compareKnownNoWorse(*candidateMetric, *baselineMetric, improved))
+        return false;
+    bool gatherGuard = false;
+    if (!compareKnownNoWorse(candidateRank.gatherScatterBytes,
+                             baselineRank.gatherScatterBytes, gatherGuard))
+      return false;
+
+    const analysis::ScheduleCostMetric *candidateNoC[] = {
+        &candidateRank.noc.aggregateTransmitBytes,
+        &candidateRank.noc.aggregateReceiveBytes,
+        &candidateRank.noc.transmitMessageCount,
+        &candidateRank.noc.receiveMessageCount,
+    };
+    const analysis::ScheduleCostMetric *baselineNoC[] = {
+        &baselineRank.noc.aggregateTransmitBytes,
+        &baselineRank.noc.aggregateReceiveBytes,
+        &baselineRank.noc.transmitMessageCount,
+        &baselineRank.noc.receiveMessageCount,
+    };
+    for (auto [candidateMetric, baselineMetric] :
+         llvm::zip_equal(candidateNoC, baselineNoC))
+      if (!compareKnownNoWorse(*candidateMetric, *baselineMetric, improved))
+        return false;
+
+    if (!isKnownZero(candidateRank.qualifiedOverlapWindowCount) ||
+        !isKnownZero(baselineRank.qualifiedOverlapWindowCount) ||
+        !isKnownZero(candidateRank.directDTEComputeOverlapWindowCount) ||
+        !isKnownZero(baselineRank.directDTEComputeOverlapWindowCount))
+      return false;
+
+    if (!compareKnownNoWorse(candidateRank.intrinsicNCCDrainCount,
+                             baselineRank.intrinsicNCCDrainCount, improved))
+      return false;
+
+    // Fixed issue and post-service wait priors describe one control resource.
+    // Compare only the changed work, so a single extra completion wait cannot
+    // hide a much larger reduction in issued instructions. Cross-kind
+    // regressions must still clear the same production uncertainty margin.
+    unsigned __int128 controlBenefit = 0;
+    unsigned __int128 controlRegression = 0;
+    if (!accumulateKnownWeightedDelta(
+            candidateRank.instructionCount, baselineRank.instructionCount,
+            policy.instructionFixedPicosecondsEstimate, controlBenefit,
+            controlRegression) ||
+        !accumulateKnownWeightedDelta(candidateRank.noc.waitedEventCount,
+                                      baselineRank.noc.waitedEventCount,
+                                      policy.dteWaitedEventPicosecondsEstimate,
+                                      controlBenefit, controlRegression) ||
+        !accumulateKnownWeightedDelta(
+            candidateRank.nccParticipantWaitCount,
+            baselineRank.nccParticipantWaitCount,
+            policy.nccParticipantWaitPicosecondsEstimate, controlBenefit,
+            controlRegression))
+      return false;
+    if (controlRegression != 0 &&
+        !deltaMarginClears(controlBenefit, controlRegression,
+                           policy.productionBenefitMarginPermille))
+      return false;
+    improved |= controlBenefit > controlRegression;
+  }
+
+  // Duration construction consumes a few all-rank aggregate/max summaries in
+  // addition to rankCosts. They are derived duplicates in production, so they
+  // may only guard against a regression here and never create benefit.
+  bool summaryGuard = false;
+  const analysis::ScheduleCostMetric *candidateSummaries[] = {
+      &candidate.aggregateDDRReadBytes,
+      &candidate.aggregateDDRWriteBytes,
+      &candidate.aggregateSPMMovementBytes,
+      &candidate.maximumRankSPMMovementBytes,
+      &candidate.aggregateGatherScatterBytes,
+      &candidate.maximumRankGatherScatterBytes,
+      &candidate.aggregateNoC.staticIssueSiteCount,
+      &candidate.aggregateNoC.aggregateTransmitBytes,
+      &candidate.aggregateNoC.aggregateReceiveBytes,
+      &candidate.aggregateNoC.transmitMessageCount,
+      &candidate.aggregateNoC.receiveMessageCount,
+      &candidate.maximumRankNoCTransmitBytes,
+      &candidate.maximumRankNoCReceiveBytes,
+      &candidate.maximumRankNoCTransmitMessageCount,
+      &candidate.maximumRankNoCReceiveMessageCount,
+      &candidate.idealizedMinimumPeakLinkByteDemand,
+  };
+  const analysis::ScheduleCostMetric *baselineSummaries[] = {
+      &baseline.aggregateDDRReadBytes,
+      &baseline.aggregateDDRWriteBytes,
+      &baseline.aggregateSPMMovementBytes,
+      &baseline.maximumRankSPMMovementBytes,
+      &baseline.aggregateGatherScatterBytes,
+      &baseline.maximumRankGatherScatterBytes,
+      &baseline.aggregateNoC.staticIssueSiteCount,
+      &baseline.aggregateNoC.aggregateTransmitBytes,
+      &baseline.aggregateNoC.aggregateReceiveBytes,
+      &baseline.aggregateNoC.transmitMessageCount,
+      &baseline.aggregateNoC.receiveMessageCount,
+      &baseline.maximumRankNoCTransmitBytes,
+      &baseline.maximumRankNoCReceiveBytes,
+      &baseline.maximumRankNoCTransmitMessageCount,
+      &baseline.maximumRankNoCReceiveMessageCount,
+      &baseline.idealizedMinimumPeakLinkByteDemand,
+  };
+  for (auto [candidateMetric, baselineMetric] :
+       llvm::zip_equal(candidateSummaries, baselineSummaries))
+    if (!compareKnownNoWorse(*candidateMetric, *baselineMetric, summaryGuard))
+      return false;
+
+  bool routeImproved = false;
+  const analysis::ScheduleCostMetric *candidateRoute[] = {
+      &candidate.minimumHopLinkByteDemand,
+      &candidate.minimumHopMessageDemand,
+      &candidate.modeledNoCRoute.peakDirectedLinkByteDemand,
+      &candidate.maximumNoCHopCount,
+  };
+  const analysis::ScheduleCostMetric *baselineRoute[] = {
+      &baseline.minimumHopLinkByteDemand,
+      &baseline.minimumHopMessageDemand,
+      &baseline.modeledNoCRoute.peakDirectedLinkByteDemand,
+      &baseline.maximumNoCHopCount,
+  };
+  for (auto [candidateMetric, baselineMetric] :
+       llvm::zip_equal(candidateRoute, baselineRoute))
+    if (!compareKnownNoWorse(*candidateMetric, *baselineMetric, routeImproved))
+      return false;
+  if (!candidate.directedNoCLinkCount.isKnown() ||
+      !baseline.directedNoCLinkCount.isKnown() ||
+      candidate.directedNoCLinkCount.value !=
+          baseline.directedNoCLinkCount.value)
+    return false;
+  improved |= routeImproved;
+  return improved;
+}
+
 struct EligibleCandidate {
   size_t index = 0;
   CoordinatedHardwareSelectionEvidence evidence =
@@ -321,13 +751,9 @@ struct EligibleCandidate {
 static std::optional<EligibleCandidate> evaluatePromotion(
     size_t index, llvm::ArrayRef<CoordinatedVariantCostView> variants,
     const analysis::WholeCardResourceDurationEstimate &baselineDuration,
-    const analysis::TargetScheduleCostPolicy &policy, size_t baselineIndex) {
+    const analysis::TargetScheduleCostPolicy &policy,
+    const analysis::WholeCardInstructionProgramCost &baselineCost) {
   const CoordinatedVariantCostView &candidate = variants[index];
-  const CoordinatedVariantCostView &baseline = variants[baselineIndex];
-  if (!hasNoUncalibratedRegression(*candidate.resourceCost,
-                                   *baseline.resourceCost))
-    return std::nullopt;
-
   EligibleCandidate result;
   result.index = index;
   result.duration = analysis::estimateWholeCardResourceDuration(
@@ -351,8 +777,17 @@ static std::optional<EligibleCandidate> evaluatePromotion(
       baselineDuration.makespan.nominalPicoseconds;
   if (!candidateNominal.isKnown() || !baselineNominal.isKnown() ||
       !marginClears(candidateNominal.value, baselineNominal.value,
-                    policy.productionBenefitMarginPermille))
+                    policy.productionBenefitMarginPermille)) {
+    if (candidateNominal.isKnown() && baselineNominal.isKnown() &&
+        candidateNominal.value < baselineNominal.value &&
+        hasKnownPrimitiveWorkPromotion(*candidate.resourceCost, baselineCost,
+                                       policy)) {
+      result.evidence = CoordinatedHardwareSelectionEvidence::EstimatedBenefit;
+      return result;
+    }
+
     return std::nullopt;
+  }
   result.evidence = CoordinatedHardwareSelectionEvidence::EstimatedBenefit;
   return result;
 }
@@ -373,12 +808,10 @@ compareEligible(const EligibleCandidate &left, const EligibleCandidate &right,
                                                   : EligibleOrder::Right;
 
   if (sameDurationEstimate(left.duration, right.duration)) {
-    auto leftOrdinal =
-        std::tie(variants[left.index].stableSemanticOrdinal,
-                 variants[left.index].terminalActionOrdinal);
-    auto rightOrdinal =
-        std::tie(variants[right.index].stableSemanticOrdinal,
-                 variants[right.index].terminalActionOrdinal);
+    auto leftOrdinal = std::tie(variants[left.index].stableSemanticOrdinal,
+                                variants[left.index].scheduleActionOrdinal);
+    auto rightOrdinal = std::tie(variants[right.index].stableSemanticOrdinal,
+                                 variants[right.index].scheduleActionOrdinal);
     if (leftOrdinal == rightOrdinal)
       return EligibleOrder::Equivalent;
     return leftOrdinal < rightOrdinal ? EligibleOrder::Left
@@ -414,7 +847,7 @@ planCoordinatedVariantSelection(
   ordinals.reserve(variants.size());
   for (auto [index, variant] : llvm::enumerate(variants)) {
     std::pair<int64_t, uint32_t> ordinal{variant.stableSemanticOrdinal,
-                                         variant.terminalActionOrdinal};
+                                         variant.scheduleActionOrdinal};
     if (!variant.resourceCost || variant.stableSemanticOrdinal < 0 ||
         llvm::is_contained(ordinals, ordinal))
       return mlir::failure();
@@ -460,9 +893,9 @@ planCoordinatedVariantSelection(
   }
   llvm::sort(plan.paretoIndices, [&](size_t left, size_t right) {
     return std::tie(variants[left].stableSemanticOrdinal,
-                    variants[left].terminalActionOrdinal) <
+                    variants[left].scheduleActionOrdinal) <
            std::tie(variants[right].stableSemanticOrdinal,
-                    variants[right].terminalActionOrdinal);
+                    variants[right].scheduleActionOrdinal);
   });
 
   if (selectionMode == WholeVariantSelectionMode::ReservedBaseline)
@@ -475,7 +908,7 @@ planCoordinatedVariantSelection(
       continue;
     std::optional<EligibleCandidate> eligible =
         evaluatePromotion(candidateIndex, variants, plan.selectedDuration,
-                          policy, *baselineIndex);
+                          policy, *variants[*baselineIndex].resourceCost);
     if (!eligible)
       continue;
     if (!selected) {
@@ -508,17 +941,181 @@ planCoordinatedVariantSelection(
   return plan;
 }
 
-mlir::FailureOr<FullyGatedCoordinatedVariant>
-selectFullyGatedCoordinatedVariant(
-    std::vector<FullyGatedCoordinatedVariant> variants,
+mlir::FailureOr<CoordinatedQualificationSelectionPlan>
+planCoordinatedQualificationSelection(
+    llvm::ArrayRef<AdmittedCoordinatedExecutable> variants,
+    WholeVariantSelectionMode selectionMode) {
+  if (!isQualificationSelectionMode(selectionMode) ||
+      !hasValidAdmittedIdentities(variants, /*requireBaseline=*/true))
+    return mlir::failure();
+
+  CoordinatedQualificationSelectionPlan plan;
+  for (auto [index, variant] : llvm::enumerate(variants))
+    if (matchesQualification(variant, selectionMode))
+      plan.matchingIndices.push_back(index);
+  if (plan.matchingIndices.empty())
+    return mlir::failure();
+  llvm::sort(plan.matchingIndices, [&](size_t left, size_t right) {
+    return std::tie(variants[left].stableSemanticOrdinal,
+                    variants[left].scheduleActionOrdinal) <
+           std::tie(variants[right].stableSemanticOrdinal,
+                    variants[right].scheduleActionOrdinal);
+  });
+  plan.selectedIndex = plan.matchingIndices.front();
+  return plan;
+}
+
+mlir::LogicalResult reduceAdmittedExecutableFrontier(
+    std::vector<AdmittedCoordinatedExecutable> &variants,
+    WholeVariantSelectionMode selectionMode,
+    const analysis::WholeCardInstructionProgramCost *externalBaselineCost) {
+  if (variants.empty())
+    return mlir::success();
+  if (externalBaselineCost &&
+      selectionMode != WholeVariantSelectionMode::Production)
+    return mlir::failure();
+  if (isQualificationSelectionMode(selectionMode))
+    return mlir::success(
+        hasValidAdmittedIdentities(variants, /*requireBaseline=*/false));
+  if (selectionMode != WholeVariantSelectionMode::Production &&
+      selectionMode != WholeVariantSelectionMode::ReservedBaseline)
+    return mlir::failure();
+
+  std::optional<size_t> baselineIndex;
+  llvm::SmallVector<std::pair<int64_t, uint32_t>, 16> ordinals;
+  ordinals.reserve(variants.size());
+  for (auto [variantIndex, variant] : llvm::enumerate(variants)) {
+    std::pair<int64_t, uint32_t> ordinal{variant.stableSemanticOrdinal,
+                                         variant.scheduleActionOrdinal};
+    if (variant.stableSemanticOrdinal < 0 ||
+        llvm::is_contained(ordinals, ordinal))
+      return mlir::failure();
+    ordinals.push_back(ordinal);
+    if (variant.reservedBaseline) {
+      if (baselineIndex)
+        return mlir::failure();
+      baselineIndex = variantIndex;
+    }
+  }
+
+  llvm::SmallVector<bool, 16> permanentlyIneligible(variants.size(), false);
+  const analysis::WholeCardInstructionProgramCost *promotionBaselineCost =
+      baselineIndex ? &variants[*baselineIndex].variant.resourceCost
+                    : externalBaselineCost;
+  if (baselineIndex || promotionBaselineCost) {
+    if (selectionMode == WholeVariantSelectionMode::ReservedBaseline) {
+      for (size_t index = 0; index < variants.size(); ++index)
+        permanentlyIneligible[index] = index != *baselineIndex;
+    } else {
+      llvm::SmallVector<CoordinatedVariantCostView, 16> views;
+      views.reserve(variants.size());
+      for (const AdmittedCoordinatedExecutable &variant : variants)
+        views.push_back(
+            {variant.stableSemanticOrdinal, variant.reservedBaseline,
+             &variant.variant.resourceCost, variant.scheduleActionOrdinal});
+      const analysis::TargetScheduleCostPolicy policy =
+          analysis::getTargetScheduleCostPolicy();
+      const analysis::WholeCardResourceDurationEstimate baselineDuration =
+          analysis::estimateWholeCardResourceDuration(
+              *promotionBaselineCost, policy,
+              getScheduleContext(*promotionBaselineCost));
+      for (size_t index = 0; index < variants.size(); ++index) {
+        if (baselineIndex && index == *baselineIndex)
+          continue;
+        permanentlyIneligible[index] =
+            !evaluatePromotion(index, views, baselineDuration, policy,
+                               *promotionBaselineCost)
+                 .has_value();
+      }
+    }
+  }
+
+  llvm::SmallVector<size_t, 16> retained;
+  for (size_t candidateIndex = 0; candidateIndex < variants.size();
+       ++candidateIndex) {
+    if (baselineIndex && candidateIndex == *baselineIndex) {
+      retained.push_back(candidateIndex);
+      continue;
+    }
+    if (permanentlyIneligible[candidateIndex])
+      continue;
+    bool remove = false;
+    const auto candidateOrdinal =
+        std::tie(variants[candidateIndex].stableSemanticOrdinal,
+                 variants[candidateIndex].scheduleActionOrdinal);
+    for (size_t otherIndex = 0; otherIndex < variants.size(); ++otherIndex) {
+      if (candidateIndex == otherIndex)
+        continue;
+      CostOrder order = compareExactSelectionCost(
+          variants[otherIndex].variant.resourceCost,
+          variants[candidateIndex].variant.resourceCost);
+      if (order == CostOrder::LeftDominates) {
+        remove = true;
+        break;
+      }
+      if (order != CostOrder::Equivalent)
+        continue;
+      if ((baselineIndex && otherIndex == *baselineIndex) ||
+          std::tie(variants[otherIndex].stableSemanticOrdinal,
+                   variants[otherIndex].scheduleActionOrdinal) <
+              candidateOrdinal) {
+        remove = true;
+        break;
+      }
+    }
+    if (!remove)
+      retained.push_back(candidateIndex);
+  }
+
+  llvm::sort(retained, [&](size_t left, size_t right) {
+    return std::tie(variants[left].stableSemanticOrdinal,
+                    variants[left].scheduleActionOrdinal) <
+           std::tie(variants[right].stableSemanticOrdinal,
+                    variants[right].scheduleActionOrdinal);
+  });
+  std::vector<AdmittedCoordinatedExecutable> reduced;
+  reduced.reserve(retained.size());
+  for (size_t index : retained)
+    reduced.push_back(std::move(variants[index]));
+  variants = std::move(reduced);
+  return mlir::success();
+}
+
+mlir::FailureOr<AdmittedCoordinatedExecutable>
+selectAdmittedCoordinatedExecutable(
+    std::vector<AdmittedCoordinatedExecutable> variants,
     WholeVariantSelectionMode selectionMode, llvm::raw_ostream &diagnostics,
     WholeVariantSelectionStatistics *statistics) {
+  if (isQualificationSelectionMode(selectionMode)) {
+    mlir::FailureOr<CoordinatedQualificationSelectionPlan> qualification =
+        planCoordinatedQualificationSelection(variants, selectionMode);
+    if (mlir::failed(qualification)) {
+      diagnostics << "wafer-compile: no exact-admitted coordinated executable "
+                     "matches qualification="
+                  << stringifyQualificationSelectionMode(selectionMode) << '\n';
+      return mlir::failure();
+    }
+    const AdmittedCoordinatedExecutable &winner =
+        variants[qualification->selectedIndex];
+    diagnostics
+        << "wafer-compile: coordinated whole-rank qualification"
+        << " mode=" << stringifyQualificationSelectionMode(selectionMode)
+        << " admitted_executables=" << variants.size()
+        << " qualification_matched=" << qualification->matchingIndices.size()
+        << " winner_ordinal=" << winner.stableSemanticOrdinal
+        << " schedule_action_ordinal=" << winner.scheduleActionOrdinal
+        << " reserved_baseline=" << (winner.reservedBaseline ? "true" : "false")
+        << " implementation_alternative="
+        << (winner.implementationAlternativeOrigin ? "true" : "false") << '\n';
+    return std::move(variants[qualification->selectedIndex]);
+  }
+
   llvm::SmallVector<CoordinatedVariantCostView, 16> views;
   views.reserve(variants.size());
-  for (const FullyGatedCoordinatedVariant &variant : variants)
+  for (const AdmittedCoordinatedExecutable &variant : variants)
     views.push_back({variant.stableSemanticOrdinal, variant.reservedBaseline,
                      &variant.variant.resourceCost,
-                     variant.terminalActionOrdinal});
+                     variant.scheduleActionOrdinal});
   mlir::FailureOr<CoordinatedVariantSelectionPlan> plan =
       planCoordinatedVariantSelection(views, selectionMode);
   if (mlir::failed(plan))
@@ -526,14 +1123,16 @@ selectFullyGatedCoordinatedVariant(
   if (statistics)
     statistics->paretoRetainedVariants += plan->paretoIndices.size();
 
-  const FullyGatedCoordinatedVariant &winner = variants[plan->selectedIndex];
+  const AdmittedCoordinatedExecutable &winner = variants[plan->selectedIndex];
   diagnostics << "wafer-compile: coordinated whole-rank selection"
-              << " fully_gated=" << variants.size()
+              << " admitted_executables=" << variants.size()
               << " pareto_retained=" << plan->paretoIndices.size()
               << " winner_ordinal=" << winner.stableSemanticOrdinal
-              << " terminal_action_ordinal="
-              << winner.terminalActionOrdinal
-              << " reserved_baseline=" << winner.reservedBaseline
+              << " schedule_action_ordinal=" << winner.scheduleActionOrdinal
+              << " reserved_baseline="
+              << (winner.reservedBaseline ? "true" : "false")
+              << " implementation_alternative="
+              << (winner.implementationAlternativeOrigin ? "true" : "false")
               << " evidence="
               << stringifyCoordinatedHardwareSelectionEvidence(plan->evidence)
               << " nominal_ps=";

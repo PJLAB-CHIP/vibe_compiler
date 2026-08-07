@@ -1,18 +1,12 @@
 add_mlir_library(WaferTransforms
   PhysicalDataflow/CandidateRewrites.cpp
+  PhysicalDataflow/CompleteRankMaterialization.cpp
   PhysicalDataflow/LayoutMovementOptimization.cpp
   PhysicalDataflow/ReadyOrder.cpp
   PhysicalDataflow/StructuredOpInterfaceModels.cpp
-  Scheduling/CandidateAnalysis.cpp
-  Scheduling/CandidateCommit.cpp
-  Scheduling/CandidateEvaluation.cpp
-  Scheduling/CandidateSelection.cpp
   Scheduling/FixedSlotPipeline.cpp
-  Scheduling/FullBufferHandoff.cpp
   Scheduling/RedundantTransferElimination.cpp
   Scheduling/RankTileMaterialization.cpp
-  Scheduling/ScheduleTensorProgram.cpp
-  Scheduling/StructuredSchedulingScope.cpp
   Scheduling/WorkerPlacement.cpp
   DDR/PlanDDRMemory.cpp
   MemoryPlanning/LifetimeAnalysis.cpp
@@ -69,6 +63,7 @@ add_mlir_library(WaferTransforms
   MLIRSupport
   MLIRTensorDialect
   MLIRTransforms
+  MLIRValueBoundsOpInterface
 )
 
 target_include_directories(obj.WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}

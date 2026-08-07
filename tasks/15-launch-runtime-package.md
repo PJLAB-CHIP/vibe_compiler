@@ -747,7 +747,7 @@ consumer，rank-15 package assembly注入失败无final/staging。任何未来ta
   不以host重新lower/重编译module替代package中的exact ELF；
 - Protobuf或其它stable wire format；
 - multi-process loader和version negotiation；
-- persistent state/migration；
+- runtime-owned persistent state/migration；显式函数输入/结果线程化的state仍按普通external IO绑定；
 - shared module/weight cache和capacity service；
 - multi-card projection/route；
 - dynamic variant selection；

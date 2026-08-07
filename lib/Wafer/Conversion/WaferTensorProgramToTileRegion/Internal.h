@@ -29,13 +29,44 @@
 
 namespace wafer::tensor_program_to_tile_region {
 
+struct CandidateTraversalConnection {
+  mlir::OpResult producerResult;
+  mlir::OpOperand *consumerOperand = nullptr;
+
+  mlir::Operation *getProducer() const {
+    return producerResult ? producerResult.getOwner() : nullptr;
+  }
+  mlir::Operation *getConsumer() const {
+    return consumerOperand ? consumerOperand->getOwner() : nullptr;
+  }
+  bool isValid() const { return producerResult && consumerOperand; }
+};
+
+class CandidateConnectionFusionPolicy {
+public:
+  CandidateConnectionFusionPolicy(
+      llvm::ArrayRef<CandidateTraversalConnection> connections,
+      llvm::ArrayRef<CandidateTraversalConnectionChoice> choices)
+      : connections(connections), choices(choices) {}
+
+  bool isValid() const { return connections.size() == choices.size(); }
+  bool shouldFuse(mlir::OpResult producerResult,
+                  mlir::OpOperand &consumerOperand) const;
+
+private:
+  llvm::ArrayRef<CandidateTraversalConnection> connections;
+  llvm::ArrayRef<CandidateTraversalConnectionChoice> choices;
+};
+
 /// A verified standalone tensor-program scheduling scope. Its entry arguments
 /// are inputs followed by output destinations; func.return yields one root per
 /// output destination.
 class TensorProgramScope {
 public:
-  explicit TensorProgramScope(mlir::func::FuncOp function)
-      : function(function) {}
+  explicit TensorProgramScope(
+      mlir::func::FuncOp function,
+      const CandidateConnectionFusionPolicy *connectionPolicy = nullptr)
+      : function(function), connectionPolicy(connectionPolicy) {}
 
   mlir::func::FuncOp getFunction() { return function; }
   mlir::Block &getBody() { return function.getBody().front(); }
@@ -57,10 +88,20 @@ public:
   mlir::TypeRange getResultTypes() { return function.getResultTypes(); }
   mlir::Location getLoc() { return function.getLoc(); }
   mlir::MLIRContext *getContext() { return function.getContext(); }
+  bool shouldFuseCandidateConnection(mlir::OpResult producerResult,
+                                     mlir::OpOperand &consumerOperand) const {
+    return !connectionPolicy ||
+           connectionPolicy->shouldFuse(producerResult, consumerOperand);
+  }
 
 private:
   mlir::func::FuncOp function;
+  const CandidateConnectionFusionPolicy *connectionPolicy = nullptr;
 };
+
+mlir::FailureOr<llvm::SmallVector<CandidateTraversalConnection, 16>>
+collectCandidateTraversalConnections(mlir::func::FuncOp function,
+                                     std::string *failureReason);
 
 struct BufferVersions {
   mlir::Value tensor;
@@ -119,6 +160,35 @@ struct ReductionChunk {
 };
 
 mlir::func::FuncOp findSingleStandaloneTensorProgram(mlir::ModuleOp module);
+
+/// An isolated complete-rank structured candidate after the functional
+/// result boundary has been normalized to explicit DPS output arguments.
+/// The original functional signature is retained only so the final Tile
+/// artifact can restore the user-visible boundary after ordinary lowering.
+struct PreparedCompleteRankTensorProgram {
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  mlir::FunctionType functionalType;
+  unsigned inputCount = 0;
+  unsigned outputCount = 0;
+};
+
+/// Clones the current structured program and normalizes its functional result
+/// destinations. No traversal or Tile operation is materialized in this
+/// stage, so an opaque implementation provider can re-prove and rewrite the
+/// current SSA of the isolated prepared artifact.
+mlir::LogicalResult
+prepareCompleteRankTensorProgram(mlir::ModuleOp sourceModule,
+                                 PreparedCompleteRankTensorProgram &candidate,
+                                 std::string *failureReason);
+
+/// Consumes a prepared structured artifact through the ordinary conservative
+/// complete-rank traversal and TensorProgram-to-Tile conversion, then restores
+/// its original functional boundary.
+mlir::LogicalResult lowerPreparedCompleteRankTensorProgramToTileRegion(
+    PreparedCompleteRankTensorProgram &&candidate,
+    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
+    int64_t currentLogicalRank,
+    llvm::ArrayRef<mlir::Operation *> coveredTopLevelOperations = {});
 
 mlir::LogicalResult verifyTensorProgramScope(mlir::func::FuncOp function,
                                              std::string *failureReason);
@@ -193,6 +263,44 @@ mlir::FailureOr<mlir::Value> materializeCandidatePartialReductionRootTileValue(
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     std::string *failureReason);
 
+/// Private implementation family selected by a typed graph-alternative
+/// provider. It is deliberately absent from the public ordinary traversal
+/// seed and never survives materialization in IR.
+enum class AttentionImplementationKind : uint8_t {
+  Online,
+  SplitKV,
+};
+
+/// Materializes one output tile of a structurally proven attention
+/// alternative. The accepted graph carries explicit (has_value, m, l, o)
+/// state and uses only SCF plus ordinary Linalg operations; later Tile
+/// lowering therefore remains the sole owner of target compute semantics.
+mlir::FailureOr<mlir::Value> materializeCandidateFlashRootTileValue(
+    mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
+    llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    AttentionImplementationKind implementation,
+    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    std::string *failureReason);
+
+/// Owns the complete output traversal for one selected Flash strategy. This
+/// is the transformation entry used by the distinct FA2 and FlashDecoding
+/// passes; generic complete-rank traversal has no attention-specific branch.
+mlir::LogicalResult materializeCompleteFlashTraversal(
+    TensorProgramScope scope, llvm::ArrayRef<int64_t> outputTileSizes,
+    llvm::ArrayRef<int64_t> reductionTileSizes,
+    AttentionImplementationKind implementation, std::string *failureReason);
+
+/// Recursively tiles current-SSA producers of slices created for one actual
+/// candidate tile.  This is shared by ordinary, partial-reduction and online
+/// materialization; it never recovers correspondence from names.
+mlir::LogicalResult fuseCandidateProducerSlices(
+    mlir::Operation *tiledConsumer, mlir::Operation *sourceConsumer,
+    TensorProgramScope scope,
+    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    std::string *failureReason);
+
 mlir::FailureOr<mlir::Value>
 getCandidateOutputBoundary(TensorProgramScope scope, unsigned outputIndex,
                            std::string *failureReason);
@@ -229,6 +337,12 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     CandidateTileTraversalKind traversalKind, std::string *failureReason);
 
+mlir::LogicalResult materializeJointCompleteRankTraversals(
+    TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<CandidateTraversalConnection> connections,
+    llvm::ArrayRef<CandidateTraversalConnectionChoice> choices,
+    std::string *failureReason);
+
 /// Materializes one deterministic, complete traversal for every distinct
 /// static result shape in a complete-rank program.  Roots with the same shape
 /// share a traversal; different shapes remain separate traversals inside the
@@ -238,6 +352,14 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
 mlir::LogicalResult
 materializeConservativeCompleteRankTraversals(TensorProgramScope scope,
                                               std::string *failureReason);
+
+/// Completes structured roots left outside a specialized or joint traversal.
+/// An already complete program is accepted; any remaining supported root uses
+/// the same conservative per-root traversal as the mandatory baseline.
+mlir::LogicalResult materializeRemainingConservativeCompleteRankTraversals(
+    TensorProgramScope scope,
+    llvm::ArrayRef<mlir::Operation *> coveredTopLevelOperations,
+    std::string *failureReason);
 
 /// Materializes every supported root as an independent traversal using the
 /// same explicit tile vector. This is the separated counterpart to
@@ -431,13 +553,6 @@ private:
       mlir::RankedTensorType tileTensorType,
       llvm::ArrayRef<mlir::OpFoldResult> offsets, llvm::ArrayRef<int64_t> sizes,
       llvm::ArrayRef<int64_t> strides, mlir::OpBuilder &builder);
-
-  std::optional<unsigned>
-  getSingleTensorProgramReturnOperandIndex(mlir::Value value) const;
-
-  bool isLinearInsertChainToTensorProgramReturn(
-      mlir::tensor::InsertSliceOp insertSlice,
-      unsigned expectedOutputIndex) const;
 
   bool hasNoObservableDestUseExceptInsert(
       mlir::tensor::InsertSliceOp insertSlice) const;

@@ -3,11 +3,11 @@
 状态：`board-ready`。bounded search、production source-to-package、默认关闭的
 invocation-local详细编译计时、symbolic movement descriptor、模型规模ordinary/profile no-card及实际
 Llama-2 7B Megatron TP16 production package/no-card均已闭合。Q41曾用18个独立optimization names完成机制资格；
-它们是pre-Q49实现证据，不是终态public控制面。Q49 C6把decision owner与CLI收口为`production`/`none`两种policy，
+它们是pre-Q49实现证据，不是终态public控制面。Q49已经把decision owner与CLI收口为`production`/`none`两种policy，
 同时保留本文计时、bounded executor、RSS和diagnostics能力。真实板端未运行。
 
-下列pipeline contract只记录Q41已经闭合的计时、并发、descriptor与model-scale合同。Q49 C6未来控制面的说明单列在合同之后，
-不属于Q41完成门禁；在C6删除旧consumer前，旧独立names只算待迁移implementation，不可引用为长期public合同。
+下列pipeline contract只记录Q41已经闭合的计时、并发、descriptor与model-scale合同。Q49当前控制面与recipe-first owner说明单列在
+合同之后，不属于Q41完成门禁；旧独立names、rank frontier、attempt plan和owner import只保留为历史性能证据，不可引用为长期合同。
 
 ```text
 Pipeline position:
@@ -42,16 +42,17 @@ Pipeline position:
   layout materialization、slice/insert、broadcast、transpose、reshape和transform-like TDMA的大shape回归证明
   descriptor数量与loop几何一致，Cx/NCx的dtype block、full/C0/folded tail和NCx per-N bank alignment均由
   统一encoding事实源推导，production路径不再按logical element枚举。M-sharded K=1024 case在
-  相同Release环境满足时间门禁、完整package生成且no-card通过时恢复`board-ready`，但不标`done`；真实板端
+  相同Release环境完成可解释的wall/RSS/work characterization、完整package生成且no-card通过时恢复`board-ready`，但不标`done`；真实板端
   exact-output和winner profile有效后完成。
 ```
 
-## Q49 Cutover 后的 Typed Optimization Policy（非Q41完成门禁）
+## Q49 Current Typed Optimization Policy（非Q41完成门禁）
 
 optimization policy属于一次compiler invocation的typed orchestration input，不进入source IR，也不作为candidate attr、side table
 或selection cost。`production`启用06统一owner的完整candidate domain；`none`只保留fully gated conservative baseline，仍执行合法
 编译所必需的tiling、lowering、normalization、placement、binding、resource和ABI gate。scope、layout、residency、NoC、worker等
 不再是public独立轴；需要固定实现的qualification使用compiler-private typed seam并重跑相同late gates。
+public parser只接受`--optimization-preset=production|none`；不存在enable/disable单轴组合、隐藏compatibility flag或第三种preset。
 
 配置传播遵循单一typed value：
 
@@ -59,13 +60,18 @@ optimization policy属于一次compiler invocation的typed orchestration input�
 wafer-compile options
   -> CompilationOptions
   -> whole-rank tile-dataflow decision owner
-  -> terminal Instr siblings
+  -> executable-finalization Instr siblings
   -> unchanged whole-variant exact selection
 ```
 
 `none`只缩小candidate domain，不修改source，不让candidate变成“带disabled attr”的影子状态，也不绕过任何late gate。
 同一policy的ordinary和profile compile必须选择同一production artifact；对比工具以canonical policy、source
 snapshot、target/launch和最终package结构共同建立A/B身份。
+
+当前Q49 completion matrix另固定为8个logical workloads、10个packages：异构非Attention rank-1 FP16与TP16 BF16、official HF
+prefill rank-1 FP16/BF16、official HF functional decode rank-1 FP16/BF16，以及official HF Llama-2 7B block TP16 FP16/BF16。
+两个decode workload各包含1023→1024和消费上一步returned K/V state的1024→1025两个静态package。本文Q41历史package/no-card不能
+代签这10个current packages；Q49仍以`tasks/progress.md`的`doing`状态和本轮fresh gate为准。
 
 ## 问题与边界
 
@@ -85,7 +91,24 @@ correspondence、admission、cost、late legality或selection policy。
 
 ## 实现合同
 
-### 有界搜索与跨context传输
+### Q49 current recipe-first复用边界
+
+- complete-rank structured proposal先在query-local facts/DP/Pareto beam中剪枝，invocation-wide structural frontier最多64项；
+  graph-changing实现由typed implementation provider贡献opaque point，common coordinator不解析provider key或按workload分支。
+- mandatory baseline canonical seed外置于A/B轮转，但其attempt/success计入全局16/8。其余action按stable A-first在new-Tile
+  canonical seed和已有exact-seeded cursor expansion之间轮转；不存在per-Tile/provider-local quota。
+- 包含baseline在内，全invocation最多16次actual materialization attempt和8个successful exact action。setup前failure不计
+  attempt；已开始action无论成功或materialization/exact rejection都消耗attempt并换lane。live cursor最多8，peak action clone为1；
+  每个action进入相同completion、SPM/DDR、transport、ABI和final recost。diagnostics分别报告structural frontier、baseline、A/B选择、
+  setup failure、attempt/failure、successful exact action和actual rank clone，不能把“逐个clone再销毁”当成recipe-first。
+- 同一个action clone内的rank-local independent pipeline按可用host并发执行，但并发度不改变batch、recipe order、work count、frontier digest或winner；
+  all-rank communication/resource/admission/selection保持原子。时间和RSS按同机fresh baseline、work counter与增长趋势判断是否合理，
+  不是架构合法性的固定秒数或MiB阈值。
+
+### Pre-Q49有界搜索与跨context传输历史（非current owner）
+
+以下数字解释Q41的旧性能证据；对应rank-frontier、Cartesian attempt plan、cross-context owner import和固定4-worker实现已经退役，
+不得恢复为Q49 candidate lifecycle：
 
 - 只有typed collective op能使rank-local scheduling观察`logicalRank`。无collective的verified tensor program
   只生成一个rank-invariant frontier，再按16个canonical rank引用复用；有collective时仍逐rank生成。
@@ -93,13 +116,13 @@ correspondence、admission、cost、late legality或selection policy。
   分片，但每class的shard数由host heavyweight thread预算除以generation-class数得到并限制在`[1,16]`。
   每个组只进入一个shard，因而partition suppression的作用域不变。shard结果按原始request ordinal稳定归并，
   只重放一次原来的三band admission。
-- 每个shard内部candidate evaluation最多4个worker；rank frontier上界仍为
+- 每个shard内部candidate evaluation当时最多4个worker；rank frontier上界当时为
   `1 reserved + 256 general + 8 fixed-slot + 8 worker-placement = 273`。
 - rank-wide admission完成后，admitted candidate保留在原request-shard context中并行执行function-boundary
   bufferization、SPM replanning和exact-cost closure；成功结果按原始request ordinal恢复canonical frontier。
   finalization失败仍按原合同只剪除非baseline candidate，reserved baseline失败仍使完整generation class失败；
   不在finalization前按cost、shape或case剪枝。
-- whole-variant attempt上界成为可引用常量：
+- whole-variant attempt上界当时固定为：
   `1 reserved + 64 Cartesian + 64 coordinated + 8 worker + 8 fixed-slot + 8 generic = 153`。
 - verified tensor program和required candidate用MLIR bytecode跨context传输。先从metadata建立完整attempt plan，
   只编码会被该plan直接消费的module；rank-invariant module bytes用共享只读存储跨16个rank引用。
@@ -159,16 +182,17 @@ artifact/buffering/worker tuple以及完整module文本。它证明candidate集�
 
 ### 观测
 
-`wafer-compile`稳定输出source-to-tensor、每个request shard、rank frontier generation、frontier transfer、
-owner import、NoC expansion、whole-variant selection、target IR/artifact、package、profile product、
-publication和transaction的wall time与process peak RSS，并报告generation class/shard/worker、候选、attempt、
-target gate、rank lowering、clone上界、encoded/imported module及capture计数。统计仅存在于本次compiler
+`wafer-compile`当前稳定输出source-to-tensor、coordinated Tile frontier、coordinated executable finalization、
+coordinated variant selection、target IR/artifact、package、profile product、publication和transaction的wall time与process peak RSS，
+并报告structural proposal/actual materialization、implementation provider、schedule recipe enumeration/retention、
+materialization attempt/failure/backfill、successful action clone、actual rank clone、late gate、rank lowering、worker和capture计数。
+统计仅存在于本次compiler
 invocation，不进入IR、package或selection input。
 
 详细计时在上述低开销稳定统计之上按需启用：
 
 - `--compile-timing`默认关闭；打开后记录`stage -> pipeline -> pass/analysis`和candidate search内部的
-  source-variant、recipe、scope selection、tile-region lowering、instr lowering、SPM/DDR planning、verifier与
+  structural derivation/provider query、recipe selection/materialization、tile-region lowering、instr lowering、SPM/DDR planning、verifier与
   cost analysis边界。索引只写入本次diagnostic detail，用于关联一次search request，不恢复或改变IR语义。
 - 每个完成项记录调用次数、累计wall/线程CPU、平均wall、最大wall和失败次数；最终按累计wall降序输出Markdown
   表格。并行worker的累计wall是work量，允许超过transaction wall，不能把它当成串行关键路径。
@@ -231,8 +255,9 @@ op name或当前winner固化shortcut。
 
 ## 无卡结果
 
-同一Release构建的门禁为profile transaction不超过90秒、peak RSS不超过512 MiB；相对首次可完成的观测值保留
-约2倍wall和约4倍memory余量，不能通过缩小shape、关闭profile或延长timeout满足。
+wall与peak RSS是同机同配置的可解释characterization，不是固定架构门禁。该轮曾以90秒/512 MiB作为回归告警线并留出明显余量；
+后续根据fresh baseline、机器容量、work counter与增长趋势判断是否处于合理范围，不能通过缩小shape、关闭profile或单纯延长timeout
+掩盖无界clone、重复exact gate或内存持续增长。
 
 本轮fresh production `--profile`结果：
 
@@ -263,20 +288,14 @@ transport status及all-rank invocation preflight均通过，`board_execution: fa
 `board-ready`并使Q44的第三个PyTorch case达到board-ready；真实tensor capture/torch eager comparison仍须在
 configured board执行后才能标`done`。
 
-以下typed configuration条目是pre-Q49机制资格的fresh host历史证据；Q49 C6迁移后不再构成current public CLI合同：
+以下typed configuration条目是pre-Q49机制资格的fresh host历史证据；它们不再构成current public CLI合同：
 
 - layout hardening后201个physical relation、encoding、view/alias、memory planning、target/model相关unit与
   42个layout/mapped movement/SPM/DDR/target lit通过；16-rank M-sharded K=1024 ordinary/profile package再次
   fresh生成，production bytes一致、grid launch和profile companion闭合，两包均通过no-card；
-- 18个稳定语义名的唯一性、parse/stringify round-trip、`production`/`none`全集和任意typed composition unit；
-- `none` rank frontier只产生唯一conservative spill/single-buffer/unplaced reserved baseline，且canonical
-  request-shard merge与未分片frontier仍逐module一致；
-- 同一reciprocal source完成default production、`none`、disable-only implementation selection和enable-only
-  implementation selection四路完整package：两组expected ELF分别byte-identical，production/only-enabled调用
-  reciprocal target implementation，none/disabled调用divide target implementation；unknown、duplicate和conflict
-  均在publication前拒绝；
-- canonical diagnostic完整列出enabled/disabled集合；原compiler optimization campaign及NoC/partial-reduction
-  host comparison baseline已迁到正式`none` preset；
+- 旧18轴的唯一性、round-trip、disable-only/enable-only package与diagnostic只证明当时机制可区分，不再保留parser或public option；
+- current public回归只验证`production`/`none`两态parse/stringify、未知值pre-publication拒绝，以及`none`仍经过完整baseline late gates；
+- 原compiler optimization campaign及NoC/partial-reduction host comparison baseline已迁到正式`none` preset；
 - 16-rank FP16 M-sharded K=1024 runner再次fresh生成ordinary/profile两个production package，递归bytes一致、
   grid launch和NE GEMM target structure一致、profile companion完整且两包均通过no-card。
 

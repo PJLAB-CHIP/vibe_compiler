@@ -7,7 +7,9 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 namespace wafer {
@@ -31,18 +33,46 @@ static bool isOne(mlir::Attribute attribute) {
   return false;
 }
 
+static mlir::Attribute getConstantAttribute(mlir::Value value) {
+  llvm::DenseSet<mlir::Value> visited;
+  while (value && visited.insert(value).second) {
+    if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>())
+      return constant.getValue();
+    // Exact tensor views preserve the value of a splat constant. Candidate
+    // tiling routinely inserts extract_slice between the original constant
+    // and a tiled structured op, so capability re-proving must follow this
+    // typed SSA relation instead of depending on adjacency.
+    if (auto slice = value.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+      value = slice.getSource();
+      continue;
+    }
+    if (auto expand = value.getDefiningOp<mlir::tensor::ExpandShapeOp>()) {
+      value = expand.getSrc();
+      continue;
+    }
+    if (auto collapse = value.getDefiningOp<mlir::tensor::CollapseShapeOp>()) {
+      value = collapse.getSrc();
+      continue;
+    }
+    if (auto cast = value.getDefiningOp<mlir::tensor::CastOp>()) {
+      value = cast.getSource();
+      continue;
+    }
+    return {};
+  }
+  return {};
+}
+
 static mlir::Attribute getConstantAttribute(mlir::linalg::GenericOp generic,
                                             mlir::Value value) {
-  if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>())
-    return constant.getValue();
+  if (mlir::Attribute attribute = getConstantAttribute(value))
+    return attribute;
   auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
   if (!argument || argument.getOwner() != generic.getBody() ||
       argument.getArgNumber() >= generic.getNumDpsInputs())
     return {};
-  mlir::Value input = generic.getDpsInputs()[argument.getArgNumber()];
-  if (auto constant = input.getDefiningOp<mlir::arith::ConstantOp>())
-    return constant.getValue();
-  return {};
+  return getConstantAttribute(
+      generic.getDpsInputs()[argument.getArgNumber()]);
 }
 
 static bool hasReciprocalExpression(mlir::linalg::GenericOp generic) {

@@ -6,11 +6,12 @@ relation和physical-version机制；Q49负责把production调用域收敛为comp
 实现状态只看`tasks/progress.md`；历史 task-dataflow scheduling 证据只作背景，不是当前合同。
 
 source structured op 的数学语义始终存在于当前 operation、region、SSA、type、attribute 和标准
-MLIR interfaces 中。tasks/06与本文不是“先选出全局plan，再统一import”的两个管线阶段：对一个fuse/tile/
-physical-dataflow proposal做完便宜预筛后，decision owner立即调用本文rewrite library，在isolated complete-rank
-candidate clone中用`PatternRewriter`和`DialectConversion`同时物化implementation、tile、physical
-encoding、residency、movement、share/recompute、hoist、numeric rewrite和traversal order。一旦作为frontier survivor，
-这些决定的唯一语义主体就是actual IR；transient proposal立即销毁，下游只读取current IR。
+MLIR interfaces 中。tasks/06与本文不是“先选出全局plan，再统一import”的两个管线阶段：fuse/tile/
+physical-dataflow proposal先用current IR、typed legality、relation和lower bound进入query-local structural frontier，由DP/Pareto
+剪枝；只有统一actual-clone budget准入的有界代表才调用本文rewrite library，在isolated complete-rank
+candidate clone中用`PatternRewriter`和`DialectConversion`同时物化implementation、tile、physical encoding、
+residency、movement、share/recompute、hoist、numeric rewrite和traversal order。物化后的决定只存在actual IR中，
+transient proposal随即销毁；actual失败时按稳定顺序从未物化frontier补位，下游只读取current IR。
 
 `wafer.tile.region`物化一个显式的 **SPM residency domain**：region body中的一个或多个structured traversal共享
 同一组可同时驻留、可由SSA直接连接并由同一liveness关系解释的tile、temporary、accumulator和staging。它不要求
@@ -45,7 +46,8 @@ SPM roots的work已经按typed effect/event证明完成。未建模的opaque SPM
 
 本层负责：
 
-- 在 isolated complete-rank clone 上应用当前frontier action选定的 tiling、fusion、producer propagation 或等价
+- 在 isolated complete-rank clone 上应用当前structural frontier中通过统一actual-clone budget准入的action所选定的
+  tiling、fusion、producer propagation 或等价
   indexing rewrite；该action与本次mutation同寿命，不先形成可跨pass保留的完整plan。
 - 物化share-vs-recompute与static loop-invariant hoist：share保持同一producer/physical version的多use；recompute只克隆
   pure/speculatable producer并形成consumer-local SSA；hoist把真实op移到loop外并让body捕获dominant SSA value。
@@ -114,7 +116,7 @@ SPM roots的work已经按typed effect/event证明完成。未建模的opaque SPM
       成功IR只含typed operation/region/type/
       attribute、memref/view、compute、movement、event和SSA；不依赖任何外部解释对象。
     - Downstream consumer:
-      target-abstract legality，并按terminal typed collective/peer algorithm参数逐点执行complete-rank instruction lowering；
+      target-abstract legality，并按executable-finalization typed collective/peer algorithm参数逐点执行complete-rank instruction lowering；
       materialized canonical/unplaced Instr随后派生typed worker/fixed-slot/ready-order siblings，进入fresh completion
       reconstruction、liveness-derived SPM allocation、whole-variant DDR、post-memory communication/transport/resource、ABI gates以及
       all-rank atomic commit。completion按真实root reuse、observer、region boundary和entry terminal分别验证；任一内部
@@ -554,7 +556,7 @@ synthesis都必须先在isolated module中形成真实、verifier-clean MLIR clo
 complete traversal；不得把`InstructionSketch`、rewrite rule、solver AST、proof certificate或implementation descriptor
 物化为TileRegion op/attr。
 
-- source clone仍经06的同一frontier action驱动，以本文typed view/compute/movement/event/SSA合同立即物化；
+- source clone仍经06的同一structural frontier准入action驱动，以本文typed view/compute/movement/event/SSA合同物化；
   proof通过不等于selected，也不允许建立可重放的选择清单。
 - target synthesis消费complete verified Tile program和baseline complete-rank tile-to-Instr conversion，只输出disposable actual Instr
   clone；每个clone重新执行本文coverage、effect/completion及下游memory/ABI gates，失败不修改selected complete-rank variant。

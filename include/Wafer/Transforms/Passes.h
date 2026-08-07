@@ -20,6 +20,10 @@ namespace wafer {
 #include "Wafer/Transforms/WaferPasses.h.inc"
 
 std::unique_ptr<mlir::Pass> createLegalizeStablehloToLinalgPass();
+/// Preserve static concatenate semantics as canonical tensor insertion SSA
+/// before the generic StableHLO-to-Linalg conversion expands it into scalar
+/// index control flow.
+std::unique_ptr<mlir::Pass> createLowerStaticStablehloConcatenatePass();
 mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t spmBase, int64_t spmLimit,
                                         int64_t spmAlignment);

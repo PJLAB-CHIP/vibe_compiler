@@ -1,5 +1,6 @@
 add_mlir_conversion_library(WaferTensorProgramToTileRegion
   WaferTensorProgramToTileRegion/BidirectionalTiling.cpp
+  WaferTensorProgramToTileRegion/AttentionSemantics.cpp
   WaferTensorProgramToTileRegion/BodyEmitter.cpp
   WaferTensorProgramToTileRegion/CandidateMaterialization.cpp
   WaferTensorProgramToTileRegion/CandidateSupport.cpp
@@ -7,12 +8,17 @@ add_mlir_conversion_library(WaferTensorProgramToTileRegion
   WaferTensorProgramToTileRegion/CompleteTraversal.cpp
   WaferTensorProgramToTileRegion/GenericLowering.cpp
   WaferTensorProgramToTileRegion/NamedComputeLowering.cpp
+  WaferTensorProgramToTileRegion/MaterializeFlashAttention.cpp
+  WaferTensorProgramToTileRegion/MaterializeFlashDecoding.cpp
   WaferTensorProgramToTileRegion/TensorControlFlowLowering.cpp
   WaferTensorProgramToTileRegion/TileMaterialization.cpp
   WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferTensorProgramToTileRegion
+
+  DEPENDS
+  WaferPassesIncGen
 
   LINK_LIBS PUBLIC
   WaferAnalysis
@@ -28,6 +34,7 @@ add_mlir_conversion_library(WaferTensorProgramToTileRegion
   MLIRLinalgUtils
   MLIRMathDialect
   MLIRMemRefDialect
+  MLIRPass
   MLIRSCFDialect
   MLIRSCFTransforms
   MLIRSupport
@@ -65,6 +72,7 @@ add_mlir_conversion_library(WaferTileRegionToInstr
 add_mlir_conversion_library(WaferStableHLOToLinalg
   StableHLOToLinalg/ConstantTensorFolding.cpp
   StableHLOToLinalg/LegalizeStablehloToLinalg.cpp
+  StableHLOToLinalg/LowerStaticStablehloConcatenate.cpp
   StableHLOToLinalg/NormalizeStablehloCollectives.cpp
 
   DEPENDS

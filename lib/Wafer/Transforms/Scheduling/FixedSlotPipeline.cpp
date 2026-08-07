@@ -1701,14 +1701,13 @@ specializePeriodicDTEClones(llvm::ArrayRef<mlir::ModuleOp> modules,
           failureReason,
           "periodic Direct-DTE site does not have one exact planned SPM "
           "allocation root");
-    uint64_t terminalOperations = 0;
-    if (detail::checkStaticTerminalOperationBudget(module,
-                                                   terminalOperations) !=
-        detail::StaticTerminalOperationBudgetStatus::WithinBudget)
+    uint64_t executableOperations = 0;
+    if (detail::countStaticExecutableOperations(module,
+                                                executableOperations) ==
+        detail::StaticExecutableOperationCountStatus::CountOverflow)
       return failSpecialization(
           failureReason,
-          "periodic Direct-DTE specialization exceeds the static terminal "
-          "operation budget");
+          "periodic Direct-DTE executable operation count overflows uint64");
     if (mlir::failed(mlir::verify(module)))
       return failSpecialization(
           failureReason,

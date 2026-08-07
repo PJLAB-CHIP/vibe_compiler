@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Threading.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
@@ -22,6 +23,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace wafer {
 namespace {
@@ -319,8 +321,7 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
     return mlir::failure();
   }
   if (hasUnsupportedObserver) {
-    fail(failureReason,
-         "worker placement rejects synchronous completion");
+    fail(failureReason, "worker placement rejects synchronous completion");
     return mlir::failure();
   }
 
@@ -367,8 +368,9 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
       "analysis-phase", "deriveDisjointNCCWorkerPlacementCandidate",
       "build-dependency-lanes");
   issueComponents.reserve(issues.size());
-  unsigned componentCount = 0;
-  for (auto [index, operation] : llvm::enumerate(issues)) {
+  std::vector<std::optional<size_t>> latestPredecessors(issues.size());
+  auto deriveLatestPredecessor = [&](size_t index) {
+    mlir::Operation *operation = issues[index];
     std::optional<size_t> latestPredecessor;
     for (mlir::Value operand : operation->getOperands()) {
       mlir::Operation *definition = operand.getDefiningOp();
@@ -395,6 +397,17 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
         latestPredecessor =
             std::max(latestPredecessor.value_or(0), predecessor);
     }
+    latestPredecessors[index] = latestPredecessor;
+  };
+  if (sourceModule.getContext()->isMultithreadingEnabled() && issues.size() > 1)
+    mlir::parallelFor(sourceModule.getContext(), 0, issues.size(),
+                      deriveLatestPredecessor);
+  else
+    for (size_t index = 0; index < issues.size(); ++index)
+      deriveLatestPredecessor(index);
+
+  unsigned componentCount = 0;
+  for (std::optional<size_t> latestPredecessor : latestPredecessors) {
     if (latestPredecessor)
       issueComponents.push_back(issueComponents[*latestPredecessor]);
     else

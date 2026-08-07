@@ -237,6 +237,13 @@ private:
   llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> valueRefs;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<ValueOriginRef, 2>>
       valueOrigins;
+  // A loop backedge is discovered after its body has been visited. Cache
+  // entries produced in that body must be recomputed against the completed
+  // recurrence union, while entries created afterwards can stop recursive
+  // alias walks immediately.
+  uint64_t provenanceRevision = 1;
+  llvm::DenseMap<mlir::Value, uint64_t> valueRefRevisions;
+  llvm::DenseMap<mlir::Value, uint64_t> valueOriginRevisions;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> asyncRefs;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<AsyncTaskRef, 2>> asyncTaskRefs;
   llvm::SmallVector<AsyncTaskState, 4> asyncTasks;

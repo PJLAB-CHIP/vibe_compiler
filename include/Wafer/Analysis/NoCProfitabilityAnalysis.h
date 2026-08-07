@@ -25,6 +25,7 @@ enum class StaticDurationAssumption : uint32_t {
   ControlIssuePrior = 1u << 6,
   SequentialPhaseModel = 1u << 7,
   QualifiedPipelineModel = 1u << 8,
+  SPMServiceRatePrior = 1u << 9,
 };
 
 using StaticDurationAssumptionMask = uint32_t;
@@ -55,10 +56,10 @@ struct WholeCardResourceDurationEstimate {
   StaticDurationInterval control;
   /// The lower bound is the maximum calibrated resource floor, the nominal
   /// reference follows the supplied current-IR schedule context, and the
-  /// conservative upper bound serializes calibrated resource envelopes.
-  /// Uncalibrated SPM/local movement stays in `spm` and exact Pareto facts; it
-  /// is not converted through a fabricated flat bandwidth or folded into
-  /// makespan.
+  /// conservative upper bound serializes calibrated external-resource
+  /// envelopes. Explicit SPM movement is a simultaneous local-port envelope:
+  /// its nominal point is assumption-marked, and its optional conservative
+  /// bound participates without adding DDR-visible movement a second time.
   StaticDurationInterval makespan;
 };
 

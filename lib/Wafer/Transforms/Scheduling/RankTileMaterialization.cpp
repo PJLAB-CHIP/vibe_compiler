@@ -1,6 +1,18 @@
 //===- RankTileMaterialization.cpp - Complete-rank Tile IR -------------===//
 
-#include "Scheduling/ScheduleTensorProgramInternal.h"
+#include "PhysicalDataflow/CompleteRankMaterializationInternal.h"
+
+#include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
+
+#include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
+
+#include <string>
 
 namespace wafer::tensor_program_scheduling {
 

@@ -229,7 +229,6 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         self.assertTrue(
             {
                 "compiler-optimization-reciprocal-implementation",
-                "compiler-optimization-layout-movement-chain",
                 "compiler-optimization-tree-all-reduce",
                 "collective-characterization-all-gather-direct-vs-ring-256b",
                 "collective-characterization-all-reduce-ring-vs-tree-65536b",

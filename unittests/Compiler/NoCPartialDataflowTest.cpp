@@ -1,7 +1,7 @@
 #include "../../lib/Wafer/Compiler/NoCPartialDataflow.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
 #include "../../lib/Wafer/Compiler/DirectDTETransport.h"
-#include "../../lib/Wafer/Compiler/NoCResidentDataflow.h"
+#include "../../lib/Wafer/Compiler/NoCCommunicationAction.h"
 #include "../../lib/Wafer/Compiler/WholeVariantResourceAcceptance.h"
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/Internal.h"
@@ -86,6 +86,16 @@ static std::string snapshot(mlir::ModuleOp module) {
   llvm::raw_string_ostream stream(text);
   module.print(stream);
   return text;
+}
+
+static const wafer::compiler::detail::CoordinatedCommunicationActionPoint *
+findCommunicationPoint(
+    const wafer::compiler::detail::CoordinatedCommunicationActionPoints &points,
+    uint32_t stableOrdinal) {
+  for (const auto &point : points)
+    if (point->getIdentity().stableOrdinal == stableOrdinal)
+      return point.get();
+  return nullptr;
 }
 
 class NoCPartialDataflowTest : public ::testing::Test {
@@ -426,6 +436,34 @@ module {
       EXPECT_EQ(snapshot(modules[rank]), before[rank]);
       EXPECT_TRUE(mlir::succeeded(mlir::verify(modules[rank])));
     }
+  }
+
+  void
+  expectPassesResidentLateGates(llvm::MutableArrayRef<mlir::ModuleOp> modules) {
+    const wafer::TargetMemoryPolicy memory =
+        wafer::getDefaultWaferTargetPolicy(wafer::TileSearchEffort::Default)
+            .memory;
+    for (mlir::ModuleOp module : modules) {
+      uint64_t executableOperations = 0;
+      EXPECT_EQ(wafer::detail::countStaticExecutableOperations(
+                    module.getOperation(), executableOperations),
+                wafer::detail::StaticExecutableOperationCountStatus::Counted);
+      ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(module)));
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
+      ASSERT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
+          module, memory.spmBase, memory.spmLimit, memory.spmAlignment)));
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
+    }
+    ASSERT_TRUE(mlir::succeeded(
+        wafer::compiler::detail::verifyDirectDTETransportSchedule(modules)));
+
+    auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+        static_cast<int64_t>(modules.size()), wafer::RuntimeLaunchKind::Kernel);
+    ASSERT_TRUE(static_cast<bool>(config))
+        << llvm::toString(config.takeError());
+    ASSERT_TRUE(
+        mlir::succeeded(wafer::compiler::detail::acceptWholeVariantResources(
+            modules, *config)));
   }
 
   mlir::DialectRegistry registry;
@@ -888,7 +926,7 @@ TEST_F(NoCPartialDataflowTest, RejectsRingMisalignedActualSlice) {
 }
 
 TEST_F(NoCPartialDataflowTest,
-       RingPartialPassesNoCResidentAllRankFinalization) {
+       RingPartialProviderActionPassesAllRankLateGates) {
   constexpr int64_t rankCount = 16;
   constexpr int64_t elements = 16;
   OwnedModules owners;
@@ -899,78 +937,53 @@ TEST_F(NoCPartialDataflowTest,
     ASSERT_TRUE(module);
     owners.push_back(std::move(module));
   }
+  auto parents = views(owners);
+  std::vector<std::string> snapshots;
+  for (mlir::ModuleOp parent : parents)
+    snapshots.push_back(snapshot(parent));
 
-  OwnedModules finalizedOwners;
-  for (const auto &owner : owners)
-    finalizedOwners.push_back(mlir::cast<mlir::ModuleOp>(owner.get()->clone()));
-  auto finalizedModules = views(finalizedOwners);
-  ASSERT_EQ(wafer::compiler::detail::materializeNoCPartialReductions(
-                finalizedModules, makeProgram(elements, rankCount)),
-            rankCount);
-  const wafer::TargetMemoryPolicy memory =
-      wafer::getDefaultWaferTargetPolicy(wafer::TileSearchEffort::Default)
-          .memory;
-  for (mlir::ModuleOp module : finalizedModules) {
-    uint64_t terminalOperations = 0;
-    EXPECT_EQ(wafer::detail::checkStaticTerminalOperationBudget(
-                  module.getOperation(), terminalOperations),
-              wafer::detail::StaticTerminalOperationBudgetStatus::WithinBudget);
-    ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(module)));
-    ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
-    ASSERT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
-        module, memory.spmBase, memory.spmLimit, memory.spmAlignment)));
-    ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
-  }
-  ASSERT_TRUE(
-      mlir::succeeded(wafer::compiler::detail::verifyDirectDTETransportSchedule(
-          finalizedModules)));
-
-  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(
-      rankCount);
-  for (size_t rank = 0; rank < frontiers.size(); ++rank)
-    frontiers[rank].push_back(
-        {std::move(owners[rank]), /*stableOrdinal=*/0,
-         wafer::RankArtifactKind::Spill, /*reservedBaseline=*/true,
-         wafer::RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0});
-
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      rankCount, wafer::RuntimeLaunchKind::Kernel);
-  ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
-  ASSERT_TRUE(
-      mlir::succeeded(wafer::compiler::detail::acceptWholeVariantResources(
-          finalizedModules, *config)));
+  auto program = makeProgram(elements, rankCount);
+  wafer::compiler::detail::NoCCommunicationActionProvider provider;
+  wafer::compiler::detail::CoordinatedCommunicationActionPoints points;
   std::string failure;
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::appendNoCResidentDataflowCandidates(
-          frontiers, makeProgram(elements, rankCount), *config, &failure)))
+  ASSERT_TRUE(
+      mlir::succeeded(provider.query(parents, program, points, &failure)))
       << failure;
-  ASSERT_EQ(frontiers[0].size(), frontiers[1].size());
-  ASSERT_GT(frontiers[0].size(), 1u);
+  const auto *partial = findCommunicationPoint(points, /*stableOrdinal=*/0);
+  ASSERT_NE(partial, nullptr);
+  auto action =
+      wafer::compiler::detail::materializeCoordinatedCommunicationAction(
+          parents, program, *partial, &failure);
+  ASSERT_TRUE(mlir::succeeded(action)) << failure;
+  ASSERT_EQ(action->rankModules.size(), parents.size());
 
-  bool foundRingPartial = false;
-  for (size_t candidate = 1; candidate < frontiers[0].size(); ++candidate) {
-    unsigned rdma = 0;
-    unsigned wdma = 0;
-    unsigned sends = 0;
-    unsigned recvs = 0;
-    for (const auto &frontier : frontiers) {
-      mlir::ModuleOp module = *frontier[candidate].module;
-      rdma += countRDMA(module);
-      wdma += countWDMA(module);
-      sends += countSends(module);
-      recvs += countRecvs(module);
-      EXPECT_TRUE(mlir::succeeded(mlir::verify(module)));
-    }
-    if (rdma == 0 && wdma == rankCount &&
-        sends == static_cast<unsigned>(rankCount * 2 * (rankCount - 1)) &&
-        recvs == static_cast<unsigned>(rankCount * 2 * (rankCount - 1)))
-      foundRingPartial = true;
+  unsigned rdma = 0;
+  unsigned wdma = 0;
+  unsigned sends = 0;
+  unsigned recvs = 0;
+  llvm::SmallVector<mlir::ModuleOp, 16> finalizedModules;
+  for (const auto &owner : action->rankModules) {
+    mlir::ModuleOp module = *owner;
+    finalizedModules.push_back(module);
+    rdma += countRDMA(module);
+    wdma += countWDMA(module);
+    sends += countSends(module);
+    recvs += countRecvs(module);
+    EXPECT_EQ(countPrivateDDRAllocations(module), 0u);
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(module)));
   }
-  EXPECT_TRUE(foundRingPartial);
+  EXPECT_EQ(rdma, 0u);
+  EXPECT_EQ(wdma, static_cast<unsigned>(rankCount));
+  EXPECT_EQ(sends, static_cast<unsigned>(rankCount * 2 * (rankCount - 1)));
+  EXPECT_EQ(recvs, static_cast<unsigned>(rankCount * 2 * (rankCount - 1)));
+  for (size_t rank = 0; rank < parents.size(); ++rank)
+    EXPECT_EQ(snapshot(parents[rank]), snapshots[rank]);
+
+  expectPassesResidentLateGates(finalizedModules);
 }
 
 TEST_F(NoCPartialDataflowTest,
-       PartialRunsWithoutValidInputBoundaryAndPassesResidentLateGates) {
+       PartialProviderRunsWithoutValidInputBoundaryAndPassesLateGates) {
   constexpr int64_t rankCount = 16;
   OwnedModules owners;
   for (int64_t rank = 0; rank < rankCount; ++rank) {
@@ -980,13 +993,10 @@ TEST_F(NoCPartialDataflowTest,
     ASSERT_TRUE(module);
     owners.push_back(std::move(module));
   }
-  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(
-      rankCount);
-  for (size_t rank = 0; rank < frontiers.size(); ++rank)
-    frontiers[rank].push_back(
-        {std::move(owners[rank]), /*stableOrdinal=*/0,
-         wafer::RankArtifactKind::Spill, /*reservedBaseline=*/true,
-         wafer::RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0});
+  auto parents = views(owners);
+  std::vector<std::string> snapshots;
+  for (mlir::ModuleOp parent : parents)
+    snapshots.push_back(snapshot(parent));
 
   wafer::frontend::FrontendProgramVerificationResult program =
       makeProgram(4, rankCount);
@@ -1009,42 +1019,49 @@ TEST_F(NoCPartialDataflowTest,
   unrelatedInput.rankSlices.push_back(std::move(onlyRank));
   program.distributedInputs.push_back(std::move(unrelatedInput));
 
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      rankCount, wafer::RuntimeLaunchKind::Kernel);
-  ASSERT_TRUE(static_cast<bool>(config)) << llvm::toString(config.takeError());
+  wafer::compiler::detail::NoCCommunicationActionProvider provider;
+  wafer::compiler::detail::CoordinatedCommunicationActionPoints points;
   std::string failure;
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::appendNoCResidentDataflowCandidates(
-          frontiers, program, *config, &failure)))
+  ASSERT_TRUE(
+      mlir::succeeded(provider.query(parents, program, points, &failure)))
       << failure;
-  ASSERT_EQ(frontiers[0].size(), frontiers[1].size());
-  ASSERT_GT(frontiers[0].size(), 1u);
+  const auto *partial = findCommunicationPoint(points, /*stableOrdinal=*/0);
+  ASSERT_NE(partial, nullptr);
+  auto action =
+      wafer::compiler::detail::materializeCoordinatedCommunicationAction(
+          parents, program, *partial, &failure);
+  ASSERT_TRUE(mlir::succeeded(action)) << failure;
+  ASSERT_EQ(action->rankModules.size(), parents.size());
 
-  bool foundResident = false;
-  for (size_t candidate = 1; candidate < frontiers[0].size(); ++candidate) {
-    unsigned rdma = 0;
-    unsigned wdma = 0;
-    unsigned sends = 0;
-    unsigned recvs = 0;
-    unsigned waits = 0;
-    for (size_t rank = 0; rank < frontiers.size(); ++rank) {
-      mlir::ModuleOp module = *frontiers[rank][candidate].module;
-      rdma += countRDMA(module);
-      wdma += countWDMA(module);
-      sends += countSends(module);
-      recvs += countRecvs(module);
-      waits += countWaits(module);
-      EXPECT_TRUE(mlir::succeeded(mlir::verify(module)));
-    }
-    if (rdma == 0 && wdma == rankCount && sends == 2 * (rankCount - 1) &&
-        recvs == 2 * (rankCount - 1) && waits == 4 * (rankCount - 1))
-      foundResident = true;
+  unsigned rdma = 0;
+  unsigned wdma = 0;
+  unsigned sends = 0;
+  unsigned recvs = 0;
+  unsigned waits = 0;
+  llvm::SmallVector<mlir::ModuleOp, 16> finalizedModules;
+  for (const auto &owner : action->rankModules) {
+    mlir::ModuleOp module = *owner;
+    finalizedModules.push_back(module);
+    rdma += countRDMA(module);
+    wdma += countWDMA(module);
+    sends += countSends(module);
+    recvs += countRecvs(module);
+    waits += countWaits(module);
+    EXPECT_EQ(countPrivateDDRAllocations(module), 0u);
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(module)));
   }
-  EXPECT_TRUE(foundResident);
-  for (const auto &frontier : frontiers) {
-    EXPECT_EQ(countRDMA(*frontier.front().module), 1u);
-    EXPECT_EQ(countWDMA(*frontier.front().module), 2u);
+  EXPECT_EQ(rdma, 0u);
+  EXPECT_EQ(wdma, static_cast<unsigned>(rankCount));
+  EXPECT_EQ(sends, static_cast<unsigned>(2 * (rankCount - 1)));
+  EXPECT_EQ(recvs, static_cast<unsigned>(2 * (rankCount - 1)));
+  EXPECT_EQ(waits, static_cast<unsigned>(4 * (rankCount - 1)));
+  for (size_t rank = 0; rank < parents.size(); ++rank) {
+    EXPECT_EQ(snapshot(parents[rank]), snapshots[rank]);
+    EXPECT_EQ(countRDMA(parents[rank]), 1u);
+    EXPECT_EQ(countWDMA(parents[rank]), 2u);
   }
+
+  expectPassesResidentLateGates(finalizedModules);
 }
 
 } // namespace

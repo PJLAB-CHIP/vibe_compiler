@@ -8,6 +8,7 @@ import copy
 import dataclasses
 import functools
 import hashlib
+import inspect
 import json
 import math
 import operator
@@ -16,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any, Callable
 
 
@@ -95,6 +97,7 @@ def _canonical_array_bytes(
 def _canonical_little_endian_array(numpy_module: Any, value: Any) -> Any:
     """Materialize one public NPY payload in canonical little-endian order."""
     array = numpy_module.asarray(value)
+    original_shape = array.shape
     if array.dtype.hasobject:
         raise RuntimeError("workload corpus does not admit object array payloads")
     if array.dtype.kind == "V":
@@ -104,11 +107,11 @@ def _canonical_little_endian_array(numpy_module: Any, value: Any) -> Any:
             raise RuntimeError(
                 "workload corpus only admits two-byte opaque BF16 payloads"
             )
-        return numpy_module.ascontiguousarray(array)
+        return numpy_module.ascontiguousarray(array).reshape(original_shape)
     canonical_dtype = array.dtype.newbyteorder("<")
     return numpy_module.ascontiguousarray(
         array.astype(canonical_dtype, copy=False)
-    )
+    ).reshape(original_shape)
 
 
 def _save_workload_array(
@@ -888,6 +891,18 @@ def _torch_to_workload_storage(
     return cpu.numpy()
 
 
+def _torch_tensor_to_workload_storage(torch_module: Any, value: Any) -> Any:
+    """Convert any Torch tensor to its canonical public NPY representation."""
+    numpy_module = _import_numpy()
+    dtype = str(value.dtype).replace("torch.", "")
+    return _canonical_little_endian_array(
+        numpy_module,
+        _torch_to_workload_storage(
+            torch_module, numpy_module, value, dtype
+        ),
+    )
+
+
 def _assign_named_parameter_arrays(
     torch_module: Any, reference_module: Any, parameters: dict[str, Any]
 ) -> None:
@@ -960,263 +975,258 @@ def _make_hf_llama_decoder_block_module(
     sequence_length: int,
     parameter_arrays: dict[str, Any] | None = None,
 ) -> Any:
-    hidden_size = int(config["hidden_size"])
-    intermediate_size = int(config["intermediate_size"])
-    num_attention_heads = int(config["num_attention_heads"])
-    head_dim = int(config.get("head_dim", hidden_size // num_attention_heads))
-    rms_norm_eps = float(config["rms_norm_eps"])
-    rope_theta = float(config.get("rope_theta", 10000.0))
-    initializer_range = float(config.get("initializer_range", 0.02))
-    storage_dtype_name = str(config.get("torch_dtype", "float32"))
-    if storage_dtype_name in {"float16", "torch.float16"}:
-        storage_dtype = torch_module.float16
-    elif storage_dtype_name in {"float32", "torch.float32"}:
-        storage_dtype = torch_module.float32
-    else:
-        raise RuntimeError(
-            "Llama decoder block test emitter supports torch_dtype float16 "
-            f"or float32, got {storage_dtype_name!r}"
-        )
-    accumulation_dtype_name = str(
-        config.get("wafer_accumulation_dtype", "float32")
-    )
-    if accumulation_dtype_name in {"float16", "torch.float16"}:
-        accumulation_dtype = torch_module.float16
-    elif accumulation_dtype_name in {"float32", "torch.float32"}:
-        accumulation_dtype = torch_module.float32
-    else:
-        raise RuntimeError(
-            "Llama decoder block test emitter supports accumulation dtype "
-            f"float16 or float32, got {accumulation_dtype_name!r}"
-        )
+    """Build a thin export adapter over the installed official HF Llama layer.
+
+    Hugging Face owns every mathematical operation in the block.  This
+    adapter only freezes the official RoPE/mask outputs for the fixture's
+    static sequence and attaches the tensor-parallel sharding contract used by
+    the PyTorch/XLA exporter.
+    """
 
     if sequence_length <= 0:
         raise RuntimeError("--sequence-length must be positive")
 
-    class WaferLlamaRMSNorm(torch_module.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.weight = torch_module.nn.Parameter(
-                torch_module.empty(hidden_size, dtype=storage_dtype)
-            )
-
-        def wafer_parameter_sharding_specs(self):
-            return ((self.weight, HF_MEGATRON_REPLICATED_VECTOR_SPEC),)
-
-        def forward(self, x):
-            input_dtype = x.dtype
-            accumulated = x.to(accumulation_dtype)
-            variance = accumulated.pow(2).mean(-1, keepdim=True)
-            normalized = accumulated * torch_module.rsqrt(
-                variance + rms_norm_eps
-            )
-            return normalized.to(input_dtype) * self.weight
-
-    class WaferLinearNoBias(torch_module.nn.Module):
-        def __init__(
-            self,
-            out_features: int,
-            in_features: int,
-            weight_sharding_spec: tuple[Any, ...],
-        ):
-            super().__init__()
-            self.weight = torch_module.nn.Parameter(
-                torch_module.empty(
-                    out_features, in_features, dtype=storage_dtype
-                )
-            )
-            self.weight_sharding_spec = weight_sharding_spec
-
-        def wafer_parameter_sharding_specs(self):
-            return ((self.weight, self.weight_sharding_spec),)
-
-        def forward(self, x):
-            return x @ self.weight.transpose(0, 1)
-
-    def build_rope_cache() -> tuple[Any, Any]:
-        positions = torch_module.arange(sequence_length, dtype=torch_module.float32)
-        inv_freq = 1.0 / (
-            rope_theta
-            ** (
-                torch_module.arange(0, head_dim, 2, dtype=torch_module.float32)
-                / head_dim
-            )
+    try:
+        from transformers import LlamaConfig
+        from transformers.masking_utils import create_causal_mask
+        from transformers.models.llama.modeling_llama import (
+            LlamaDecoderLayer,
+            LlamaRotaryEmbedding,
         )
-        freqs = torch_module.outer(positions, inv_freq)
-        embedding = torch_module.cat((freqs, freqs), dim=-1)
-        return (
-            torch_module.cos(embedding)[None, None, :, :],
-            torch_module.sin(embedding)[None, None, :, :],
+    except ImportError as error:
+        raise RuntimeError(
+            "the Llama block fixture requires the pinned Hugging Face "
+            "Transformers dependency"
+        ) from error
+
+    decoder_parameters = inspect.signature(
+        LlamaDecoderLayer.forward
+    ).parameters
+    required_decoder_features = {
+        "attention_mask",
+        "position_ids",
+        "position_embeddings",
+        "use_cache",
+    }
+    missing_decoder_features = sorted(
+        required_decoder_features - set(decoder_parameters)
+    )
+    mask_parameters = inspect.signature(create_causal_mask).parameters
+    required_mask_features = {
+        "config",
+        "inputs_embeds",
+        "attention_mask",
+        "past_key_values",
+        "position_ids",
+    }
+    missing_mask_features = sorted(
+        required_mask_features - set(mask_parameters)
+    )
+    if missing_decoder_features or missing_mask_features:
+        raise RuntimeError(
+            "the installed Hugging Face Llama API cannot express the "
+            "fixture contract: "
+            f"decoder_missing={missing_decoder_features} "
+            f"mask_missing={missing_mask_features}"
         )
 
-    class WaferHFLlamaDecoderBlock(torch_module.nn.Module):
-        def __init__(self):
+    hidden_size = int(config["hidden_size"])
+    storage_dtype_name = str(config.get("torch_dtype", "float32"))
+    if storage_dtype_name in {"float16", "torch.float16"}:
+        storage_dtype = torch_module.float16
+    elif storage_dtype_name in {"bfloat16", "torch.bfloat16"}:
+        storage_dtype = torch_module.bfloat16
+    elif storage_dtype_name in {"float32", "torch.float32"}:
+        storage_dtype = torch_module.float32
+    else:
+        raise RuntimeError(
+            "Llama decoder block test emitter supports torch_dtype float16, "
+            f"bfloat16, or float32, got {storage_dtype_name!r}"
+        )
+
+    hf_config = LlamaConfig.from_dict(copy.deepcopy(config))
+    hf_config._attn_implementation = "eager"
+    hf_config.use_cache = False
+
+    decoder_init_parameters = inspect.signature(
+        LlamaDecoderLayer.__init__
+    ).parameters
+    decoder_init_kwargs = (
+        {"layer_idx": 0} if "layer_idx" in decoder_init_parameters else {}
+    )
+
+    class HuggingFaceLlamaDecoderBlockAdapter(torch_module.nn.Module):
+        def __init__(self) -> None:
             super().__init__()
+            self.decoder_layer = LlamaDecoderLayer(
+                hf_config, **decoder_init_kwargs
+            ).to(dtype=storage_dtype)
             self._wafer_spmd_module = None
             self._wafer_spmd_mesh = None
-            self.input_layernorm = WaferLlamaRMSNorm()
-            self.post_attention_layernorm = WaferLlamaRMSNorm()
-            self.q_proj = WaferLinearNoBias(
-                hidden_size,
-                hidden_size,
-                HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
-            )
-            self.k_proj = WaferLinearNoBias(
-                hidden_size,
-                hidden_size,
-                HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
-            )
-            self.v_proj = WaferLinearNoBias(
-                hidden_size,
-                hidden_size,
-                HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
-            )
-            self.o_proj = WaferLinearNoBias(
-                hidden_size,
-                hidden_size,
-                HF_MEGATRON_ROW_PARALLEL_WEIGHT_SPEC,
-            )
-            self.gate_proj = WaferLinearNoBias(
-                intermediate_size,
-                hidden_size,
-                HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
-            )
-            self.up_proj = WaferLinearNoBias(
-                intermediate_size,
-                hidden_size,
-                HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
-            )
-            self.down_proj = WaferLinearNoBias(
-                hidden_size,
-                intermediate_size,
-                HF_MEGATRON_ROW_PARALLEL_WEIGHT_SPEC,
-            )
-            cos_cached, sin_cached = build_rope_cache()
-            self.register_buffer("cos_cached", cos_cached, persistent=False)
-            self.register_buffer("sin_cached", sin_cached, persistent=False)
-            causal_mask = torch_module.triu(
-                torch_module.full(
-                    (sequence_length, sequence_length),
-                    float("-inf"),
-                    dtype=torch_module.float32,
-                ),
-                diagonal=1,
-            )
-            self.register_buffer("causal_mask", causal_mask, persistent=False)
-            if parameter_arrays is None:
-                for _, parameter in self.named_parameters():
-                    torch_module.nn.init.normal_(
-                        parameter, mean=0.0, std=initializer_range
-                    )
 
-        def set_activation_sharding(self, spmd_module, mesh):
+            positions = torch_module.arange(
+                sequence_length, dtype=torch_module.long
+            ).unsqueeze(0)
+            rotary_input = torch_module.empty(
+                (1, sequence_length, hidden_size), dtype=storage_dtype
+            )
+            rotary = LlamaRotaryEmbedding(hf_config).eval()
+            with torch_module.no_grad():
+                rotary_cos, rotary_sin = rotary(rotary_input, positions)
+                causal_mask = create_causal_mask(
+                    config=hf_config,
+                    inputs_embeds=rotary_input,
+                    attention_mask=None,
+                    past_key_values=None,
+                    position_ids=positions,
+                )
+            if not isinstance(causal_mask, torch_module.Tensor):
+                raise RuntimeError(
+                    "the official Hugging Face eager Llama mask path did not "
+                    "produce an additive tensor mask"
+                )
+            self.register_buffer("position_ids", positions, persistent=False)
+            self.register_buffer(
+                "rotary_cos", rotary_cos, persistent=False
+            )
+            self.register_buffer(
+                "rotary_sin", rotary_sin, persistent=False
+            )
+            self.register_buffer(
+                "causal_mask", causal_mask, persistent=False
+            )
+
+            # Hooks annotate tensor-parallel boundaries only.  The invoked
+            # projection, attention, normalization and activation operators
+            # remain the official Hugging Face module implementations.
+            self.decoder_layer.self_attn.o_proj.register_forward_pre_hook(
+                self._mark_projection_input
+            )
+            self.decoder_layer.mlp.gate_proj.register_forward_hook(
+                self._mark_projection_output
+            )
+            self.decoder_layer.mlp.up_proj.register_forward_hook(
+                self._mark_projection_output
+            )
+            self.decoder_layer.mlp.down_proj.register_forward_pre_hook(
+                self._mark_projection_input
+            )
+
+        def set_activation_sharding(self, spmd_module, mesh) -> None:
             self._wafer_spmd_module = spmd_module
             self._wafer_spmd_mesh = mesh
-
-        def wafer_parameter_sharding_specs(self):
-            specs = []
-            for child in self.children():
-                get_specs = getattr(
-                    child, "wafer_parameter_sharding_specs", None
-                )
-                if callable(get_specs):
-                    specs.extend(get_specs())
-            return tuple(specs)
 
         def _mark_activation_tp(self, tensor):
             if self._wafer_spmd_module is not None:
                 self._wafer_spmd_module.mark_sharding(
-                    tensor, self._wafer_spmd_mesh, HF_MEGATRON_ACTIVATION_TP_SPEC
+                    tensor,
+                    self._wafer_spmd_mesh,
+                    HF_MEGATRON_ACTIVATION_TP_SPEC,
                 )
             return tensor
 
-        def _shape_projection(self, x):
-            batch, seq, _ = x.shape
+        def _mark_projection_input(self, _module, arguments):
+            if not arguments:
+                raise RuntimeError(
+                    "official HF projection received no activation"
+                )
             return (
-                x.reshape(batch, seq, num_attention_heads, head_dim)
-                .transpose(1, 2)
+                self._mark_activation_tp(arguments[0]),
+                *arguments[1:],
             )
 
-        def _rotate_half(self, x):
-            first_half = x[..., : head_dim // 2]
-            second_half = x[..., head_dim // 2 :]
-            # Express the RoPE sign change as source-level multiplication.
-            # The TX81 native Neg command canonicalizes signed zero, whereas
-            # its floating multiply route is admitted with source semantics.
-            # Keeping this choice in the PyTorch module makes eager reference
-            # evaluation and exported StableHLO agree on the operation rather
-            # than weakening numeric legality during target lowering.
-            negative_second_half = torch_module.mul(
-                second_half, torch_module.full_like(second_half, -1)
-            )
-            return torch_module.cat(
-                (negative_second_half, first_half), dim=-1
+        def _mark_projection_output(self, _module, _arguments, output):
+            return self._mark_activation_tp(output)
+
+        def wafer_named_parameters(self):
+            layer = self.decoder_layer
+            return (
+                ("input_layernorm.weight", layer.input_layernorm.weight),
+                (
+                    "post_attention_layernorm.weight",
+                    layer.post_attention_layernorm.weight,
+                ),
+                ("q_proj.weight", layer.self_attn.q_proj.weight),
+                ("k_proj.weight", layer.self_attn.k_proj.weight),
+                ("v_proj.weight", layer.self_attn.v_proj.weight),
+                ("o_proj.weight", layer.self_attn.o_proj.weight),
+                ("gate_proj.weight", layer.mlp.gate_proj.weight),
+                ("up_proj.weight", layer.mlp.up_proj.weight),
+                ("down_proj.weight", layer.mlp.down_proj.weight),
             )
 
-        def _apply_rope(self, query, key):
-            seq = query.shape[-2]
-            cos = self.cos_cached[:, :, :seq, :]
-            sin = self.sin_cached[:, :, :seq, :]
-            cos = cos.to(query.dtype)
-            sin = sin.to(query.dtype)
-            query = (query * cos) + (self._rotate_half(query) * sin)
-            key = (key * cos) + (self._rotate_half(key) * sin)
-            return query, key
-
-        def _silu(self, x):
-            # StableHLO logistic is defined as the explicit IEEE operation
-            # sequence 1 / (1 + exp(-x)).  Spell the same PyTorch source
-            # sequence with multiplication by -1 so the target-qualified
-            # arithmetic route remains visible after StableHLO legalization;
-            # a fused logistic would otherwise reintroduce an unqualified
-            # native Neg command in that expansion.
-            one = torch_module.ones_like(x)
-            negative = torch_module.mul(
-                x, torch_module.full_like(x, -1)
+        def wafer_parameter_sharding_specs(self):
+            named = dict(self.wafer_named_parameters())
+            return (
+                (
+                    named["input_layernorm.weight"],
+                    HF_MEGATRON_REPLICATED_VECTOR_SPEC,
+                ),
+                (
+                    named["post_attention_layernorm.weight"],
+                    HF_MEGATRON_REPLICATED_VECTOR_SPEC,
+                ),
+                (
+                    named["q_proj.weight"],
+                    HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
+                ),
+                (
+                    named["k_proj.weight"],
+                    HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
+                ),
+                (
+                    named["v_proj.weight"],
+                    HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
+                ),
+                (
+                    named["o_proj.weight"],
+                    HF_MEGATRON_ROW_PARALLEL_WEIGHT_SPEC,
+                ),
+                (
+                    named["gate_proj.weight"],
+                    HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
+                ),
+                (
+                    named["up_proj.weight"],
+                    HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
+                ),
+                (
+                    named["down_proj.weight"],
+                    HF_MEGATRON_ROW_PARALLEL_WEIGHT_SPEC,
+                ),
             )
-            logistic = torch_module.div(
-                one, torch_module.add(one, torch_module.exp(negative))
-            )
-            return torch_module.mul(x, logistic)
 
         def forward(self, hidden_states):
-            residual = hidden_states
-            normed_states = self.input_layernorm(hidden_states)
-            query = self._shape_projection(self.q_proj(normed_states))
-            key = self._shape_projection(self.k_proj(normed_states))
-            value = self._shape_projection(self.v_proj(normed_states))
-            query, key = self._apply_rope(query, key)
-            attn_scores = torch_module.matmul(
-                query, key.transpose(-2, -1)
-            ) * (1.0 / math.sqrt(head_dim))
-            seq = attn_scores.shape[-1]
-            attn_scores = attn_scores + self.causal_mask[:seq, :seq].to(
-                attn_scores.dtype
+            return self.decoder_layer(
+                hidden_states,
+                attention_mask=self.causal_mask,
+                position_ids=self.position_ids,
+                position_embeddings=(self.rotary_cos, self.rotary_sin),
+                use_cache=False,
             )
-            attn_weights = torch_module.softmax(
-                attn_scores, dim=-1, dtype=accumulation_dtype
-            ).to(attn_scores.dtype)
-            attn_output = torch_module.matmul(attn_weights, value)
-            batch, _, seq, _ = attn_output.shape
-            attn_output = (
-                attn_output.transpose(1, 2)
-                .reshape(batch, seq, hidden_size)
-            )
-            attn_output = self._mark_activation_tp(attn_output)
-            hidden_states = residual + self.o_proj(attn_output)
 
-            residual = hidden_states
-            normed_states = self.post_attention_layernorm(hidden_states)
-            gated = self._mark_activation_tp(self.gate_proj(normed_states))
-            up = self._mark_activation_tp(self.up_proj(normed_states))
-            mlp_output = self._mark_activation_tp(
-                self._silu(gated) * up
-            )
-            return residual + self.down_proj(mlp_output)
-
-    module = WaferHFLlamaDecoderBlock()
+    module = HuggingFaceLlamaDecoderBlockAdapter()
     if parameter_arrays is not None:
-        _assign_named_parameter_arrays(torch_module, module, parameter_arrays)
+        named_parameters = dict(module.wafer_named_parameters())
+        if set(named_parameters) != set(parameter_arrays):
+            missing = sorted(set(named_parameters) - set(parameter_arrays))
+            extra = sorted(set(parameter_arrays) - set(named_parameters))
+            raise RuntimeError(
+                "workload parameter set does not match the official HF "
+                f"decoder layer: missing={missing}, extra={extra}"
+            )
+        with torch_module.no_grad():
+            for name, parameter in named_parameters.items():
+                source = torch_module.from_numpy(
+                    parameter_arrays[name].copy()
+                )
+                if tuple(parameter.shape) != tuple(source.shape):
+                    raise RuntimeError(
+                        f"workload parameter shape mismatch for {name}: "
+                        f"model={tuple(parameter.shape)}, "
+                        f"source={tuple(source.shape)}"
+                    )
+                parameter.copy_(source)
     return module
 
 
@@ -1537,7 +1547,9 @@ def _build_workload_case_payload(
                 expected_tensor = reference_module(
                     torch_module.from_numpy(input_array.copy())
                 )
-            expected = expected_tensor.detach().cpu().numpy().copy()
+            expected = _torch_tensor_to_workload_storage(
+                torch_module, expected_tensor
+            )
         else:
             expected = _llama_decoder_block_cpu_reference(
                 numpy_module, input_array, parameters, hf_config
@@ -1789,20 +1801,82 @@ def _named_parameters(reference_module: Any) -> list[tuple[str, Any]]:
 def _state_dict_numpy(
     torch_module: Any, reference_module: Any
 ) -> dict[str, Any]:
-    numpy_module = _import_numpy()
     return {
-        name: _torch_to_workload_storage(
-            torch_module,
-            numpy_module,
-            parameter,
-            (
-                "bfloat16"
-                if parameter.dtype == torch_module.bfloat16
-                else str(parameter.dtype).replace("torch.", "")
-            ),
-        )
+        name: _torch_tensor_to_workload_storage(torch_module, parameter)
         for name, parameter in _named_parameters(reference_module)
     }
+
+
+def _exported_state_dict_numpy(
+    torch_module: Any, exported_program: Any
+) -> dict[str, Any]:
+    """Convert an ExportedProgram state dict to canonical NPY payload arrays."""
+    state_dict = getattr(exported_program, "state_dict", None)
+    if not isinstance(state_dict, dict):
+        raise RuntimeError("PyTorch ExportedProgram state_dict must be a mapping")
+    converted = {}
+    for name, value in state_dict.items():
+        if not isinstance(name, str):
+            raise RuntimeError("PyTorch ExportedProgram state names must be strings")
+        if not isinstance(value, torch_module.Tensor):
+            converted[name] = value
+            continue
+        converted[name] = _torch_tensor_to_workload_storage(
+            torch_module, value
+        )
+    return converted
+
+
+def exported_program_to_stablehlo(
+    torch_module: Any,
+    stablehlo_module: Any,
+    exported_program: Any,
+    *,
+    options: Any | None = None,
+) -> Any:
+    """Export StableHLO while preserving BF16 parameter and buffer payloads.
+
+    PyTorch 2.5 intentionally has no public NumPy BF16 scalar type, while the
+    pinned PyTorch/XLA exporter serializes every ExportedProgram state tensor
+    through ``Tensor.numpy()``.  Keep the upstream path for ordinary state.  If
+    BF16 state is present, let PyTorch/XLA build the same graph and parameter
+    locations without serializing weights, then attach canonical little-endian
+    ``|V2`` payload arrays to its returned bundle.  This applies uniformly to
+    parameters and persistent buffers; callers do not need model-specific dtype
+    handling.
+    """
+    resolved_options = options
+    if resolved_options is None:
+        resolved_options = stablehlo_module.StableHLOExportOptions()
+    state_dict = getattr(exported_program, "state_dict", None)
+    has_bfloat16_state = isinstance(state_dict, dict) and any(
+        isinstance(value, torch_module.Tensor)
+        and value.dtype == torch_module.bfloat16
+        for value in state_dict.values()
+    )
+    if not resolved_options.export_weights or not has_bfloat16_state:
+        return stablehlo_module.exported_program_to_stablehlo(
+            exported_program, options=resolved_options
+        )
+
+    graph_options = copy.copy(resolved_options)
+    graph_options.export_weights = False
+    program = stablehlo_module.exported_program_to_stablehlo(
+        exported_program, options=graph_options
+    )
+    bundle = getattr(program, "_bundle", None)
+    if bundle is None or not hasattr(bundle, "state_dict"):
+        raise RuntimeError(
+            "pinned PyTorch/XLA StableHLO result omitted its model bundle"
+        )
+    if bundle.state_dict:
+        raise RuntimeError(
+            "PyTorch/XLA exported weights despite export_weights=False"
+        )
+    bundle.state_dict = _exported_state_dict_numpy(
+        torch_module, exported_program
+    )
+    return program
 
 
 def _move_to_device(value: Any, device: Any) -> Any:
@@ -1813,6 +1887,7 @@ def _move_to_device(value: Any, device: Any) -> Any:
 
 def _build_lazy_stablehlo_program(
     *,
+    torch_module: Any,
     stablehlo_module: Any,
     xla_model_module: Any,
     xlac_module: Any,
@@ -1846,7 +1921,11 @@ def _build_lazy_stablehlo_program(
             location = stablehlo_module.InputLocation.constant(
                 position=len(additional_constants)
             )
-            additional_constants.append(tensor_value.detach().cpu().numpy())
+            additional_constants.append(
+                _torch_tensor_to_workload_storage(
+                    torch_module, tensor_value
+                )
+            )
         input_locations.append(location)
         runtime_input_signatures.append(
             _tensor_signature(stablehlo_module, tensor_value)
@@ -1899,8 +1978,11 @@ def emit_reference_stablehlo_program(
 
     with torch_module.no_grad():
         exported = torch_module.export.export(reference_module, (input_tensor,))
-        stablehlo_program = stablehlo_module.exported_program_to_stablehlo(
-            exported, options=options
+        stablehlo_program = exported_program_to_stablehlo(
+            torch_module,
+            stablehlo_module,
+            exported,
+            options=options,
         )
 
     if program_dir.exists():
@@ -1950,8 +2032,11 @@ def emit_simple_gemm_program(
         exported = torch_module.export.export(
             reference_module, (lhs_tensor, rhs_tensor)
         )
-        stablehlo_program = stablehlo_module.exported_program_to_stablehlo(
-            exported, options=options
+        stablehlo_program = exported_program_to_stablehlo(
+            torch_module,
+            stablehlo_module,
+            exported,
+            options=options,
         )
     if program_dir.exists():
         shutil.rmtree(program_dir)
@@ -1991,8 +2076,11 @@ def emit_linear_residual_mlp_program(
 
     with torch_module.no_grad():
         exported = torch_module.export.export(reference_module, (input_tensor,))
-        stablehlo_program = stablehlo_module.exported_program_to_stablehlo(
-            exported, options=options
+        stablehlo_program = exported_program_to_stablehlo(
+            torch_module,
+            stablehlo_module,
+            exported,
+            options=options,
         )
 
     if program_dir.exists():
@@ -2399,8 +2487,14 @@ def emit_sharded_stablehlo_program(
     reference_module_factory: Callable[[], Any] | None = None,
     example_input_tensor: Any | None = None,
     size: int = DEFAULT_REFERENCE_MATMUL_SIZE,
+    timing_callback: Callable[[str, int], None] | None = None,
 ) -> None:
+    def report_timing(stage: str, start_ns: int) -> None:
+        if timing_callback is not None:
+            timing_callback(stage, (time.monotonic_ns() - start_ns) // 1_000_000)
+
     strategy = get_sharding_strategy(strategy_name)
+    import_start_ns = time.monotonic_ns()
     if (
         torch_module is None
         or stablehlo_module is None
@@ -2417,6 +2511,7 @@ def emit_sharded_stablehlo_program(
             spmd_module,
             xlac_module,
         ) = _import_spmd_runtime_modules()
+    report_timing("runtime-import", import_start_ns)
 
     if not runtime_module.is_spmd():
         runtime_module.use_spmd()
@@ -2429,13 +2524,16 @@ def emit_sharded_stablehlo_program(
             "torch_xla"
         )
 
+    model_start_ns = time.monotonic_ns()
     if reference_module_factory is None:
         reference_module = _make_reference_matmul_module(torch_module, size)
     else:
         reference_module = reference_module_factory()
     reference_module.eval()
     state_dict = _state_dict_numpy(torch_module, reference_module)
+    report_timing("model-state-materialization", model_start_ns)
 
+    device_start_ns = time.monotonic_ns()
     device = xla_model_module.xla_device()
     reference_module = _move_to_device(reference_module, device)
     first_parameter = next(reference_module.parameters(), None)
@@ -2469,6 +2567,7 @@ def emit_sharded_stablehlo_program(
         input_tensor=input_tensor,
         reference_module=reference_module,
     )
+    report_timing("xla-device-materialization", device_start_ns)
 
     options = stablehlo_module.StableHLOExportOptions()
     options.export_weights = True
@@ -2476,9 +2575,11 @@ def emit_sharded_stablehlo_program(
     options.inline_all_constant = True
     options.include_human_readable_text = True
 
+    graph_start_ns = time.monotonic_ns()
     with torch_module.no_grad():
         output_tensor = reference_module(input_tensor)
         stablehlo_graph = _build_lazy_stablehlo_program(
+            torch_module=torch_module,
             stablehlo_module=stablehlo_module,
             xla_model_module=xla_model_module,
             xlac_module=xlac_module,
@@ -2487,7 +2588,9 @@ def emit_sharded_stablehlo_program(
             reference_module=reference_module,
             state_dict=state_dict,
         )
+    report_timing("xla-graph-capture", graph_start_ns)
 
+    save_start_ns = time.monotonic_ns()
     if program_dir.exists():
         shutil.rmtree(program_dir)
     program_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -2495,6 +2598,7 @@ def emit_sharded_stablehlo_program(
         str(program_dir), options
     )
     _verify_program_dir_layout(program_dir)
+    report_timing("artifact-save", save_start_ns)
 
 
 def emit_hf_megatron_transformer_block_program(
@@ -2636,6 +2740,7 @@ def emit_hf_megatron_transformer_block_program(
     with torch_module.no_grad():
         output_tensor = reference_module(input_tensor)
         stablehlo_graph = _build_lazy_stablehlo_program(
+            torch_module=torch_module,
             stablehlo_module=stablehlo_module,
             xla_model_module=xla_model_module,
             xlac_module=xlac_module,

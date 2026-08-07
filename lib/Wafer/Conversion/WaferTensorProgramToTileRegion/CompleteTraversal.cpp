@@ -2,6 +2,8 @@
 
 #include "Internal.h"
 
+#include "mlir/IR/Verifier.h"
+
 #include <algorithm>
 #include <iterator>
 #include <limits>
@@ -9,6 +11,155 @@
 using namespace wafer;
 
 namespace wafer::tensor_program_to_tile_region {
+
+static mlir::Value getCandidateViewSource(mlir::Operation *operation) {
+  if (auto slice =
+          mlir::dyn_cast_or_null<mlir::tensor::ExtractSliceOp>(operation))
+    return slice.getSource();
+  if (auto expand =
+          mlir::dyn_cast_or_null<mlir::tensor::ExpandShapeOp>(operation))
+    return expand.getSrc();
+  if (auto collapse =
+          mlir::dyn_cast_or_null<mlir::tensor::CollapseShapeOp>(operation))
+    return collapse.getSrc();
+  if (auto cast = mlir::dyn_cast_or_null<mlir::tensor::CastOp>(operation))
+    return cast.getSource();
+  return {};
+}
+
+static mlir::OpResult traceCandidateStructuredProducer(mlir::Value value,
+                                                       mlir::Block &body) {
+  llvm::DenseSet<mlir::Value> visited;
+  while (value && visited.insert(value).second) {
+    auto result = mlir::dyn_cast<mlir::OpResult>(value);
+    if (!result)
+      return nullptr;
+    mlir::Operation *owner = result.getOwner();
+    if (owner->getBlock() != &body)
+      return {};
+    if (classifyCandidateTraversalRoot(owner) !=
+        CandidateTraversalRootCapability::Unsupported)
+      return result;
+    value = getCandidateViewSource(owner);
+  }
+  return {};
+}
+
+/// Maps an observable tensor destination back through the exact shape-only
+/// view chain between a returned value and its structured producer.  Joint
+/// traversal tiles are expressed in the producer result domain; reversing the
+/// views keeps their insert_slice coordinates in that same domain while the
+/// original forward views continue to form the public result afterwards.
+static mlir::FailureOr<mlir::Value> materializeJointOutputDestination(
+    mlir::OpBuilder &builder, mlir::Value returned,
+    mlir::Value structuredResult, mlir::Value publicDestination,
+    std::string *failureReason) {
+  mlir::Value currentReturned = returned;
+  mlir::Value currentDestination = publicDestination;
+  llvm::DenseSet<mlir::Value> visited;
+  while (currentReturned != structuredResult &&
+         visited.insert(currentReturned).second) {
+    auto result = mlir::dyn_cast<mlir::OpResult>(currentReturned);
+    if (!result) {
+      setFailureReason(
+          failureReason,
+          "joint traversal output view left the current SSA graph");
+      return mlir::failure();
+    }
+    if (auto expand =
+            mlir::dyn_cast<mlir::tensor::ExpandShapeOp>(result.getOwner())) {
+      currentDestination =
+          builder
+              .create<mlir::tensor::CollapseShapeOp>(
+                  expand.getLoc(), expand.getSrcType(), currentDestination,
+                  expand.getReassociationIndices())
+              .getResult();
+      currentReturned = expand.getSrc();
+      continue;
+    }
+    if (auto collapse =
+            mlir::dyn_cast<mlir::tensor::CollapseShapeOp>(result.getOwner())) {
+      currentDestination =
+          builder
+              .create<mlir::tensor::ExpandShapeOp>(
+                  collapse.getLoc(), collapse.getSrcType(), currentDestination,
+                  collapse.getReassociationIndices())
+              .getResult();
+      currentReturned = collapse.getSrc();
+      continue;
+    }
+    setFailureReason(
+        failureReason,
+        "joint traversal output view is not an exact static reshape");
+    return mlir::failure();
+  }
+  if (currentReturned != structuredResult ||
+      currentDestination.getType() != structuredResult.getType()) {
+    setFailureReason(
+        failureReason,
+        "joint traversal output view does not map to the producer domain");
+    return mlir::failure();
+  }
+  return currentDestination;
+}
+
+mlir::FailureOr<llvm::SmallVector<CandidateTraversalConnection, 16>>
+collectCandidateTraversalConnections(mlir::func::FuncOp function,
+                                     std::string *failureReason) {
+  if (!function || function.isExternal() || !function.getBody().hasOneBlock()) {
+    setFailureReason(failureReason,
+                     "connection traversal requires one defined block");
+    return mlir::failure();
+  }
+  mlir::Block &body = function.getBody().front();
+  llvm::SmallVector<CandidateTraversalConnection, 16> connections;
+  for (mlir::Operation &consumer : body.without_terminator()) {
+    if (classifyCandidateTraversalRoot(&consumer) ==
+        CandidateTraversalRootCapability::Unsupported)
+      continue;
+    auto appendOperandConnection = [&](mlir::OpOperand &operand) {
+      mlir::OpResult producerResult =
+          traceCandidateStructuredProducer(operand.get(), body);
+      mlir::Operation *producer =
+          producerResult ? producerResult.getOwner() : nullptr;
+      if (!producer || producer == &consumer ||
+          !producer->isBeforeInBlock(&consumer))
+        return;
+      auto duplicate = llvm::find_if(
+          connections, [&](const CandidateTraversalConnection &connection) {
+            return connection.producerResult == producerResult &&
+                   connection.consumerOperand == &operand;
+          });
+      if (duplicate == connections.end())
+        connections.push_back({producerResult, &operand});
+    };
+    // DPS init values are destination/initialization state, not producer data
+    // connections. In particular, a zero fill feeding matmul must remain the
+    // typed overwrite initialization proof rather than becoming a fusion or
+    // residency action.
+    if (auto dps =
+            mlir::dyn_cast<mlir::DestinationStyleOpInterface>(&consumer)) {
+      for (mlir::OpOperand *input : dps.getDpsInputOperands())
+        appendOperandConnection(*input);
+    } else {
+      for (mlir::OpOperand &operand : consumer.getOpOperands())
+        appendOperandConnection(operand);
+    }
+  }
+  return connections;
+}
+
+bool CandidateConnectionFusionPolicy::shouldFuse(
+    mlir::OpResult producerResult, mlir::OpOperand &consumerOperand) const {
+  if (!isValid() || !producerResult)
+    return false;
+  for (auto [connection, choice] : llvm::zip_equal(connections, choices))
+    if (connection.producerResult == producerResult &&
+        connection.consumerOperand == &consumerOperand)
+      return choice.action ==
+             CandidateTraversalConnectionAction::CoupledResident;
+  return false;
+}
 
 static mlir::FailureOr<uint64_t>
 getCandidateOutputTileCount(mlir::RankedTensorType resultType,
@@ -98,12 +249,11 @@ materializeLoopedRootsTraversal(
     llvm::ArrayRef<unsigned> outputIndices, llvm::ArrayRef<int64_t> shape,
     llvm::ArrayRef<int64_t> tileSizes,
     llvm::ArrayRef<int64_t> reductionTileSizes,
-    CandidateTileTraversalKind traversalKind, unsigned dim,
-    mlir::ValueRange outputs,
+    unsigned dim, mlir::ValueRange outputs,
     llvm::SmallVectorImpl<mlir::OpFoldResult> &offsets,
     llvm::SmallVectorImpl<int64_t> &sizes,
     llvm::SmallVectorImpl<mlir::LoopLikeOpInterface> &loops,
-    std::string *failureReason) {
+    std::string *failureReason, bool elideSingleIteration = false) {
   if (roots.size() != outputs.size() || roots.size() != outputIndices.size()) {
     setFailureReason(failureReason,
                      "shared traversal root/output count mismatch");
@@ -114,7 +264,7 @@ materializeLoopedRootsTraversal(
     nextOutputs.reserve(roots.size());
     for (auto [index, root, output] : llvm::enumerate(roots, outputs)) {
       mlir::FailureOr<mlir::Value> tile =
-          traversalKind == CandidateTileTraversalKind::PartialReduction
+          !reductionTileSizes.empty()
               ? materializeCandidatePartialReductionRootTileValue(
                     builder, scope, root, offsets, sizes, reductionTileSizes,
                     loops, failureReason)
@@ -137,6 +287,18 @@ materializeLoopedRootsTraversal(
   llvm::SmallVector<mlir::Value, 4> currentOutputs(outputs.begin(),
                                                    outputs.end());
 
+  if (elideSingleIteration && tailSize == 0 && tileSizes[dim] == shape[dim]) {
+    offsets.push_back(builder.getIndexAttr(0));
+    sizes.push_back(tileSizes[dim]);
+    auto next = materializeLoopedRootsTraversal(
+        builder, scope, roots, outputIndices, shape, tileSizes,
+        reductionTileSizes, dim + 1, currentOutputs, offsets, sizes, loops,
+        failureReason, elideSingleIteration);
+    sizes.pop_back();
+    offsets.pop_back();
+    return next;
+  }
+
   if (mainEnd > 0) {
     auto lower = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
     auto upper = builder.create<mlir::arith::ConstantIndexOp>(loc, mainEnd);
@@ -152,8 +314,8 @@ materializeLoopedRootsTraversal(
     mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>> next =
         materializeLoopedRootsTraversal(
             bodyBuilder, scope, roots, outputIndices, shape, tileSizes,
-            reductionTileSizes, traversalKind, dim + 1,
-            loop.getRegionIterArgs(), offsets, sizes, loops, failureReason);
+            reductionTileSizes, dim + 1, loop.getRegionIterArgs(), offsets,
+            sizes, loops, failureReason, elideSingleIteration);
     loops.pop_back();
     sizes.pop_back();
     offsets.pop_back();
@@ -169,10 +331,10 @@ materializeLoopedRootsTraversal(
     offsets.push_back(builder.getIndexAttr(mainEnd));
     sizes.push_back(tailSize);
     mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>> tail =
-        materializeLoopedRootsTraversal(builder, scope, roots, outputIndices,
-                                        shape, tileSizes, reductionTileSizes,
-                                        traversalKind, dim + 1, currentOutputs,
-                                        offsets, sizes, loops, failureReason);
+        materializeLoopedRootsTraversal(
+            builder, scope, roots, outputIndices, shape, tileSizes,
+            reductionTileSizes, dim + 1, currentOutputs, offsets, sizes, loops,
+            failureReason, elideSingleIteration);
     sizes.pop_back();
     offsets.pop_back();
     if (mlir::failed(tail))
@@ -440,7 +602,7 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
     group->outputIndices.push_back(static_cast<unsigned>(outputIndex));
     group->outputBoundaries.push_back(*outputBoundary);
 
-    if (traversalKind == CandidateTileTraversalKind::PartialReduction) {
+    if (!candidateReductionTileSizes.empty()) {
       mlir::FailureOr<mlir::linalg::LinalgOp> computeRoot =
           getCandidatePartialReductionComputeRoot(root, failureReason);
       if (mlir::failed(computeRoot))
@@ -461,12 +623,6 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
                      "candidate reduction split requires a reduction root");
     return mlir::failure();
   }
-  if (traversalKind == CandidateTileTraversalKind::PartialReduction &&
-      !hasReductionRoot) {
-    setFailureReason(failureReason,
-                     "partial-reduction traversal requires a reduction root");
-    return mlir::failure();
-  }
   auto returnOp =
       mlir::cast<mlir::func::ReturnOp>(scope.getBody().getTerminator());
   // Equal-shape roots share one traversal. Different result domains receive
@@ -482,9 +638,8 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
     mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>> completeOutputs =
         materializeLoopedRootsTraversal(
             builder, scope, group.roots, group.outputIndices, group.shape,
-            candidateTileSizes, candidateReductionTileSizes, traversalKind,
-            /*dim=*/0, group.outputBoundaries, offsets, sizes, loops,
-            failureReason);
+            candidateTileSizes, candidateReductionTileSizes, /*dim=*/0,
+            group.outputBoundaries, offsets, sizes, loops, failureReason);
     if (mlir::failed(completeOutputs))
       return mlir::failure();
     for (auto [index, output] :
@@ -498,26 +653,405 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
   return mlir::success();
 }
 
+static bool isDDRConnectionAction(CandidateTraversalConnectionAction action) {
+  return action == CandidateTraversalConnectionAction::SeparatedDDR ||
+         action == CandidateTraversalConnectionAction::CrossRegion;
+}
+
+static bool
+isSeparatedConnectionAction(CandidateTraversalConnectionAction action) {
+  return action != CandidateTraversalConnectionAction::CoupledResident;
+}
+
+static mlir::FailureOr<mlir::Value>
+createJointTraversalDestination(TensorProgramScope scope, mlir::Operation *root,
+                                CandidateTraversalConnectionAction action,
+                                std::string *failureReason) {
+  auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(root);
+  auto resultType =
+      root && root->getNumResults() == 1
+          ? mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType())
+          : mlir::RankedTensorType{};
+  if (!dps || dps.getNumDpsInits() != 1 || !resultType ||
+      !resultType.hasStaticShape()) {
+    setFailureReason(
+        failureReason,
+        "joint traversal root requires one static ranked DPS result");
+    return mlir::failure();
+  }
+  if (!isDDRConnectionAction(action))
+    return getConservativeTraversalDestination(root, dps.getDpsInits().front());
+
+  auto ddrType = mlir::MemRefType::get(
+      resultType.getShape(), resultType.getElementType(),
+      mlir::MemRefLayoutAttrInterface{},
+      wafer::MemoryAttr::get(scope.getContext(), wafer::MemorySpace::DDR,
+                             wafer::MemLayout::Tensor));
+  mlir::OpBuilder builder(root);
+  auto allocation =
+      builder.create<mlir::memref::AllocOp>(root->getLoc(), ddrType);
+  auto tensor = builder.create<mlir::bufferization::ToTensorOp>(
+      root->getLoc(), allocation.getResult(), /*restrict=*/true,
+      /*writable=*/true);
+  return tensor.getResult();
+}
+
+mlir::LogicalResult materializeJointCompleteRankTraversals(
+    TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<CandidateTraversalConnection> connections,
+    llvm::ArrayRef<CandidateTraversalConnectionChoice> choices,
+    std::string *failureReason) {
+  if (connections.empty() || connections.size() != choices.size()) {
+    setFailureReason(failureReason,
+                     "joint traversal requires one action per connection");
+    return mlir::failure();
+  }
+
+  CandidateConnectionFusionPolicy policy(connections, choices);
+  if (!policy.isValid())
+    return mlir::failure();
+  for (auto [connection, choice] : llvm::zip_equal(connections, choices)) {
+    mlir::Operation *producer = connection.getProducer();
+    mlir::Operation *consumer = connection.getConsumer();
+    auto producerType = connection.producerResult
+                            ? mlir::dyn_cast<mlir::RankedTensorType>(
+                                  connection.producerResult.getType())
+                            : mlir::RankedTensorType{};
+    auto consumerOperandType =
+        connection.consumerOperand
+            ? mlir::dyn_cast<mlir::RankedTensorType>(
+                  connection.consumerOperand->get().getType())
+            : mlir::RankedTensorType{};
+    auto consumerType =
+        consumer && consumer->getNumResults() == 1
+            ? mlir::dyn_cast<mlir::RankedTensorType>(
+                  consumer->getResult(0).getType())
+            : mlir::RankedTensorType{};
+    if (!connection.isValid() || !producer || !consumer || !producerType ||
+        !consumerOperandType || !consumerType ||
+        !producerType.hasStaticShape() ||
+        !consumerOperandType.hasStaticShape() ||
+        !consumerType.hasStaticShape()) {
+      setFailureReason(
+          failureReason,
+          "joint traversal choices require exact static connection domains");
+      return mlir::failure();
+    }
+    if (choice.action ==
+            CandidateTraversalConnectionAction::CoupledResident &&
+        !choice.producerTileSizes.empty()) {
+      setFailureReason(
+          failureReason,
+          "coupled connection derives producer demand from the consumer "
+          "tile and cannot select a producer tile independently");
+      return mlir::failure();
+    }
+    if ((!choice.producerTileSizes.empty() &&
+         mlir::failed(getCandidateOutputTileCount(
+             producerType, choice.producerTileSizes, failureReason))) ||
+        (!choice.consumerTileSizes.empty() &&
+         mlir::failed(getCandidateOutputTileCount(
+             consumerType, choice.consumerTileSizes, failureReason))))
+      return mlir::failure();
+  }
+  TensorProgramScope policyScope(scope.getFunction(), &policy);
+  mlir::Block &body = policyScope.getBody();
+  auto returnOp = policyScope.getReturn();
+
+  llvm::SmallVector<mlir::Operation *, 32> nodes;
+  llvm::DenseMap<mlir::Operation *, unsigned> nodeIndices;
+  for (mlir::Operation &operation : body.without_terminator()) {
+    if (classifyCandidateTraversalRoot(&operation) ==
+        CandidateTraversalRootCapability::Unsupported)
+      continue;
+    nodeIndices[&operation] = nodes.size();
+    nodes.push_back(&operation);
+  }
+  if (nodes.empty()) {
+    setFailureReason(failureReason,
+                     "joint traversal found no structured operations");
+    return mlir::failure();
+  }
+
+  llvm::SmallVector<unsigned, 32> parents(nodes.size());
+  for (unsigned index = 0; index < parents.size(); ++index)
+    parents[index] = index;
+  auto findRoot = [&](unsigned index) {
+    while (parents[index] != index) {
+      parents[index] = parents[parents[index]];
+      index = parents[index];
+    }
+    return index;
+  };
+  auto unite = [&](unsigned left, unsigned right) {
+    unsigned leftRoot = findRoot(left);
+    unsigned rightRoot = findRoot(right);
+    if (leftRoot != rightRoot)
+      parents[std::max(leftRoot, rightRoot)] = std::min(leftRoot, rightRoot);
+  };
+  for (auto [connection, choice] : llvm::zip_equal(connections, choices)) {
+    auto producer = nodeIndices.find(connection.getProducer());
+    auto consumer = nodeIndices.find(connection.getConsumer());
+    if (producer == nodeIndices.end() || consumer == nodeIndices.end()) {
+      setFailureReason(failureReason,
+                       "joint traversal connection left the current IR");
+      return mlir::failure();
+    }
+    if (choice.action == CandidateTraversalConnectionAction::CoupledResident)
+      unite(producer->second, consumer->second);
+  }
+
+  struct RootEntry {
+    mlir::Operation *operation = nullptr;
+    unsigned component = 0;
+    unsigned blockOrdinal = 0;
+    std::optional<unsigned> outputIndex;
+    mlir::Value returnedValue;
+    CandidateTraversalConnectionAction boundaryAction =
+        CandidateTraversalConnectionAction::SeparatedResident;
+    llvm::SmallVector<int64_t, 4> tileSizes;
+  };
+  llvm::SmallVector<RootEntry, 16> roots;
+  llvm::DenseSet<mlir::Operation *> seenRoots;
+  auto appendRoot = [&](mlir::Operation *operation,
+                        std::optional<unsigned> outputIndex,
+                        mlir::Value returnedValue,
+                        CandidateTraversalConnectionAction boundaryAction,
+                        llvm::ArrayRef<int64_t> tileSizes) {
+    if (!operation || !seenRoots.insert(operation).second)
+      return;
+    auto node = nodeIndices.find(operation);
+    if (node == nodeIndices.end())
+      return;
+    // A materialized internal boundary is its own traversal root even when a
+    // second fanout branch couples the same producer into an observable root.
+    // Grouping those roots would recreate the forbidden hybrid traversal and
+    // can also make the original producer fail SSA dominance.
+    unsigned component =
+        outputIndex ? findRoot(node->second) : nodes.size() + node->second;
+    RootEntry entry{operation,   component,     node->second,
+                    outputIndex, returnedValue, boundaryAction};
+    entry.tileSizes.assign(tileSizes.begin(), tileSizes.end());
+    roots.push_back(std::move(entry));
+  };
+
+  for (auto [outputIndex, returned] : llvm::enumerate(returnOp.getOperands())) {
+    mlir::OpResult rootResult =
+        traceCandidateStructuredProducer(returned, body);
+    mlir::Operation *root = rootResult ? rootResult.getOwner() : nullptr;
+    llvm::SmallVector<int64_t, 4> rootTileSizes;
+    for (auto [connection, choice] : llvm::zip_equal(connections, choices)) {
+      if (connection.getConsumer() != root ||
+          choice.consumerTileSizes.empty())
+        continue;
+      if (!rootTileSizes.empty() &&
+          !llvm::equal(rootTileSizes, choice.consumerTileSizes)) {
+        setFailureReason(
+            failureReason,
+            "one coupled consumer requires incompatible tile vectors");
+        return mlir::failure();
+      }
+      rootTileSizes.assign(choice.consumerTileSizes.begin(),
+                           choice.consumerTileSizes.end());
+    }
+    if (rootTileSizes.empty())
+      rootTileSizes.assign(candidateTileSizes.begin(),
+                           candidateTileSizes.end());
+    appendRoot(root, static_cast<unsigned>(outputIndex), returned,
+               CandidateTraversalConnectionAction::SeparatedResident,
+               rootTileSizes);
+  }
+
+  for (auto [connectionIndex, connection] : llvm::enumerate(connections)) {
+    const CandidateTraversalConnectionChoice &choice = choices[connectionIndex];
+    CandidateTraversalConnectionAction action = choice.action;
+    if (!isSeparatedConnectionAction(action))
+      continue;
+    CandidateTraversalConnectionAction rootAction = action;
+    llvm::SmallVector<int64_t, 4> producerTileSizes(
+        choice.producerTileSizes.begin(), choice.producerTileSizes.end());
+    for (auto [otherIndex, other] : llvm::enumerate(connections)) {
+      if (otherIndex == connectionIndex ||
+          other.producerResult != connection.producerResult ||
+          !isSeparatedConnectionAction(choices[otherIndex].action))
+        continue;
+      bool leftDDR = isDDRConnectionAction(rootAction);
+      bool rightDDR = isDDRConnectionAction(choices[otherIndex].action);
+      bool leftSpill =
+          rootAction == CandidateTraversalConnectionAction::SelectiveSpill;
+      bool rightSpill = choices[otherIndex].action ==
+                        CandidateTraversalConnectionAction::SelectiveSpill;
+      bool incompatibleTileVersion =
+          !producerTileSizes.empty() &&
+          !choices[otherIndex].producerTileSizes.empty() &&
+          !llvm::equal(producerTileSizes,
+                       choices[otherIndex].producerTileSizes);
+      if (leftDDR != rightDDR || leftSpill != rightSpill ||
+          incompatibleTileVersion) {
+        setFailureReason(
+            failureReason,
+            "one producer fanout requires incompatible shared versions");
+        return mlir::failure();
+      }
+      if (producerTileSizes.empty())
+        producerTileSizes.assign(choices[otherIndex].producerTileSizes.begin(),
+                                 choices[otherIndex].producerTileSizes.end());
+      if (choices[otherIndex].action ==
+          CandidateTraversalConnectionAction::CrossRegion)
+        rootAction = CandidateTraversalConnectionAction::CrossRegion;
+    }
+    if (producerTileSizes.empty())
+      producerTileSizes.assign(candidateTileSizes.begin(),
+                               candidateTileSizes.end());
+    appendRoot(connection.getProducer(), std::nullopt, mlir::Value{},
+               rootAction, producerTileSizes);
+  }
+  if (roots.empty()) {
+    setFailureReason(failureReason,
+                     "joint traversal has no observable or cut roots");
+    return mlir::failure();
+  }
+
+  llvm::sort(roots, [](const RootEntry &left, const RootEntry &right) {
+    return left.blockOrdinal > right.blockOrdinal;
+  });
+  struct RootTraversalGroup {
+    unsigned component = 0;
+    llvm::SmallVector<int64_t, 4> shape;
+    llvm::SmallVector<int64_t, 4> tileSizes;
+    llvm::SmallVector<RootEntry *, 4> roots;
+  };
+  llvm::SmallVector<RootTraversalGroup, 16> groups;
+  for (RootEntry &root : roots) {
+    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
+        root.operation->getResult(0).getType());
+    if (!resultType || !resultType.hasStaticShape()) {
+      setFailureReason(failureReason,
+                       "joint traversal root has no static result domain");
+      return mlir::failure();
+    }
+    llvm::SmallVector<int64_t, 4> rootTileSizes = root.tileSizes;
+    if (rootTileSizes.empty())
+      rootTileSizes.assign(resultType.getShape().begin(),
+                           resultType.getShape().end());
+    auto group = llvm::find_if(groups, [&](const RootTraversalGroup &current) {
+      return current.component == root.component &&
+             llvm::equal(current.shape, resultType.getShape()) &&
+             llvm::equal(current.tileSizes, rootTileSizes);
+    });
+    if (group == groups.end()) {
+      RootTraversalGroup next;
+      next.component = root.component;
+      next.shape.assign(resultType.getShape().begin(),
+                        resultType.getShape().end());
+      next.tileSizes = std::move(rootTileSizes);
+      groups.push_back(std::move(next));
+      group = std::prev(groups.end());
+    }
+    group->roots.push_back(&root);
+  }
+
+  for (RootTraversalGroup &group : groups) {
+    llvm::SmallVector<mlir::Operation *, 4> groupRoots;
+    llvm::SmallVector<unsigned, 4> outputIndices;
+    llvm::SmallVector<mlir::Value, 4> destinations;
+    llvm::SmallVector<mlir::Value, 4> originalResults;
+    for (RootEntry *root : group.roots) {
+      if (!root->operation || root->operation->getBlock() != &body) {
+        setFailureReason(failureReason,
+                         "joint traversal root was consumed out of order");
+        return mlir::failure();
+      }
+      groupRoots.push_back(root->operation);
+      outputIndices.push_back(root->outputIndex.value_or(0));
+      originalResults.push_back(root->operation->getResult(0));
+      if (root->outputIndex) {
+        mlir::FailureOr<mlir::Value> boundary = getCandidateOutputBoundary(
+            policyScope, *root->outputIndex, failureReason);
+        if (mlir::failed(boundary))
+          return mlir::failure();
+        mlir::OpBuilder destinationBuilder(root->operation);
+        mlir::FailureOr<mlir::Value> mappedDestination =
+            materializeJointOutputDestination(
+                destinationBuilder, root->returnedValue,
+                root->operation->getResult(0), *boundary, failureReason);
+        if (mlir::failed(mappedDestination))
+          return mlir::failure();
+        destinations.push_back(*mappedDestination);
+      } else {
+        mlir::FailureOr<mlir::Value> destination =
+            createJointTraversalDestination(policyScope, root->operation,
+                                            root->boundaryAction,
+                                            failureReason);
+        if (mlir::failed(destination))
+          return mlir::failure();
+        destinations.push_back(*destination);
+      }
+    }
+
+    llvm::ArrayRef<int64_t> groupTileSizes(group.tileSizes);
+    if (mlir::failed(getCandidateOutputTileCount(
+            mlir::cast<mlir::RankedTensorType>(
+                groupRoots.front()->getResult(0).getType()),
+            groupTileSizes, failureReason)))
+      return mlir::failure();
+    mlir::OpBuilder builder(groupRoots.front());
+    llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+    llvm::SmallVector<int64_t, 4> sizes;
+    llvm::SmallVector<mlir::LoopLikeOpInterface, 4> loops;
+    mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>> completeOutputs =
+        materializeLoopedRootsTraversal(
+            builder, policyScope, groupRoots, outputIndices, group.shape,
+            groupTileSizes, /*reductionTileSizes=*/{}, /*dim=*/0,
+            destinations, offsets, sizes, loops, failureReason,
+            /*elideSingleIteration=*/true);
+    if (mlir::failed(completeOutputs) ||
+        completeOutputs->size() != groupRoots.size())
+      return mlir::failure();
+    for (auto [root, originalResult, completeOutput] :
+         llvm::zip_equal(groupRoots, originalResults, *completeOutputs)) {
+      originalResult.replaceAllUsesWith(completeOutput);
+      root->erase();
+    }
+    eraseDeadCandidateSupportClosure(policyScope);
+  }
+
+  if (mlir::failed(mlir::verify(policyScope.getFunction()))) {
+    setFailureReason(failureReason,
+                     "joint traversal produced invalid structured IR");
+    return mlir::failure();
+  }
+  return mlir::success();
+}
+
+static bool
+isConservativeCompleteRankTraversalRoot(mlir::Operation &operation) {
+  if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(operation)) {
+    bool isReturned = llvm::any_of(fill->getUsers(), [](mlir::Operation *user) {
+      return mlir::isa<mlir::func::ReturnOp>(user);
+    });
+    // Keep a non-terminal fill attached to its consumer so reduction and
+    // overwrite lowering can prove the exact initialization scalar while
+    // materializing that consumer's tile.
+    if (!isReturned)
+      return false;
+  }
+  return classifyCandidateTraversalRoot(&operation) !=
+         CandidateTraversalRootCapability::Unsupported;
+}
+
 static mlir::LogicalResult materializeSeparatedCompleteRankTraversalsImpl(
     TensorProgramScope scope,
     std::optional<llvm::ArrayRef<int64_t>> candidateTileSizes,
+    llvm::ArrayRef<mlir::Operation *> coveredTopLevelOperations,
     std::string *failureReason) {
+  llvm::DenseSet<mlir::Operation *> covered(
+      coveredTopLevelOperations.begin(), coveredTopLevelOperations.end());
   llvm::SmallVector<mlir::Operation *, 16> roots;
   for (mlir::Operation &operation : scope.getBody().without_terminator()) {
-    if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(operation)) {
-      bool isReturned =
-          llvm::any_of(fill->getUsers(), [](mlir::Operation *user) {
-            return mlir::isa<mlir::func::ReturnOp>(user);
-          });
-      // Keep a non-terminal fill attached to its consumer so reduction and
-      // overwrite lowering can prove the exact initialization scalar while
-      // materializing that consumer's tile.
-      if (!isReturned)
-        continue;
-    }
-    CandidateTraversalRootCapability capability =
-        classifyCandidateTraversalRoot(&operation);
-    if (capability == CandidateTraversalRootCapability::Unsupported)
+    if (covered.contains(&operation))
+      continue;
+    if (!isConservativeCompleteRankTraversalRoot(operation))
       continue;
     if (operation.getNumResults() != 1) {
       setFailureReason(
@@ -544,7 +1078,8 @@ static mlir::LogicalResult materializeSeparatedCompleteRankTraversalsImpl(
   // full-shape SPM producer.
   llvm::SmallVector<mlir::tensor::EmptyOp, 16> emptyDestinations;
   for (mlir::Operation &operation : scope.getBody().without_terminator())
-    if (auto empty = mlir::dyn_cast<mlir::tensor::EmptyOp>(operation))
+    if (!covered.contains(&operation))
+      if (auto empty = mlir::dyn_cast<mlir::tensor::EmptyOp>(operation))
       emptyDestinations.push_back(empty);
   for (mlir::tensor::EmptyOp empty : emptyDestinations) {
     auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(empty.getType());
@@ -629,9 +1164,9 @@ static mlir::LogicalResult materializeSeparatedCompleteRankTraversalsImpl(
         materializeLoopedRootsTraversal(
             builder, scope, llvm::ArrayRef<mlir::Operation *>{root},
             llvm::ArrayRef<unsigned>{outputIndex}, shape, tileSizes,
-            /*reductionTileSizes=*/{}, CandidateTileTraversalKind::ResultDriven,
-            /*dim=*/0, mlir::ValueRange{outputDestination}, offsets, sizes,
-            loops, failureReason);
+            /*reductionTileSizes=*/{}, /*dim=*/0,
+            mlir::ValueRange{outputDestination}, offsets, sizes, loops,
+            failureReason);
     if (mlir::failed(completeOutputs))
       return mlir::failure();
     if (completeOutputs->size() != 1) {
@@ -652,15 +1187,33 @@ static mlir::LogicalResult materializeSeparatedCompleteRankTraversalsImpl(
 mlir::LogicalResult
 materializeConservativeCompleteRankTraversals(TensorProgramScope scope,
                                               std::string *failureReason) {
-  return materializeSeparatedCompleteRankTraversalsImpl(scope, std::nullopt,
-                                                        failureReason);
+  return materializeSeparatedCompleteRankTraversalsImpl(
+      scope, std::nullopt, /*coveredTopLevelOperations=*/{}, failureReason);
+}
+
+mlir::LogicalResult materializeRemainingConservativeCompleteRankTraversals(
+    TensorProgramScope scope,
+    llvm::ArrayRef<mlir::Operation *> coveredTopLevelOperations,
+    std::string *failureReason) {
+  llvm::DenseSet<mlir::Operation *> covered(
+      coveredTopLevelOperations.begin(), coveredTopLevelOperations.end());
+  bool hasRemainingRoot = llvm::any_of(
+      scope.getBody().without_terminator(), [&](mlir::Operation &operation) {
+        return !covered.contains(&operation) &&
+               isConservativeCompleteRankTraversalRoot(operation);
+      });
+  if (!hasRemainingRoot)
+    return mlir::success();
+  return materializeSeparatedCompleteRankTraversalsImpl(
+      scope, std::nullopt, coveredTopLevelOperations, failureReason);
 }
 
 mlir::LogicalResult materializeSeparatedCompleteRankTraversals(
     TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileSizes,
     std::string *failureReason) {
   return materializeSeparatedCompleteRankTraversalsImpl(
-      scope, candidateTileSizes, failureReason);
+      scope, candidateTileSizes, /*coveredTopLevelOperations=*/{},
+      failureReason);
 }
 
 } // namespace wafer::tensor_program_to_tile_region

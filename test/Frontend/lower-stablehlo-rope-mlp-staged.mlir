@@ -53,8 +53,11 @@ module {
 // CHECK: arith.mulf
 // CHECK: arith.subf
 // CHECK: arith.addf
-// CHECK: scf.if
-// CHECK: tensor.extract
+// CHECK: tensor.empty() : tensor<2x4xf32>
+// CHECK: tensor.insert_slice {{.*}}[0, 0] [2, 2] [1, 1]
+// CHECK: tensor.insert_slice {{.*}}[0, 2] [2, 2] [1, 1]
+// CHECK-NOT: scf.if
+// CHECK-NOT: linalg.index
 
 // CHECK-LABEL: func.func @gelu_tanh_staged
 // CHECK-NOT: stablehlo.

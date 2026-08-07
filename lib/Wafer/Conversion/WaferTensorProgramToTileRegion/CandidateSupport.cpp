@@ -14,17 +14,22 @@ namespace wafer {
 
 CandidateTraversalRootCapability
 classifyCandidateTraversalRoot(mlir::Operation *operation) {
-  if (mlir::isa_and_nonnull<mlir::linalg::LinalgOp>(operation))
+  if (!operation)
+    return CandidateTraversalRootCapability::Unsupported;
+
+  // Ordinary structured roots are admitted by the interfaces that define
+  // their tile relation.  Do not maintain an operation allowlist here: a new
+  // DPS operation that implements TilingInterface must enter the same search
+  // and materialization path without a coordinator or conversion edit.
+  auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(operation);
+  if (dps && mlir::isa<mlir::TilingInterface>(operation) &&
+      dps.getNumDpsInits() == 1 && operation->getNumResults() == 1)
     return CandidateTraversalRootCapability::Tiled;
-  if (auto allReduce =
-          mlir::dyn_cast_or_null<LinalgExtCollectiveAllReduceOp>(operation)) {
-    if (allReduce.getInputs().size() == 1 && allReduce.getOuts().size() == 1 &&
-        allReduce->getNumResults() == 1 &&
-        mlir::isa<mlir::TilingInterface>(operation))
-      return CandidateTraversalRootCapability::Tiled;
-    return CandidateTraversalRootCapability::FullTraversalOnly;
-  }
-  if (mlir::isa_and_nonnull<WaferLinalgExtCollectiveOpInterface>(operation))
+
+  // A typed collective without a tile relation remains legal only as one
+  // full traversal.  This is a capability distinction, not recognition of a
+  // workload or an invitation to invent a relation in the coordinator.
+  if (mlir::isa<WaferLinalgExtCollectiveOpInterface>(operation))
     return CandidateTraversalRootCapability::FullTraversalOnly;
   return CandidateTraversalRootCapability::Unsupported;
 }

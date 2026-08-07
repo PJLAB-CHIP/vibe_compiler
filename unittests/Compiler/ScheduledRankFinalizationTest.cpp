@@ -5,6 +5,7 @@
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileWorkStatistics.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Diagnostics.h"
@@ -121,37 +122,11 @@ module {
 };
 
 TEST_F(ScheduledRankFinalizationTest,
-       LowersTypedTileDataflowOnlyAtTerminalBoundary) {
-  mlir::OwningOpRef<mlir::ModuleOp> tileCandidate =
+       RejectsTileDataflowAtCanonicalInstrActionBoundary) {
+  mlir::OwningOpRef<mlir::ModuleOp> module =
       candidateWithSPMElements(/*elements=*/128);
-  ASSERT_TRUE(tileCandidate);
-  ASSERT_TRUE(
-      wafer::containsTileDataflowOperations(tileCandidate->getOperation()));
-
-  std::vector<wafer::ScheduledRankCandidate> frontier;
-  frontier.emplace_back(std::move(tileCandidate), /*stableOrdinal=*/0,
-                        wafer::RankArtifactKind::Spill,
-                        /*reservedBaseline=*/true);
-  auto finalized =
-      wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-          std::move(frontier));
-  ASSERT_TRUE(mlir::succeeded(finalized));
-  ASSERT_EQ(finalized->size(), 1u);
-  EXPECT_FALSE(wafer::containsTileDataflowOperations(
-      finalized->front().module->getOperation()));
-  bool hasRDMA = false;
-  finalized->front().module->walk([&](wafer::InstrRDMAOp) { hasRDMA = true; });
-  EXPECT_TRUE(hasRDMA);
-}
-
-TEST_F(ScheduledRankFinalizationTest,
-       FiltersFailedAlternativeAndClosesSurvivorExactCost) {
-  mlir::OwningOpRef<mlir::ModuleOp> overflow =
-      candidateWithSPMElements(/*elements=*/2'000'000);
-  mlir::OwningOpRef<mlir::ModuleOp> valid =
-      candidateWithSPMElements(/*elements=*/128);
-  ASSERT_TRUE(overflow);
-  ASSERT_TRUE(valid);
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(wafer::containsTileDataflowOperations(module->getOperation()));
 
   std::string diagnostics;
   mlir::ScopedDiagnosticHandler handler(
@@ -161,92 +136,24 @@ TEST_F(ScheduledRankFinalizationTest,
         os << "\n";
         return mlir::success();
       });
-
-  std::vector<wafer::ScheduledRankCandidate> frontier;
-  frontier.emplace_back(
-      std::move(overflow), /*stableOrdinal=*/3, wafer::RankArtifactKind::Spill,
-      /*reservedBaseline=*/false, wafer::RankBufferingKind::StaticFixedSlot,
-      /*bufferingPlanOrdinal=*/2);
-  frontier.emplace_back(std::move(valid), /*stableOrdinal=*/4,
-                        wafer::RankArtifactKind::Spill,
-                        /*reservedBaseline=*/true);
-  mlir::FailureOr<std::vector<wafer::compiler::detail::FinalizedRankCandidate>>
-      finalized =
-          wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-              std::move(frontier));
-
-  ASSERT_TRUE(mlir::succeeded(finalized)) << diagnostics;
-  ASSERT_EQ(finalized->size(), 1u);
-  EXPECT_EQ(finalized->front().stableOrdinal, 4);
-  EXPECT_EQ(finalized->front().artifactKind, wafer::RankArtifactKind::Spill);
-  EXPECT_TRUE(finalized->front().reservedBaseline);
-  EXPECT_NE(diagnostics.find("capacity_overflow"), std::string::npos)
+  wafer::compiler::detail::RankFinalizationFailure failure;
+  auto finalized = wafer::compiler::detail::finalizeCoordinatedRankModule(
+      std::move(module), &failure);
+  EXPECT_TRUE(mlir::failed(finalized));
+  EXPECT_EQ(failure.kind,
+            wafer::compiler::detail::RankFinalizationFailureKind::Contract);
+  EXPECT_NE(
+      diagnostics.find("rank_finalization_requires_canonical_instr_action"),
+      std::string::npos)
       << diagnostics;
 }
 
-TEST_F(ScheduledRankFinalizationTest,
-       PreservesFixedSlotBufferingIdentityForSurvivingAlternative) {
-  mlir::OwningOpRef<mlir::ModuleOp> baseline =
-      candidateWithSPMElements(/*elements=*/128);
-  mlir::OwningOpRef<mlir::ModuleOp> fixed =
-      candidateWithSPMElements(/*elements=*/256);
-  ASSERT_TRUE(baseline);
-  ASSERT_TRUE(fixed);
-
-  std::vector<wafer::ScheduledRankCandidate> frontier;
-  frontier.emplace_back(std::move(baseline), /*stableOrdinal=*/4,
-                        wafer::RankArtifactKind::Spill,
-                        /*reservedBaseline=*/true);
-  frontier.emplace_back(
-      std::move(fixed), /*stableOrdinal=*/4, wafer::RankArtifactKind::Spill,
-      /*reservedBaseline=*/false, wafer::RankBufferingKind::StaticFixedSlot,
-      /*bufferingPlanOrdinal=*/6);
-
-  auto finalized =
-      wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-          std::move(frontier));
-  ASSERT_TRUE(mlir::succeeded(finalized));
-  ASSERT_EQ(finalized->size(), 2u);
-  auto fixedCandidate = llvm::find_if(*finalized, [](const auto &candidate) {
-    return candidate.bufferingKind == wafer::RankBufferingKind::StaticFixedSlot;
-  });
-  ASSERT_NE(fixedCandidate, finalized->end());
-  EXPECT_EQ(fixedCandidate->stableOrdinal, 4);
-  EXPECT_EQ(fixedCandidate->bufferingPlanOrdinal, 6u);
-  EXPECT_FALSE(fixedCandidate->reservedBaseline);
-}
-
-TEST_F(ScheduledRankFinalizationTest,
-       FinalizesBaselineFreeRequestShardAndPreservesCanonicalOrder) {
-  mlir::OwningOpRef<mlir::ModuleOp> candidate =
-      candidateWithSPMElements(/*elements=*/128);
-  ASSERT_TRUE(candidate);
-
-  std::vector<wafer::ScheduledRankCandidate> frontier;
-  frontier.emplace_back(
-      std::move(candidate), /*stableOrdinal=*/7, wafer::RankArtifactKind::Spill,
-      /*reservedBaseline=*/false, wafer::RankBufferingKind::Single,
-      /*bufferingPlanOrdinal=*/0, wafer::RankWorkerPlacementKind::Unplaced,
-      /*workerPlacementPlanOrdinal=*/0, /*frontierOrderOrdinal=*/91);
-  auto finalized =
-      wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-          std::move(frontier),
-          /*requireReservedBaseline=*/false);
-  ASSERT_TRUE(mlir::succeeded(finalized));
-  ASSERT_EQ(finalized->size(), 1u);
-  EXPECT_FALSE(finalized->front().reservedBaseline);
-  EXPECT_EQ(finalized->front().frontierOrderOrdinal, 91u);
-
-  auto empty = wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-      {}, /*requireReservedBaseline=*/false);
-  ASSERT_TRUE(mlir::succeeded(empty));
-  EXPECT_TRUE(empty->empty());
-}
-
-TEST_F(ScheduledRankFinalizationTest, FailsOnlyWhenNoAlternativeSurvives) {
-  mlir::OwningOpRef<mlir::ModuleOp> overflow =
+TEST_F(ScheduledRankFinalizationTest, ReportsSPMFailureForOwnedRankModule) {
+  mlir::OwningOpRef<mlir::ModuleOp> module =
       candidateWithSPMElements(/*elements=*/2'000'000);
-  ASSERT_TRUE(overflow);
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(wafer::convertTileRegionToInstrModule(*module)));
+  ASSERT_FALSE(wafer::containsTileDataflowOperations(module->getOperation()));
 
   std::string diagnostics;
   mlir::ScopedDiagnosticHandler handler(
@@ -256,22 +163,21 @@ TEST_F(ScheduledRankFinalizationTest, FailsOnlyWhenNoAlternativeSurvives) {
         os << "\n";
         return mlir::success();
       });
-  std::vector<wafer::ScheduledRankCandidate> frontier;
-  frontier.emplace_back(std::move(overflow), /*stableOrdinal=*/3,
-                        wafer::RankArtifactKind::Spill,
-                        /*reservedBaseline=*/true);
-
-  EXPECT_TRUE(mlir::failed(
-      wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-          std::move(frontier))));
+  wafer::compiler::detail::RankFinalizationFailure failure;
+  auto finalized = wafer::compiler::detail::finalizeCoordinatedRankModule(
+      std::move(module), &failure);
+  EXPECT_TRUE(mlir::failed(finalized));
+  EXPECT_EQ(
+      failure.kind,
+      wafer::compiler::detail::RankFinalizationFailureKind::SPMAllocation);
   EXPECT_NE(diagnostics.find("capacity_overflow"), std::string::npos)
       << diagnostics;
 }
 
 TEST_F(ScheduledRankFinalizationTest,
        RejectsWholeVariantPlacementBeforeRankFinalization) {
-  mlir::OwningOpRef<mlir::ModuleOp> placed = candidateWithDDRPlacement();
-  ASSERT_TRUE(placed);
+  mlir::OwningOpRef<mlir::ModuleOp> module = candidateWithDDRPlacement();
+  ASSERT_TRUE(module);
 
   std::string diagnostics;
   mlir::ScopedDiagnosticHandler handler(
@@ -281,42 +187,40 @@ TEST_F(ScheduledRankFinalizationTest,
         os << "\n";
         return mlir::success();
       });
-  std::vector<wafer::ScheduledRankCandidate> frontier;
-  frontier.emplace_back(std::move(placed), /*stableOrdinal=*/5,
-                        wafer::RankArtifactKind::Spill,
-                        /*reservedBaseline=*/true);
-
-  EXPECT_TRUE(mlir::failed(
-      wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-          std::move(frontier))));
-  EXPECT_NE(diagnostics.find("rank_frontier_contains_whole_variant_facts"),
+  wafer::compiler::detail::RankFinalizationFailure failure;
+  auto finalized = wafer::compiler::detail::finalizeCoordinatedRankModule(
+      std::move(module), &failure);
+  EXPECT_TRUE(mlir::failed(finalized));
+  EXPECT_EQ(
+      failure.kind,
+      wafer::compiler::detail::RankFinalizationFailureKind::WholeVariantFacts);
+  EXPECT_NE(diagnostics.find("rank_finalization_contains_whole_variant_facts"),
             std::string::npos)
       << diagnostics;
 }
 
 TEST_F(ScheduledRankFinalizationTest,
-       RebuildsCompletionAfterBufferizationFromCurrentEffects) {
-  auto candidate = candidateWithStaleMidRegionJoin();
-  ASSERT_TRUE(candidate);
-  std::vector<wafer::ScheduledRankCandidate> frontier;
-  frontier.emplace_back(std::move(candidate), /*stableOrdinal=*/0,
-                        wafer::RankArtifactKind::Spill,
-                        /*reservedBaseline=*/true);
+       RebuildsRegionRootCompletionAfterBufferizationFromCurrentEffects) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = candidateWithStaleMidRegionJoin();
+  ASSERT_TRUE(module);
+  auto workSession =
+      std::make_shared<wafer::support::CompileWorkStatisticsSession>();
+  wafer::support::ScopedCompileWorkStatisticsActivation workActivation(
+      workSession);
   auto finalized =
-      wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-          std::move(frontier), /*requireReservedBaseline=*/true,
-          wafer::compiler::detail::RankCompletionPolicy::
-              RebuildFromCurrentEffects);
+      wafer::compiler::detail::finalizeCoordinatedRankModule(std::move(module));
   ASSERT_TRUE(mlir::succeeded(finalized));
-  ASSERT_EQ(finalized->size(), 1u);
 
   llvm::SmallVector<wafer::SyncNCCJoinOp, 2> joins;
-  finalized->front().module->walk(
-      [&](wafer::SyncNCCJoinOp join) { joins.push_back(join); });
+  (*finalized)->walk([&](wafer::SyncNCCJoinOp join) { joins.push_back(join); });
   ASSERT_EQ(joins.size(), 1u);
-  EXPECT_EQ(joins.front().getParticipants(),
-            (llvm::ArrayRef<int64_t>{0}));
-  EXPECT_TRUE(mlir::isa<mlir::func::ReturnOp>(joins.front()->getNextNode()));
+  EXPECT_EQ(joins.front().getParticipants(), (llvm::ArrayRef<int64_t>{0}));
+  EXPECT_TRUE(mlir::isa<wafer::TileYieldOp>(joins.front()->getNextNode()));
+  EXPECT_TRUE(joins.front()->getParentOfType<wafer::TileRegionOp>());
+  const wafer::support::CompileWorkStatistics work = workSession->snapshot();
+  EXPECT_EQ(work.finalizationCandidateClones, 1u);
+  EXPECT_EQ(work.finalizationInstructionLowerings, 0u);
+  EXPECT_EQ(work.spmPlanningInvocations, 1u);
 }
 
 } // namespace

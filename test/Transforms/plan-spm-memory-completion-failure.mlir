@@ -141,6 +141,46 @@ func.func @loop_may_skip_only_ncc_join(
 
 // -----
 
+// A loop-local allocation has a fresh logical instance on each iteration, but
+// its value-associated NCC accesses still name a resolved runtime address
+// domain. The same worker therefore orders a prior WDMA read against the next
+// iteration's fill when their physical ranges overlap; disjoint ranges require
+// no completion edge. The join after the loop remains the real domain-exit cut.
+func.func @loop_local_origin_is_same_worker_ordered(
+    %boundary: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+  %region = wafer.tile.region(%boundary
+      : memref<4xf16, #wafer.memory<ddr, tensor>>)
+      -> (memref<4xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<4xf16, #wafer.memory<ddr, tensor>>):
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c4 = arith.constant 4 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    scf.for %i = %c0 to %c4 step %c2 {
+      %buffer = memref.alloc()
+          : memref<2xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.fill %buffer, %zero
+          : memref<2xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.instr.ncc_join [0]
+      %token = wafer.instr.dte_send %buffer
+          {peer = 1 : i64, bytes = 4 : i64,
+           message = #wafer.dte_message<communication = 7, phase = collective_permute, round = 0, slice = 0>}
+          : memref<2xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %token : !async.token
+      wafer.instr.wdma %buffer to %arg0
+          {byte_count = 4 : i64, dst_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>, inner_bytes = 4 : i64}
+          : memref<2xf16, #wafer.memory<spm, tensor>>
+         to memref<4xf16, #wafer.memory<ddr, tensor>>
+    }
+    wafer.instr.ncc_join [0]
+    wafer.tile.yield %arg0 : memref<4xf16, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// -----
+
 func.func @loop_body_same_worker_stream_reaches_outer_completion(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>,
     %lb: index, %ub: index, %step: index) {

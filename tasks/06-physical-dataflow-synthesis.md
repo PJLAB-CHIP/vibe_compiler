@@ -9,11 +9,14 @@ SPM residency domain，但一个rank program如何划分为这些domains是搜�
 `tasks/plans/whole-rank-tile-dataflow-synthesis.md`。
 
 本文不新增第二套 layout、candidate IR、调度 plan 或 runtime 协议。当前 MLIR operation、region、SSA、type、typed
-attribute、effect 和 target capability 是唯一语义事实源；candidate 只有 isolated actual IR clone。Llama block 用于暴露和
-验证通用问题，不定义任何 shape、op 顺序或模型专用规则。
+attribute、effect 和 target capability 是唯一语义事实源。合法参数域与structural proposal只能作为一次coordinator
+invocation内、可失效且可重算的query-local分析对象；只有被actual-clone准入的决定才物化进isolated IR，最终接受事实只存在于
+selected current IR。Llama block用于暴露和验证通用问题，不定义任何shape、op顺序或模型专用规则。
 
-术语固定为：**whole-rank**表示一次优化覆盖rank function完整范围；**complete-rank actual clone**表示确实包含该rank完整
-program的候选artifact；**all-rank/whole-variant**只表示把all-and-only logical ranks组成一个原子tuple并执行跨rank gate。
+术语固定为：**whole-rank**表示一次优化覆盖rank function完整范围；**domain point**表示尚未物化的合法参数点；
+**structural proposal**表示query-local图决定及其通用facts；**complete-rank actual candidate**表示决定已物化且确实包含该rank
+完整program的isolated IR clone；**executable candidate**表示全部late exact gate已通过的actual candidate；
+**all-rank/whole-variant**只表示把all-and-only logical ranks组成一个原子tuple并执行跨rank gate。
 
 ## 1. 核心结论
 
@@ -33,16 +36,19 @@ program的候选artifact；**all-rank/whole-variant**只表示把all-and-only lo
    single-region resident候选可能迫使tile变小；multi-region materialized候选增加DDR，却可能让两侧tile变大、缩短共同live roots并
    减少loop-expanded work。task、source scope、collective、loop或单个spill都不自动成为cut；selected cut必须在actual IR中
    显式结束跨界SPM residency并materialize所有跨界data。两者没有先验胜负。
-4. **延迟不可逆 lowering，不延迟候选事实。** 不因为 task、source scope、loop boundary或旧 `tile.region` 自动创建 RDMA、WDMA、GS 或
-   `NCCJoin`；任何带region/traversal/tile/layout/residency/order决定的state在进入frontier或cost/gate前，都先把selected
-   regions、SCF loops、view、movement和structured event/effect obligation物化进自己的actual clone。resident edge、local movement、
-   recompute和DDR materialization均由SSA/effects显式表达，region结构不反向产生movement或join。只有terminal survivors
-   执行不可逆Tile→Instr和exact late gates。
+4. **延迟昂贵物化和不可逆lowering，不延迟当前IR事实。** 不因为task、source scope、loop boundary或旧`tile.region`自动创建
+   RDMA、WDMA、GS或`NCCJoin`。domain point与structural proposal先只使用current IR、typed interface、target capability和
+   可证明lower bound进入同一个有界pre-materialization frontier；它们不能跨pass、序列化或充当exact gate输入。只有经统一预算
+   准入的frontier代表才clone complete-rank IR并物化selected regions、SCF loops、view、movement和event/effect obligation。
+   resident edge、local movement、recompute和DDR materialization均由actual SSA/effects显式表达，region结构不反向产生movement
+   或全局drain。若region-owned SPM root在`wafer.tile.yield`前仍有pending participant work，final completion reconstruction必须在
+   yield内侧插入覆盖exact participants的join后才能释放该root；与这些roots无关的pending work保持live并跨region传播。只有actual
+   candidates执行不可逆Tile→Instr和exact late gates。
 5. **legality owner 独立，decision owner 唯一但分层执行。** structured 层决定 tile/loop/layout/resident edge，Instr 层才派生
    worker/slot/completion siblings；relation、physical realizability、SPM、DDR、communication、instruction、
    ABI 各自只回答自己的可验证问题；只有本文 owner 生成邻居、排序候选和决定 fallback。
 6. **capacity failure 反馈给搜索，不让 allocator 修 IR。** allocator 返回 typed failure；搜索 owner 从未放置 parent 建立
-   有界 structured sibling，例如改变region partition、traversal fusion/materialization与两侧tile、缩短 lifetime、改变 physical version或spill某条edge；terminal
+   有界 structured sibling，例如改变region partition、traversal fusion/materialization与两侧tile、缩短 lifetime、改变 physical version或spill某条edge；executable-finalization
    Instr层另行派生worker/slot/latest-necessary-completion variants。final bufferization后从complete current IR的roots、control flow
    和coexistence/conflict关系形成fixed SPM allocation problems，并由MiniMalloc和独立validator覆盖all-and-only roots；actual high-water只报告
    capacity/headroom，bank phase至多进入allocator既有单次搜索的deterministic offset ordering，作为
@@ -63,26 +69,32 @@ Pipeline position:
   DPS destination、indexing map、iterator/reduction、structured control flow、typed collective/peer relation、
   dtype/numeric semantics 和 external effects。target capability、execution mesh 与 memory arena 是只读输入。
 - Current stage responsibility:
-  在 isolated complete-rank clones 上发现可联合综合的 connected components与逐edge正交legality；通过 TilingInterface、
+  从current complete-rank structured IR发现可联合综合的connected components与逐edge正交legality；通过TilingInterface、
   IndexRelation、physical encoding/transfer interfaces 和 current effects 从 consumer 向 producer 传播 tile demand；
-  在all-rank transaction内共享一个deterministic work budget和coordinated frontier，联合枚举region merge/split/cut、
+  在all-rank transaction内共享一个deterministic work budget和query-local coordinated structural frontier，惰性联合枚举region
+  merge/split/cut、
   traversal fusion/materialization、implementation、
   tile shape/loop order、share/recompute、physical version/layout、resident/spill、local/peer movement和loop reuse choices；
-  每次merge/split/fuse/separate都同时重算两侧tile schedule、region boundary interface、overlapping SPM-root lifetime/live bound与
-  loop-expanded DDR/GS/compute/completion work；
-  用有界resource-aware search保留deterministic Pareto frontier；只对terminal all-rank Tile variant中的complete-rank Tile clones按
-  typed collective/peer algorithm参数逐点lower actual canonical Instr sibling，再派生worker/fixed-slot/ready-order、删除全部
-  compiler-derived join并fresh重建completion；从每个terminal rank-entry Instr variant的current roots/lifetime/conflict派生
+  coupled action从consumer tile经interface派生producer demand，separated action才显式携带两侧独立traversal与coverage relation；
+  每次merge/split/fuse/separate都从current IR重算两侧tile schedule、region boundary interface、可证明SPM-live lower bound与
+  loop-expanded DDR/GS/compute/completion estimate；
+  用DP或bounded Pareto beam保留invocation-wide最多64项的deterministic structural frontier。mandatory baseline canonical seed
+  外置于A/B轮转；其余action按stable A-first在new-Tile canonical seed（A）和已有exact-seeded cursor expansion（B）之间轮转。
+  包含baseline在内，全invocation总计最多16次actual materialization attempt和8个successful exact action；setup前failure不计
+  attempt，已开始action的成功或materialization/exact failure都消耗attempt并换lane。live cursor最多8个，peak action clone为1，
+  不存在per-Tile/provider-local quota。typed communication provider point与worker/fixed-slot/ready-order只形成read-only recipe order；
+  common coordinator不按workload或provider key分支。所选action删除全部compiler-derived join并fresh重建completion；从每个
+  finalized rank-entry Instr variant的current roots/lifetime/conflict派生
   all-and-only fixed SPM allocation problems并原子验证，对每个complete all-rank variant执行whole-variant DDR、post-memory
   Direct-DTE/resource、ABI和final recost exact gate；DDR gate按current explicit arenas/placement domains构造问题并原子汇总，
   再由当前校准的hardware cost model选择并原子提交all-rank winner。
 - Output artifact / IR:
   原子accepted `ExecutableBundle`：包含all-and-only logical ranks的final verifier-legal Instr artifact、accepted SPM/DDR
-  placement、transport binding与current target-legality records。terminal Tile clone只是本stage内部handoff；
+  placement、transport binding与current target-legality records。finalization Tile candidate只是本stage内部handoff；
   不发布all-rank correspondence、component graph、搜索state、candidate ordinal、layout proposal、repair recipe或proof sidecar。
 - Downstream consumer:
   target module/package publication、runtime loader与board launch。Tile→Instr、worker/fixed-slot/ready-order、fresh completion、
-  whole-rank SPM、whole-variant DDR、post-memory Direct-DTE binding和target ABI均是本stage内部terminal gates。
+  whole-rank SPM、whole-variant DDR、post-memory Direct-DTE binding和target ABI均是本stage内部executable-admission gates。
 - User-level driver / named pipeline:
   wafer-compile source-to-bundle production pipeline；wafer-opt 只复用相同 interfaces/conversions 做局部测试，
   不提供需要用户手工拼 pass 的第二条生产路径。
@@ -94,11 +106,13 @@ Pipeline position:
   均经默认 driver 产生 selected actual IR；同一source至少覆盖single-region fused-small-tile、multi-region
   separated-large-tile、same-region separated traversal和selective spill等对立candidate，单条spill不迫使无关resident root结束。
   task/source-scope/loop边界不自动生成region；每个region的data inputs/results为variadic DDR边界且SPM operand/result为零，
-  selected cross-region edge有显式store/completion/load。region exit不因容器本身自动形成join，只证明仍访问其SPM roots的work已完成；
-  entry terminal证明all-and-only pending external effects已完成。所有terminal candidates在selection前通过
-  fresh complete traversal、memory、descriptor、completion、all-rank、ABI 和 source-to-package/no-card gates；
-  短序列、read-only cached-attention与长prefill cases完成host/model/package/no-card而达到board-ready；fresh板端只执行
-  当前Llama `(16, 16)` matched A/B与一个read-only cached-attention representative，correctness/performance通过后任务才可done。
+  selected cross-region edge有显式store/completion/load。region结构边界本身不是全局drain；若exit时仍有访问region-owned roots的
+  pending work，则在`wafer.tile.yield`内侧插入exact-participant join作为root-release witness，无关pending work跨region保留；
+  entry final drain证明all-and-only pending external effects已完成。所有actual finalization candidates在selection前通过
+  fresh complete traversal、memory、descriptor、completion、all-rank、ABI 和 source-to-package/no-card gates；普通
+  `TilingInterface`异构图、official HF prefill、functional decode与较大Llama block按8 logical workloads/10 packages完成
+  host/model/package/no-card而达到
+  board-ready；fresh板端只执行对应合同指定的最小代表集，correctness/performance通过后任务才可done。
 ```
 
 ## 3. 稳定对象与所有权
@@ -124,29 +138,44 @@ Pipeline position:
 
 ### 3.2 Candidate 生命周期
 
-“candidate”只指 isolated、可验证的 actual MLIR clone：
+候选生命周期分成四层，不能再用“candidate”混指合法参数点和actual clone：
 
 ```text
 verified post-SPMD snapshot
-  -> clone complete rank
-  -> apply one bounded set of structured/physical decisions to actual IR
-  -> canonicalize + verify current layer + keep in bounded structured frontier or destroy
-  -> shortlist terminal Tile clones
-  -> for each typed collective/peer algorithm parameter, lower complete rank to an actual canonical Instr sibling
-  -> worker / fixed-slot / ready-order siblings
+  -> lazily derive domain points from current IR/interfaces
+  -> compose query-local structural proposals with DP / bounded Pareto beam
+  -> retain at most 64 structural representatives across the invocation
+  -> materialize the mandatory baseline canonical seed outside A/B rotation, while charging it to the global 16/8 counters
+  -> stable A-first rotation: next new-Tile canonical seed (A), then an existing exact-seeded cursor expansion (B)
+  -> after setup, materialize at most one all-rank action clone; setup failures consume no attempt
   -> erase and fresh-rebuild completion
   -> exact SPM / DDR / post-memory communication / ABI gates and final recost
+  -> charge the started action success or failure as one of 16 attempts and switch lanes
+  -> keep at most 8 successful exact actions and at most 8 live cursors
   -> atomically commit one complete all-rank tuple
 ```
 
-不携带决策的 relation/cost proposal 可以避免为明显 infeasible 的前缀复制 module；proposal不是候选、不能跨pass、不能成为
-另一份execution graph。任何被frontier保留且携带tile/layout/residency/order决定的state都必须拥有actual unplaced rank clone；
-PBQP或其它factor proposal一旦被保留就立即replay到clone并销毁。进入exact gate前不存在只靠decision list解释的survivor。
-失败clone不修改source、其它clone或accepted module。
+domain point和structural proposal可以携带query-local typed决定及从current IR派生的facts，以避免为明显不可行、等价或被支配的
+前缀复制module；它们不是execution graph，不能跨pass、序列化、发布或成为late exact gate输入。structural frontier只在同一次
+coordinator invocation内存活，source rewrite会使其全部失效。只有actual-clone admission后才replay决定，随后销毁proposal；从
+这一点开始，cost/gate只消费actual current IR。失败clone不修改source、其它clone或accepted module。
 
 不再使用 task candidate、standalone task module、task alternative ordinal、physical artifact kind 或先拼 ordinal 再做
 complete-rank import 的生产合同。稳定排序只由 IR-derived key、typed decision 和 deterministic traversal 给出；ordinal 只能是
 容器内部的临时迭代位置，不能参与语义对应。
+
+reserved conservative baseline由单一complete-rank materialization utility构造：只消费post-SPMD source module和logical rank，
+返回唯一verified owning module。它clone source、为non-splat dense tensor constant建立只读DDR backing；存在eligible structured
+root时复用完整conservative Tile lowering并保证一个outer residency region，否则清除compiler-derived placement/binding facts后返回
+source-level clone。该utility不接收optimization config，不产生frontier/artifact/buffering/worker/ordinal或selected-IR metadata；
+rank-invariance也只从同一complete-rank typed IR utility surface即时查询。production与qualification都不得恢复旧rank-frontier
+wrapper、per-rank survivor或artifact import合同；需要固定mechanism的qualification只通过compiler-private typed family/point进入同一
+all-rank materialization与late exact gates。
+
+public optimization policy只通过`--optimization-preset=production|none`暴露两态。`production`开放完整compiler-owned
+provider/domain；`none`只保留上述
+fully gated conservative baseline。两者都执行相同的lowering、completion、SPM/DDR、transport、ABI与publication gate；单个
+implementation、communication、layout、residency、worker或schedule mechanism不是public开关，也不进入IR/package。
 
 ### 3.3 独立 legality owners
 
@@ -178,7 +207,8 @@ alias且自身verifier允许时才能穿过边界。
 以及连接edge采用resident SSA、local movement、DDR materialization、streaming或recompute。single-region fused-resident候选可能
 节省DDR却迫使共同tile变小；multi-region materialized候选可让两侧独立retile、缩短共同root lifetime与SPM live bound，却增加
 DDR、descriptor和completion；same-region separated traversal与selective spill也都是独立候选。schedule separation、per-value
-spill和region cut相关但不互相蕴含，每个action必须把partition、两侧tile、lifetime、movement与loop-expanded work共同物化和计价。
+spill和region cut相关但不互相蕴含；每个经统一预算准入的action必须在actual clone中把partition、两侧tile、lifetime、movement与
+loop-expanded work共同物化和计价，未准入proposal不为此clone。
 
 task、source scope、旧region、普通effect、collective、layout conversion、retile或单个spill都不是cut witness。selected cut必须
 结束切口上的全部SPM residency，并在actual IR中显式表达跨界materialization；没有真实residency终止、materialization或external
@@ -203,9 +233,10 @@ Direct-DTE、typed collective、spill/reload 等 edge realization。collective �
 
 ### 4.5 Execution and completion
 
-决定 dependency、worker/slot、engine overlap、buffer reuse、wait/fence 和 terminal drain。task、component、traversal、loop、
-任意builder调用、static op顺序或`tile.region` boundary都不是completion cut。region exit只需证明仍访问将被释放SPM roots的
-pending work已经完成；与这些roots无关的typed work可继续，entry terminal才闭合all-and-only observable pending effects。
+决定 dependency、worker/slot、engine overlap、buffer reuse、wait/fence 和 final observable drain。task、component、traversal、loop、
+任意builder调用、static op顺序或`tile.region` boundary都不是全局completion cut。region exit必须证明仍访问将被释放SPM roots的
+pending work已经完成；若证明依赖participant completion，则join位于该region的`wafer.tile.yield`内侧且只覆盖exact worker mask。
+与这些roots无关的typed work可继续，entry final drain才闭合all-and-only observable pending effects。
 verifier只检查final facts，不因看见region op自动插join。
 
 例如 producer 与 consumer 共享同一resident SSA version时，其root lifetime由实际use-def覆盖；它们处于同一region仍可能因
@@ -228,8 +259,8 @@ materialization action的edge frontier上提出region merge/split sibling。
 | tile propagation | producer/consumer domain能否由finite `IndexRelation` exact组合 | direct tile、显式movement或仅停止此维传播 |
 | numeric reassociation | reduction/recompute/order变化是否满足typed numeric contract或query-local proof | 允许特定actual sibling或保持原顺序 |
 | storage/materialization | view、layout、valid domain和target transfer是否可实现 | resident/direct、GS/staged、DDR boundary或unsupported |
-| schedule/completion | effect、async dependency、reuse和observer要求何种顺序 | issue order、wait/join、terminal drain或barrier |
-| rank coupling | collective/peer tile/payload是否允许同一组terminal algorithm参数，展开后的chunk/message能否all-rank对应 | 参数只生成actual Instr sibling，随后逐tuple重证或拒绝 |
+| schedule/completion | effect、async dependency、reuse和observer要求何种顺序 | issue order、wait/join、final drain或barrier |
+| rank coupling | collective/peer tile/payload是否允许同一组executable algorithm参数，展开后的chunk/message能否all-rank对应 | typed provider先返回read-only recipe point；只有统一coverage/budget准入后才物化actual Instr sibling并逐tuple重证或拒绝 |
 
 unknown/external mutation、无法表示的control flow、缺失typed target capability和source-observable publication可以阻断对应维度；
 只有所有可用实现都无法跨越时才停止该component内的联合传播。collective通常允许tile传播，却要求completion和all-rank coupling；
@@ -259,10 +290,11 @@ source scope或旧结构机械恢复。
    或两套独立traversal与各自tile/loop；每种组合再与resident/local movement/DDR streaming或spill/reload/recompute的合法
    storage realization组合。cross-region action必须覆盖all crossing values并显式物化边界。
    schedule separation与DDR materialization互不蕴含，不能先选局部tile winner再补storage/lifetime。
-6. proposal只在clone前使用SSA relation、typed legality、target capability和footprint lower bound作便宜rejection。对通过预筛并要进入
-   global frontier的action，立即clone complete-rank current IR，同时物化region partition、loop/tile/physical version/storage/transport决定，
-   重算SPM live-working-set bound、loop-expanded DDR/GS/compute work和completion obligation，然后销毁proposal。
-   从这一点开始，frontier、cost、gate和后续action只消费actual IR clone。
+6. proposal只在clone前使用SSA relation、typed legality、target capability、footprint lower bound和版本化structural estimate；
+   chain/tree DP与general-DAG bounded Pareto beam在query-local structural frontier中完成等价、dominance、coverage和预算剪枝。
+   只有经统一actual-clone budget准入的代表才clone complete-rank current IR并物化region partition、loop/tile/physical
+   version/storage/transport决定，随后销毁proposal；actual clone重算SPM live-working-set、loop-expanded
+   DDR/GS/compute和completion obligation并进入exact gate。失败后由同一owner从尚未物化frontier补入下一代表。
 7. 到另一root或已覆盖frontier后，只按future live interface做DP/beam合并；component或旧scope identity不进入语义key。
 
 传播必须证明 output all-and-only coverage、tail union、reduction order和每个 fanout consumer 的 version relation。不能用
@@ -283,55 +315,42 @@ representative tile、单个 loop body dump 或 static op 数量代替 complete 
 - **selective spill / streaming**：一个region内可让A长期resident，同时B store→completion→reload，或让Q/state长期resident而
   K/V逐tile从DDR streaming。B/K/V的movement只结束对应root，不能把A/Q/state一起变成region boundary。
 
-### 6.3 Reduction 与 softmax
+### 6.3 Reduction 与 graph-changing implementation alternatives
 
-reduction strategy 不由固定序列长度决定，而由 selected tile、SPM peak、typed instruction capability、numeric contract 和 cost共同决定：
+普通reduction strategy不由固定序列长度或op名字决定，而由`TilingInterface`、iterator/indexing semantics、
+`PartialReductionOpInterface`、selected tile、target capability和通用cost共同决定：一个legal tile覆盖完整domain时可生成native
+one-pass implementation，跨tile时生成explicit partial/merge。Coordinator只消费这些typed能力，不维护reduction类别表。
 
-- reduction domain 能在一个 legal tile 内完整覆盖时，优先生成 native one-pass reduction；
-- 需要跨 tile 时生成 explicit partial reduction/merge；
-- 对 softmax 或 attention，只有在 current typed IR 能表达 max、normalizer 和可选 value accumulator 的 loop-carried state，且
-  numeric verifier接受时，才生成 online sibling。
+会改变计算图、状态递推或归并结构的算法不是普通tile kind，而是隔离的implementation alternative。Production pipeline向通用
+coordinator提供typed provider set；provider从current SSA证明适用性、描述query-local输入输出与iteration/reduction domain、生成合法
+参数并materialize等价structured IR。它不能修改通用frontier/comparator、调用专用SPM/lifetime/cost路径或选择winner。provider的
+domain point与普通tile、connection、layout proposal共同进入pre-materialization DP/beam，只有统一actual-clone budget准入后才
+materialize；随后所有事实从actual current IR重证。
 
-online reduction不是consumer-driven tiling自然推导出的普通rewrite，而是独立typed semantic candidate；Q49的最小online纵向是
-由现有SCF、tile reduce/elementwise/GEMM表达的fused attention `(m,l,o)` capability，不新增Instr op或ABI字段。candidate只在
-current SSA证明score/softmax中间值除matching weighted-value contraction外没有其它observable use、dropout为静态identity，且
-scale、bias、mask的broadcast/indexing、dtype、应用顺序与source语义均可typed重放时生成；名字、shape或参数位置不能代替证明。
+Source fidelity是所有provider的共同合同：PyTorch/Hugging Face当前导出的operation、operand、常量、mask、scalar value flow、control flow、
+dtype和function boundary是什么，provider就消费什么；frontend、fixture和provider不得为某种算法注入、规范化或重建模型语义。
+RoPE的cos/sin由model侧按原实现precompute并作为普通source值进入图，compiler既不在线重算，也不注入另一份table；mask中的finite值或
+`-inf`同样只按current SSA原样lower，不补写或改造成compiler policy。
+只有type、indexing map、iterator、scalar body、SSA use-def、view relation和numeric contract能够证明整个rewrite等价时才生成
+alternative；不能证明时保留baseline。模型名、函数名、参数位置、固定rank/shape或exporter序列不能代替证明。
 
-对每个query row，先按source顺序应用`z = scale * score + bias + mask`；boolean-excluded lane不参与max/sum，
-additive mask则作为typed bias参与计算；具体boolean/additive mask、
-NaN/Inf/signed-zero和fully-masked-row结果必须来自source numeric contract。无法区分时先扩semantic op/verifier，本candidate fail closed。
-running state还携带由valid-domain派生的`has_value`控制谓词，数值初值与合并为：
+Attention只是该扩展边界的一个验证族。普通attention语义可贡献在普通SSA中显式维护online reduction state的implementation；只有
+current SSA同时证明functional K/V update、attention消费updated state以及updated state继续作为调用边界结果线程化时，才可贡献
+split-KV decoding implementation。query长度或KV shape不能替代该数据流证明。KV block与split数量是provider暴露的合法算法参数域，
+由通用target先验、structural facts、DP/beam、actual-clone admission、exact gates和final recost选择，不在provider或
+`CoordinatedDataflowSearch`中硬选。materializer只产生现有SCF、structured compute、view和convert IR，不新增专用Instr或ABI。
 
-```text
-init: has_value = false, m = -inf, l = 0, o = 0
-tile(z_t, v_t): m_t = max(valid z_t)
-                l_t = sum(exp(z_t - m_t))
-                o_t = sum(exp(z_t - m_t) * v_t)
-merge(a, b): if empty(a) return b; if empty(b) return a
-             m = max(m_a, m_b)
-             l = l_a * exp(m_a - m) + l_b * exp(m_b - m)
-             o = o_a * exp(m_a - m) + o_b * exp(m_b - m)
-finalize fused attention: y = o / l when has_value
-```
-
-empty tile/state在进入`max`或指数差前由`has_value`分支处理，不能计算`-inf - -inf`；fully-masked row的finalize必须逐项匹配
-source定义，不能擅自选择zero或NaN。`m/l/o`的accumulator dtype、rounding、exp实现、tail mask、underflow/overflow和reduction
-order全部进入typed numeric contract。
-
-standalone softmax若要输出完整probability tensor，`(m,l)`本身不够：actual sibling必须显式物化第一遍统计与第二遍
-`p = exp(z - m) / l`全域写回，第二遍的re-read/recompute/resident storage及cost都留在IR；或者显式保存并按后续global-state
-merge重标定每个partial。Q49不要求实现第二条online纵向，未实现时保留native/partial/two-pass baseline。fused candidate遇到
-softmax probability额外use、非identity dropout、无法重放的mask/bias、dynamic RNG或未定义fully-masked policy时一律拒绝。
-small/native、partial和online仍进入同一通用候选域，不建立softmax专用pipeline。Q48后续可自动发现和证明更广semantic variants，
-但只消费Q49 final Instr/TargetCall合同，不能反向成为本条纵向的完成前提。
+若原始中间值还有其它observable use，implementation必须在actual IR中完整保留、重算或物化这些use及其cost；当前能力不能等价表达时
+该alternative fail closed。native、partial和所有implementation alternatives仍由同一decision owner管理，不建立算子专用pipeline。
 
 ## 7. 有界联合搜索
 
 ### 7.1 State 与 cost
 
-搜索采用 live-frontier constrained pebbling：只保留已经处理的 component frontier 以及仍影响未来决策的事实。structured阶段的
-每个survivor拥有actual unplaced Tile IR clone；worker、slot和concrete completion只在terminal Tile clone lower成Instr后派生，
-不能在pre-Instr frontier中虚构pending NCC或worker schedule。一个structured state至少包含：
+搜索采用 live-frontier constrained pebbling：只保留已经处理的 component frontier 以及仍影响未来决策的事实。clone前的survivor是
+query-local structural proposal，只携带下面这些可重算facts；通过统一actual-clone admission后，才成为拥有unplaced Tile IR的actual
+survivor。worker、slot和concrete completion只在finalization Tile candidate lower成Instr后派生，不能在pre-Instr frontier中虚构
+pending NCC或worker schedule。一个structured state至少包含：
 
 - 当前selected region membership/boundary interface、traversal coupling/materialization、covered domains、live tile relations
   和fanout obligations；
@@ -348,29 +367,43 @@ cost vector至少分别记录：
 - local GS/pack/unpack bytes 与 call/descriptor count；
 - pre-Instr可证明的collective/peer bytes、NoC link/endpoint work、effect/observer obligations与各engine work lower bound；
 - compute/recompute的static-trip expanded work、selected tile utilization与dependency lower bound；worker、Direct-DTE和`NCCJoin` exact work
-  在terminal Instr完成worker/order/completion后才Known；
+  在finalized Instr完成worker/order/completion后才Known；
 - SPM live-footprint bound、exact SPM movement bytes、DDR peak、buffer count 和 descriptor/resource pressure。SPM bytes保持
-  独立可审计work；SPM peak/high-water是hard capacity与headroom事实，不作为普通execution Pareto维度，也不用历史
-  SPM0/RAM_ACC `128 GB/s` flat rate换算duration；bank phase不形成candidate cost。
+  独立可审计work；SPM peak/high-water是hard capacity与headroom事实，不作为普通execution Pareto维度。duration不使用历史
+  SPM0/RAM_ACC `128 GB/s` flat rate，而使用versioned SPM1单bank point prior：`256 B * 1 GHz = 256 GB/s/tile`。
+  max-rank SPM service与DDR/NoC/compute service取资源最大值，避免重复计算同一DMA；该值不是lower bound或proof，bank phase
+  仍不形成candidate cost。
 
 pre-Instr的bytes只有在physical coverage已exact时才可`Known`；RDMA、WDMA、GS及pack/unpack的最终call/descriptor count会受
-Tile→Instr descriptor splitting/coalescing影响，没有同源exact proof时只能记safe bound或`Unknown`，不能参与exact dominance。
-terminal final-IR recost才产生这些exact counts并用于最终winner selection。这些量不能未校准地相加成伪时间，`Unknown`不能
-当作零、不能dominates任何对应Known值，也不能因插入顺序拒绝later candidate。terminal resource scopes固定为：
+Tile→Instr descriptor splitting/coalescing影响，没有同源exact proof时只能记safe bound、带稳定model identity的
+`Estimated(value)`或`Unknown`，不能参与exact dominance。`Estimated`只允许使用current IR、typed topology和target policy
+输入；相同model identity的估计值可在structured frontier中比较，不同模型仍不可比，且不得把估计标成`Known`或写入IR/artifact。
+例如每个Tile request一个descriptor、每个collective phase一个endpoint、逻辑one-hop link bytes以及current static buffer site都可
+作为版本化估计模型；executable final-IR recost必须替换这些估计并产生exact counts用于最终winner selection。这些量不能未校准地
+相加成伪时间；`Unknown`不能当作零、不能dominates任何对应Known/Estimated值，也不能因插入顺序拒绝later candidate。
+executable recost resource scopes固定为：
 
 - DDR：all-rank aggregate read/write bytes与RDMA/WDMA executions为card-shared主压力，另报max-rank issue work；
 - GS/layout：max-rank GS bytes/executions为tile-local主压力，aggregate只作总工作审计；
 - completion：max-rank steady-state、nonterminal和total participant waits及其critical-path位置为主，join op数只作次级审计。
 
-直接dominance要求所有selection-sensitive维度都可比较且不差，并至少一项严格更好：除上述DDR、GS和completion外，还包括
+直接dominance要求所有selection-sensitive维度都以`Known`事实可比较且不差，并至少一项严格更好：除上述DDR、GS和completion外，还包括
 compute/recompute、tile utilization、NoC/link/endpoint work、Instr work、descriptor/resource pressure、SPM movement、
-dependency/critical-path bound和all-rank coupling；SPM high-water只参与capacity/headroom，不作为execution cost。任一对应维度为`Unknown`且不能证明
-两边具有同一unknown disposition时，两个state不可比较。DDR下降而GS、completion或任何其它维度回退时同样保持不可比较，不能由
-`ExternalMovementFirst`无条件覆盖baseline。terminal recost逐rank报告上述工作及aggregate shared-resource demand；不同维度的最大值
+dependency/critical-path bound和all-rank coupling；SPM high-water只参与capacity/headroom，不作为execution cost。任一对应维度为
+`Unknown`时两个state不可比较；相同reason/disposition只说明失败归类相同，不证明数值相等，不能把两个Unknown消去。
+`Estimated`只有knowledge和model identity一致时才按value排序。
+DDR下降而GS、completion或任何其它维度回退时同样保持Pareto不可比较，不能由
+`ExternalMovementFirst`无条件覆盖baseline；但已通过exact capacity gate的DDR high-water、已有control prior的event count和只作
+等价资源下tie-break的ready-order inversion都不能再作为promotion前的absolute veto。versioned hardware point model可以在这些
+Pareto tradeoff之间按完整nominal resource envelope和margin作Estimated选择。executable final recost逐rank报告上述工作及aggregate shared-resource demand；不同维度的最大值
 不能伪装成同一个真实critical rank。Pareto frontier固定保留baseline及关键资源代表，当前校准的hardware cost model只排序已经通过
-hard legality与terminal exact gates的states。它以fresh final IR的exact work和qualified point/bound parameters计算nominal/bounded
+hard legality与executable-admission exact gates的states。它以fresh final IR的exact work和qualified point/bound parameters计算nominal/bounded
 makespan与promotion margin；不能计算或不能清除baseline margin时保留baseline。stable semantic order只在完整target
-selection tuple相等时作最后tie-break，不能代替cost从不可比Pareto states中任意选winner。
+selection tuple相等时作最后tie-break，不能代替cost从不可比Pareto states中任意选winner。`ProvenBenefit`只在candidate conservative
+upper bound严格低于baseline conservative lower bound时成立；exact audit/high-water/count字段只能作guard或tie-break，不能自行创造收益。
+若两边均由Known的零overlap-window事实证明采用同一explicit sequential schedule，且逐rank compute engine、DDR、SPM、NoC和intrinsic
+NCC drain primitive均不回退，则可在同一个control resource内对instruction、DTE waited event和NCC participant wait的changed work按
+同一point prior核算20% margin；通过后只给`EstimatedBenefit`。duration-consumed aggregate/max summary仍只作no-regression guard。
 loop 中一条 instruction 必须按 exact static trip count或保守 symbolic multiplicity计入，不能把 static call site 当作 dynamic count。
 
 ### 7.2 求解策略
@@ -384,18 +417,41 @@ loop 中一条 instruction 必须按 exact static trip count或保守 symbolic m
   interface、physical versions、SPM lifetime/capacity disposition，以及完整selection vector（DDR all-rank aggregate/
   max-rank issue、GS/local max-rank/aggregate、completion/wait/critical path、NoC/link/endpoint、SPM movement、
   compute/recompute、tile utilization、Instr、descriptor/resource、all-rank coupling）和所有`Unknown` disposition
-  上完全等价的项；不得以local conversion cost产生winner。proposal通过预筛后立即materialize到actual clone并销毁；
+  连同current-IR derivation上完全等价的proposal；这只允许pre-clone coverage merge，不把same-reason Unknown变成final cost相等。
+  不得以local conversion cost产生winner。proposal先进入同一次invocation的pre-materialization frontier，只有
+  统一actual-clone budget准入的代表才materialize并销毁；
 - small component只用仓库内exhaustive/property test检查有限domain的最优性、dominance和
   baseline retention；production不依赖外部solver；
-- all-rank transaction内的complete-rank structured与terminal alternatives共享一个global deterministic work ledger；
-  coordinator在generation前为conservative baseline的全部mandatory terminal exact gates预留credits，并保留有限repair reserve。
+- all-rank transaction内的complete-rank structured与finalization alternatives共享一个global deterministic work ledger；
+  coordinator在generation前为conservative baseline的全部mandatory executable-admission exact gates预留credits，并保留有限repair reserve。
   非baseline proposal只有在可按deterministic upper bound预留其所需Tile→Instr、worker/order/completion、SPM、DDR、transport和ABI
   evaluation credits后才能进入frontier；generation不能消耗已预留credits。actual evaluation按stable action order消费或释放reservation，
   late failure只有在剩余global repair credits内才能回到unplaced parent生成neighbor。component、rank、PBQP、layout、worker或artifact
   不得各有独立allowance后再做Cartesian product。允许从actual clone即时派生携带region boundary、collective/peer接口、
   additive与max-reduction cost contribution及`Unknown` disposition的transient rank/component factor summary，用于同一coordinator
   的factorized DP/beam；summary不能发布、独立选winner/commit或形成`N^R` tuple。budget exhaustion只能停止
-  未准入扩展，不能把未证明infeasible伪装成capacity/legality failure，也不能让已准入terminal candidate因前置搜索耗尽预算。
+  未准入扩展，不能把未证明infeasible伪装成capacity/legality failure，也不能让已准入finalization candidate因前置搜索耗尽预算。
+
+production先从current IR、typed recipe字段和opaque provider identity形成invocation-wide最多64项的structural frontier；
+`Estimated(value, executable-schedule-recipe-structural-coverage-v2)`只为frontier和cursor提供稳定、可解释的顺序，不创建action
+sibling，也不把每个Tile、provider或cursor变成独立beam/quota。模型只使用static instruction/event sites、dependency depth、
+ready-order inversion、qualified overlap window、steady-state participant wait、SPM movement及recipe可解释的结构变化，不把这些量
+相加成伪时间；common coordinator不解析opaque provider key恢复算法语义，也不按workload分支。
+
+implementation provider可随exact parameter point返回typed、可选的peak-live-byte与compute-work估计；缺失估计是普通状态，既不
+降低legality也不使point自动排后。bounded coverage先按`parallelism=serial|partitioned × residency`保留粗类代表，再在每类/剩余
+slot中按资源headroom（unknown或不超过半个target window、window内、oversized）及其它typed estimate作稳定排序。coverage和排序都只
+决定有限actual-clone预算花在哪里，不解释算法identity、不证明可行性，也不绕过所有admitted actual clones共用的completion、SPM、
+DDR、transport、ABI与final recost exact gates。
+
+mandatory baseline canonical seed外置于recipe轮转，但其actual materialization attempt和successful exact action仍计入全局16/8。
+其余action由同一coordinator在A（下一个new-Tile canonical seed）和B（推进已有exact-seeded cursor）之间按stable A-first轮转。
+setup前发现无法构造action不计attempt；一旦action开始，成功或materialization/exact consumer失败都消耗全invocation最多16次
+attempt中的一次并换lane。successful exact action全局最多8个，live cursor最多8个，任何时刻只有1个action clone。每个已开始
+action都执行相同completion、SPM、DDR、transport、ABI和final-IR recost；失败action立即销毁，canonical parents保持不变。
+qualification/characterization可以请求明确typed family/point，但仍受同一invocation-wide attempt bound和全部late gate约束。
+diagnostic分别记录structural frontier、A/B选择、setup failure、attempt/failure、successful exact action、live cursor和actual rank
+clone计数；这些事实只属于global ledger，不进入IR或artifact。
 
 用于预筛的transient hash必须从actual IR即时派生，命中后仍逐项重证future-interface等价；它不能成为正确性key、IR/interface或schema。
 dominance key不得含 task ID、op/value 名、candidate ordinal、模型角色或路径。相同 source、target facts 和 options 必须得到相同
@@ -409,9 +465,9 @@ movement、loop order和worker/completion的选择会真实改写op、SSA、effe
 生产只保留下列分层求解：
 
 1. structured层由consumer-driven propagation生成有限typed actions，用component-local DP、Pareto beam和
-   interface decomposition保留actual Tile clones；这些action原子包含region merge/split、traversal coupling、两侧tile schedule和physical realization，
-   structured层不发布winner；
-2. terminal Instr层在worker/slot/order确定后fresh重建completion，由current IR得到固定lifetime与
+   interface decomposition先保留query-local proposals；只有统一预算准入的代表才物化actual Tile clones。这些action原子包含region
+   merge/split、traversal coupling、两侧tile schedule和physical realization，structured层不发布winner；
+2. executable-finalization Instr层在worker/slot/order确定后fresh重建completion，由current IR得到固定lifetime与
    pairwise conflict relation；
 3. packing层从complete current Instr IR的SPM roots、control-flow coexistence与pairwise conflict形成all-and-only fixed
    SPM allocation problems，再从current explicit DDR arenas/placement domains形成DDR problems；用受管MiniMalloc
@@ -432,8 +488,8 @@ SMT只证明semantic rewrite等价，与本层packing求解无关。
 
 ### 7.4 Capacity-aware siblings
 
-structured frontier只消费从current Tile IR派生的capacity lower bound或`Unknown`；Instr-level SPM/DDR planner只对terminal
-siblings执行并保持pure fixed-capacity gate。terminal evaluation期间，actual Tile parent一直作为拥有IR的parent clone存在，不是
+structured frontier只消费从current Tile IR派生的capacity lower bound或`Unknown`；Instr-level SPM/DDR planner只对finalization
+siblings执行并保持pure fixed-capacity gate。executable finalization期间，actual Tile parent一直作为拥有IR的parent clone存在，不是
 decision list或sidecar。placement失败后，decision owner根据typed failure class从该无offset actual parent生成有限sibling。
 structured parent可生成：
 
@@ -444,11 +500,15 @@ structured parent可生成：
 - 缩短buffer lifetime、调整loop nesting或structured traversal order；
 - 在capability允许时使用partial reduction或double buffer。
 
-terminal Tile clone lower成unplaced Instr后，另一个有界层才可派生worker/slot/order/completion siblings；它们不反向成为pre-Instr
+DDR-clean region split只枚举一个有界结构代表时，优先用current Tile IR中可静态求出的physical SPM allocation bytes平衡cut两侧；
+只有byte事实不完整或溢出时才以Tile dataflow op count作deterministic fallback/tie-break。该规则只是generic current-IR prior，不能
+代替cut合法性、root-release completion、exact packing或final cost。
+
+finalization Tile candidate lower成unplaced Instr后，另一个有界层才可派生worker/slot/order/completion siblings；它们不反向成为pre-Instr
 shadow schedule。若这些选择改变lifetime或packing feasibility，重新从相应unplaced parent materialize并执行fresh gates。
 
 每个alternative都从未写offset的parent clone产生。structured alternative只重跑本层relation、materialization、coverage/verifier和safe bounds；
-只有terminal survivor才执行bufferization、completion、lifetime、packing与全部exact late gates。Instr variant从canonical unplaced
+只有finalization candidate才执行bufferization、completion、lifetime、packing与全部exact late gates。Instr variant从canonical unplaced
 Instr parent重跑completion、lifetime、packing和后续gate。allocator不返回repair recipe，不修改traversal/tile/layout/residency，
 也不把rejected offset带入sibling。SPM allocator必须保留capacity/range/alignment/lifetime-valid baseline；actual high-water
 只用于capacity/headroom。MiniMalloc的既有单次搜索可用accepted-offset-derived bank phase作
@@ -480,18 +540,20 @@ physical version；它不假定DMA能执行任意transpose，也不要求package
 ## 9. Completion 与 `NCCJoin` 重建
 
 selected Tile IR 以 SSA dependency、effect 和 async event 表达未完成工作；region/task materializer不得在每个局部 return 插入
-terminal join。`wafer.instr.ncc_join`只表示compiler派生的ordinary NCC participant completion；current source-observable ordering
+无条件final join。`wafer.instr.ncc_join`只表示compiler派生的ordinary NCC participant completion；current source-observable ordering
 由structured control-flow、SSA event/token和typed effects表达，DTE wait与group barrier各有独立typed op/event。若未来source
-fence无法由这些事实typed区分，先扩独立op/verifier再进入本stage，绝不借用join provenance/name保留。terminal
+fence无法由这些事实typed区分，先扩独立op/verifier再进入本stage，绝不借用join provenance/name保留。final
 Tile→canonical Instr与worker/slot/ready-order完成后，对complete-rank Instr IR
 执行一次fresh completion reconstruction：
 
 1. 识别 source-observable ordering/observer、external write/publication、typed collective/DTE protocol step和所有pending effects；
 2. 从 worker order、event token、read/write range、alias、reuse和control-flow exits重算最晚必要 completion；
 3. reconstruction入口先删除clone中全部`wafer.instr.ncc_join`；不靠名字、provenance字符串或“保守join”标记区分来源；
-4. 在固定worker/order/effect frontier上，仅在跨worker/engine dependency、unsafe buffer reuse、协议要求或terminal external drain处
+4. 在固定worker/order/effect frontier上，仅在跨worker/engine dependency、unsafe buffer reuse、协议要求或final external drain处
    构造latest-necessary participant completion，并合并所有可安全coalesce的join；
-5. 验证每条 exit path已 drain all-and-only observable/pending effects，且无 join被当作 DTE wait或group barrier；
+5. 对每个`tile.region`只在其`wafer.tile.yield`内侧完成仍访问region-owned SPM roots的exact participant domains；无关pending
+   frontier原样跨region传播。验证每条entry exit path已drain all-and-only observable/pending effects，且无join被当作DTE wait或
+   group barrier；
 6. fresh重算全部roots的lifetime/coexistence/conflict，形成all-and-only fixed SPM allocation problems并执行3 MiB
    capacity placement与independent physical-alias validator；不做capacity tightening、quality probe或post-solve relocation；packing不得制造新的
    lifetime overlap。失败时销毁clone：worker/slot/ready-order/completion变化只能从canonical unplaced Instr parent生成并完整重跑；
@@ -500,17 +562,27 @@ Tile→canonical Instr与worker/slot/ready-order完成后，对complete-rank Ins
 同一 worker 上已有严格 issue order且无 range reuse/跨 engine可见性需求时，不额外插 join。collective completion是 execution cut，
 不自动物化 store/reload。最终 join 数量由当前 effects和execution mapping决定，不能由 `tile.region`、task 数量或历史 builder site决定。
 
+region partition还可能把原本局部的loop bound或其它scalar SSA值变成region input/result。Tile→Instr的分析必须沿
+`tile.region` block argument与matching yield/result回溯到外围scalar source，再判断constant bound与completion legality；scalar
+forwarding不改变值的静态性，也不能因为跨region carrier就把它误作memory root或dynamic control。
+
 ## 10. All-Rank Coordination 与原子性
 
 all-rank coordinator和唯一tuple-level work ledger在第一个generation action前就建立，并持续拥有frontier、预算与actual parents，
-直到terminal exact evaluation、winner selection和atomic commit结束；terminal evaluator只是服务，不接管frontier或发布局部winner。
+直到executable finalization and exact admission、winner selection和atomic commit结束；executable-finalization service只是服务，不接管frontier或发布局部winner。
 rank-local analysis可以从actual clone派生transient factor summary，携带region boundary interface、collective/peer参数、
 additive DDR contribution、GS/completion/critical-path max contribution、NoC link/endpoint contribution及`Unknown` disposition；
 summary只供同一coordinator的factorized DP/beam使用，不形成rank-local winner、commit、独立budget或可发布artifact。含collective/peer
 的组合逐项fresh重证，不能把summaries做成`N^R` Cartesian product。
-worker/fixed-slot/ready-order也作为coordinator一次性作用于complete all-rank tuple的terminal action；每个action只生成匹配的actual
-rank siblings并原子评估，不先为每rank建立`W^R`组合。typed exact failure返回同一coordinator；只有它能在剩余reserved repair
-credits内从对应unplaced parent生成structured或terminal neighbor。
+worker/fixed-slot/ready-order也作为coordinator一次性作用于complete all-rank tuple的schedule action；每个action只生成匹配的actual
+rank siblings，不先为每rank建立`W^R`组合。communication algorithm由compiler-private typed provider对complete-rank canonical Instr
+parents作read-only query；返回point只含opaque `{providerKey, stableOrdinal}` identity和自身materializer，不保留operation pointer。
+NoC只是一个provider，common coordinator不解析identity、不出现provider-key、NoC或workload分支。provider point与
+ready-order/fixed-slot/worker字段只进入对应cursor的稳定recipe顺序；它们不创建provider-local beam或attempt quota。只有全局A/B
+scheduler选中的action才clone all-rank parents，materializer在唯一discardable action clone上fresh重证并原子改写all-and-only ranks。
+production对这些action执行相同exact gate；qualification请求明确typed point但不绕过全局16/8、cursor或single-clone gate。
+typed exact failure返回同一coordinator；只有它能在剩余reserved repair
+credits内从对应unplaced parent生成structured或finalization neighbor。
 coordinator可以用current typed IR即时派生transient hash做保守预筛，但每个tuple必须重新读取actual IR验证：
 
 - logical rank domain完整；collective algorithm、group、step、tile/segment 和 bytes在参与 rank 间一致；
@@ -520,7 +592,7 @@ coordinator可以用current typed IR即时派生transient hash做保守预筛，
 
 coordinator不输出或保存semantic key/correspondence sidecar，也不使用task/layout/artifact ordinal恢复对应关系。任一rank或
 late gate失败都销毁整个 tuple，不发布 partial offsets、bindings、module、bundle 或 package。reserved baseline也必须经过相同 exact gates。
-每个terminal rank-entry Instr variant的全部SPM roots必须被fresh派生的fixed allocation problems all-and-only覆盖；每个complete
+每个finalized rank-entry Instr variant的全部SPM roots必须被fresh派生的fixed allocation problems all-and-only覆盖；每个complete
 all-rank variant的全部DDR arenas/placement domains必须原子验证和汇总。planner problem/query数量进入统一work budget与diagnostic，
 但不与entry、rank或region数量绑定为IR语义。后续winner selection/commit只重跑无搜索validator，不重新物化候选或调用planner。
 
@@ -533,7 +605,7 @@ post-SPMD complete-rank structured IR
   -> structured normalization and exact relation analyses
   -> coordinated all-rank frontier + one deterministic work budget
   -> complete-rank consumer-driven component synthesis in actual clones
-  -> terminal all-rank Tile variants
+  -> finalization all-rank Tile candidates
   -> per-rank complete-entry Tile-to-Instr conversion and bufferization
   -> worker / fixed-slot / ready-order Instr variants
   -> fresh dependency-driven completion reconstruction
@@ -552,7 +624,7 @@ completion 和 cost失效并重跑对应 owner。
 禁止的生产顺序包括：
 
 - 单独 lower 每个 task 到完整 Instr 后再拼 complete rank；
-- 在 task/region return处插 terminal join，再依赖 normalizer保留它；
+- 在 task/region return处插无条件final join，再依赖normalizer保留它；
 - 先生成 spill/resident/layout 等 artifact 笛卡尔积，再按 ordinal拼 rank tuple；
 - 先让每个局部候选通过 SPM/DDR并写 offset，再合并函数；
 - 把 failed packing 的 repair 决策放进 allocator或 lowering；
@@ -577,7 +649,7 @@ local cleanup只删除winner中的残余no-op movement。
 
 rank-local compute tile进入 all-reduce，再被下一段 compute消费。logical collective和participant completion保留；如果 selected
 physical payload可被 collective与consumer共同接受，result可跨 collective保持 SPM resident。collective前后没有因 region boundary
-自动出现 WDMA/RDMA，terminal drain只在真实 external output或resource reuse处建立。
+自动出现 WDMA/RDMA，final drain只在真实 external output或resource reuse处建立。
 
 ### 12.4 Long reduction / attention
 
@@ -590,7 +662,7 @@ capacity和typed capability，不识别“attention”名字。
 对同一个`producer -> consumer` chain，搜索至少形成三类可比actual candidates：single-region resident handoff配合耦合但可能
 更小的tile；two-region显式DDR store/completion/load，允许producer/consumer分别选择更大的tile和loop order并缩短共同SPM
 root lifetime；same-region的两套独立loop nests但保持可证明resident relation。前者节省DDR，第二类可能减少loop-expanded GS、
-descriptor、completion和低利用率compute，第三类验证traversal separation不等于region cut；共同terminal cost决定winner。
+descriptor、completion和低利用率compute，第三类验证traversal separation不等于region cut；共同final executable cost决定winner。
 
 对`A`长期live而`B`需要spill的graph，第三类candidate把二者保留在同一region，只对`B`显式store/completion/reload；
 `A`继续使用同一SPM root。这个case证明`spill(edge) !=> differentRegion`，也证明同一region不等于所有edge都resident。
@@ -614,12 +686,14 @@ effect-proven read-only weight的exact composed mapped transfer、共享LHS loop
 同时被选中，残余量级约为25.9 MB DDR、85次GS和3/5个join。它只是候选空间的opportunity estimate；只有fresh actual IR、
 exact counters和matched execution才能证明最终收益，未达投影也必须按current typed capability解释。
 
-tasks/16的矩阵分别覆盖短序列block、read-only cached-attention与prefill：前者暴露shared input、weight physical version、
-native reduction、fusion后tile缩小与internal DDR materialization后独立retile的取舍，以及join重建；cached-attention暴露小query/长KV
-traversal、Q/state resident与K/V internal streaming、partial/online state及bounded SPM；
-prefill暴露score domain不能整体驻留时的full-matrix round-trip风险。这些只是通用SSA/reduction/storage关系的不同压力点，
-不形成算法阈值或matcher。read-only cached-attention只验证一次invocation内对显式K/V的读取；真正decode还需要KV cache写入、
-position和跨invocation persistent-state合同，当前tasks/12/15尚未提供，必须在这些前置闭合后另行纳入gate。
+tasks/16的8-workload矩阵用四类压力点验证同一通用算法：异构非Attention图覆盖mixed shape、fanout与普通`TilingInterface`；
+official HF prefill覆盖score domain不能整体驻留时的full-matrix round-trip、online state和mask/numeric source fidelity；functional
+decode把past cache作为函数输入，把new K/V exact append后的updated cache同时交给attention并作为函数结果返回，再让第二个静态
+package消费第一步returned state，覆盖小query/长KV、Q/state residency、K/V streaming和split/merge；official HF Llama-2 7B block
+覆盖shared input、weight physical version、native/partial reduction、fusion后tile缩小与internal DDR materialization后独立retile、
+collective和join重建。它们只是通用SSA/reduction/storage关系的不同压力点，不形成算法阈值或matcher。functional decode是可验证的
+compiler function-state case，但不是tasks/12/15所保留的runtime-owned persistent resource、page allocator、隐式in-place alias或
+跨request cache service。
 
 ## 14. 迁移与删除边界
 
@@ -635,16 +709,17 @@ position和跨invocation persistent-state合同，当前tasks/12/15尚未提供�
 ### 14.2 重新定位
 
 - layout PBQP从 per-task独立 winner变为 component-local factor reducer；
-- worker、fixed-slot和ready-order从已经lowered task的后处理变为terminal Instr siblings；collective/peer tile、payload、layout与
-  residency在structured frontier联合选择，Direct/Ring/Tree参数在terminal conversion逐点生成actual Instr sibling，post-memory
+- worker、fixed-slot和ready-order从已经lowered task的后处理变为executable Instr siblings；collective/peer tile、payload、layout与
+  residency在structural frontier联合选择，Direct/Ring/Tree参数由typed communication provider贡献read-only recipe point，只有
+  invocation-wide A/B scheduler选中的唯一action才在executable conversion物化actual Instr sibling；post-memory
   Direct-DTE binder只验证和绑定，不重新决策；
 - relation/view motion、LICM、exact same-root transfer elimination和通用GS descriptor cleanup只做policy-free canonicalization；
-- completion normalizer从“保留已有 terminal joins”变为在final complete-rank effects上fresh reconstruction。
+- completion normalizer从“保留已有final joins”变为在final complete-rank effects上fresh reconstruction。
 
 ### 14.3 Production cutover 后删除
 
 - per-task `CandidateEvaluation -> Instr -> SPM/DDR`生产路径；
-- lowered task import/commit和task-return terminal join；
+- lowered task import/commit和task-return final join；
 - spill/resident/ready artifact Cartesian product、physical artifact kind和全局 task/layout ordinals；
 - all-or-nothing full-buffer handoff decision owner与其它独立scope/layout/communication selectors；
 - 任何通过名字、shape、operand顺序或Llama角色恢复dataflow的 matcher；
@@ -674,24 +749,31 @@ diagnostic只描述 current IR、typed decision和owner failure class；不含�
 本文终态同时满足：
 
 1. 默认 `wafer-compile` 在 complete-rank structured IR 上进行consumer-driven联合综合；没有production per-task先lower再拼接路径。
-2. task、source scope、component、traversal和local builder边界不自动产生region、DDR movement、SPM arena释放或terminal join；
+2. task、source scope、component、traversal和local builder边界不自动产生region、DDR movement、SPM arena释放或final join；
    region partition与traversal fusion/materialization、tile/loop、layout/version和resident/spill/recompute联合选择，并物化为一个或
    多个non-nested `tile.region`。SPM value/root/alias不跨region；region内允许逐value streaming/selective spill，region exit只
-   验证仍访问其roots的pending completion，entry terminal闭合observable work，不因结构边界插join。
+   验证仍访问其roots的pending completion，必要时在`wafer.tile.yield`内侧插exact-participant join作为root-release witness；无关
+   pending跨region保留，entry final drain闭合observable work，结构边界本身不形成全局join。
 3. chain、diamond、fanin/fanout、multi-root、loop-carried reduction、structured control flow和collective都以通用interface覆盖；
    source正负例经完整driver，不靠名字/shape matcher。
-4. implementation、tile、layout/physical version、share/recompute和residency/transport进入structured frontier；worker/slot/
-   completion在terminal Instr variant层由同一decision owner协调，PBQP/allocator/lowering保持各自边界且不存在跨层shadow plan。
-5. candidate只有actual clones；accepted IR不依赖task/artifact/layout ordinal、shadow plan、side table或proposal attr。
-6. cheap proposal只在clone前作relation/type/effect/footprint rejection；每个frontier survivor的决定已物化进actual clone并
-   重跑其层内verifier。terminal variant从fresh current IR派生SPM/DDR allocation problems，all-and-only覆盖roots/domains并
+4. implementation、tile、layout/physical version、share/recompute和residency/transport进入invocation-wide最多64项的
+   structural frontier；worker/slot/completion在finalized Instr candidate层由同一decision owner协调，PBQP/allocator/lowering
+   保持各自边界且不存在跨层shadow plan。
+5. domain point和structural proposal只在一次coordinator invocation内存在；mandatory baseline canonical seed外置于A/B轮转但
+   计入全局16/8。其余action按stable A-first在new-Tile canonical seed与exact-seeded cursor expansion间轮转；setup前failure
+   不计attempt，已开始action的成功或失败均耗attempt并换lane，live cursor最多8且peak action clone为1。
+6. 所有Tile和provider共用全invocation最多16次actual materialization attempt与8个successful exact action；common coordinator
+   不按workload/provider key分支。final executable candidate从fresh current IR派生SPM/DDR
+   allocation problems，all-and-only覆盖roots/domains并
    原子执行communication/ABI exact evaluation与final recost；problem/query数量只受统一预算约束，不是region/entry固定语义。
 7. completion从final current Instr effects/event/ranges fresh重建；无task-return join泄漏，join、DTE wait和group barrier语义不混用。
 8. work/cost分别记录static site、可证明static-trip loop-expanded exact work、conditional-path lower/upper bound和
    symbolic/`Unknown`；Q9独占runtime-measured count。DDR、GS、NCC/join、Instr、SPM peak和critical path分别可审计，
    不以static site count冒充执行work，也不把runtime dynamic count写回compile-time cost。
-9. Llama短序列、read-only cached-attention和长prefill矩阵完成同源baseline/winner IR dump、structural counter、CPU/model oracle、
-   complete package和fresh no-card；unsupported/skipped不算通过。
+9. 普通`TilingInterface`异构图、official HF prefill、functional decode和较大Llama block矩阵按tasks/16固定的8 logical
+   workloads/10 packages完成同源baseline/winner IR dump、structural proposal/actual-clone counter、CPU/model oracle、complete
+   package和fresh no-card；两个decode workload各自的第二个package必须消费第一个package对应的returned cache state；
+   official HF prefill与functional decode分别必须由production winner实际选择合法implementation sibling；unsupported/skipped不算通过。
 10. compiler-side gate通过后达到`board-ready`；真实设备按FP16/BF16、单进程、逐case、bounded timeout完成exact output/guard和
     matched baseline/winner性能，才可标`done`。
 11. 旧per-task evaluation/import、artifact Cartesian product、task-return join和并行decision owners已删除，而不是仅禁用。
@@ -700,7 +782,8 @@ diagnostic只描述 current IR、typed decision和owner failure class；不含�
     DDR/GS/completion cost，也不以单条spill结束无关root lifetime。
 13. all-rank coordinator和唯一work budget在generation前建立；允许不可发布、不可独立选winner的rank/component factor summary，
     但不存在rank-local commit、`N^R` tuple或C3/C4重复
-    materialization/exact planning。final winner由当前校准的hardware cost model决定，stable semantic order只是等cost末级tie-break。
+    materialization/exact planning。final winner由当前校准的hardware cost model决定，Unknown同reason不等于相等；Proven只来自
+    conservative bound分离，同sequential schedule的Known primitive/20% changed-work规则至多给Estimated，audit不创造收益。
 
 ## 17. 参考机制
 

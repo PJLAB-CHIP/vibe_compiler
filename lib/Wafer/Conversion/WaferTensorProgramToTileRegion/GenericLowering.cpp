@@ -388,6 +388,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
     return createConvert(truncf.getIn());
   if (auto exp = mlir::dyn_cast<mlir::math::ExpOp>(op))
     return createUnary(exp.getOperand(), ComputeElementwiseKind::Exp);
+  if (auto log = mlir::dyn_cast<mlir::math::LogOp>(op))
+    return createUnary(log.getOperand(), ComputeElementwiseKind::Ln);
   if (auto sqrt = mlir::dyn_cast<mlir::math::SqrtOp>(op))
     return createUnary(sqrt.getOperand(), ComputeElementwiseKind::Sqrt);
   if (auto rsqrt = mlir::dyn_cast<mlir::math::RsqrtOp>(op))

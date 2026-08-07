@@ -134,7 +134,8 @@ Pipeline position:
   不把 debug pass pipeline 讲成 production orchestration。
 - Completion gate:
   每个技术页单独通过内容、图形、IR、case、语言和投影验收；全部 production stage、analysis/pass、
-  18 个 optimization axis、Target LLVM/ELF/package、代表硬件 finding 与共同开发经验均有可讲页面；
+  production/none两种公开优化policy及其compiler-owned完整候选域、Target LLVM/ELF/package、代表硬件 finding
+  与共同开发经验均有可讲页面；
   不读 Notes 时仍能判断本页为何出现、主要阅读路径和工程含义；连续播放时每页承接上一页并为下一页
   留出问题；Notes 实际嵌入；PPTX/PDF/PNG 无裁切、遮挡、低分辨率或不可读小字；数字、状态和范围与
   当前事实一致。
@@ -257,7 +258,7 @@ page dossier；表格内容不是最终页面栏目。
 | 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
 |---:|---|---|---|---|
 | 1 | Vibe Compiler：PyTorch 到 Wafer executable | 封面即展示模型、global/rank-local IR、candidate dataflow、Instr、LLVM、ELF/package 的表示变化；副标题说明共同开发与硬件校准。 | 16:9 横向 hero，七个 representation 不是同形框；让同一 GEMM 数据对象逐层变形，右端形成 package/runtime，不画虚假芯片内部。 | `tasks/01-architecture.md`、production source map；正常投影可辨认关键 IR 名称。 |
-| 2 | Production pipeline completion surface | 同页给出 PyTorch/XLA 入口、16-rank complete program、18 个优化轴、Target LLVM、RV64 ELF、verified package 和 board runtime；数字贴在对应 artifact。 | 沿 source→package 的 artifact river，途中展开 ExecutionConfig、ExecutableBundle、TargetArtifactBundle 和 PackageBundle；下方用 Q38/Q39 done、Q40/Q41 board-ready 的克制状态线。 | `CompilationOrchestration.cpp`、`TargetArtifact.h`、`tasks/progress.md`；不能用“支持若干算子”代替成果。 |
+| 2 | Production pipeline completion surface | 同页给出 PyTorch/XLA 入口、16-rank complete program、production完整候选域与none fully-gated baseline、Target LLVM、RV64 ELF、verified package 和 board runtime；数字贴在对应 artifact。 | 沿 source→package 的 artifact river，途中展开 ExecutionConfig、ExecutableBundle、TargetArtifactBundle 和 PackageBundle；下方用 Q38/Q39 done、Q40/Q41 board-ready 的克制状态线。 | `CompilationOrchestration.cpp`、`TargetArtifact.h`、`tasks/progress.md`；不能用“支持若干算子”代替成果。 |
 | 3 | GEMM 的五层 IR 表示 | 以 GEMM 为例并列 StableHLO `dot_general`、`linalg.matmul`、Tile/Instr、oriented GEMM runtime call、ELF/package slot；标出 shape、sharding、layout、completion、ABI 逐层新增。 | 五层剖面图，数据对象在每层保持同一颜色；真实 IR 片段嵌在对应层，箭头只标本层新增事实。 | dot lowering、GEMM Instr→LLVM tests；每层至少保留一个真实字段。 |
 | 4 | Cross-layer semantic invariants | 同一 candidate 中展示 indexing map、rank slice、SPM/DDR range、DTE message identity 和 completion token 的相互约束；用一个缺失 completion 导致 slot 不可复用的反例收束。 | 中央为 candidate IR，五类语义以不同视觉语法连接到同一 buffer/message；右侧红色反例显示缺一项后 downstream gate 失败。 | architecture、physical-dataflow、Direct DTE docs；颜色一页只表达一种语义。 |
 | 5 | Three running cases | 用 GEMM、strided transfer、fixed-slot/DTE 三条彩色路径叠在 production pipeline 上，标出每次放大的章节和最终硬件结论。 | 全场路线图；三条 case 路径在 representation ladder 上交叉，不做普通 agenda。 | 本计划和三个 case source map；后续每章沿同一颜色继续。 |
@@ -326,11 +327,11 @@ page dossier；表格内容不是最终页面栏目。
 | 43 | Bounded rank frontier | 解释general/fixed-slot/worker bands、dominance、stable ordinal和273上限；用一个candidate被同band支配但baseline仍保留的case。 | 多泳道frontier时间轴，候选按band进入/淘汰；不是排行榜。 | `RankCandidateFrontier.h/Test`；上限和band来自代码。 |
 | 44 | Search scalability | 展示rank-invariant generation class、bytecode clone、bounded executor、attempt plan、selective import；放Q41 host case的wall/RSS/attempt counts。 | 搜索执行火焰/资源图：哪些工作复用、哪些并行、哪些延后import；数字贴在阶段旁。 | compiler-search plan、host evidence；wall/RSS不外推为固定性能。 |
 
-### G. 18 个 optimization axes（45--60）
+### G. Production compiler mechanisms（45--60）
 
 | 页 | 技术标题 | 因果与可见技术内容 | Image2 主图 | 主要取材与验收 |
 |---:|---|---|---|---|
-| 45 | 18 optimization axes | 明确6个source-expression、6个rank-recipe、5个accepted-rank、1个all-rank axis；并列≤16 source、≤12 recipes、SPM 1/2/3、NoC seeds≤8等独立预算。 | 从expression DAG→tile plan→rank timeline→multi-rank dataflow的候选谱系；四段使用不同视觉语法。 | `OptimizationConfig.h`和source map；不是18个顺序pass。 |
+| 45 | Production candidate mechanisms | 按source-expression、rank-recipe、accepted-rank、all-rank四个IR边界解释compiler-owned机制；并列≤16 source、≤12 recipes、SPM 1/2/3、NoC seeds≤8等独立预算。明确公开控制面只有production/none，不把内部机制列成用户轴。 | 从expression DAG→tile plan→rank timeline→multi-rank dataflow的候选谱系；四段使用不同视觉语法。 | `OptimizationConfig.h`和source map；机制不是顺序pass或可组合开关。 |
 | 46 | Consumer-local recomputation | 展示pure producer被两个consumer共享的before IR，以及只为一个consumer clone后的after IR；标注op count、fanout和可删除transfer。 | before/after use-def DAG，clone节点与consumer同色；external-visible use作为红色反例。 | `CandidateRewrites.cpp/Test`；真实linalg/SSA片段可读。 |
 | 47 | Loop-invariant code motion | `%sum=arith.addi %a,%b`移出loop，依赖iv/iter_arg或有effect的store保持；展示dominance和speculation gate。 | loop代码与dependency overlay；只有合法op沿箭头移出，store留在原位。 | `HoistsOnlySpeculatableLoopInvariantWork`；不能概括成“循环外提所有常量”。 |
 | 48 | Algebraic reassociation | 展示 `(a+b)+c→a+(b+c)` 的真实IR、两棵表达式树和critical path；并列F16/BF16正例与poison-changing integer拒绝。 | expression tree morph，节点和IR行编号对应；数值gate直接贴在边上。 | algebra tests与numeric plan；结论不宣称bit-exact浮点结合律。 |
@@ -460,7 +461,7 @@ page dossier；表格内容不是最终页面栏目。
 | A2 | Production/focused/debug pipelines | 展开每条named pipeline的真实pass sequence、输入/输出IR和用户入口；Image2提供多轨流程结构。 | pipeline builders/tests。 |
 | A3 | StableHLO normalization IR sequence | 同一case在normalize/legalize/canonicalize各轮的完整关键IR和变化标记。 | fresh host dumps。 |
 | A4 | IR layer legality | representation ladder+精确dialect table+stage verifier；每层标下游直接读取的interface。 | CompilationStages/verifiers。 |
-| A5 | Optimization axis configuration | 18轴全表、production/none/enable/disable语义与四层候选谱系图。 | OptimizationConfig tests。 |
+| A5 | Optimization policy configuration | production完整域、none fully-gated baseline与四层compiler-owned候选谱系图；私有qualification family明确标为测试入口。 | OptimizationConfig tests。 |
 | A6 | Source variant bound | baseline/singleton/pair/all joint的具体枚举树与≤16证明。 | source variant code/tests。 |
 | A7 | Rank frontier bounds | general/fixed/worker bands、273上限、dominance例子和reserved baseline。 | frontier code/tests。 |
 | A8 | Whole-variant attempt plan | correspondence keys、attempt ordering、NoC seed fairness、selective import和complete tuple数量。 | coordinator code/tests。 |

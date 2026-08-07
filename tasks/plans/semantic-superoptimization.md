@@ -43,7 +43,7 @@ Pipeline position:
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  terminal complete-rank canonical/unplaced Instr actual clone、compiler-fixed current target facts，以及从current clone
+  finalized complete-rank canonical/unplaced Instr actual clone、compiler-fixed current target facts，以及从current clone
   SSA/effect边界即时派生的query-local connected replacement window。window不是独立artifact或可提交slice。
 - Current stage responsibility:
   从canonical Instr ODS/op/enums、family-owned typed constructor/semantic adapters和current verifier/preflight构造
@@ -52,7 +52,7 @@ Pipeline position:
 - Output artifact / IR:
   baseline及verifier-clean的complete-rank canonical/unplaced actual Instr siblings；每个sibling按worker/slot/ready-order、
   fresh completion、lifetime/SPM、whole-variant DDR、post-memory transport/resource、target preflight、final recost/
-  whole-variant selection和atomic commit顺序进入06的terminal gates；只有winner随后进入target module/package publication。
+  whole-variant selection和atomic commit顺序进入06的executable-finalization gates；只有winner随后进入target module/package publication。
   不保存slice、sketch或solver residue。
 - Downstream consumer:
   现有rank/whole-variant candidate owner、memory planning、Target LLVM/package、TargetModel/no-card和板端执行。
@@ -71,8 +71,8 @@ Pipeline position:
 Q49 C6完成后，public控制面只保留`OptimizationConfig::production()`与`OptimizationConfig::none()`两种typed policy：
 
 - `production`启用包含本任务候选生成在内的唯一完整优化pipeline；`none`只保留fully gated conservative baseline。
-- 不恢复逐项enable/disable、`operator-propagation`、`instruction-synthesis`或其它public axis/spelling；pre-Q49的18个
-  `OptimizationKind`只属历史实现证据，继续在parse/compile前拒绝。
+- 不恢复逐项开关、`operator-propagation`、`instruction-synthesis`或其它public axis/spelling；pre-Q49的逐机制
+  枚举只属历史实现证据，旧CLI拼写继续在parse/compile前拒绝。
 - compiler-private qualification seam可在定向测试中请求一个typed candidate family，但不进入public CLI、source IR、
   candidate attr或artifact schema，也不形成第二个decision owner。
 - 不新增public `SearchBudget`、proof mode、float tolerance、explore preset或第二个selector。局部synthesis bound
@@ -238,7 +238,7 @@ current target-admitted deterministic family在Q48完成时不能停留在“未
 ## 7. Search、Selection 与 Failure
 
 - baseline始终独立保留并先通过现有exact gates。SMT只决定候选是否有资格进入frontier，不提供cost、winner或硬件收益。
-- 全局expanded-state、frontier、terminal-lowering与whole-variant attempt hard caps只由06/Q49 current budget owner提供；
+- 全局expanded-state、frontier、executable-finalization lowering与whole-variant attempt hard caps只由06/Q49 current budget owner提供；
   pre-Q49的rank frontier 273、whole attempt 153等数值只属历史实现证据，本任务不冻结或复制。新增局部3-issue/depth-1
   bound必须在current全局预算内计数，budget exhaustion稳定保留baseline。
 - 不在本计划复制或改变Q41 request sharding、Q49 whole-variant coordinator和target late-gate ownership。

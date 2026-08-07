@@ -501,7 +501,7 @@ TEST(TargetFormatTest, DirectTargetAcceptsExactly4096TerminalOperations) {
             "llvm.func");
 }
 
-TEST(TargetFormatTest, DirectTargetRejects4097TerminalOperationsAtomically) {
+TEST(TargetFormatTest, DirectTargetAccepts4097ExecutableOperations) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
   wafer::registerAllDialects(registry);
@@ -511,29 +511,12 @@ TEST(TargetFormatTest, DirectTargetRejects4097TerminalOperationsAtomically) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       parseNCCJoinModule(context, 4097);
   ASSERT_TRUE(module);
-  std::string diagnostics;
-  mlir::ScopedDiagnosticHandler handler(
-      &context, [&](mlir::Diagnostic &diagnostic) {
-        llvm::raw_string_ostream stream(diagnostics);
-        diagnostic.print(stream);
-        return mlir::success();
-      });
   mlir::PassManager manager(&context);
   wafer::TargetConversionRequest request{};
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
-  EXPECT_TRUE(mlir::failed(manager.run(*module)));
-  EXPECT_NE(diagnostics.find("static_terminal_budget_exceeded"),
-            std::string::npos)
-      << diagnostics;
-
-  uint64_t remainingJoins = 0;
-  module->walk([&](mlir::Operation *operation) {
-    if (operation->getName().getStringRef() == "wafer.instr.ncc_join")
-      ++remainingJoins;
-  });
-  EXPECT_EQ(remainingJoins, 4097u);
+  ASSERT_TRUE(mlir::succeeded(manager.run(*module)));
   EXPECT_EQ(module->lookupSymbol("main")->getName().getStringRef(),
-            "func.func");
+            "llvm.func");
 }
 
 TEST(TargetFormatTest, TargetPreflightRejectsResidualReduceInitAtomically) {

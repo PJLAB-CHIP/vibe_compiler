@@ -77,9 +77,22 @@ void expectBefore(mlir::Operation *before, mlir::Operation *after) {
       << after->getName().getStringRef().str();
 }
 
-void expectBeforeTerminalPublication(wafer::SyncNCCJoinOp join) {
+void expectBeforeCompletionObserver(wafer::SyncNCCJoinOp join) {
   mlir::Operation *observer = join->getNextNode();
   ASSERT_NE(observer, nullptr);
+
+  // A Tile region owns its local SPM roots. Their exact participant drain is
+  // therefore a root-release witness immediately before the region yield;
+  // the structural boundary alone is not a completion event.
+  if (auto yield = mlir::dyn_cast<wafer::TileYieldOp>(observer)) {
+    auto region = join->getParentOfType<wafer::TileRegionOp>();
+    ASSERT_TRUE(region);
+    ASSERT_TRUE(region.getBody().hasOneBlock());
+    EXPECT_EQ(yield.getOperation(),
+              region.getBody().front().getTerminator());
+    return;
+  }
+
   EXPECT_TRUE(
       (mlir::isa<mlir::bufferization::ToTensorOp, mlir::memref::DeallocOp,
                  mlir::func::ReturnOp>(observer)))
@@ -318,7 +331,7 @@ module {
   ASSERT_NE(remoteAssembly, gathers.end());
   expectBefore(waits.back(), *remoteAssembly);
   expectBefore(*remoteAssembly, wdmas.front());
-  expectBeforeTerminalPublication(joins.back());
+  expectBeforeCompletionObserver(joins.back());
 }
 
 TEST_F(CollectiveCompletionTest,
@@ -361,7 +374,7 @@ module {
   auto wdmas = collectOps<wafer::InstrWDMAOp>(*lowered);
   ASSERT_EQ(joins.size(), 1u);
   ASSERT_EQ(wdmas.size(), 1u);
-  expectBeforeTerminalPublication(joins.front());
+  expectBeforeCompletionObserver(joins.front());
 }
 
 TEST_F(CollectiveCompletionTest,
@@ -511,7 +524,7 @@ TEST_F(CollectiveCompletionTest,
   expectBefore(sends.front(), waits.front());
   expectBefore(recvs.front(), waits.back());
   expectBefore(waits.back(), wdmas.front());
-  expectBeforeTerminalPublication(joins.back());
+  expectBeforeCompletionObserver(joins.back());
 }
 
 TEST_F(CollectiveCompletionTest,
@@ -545,7 +558,7 @@ TEST_F(CollectiveCompletionTest,
   expectBefore(joins.front(), sends.front());
   expectBefore(sends.front(), waits.front());
   expectBefore(waits.front(), wdmas.front());
-  expectBeforeTerminalPublication(joins.back());
+  expectBeforeCompletionObserver(joins.back());
 }
 
 TEST_F(CollectiveCompletionTest,
@@ -592,7 +605,7 @@ TEST_F(CollectiveCompletionTest,
   ASSERT_EQ(instrFills.size(), 1u);
   ASSERT_EQ(wdmas.size(), 1u);
   expectBefore(instrFills.front(), wdmas.front());
-  expectBeforeTerminalPublication(joins.front());
+  expectBeforeCompletionObserver(joins.front());
 }
 
 TEST_F(CollectiveCompletionTest,
@@ -620,7 +633,7 @@ TEST_F(CollectiveCompletionTest,
   ASSERT_FALSE(gathers.empty());
   ASSERT_EQ(wdmas.size(), 1u);
   expectBefore(gathers.back(), wdmas.front());
-  expectBeforeTerminalPublication(joins.front());
+  expectBeforeCompletionObserver(joins.front());
 }
 
 } // namespace

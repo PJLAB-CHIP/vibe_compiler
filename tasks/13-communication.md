@@ -47,7 +47,7 @@ Pipeline position:
   的typed order/edge参数；对每个参数点使用
   PatternRewriter/DialectConversion在complete-rank clone内
   直接展开全部p2p、local movement/compute、communication staging、SSA token和exact wait；NCC issue只携带
-  typed dependency，rewrite结束后fresh验证IR。统一completion placement在terminal Instr clone的固定worker/order/effect
+  typed dependency，rewrite结束后fresh验证IR。统一completion placement在finalized Instr clone的固定worker/order/effect
   frontier上，为真实NCC→DTE/Kcore/不同worker/host cut生成latest-necessary participant completion；不得产生独立于clone的执行图或可序列化候选记录。
 - Output artifact / IR:
   verifier-legal、尚未分配物理transport resource的complete-rank instruction candidate。所有logical peer、
@@ -526,7 +526,7 @@ layout与bytes由当前typed buffer唯一决定，不新增payload enum：
 - Ring只有在每个非零chunk都能由existing physical-access relation证明为exact、连续、互斥且完整cover时才生成Cx/NCx
   candidate；否则保留compact或显式pack/unpack candidate，不新增blocked-subview表示。
 
-上述layout与algorithm参数组合由06的唯一decision owner从complete-rank terminal Tile actual parent生成。owner直接读取
+上述layout与algorithm参数组合由06的唯一decision owner从准入executable finalization的complete-rank Tile actual parent生成。owner直接读取
 各rank current IR中的typed rank/group/payload relation、encoding、mapping、footprint与chunk cover，枚举有限all-rank参数点；
 每个参数点立即rewrite成一份actual Instr sibling并销毁proposal。all-rank matching随后从该sibling的显式peer/message IR
 fresh重证；不建立semantic collective ordinal、跨rank共享state或per-rank Top-4 Cartesian tuple。任一rank encoding、footprint、

@@ -7,7 +7,7 @@ tile shape、selective spill/recompute和cross-region materialization已由06物
 nested/async/parallel scope和缺少arena/resource summary的调用保持fail closed。
 实现状态以`tasks/progress.md`为准。accepted fact为offset-only `wafer.spm.offset`；size、alignment和SPM1
 bank phase均由memref type、layout、accepted offset和target policy重算。allocator对candidate generator提交的
-terminal complete-rank Instr variant，从全部roots、control-flow coexistence与pairwise conflict派生
+finalized complete-rank Instr candidate，从全部roots、control-flow coexistence与pairwise conflict派生
 all-and-only fixed allocation problems，并用3 MiB MiniMalloc与独立validator求解。已证明不重叠的regions/roots可复用地址，
 可能重叠的regions必须联合满足容量；allocator不识别或改变spill/resident/partition策略。problem/query数量只作work diagnostic，
 不与rank entry或region数量绑定。
@@ -15,10 +15,10 @@ actual high-water只作capacity/headroom诊断，不触发反复收紧query，�
 hard-valid placement间的soft preference；不得改变hard feasible set或新增candidate/relocation分支。
 
 当前实现已由C1把production切到complete-rank decision point并禁止`tile.region`的SPM data operand/result；C2/C3
-纵向骨架也已让coordinator持有无offset actual Tile parent，在terminal worker/order action上执行function-boundary
+纵向骨架也已让coordinator持有无offset actual Tile parent，在executable-finalization worker/order action上执行function-boundary
 bufferization、fresh completion和SPM/DDR/transport/ABI exact gates，packing failure不复用failed Instr或partial offset。
 仍未闭合的是C2完整DP/Pareto candidate domain、C3全部repair family与serial/parallel fully-gated frontier，以及C5/C6
-collective/online和旧路径删除。因此“all-and-only root coverage”已是当前terminal evaluator的单candidate合同，但Q49整体
+collective/online和旧路径删除。因此“all-and-only root coverage”已是当前executable-finalization owner的单candidate合同，但Q49整体
 仍未达到checkpoint完成或board-ready。
 
 本文定义Wafer SPM bufferization、rank-local allocation和storage verification。它服务于complete-rank
@@ -94,13 +94,13 @@ Pipeline position:
 - Current stage responsibility:
   在每个complete rank entry上对`#wafer.memory<spm, layout>` memref做SPM memory planning，
   计算offset/end、alignment、lifetime/reuse、must-alias/must-not-alias、reserved range和range-end
-  verification；对每个terminal complete-rank Instr variant（一个已固定worker/slot/order的完整rank entry）从current
+  verification；对每个finalized complete-rank Instr candidate（一个已固定worker/slot/order的完整rank entry）从current
   roots、control-flow coexistence与conflict派生all-and-only fixed allocation problems，使用3 MiB
   fixed-capacity MiniMalloc并独立验证；
   用显式generic
   async wait、DTE exact token/wait、typed NCC ordered-pending/
   participant join、root-release与entry-terminal completion proof验证相关issue completion，并在variant-set gate汇总所有rank的
-  通过结果。返回validated placement和从该placement重算的actual high-water/headroom诊断。每个candidate clone独立规划、
+  通过结果。返回validated placement和从该placement重算的actual high-water/headroom诊断。每个已准入actual candidate clone独立规划、
   独立失败，任何候选的offset、alias或completion fact都不能成为其它候选的输入或fallback事实。
 - Output artifact / IR:
   仅存在于 complete passing variant clone 中的 same instruction-level IR with offset-only
@@ -116,8 +116,8 @@ Pipeline position:
   whole-variant candidate driver及Q16 typed rank-record validation；atomic commit后target LLVM消费
   committed IR/resource bindings，package只消费committed executable + Q17 verified staged target module
   records，runtime只消费validated manifest。function-boundary bufferization必须在本文fresh allocation-problem derivation之前完成；
-  终态production不存在先对rank frontier写入placement、后面复用stale offsets的路径。失败只拒绝该terminal rank-entry Instr
-  variant；新resource-aware alternative必须从无placement Tile/Instr parent重新物化并fresh派生自己的problems。
+  终态production不存在先对rank frontier写入placement、后面复用stale offsets的路径。失败只拒绝该finalized rank-entry Instr
+  candidate；新resource-aware alternative必须从无placement Tile/Instr parent重新物化并fresh派生自己的problems。
 - User-level driver / named pipeline:
   Q16以后由同一
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --launch-kind={kernel|model}`
@@ -141,7 +141,7 @@ Pipeline position:
   allocator本身不拥有candidate objective、不生成IIS，不让solver trace或pressure witness成为accepted attr/side table。
   `Feasible`/`ProvenInfeasible`/`ResourceExhausted`、validated placement、high-water/headroom diagnostic和typed
   failure是唯一反馈；allocator不执行high-water bisection/quality probes。选择、邻居生成和stop policy由06拥有。
-  06可以从无offset parent产生tile/edge-residency/spill/recompute/order或terminal
+  06可以从无offset parent产生tile/edge-residency/spill/recompute/order或executable-finalization
   worker/slot sibling，09不返回或应用repair，也不保存跨candidate state。
 - Completion gate:
   对每个合法complete rank program给出 deterministic memory plan；planned storage的size、alignment、
@@ -180,7 +180,7 @@ captured group、选择不同task identity的`SelectLike`和非identity-preservi
 `missing_async_completion`拒绝。`scf.if`只有在task origin本来只存在于对应branch path时，result wait才能完成它；
 在分支前已经发起的不同task不能靠if选择隐式取消未选task。
 
-SPM planning以terminal rank entry为scope，对完整current IR的全部roots统一收集demand、path-aware lifetime、coexistence和
+SPM planning以finalized rank-entry candidate为scope，对完整current IR的全部roots统一收集demand、path-aware lifetime、coexistence和
 physical arena facts，再形成all-and-only fixed allocation problems。entry含一个或多个non-nested `wafer.tile.region`；nested
 region、SPM root/alias跨界及typed opaque clobber输入拒绝。region结构不预设problem/query数量。
 
@@ -481,8 +481,10 @@ SPM1 bank placement事实与策略：
 
 按本项目1 GHz、并额外假设每个bank每周期贡献一个2048-bit传输做粗略上界算术，raw service envelope为
 `8 * 256 B * 1 GHz = 2.048 TB/s`；`2.048 * 0.9 = 1.8432 TB/s`只是再假设per-port效率目标可聚合为全bank利用率的条件说明，不是
-operating point或sustained guarantee，更不能作为candidate的
-固定duration。它与历史SPM0/RAM_ACC的1024-bit接口是不同层级。
+operating point或sustained guarantee。hardware-cost point model只取其中一个SPM1 bank的
+`256 B * 1 GHz = 256 GB/s/tile`作为保守nominal service prior，不假设8 bank利用率可聚合；它带版本化assumption，
+不作为lower bound、proof或allocator legality。该prior与历史SPM0/RAM_ACC的1024-bit接口不同，也不改变bank phase、
+port/stride conflict和DIDT penalty仍待校准的事实。
 
 ## 8. Static Allocation Algorithm
 
@@ -565,7 +567,7 @@ packing结果反向改写成这些选择。未限制search budget时，当前受
 production的有界budget必须保留`ResourceExhausted`，不能伪装成不可行。选择MiniMalloc是基于专用搜索、确定性、
 三态failure和轻量集成的工程结论，不声称它对所有实例都比通用solver更快。
 
-每个terminal complete-rank Instr variant从完整current IR派生一个或多个fixed allocation problems；每个root被all-and-only
+每个finalized complete-rank Instr candidate从完整current IR派生一个或多个fixed allocation problems；每个root被all-and-only
 一个problem覆盖，可能并发的regions进入同一coexistence/conflict约束，已证明不重叠的roots可复用3 MiB地址范围。
 `Feasible`证明当前固定lifetime/size/alignment/conflict问题能装下；accepted placement的actual high-water不是全局最优证明，也不是继续
 二分arena end的理由。candidate间真正有意义的working-set差异已经由06选择的tile、buffering和
@@ -577,7 +579,7 @@ validator和fixed-capacity结果；若真实捕获实例持续`ResourceExhausted
 
 ### 8.2 Candidate Evaluation Boundary
 
-只对terminal complete-rank Instr variant调用本节fixed-capacity路径；每份fresh problem得到：
+只对finalized complete-rank Instr candidate调用本节fixed-capacity路径；每份fresh problem得到：
 
 - `Feasible`：完整placement经独立validator接受，offset可原子写入该clone；
 - `ProvenInfeasible`：在owner budget内完成搜索并证明硬件arena不可行；
@@ -591,7 +593,7 @@ offset-dependent descriptor/range及后续variant gate。这些结果是candidat
 buffering或执行顺序。
 
 candidate rewrite、bufferization或lifetime/effect变化后，旧placement和所有offset-dependent descriptor/range/cost结果均失效，
-因而原terminal variant必须丢弃，不能原地修补或复用solve结果。owner只能从无placement generation parent创建一个新variant，
+因而原finalized candidate必须丢弃，不能原地修补或复用solve结果。owner只能从无placement generation parent创建一个新candidate，
 在它的final current IR上重建`StaticPackingProblem`集合；只在全部range/alignment/conflict
 gate通过后提交`wafer.spm.offset`。06的generation worklist不接收已写offset的evaluation clone。
 
@@ -633,13 +635,13 @@ complete rank candidate clone with selected typed IR
 
 candidate必须先把resident edge、spill、encoding、transfer和instruction sequence显式物化；SPM owner只从该IR重算demand。
 compiler-derived completion在完整worker assignment形成后fresh rebuild；rewrite、completion或bufferization改变root、alias、
-effect或lifetime后原terminal variant必须丢弃，由06从unplaced parent物化新variant；旧offset和cost不得复用。packing只允许
+effect或lifetime后原finalized candidate必须丢弃，由06从unplaced parent物化新candidate；旧offset和cost不得复用。packing只允许
 对lifetime/conflict证明为不冲突的roots复用range；
 accepted offsets形成后由独立physical-alias verifier复核。失败表示packing结果无效或上游proof不一致，evaluation clone被拒绝并由06
 从未放置parent产生有界sibling；offset本身不改变lifetime/completion，allocator不得就地插join、改slot或反复packing修复。
 
-function-boundary bufferization可能新增或删除buffer/movement，所以它在fresh allocation-problem derivation之前完成。每个terminal
-rank-entry Instr variant从final instruction IR派生problems并fresh recost；失败会拒绝包含它的整个all-rank variant，不产生
+function-boundary bufferization可能新增或删除buffer/movement，所以它在fresh allocation-problem derivation之前完成。每个finalized
+rank-entry Instr candidate从final instruction IR派生problems并fresh recost；失败会拒绝包含它的整个all-rank candidate，不产生
 rank-local survivor/commit。all-rank coordinator对每个disposable complete variant从current explicit DDR arenas/domains派生并
 原子验证placement，再从current placed/bound IR重算
 transport/resource事实，不消费SPM-side compatibility signature。
@@ -712,7 +714,7 @@ accepted range/arena relation；commit后package/runtime只消费
 - bank-line span按256B粒度由`[offset / 256, ceil((offset + size) / 256))`重算；对256B对齐base的
   working bank phase按`(offset / 256) mod 8`重算。二者都不是accepted attr。
 
-每个logical rank的SPM window是rank-local physical arena。每个terminal rank entry的全部roots从current IR派生fixed
+每个logical rank的SPM window是rank-local physical arena。每个finalized rank-entry candidate的全部roots从current IR派生fixed
 allocation problems并在3 MiB window内all-and-only规划；entry含一个或多个non-nested regions。SPM memref/root/alias不得跨region boundary；
 region result若是data只能发布DDR value/view，其root可以是function
 external或compiler-managed materialization。region内部的selective spill/store结束目标root，matching reload建立distinct root，且

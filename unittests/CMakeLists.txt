@@ -9,22 +9,21 @@ add_executable(WaferUnitTests
   Compiler/CompilationPublicationTest.cpp
   Compiler/CompilationTest.cpp
   Compiler/CoordinatedDataflowSearchTest.cpp
-  Compiler/CoordinatedTerminalEvaluationTest.cpp
+  Compiler/CoordinatedExecutableAdmissionTest.cpp
+  Compiler/CoordinatedExecutableFinalizationTest.cpp
   Compiler/CoordinatedVariantSelectionTest.cpp
   Compiler/DirectDTETransportTest.cpp
   Compiler/GlobalTileRelationTest.cpp
+  Compiler/NoCCommunicationActionTest.cpp
   Compiler/NoCIntermediateDataflowTest.cpp
   Compiler/NoCPartialDataflowTest.cpp
-  Compiler/NoCResidentDataflowTest.cpp
-  Compiler/NoCTiledBoundaryDataflowTest.cpp
   Compiler/ProgramTensorComparisonTest.cpp
   Compiler/ScheduledRankFinalizationTest.cpp
+  Compiler/StructuredImplementationAlternativeTest.cpp
   Compiler/TargetABIPreparationTest.cpp
   Compiler/TargetArtifactTest.cpp
   Compiler/TargetCallFrontendTest.cpp
   Compiler/TargetIdentityTest.cpp
-  Compiler/WholeVariantAttemptPlanTest.cpp
-  Compiler/WholeVariantCoordinatorTest.cpp
   Compiler/WholeVariantResourceAcceptanceTest.cpp
   Conversion/CollectiveCompletionTest.cpp
   Conversion/CollectiveTopologyTest.cpp
@@ -53,14 +52,11 @@ add_executable(WaferUnitTests
   Transforms/MemoryPlanning/MiniMallocPackingTest.cpp
   Transforms/MemoryPlanning/StaticMemoryPackingTest.cpp
   Transforms/PhysicalDataflow/CandidateRewritesTest.cpp
+  Transforms/PhysicalDataflow/CompleteRankMaterializationTest.cpp
   Transforms/PhysicalDataflow/ReadyOrderTest.cpp
-  Transforms/Scheduling/CandidateSelectionTest.cpp
   Transforms/Scheduling/FixedSlotPipelineTest.cpp
-  Transforms/Scheduling/FullBufferHandoffTest.cpp
   Transforms/Scheduling/RankTileMaterializationTest.cpp
-  Transforms/Scheduling/RankCandidateFrontierTest.cpp
   Transforms/Scheduling/RedundantTransferEliminationTest.cpp
-  Transforms/Scheduling/StructuredSchedulingScopeTest.cpp
   Transforms/Scheduling/WorkerPlacementTest.cpp
   Transforms/Target/LowerInstrToTargetLLVMTest.cpp
 )
@@ -106,10 +102,10 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
 endif()
 
 set(WAFER_DEFAULT_UNIT_TEST_FILTER
-  "--gtest_filter=-NoCIntermediateDataflowTest.*:NoCPartialDataflowTest.*:NoCResidentDataflowTest.*:NoCTiledBoundaryDataflowTest.*:WholeVariantCoordinatorTest.*:RankCandidateFrontierTest.*"
+  "--gtest_filter=-NoCIntermediateDataflowTest.*:NoCPartialDataflowTest.*"
 )
 set(WAFER_COMPILER_INTEGRATION_TEST_FILTER
-  "--gtest_filter=NoCIntermediateDataflowTest.*:NoCPartialDataflowTest.*:NoCResidentDataflowTest.*:NoCTiledBoundaryDataflowTest.*:WholeVariantCoordinatorTest.*-WholeVariantCoordinatorTest.PrefersShorterHopRingAllGatherWhenNCCDrainsAreEqual:WholeVariantCoordinatorTest.RejectsI8AllReduceWithoutNumericAdmission:WholeVariantCoordinatorTest.SelectsLargeDDRBoundDistributedContractionWithEstimatedModel"
+  "--gtest_filter=NoCIntermediateDataflowTest.*:NoCPartialDataflowTest.*"
 )
 
 add_test(NAME WaferUnitTests

@@ -92,14 +92,14 @@ runtime/package owner 负责。
       `wafer.tile.region` SPM residency domains；各body内的traversal/loop nest和tile shape已经包含selected
       wafer.tile.* compute/movement、Wafer-tagged memref、typed implementation fields、view、explicit
       movement、storage roots以及必要token/effect；logical/tiled collective、physical payload relation和rank facts显式存在。
-      Direct/Ring/Tree只是terminal conversion的一次typed参数，展开后立即成为actual Instr sibling并销毁参数。
+      Direct/Ring/Tree只是executable-finalization conversion的一次typed参数，展开后立即成为actual Instr sibling并销毁参数。
     - Current stage responsibility:
       通过typed op class、ODS/op verifier、DestinationStyle/Tiling/ViewLike或Subset语义、
       MemoryEffectOpInterface及conversion legality检查selected合同，再用DialectConversion/rewrite
       patterns生成complete-rank wafer.instr.*。lowering必须
       显式生成instruction kind/parameters、queue/effect、temporary/accumulator/staging、
       descriptor、async token和completion relation。compiler-derived participant join不因内部traversal/task/loop boundary在本conversion中
-      自动生成；它在terminal Instr clone的worker/slot/range已知后由11定义的completion owner fresh构造，在root释放、
+      自动生成；它在finalized Instr clone的worker/slot/range已知后由11定义的completion owner fresh构造，在root释放、
       真实observer和rank-entry terminal按witness证明completion。
     - Output artifact / IR:
       覆盖每个static rank entry完整structured control flow的wafer.instr.* program，
@@ -118,7 +118,7 @@ runtime/package owner 负责。
       每个selected op均生成verifier-legal canonical/unplaced instruction IR；typed async event具有matching token/wait，
       ordinary NCC issue的worker-independent effect/range/observer obligations保持可重建且不存在premature read/reuse；
       conversion不插participant join，也不要求function exit的pending ordinary-NCC effect set为空。任一rank失败丢弃整个
-      candidate，不能形成partial committed program；terminal rank-entry Instr variant后续必须经过worker/slot/order、
+      candidate，不能形成partial committed program；finalized rank-entry Instr candidate后续必须经过worker/slot/order、
       fresh completion和memory gates。
 
 ## 3. Source MLIR Interface 与 Candidate 合同
@@ -519,7 +519,7 @@ wait，但必须显式表达依赖：
 - DTE wait、post-worker compiler-derived NCC participant join和group barrier是不同resource边界，不能互相替代。
 - queue capacity或busy-table只限制in-flight legality，不是event或completion proof。
 - canonical/unplaced conversion输出的每条static rank exit path保留可重建的pending ordinary-NCC obligations；只有post-worker
-  completion reconstruction后的terminal rank-entry Instr variant才要求all-and-only observable/pending effects已在真实
+  completion reconstruction后的finalized rank-entry Instr candidate才要求all-and-only observable/pending effects已在真实
   observer或rank-entry terminal完成。
 
 ## 8. 通用 Case

@@ -22,6 +22,7 @@ namespace {
 
 static void addStablehloToLinalgBody(mlir::OpPassManager &pm) {
   pm.addPass(createNormalizeStablehloCollectivesPass());
+  pm.addPass(createLowerStaticStablehloConcatenatePass());
   pm.addPass(createLegalizeStablehloToLinalgPass());
   pm.addPass(createNormalizeStablehloCollectivesPass());
   pm.addPass(mlir::createCanonicalizerPass());

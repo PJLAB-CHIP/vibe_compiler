@@ -16,7 +16,8 @@ realization、large contraction、compound workload及NoC×fixed-slot×nonzero-w
 
 Q49集成说明：本文闭合的peer/collective materialization保留为typed action mechanics，从final IR重算的NoC/message/resource
 量保留为统一hardware cost model的输入；历史profitability selector不再保留为decision owner。tile/loop、
-resident/spill/recompute、NoC action和internal materialization由06的complete-rank global frontier联合决定，Q39不建立
+resident/spill/recompute、NoC action和internal materialization由06的query-local structural frontier联合决定，只有
+统一预算准入的有界代表才物化actual clone，exact失败按稳定顺序补位；Q39不建立
 NoC-specific frontier或独立选择winner。当前complete static rank entry可包含一到多个non-nested
 `wafer.tile.region`；它们是与tile、residency、movement和materialization共同搜索并立即物化的SPM驻留域，不是
 device-execution epoch、whole-rank容器或独立launch。region boundary本身不隐式生成DDR movement、join或drain；任何
@@ -472,9 +473,10 @@ baseline且只允许对应slice owner写回。任何优化都不能静默改变p
 - bounded tile/segment/work-quantum参数；
 - resident/spill choice。
 
-proposal一旦选中必须立即改写完整rank tuple；成功后只保存actual clones，失败则丢弃全部tuple。不得在IR
-attr、bundle、package、cache或diagnostic schema中保留第二份owner map、tile graph或stage list。下游所有
-legality/cost从修改后的IRfresh重算。
+proposal先作为query-local structural frontier成员参与typed legality、relation、lower-bound与DP/Pareto剪枝；只有统一
+actual-clone budget准入的有界代表才改写完整rank tuple，成功后保存actual clones，失败则按稳定顺序从未物化frontier补位。
+不得在IR attr、bundle、package、cache或diagnostic schema中保留第二份owner map、tile graph或stage list。下游所有
+legality/cost从修改后的IR fresh重算。
 
 ## 4. Generic candidate space
 
@@ -609,7 +611,8 @@ exact `Known`，但physical route、arbiter和actual hot-link仍可是Unknown。
 当前versioned parameters的证据强度保持不变：整卡DDR `200 GB/s`只是peak lower-bound参考，`150 GB/s`是
 16-tile shared nominal point；单向NoC link和DTE endpoint各自使用`128 GB/s` point reference，语义不同；Direct-DTE
 message startup `10 us`与hop/control `1 ns`是policy prior，不是board bound。历史SPM0/RAM_ACC `128 GB/s`不是
-SPM1 aggregate bandwidth，Q49不得用它为SPM bytes计duration。
+SPM1 aggregate bandwidth，Q49不得用它为SPM bytes计duration。Q49另以单个SPM1 2048-bit bank在1 GHz下的
+`256 GB/s/tile`作为explicit-movement nominal point prior；它不假设8-bank聚合、不形成sustained lower bound或proof。
 
 DDR作为card-shared resource，duration只对total-card bytes除一次带宽；NoC lower可用route-independent minimum-hop work，
 nominal可用显式`EstimatedRoute`的modeled link/endpoint pressure。无qualified multi-buffer时，已具备qualified duration
@@ -765,7 +768,7 @@ current SSA/effect/range证明的recompute或producer chain均是明确非目标
 | Complete tuples | baseline-first；canonical Single/Unplaced current Instr先原子派生typed DisjointComponents sibling，再派生worker-preserving StaticFixedSlot；已有nonzero/fixed-slot不原地重写；四materializer同clone累计；null/mixed/伪metadata跳过；failure atomic | 五类tile role、worker/fixed-slot和structured occurrence保持complete-rank correspondence |
 | IR | owner RDMA、intermediate zero-DDR、tree/ring partial、round-2 output、local merge、bytes/peer/message、DTE token/wait、actual worker/loop及required store全部显式；每entry可有一到多个jointly selected、non-nested SPM驻留域 | 不保留role/owner/channel/stage side protocol；region boundary不隐式生成DDR/join，跨界data value显式store/completion/load且无跨界SPM root/alias |
 | Lifetime/scheduling | Direct/ReceiveForward、SPM/fixed-slot/worker late gates；receive-prep-before-issue；call-expanded whole-program wait graph；Q38 odd/even/tail和same/cross-worker流水 | Unknown alias/control/message occurrence原子拒绝 |
-| Cost | DDR/SPM/NoC message+endpoint/compute/join从final IR exact重算；partitioned unique shard不报DDR下降；200 peak lower、150 DDR nominal、128 link/endpoint point reference和10 us message `α`分级；modeled deterministic shortest path标`EstimatedRoute`；SPM bytes不再用legacy 128 GB/s flat duration，现存Q39代码项由Q49删除；无qualified multi-buffer按sequential phases，qualified fixed-slot按steady-state maximum；20% margin disposition只由Q49统一selection签发 | dynamic/unsupported work为`Indeterminate`；K-sharded matched board只资格化该组baseline/winner，不外推为所有DDR/GS/completion tradeoff的通用校准 |
+| Cost | DDR/SPM/NoC message+endpoint/compute/join从final IR exact重算；partitioned unique shard不报DDR下降；200 peak lower、150 DDR nominal、128 link/endpoint point reference和10 us message `α`分级；modeled deterministic shortest path标`EstimatedRoute`；SPM bytes不再用legacy 128 GB/s flat duration，改用SPM1单bank256 GB/s/tile nominal prior且不作为bound；无qualified multi-buffer按sequential phases，qualified fixed-slot按steady-state maximum；20% margin disposition只由Q49统一selection签发 | dynamic/unsupported work为`Indeterminate`；K-sharded matched board只资格化该组baseline/winner，不外推为所有DDR/GS/completion tradeoff的通用校准 |
 | Genericity | 四materializer覆盖五类role，不含op/shape/name matcher；纯elementwise非GEMM和GEMM两个compute family均进入同一candidate/model，small elementwise回退而large contraction清除margin，compound也覆盖 | case只验证协议，不成为matcher |
 | Vertical | input、纯elementwise非GEMM小payload回退、tree/ring partial、large contraction positive、compound qualification、strict boundary-only ring及独立fixed-slot/worker纵向均闭合；intermediate/output/parameter各有独立原子正负例；NoC×fixed-slot×nonzero-worker同候选的target model、ELF、package、attestation和no-card fresh纵向已闭合 | 已完成 |
 | Board | K-sharded `4096³`同源baseline/winner完成6次16-rank exact output；winner profile有效且保持16-rank exact | 已完成；wait/overlap转交Q40，compile-time search转交Q41 |

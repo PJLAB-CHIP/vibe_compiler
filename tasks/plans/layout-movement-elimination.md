@@ -9,7 +9,8 @@ SPM/DDR/NoC搬运、descriptor、等待和额外live storage。
 
 Q49集成说明：本文闭合的IndexRelation、PBQP projection和movement realization保留为proposal/action mechanics；
 layout proposal不再先形成局部winner，而是与region partition、tile/loop、resident/spill/recompute、materialization和
-communication进入06的同一global frontier。每个complete static rank entry可包含一个或多个non-nested
+communication进入06的同一query-local structural frontier；只有统一预算准入的有界代表才物化actual clone，exact
+失败按稳定顺序从未物化frontier补位。每个complete static rank entry可包含一个或多个non-nested
 `wafer.tile.region` SPM residency domains；layout/traversal边界不机械切region，region boundary本身也不自动产生DDR
 movement或join。若candidate选择跨region cut，所有跨界data必须通过显式DDR store、可信completion和matching load表达；
 SPM root/alias不得跨界，boundary只完成仍访问被释放roots的work。本文原有固定Top-K只记录Q46

@@ -12,18 +12,23 @@ endforeach()
 
 add_mlir_library(WaferCompiler
   AcceptedCallClosure.cpp
+  AttentionImplementationAlternative.cpp
   Compilation.cpp
   CompilationOrchestration.cpp
   CompilationStages.cpp
+  CoordinatedCommunicationAction.cpp
   CoordinatedDataflowSearch.cpp
-  CoordinatedTerminalEvaluation.cpp
+  CoordinatedExecutableAdmission.cpp
+  CoordinatedStructuredCandidateDerivation.cpp
+  CoordinatedStructuredFrontier.cpp
+  CoordinatedExecutableFinalization.cpp
   CoordinatedVariantSelection.cpp
   DirectDTETransport.cpp
   ExecutableBundle.cpp
   GlobalTileRelation.cpp
+  NoCCommunicationAction.cpp
   NoCIntermediateDataflow.cpp
   NoCPartialDataflow.cpp
-  NoCResidentDataflow.cpp
   TensorProgramCompilation.cpp
   Package.cpp
   ProgramDirectoryTransaction.cpp
@@ -32,6 +37,7 @@ add_mlir_library(WaferCompiler
   ScheduledRankFinalization.cpp
   SpmdCompilationBridge.cpp
   StaticFixedSlotQualification.cpp
+  StructuredImplementationAlternative.cpp
   TargetABIPreparation.cpp
   TargetArtifact.cpp
   TargetArtifactPublication.cpp
@@ -43,8 +49,6 @@ add_mlir_library(WaferCompiler
   TargetInstrumentation.cpp
   TargetRankPreflight.cpp
   TargetCallFrontend.cpp
-  WholeVariantAttemptPlan.cpp
-  WholeVariantCoordinator.cpp
   WholeVariantResourceAcceptance.cpp
 
   LINK_LIBS PUBLIC
@@ -64,7 +68,10 @@ add_mlir_library(WaferCompiler
   WaferPipelines
   WaferRuntime
   WaferTarget
+  WaferTensorProgramToTileRegion
   WaferTransforms
+  MLIRAffineToStandard
+  MLIRAffineDialect
   MLIRArithDialect
   MLIRArithTransforms
   MLIRArithValueBoundsOpInterfaceImpl

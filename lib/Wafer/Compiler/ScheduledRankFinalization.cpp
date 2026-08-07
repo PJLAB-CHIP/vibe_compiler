@@ -1,4 +1,4 @@
-//===- ScheduledRankFinalization.cpp - Final rank candidates -------------===//
+//===- ScheduledRankFinalization.cpp - Exact rank finalization -----------===//
 
 #include "ScheduledRankFinalization.h"
 
@@ -82,165 +82,92 @@ getExactCostClosureFailure(const analysis::InstructionProgramCost &cost) {
 
 } // namespace
 
-mlir::FailureOr<std::vector<FinalizedRankCandidate>>
-finalizeScheduledRankCandidateFrontier(
-    std::vector<wafer::ScheduledRankCandidate> frontier,
-    bool requireReservedBaseline, RankCompletionPolicy completionPolicy,
-    RankFinalizationFailure *failure) {
+mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
+finalizeCoordinatedRankModule(mlir::OwningOpRef<mlir::ModuleOp> module,
+                              RankFinalizationFailure *failure) {
   if (failure)
     *failure = {};
-  if (frontier.empty()) {
-    if (requireReservedBaseline) {
-      if (failure)
-        failure->kind = RankFinalizationFailureKind::Contract;
-      return mlir::failure();
-    }
-    return std::vector<FinalizedRankCandidate>{};
-  }
-  unsigned baselineCount = llvm::count_if(
-      frontier, [](const wafer::ScheduledRankCandidate &candidate) {
-        return candidate.reservedBaseline;
-      });
-  if ((requireReservedBaseline && baselineCount != 1) || baselineCount > 1) {
-    if (failure) {
+  if (!module) {
+    if (failure)
       failure->kind = RankFinalizationFailureKind::Contract;
-      failure->stableOrdinal = frontier.front().stableOrdinal;
-    }
-    frontier.front().module->emitError()
-        << "rank_frontier_baseline_contract: expected "
-        << (requireReservedBaseline ? "exactly one" : "at most one")
-        << " reserved baseline but found " << baselineCount;
     return mlir::failure();
   }
 
-  std::vector<FinalizedRankCandidate> finalized;
-  finalized.reserve(frontier.size());
-  for (wafer::ScheduledRankCandidate &candidate : frontier) {
-    auto recordFailure = [&](RankFinalizationFailureKind kind) {
-      if (failure)
-        *failure = {kind, candidate.stableOrdinal};
-    };
-    if (hasWholeVariantFacts(*candidate.module)) {
-      recordFailure(RankFinalizationFailureKind::WholeVariantFacts);
-      candidate.module->emitError()
-          << "rank_frontier_contains_whole_variant_facts: DDR placement and "
-             "Direct DTE bindings must be recomputed by the all-rank "
-             "coordinator";
-      if (candidate.reservedBaseline)
-        return mlir::failure();
-      continue;
-    }
-    wafer::support::recordCompileWork(
-        wafer::support::CompileWorkKind::TerminalCandidateClone);
-    bool loweredTileDataflow =
-        containsTileDataflowOperations(*candidate.module);
-    std::string loweringFailure;
-    if (mlir::failed(convertTileRegionToInstrModule(*candidate.module,
-                                                    &loweringFailure))) {
-      recordFailure(RankFinalizationFailureKind::TileToInstr);
-      candidate.module->emitError()
-          << "terminal complete-rank Tile-to-Instr conversion failed"
-          << (loweringFailure.empty() ? "" : ": ") << loweringFailure;
-      if (candidate.reservedBaseline)
-        return mlir::failure();
-      continue;
-    }
-    if (!loweredTileDataflow &&
-        mlir::failed(normalizeMinimumNCCJoins(*candidate.module))) {
-      recordFailure(RankFinalizationFailureKind::Completion);
-      candidate.module->emitError(
-          "terminal complete-rank completion normalization failed");
-      if (candidate.reservedBaseline)
-        return mlir::failure();
-      continue;
-    }
-    clearRankCandidatePhysicalFacts(*candidate.module);
-    if (mlir::failed(mlir::verify(*candidate.module))) {
-      recordFailure(RankFinalizationFailureKind::Verification);
-      candidate.module->emitError(
-          "terminal complete-rank Instr parent failed verification");
-      if (candidate.reservedBaseline)
-        return mlir::failure();
-      continue;
-    }
-    mlir::LogicalResult finalizationResult = mlir::success();
-    RankFinalizationFailureKind pipelineFailure =
-        RankFinalizationFailureKind::Contract;
-    if (completionPolicy == RankCompletionPolicy::RebuildFromCurrentEffects) {
-      mlir::PassManager preparation(candidate.module->getContext());
-      wafer::support::attachCompileTiming(preparation,
-                                          "scheduled-rank-preparation");
-      wafer::buildPrepareScheduledRankCandidatePipeline(preparation);
-      if (mlir::failed(preparation.run(*candidate.module))) {
-        finalizationResult = mlir::failure();
-        pipelineFailure =
-            RankFinalizationFailureKind::FunctionBoundaryBufferization;
-      } else if (mlir::failed(rebuildMinimumNCCJoins(*candidate.module))) {
-        finalizationResult = mlir::failure();
-        pipelineFailure = RankFinalizationFailureKind::Completion;
-      } else if (mlir::failed(mlir::verify(*candidate.module))) {
-        finalizationResult = mlir::failure();
-        pipelineFailure = RankFinalizationFailureKind::Verification;
-      }
-      mlir::PassManager spmPlanning(candidate.module->getContext());
-      wafer::support::attachCompileTiming(spmPlanning,
-                                          "scheduled-rank-spm-planning");
-      wafer::buildPlanSPMMemoryPipeline(spmPlanning);
-      spmPlanning.addPass(mlir::createCanonicalizerPass());
-      if (mlir::succeeded(finalizationResult)) {
-        finalizationResult = spmPlanning.run(*candidate.module);
-        if (mlir::failed(finalizationResult))
-          pipelineFailure = RankFinalizationFailureKind::SPMAllocation;
-      }
-    } else {
-      mlir::PassManager manager(candidate.module->getContext());
-      wafer::support::attachCompileTiming(manager,
-                                          "scheduled-rank-finalization");
-      wafer::buildFinalizeScheduledRankCandidatePipeline(manager);
-      finalizationResult = manager.run(*candidate.module);
-    }
-    if (mlir::failed(finalizationResult)) {
-      recordFailure(pipelineFailure);
-      if (candidate.reservedBaseline)
-        return mlir::failure();
-      continue;
-    }
-    if (hasWholeVariantFacts(*candidate.module)) {
-      recordFailure(RankFinalizationFailureKind::WholeVariantFacts);
-      candidate.module->emitError()
-          << "rank_finalization_created_whole_variant_facts";
-      if (candidate.reservedBaseline)
-        return mlir::failure();
-      continue;
-    }
-
-    analysis::InstructionProgramCost exactCost =
-        analysis::analyzeInstructionProgramCost(
-            candidate.module->getOperation(),
-            analysis::getTargetScheduleCostPolicy());
-    if (std::optional<std::string> failure =
-            getExactCostClosureFailure(exactCost)) {
-      recordFailure(RankFinalizationFailureKind::ExactCost);
-      candidate.module->emitError()
-          << "rank_finalization_exact_cost: " << *failure;
-      if (candidate.reservedBaseline)
-        return mlir::failure();
-      continue;
-    }
-    finalized.emplace_back(
-        std::move(candidate.module), candidate.stableOrdinal,
-        candidate.artifactKind, candidate.reservedBaseline,
-        candidate.bufferingKind, candidate.bufferingPlanOrdinal,
-        candidate.workerPlacementKind, candidate.workerPlacementPlanOrdinal,
-        candidate.frontierOrderOrdinal);
-    finalized.back().selectedTileIR = std::move(candidate.selectedTileIR);
+  auto recordFailure = [&](RankFinalizationFailureKind kind) {
+    if (failure)
+      failure->kind = kind;
+  };
+  if (containsTileDataflowOperations(module->getOperation())) {
+    recordFailure(RankFinalizationFailureKind::Contract);
+    module->emitError()
+        << "rank_finalization_requires_canonical_instr_action: Tile "
+           "dataflow must be lowered exactly once while constructing the "
+           "canonical Instr parent";
+    return mlir::failure();
+  }
+  if (hasWholeVariantFacts(*module)) {
+    recordFailure(RankFinalizationFailureKind::WholeVariantFacts);
+    module->emitError()
+        << "rank_finalization_contains_whole_variant_facts: DDR placement and "
+           "Direct DTE bindings must be recomputed by coordinated admission";
+    return mlir::failure();
   }
 
-  if (finalized.empty() && requireReservedBaseline)
+  wafer::support::recordCompileWork(
+      wafer::support::CompileWorkKind::FinalizationCandidateClone);
+  clearRankCandidatePhysicalFacts(*module);
+  if (mlir::failed(mlir::verify(*module))) {
+    recordFailure(RankFinalizationFailureKind::Verification);
+    module->emitError(
+        "executable-finalization Instr parent failed verification");
     return mlir::failure();
-  if (!finalized.empty() && failure)
+  }
+
+  mlir::PassManager preparation(module->getContext());
+  wafer::support::attachCompileTiming(preparation,
+                                      "coordinated-rank-preparation");
+  wafer::buildPrepareScheduledRankCandidatePipeline(preparation);
+  if (mlir::failed(preparation.run(*module))) {
+    recordFailure(RankFinalizationFailureKind::FunctionBoundaryBufferization);
+    return mlir::failure();
+  }
+  if (mlir::failed(rebuildMinimumNCCJoins(*module))) {
+    recordFailure(RankFinalizationFailureKind::Completion);
+    return mlir::failure();
+  }
+  if (mlir::failed(mlir::verify(*module))) {
+    recordFailure(RankFinalizationFailureKind::Verification);
+    return mlir::failure();
+  }
+
+  mlir::PassManager spmPlanning(module->getContext());
+  wafer::support::attachCompileTiming(spmPlanning,
+                                      "coordinated-rank-spm-planning");
+  wafer::buildPlanSPMMemoryPipeline(spmPlanning);
+  spmPlanning.addPass(mlir::createCanonicalizerPass());
+  if (mlir::failed(spmPlanning.run(*module))) {
+    recordFailure(RankFinalizationFailureKind::SPMAllocation);
+    return mlir::failure();
+  }
+  if (hasWholeVariantFacts(*module)) {
+    recordFailure(RankFinalizationFailureKind::WholeVariantFacts);
+    module->emitError("rank_finalization_created_whole_variant_facts");
+    return mlir::failure();
+  }
+
+  analysis::InstructionProgramCost exactCost =
+      analysis::analyzeInstructionProgramCost(
+          module->getOperation(), analysis::getTargetScheduleCostPolicy());
+  if (std::optional<std::string> exactFailure =
+          getExactCostClosureFailure(exactCost)) {
+    recordFailure(RankFinalizationFailureKind::ExactCost);
+    module->emitError() << "rank_finalization_exact_cost: " << *exactFailure;
+    return mlir::failure();
+  }
+
+  if (failure)
     *failure = {};
-  return finalized;
+  return std::move(module);
 }
 
 } // namespace wafer::compiler::detail

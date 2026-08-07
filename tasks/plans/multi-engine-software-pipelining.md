@@ -4,7 +4,7 @@
 Direct-DTE与compute并行的剩余闭环已拆分到Q40，
 当前执行顺序以`tasks/progress.md`为准。
 
-Q49集成说明：本文闭合的worker/fixed-slot/ready-order mechanics只在terminal complete-rank Instr parent上派生siblings；
+Q49集成说明：本文闭合的worker/fixed-slot/ready-order mechanics只在executable-finalization complete-rank Instr parent上派生siblings；
 它们不独立选择region、tile、layout或residency。Q49 actual candidate的complete static rank entry可包含一个或多个
 non-nested `wafer.tile.region` SPM residency domains；region partition与tile、residency、materialization和communication由06联合选择并物化。
 software pipeline的stage、slot和traversal不机械创建或切分region，region boundary也不自动产生DDR movement或join。completion必须
@@ -427,7 +427,7 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
   steady/nonterminal join-op、steady/nonterminal/total participant waits和intrinsic drain；participant waits按
   `popcount(participant mask) * structured static execution multiplicity`逐rank精确展开，DTE event wait、CPU fence和
   cache publication不混入该指标。
-- Q49 C3在complete all-rank terminal variant上取max-rank steady/nonterminal/total participant waits及其
+- Q49 C3在complete all-rank finalized candidate上取max-rank steady/nonterminal/total participant waits及其
   critical-path位置作为completion主scope，join-op count只作次级结构统计，并同时审计aggregate waits。
   zero-wait只代表completion维度更好；它不能机械拒绝一个以更少all-rank DDR、更少max-rank GS或更高
   tile utilization换取必要wait的candidate。

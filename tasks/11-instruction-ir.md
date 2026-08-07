@@ -959,7 +959,7 @@ R3.2d 应实现为 MLIR DialectConversion：
 当前V0与终态扩展的mapping边界：
 
 下表collective三行记录instruction-level materialization合同，不构成instruction层的算法选择合同。Q32.M已删除
-public pass schedule option/parser；production decision owner从complete-rank terminal Tile actual parent为All-Gather Direct/Ring、
+public pass schedule option/parser；production decision owner从准入executable finalization的complete-rank Tile actual parent为All-Gather Direct/Ring、
 Reduce-Scatter Direct/Ring和All-Reduce Ring/Tree逐参数点建立完整all-rank actual Instr sibling，再依次执行
 worker/slot/order、fresh completion、SPM/DDR/all-rank/verifier/final-cost gates。IR-local conversion入口使用显式typed options
 重放单个参数点；rewrite后销毁参数/proposal，不保存selector或algorithm attr。Q36把这些普通C++参数
@@ -990,7 +990,7 @@ peer edge、message、local work和completion。
 算法优劣证明。equal-split all-to-all和collective-permute虽然在更早的structured→tile-region rewrite直接产生
 Instr DTE op，也遵守相同completion要求：conversion显式留下remote insert/recv、local copy/fill、effect与DTE exact wait；
 需要participant completion的cut由post-worker统一owner重建。same-worker RAW/WAR/WAW只保持issue order，不能依赖block order，
-也不能因terminal region结构边界插join。
+也不能因region exit结构边界插join。
 
 R3.2d.4 已覆盖 static movement descriptor splitting / packing：
 
@@ -1194,7 +1194,7 @@ event、transport和target binding均通过后，才由atomic commit构造all-an
 representative rank或byte-identical module不能替代未验证entry。
 
 Instruction op-local lowering不分配physical address range、不选择SPM bank phase、不选择DDR arena
-placement，也不绑定runtime symbol、packet bit或worker window。Q49 SPM allocator从每个terminal rank-entry Instr variant的
+placement，也不绑定runtime symbol、packet bit或worker window。Q49 SPM allocator从每个finalized rank-entry Instr candidate的
 全部SPM roots、lifetime/coexistence/conflict派生fixed problems并all-and-only放置；DDR另从current explicit
 arenas/placement domains派生problems；actual SPM high-water只作headroom。
 accepted-offset-derived bank phase若参与，只能作为hard-valid placements间的soft preference，不得改变spill/resident、region partition、

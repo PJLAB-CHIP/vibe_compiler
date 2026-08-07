@@ -203,8 +203,15 @@ PRODUCTION_PIPELINE_ANCHORS = (
     ),
     _anchor(
         "lib/Wafer/Compiler/ExecutableBundle.cpp",
-        "finalizeScheduledRankCandidateFrontier",
-        "selectAcceptedWholeVariant",
+        "CoordinatedDataflowSearchSession::create",
+        "beginCoordinatedExecutableFinalization",
+        "advanceCoordinatedExecutableFinalization",
+        "selectAdmittedCoordinatedExecutable",
+    ),
+    _anchor(
+        "lib/Wafer/Compiler/CoordinatedExecutableFinalization.cpp",
+        "beginCoordinatedExecutableFinalization",
+        "advanceCoordinatedExecutableFinalization",
     ),
     _anchor(
         "lib/Wafer/Pipelines/Pipelines.cpp",
@@ -828,18 +835,17 @@ FRONTEND_HOST_GATES = (
 )
 RELATION_HOST_GATES = (
     "unittests/Analysis/PhysicalDataflow/IndexRelationTest.cpp",
-    "unittests/Transforms/Scheduling/StructuredSchedulingScopeTest.cpp",
 )
 REWRITE_HOST_GATES = (
     "unittests/Transforms/PhysicalDataflow/CandidateRewritesTest.cpp",
-    "unittests/Transforms/Scheduling/RankCandidateFrontierTest.cpp",
 )
 ORDER_HOST_GATES = (
     "unittests/Transforms/PhysicalDataflow/ReadyOrderTest.cpp",
 )
 SELECTION_HOST_GATES = (
-    "unittests/Transforms/Scheduling/CandidateSelectionTest.cpp",
-    "unittests/Compiler/WholeVariantCoordinatorTest.cpp",
+    "unittests/Compiler/CoordinatedDataflowSearchTest.cpp",
+    "unittests/Compiler/CoordinatedExecutableAdmissionTest.cpp",
+    "unittests/Compiler/CoordinatedVariantSelectionTest.cpp",
     "unittests/Compiler/WholeVariantResourceAcceptanceTest.cpp",
 )
 MEMORY_HOST_GATES = (
@@ -862,8 +868,8 @@ PRODUCTION_OWNER_BY_AXIS = {
         "TargetImplementationKind::GenericReciprocal",
     ),
     "dependent-tiling-and-tail-coverage": _anchor(
-        "lib/Wafer/Transforms/Scheduling/CandidateSelection.cpp",
-        "rankRefinementDims",
+        "lib/Wafer/Compiler/CoordinatedDataflowSearch.cpp",
+        "buildStructuredTraversalProposals",
     ),
     "producer-fusion-and-relation-propagation": _anchor(
         "lib/Wafer/Conversion/WaferTensorProgramToTileRegion/TileMaterialization.cpp",
@@ -886,12 +892,12 @@ PRODUCTION_OWNER_BY_AXIS = {
         "TileRegionBodyEmitter::record",
     ),
     "movement-resident-cut-elimination": _anchor(
-        "lib/Wafer/Transforms/Scheduling/FullBufferHandoff.cpp",
-        "promoteFullBufferHandoffs",
+        "lib/Wafer/Compiler/CoordinatedDataflowSearch.cpp",
+        "materializeCompleteRankTileResidencySibling",
     ),
     "whole-tensor-share-winner": _anchor(
-        "lib/Wafer/Transforms/Scheduling/FullBufferHandoff.cpp",
-        "promoteFullBufferHandoffs",
+        "lib/Wafer/Compiler/CoordinatedDataflowSearch.cpp",
+        "CandidateTileResidencyAction::SelectiveSpill",
     ),
     "consumer-local-recompute-winner": _anchor(
         "lib/Wafer/Transforms/PhysicalDataflow/CandidateRewrites.cpp",
@@ -926,20 +932,20 @@ PRODUCTION_OWNER_BY_AXIS = {
         "scheduleIndependentInstructionsByReadyOrder",
     ),
     "static-fixed-slot-overlap-selection": _anchor(
-        "lib/Wafer/Compiler/WholeVariantCoordinator.cpp",
-        "compareQualifiedOverlapWindows",
+        "lib/Wafer/Compiler/CoordinatedExecutableFinalization.cpp",
+        "deriveFixedSlotAction",
     ),
     "collective-direct": _anchor(
         "lib/Wafer/Conversion/WaferTensorProgramToTileRegion/CollectiveLowering.cpp",
         "TileRegionBodyEmitter::convertAllReduce",
     ),
     "collective-ring-all-gather": _anchor(
-        "lib/Wafer/Transforms/Scheduling/CandidateEvaluation.cpp",
-        "CommunicationAlternative::Ring",
+        "lib/Wafer/Conversion/WaferTileRegionToInstr/CollectiveLowering.cpp",
+        "DTEProtocolPhase::AllGatherRing",
     ),
     "collective-ordered-tree-all-reduce": _anchor(
-        "lib/Wafer/Transforms/Scheduling/CandidateEvaluation.cpp",
-        "CommunicationAlternative::TreeAllReduce",
+        "lib/Wafer/Conversion/WaferTileRegionToInstr/CollectiveLowering.cpp",
+        "AllReduceSchedule::Tree",
     ),
     "stablehlo-normalization-and-canonicalization": _anchor(
         "lib/Wafer/Pipelines/Pipelines.cpp",
@@ -962,16 +968,16 @@ PRODUCTION_OWNER_BY_AXIS = {
         "scheduleIndependentInstructionsByReadyOrder",
     ),
     "resource-aware-neighbor-generation": _anchor(
-        "lib/Wafer/Transforms/Scheduling/CandidateSelection.cpp",
-        "enqueueRefinements",
+        "lib/Wafer/Compiler/CoordinatedDataflowSearch.cpp",
+        "buildLocalConnectionChoicePool",
     ),
     "bounded-joint-search-and-baseline-fallback": _anchor(
-        "lib/Wafer/Transforms/Scheduling/CandidateSelection.cpp",
-        "maxSearchCandidates",
+        "lib/Wafer/Compiler/CoordinatedDataflowSearch.cpp",
+        "deriveStructuralFrontier",
     ),
     "whole-variant-pareto-and-atomic-commit": _anchor(
-        "lib/Wafer/Compiler/WholeVariantCoordinator.cpp",
-        "selectAcceptedWholeVariant",
+        "lib/Wafer/Compiler/CoordinatedVariantSelection.cpp",
+        "selectAdmittedCoordinatedExecutable",
     ),
     "spm-lifetime-placement-and-packing": _anchor(
         "lib/Wafer/Transforms/SPM/PlanSPMMemory.cpp",
@@ -1209,7 +1215,7 @@ OPTIMIZATION_AXES = (
         ),
         host_assets=(
             "unittests/Conversion/CommunicationAlternativesTest.cpp",
-            "unittests/Compiler/WholeVariantCoordinatorTest.cpp",
+            "unittests/Compiler/CoordinatedExecutableFinalizationTest.cpp",
         ),
     ),
     _axis(

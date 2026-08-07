@@ -1,12 +1,14 @@
 //===- RedundantTransferElimination.cpp - Exact storage coalescing -------===//
 
-#include "Scheduling/ScheduleTensorProgramInternal.h"
+#include "Scheduling/RedundantTransferElimination.h"
 
 #include "MemoryPlanning/LifetimeAnalysis.h"
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
+#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -17,10 +19,12 @@
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
 
 #include <limits>
+#include <memory>
 #include <optional>
 
 namespace wafer::tensor_program_scheduling {

@@ -4,7 +4,9 @@ target_link_libraries(wafer-opt
   WaferIR
   WaferPipelines
   WaferTransforms
+  MLIRAffineDialect
   MLIRArithDialect
+  MLIRArithValueBoundsOpInterfaceImpl
   MLIRArithTransforms
   MLIRAsyncDialect
   MLIRBufferizationDialect

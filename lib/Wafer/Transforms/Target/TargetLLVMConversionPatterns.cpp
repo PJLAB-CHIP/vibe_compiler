@@ -58,6 +58,39 @@ getStaticViewDeltaBytes(mlir::Operation *op, mlir::MemRefType sourceType,
   return -(*sourceOffset - *resultOffset);
 }
 
+/// Collapse/expand preserve the address of the first element.  Once a
+/// dynamically-offset subview has been converted, its adaptor is already the
+/// exact dynamic i64 address, so an address-preserving shape view must forward
+/// that value instead of asking the types to recover a static offset.  A
+/// static/dynamic mismatch is not enough evidence that both types describe
+/// the same address and remains illegal.
+static mlir::FailureOr<int64_t>
+getAddressPreservingShapeViewDeltaBytes(mlir::Operation *op,
+                                        mlir::MemRefType sourceType,
+                                        mlir::MemRefType resultType) {
+  llvm::SmallVector<int64_t, 4> sourceStrides;
+  llvm::SmallVector<int64_t, 4> resultStrides;
+  int64_t sourceOffset = 0;
+  int64_t resultOffset = 0;
+  if (mlir::failed(mlir::getStridesAndOffset(sourceType, sourceStrides,
+                                             sourceOffset)) ||
+      mlir::failed(mlir::getStridesAndOffset(resultType, resultStrides,
+                                             resultOffset)))
+    return op->emitError()
+           << "unsupported_target_address: shape view requires strided "
+              "source and result memrefs";
+  const bool sourceDynamic = sourceOffset == mlir::ShapedType::kDynamic;
+  const bool resultDynamic = resultOffset == mlir::ShapedType::kDynamic;
+  if (sourceDynamic && resultDynamic)
+    return 0;
+  if (sourceDynamic != resultDynamic)
+    return op->emitError()
+           << "unsupported_target_address: address-preserving shape view "
+              "requires source and result layout offsets to both be static "
+              "or both be dynamic";
+  return getStaticViewDeltaBytes(op, sourceType, resultType);
+}
+
 static mlir::Value
 applyStaticAddressDelta(mlir::ConversionPatternRewriter &rewriter,
                         mlir::Location loc, mlir::Value source, int64_t delta) {
@@ -403,7 +436,8 @@ struct TargetCollapseShapeOpLowering
                 "element count and physical footprint";
 
     mlir::FailureOr<int64_t> delta =
-        getStaticViewDeltaBytes(collapseOp, sourceType, resultType);
+        getAddressPreservingShapeViewDeltaBytes(collapseOp, sourceType,
+                                                resultType);
     if (mlir::failed(delta))
       return mlir::failure();
     rewriter.replaceOp(collapseOp,
@@ -458,7 +492,8 @@ struct TargetExpandShapeOpLowering
                 "element count and physical footprint";
 
     mlir::FailureOr<int64_t> delta =
-        getStaticViewDeltaBytes(expandOp, sourceType, resultType);
+        getAddressPreservingShapeViewDeltaBytes(expandOp, sourceType,
+                                                resultType);
     if (mlir::failed(delta))
       return mlir::failure();
     rewriter.replaceOp(expandOp,

@@ -18,6 +18,11 @@ namespace wafer::tile_region_to_instr {
 
 namespace {
 
+/// Local compiler-resource guard for one relation decomposition. This is not
+/// an executable-program or workload legality limit: alternative tiling or a
+/// more compact target descriptor can still represent the logical movement.
+constexpr size_t kMaximumStaticMovementDescriptorMaterializations = 4096;
+
 struct DescriptorLoop {
   int64_t strideBytes = 0;
   int64_t iterations = 1;
@@ -842,7 +847,8 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
       llvm::SmallVector<DescriptorAxis, 8> remaining = axes;
       remaining.erase(remaining.begin() + index);
       for (int64_t iteration = 0; iteration < axis.count; ++iteration) {
-        if (descriptors.size() >= detail::kStaticTerminalOperationBudget)
+        if (descriptors.size() >=
+            kMaximumStaticMovementDescriptorMaterializations)
           return mlir::failure();
         std::optional<int64_t> sourceAdjustment =
             checkedSignedMul(axis.sourceStride, iteration);
@@ -895,7 +901,8 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
           llvm::SmallVector<DescriptorAxis, 8> remaining = axes;
           remaining.erase(remaining.begin() + index);
           for (int64_t iteration = 0; iteration < split.count; ++iteration) {
-            if (descriptors.size() >= detail::kStaticTerminalOperationBudget)
+            if (descriptors.size() >=
+                kMaximumStaticMovementDescriptorMaterializations)
               return mlir::failure();
             std::optional<int64_t> sourceAdjustment =
                 checkedSignedMul(split.sourceStride, iteration);
@@ -964,7 +971,8 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
       DescriptorAxis split = axes[splitIndex];
       axes.erase(axes.begin() + splitIndex);
       for (int64_t iteration = 0; iteration < split.count; ++iteration) {
-        if (descriptors.size() >= detail::kStaticTerminalOperationBudget)
+        if (descriptors.size() >=
+            kMaximumStaticMovementDescriptorMaterializations)
           return mlir::failure();
         std::optional<int64_t> sourceAdjustment =
             checkedSignedMul(split.sourceStride, iteration);
@@ -1078,7 +1086,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
     destType.print(typeStream);
     return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
         rewriter, op, failureReason,
-        llvm::Twine("static_terminal_budget_exceeded: ")
+        llvm::Twine("movement_descriptor_materialization_limit_exceeded: ")
             .concat(opLabel)
             .concat(" IndexRelation descriptor plan is not target-encodable "
                     "within 4096 commands")

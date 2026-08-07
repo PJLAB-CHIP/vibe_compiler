@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Sequence
 
 import torch
@@ -36,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
     parser.add_argument("--dump-compiler-ir", type=pathlib.Path)
     parser.add_argument("--compile-timing", action="store_true")
+    parser.add_argument("--require-implementation-alternative", action="store_true")
     parser.add_argument("--no-card", action="store_true")
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--expected-runtime-version", type=int)
@@ -77,13 +79,20 @@ def run(
     return result
 
 
-def prepare_work_dir(work_dir: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+def prepare_work_dir(work_dir: pathlib.Path) -> None:
     if work_dir.exists():
         shutil.rmtree(work_dir)
-    source = work_dir / "source-program"
-    package = work_dir / "package"
     work_dir.mkdir(parents=True)
-    return source, package
+
+
+def case_step_paths(
+    work_dir: pathlib.Path, *, step_index: int, is_chain: bool
+) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+    step_dir = (
+        work_dir / f"step_{step_index + 1:02d}" if is_chain else work_dir
+    )
+    step_dir.mkdir(parents=True, exist_ok=True)
+    return step_dir, step_dir / "source-program", step_dir / "package"
 
 
 def validate_structured_program(
@@ -167,6 +176,7 @@ def _boundary_tensor(
 def _boundary_maps(
     package: pathlib.Path,
     case: board_cases.PyTorchBoardCase,
+    expected_outputs: tuple[torch.Tensor, ...],
 ) -> tuple[dict[tuple[int, int], torch.Tensor], dict[tuple[int, int], torch.Tensor]]:
     metadata = json.loads(
         (package / "functions" / "forward.meta").read_text(encoding="utf-8")
@@ -179,7 +189,7 @@ def _boundary_maps(
             {(0, index): tensor for index, tensor in enumerate(case.inputs)},
             {
                 (0, index): tensor
-                for index, tensor in enumerate(case.expected_outputs)
+                for index, tensor in enumerate(expected_outputs)
             },
         )
     if boundary.get("logical_rank_count") != case.rank_count:
@@ -216,14 +226,14 @@ def _boundary_maps(
         if not isinstance(binding, dict):
             raise RuntimeError("distributed output binding must be an object")
         result_index = binding.get("result_index")
-        if not isinstance(result_index, int) or result_index >= len(case.expected_outputs):
+        if not isinstance(result_index, int) or result_index >= len(expected_outputs):
             raise RuntimeError("distributed result index is invalid")
         for rank in range(case.rank_count):
             key = (rank, result_index)
             if key in local_outputs:
                 raise RuntimeError(f"duplicate distributed output binding: {key}")
             local_outputs[key] = _boundary_tensor(
-                case.expected_outputs[result_index], binding, rank
+                expected_outputs[result_index], binding, rank
             )
     return local_inputs, local_outputs
 
@@ -277,8 +287,14 @@ def prepare_runtime_payloads(
     work_dir: pathlib.Path,
     package: pathlib.Path,
     case: board_cases.PyTorchBoardCase,
-) -> tuple[list[str], dict[pathlib.Path, torch.Tensor], set[int]]:
-    local_inputs, local_outputs = _boundary_maps(package, case)
+    expected_outputs: tuple[torch.Tensor, ...],
+) -> tuple[
+    list[str],
+    dict[pathlib.Path, torch.Tensor],
+    set[int],
+    dict[tuple[int, int], pathlib.Path],
+]:
+    local_inputs, local_outputs = _boundary_maps(package, case, expected_outputs)
     resources, output_ids = _manifest_resources(package, case)
     expected_keys = {
         *(rank_role_index for rank_role_index in (
@@ -299,6 +315,7 @@ def prepare_runtime_payloads(
     raw.mkdir()
     arguments: list[str] = []
     captures: dict[pathlib.Path, torch.Tensor] = {}
+    result_capture_paths: dict[tuple[int, int], pathlib.Path] = {}
     for key, resource in sorted(resources.items()):
         rank, role, index = key
         tensor = (
@@ -321,9 +338,30 @@ def prepare_runtime_payloads(
         )
         arguments.extend(["--output", f"{resource_id}={capture_path}"])
         captures[capture_path] = tensor
+        result_capture_paths[(rank, index)] = capture_path
     if len(captures) != len(output_ids):
         raise RuntimeError("PyTorch output captures are not all-and-only")
-    return arguments, captures, output_ids
+    return arguments, captures, output_ids, result_capture_paths
+
+
+def read_rank_one_continuation_outputs(
+    result_capture_paths: dict[tuple[int, int], pathlib.Path],
+    expected_outputs: tuple[torch.Tensor, ...],
+) -> tuple[torch.Tensor, ...]:
+    expected_keys = {(0, index) for index in range(len(expected_outputs))}
+    if set(result_capture_paths) != expected_keys:
+        raise RuntimeError(
+            "functional continuation requires complete rank-one result "
+            "captures"
+        )
+    return tuple(
+        common.read_tensor_raw(
+            result_capture_paths[(0, index)],
+            dtype=expected.dtype,
+            shape=expected.shape,
+        )
+        for index, expected in enumerate(expected_outputs)
+    )
 
 
 def verify_no_card(stdout: str, case: board_cases.PyTorchBoardCase) -> None:
@@ -366,13 +404,148 @@ def verify_board(
         )
 
 
+def prepare_case_step(
+    args: argparse.Namespace,
+    case: board_cases.PyTorchBoardCase,
+    *,
+    step_index: int,
+    step_dir: pathlib.Path,
+    source: pathlib.Path,
+    package: pathlib.Path,
+    dump_compiler_ir: pathlib.Path | None,
+) -> tuple[
+    tuple[torch.Tensor, ...],
+    list[str],
+    dict[pathlib.Path, torch.Tensor],
+    set[int],
+    dict[tuple[int, int], pathlib.Path],
+]:
+    step_number = step_index + 1
+    export_start_ns = time.monotonic_ns()
+    case.export_program(source)
+    print(
+        "pytorch-board-timing stage=source-export "
+        f"step={step_number} "
+        f"wall_ms={(time.monotonic_ns() - export_start_ns) // 1_000_000}"
+    )
+    compile_command = [
+        str(args.wafer_compile),
+        "--input-program-dir",
+        str(source),
+        "--output-program-dir",
+        str(package),
+        f"--execution-ranks={case.rank_count}",
+        f"--launch-kind={LAUNCH_KIND}",
+    ]
+    if args.compile_timing:
+        compile_command.append("--compile-timing")
+    if dump_compiler_ir is not None:
+        compile_command.extend(
+            ["--dump-compiler-ir", str(dump_compiler_ir)]
+        )
+    compile_result = run(
+        compile_command,
+        timeout_seconds=COMPILE_TIMEOUT_SECONDS,
+    )
+    if args.compile_timing:
+        print(compile_result.stderr, end="", file=sys.stderr)
+    if (
+        f"published verified package with execution-ranks={case.rank_count}"
+        not in compile_result.stdout
+    ):
+        raise RuntimeError("wafer-compile did not publish the PyTorch package")
+    if args.require_implementation_alternative and not re.search(
+        r"^wafer-compile: coordinated whole-rank selection .*"
+        r"implementation_alternative=true(?: |$)",
+        compile_result.stderr,
+        re.MULTILINE,
+    ):
+        # Preserve the compiler's exact rejection ledger and final selection
+        # evidence when this integration gate fails.  A successful compiler
+        # invocation is otherwise captured by the wrapper, which used to hide
+        # the only facts needed to distinguish failed materialization, a late
+        # exact-gate rejection, and a conservative baseline winner.
+        print(compile_result.stderr, end="", file=sys.stderr)
+        raise RuntimeError(
+            "production did not select an exact-admitted implementation "
+            "alternative"
+        )
+    if dump_compiler_ir is not None:
+        expected_stems = [f"rank_{rank:05d}" for rank in range(case.rank_count)]
+        tile_files = sorted(
+            (dump_compiler_ir / "tile-dataflow").glob("rank_*.mlir")
+        )
+        instruction_files = sorted(
+            (dump_compiler_ir / "instruction").glob("rank_*.mlir")
+        )
+        target_files = sorted(
+            (dump_compiler_ir / "target-llvm").glob("rank_*.ll")
+        )
+        if (
+            [path.stem for path in tile_files] != expected_stems
+            or [path.stem for path in instruction_files] != expected_stems
+            or [path.stem for path in target_files] != expected_stems
+            or any(
+                path.stat().st_size == 0
+                for path in (*tile_files, *instruction_files, *target_files)
+            )
+        ):
+            raise RuntimeError("compiler IR dump is incomplete")
+        for tile_file in tile_files:
+            tile_ir = tile_file.read_text(encoding="utf-8")
+            if "wafer.tile.region" not in tile_ir or "wafer.instr." in tile_ir:
+                raise RuntimeError(
+                    "compiler Tile/dataflow evidence is not a selected "
+                    "pre-Instr artifact"
+                )
+    validate_structured_program(package, case)
+
+    oracle_start_ns = time.monotonic_ns()
+    expected_outputs = case.materialize_expected_outputs()
+    print(
+        "pytorch-board-timing stage=torch-eager-reference "
+        f"step={step_number} "
+        f"wall_ms={(time.monotonic_ns() - oracle_start_ns) // 1_000_000}"
+    )
+    payload_start_ns = time.monotonic_ns()
+    (
+        resource_arguments,
+        captures,
+        output_ids,
+        result_capture_paths,
+    ) = prepare_runtime_payloads(
+        step_dir, package, case, expected_outputs
+    )
+    print(
+        "pytorch-board-timing stage=runtime-payload "
+        f"step={step_number} "
+        f"wall_ms={(time.monotonic_ns() - payload_start_ns) // 1_000_000}"
+    )
+    return (
+        expected_outputs,
+        resource_arguments,
+        captures,
+        output_ids,
+        result_capture_paths,
+    )
+
+
+def base_runtime_command(
+    wafer_run: pathlib.Path,
+    package: pathlib.Path,
+    case: board_cases.PyTorchBoardCase,
+) -> list[str]:
+    command = [str(wafer_run), "--package-dir", str(package)]
+    command.extend(
+        ["--entry-id", "0"] if case.rank_count == 1 else ["--all-ranks"]
+    )
+    return command
+
+
 def main() -> int:
     args = parse_args()
     if args.repeat < 1 or args.completion_timeout_ms < 1:
         raise RuntimeError("repeat and completion timeout must be positive")
-    if args.case != "rank-one-gemm":
-        os.environ.setdefault("CPU_NUM_DEVICES", str(board_cases.RANK_COUNT))
-        os.environ.setdefault("PJRT_DEVICE", "CPU")
     if not args.no_card and os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
         print("PyTorch board vertical hardware execution is not armed")
         return 77
@@ -388,116 +561,146 @@ def main() -> int:
             raise RuntimeError("board execution requires complete qualification arguments")
 
     dtype = board_cases.parse_torch_dtype(args.dtype)
+    case_start_ns = time.monotonic_ns()
     case = board_cases.make_case(args.case, dtype=dtype, seed=args.seed)
+    if case.rank_count > 1:
+        os.environ.setdefault("CPU_NUM_DEVICES", str(case.rank_count))
+        os.environ.setdefault("PJRT_DEVICE", "CPU")
+    print(
+        "pytorch-board-timing stage=case-materialization "
+        "step=1 "
+        f"wall_ms={(time.monotonic_ns() - case_start_ns) // 1_000_000}"
+    )
     if not args.no_card and args.expected_tile_count < case.rank_count:
         raise RuntimeError("PyTorch case exceeds the qualified tile count")
-    source, package = prepare_work_dir(args.work_dir)
-    case.export_program(source)
-    compile_command = [
-        str(args.wafer_compile),
-        "--input-program-dir",
-        str(source),
-        "--output-program-dir",
-        str(package),
-        f"--execution-ranks={case.rank_count}",
-        f"--launch-kind={LAUNCH_KIND}",
-    ]
-    if args.compile_timing:
-        compile_command.append("--compile-timing")
-    if args.dump_compiler_ir is not None:
-        compile_command.extend(
-            ["--dump-compiler-ir", str(args.dump_compiler_ir)]
+    is_chain = case.continuation_factory is not None
+    prepare_work_dir(args.work_dir)
+    current_case = case
+    step_index = 0
+    while True:
+        step_dir, source, package = case_step_paths(
+            args.work_dir,
+            step_index=step_index,
+            is_chain=is_chain,
         )
-    compile_result = run(
-        compile_command,
-        timeout_seconds=COMPILE_TIMEOUT_SECONDS,
-    )
-    if args.compile_timing:
-        print(compile_result.stderr, end="", file=sys.stderr)
-    if f"published verified package with execution-ranks={case.rank_count}" not in compile_result.stdout:
-        raise RuntimeError("wafer-compile did not publish the PyTorch package")
-    if args.dump_compiler_ir is not None:
-        expected_stems = [f"rank_{rank:05d}" for rank in range(case.rank_count)]
-        instruction_files = sorted(
-            (args.dump_compiler_ir / "instruction").glob("rank_*.mlir")
-        )
-        target_files = sorted(
-            (args.dump_compiler_ir / "target-llvm").glob("rank_*.ll")
-        )
-        if (
-            [path.stem for path in instruction_files] != expected_stems
-            or [path.stem for path in target_files] != expected_stems
-            or any(
-                path.stat().st_size == 0
-                for path in (*instruction_files, *target_files)
+        dump_compiler_ir = args.dump_compiler_ir
+        if dump_compiler_ir is not None and is_chain:
+            dump_compiler_ir = (
+                dump_compiler_ir / f"step_{step_index + 1:02d}"
             )
-        ):
-            raise RuntimeError("compiler IR dump is incomplete")
-    validate_structured_program(package, case)
-    resource_arguments, captures, output_ids = prepare_runtime_payloads(
-        args.work_dir, package, case
-    )
+        (
+            expected_outputs,
+            resource_arguments,
+            captures,
+            output_ids,
+            result_capture_paths,
+        ) = prepare_case_step(
+            args,
+            current_case,
+            step_index=step_index,
+            step_dir=step_dir,
+            source=source,
+            package=package,
+            dump_compiler_ir=dump_compiler_ir,
+        )
 
-    command = [str(args.wafer_run), "--package-dir", str(package)]
-    if case.rank_count == 1:
-        command.extend(["--entry-id", "0"])
-    else:
-        command.extend(["--all-ranks"])
-    if args.no_card:
-        if case.rank_count > 1:
+        command = base_runtime_command(
+            args.wafer_run, package, current_case
+        )
+        if args.no_card:
+            if current_case.rank_count > 1:
+                command.extend(
+                    [
+                        "--direct-dte-status-abi",
+                        DIRECT_DTE_STATUS_ABI,
+                        "--supports-host-watchdog",
+                    ]
+                )
+            command.append("--no-card")
+            result = run(command)
+            verify_no_card(result.stdout, current_case)
+            print(
+                f"pytorch_board_no_card: case={current_case.name} "
+                f"dtype={args.dtype} seed={args.seed} "
+                f"step={step_index + 1} "
+                "source_export=true torch_eager_reference=true "
+                "runtime_payload=true"
+            )
+            print(result.stdout, end="")
+            continuation_outputs = expected_outputs
+        else:
             command.extend(
                 [
-                    "--direct-dte-status-abi",
-                    DIRECT_DTE_STATUS_ABI,
-                    "--supports-host-watchdog",
+                    "--board",
+                    "--device-id",
+                    str(args.device_id),
+                    "--expected-runtime-version",
+                    str(args.expected_runtime_version),
+                    "--expected-device-name",
+                    args.expected_device_name,
+                    "--expected-pci-bus-id",
+                    args.expected_pci_bus_id,
+                    "--expected-tile-count",
+                    str(args.expected_tile_count),
+                    "--expected-runtime-library-sha256",
+                    args.expected_runtime_library_sha256,
+                    "--completion-timeout-ms",
+                    str(args.completion_timeout_ms),
+                    *resource_arguments,
                 ]
             )
-        command.append("--no-card")
-        result = run(command)
-        verify_no_card(result.stdout, case)
-        print(
-            f"pytorch_board_no_card: case={case.name} "
-            f"dtype={args.dtype} seed={args.seed} "
-            "source_export=true torch_eager_reference=true"
-        )
-        print(result.stdout, end="")
-        return 0
+            for iteration in range(args.repeat):
+                result = run(
+                    command,
+                    timeout_seconds=(
+                        args.completion_timeout_ms / 1000
+                        + PROCESS_TIMEOUT_MARGIN_SECONDS
+                    ),
+                )
+                verify_board(
+                    result.stdout,
+                    current_case,
+                    output_ids,
+                    captures,
+                )
+                print(
+                    f"pytorch_board_iteration: case={current_case.name} "
+                    f"dtype={args.dtype} seed={args.seed} "
+                    f"step={step_index + 1} "
+                    f"iteration={iteration + 1}/{args.repeat} "
+                    "torch_close=true"
+                )
+                print(result.stdout, end="")
+            continuation_outputs = (
+                read_rank_one_continuation_outputs(
+                    result_capture_paths, expected_outputs
+                )
+                if current_case.continuation_factory is not None
+                else expected_outputs
+            )
 
-    command.extend(
-        [
-            "--board",
-            "--device-id",
-            str(args.device_id),
-            "--expected-runtime-version",
-            str(args.expected_runtime_version),
-            "--expected-device-name",
-            args.expected_device_name,
-            "--expected-pci-bus-id",
-            args.expected_pci_bus_id,
-            "--expected-tile-count",
-            str(args.expected_tile_count),
-            "--expected-runtime-library-sha256",
-            args.expected_runtime_library_sha256,
-            "--completion-timeout-ms",
-            str(args.completion_timeout_ms),
-            *resource_arguments,
-        ]
-    )
-    for iteration in range(args.repeat):
-        result = run(
-            command,
-            timeout_seconds=(
-                args.completion_timeout_ms / 1000
-                + PROCESS_TIMEOUT_MARGIN_SECONDS
-            ),
-        )
-        verify_board(result.stdout, case, output_ids, captures)
+        continuation_factory = current_case.continuation_factory
+        if continuation_factory is None:
+            break
+        if current_case.rank_count != 1 or step_index != 0:
+            raise RuntimeError(
+                "functional state chain must be one bounded rank-one "
+                "continuation"
+            )
+        continuation_start_ns = time.monotonic_ns()
+        current_case = continuation_factory(continuation_outputs)
+        step_index += 1
         print(
-            f"pytorch_board_iteration: case={case.name} "
-            f"dtype={args.dtype} seed={args.seed} "
-            f"iteration={iteration + 1}/{args.repeat} torch_close=true"
+            "pytorch-board-timing stage=case-materialization "
+            f"step={step_index + 1} "
+            f"wall_ms="
+            f"{(time.monotonic_ns() - continuation_start_ns) // 1_000_000}"
         )
-        print(result.stdout, end="")
+        if (
+            not args.no_card
+            and args.expected_tile_count < current_case.rank_count
+        ):
+            raise RuntimeError("PyTorch continuation exceeds qualified tiles")
     return 0
 
 

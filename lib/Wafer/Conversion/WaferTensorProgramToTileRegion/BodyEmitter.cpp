@@ -565,6 +565,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
   }
 
   if (mlir::isa<mlir::affine::AffineApplyOp, mlir::arith::ConstantOp,
+                mlir::bufferization::MaterializeInDestinationOp,
                 mlir::bufferization::ToMemrefOp,
                 mlir::bufferization::ToTensorOp, mlir::tensor::EmptyOp,
                 mlir::memref::AllocOp, mlir::tensor::ExtractOp,
@@ -663,9 +664,31 @@ TileRegionBodyEmitter::finishRegion(TensorProgramScope scope,
       return fail("tensor program result has no output boundary");
     mlir::Value output = outputIt->second;
 
+    auto getReshapeBase = [](mlir::Value current) {
+      llvm::DenseSet<mlir::Value> visited;
+      while (visited.insert(current).second) {
+        if (auto collapse =
+                current.getDefiningOp<mlir::memref::CollapseShapeOp>()) {
+          current = collapse.getSrc();
+          continue;
+        }
+        if (auto expand =
+                current.getDefiningOp<mlir::memref::ExpandShapeOp>()) {
+          current = expand.getSrc();
+          continue;
+        }
+        break;
+      }
+      return current;
+    };
     if (auto directIt = directYieldBuffers.find(value);
         directIt != directYieldBuffers.end()) {
-      if (directIt->second != output)
+      // A functional result may add/remove unit dimensions after the target
+      // compute.  Its restored DPS destination is then an exact memref reshape
+      // view of the public output.  Compare typed SSA bases rather than raw
+      // value identity; arbitrary subviews or offset-changing aliases remain
+      // rejected.
+      if (getReshapeBase(directIt->second) != getReshapeBase(output))
         return fail("direct boundary storeback target mismatch");
       yieldedValues.push_back(output);
       continue;

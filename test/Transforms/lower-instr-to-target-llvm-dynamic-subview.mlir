@@ -153,16 +153,14 @@ func.func @lower_stage_shifted_dynamic_offset(
 
 func.func @reject_unsupported_dynamic_offset(
     %input: memref<4xf16, #wafer.memory<ddr, tensor>>,
-    %condition: i1) {
+    %condition_storage: memref<1xi32, #wafer.memory<ddr, tensor>>) {
   %c0 = arith.constant 0 : index
-  %c1 = arith.constant 1 : index
-  %c4 = arith.constant 4 : index
-  scf.for %i = %c0 to %c4 step %c1 {
-    %selected = arith.select %condition, %i, %c0 : index
-    %view = memref.subview %input[%selected] [1] [1]
-        : memref<4xf16, #wafer.memory<ddr, tensor>>
-       to memref<1xf16, strided<[1], offset: ?>, #wafer.memory<ddr, tensor>>
-  }
+  %condition_value = memref.load %condition_storage[%c0]
+      : memref<1xi32, #wafer.memory<ddr, tensor>>
+  %dynamic_offset = arith.index_cast %condition_value : i32 to index
+  %view = memref.subview %input[%dynamic_offset] [1] [1]
+      : memref<4xf16, #wafer.memory<ddr, tensor>>
+     to memref<1xf16, strided<[1], offset: ?>, #wafer.memory<ddr, tensor>>
   return
 }
 

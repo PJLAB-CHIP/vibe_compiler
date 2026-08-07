@@ -16,8 +16,8 @@ namespace wafer::support {
 /// not elapsed time, estimated target cycles, or persisted candidate state.
 enum class CompileWorkKind : size_t {
   CandidateExpandedState,
-  TerminalCandidateClone,
-  TerminalInstructionLowering,
+  FinalizationCandidateClone,
+  FinalizationInstructionLowering,
   SPMPlanning,
   DDRPlanning,
   Count,
@@ -25,8 +25,8 @@ enum class CompileWorkKind : size_t {
 
 struct CompileWorkStatistics {
   uint64_t candidateExpandedStates = 0;
-  uint64_t terminalCandidateClones = 0;
-  uint64_t terminalInstructionLowerings = 0;
+  uint64_t finalizationCandidateClones = 0;
+  uint64_t finalizationInstructionLowerings = 0;
   uint64_t spmPlanningInvocations = 0;
   uint64_t ddrPlanningInvocations = 0;
 };
@@ -48,8 +48,8 @@ public:
     };
     return {
         read(CompileWorkKind::CandidateExpandedState),
-        read(CompileWorkKind::TerminalCandidateClone),
-        read(CompileWorkKind::TerminalInstructionLowering),
+        read(CompileWorkKind::FinalizationCandidateClone),
+        read(CompileWorkKind::FinalizationInstructionLowering),
         read(CompileWorkKind::SPMPlanning),
         read(CompileWorkKind::DDRPlanning),
     };

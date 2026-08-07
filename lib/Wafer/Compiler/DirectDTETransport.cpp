@@ -3,6 +3,7 @@
 #include "DirectDTETransport.h"
 
 #include "AcceptedCallClosure.h"
+#include "Wafer/Transforms/MemoryPlanning/StaticIndexRange.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 
@@ -274,20 +275,47 @@ collectPlannedSPMRoots(mlir::Operation *op, mlir::Value value,
       "allocation or a static rotating slot family"));
 }
 
-static std::optional<uint64_t> getStaticTripCount(mlir::scf::ForOp loop) {
+struct StaticLoopBounds {
+  int64_t lower = 0;
+  int64_t upper = 0;
+  int64_t step = 0;
+};
+
+static std::optional<int64_t> getStaticIndexConstant(mlir::Value value,
+                                                     mlir::Operation *use) {
+  if (std::optional<int64_t> constant = mlir::getConstantIntValue(value))
+    return constant;
+  ::wafer::memory_planning::detail::StaticIndexRangeResult range =
+      ::wafer::memory_planning::detail::evaluateNonNegativeStaticIndexRange(
+          value, use);
+  if (!range.succeeded() || range.range.empty ||
+      range.range.min != range.range.max)
+    return std::nullopt;
+  return range.range.min;
+}
+
+static std::optional<StaticLoopBounds>
+getStaticLoopBounds(mlir::scf::ForOp loop) {
   std::optional<int64_t> lower =
-      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getLowerBound()));
+      getStaticIndexConstant(loop.getLowerBound(), loop);
   std::optional<int64_t> upper =
-      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getUpperBound()));
-  std::optional<int64_t> step =
-      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getStep()));
+      getStaticIndexConstant(loop.getUpperBound(), loop);
+  std::optional<int64_t> step = getStaticIndexConstant(loop.getStep(), loop);
   if (!lower || !upper || !step || *step <= 0)
     return std::nullopt;
-  if (*lower >= *upper)
+  return StaticLoopBounds{*lower, *upper, *step};
+}
+
+static std::optional<uint64_t> getStaticTripCount(mlir::scf::ForOp loop) {
+  std::optional<StaticLoopBounds> bounds = getStaticLoopBounds(loop);
+  if (!bounds)
+    return std::nullopt;
+  if (bounds->lower >= bounds->upper)
     return uint64_t{0};
-  __int128 span = static_cast<__int128>(*upper) - static_cast<__int128>(*lower);
-  __int128 count =
-      (span + static_cast<__int128>(*step) - 1) / static_cast<__int128>(*step);
+  __int128 span = static_cast<__int128>(bounds->upper) -
+                  static_cast<__int128>(bounds->lower);
+  __int128 count = (span + static_cast<__int128>(bounds->step) - 1) /
+                   static_cast<__int128>(bounds->step);
   if (count < 0 ||
       count > static_cast<__int128>(std::numeric_limits<uint64_t>::max()))
     return std::nullopt;
@@ -512,18 +540,14 @@ getStructuredLoopSite(mlir::Operation *issue) {
           "matched control instance");
 
     if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
-      std::optional<int64_t> lower = mlir::getConstantIntValue(
-          mlir::getAsOpFoldResult(loop.getLowerBound()));
-      std::optional<int64_t> upper = mlir::getConstantIntValue(
-          mlir::getAsOpFoldResult(loop.getUpperBound()));
-      std::optional<int64_t> step =
-          mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getStep()));
-      if (!lower || !upper || !step || *step <= 0)
+      std::optional<StaticLoopBounds> bounds = getStaticLoopBounds(loop);
+      if (!bounds)
         return issue->emitError(
             "direct_dte_acceptance: enclosing scf.for requires constant "
             "bounds and a positive constant step");
-      reversedLoops.push_back(StructuredLoopSite{
-          *lower, *upper, *step, getStructuredLoopSiblingOrdinal(loop)});
+      reversedLoops.push_back(
+          StructuredLoopSite{bounds->lower, bounds->upper, bounds->step,
+                             getStructuredLoopSiblingOrdinal(loop)});
     } else if (!mlir::isa<mlir::func::FuncOp, mlir::ModuleOp, TileRegionOp>(
                    parent) &&
                parent->getNumRegions() != 0) {
@@ -749,6 +773,30 @@ static mlir::LogicalResult buildDynamicMessageStreams(
   return mlir::success();
 }
 
+/// A structured transport proof has already established that every static
+/// issue is reached through the same non-empty call/region/loop occurrence on
+/// its peer and that no endpoint crosses a loop backedge. When every accepted
+/// endpoint has one invariant physical range, repeating that occurrence cannot
+/// change route selection. Keep one representative per static issue instead of
+/// materializing one DynamicIssue for every workload loop iteration.
+static bool buildInvariantMessageRepresentatives(
+    llvm::ArrayRef<IssueRecord> issues,
+    std::map<MessageBaseKey, DynamicMessageStream> &streams) {
+  if (llvm::any_of(issues, [](const IssueRecord &issue) {
+        return issue.rangePattern.ranges.size() != 1;
+      }))
+    return false;
+
+  for (auto [index, issue] : llvm::enumerate(issues)) {
+    DynamicMessageStream &stream = streams[issue.message];
+    auto &instances = issue.isSend ? stream.sends : stream.recvs;
+    instances.push_back(DynamicIssue{static_cast<unsigned>(index),
+                                     issue.rangePattern.ranges.front(),
+                                     /*selector=*/0});
+  }
+  return true;
+}
+
 static mlir::LogicalResult
 verifySenderResources(llvm::ArrayRef<IssueRecord> issues) {
   for (size_t leftIndex = 0; leftIndex < issues.size(); ++leftIndex) {
@@ -949,17 +997,12 @@ private:
   }
 
   mlir::LogicalResult traceLoop(mlir::scf::ForOp loop) {
-    std::optional<int64_t> lower = mlir::getConstantIntValue(
-        mlir::getAsOpFoldResult(loop.getLowerBound()));
-    std::optional<int64_t> upper = mlir::getConstantIntValue(
-        mlir::getAsOpFoldResult(loop.getUpperBound()));
-    std::optional<int64_t> step =
-        mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getStep()));
-    if (!lower || !upper || !step || *step <= 0)
+    std::optional<StaticLoopBounds> bounds = getStaticLoopBounds(loop);
+    if (!bounds)
       return loop.emitError(
           "direct_dte_acceptance: DTE-bearing caller loop requires constant "
           "bounds and a positive constant step");
-    if (*lower >= *upper)
+    if (bounds->lower >= bounds->upper)
       return mlir::success();
 
     // Every accepted issue has an exact later wait in the same block. Hence no
@@ -967,8 +1010,8 @@ private:
     // is a complete proof of every identical steady-state occurrence.
     const size_t pendingBefore = pending.size();
     occurrencePath.push_back(StructuredExecutionFrame{
-        StructuredExecutionFrameKind::Loop, *lower, *upper, *step,
-        getStructuredLoopSiblingOrdinal(loop)});
+        StructuredExecutionFrameKind::Loop, bounds->lower, bounds->upper,
+        bounds->step, getStructuredLoopSiblingOrdinal(loop)});
     mlir::LogicalResult result = traceBlock(loop.getRegion().front());
     occurrencePath.pop_back();
     if (mlir::failed(result))
@@ -1563,7 +1606,8 @@ acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> rankModules) {
     return TransportContract::None;
 
   std::map<MessageBaseKey, DynamicMessageStream> streams;
-  if (mlir::failed(buildDynamicMessageStreams(rankModules, issues, streams)))
+  if (!buildInvariantMessageRepresentatives(issues, streams) &&
+      mlir::failed(buildDynamicMessageStreams(rankModules, issues, streams)))
     return mlir::failure();
 
   llvm::SmallVector<std::pair<mlir::Operation *, DirectDTEBindingAttr>, 32>

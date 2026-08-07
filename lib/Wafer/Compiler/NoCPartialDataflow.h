@@ -10,6 +10,13 @@
 
 namespace wafer::compiler::detail {
 
+/// Read-only capability query over current all-rank canonical Instr SSA. It
+/// performs the same complete protocol/provenance proof as materialization and
+/// retains no Operation pointers after returning.
+bool hasNoCPartialReductionOpportunity(
+    llvm::ArrayRef<mlir::ModuleOp> modules,
+    const frontend::FrontendProgramVerificationResult &program);
+
 /// Removes a complete-rank partial-result DDR spill/reload cut only when the
 /// current instruction IR proves that every reloaded value feeds one explicit
 /// typed ordered-tree or ring all-reduce and reaches the verified output

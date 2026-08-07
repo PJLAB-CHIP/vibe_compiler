@@ -7,24 +7,24 @@
 # RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.package --execution-ranks=16 --launch-kind=kernel --optimization-preset=none 2>&1 | FileCheck %s
 # RUN: test -s %t.package/modules/module_00000.so
 
-# CHECK: wafer-compile: instruction-work scope=rank rank=0 instructions_sites=known:4 instructions_exact=known:4 instructions_lower=known:4 instructions_upper=known:4
-# CHECK-SAME: rdma_sites=known:1 rdma_exact=known:1
-# CHECK-SAME: wdma_sites=known:1 wdma_exact=known:1
-# CHECK-SAME: tdma_sites=known:1 tdma_exact=known:1
-# CHECK-SAME: gather_scatter_sites=known:1 gather_scatter_exact=known:1
+# CHECK: wafer-compile: instruction-work scope=rank rank=0 instructions_sites=known:4 instructions_exact=known:97 instructions_lower=known:97 instructions_upper=known:97
+# CHECK-SAME: rdma_sites=known:1 rdma_exact=known:32
+# CHECK-SAME: wdma_sites=known:1 wdma_exact=known:32
+# CHECK-SAME: tdma_sites=known:1 tdma_exact=known:32
+# CHECK-SAME: gather_scatter_sites=known:1 gather_scatter_exact=known:32
 # CHECK-SAME: ncc_join_sites=known:1 ncc_join_exact=known:1
 # CHECK-SAME: ddr_read_bytes=known:64 ddr_write_bytes=known:64
 # CHECK-SAME: gather_scatter_bytes=known:64
-# CHECK: wafer-compile: instruction-work scope=rank rank=1 instructions_sites=known:4 instructions_exact=known:4
-# CHECK: wafer-compile: instruction-work scope=rank rank=15 instructions_sites=known:4 instructions_exact=known:4
-# CHECK: wafer-compile: instruction-work scope=all-ranks instructions_sites=known:64 instructions_exact=known:64 instructions_lower=known:64 instructions_upper=known:64
-# CHECK-SAME: rdma_sites=known:16 rdma_exact=known:16
-# CHECK-SAME: gather_scatter_sites=known:16 gather_scatter_exact=known:16
+# CHECK: wafer-compile: instruction-work scope=rank rank=1 instructions_sites=known:4 instructions_exact=known:97
+# CHECK: wafer-compile: instruction-work scope=rank rank=15 instructions_sites=known:4 instructions_exact=known:97
+# CHECK: wafer-compile: instruction-work scope=all-ranks instructions_sites=known:64 instructions_exact=known:1552 instructions_lower=known:1552 instructions_upper=known:1552
+# CHECK-SAME: rdma_sites=known:16 rdma_exact=known:512
+# CHECK-SAME: gather_scatter_sites=known:16 gather_scatter_exact=known:512
 # CHECK-SAME: ncc_join_sites=known:16 ncc_join_exact=known:16
 # CHECK-SAME: ddr_read_bytes=known:1024 ddr_write_bytes=known:1024
 # CHECK-SAME: gather_scatter_bytes=known:1024
-# CHECK: wafer-compile: instruction-work scope=rank-maxima instructions_sites=known:4 instructions_exact=known:4 instructions_lower=known:4 instructions_upper=known:4
-# CHECK-SAME: rdma_sites=known:1 rdma_exact=known:1
-# CHECK-SAME: gather_scatter_sites=known:1 gather_scatter_exact=known:1
+# CHECK: wafer-compile: instruction-work scope=rank-maxima instructions_sites=known:4 instructions_exact=known:97 instructions_lower=known:97 instructions_upper=known:97
+# CHECK-SAME: rdma_sites=known:1 rdma_exact=known:32
+# CHECK-SAME: gather_scatter_sites=known:1 gather_scatter_exact=known:32
 # CHECK-SAME: ncc_join_sites=known:1 ncc_join_exact=known:1 ncc_join_lower=known:1 ncc_join_upper=known:1
-# CHECK: wafer-compile: compile-work candidate_expanded_states=1 terminal_candidate_clones=2 terminal_instr_lowerings=2 spm_planning_invocations=4 ddr_planning_invocations=18
+# CHECK: wafer-compile: compile-work candidate_expanded_states=0 finalization_candidate_clones=16 finalization_instr_lowerings=16 spm_planning_invocations=16 ddr_planning_invocations=16

@@ -1,6 +1,6 @@
 //===- RedundantTransferEliminationTest.cpp - Full-buffer copy tests -----===//
 
-#include "Scheduling/ScheduleTensorProgramInternal.h"
+#include "Scheduling/RedundantTransferElimination.h"
 
 #include "Wafer/InitAll.h"
 

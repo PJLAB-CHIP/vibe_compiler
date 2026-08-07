@@ -362,6 +362,24 @@ public:
     if (mlir::failed(insertDescriptors))
       return mlir::failure();
 
+    // An updated destination version can reuse its existing storage when all
+    // observations of the old version precede this insertion in the same
+    // block. This is the explicit destination-style case emitted for
+    // loop-carried tensor state; retaining a fresh result allocation there
+    // would create a dynamic allocation instance on every loop backedge.
+    bool canUpdateDestinationInPlace =
+        llvm::all_of(op.getDest().getUsers(), [&](mlir::Operation *user) {
+          return user == op.getOperation() ||
+                 (user->getBlock() == op->getBlock() &&
+                  user->isBeforeInBlock(op.getOperation()));
+        });
+    if (canUpdateDestinationInPlace) {
+      createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                     op.getDest(), *insertDescriptors);
+      rewriter.replaceOp(op, op.getDest());
+      return mlir::success();
+    }
+
     mlir::FailureOr<mlir::Value> result = createDestAlloc(
         op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
     if (mlir::failed(result))

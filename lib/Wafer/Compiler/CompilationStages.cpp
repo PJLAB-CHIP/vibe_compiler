@@ -10,6 +10,8 @@
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -31,6 +33,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
@@ -401,16 +404,18 @@ void eraseTargetTopologyAndExecutionMesh(mlir::ModuleOp module) {
 }
 
 void registerCompilationDialects(mlir::DialectRegistry &registry) {
-  registry.insert<mlir::arith::ArithDialect,
+  registry.insert<mlir::affine::AffineDialect, mlir::arith::ArithDialect,
                   mlir::bufferization::BufferizationDialect,
                   mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
                   mlir::LLVM::LLVMDialect, mlir::linalg::LinalgDialect,
                   mlir::math::MathDialect, mlir::memref::MemRefDialect,
-                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                  mlir::vector::VectorDialect>();
   wafer::registerAllDialects(registry);
   wafer::registerImporterDialects(registry);
   mlir::registerBuiltinDialectTranslation(registry);
   mlir::registerLLVMDialectTranslation(registry);
+  mlir::affine::registerValueBoundsOpInterfaceExternalModels(registry);
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::arith::registerValueBoundsOpInterfaceExternalModels(registry);
   mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
