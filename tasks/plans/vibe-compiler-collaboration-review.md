@@ -756,3 +756,45 @@ Pipeline position:
 - Fresh构建与结构检查确认：4页16:9、每页1张唯一新图、4份notes、PDF 4页、所有对象在页面边界内；原尺寸PNG
   复核未见裁切、遮挡或无法解释的空白占位。未执行compiler构建或板端测试，本轮没有产生新的硬件行为结论，
   无需更新`memory/`。
+
+## 20. 硬件知识建立与校准方法补充两页（2026-08-07）
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  用户提供的硬件资料、SDK接口与二进制逆向记录、当前硬件/编程模型文档、校准矩阵、probe与板端行为结论。
+- Current stage responsibility:
+  将“知识如何建立”和“硬件如何校准”分别组织成一页可独立演讲的技术材料，并用真实case解释方法为何必要。
+- Output artifact / IR:
+  独立2页PPTX/PDF、两张新Image2技术图、逐页PNG、source dossier和嵌入notes；不产生compiler program IR。
+- Downstream consumer:
+  用户自行合入主汇报，并面向compiler、runtime和hardware专家演讲。
+- User-level driver / named pipeline:
+  docs/presentations/2026-08-07-vibe-compiler-hardware-knowledge-calibration/build_deck.py。
+- Explicit non-goals:
+  不修改168页历史deck或4页开场材料；不执行新板测；不猜测芯片内部结构；不复用旧技术图；
+  不把单个probe结果提升为超出当前profile的硬件承诺。
+- Completion gate:
+  两页均有独立新图、充分中文正文、代表case和嵌入notes；映射、同步、cache与校准数字可追溯；
+  PPTX/PDF/PNG结构一致，原尺寸检查无裁切遮挡，图中没有虚构接口、路径、engine副本或无来源指标。
+```
+
+逐页内容合同：
+
+- **硬件知识体系的建立**：从原始文档、headers、SDK/build/linker信息和库文件出发，同时建立硬件模型与
+  编程模型；解释`nm`/`objdump`/`strings`、反汇编、调用关系和参数传播怎样补齐文档未写明的实现语义；用
+  `get_spm_memory_mapping`与`get_ddr_memory_mapping`对照说明“地址映射”在两个接口中并非同一动作；结尾落到
+  可持续维护的接口合同、结构体附录、symbol coverage、显式unknown与编号设计owner。
+- **硬件校准方法与覆盖**：先说明descriptor单位、数据方向、完成域、cache可见性、数值与物理写范围为什么不能
+  只由接口声明推断；再展示假设、最小probe、host oracle、完整package/no-card、单进程fresh板测和多维结果检查；
+  覆盖指令/数值、memory/descriptor、completion/sync、cache/publication、communication/performance，并用当前
+  profile的代表数字说明哪些结论已经进入verifier、lowering、scheduler/cost和runtime合同，哪些仍不能外推。
+
+完成记录：
+
+- 两页可见正文、逐页dossier、speaker notes和source map已经完成；正文保留SPM/DDR mapping的精确动作、五类校准
+  覆盖、39/39、58/58、24 cases/72 samples、18/18、12/12、两epoch 16/16与queue D=6/D=4等代表结果。
+- 两张新Image2技术图逐页生成并在原图上核对；第一页只画一个Tile、一个Kcore、一个NCC subsystem和一组五类
+  engine，第二页删除了无来源的Kcore cache层级命名，并明确D+1完成不证明resident window、full-card barrier不证明subgroup。
+- Fresh构建确认PPTX/PDF均为2页16:9，每页一张不同的高分辨率技术图和一份嵌入notes；逐页PNG与contact sheet
+  无裁切、遮挡或空白占位。未执行新compiler构建或板端case，也没有产生新的硬件行为结论，无需更新`memory/`。
