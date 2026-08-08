@@ -1,8 +1,8 @@
-# Wafer Target Topology 与 Execution Mesh 设计
+# Wafer Target Topology 与 Card-Partition Mesh 设计
 
-状态：2026-07-23按topology-aware communication consumer边界同步。本文只拥有`wafer.target.topology`和
-`wafer.execution.mesh`合同；tasks/14拥有current target identity，本层不把它复制进topology/mesh IR。
-calibration、accepted physical transport binding和多卡deployment均不属于本层；
+状态：2026-08-08 按logical card partition与physical Tile双域重置。本文拥有
+`wafer.target.topology`、card-level logical execution mesh以及两者的可重算基础事实；
+`tasks/06-physical-dataflow-synthesis.md`唯一拥有whole-card MPMD和时空搜索，tasks/14拥有current target identity。
 实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -10,50 +10,78 @@ calibration、accepted physical transport binding和多卡deployment均不属于
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  verified pre-SPMD StableHLO program directory，以及显式validated single-card ExecutionConfig；rank-count只能是1或16。
+  verified pre-SPMD StableHLO program directory，以及validated ExecutionConfig中的card-level num_partitions；
+  target identity由compiler内部固定，physical topology不由frontend参数伪造。
 - Current stage responsibility:
-  在transaction-owned program snapshot中建立或核对唯一、module-top-level的single-card target topology和
-  execution mesh；证明mesh rank domain与ExecutionConfig精确一致；在helper调用前临时从helper input副本移除
-  Wafer topology/mesh，helper返回后补回并重新verify。该stage不解释或传播target选择。
+  在transaction-owned program snapshot中建立或核对唯一module-top-level target topology和logical card-partition
+  mesh；分别验证physical card/Tile domain与num_partitions，禁止用同一rank count或endpoint tuple连接二者；
+  helper边界前后重建并验证所需facts。
 - Output artifact / IR:
-  `wafer.target.topology @default`和`wafer.execution.mesh @default_mesh`。它们只表达规则物理topology事实与
-  logical execution-rank domain，不是sharding plan、per-rank executable或runtime placement。
+  `wafer.target.topology @default`表达physical card/Tile topology；`wafer.execution.mesh @default_mesh`只表达
+  logical card-partition domain。两者都不是sharding strategy、selected Tile mapping、per-Tile executable或runtime placement。
 - Downstream consumer:
-  Q15的XLA SPMD helper调用与post-SPMD parameter-shard verifier；Q16从同一mesh domain派生
-  logicalRank=0..N-1的isolated static clones；communication candidate与whole-card cost从current
-  topology/mesh fresh派生rank endpoint和minimum-hop facts。
+  Shardy/XLA SPMD只消费logical card-partition mesh；whole-DAG physical-dataflow synthesis独立消费每个card-local DAG
+  和target topology的available physical tile_id domain，产生whole-card MPMD；target/package lowering再把selected
+  `(card_id, tile_id)`投影为当前ABI launch slot。
 - User-level driver / named pipeline:
-  正式入口为
-  `wafer-compile --execution-ranks={1|16} --launch-kind={kernel|model}`；两个执行字段都必须显式给出。
-  topology/mesh materialization passes及
-  `wafer-opt`只处理显式IR，用于debug/test，不能成为用户可选stage或production rank配置旁路。
+  正式入口为`wafer-compile --num-partitions=N --launch-kind={kernel|model}`。topology/mesh materialization passes和
+  `wafer-opt`只处理显式IR，用于debug/test，不能成为production placement旁路。
 - Explicit non-goals:
-  topology/mesh IR不表达target revision/ABI/capability fingerprint、SPM/DDR容量、calibration profile、rank class、DTE
-  route、physical transport binding、target module或runtime handle；不从axis名恢复dp/tp/pp语义，也不拥有
-  target identity registry。
+  本层不表达spatial work assignment、temporal tiling、fusion/SPM residency、route、DTE binding、cost、target ABI、
+  runtime handle或search state；不从axis名恢复dp/tp/pp语义，也不拥有multi-card deployment policy。
 - Completion gate:
-  rank-count=1/16均得到exact topology/mesh，已有不匹配、重复或nested事实fail closed；post-SPMD metadata中的
-  logical_rank_count与mesh一致；Q15最终structured tensor program重新parse后仍通过同一exact-config gate；
-  current target identity由compiler在target preparation形成并由artifact readback exact-match；
-  通用analysis对mesh/torus、explicit placement和unavailable detour给出一致、可重算的rank mapping与shortest-hop结果。
+  num_partitions与logical mesh exact-match；physical topology独立给出稳定card_id/tile_id与availability；
+  single-card num_partitions=1和16个available Tile同时合法且不存在count-equality gate；helper readback仍满足logical
+  partition合同；下游selected MPMD与late launch projection分别验证physical Tile coverage和slot双射。
 ```
 
-## 2. 当前 Single-Card 配置
+## 2. 两个互不混淆的 topology domain
 
-`ExecutionConfig`是factory-only C++ value，没有默认构造或隐式rank 0。当前已验证Q15实现只携带rank-count并接受：
+### 2.1 Logical card-partition mesh
 
-| 请求 | target topology | execution mesh |
-| --- | --- | --- |
-| `execution-ranks=1` | 1×1 card，每card 4×4 tile，无unavailable tile | axis `rank`、shape `[1]`、`explicit` endpoint `(0,0,0,0)` |
-| `execution-ranks=16` | 同一1×1 card / 4×4 tile topology | axis `rank`、shape `[16]`、`all_available`，不保存expanded endpoints |
+`wafer.execution.mesh`保存GSPMD使用的逻辑mesh：
 
-两个配置走同一个typed driver和相同验证路径；1-rank不是debug fallback，16-rank也不是默认。其它rank-count可以
-出现在IR-local topology/mesh verifier测试，但不属于当前用户driver支持面。
+- 唯一、非空axis列表；
+- 与axis数相同的正整数shape；
+- shape product精确等于`ExecutionConfig.numPartitions`。
 
-factory输入只含`rankCount`，不接受target字符串。topology/mesh只投影rank/topology字段；current target identity
-在后续target preparation由compiler固定形成，helper前后无需传播或重建。
+axis只标识logical partition dimension，不等同于`dp`、`tp`或任何model strategy。linear
+`partition_id=0..N-1`由mesh coordinates稳定线性化，仅用于global-to-card-local tensor relation。mesh不携带
+Tile coordinate、Tile endpoint、physical route或launch slot。
 
-Q15要求production module中的facts精确为：
+当前single-card production使用`num_partitions=1`：
+
+```mlir
+wafer.execution.mesh @default_mesh {
+  axes = ["card_partition"],
+  shape = array<i64: 1>
+}
+```
+
+这里的`1`和单卡available Tile数量没有关系。未来logical multi-card mesh可以有更大shape，但只有card placement、
+cross-card transport和runtime同时闭合后才进入production。若需要把logical partition放到physical card，必须形成
+独立typed card-placement artifact；不得重新把Tile coordinate塞回execution mesh。
+
+### 2.2 Physical card/Tile topology
+
+`wafer.target.topology`描述target固有的规则物理资源：
+
+- `card_grid = [card_rows, card_cols]`；
+- `card_interconnect = mesh | torus`；
+- `tile_grid = [tile_rows, tile_cols]`；
+- `unavailable_tiles`按`card_y, card_x, tile_y, tile_x`四元组展开。
+
+verifier要求grid为正整数、interconnect属于closed set、unavailable coordinate在范围内且无重复。规则adjacency由
+grid和interconnect推导，不另存links边表；topology不保存SPM容量、engine count、packet limit、cost或runtime状态。
+
+physical identity由topology稳定导出：
+
+- `card_id`是physical card domain中的稳定ID；
+- 每个card有独立的local `tile_id` domain，available set由grid减去unavailable coordinates；
+- topology analysis提供`card_id/tile_id`与physical coordinate的双向查询以及available adjacency；
+- unavailable Tile不重编号其它physical Tile，不能通过“第几个available endpoint”恢复`tile_id`。
+
+当前target是1×1 card、每card 4×4 Tile且没有unavailable Tile：
 
 ```mlir
 wafer.target.topology @default {
@@ -62,131 +90,97 @@ wafer.target.topology @default {
   tile_grid = array<i64: 4, 4>,
   unavailable_tiles = array<i64>
 }
-
-// rank-count = 16
-wafer.execution.mesh @default_mesh {
-  topology = @default,
-  axes = ["rank"],
-  shape = array<i64: 16>,
-  policy = "all_available",
-  endpoints = array<i64>
-}
-
-// rank-count = 1 uses the same symbols/topology with:
-// shape = array<i64: 1>, policy = "explicit",
-// endpoints = array<i64: 0, 0, 0, 0>
 ```
 
-已有topology/mesh不能仅因shape product相同就被接受。symbol、topology reference、grid、interconnect、
-unavailable set、axis、shape、policy和endpoint tuple必须逐项相同。module必须各有且仅有一个直接top-level
-topology/mesh；nested op不是另一种合法scope，必须拒绝。
+因此single-card physical domain有一个`card_id`和16个available `tile_id`；这不产生16个logical partitions。
+通用topology op可表达multi-card、torus和unavailable coordinate，只证明表示与verifier能力，不代表multi-card
+SPMD、transport或runtime已经实现。
 
-## 3. 通用 IR 合同
+### 2.3 明确禁止的旧等式
 
-### 3.1 `wafer.target.topology`
+旧whole-rank架构中把logical execution identity直接绑定physical Tile的合同全部删除，具体包括：
 
-该module-level symbol op保存规则拓扑：
+- `execution-ranks in {1,16}`；
+- logical mesh的shape product被要求等于available Tile数量；
+- logical execution identity被映射成包含Tile坐标的四元组；
+- 第一个logical execution实例绑定Tile `(0,0)`，或16个实例按行主序绑定16个Tile；
+- logical program数量被要求等于physical launch数量；
+- collective `rank_group`直接作为NoC peer/route。
 
-- `card_grid = [card_rows, card_cols]`；
-- `card_interconnect = mesh | torus`；
-- `tile_grid = [tile_rows, tile_cols]`；
-- `unavailable_tiles`按`card_y, card_x, tile_y, tile_x`四元组展开。
+logical `partition_id`、physical `card_id`和local physical `tile_id`即使某个single-card case里数值偶然相同，也不能
+跨domain比较、复制或通过文件/vector位置恢复。
 
-verifier要求两个grid各有两个正整数，interconnect属于closed set，每个unavailable coordinate在grid内且
-没有重复。规则adjacency由grid和interconnect推导，不另存links边表；topology不保存SPM容量、engine count、
-packet limit、cost或runtime provider状态。
+## 3. 可重算的 topology analysis
 
-当前production固定single-card 4×4且没有unavailable tile。通用op仍保留multi-card grid、torus和unavailable
-coordinate的IR-local表达能力，这只证明表示与verifier，不代表多卡SPMD、transport或runtime已实现。
+下游共享只读analysis从current module的唯一target topology派生：
 
-### 3.2 `wafer.execution.mesh`
+- physical card与Tile ID/coordinate双向映射；
+- 每个card的available Tile set和on-card邻接图；
+- 任意两个selected physical Tile之间的minimum-hop distance；
+- 对multi-card IR-local topology，card interconnect和同local-coordinate Tile之间的基础邻接。
 
-该module-level symbol op引用一个topology并保存：
+这些结果可失效、可重算且不写入IR。minimum hop只表示typed graph上不可避免的link traversal；在IR没有route
+policy时，不从它伪造实际N/S/E/W route、per-link congestion、cycle或时间。collective topology、redistribution、
+multicast、gather/reduction的候选与选择属于communication/physical-dataflow owner；本层只提供合法physical graph
+query，不保存ring、tree、rank order或selected path。
 
-- 唯一非空axis名列表；
-- 与axis数相同的正整数shape；
-- `all_available`或`explicit` policy；
-- 仅`explicit`使用的logical-rank顺序endpoint tuples。
+logical mesh的analysis只提供partition coordinate与linear `partition_id`。它不查询Tile graph。只有下游已形成
+`wafer.card.program`及其selected `wafer.tile.program(tile_id=...)`后，communication analysis才用physical Tile set
+查询距离和邻接。
 
-shape product是logical rank count。`all_available`不携带endpoint tuples，rank count必须等于topology的available
-endpoint数，且这些endpoint在derived graph中连通。`explicit`的tuple数必须等于rank count；每个endpoint必须
-在grid内、available、唯一，并属于同一connected component。
+## 4. Helper 与 structured-program 交接
 
-axis名只标识mesh dimension，不等同于`dp`、`tp`或任何model strategy。当前production统一使用单axis
-`rank`；frontend sharding和XLA helper决定tensor如何使用rank domain，topology/mesh层不切tensor。
-
-### 3.3 可重算的 execution-topology analysis
-
-下游不得各自复制rank mapping或按logical rank编号猜physical邻接。共享只读analysis从current module的唯一
-execution mesh及其引用topology派生：
-
-- `logical rank -> (card_y, card_x, tile_y, tile_x)`；`all_available`按规则线性endpoint顺序跳过
-  unavailable coordinate，`explicit`严格保持IR中tuple顺序；
-- available endpoint graph；tile grid使用同card四邻接，card mesh/torus在相同tile coordinate之间连接；
-- 任意两个logical rank endpoint之间的shortest-hop distance。
-
-这些结果可失效、可重算且不写入IR。shortest-hop只表示当前typed graph上不可避免的minimum link traversal；
-在IR没有route policy时，不从它伪造实际N/S/E/W route、per-link congestion、cycle或带宽时间。若未来需要任意
-带权/不规则graph或确定route，必须扩展本层typed topology合同并同步verifier，不能靠target identity名、side table
-或特定卡编号补猜。
-
-communication consumer可在一次rewrite调用内继续从上述距离和current `rank_group`派生有界参数。当前
-`CollectiveTopologyAnalysis`对不超过16 rank的Ring求exact minimum-total-hop Hamiltonian cycle；对Tree则以
-`rank_group`连续区间做动态规划，枚举其中序遍历严格等于`rank_group`的全部有序二叉树，先最小化edge的
-shortest-hop总和，再依次以最大root distance、root distance总和和logical-rank次序确定性解平局。这个Tree不是
-先构造无序MST再选择center，也不固定root 0、XOR/binomial关系；root、parent和左右children都是本次analysis结果。
-这些参数仍属于tasks/13的collective rewrite，不进入topology/mesh IR。
-
-## 4. Q15 Driver 交接
-
-Q15遵循以下顺序：
+frontend driver遵循以下顺序：
 
 1. 创建source program的transaction-owned snapshot；
 2. parse/verify source IR与program metadata；
-3. 若topology/mesh缺失，按validated `ExecutionConfig`materialize exact facts；若已有，要求唯一且逐字段一致；
-4. 再次运行MLIR verifier和exact-config check；
-5. 复制出helper input，并从该副本移除Wafer topology/mesh，因为pinned XLA helper不消费Wafer dialect；
-6. helper返回post-SPMD program后补回同一exact topology/mesh；
-7. 在mesh存在时校验parameter shard `logical_rank_count`、rank domain和payload；
-8. local normalization和structured tensor program legality通过后，写出、重新parse并再次执行exact-config与program verification；
-9. 全部通过才发布Q15 structured tensor program directory。
+3. 按validated `ExecutionConfig.numPartitions`建立或核对logical card-partition mesh；
+4. 从current target identity独立materialize/verify target topology；
+5. 复制helper input，只传helper能解释的StableHLO、sharding和logical partition配置；
+6. helper返回post-SPMD card-local programs后，重建并核对同一logical mesh和target topology；
+7. 校验distributed boundary、parameter shard partition domain和payload；
+8. local normalization和structured legality通过后写出、重新parse并再次执行exact-config/program verification；
+9. 全部通过才发布card-local structured-program directory。
 
-因此topology/mesh既不是传给helper的opaque sidecar，也不是helper必须保留的unknown op。它们由typed driver拥有，
-在helper边界两侧分别materialize并验证。helper path、output path和pass名不进入`ExecutionConfig`或IR。
+topology/mesh不是helper必须保留的unknown op，也不是opaque sidecar。logical partition配置由typed driver拥有；
+physical topology可以在helper边界后fresh重建，因为helper不消费physical Tile语义。helper path、output path和pass名不
+进入`ExecutionConfig`或IR。
 
-## 5. Q16 与后续阶段边界
+## 5. Whole-card MPMD 与 late projection
 
-Q15到此只形成verified structured tensor program。Q16直接从`ExecutionConfig.rankCount`/mesh shape派生完整rank domain，
-对每个`logicalRank`建立isolated module clone并执行candidate、tile/instruction/memory/completion gates。禁止：
+对每个card-local structured DAG，下游产生一个`wafer.card.program(card_id=...)`，内部包含selected
+`wafer.tile.program(tile_id=...)`。不同Tile program可以包含不同op、loop和work domain；完整语义覆盖、跨Tile消息、
+SPM ownership和completion由whole-card verifier证明。具体搜索状态、候选生成、fusion/residency和cost只在
+`tasks/06-physical-dataflow-synthesis.md`定义，本文不复制。
 
-- 只编rank 0；
-- 用filename、symbol spelling或pass默认值恢复rank；
-- 一个clone失败后保留其它rank的partial bundle；
-- 把mesh op当成per-rank executable或physical transport assignment。
+selected card program之后才执行physical-Tile projection：
 
-Q16产出move-only `RankExecutable[]`和共同拥有MLIRContext的atomic `ExecutableBundle`；vector顺序和每个record的
-logical rank必须严格为`0..N-1`，即使replicated modules字节相同也不去重。Q17才把每rankaccepted instruction
-module转成verified target artifacts；Q18才定义manifest和runtime binding。topology/mesh可以作为这些阶段的已验证
-输入，但当前没有target capability op、accepted physical transport binding、rank class或relocation protocol。
+```text
+wafer.card.program(card_id)
+  + wafer.tile.program(tile_id)*
+  -> per-physical-Tile instruction modules
+  -> target lowering maps (card_id, tile_id) to ABI launch slot
+```
 
-current target identity/Kernel Runtime ABI已经是tasks/14 target conversion和Q22 model的真实consumer，但identity只作为
-`ExecutionConfig`中的typed ID传递，不进入topology/mesh op。bad-tile deployment或multi-card transport未来成为真实
-consumer时仍需扩展对应owner。不得把历史environment fingerprint、projection set、calibration profile或WCRE identity
-重新写进当前topology/mesh合同。
+projection必须all-and-only覆盖selected Tile programs、拒绝duplicate/unavailable Tile，并证明每个physical program与
+launch slot一一对应。launch slot只是最低层ABI编码，不能反向进入logical mesh、structured DAG或search identity。
 
-## 6. Verifier 与失败语义
+`num_partitions=1`的source因此可以合法产生多个甚至全部16个physical Tile launch entries；反之，一个未来
+`num_partitions>1`的program也不能据partition count猜每张card使用多少Tile。
+
+## 6. Verifier 与验证
 
 必须覆盖：
 
-- grid rank/positive值、interconnect enum、unavailable tuple/range/duplicate；
-- unknown topology ref、empty/duplicate axis、shape rank/product overflow；
-- `all_available`携带endpoint、rank count不等或disconnected；
-- `explicit` tuple count/range/unavailable/duplicate/disconnected；
-- production rank 1/16 exact materialization；
-- source中duplicate topology、duplicate mesh、mesh-before-topology、nested topology/mesh；
-- topology任一field、mesh symbol/ref/axis/shape/policy/endpoint与`ExecutionConfig`不符；
-- post-SPMD shard logical rank count与mesh不符；
-- final structured tensor program readback仍满足exact config。
+- topology grid rank/positive、interconnect enum、unavailable tuple/range/duplicate；
+- stable physical card_id/tile_id、available set和adjacency，unavailable Tile不导致其它ID重编号；
+- execution mesh empty/duplicate axis、shape rank/product overflow、shape product与`num_partitions`不符；
+- source中的duplicate/nested topology或mesh、helper前后/final readback不一致；
+- single-card `num_partitions=1`与16个available Tile同时通过，且没有count-equality或rank-to-Tile mapping；
+- post-SPMD boundary/parameter shard的partition domain与logical mesh不符时fail closed；
+- downstream duplicate/unavailable selected Tile与不完整physical projection fail closed；
+- 旧whole-rank入口、四元组logical endpoint、identity直绑Tile的fixture和依赖这些事实的旧golden被删除或改写。
 
-任一失败发生在transaction staging内，source和已存在final output保持byte-identical。IR-local pass success只证明
-op合同；只有统一driver从真实program重放helper、metadata、structured program和final readback才能完成Q15 gate。
+任一frontend失败发生在transaction staging内，source和既有final output保持byte-identical。IR-local pass success只证明
+op或analysis合同；只有统一driver从真实program重放helper、metadata、structured program和final readback才完成
+frontend gate。whole-card MPMD、projection和package completion由各自owner的integration gate证明。

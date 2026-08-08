@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-08-06
+更新时间：2026-08-08
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -30,9 +30,9 @@ Q42 + Q39 -> Q40 composed search and DTE overlap             [board-ready]
 Q15 + Q18 + Q35 -> Q44 PyTorch source board verticals        [board-ready]
 Q32 + Q37 -> Q46 layout movement elimination                 [board-ready]
 Q46 compiler closure -> Q47 target ABI retirement            [board-ready]
-Q32 + Q38-Q41 + Q46/Q47 compiler closure
-  -> Q49 whole-rank tile-dataflow synthesis                  [board-ready]
-Q49 board-ready compiler cutover + Q47 compiler ABI closure satisfied; Q48 not started
+Q32 + Q38-Q41 + Q46/Q47 compiler mechanics
+  -> Q49 whole-DAG multi-Tile spatiotemporal synthesis       [doing]
+Q49 new whole-DAG compiler cutover + Q47 compiler ABI closure
   -> Q48 semantic superoptimization                          [later]
 Q45 compiler terminology and naming                           [later]
 ```
@@ -48,7 +48,7 @@ Q45 compiler terminology and naming                           [later]
 | Q41 | `compiler-search-scalability` | `board-ready` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 默认关闭的stage/pipeline/pass/analysis/candidate详细计时、active诊断、Markdown汇总、sharded低扰动聚合、symbolic movement descriptor及request-sharded finalization均已闭合；实际Llama-2 7B TP16 production compile为493.374秒，完整schema-v7 package与fresh no-card通过。计时、bounded executor、RSS和diagnostics由Q49复用；pre-Q49独立optimization names现只作为历史证据，current public policy已收口为`production`/`none`。后续剪枝仍不得按shape/op/name恢复语义。真实板端exact-output及winner profile尚未执行，不得标`done`。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
 | Q44 | `pytorch-source-board-verticals` | `board-ready` | Q15、Q18、Q35；Q41通用movement lowering与compile scalability | 集中的PyTorch source case、固定seed随机输入、case-owned dtype、同module/op eager参考结果、output-only capture及原dtype/shape `torch.testing`比较已经闭合；rank-one GEMM、`4096³` K-sharded GEMM/AllReduce和实际Llama-2 7B Megatron TP16均由真实PyTorch/XLA exporter完成production package与fresh no-card。Llama package为16-rank cluster prepare/main、每rank 18 slots及typed rank-row pointer ABI。三个case真实板端完整capture/eager comparison尚未执行，不得标`done`。 | 02、15-16；`tasks/plans/pytorch-source-board-verticals.md` |
 | Q46 | `layout-movement-elimination` | `board-ready` | Q32、Q37；复用Q41已闭合的compiler-side有界搜索与计时基础 | 唯一`MemLayout`事实源、exact unary relation motion与mutation barrier、typed layout PBQP/Top-4、implementation/layout actual recipe联合候选、fanout双版本共享、bitpacked blocked traversal、Tree AllReduce full-footprint及跨rank physical payload gate已闭合；FP16 `GEMM -> square -> GEMM`同源双package/fresh no-card通过，winner保持非layout call inventory并将gather/scatter从7降到4。真实板端exact output/guard和matched baseline/winner性能尚未执行，不得标`done`。 | 06-08、10-11、13-14、16-17；`tasks/plans/layout-movement-elimination.md` |
-| Q49 | `whole-rank-tile-dataflow-synthesis` | `board-ready` | Q32 actual-clone/relation/mechanism/exact-gate基础；Q38–Q40 execution/NoC/overlap机制；Q41计时、并发与配置基础；Q46/Q47 compiler-side current合同。Q40/Q41/Q46/Q47尚缺的板端外部门禁不阻塞本项compiler closure | C0–C6 compiler cutover已经闭合：唯一all-rank coordinator/global ledger、pre-materialization structural frontier、有界actual-clone admission、typed implementation/communication provider、common exact gates和hardware-cost selector已成为production路径；public控制面仅`production|none`，旧per-task/rank-frontier/attempt-plan/late-NoC tuple owner及独立optimization flags已删除。8个logical workloads生成10个fresh packages并全部通过no-card：异构非Attention rank-1 FP16与TP16 BF16、official HF prefill rank-1 FP16/BF16、两步functional decode rank-1 FP16/BF16、official HF Llama-2 7B block TP16 FP16/BF16。prefill和functional decode均由production actual-select implementation sibling；Llama blocks只作为多元workload/完整pipeline gate，不要求算法alternative获胜。真实板端matched Llama baseline/winner A/B及functional decode representative尚未执行，因此不得标`done`。Q49的`board-ready`已满足Q48依赖，但不自动启动Q48。 | 01、06-13、16、18；`tasks/plans/whole-rank-tile-dataflow-synthesis.md` |
+| Q49 | `whole-dag-multi-tile-synthesis` | `doing` | Q32 relation/actual-clone/exact-gate mechanics；Q38–Q40 worker/NoC/overlap mechanics；Q41 bounded execution/计时；Q46/Q47 layout与ABI mechanics | 重建card-level GSPMD之后的whole-DAG event-driven时空综合：增加card/tile MPMD IR，联合搜索不同op并行、intra-op spatial mapping、temporal tile、fusion/SPM residency、NoC与buffered overlap；复用并简化现有理论cost，删除performance Unknown。旧C0–C6和10个no-card package只作mechanics历史证据，不能证明新架构完成。完成要求是旧rank==Tile/late selector全部删除，通用DAG与HF/Llama fresh package/no-card达到`board-ready`，Llama及一个prefill/decode代表matched板端A/B获得可重复改善后才`done`。 | 01、03-13、16、18；`tasks/plans/whole-rank-tile-dataflow-synthesis.md` |
 
 ## Later / External Gates
 
@@ -64,7 +64,7 @@ Q45 compiler terminology and naming                           [later]
 | Q32.T | `compiler-transform-control` | `later` | Q32、明确的external control-plane consumer | 复用现有rewrite/conversion；Transform IR不保存frontier、不替代all-rank coordinator。 | 01、05-08、10、16、18 |
 | Q45 | `compiler-terminology-and-naming` | `later` | Q41完成或暂停、明确独立迁移窗口 | 审计当前source、IR、analysis、transformation、conversion、diagnostic和设计文档中的长期命名；重点清理将执行范围、实现过程和临时产物混成概念的`rank-artifact-*`、`all-rank-*-synthesis`、`*-handoff`等命名。每个改名先确定pipeline contract与对应IR / analysis / transformation责任，不只换字符串，不改写archive历史。完成门禁是当前代码、文档、CLI/diagnostic与测试使用同一稳定术语，且名称能直接对应可验证的compiler对象。 | 01、18 |
 | Q47 | `target-abi-retirement` | `board-ready` | 用户明确将Q46后续验证与ABI收口合并推进 | TargetProfile和用户级profile选择已删除；current worker-aware TargetCall/CRT、runtime ABI与各artifact唯一current schema reader已经收口；LocalFence已删除，原compiler-derived ordinary completion sites统一使用typed NCCJoin；GEMM拒绝FP32，其余指令消费统一可编码dtype。完整source→package→model/no-card和实际Llama fresh compile已达到`board-ready`；fresh板端worker completion及普通/DTE路径通过后才能`done`。不包含SMT或superoptimizer。 | 11、14-17；`tasks/plans/target-abi-retirement.md` |
-| Q48 | `semantic-superoptimization` | `later` | 前置已满足：Q49达到`board-ready`且C0–C6 compiler cutover完成；Q47 compiler ABI closure可消费final Instr/TargetCall。Q48尚未启动 | 从actual structured MLIR与current typed Instr自动生成有界actual clones，以query-local SMT证明数学value及外部可观察memory/effect/completion等价，继续由06唯一decision owner和现有exact gates选择；删除旧target implementation interface/materializer、重复numeric enums/status，不新增语义interface、sketch、rule registry或proof sidecar。current target-admitted deterministic typed surface形成exhaustive closure，FP16/BF16完整package/fresh no-card达到`board-ready`，fresh板端同源A/B通过后才能`done`。 | 05-08、10-11、16-18；`tasks/plans/semantic-superoptimization.md` |
+| Q48 | `semantic-superoptimization` | `later` | Q49按whole-DAG multi-Tile新合同重新达到`board-ready`，且Q47 compiler ABI closure可消费final Instr/TargetCall；当前前置未满足 | 从actual structured MLIR与current typed Instr自动生成有界actual clones，以query-local SMT证明数学value及外部可观察memory/effect/completion等价；不得在Q49旧rank==Tile架构上启动或恢复独立selector。 | 05-08、10-11、16-18；`tasks/plans/semantic-superoptimization.md` |
 | Q38.W | `multi-worker-production-promotion` | `later` | current typed ABI、actual clone和host/model资格已闭合，且出现需要隔离等待域并可能受益的独立命令链 | 以configured-board matched correctness/performance证明非零worker相对worker0流水的明确收益后才允许normal production promotion；不得为使用worker1/2而拆分已能在worker0并行的流水。 | 08、11、14-17 |
 | Q3.6 | `crt-writeback-scalar` | `later` | 明确Count predicate及wrapper/target/model evidence | 独立闭合typed instruction、effect/completion、ABI/CRT、model和必要package readback。 | 11、14-17 |
 
@@ -132,7 +132,7 @@ WCRE/global registry、capability lease、跨model state migration、共享weigh
 
 - Q46实施计划：`tasks/plans/layout-movement-elimination.md`。
 - Q47 Target ABI退役计划：`tasks/plans/target-abi-retirement.md`。
-- Q49 whole-rank tile dataflow synthesis计划：`tasks/plans/whole-rank-tile-dataflow-synthesis.md`。
+- Q49 whole-DAG multi-Tile synthesis计划：`tasks/plans/whole-rank-tile-dataflow-synthesis.md`。
 - Q48语义驱动superoptimizer计划：`tasks/plans/semantic-superoptimization.md`。
 - 当前计划：`tasks/plans/noc-resident-tile-dataflow.md`与
   `tasks/plans/multi-engine-software-pipelining.md`分别记录Q39、Q38的configured-board external gate。

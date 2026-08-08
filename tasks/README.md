@@ -40,12 +40,12 @@
 | pre-SPMD topology和execution mesh | 04 |
 | Shardy/SPMD output和显式rank identity | 03 |
 | component/rank-local compute normalization与collective handoff | 05；跨stage正确性证据由16约束 |
-| complete-rank physical-dataflow bounded joint candidate生成/选择、all-rank协调、selected tile/dataflow materialization和physical encoding/transfer | 06、07、08；source implementation interface由10提供，instruction legality由11提供，exact resource/transport gate由09、12、13提供 |
+| whole-DAG multi-Tile时空综合、selected card/tile MPMD materialization和physical encoding/transfer | 06、07、08；source implementation interface由10提供，instruction legality由11提供，exact resource/transport gate由09、12、13提供 |
 | policy-free physical-dataflow rewrites | 06、07、08；upstream structured utility由05提供，source/selected implementation合同由10提供，源码ownership由18约束 |
 | source implementation interface、target-abstract compute/movement和instruction legality | 10、11；transfer realizability/descriptor cover只由08拥有 |
 | accepted SPM/DDR allocation、lifetime和offset | 09、12；shared lifetime analysis的源码ownership和测试镜像由18约束 |
 | logical collective direct/ring/tree candidate materialization、Direct DTE completion、all-rank acceptance与post-memory transport activation | 13；joint choice由06、target/package/verification consumer由14、15、16约束 |
-| whole-rank/whole-variant candidate commit和typed executable bundle | 06；资源/lifetime边界由09、12、13共同约束 |
+| whole-DAG multi-Tile时空调度、whole-card MPMD commit和typed executable bundle | 06；资源/lifetime边界由09、12、13共同约束 |
 | target LLVM、CRT/device link和staged target module | 14 |
 | typed manifest、launch和RuntimeSession | 15 |
 | 横跨上述边界的completion evidence | 16 |
@@ -61,13 +61,14 @@ Q47 Target ABI退役计划见`tasks/plans/target-abi-retirement.md`。它已在Q
 沿11、14-17的owner边界把TX81 target收口为唯一current ABI；它不包含SMT、候选生成或优化器改造，动态状态和
 完成门禁只看`tasks/progress.md`。
 
-Q49 whole-rank tile dataflow synthesis计划见`tasks/plans/whole-rank-tile-dataflow-synthesis.md`。它由06作为唯一
-联合决策设计owner，复用01、07-13、16、18的selected IR、physical realization、memory、completion、communication和验证合同；
-目标是在Instr lowering前联合搜索SPM-residency region partition、tiling/residency/materialization/communication，并让candidate generation与executable-finalization exact gate服从同一个all-rank
-coordinator/global ledger，同时删除旧per-task提前物化路径。动态状态和完成门禁只看`tasks/progress.md`。
+Q49 whole-DAG multi-Tile时空综合计划见`tasks/plans/whole-rank-tile-dataflow-synthesis.md`。它由06作为唯一
+联合决策设计owner，复用01、07-13、16、18中仍符合新边界的selected IR、physical realization、memory、completion、
+communication和验证mechanics；目标是在Instr lowering前对整张card-local DAG联合搜索physical Tile placement、不同op/branch/wave
+并行、temporal tile、fusion/SPM residency、DDR/NoC和buffered overlap，并以whole-card MPMD actual IR进入共同exact gates。
+旧whole-rank C0-C6和no-card证据只作mechanics背景；动态状态和完成门禁只看`tasks/progress.md`。
 
-Q48语义驱动superoptimizer计划见`tasks/plans/semantic-superoptimization.md`。它必须在Q49达到`board-ready`且C0–C6
-compiler cutover完成、Q47 current ABI可消费final Instr/TargetCall后启动，
+Q48语义驱动superoptimizer计划见`tasks/plans/semantic-superoptimization.md`。它必须在Q49按whole-DAG multi-Tile新合同
+重新达到`board-ready`、Q47 current ABI可消费final Instr/TargetCall后启动，
 复用05-08、10-11、16-18的现有IR、candidate、proof consumer、model和源码ownership合同；目标是自动生成并证明
 actual MLIR clones，同时删除旧implementation抽象和重复numeric表示，不另建语义IR/interface/sidecar。动态状态和
 完成门禁只看`tasks/progress.md`。
