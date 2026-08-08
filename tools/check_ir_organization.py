@@ -10,6 +10,13 @@ from pathlib import Path
 
 
 OP_FAMILIES = {
+    "Program": {
+        "layer": "Program",
+        "td": "ProgramOps.td",
+        "cpp": "ProgramOps.cpp",
+        "mnemonics": ["card.program", "tile.program"],
+        "tests": "Program/Program",
+    },
     "TargetTopology": {
         "layer": "Target",
         "td": "TopologyOps.td",
@@ -108,6 +115,7 @@ OP_FAMILIES = {
 
 SUPPORT_TEST_DIRS = {"Common/Attrs"}
 IR_LAYERS = {
+    "Program",
     "Target",
     "Tensor",
     "LinalgExt",

@@ -9,6 +9,7 @@ add_mlir_dialect_library(WaferIR
   Instr/PeripheralOps.cpp
   Instr/SyncOps.cpp
   LinalgExt/CollectiveOps.cpp
+  Program/ProgramOps.cpp
   Resource/SPMOps.cpp
   Target/TopologyOps.cpp
   Tile/CommOps.cpp
