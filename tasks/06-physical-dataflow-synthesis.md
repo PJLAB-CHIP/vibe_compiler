@@ -4,7 +4,7 @@
 relation、actual clone、SPM/DDR packing、NoC lowering、completion 和 package mechanics 可以工作，但它在
 GSPMD 后把 logical rank 直接绑定到单卡 16 个物理 Tile，因而丢失了 Tile 级 spatial mapping、不同 op 并行和
 spatial/temporal/fusion 的联合搜索空间。本设计替换该决策合同；实现状态只看 `tasks/progress.md`，施工顺序只看
-`tasks/plans/whole-rank-tile-dataflow-synthesis.md`。
+`tasks/plans/whole-card-tile-dataflow-synthesis.md`。
 
 本文不要求保留当前搜索器、cost 比较或 rank-oriented orchestration。现有代码只有在能落入本设计的 IR 与
 owner 边界时才复用；为旧架构或旧测试服务的实现直接改写或删除。Llama、Attention 和 decode 只作为通用 DAG、
@@ -45,7 +45,9 @@ GSPMD 只拥有 card 级 global-to-local tensor partition。单卡内部 4×4 Ti
 Pipeline position:
 - Upstream artifact / IR:
   GSPMD完成card级分区、target-independent canonicalization完成后的完整card-local structured tensor DAG；
-  current SSA、structured op semantics、IndexRelation、effect、type、shape和dtype均可验证，尚未绑定物理Tile。
+  current SSA、structured op semantics、IndexRelation、effect、type、shape和dtype均可验证，尚未绑定物理Tile；
+  函数边界是frontend验证后的functional input/result ABI，argument只表示真实input/parameter/constant，result表示
+  observable output，不存在隐式trailing output参数。
 - Current stage responsibility:
   对整张DAG联合选择physical tile_id、op-wave时间顺序、spatial work domain、temporal tile、implementation、
   region/residency、physical representation、DDR/NoC movement、buffering和可证明overlap；只对shortlist物化actual IR。
@@ -123,6 +125,12 @@ ready 后启动，而不必等待整个 producer op 完成。
 consumer-driven tile propagation 仍负责根据 indexing semantics 与 `IndexRelation` 计算 consumer 需要 producer 的
 exact domain；它不再拥有全局遍历顺序。唯一全局 owner 是 whole-DAG event-driven scheduler。
 
+可观察独立分支首先按 current structured SSA 的无向依赖连通分量证明：从每个函数 result 穿过无副作用 support
+op 找到最近 structured roots，再把 producer/consumer edge、共享 structured producer 和同一 result 汇合的 roots
+合并。只有所有相关 structured op 都是无 memory effect 的 tensor SSA、每个 node 都归属于至少一个 observable
+result，且不存在跨分量 effect / memref alias 时，分量才可绑定 disjoint Tile 集合。证明失败只删除该并行候选；
+不会靠 op 名或 shape 猜测独立，也不会把联合 baseline 判成非法。
+
 ### 4.2 Query-local state
 
 ```text
@@ -132,12 +140,15 @@ DAG:
 Per physical Tile:
   scheduled/running op-wave
   local ready and finish time
-  resident values: domain, encoding, footprint, remaining consumers
-  implementation temporaries and layout buffers
-  send/receive staging and rotating pipeline buffers
+  selected spatial iterator domain, temporal traversal and implementation
+  resident values: producer-consumer edge, finite wave class, domain, MemLayout/physical encoding and footprint
+  implementation temporaries and explicit layout-conversion buffers
+  selected buffer count, rotating slot and send/receive staging buffers
+  compute and explicit SPM-movement resource calendars
 
 Communication:
-  pending DDR/NoC work and data-ready/completion events
+  per-directed-link NoC and card-shared DDR resource calendars
+  pending movement, data-ready and completion events
 
 Global:
   shared DDR/NoC work, observable obligations and current makespan
@@ -153,10 +164,11 @@ Global:
 1. 形成当前 ready op-wave 集合；
 2. 选择一组无依赖冲突且可同时运行的 op-wave；
 3. 为每个 op-wave 选择 physical Tile 集合与每 Tile work domain；
-4. 选择 implementation、temporal tile、loop order 和 buffering；
+4. 选择 implementation、temporal tile、loop order、每个 value 的 MemLayout/physical encoding 和 buffer count/rotation；
 5. 选择 local fusion/residency、local conversion、NoC、DDR、spill 或 recompute；
-6. 更新 per-Tile SPM live set、message、event、resource work 和 finish time；
-7. 释放已完成最后 consumer 及异步访问的 roots，并产生新的 ready work。
+6. 在同一 transition 中预留 per-Tile compute/SPM movement、per-link NoC 和 card-shared DDR 时间窗口；
+7. 更新 per-Tile SPM live set、rotating slot、message、event、resource work 和 finish time；
+8. 释放已完成最后 consumer 及异步访问的 roots，并产生新的 ready work。
 
 这统一覆盖 intra-op data/tensor parallelism、独立 branch parallelism、fanout/fanin、dependent wave pipeline、
 不同 op 的 spatial pipeline 和 compute/movement overlap。
@@ -176,8 +188,30 @@ placement 与 tile/fusion 同时决定：
 - fanout 可比较共置一个分支、multicast、分别发送和 recompute；
 - fanin 可比较 gather/reduction tree 和 consumer remapping。
 
+result shape 不需要相同。selected mapping 为每个 observable result 指定自身的 shard dimension 和 physical Tile
+集合；同一 dependency component 的 results 使用同一 Tile group，独立 components 才能使用 disjoint groups。
+actual CardProgram materialization在每个Tile只保留该Tile拥有的result roots及其current-SSA producer closure；其它
+results 保持完整card-shared ABI但不产生store。该query-local mapping在actual IR生成后销毁，winner的区别只由各
+`tile.program` body中的真实op、subview、load/store和SSA表达。
+
+TileRegion物化需要可写result destination时，只在isolated candidate clone中按result显式追加private scheduling
+destination；该区间以转换当次记录的source argument count验证并在CardProgram输出前全部消费。不得按参数位置、
+数量、shape/type相同关系猜测source argument是output，也不得把private destination发布成CardProgram、TargetABI或
+package接口。
+
 独立 work 使用 deterministic minimum-cost assignment；存在 coupled edge、broadcast 或 reduction 时，对 4×4 固定
 规模使用 topology-symmetry-reduced branch-and-bound。placement 不能在 temporal tiling 或 fusion 提交后事后补齐。
+node placement 的合法性不依赖是否生成 peer transfer：same-group local residency、独立分支的 disjoint group 与
+确实需要传输的 partial/disjoint coupled group 都进入同一有界 frontier；peer action 为空只是该 placement 的数据
+无需跨 Tile 搬运，不能作为删除候选的条件。
+
+对发生 redistribution 的 direct current-SSA edge，query-local actual 输入同时携带 consumer result shard、由
+structured indexing relation 推出的 producer demand、same-Tile local fragment 和 cross-Tile remote fragment。
+actual materializer 必须相对该 producer demand 证明所有 fragment all-and-only 覆盖、互不重叠，再按稳定 domain
+顺序用 `tensor.insert_slice` 形成一个 SPM staging SSA 链；local fragment 从 exact producer tile 取得，remote
+fragment 由显式 receive/wait 填充。`tensor.empty` 只提供 typed destination，任何 hole 都不能作为有效数据。
+同一 Tile 可以同时拥有 observable output、send 和 receive；这些是 body 中可组合的 edge action，不是互斥角色。
+partial-overlap 的 LiveSPM 只计实际 local intersection，不能把未物化的完整 producer shard 记为 resident。
 
 ### 5.2 Finite temporal tile domain
 
@@ -187,6 +221,11 @@ placement 与 tile/fusion 同时决定：
 - native block、physical issued work、padding 或 footprint 变化；
 - DDR/SPM/NoC transaction 与 descriptor 数变化；
 - implementation geometry、instruction field 和 SPM feasibility 边界。
+
+每个scheduled structured op的temporal state是覆盖其全部iterator的一个完整向量，不另设reduction-axis旁路字段。
+理论驻留按当前operand indexing map对应的实际tile window和per-buffer alignment计算；无法从IR与已知hardware参数证明的项
+直接省略，不能用完整iteration-domain体积、`Unknown`状态或猜测系数代替。无`reassoc`的浮点reduction只允许沿保持源
+lexicographic顺序的adjacent breakpoint推进：后一个reduction轴必须等前轴unit-tiled后才可split。
 
 禁止 capacity failure 后反复 `tile_size / 2`。小 tile 只有在换来更长 residency、更多 spatial/pipeline parallelism、
 更少外部 movement 或更短 makespan 时才可能保留；若仅减少 footprint 却增加 wave、message 和 instruction，则被支配。
@@ -207,6 +246,27 @@ placement 与 tile/fusion 同时决定：
 形成 operator pipeline 的候选。fusion 不按 op 数量奖励；只由减少的 DDR/reload/conversion、增加的 NoC、SPM
 pressure、parallelism 和最终 makespan 决定。
 
+DPS init-operand 边（如 `linalg.fill` 直接供给 consumer 的 `outs`）是初始化状态，不是 spatial data edge：
+它不携带上述任何 edge action，初始化状态由 consumer 的 typed lowering 管辖（producer closure 在 consumer
+traversal 内融合）。whole-DAG scheduler 仍通过同一 DAG 边做 wave readiness 排序，只是 edge strategy plan
+与 card spatial mapping 不为它生成 action；card-program materialization verifier 同样只要求 direct
+structured data-input 边有 selected treatment。
+
+### 5.4 Physical representation、buffering 与 resource timeline
+
+layout 分配不是 lowering 的默认决定或 materialization 后的 repair。对每个 scheduled value，候选状态显式选择
+consumer/implementation 可接受的 `MemLayout` 与 physical encoding；producer 和 consumer 表示不一致时，同一 edge
+transition 必须选择 local conversion、NoC 传输中的表示转换、spill/reload 或其它已定义 action，并把转换
+buffer、movement 和 lifetime 计入同一状态。winner 必须将选择直接物化为 typed IR，lowering 只验证和消费，
+不再自行选 layout。
+
+single/double/triple buffering 也是每个 pipeline edge/op-wave 的候选维度。状态同时跟踪 slot 轮转、所有者、最后
+async consumer 和 all-buffer aligned footprint；只有 buffer 彼此独立且当前 event/resource 约束证明重叠可实现时，
+才生成 overlap transition。compute、explicit SPM movement、每条 directed NoC link 和 card-shared DDR 各自使用有界的
+resource calendar；transition 预留实际时间窗口并生成 data-ready/completion event，不能在最后对已选顺序仅用
+`max(compute, movement)` 估算重叠。layout、buffer 数、worker/order 或 resource 时间窗口的任何 exact failure 都回到
+同一未放置 parent，不调用独立 allocator/scheduler 修复。
+
 ## 6. SPM Search Bound 与 Late Exact Packing
 
 每个 Tile 的 search-time working set 包含：
@@ -221,7 +281,7 @@ live inputs + resident intermediates + outputs
 关系：已知同时 live 集合或 weighted clique 超过 usable SPM capacity 时立即拒绝；保守 aligned placement 能放下时
 提前确认存在可行排列；其它状态保留到 shortlist。
 
-完整 MPMD 完成 Tile→Instr、worker/order 和 fresh completion 后，才从 actual roots、control flow、lifetime 和
+完整 MPMD 完成 Tile→Instr、selected worker/order物化和 fresh completion 后，才从 actual roots、control flow、lifetime 和
 coexistence 形成 fixed allocation problem 并调用 MiniMalloc。allocator 只返回 validated offsets 或失败：不得改变
 tile、spill、region、order、worker 或 completion。失败交回同一个 scheduler，从未放置 parent 选择其它状态。
 
@@ -271,6 +331,20 @@ makespan = prologue + (waves - 1) * II + epilogue + enabled control overhead
 有 data/effect dependency 的 phases 顺序相加；无证明的 overlap 不假定存在。不得对整程序无条件全相加或全取 max。
 理论 cost 用于 best-first/beam ordering 和 final numeric selection，不宣称 cycle accuracy。
 
+final selector只消费accepted Instr IR形成的`StaticSchedulePlan`。CardProgram私有candidate clone以typed、query-local
+structured node lineage跟踪source operation到最终operation；lineage不进入公开IR schema，并在winner进入下游前从全部
+location中剥离。cost collector仍遍历完整entry control flow，只按最终operation集合过滤，因此`scf` trip count、call
+closure和NoC topology不会因切片丢失。被合法消除的内部source node允许形成空slice，但其每条observable successor path
+必须由accepted IR中存活的下游lineage覆盖；多lineage融合只归属一次，并且必须存在由DAG依赖证明的唯一下游owner。
+每个node slice和明确的boundary/communication/control residual slice必须彼此不重叠，并对所有可加raw metrics、per-Tile
+allocation count及high-water组合与whole-program cost精确守恒；observable terminal lineage丢失、foreign lineage、无唯一
+下游owner的融合或不守恒直接删除该候选，不允许按比例拆分整程序cost。
+
+当前可证明overlap只作用于physical Tile集合不相交的node local compute/SPM phases；card-shared DDR和NoC仍各以完整
+accepted whole-card work形成共享资源phase。temporal loop的真实重复次数保留在node slice中，不把同一actual cost复制到
+symbolic prologue/steady/tail。只有actual IR进一步给出buffer/resource独立性证明时，才允许把共享movement与compute拆成
+更细的pipeline overlap。
+
 ## 8. Search Algorithm 与 Bounded Materialization
 
 - linear/tree 子图可以用 boundary-compatible DP 压缩，但结果必须回到同一个 whole-DAG scheduler；
@@ -293,7 +367,7 @@ winner 必须通过同一 Tile→Instr、fresh completion、SPM、DDR、communic
 - typed physical representation、movement 和 numeric legality；
 - `tile.region` local residency、MiniMalloc、DDR planner；
 - peer/collective IR、Direct-DTE lowering；
-- fresh completion、worker/fixed-slot/order mechanics；
+- typed completion、worker、loop-carried slot和instruction-order表达能力；旧独立candidate API不保留；
 - global ledger、delayed clone、deterministic parallel evaluation、wall/RSS/work counters；
 - current package/runtime 对不同 physical endpoint program 的发布能力。
 
@@ -304,7 +378,8 @@ winner 必须通过同一 Tile→Instr、fresh completion、SPM、DDR、communic
 - GSPMD 后按单卡 16 Tile 建 logical ranks；
 - logical rank 到 physical Tile 的直接映射、rank0 clone N 和 rank-local winner；
 - common function-result tile vector、linear connection DP 与 fixed partition count 完整域；
-- 当前不含 ready/running op-wave 和 per-Tile LiveSPM 的 frontier；
+- 不含 ready/running op-wave 和 per-Tile LiveSPM 的旧 frontier，以及只由 unit test 手工增减、未接入
+  production event transition 的 residency API；
 - late NoC profitability selector 与全程序 sequential/pipelined 二态 overlap；
 - performance `Unknown`/`Indeterminate` comparison；
 - Attention、decode、mask、shape 或参数名 shortcut；
