@@ -22,11 +22,13 @@ bool createDirectory(llvm::StringRef path, llvm::raw_ostream &diagnostics) {
   return true;
 }
 
-llvm::SmallString<256> rankPath(llvm::StringRef directory, int64_t rank,
-                                llvm::StringRef extension) {
+llvm::SmallString<256> physicalTilePath(llvm::StringRef directory,
+                                        PhysicalTileId tileId,
+                                        llvm::StringRef extension) {
   llvm::SmallString<32> filename;
   llvm::raw_svector_ostream stream(filename);
-  stream << "rank_" << llvm::formatv("{0:05}", rank) << extension;
+  stream << "tile_" << llvm::formatv("{0:05}", tileId.getValue())
+         << extension;
   llvm::SmallString<256> path(directory);
   llvm::sys::path::append(path, filename);
   return path;
@@ -81,42 +83,48 @@ bool dumpCompilerIR(
       !createDirectory(targetLLVMDirectory, diagnostics))
     return false;
 
-  const auto &ranks = product.getExecutableBundle().getRankExecutables();
+  const auto &tiles =
+      product.getExecutableBundle().getPhysicalTileExecutables();
   const auto &targetModules =
       product.getTargetLLVMModuleBundle().getModules();
-  if (ranks.size() != targetModules.size()) {
-    diagnostics << "wafer-compile: compiler IR dump rank domains differ\n";
+  if (tiles.size() != targetModules.size()) {
+    diagnostics
+        << "wafer-compile: compiler IR dump physical Tile domains differ\n";
     return false;
   }
-  for (size_t index = 0; index < ranks.size(); ++index) {
-    const wafer::compiler::RankExecutable &rank = ranks[index];
+  for (size_t index = 0; index < tiles.size(); ++index) {
+    const wafer::compiler::PhysicalTileExecutable &tile = tiles[index];
     const wafer::compiler::TargetLLVMModule &targetModule =
         targetModules[index];
-    if (rank.getLogicalRank() != targetModule.getLogicalRank()) {
-      diagnostics << "wafer-compile: compiler IR dump rank order differs\n";
+    if (tile.getPhysicalCardId() != targetModule.getPhysicalCardId() ||
+        tile.getPhysicalTileId() != targetModule.getPhysicalTileId() ||
+        tile.getLaunchSlotId() != targetModule.getLaunchSlotId()) {
+      diagnostics
+          << "wafer-compile: compiler IR dump physical Tile order differs\n";
       return false;
     }
     llvm::SmallString<256> tileDataflowPath =
-        rankPath(tileDataflowDirectory, rank.getLogicalRank(), ".mlir");
+        physicalTilePath(tileDataflowDirectory, tile.getPhysicalTileId(),
+                         ".mlir");
     if (!writeIRFile(
             tileDataflowPath,
             [&](llvm::raw_ostream &output) {
-              output << rank.getSelectedTileIR();
+              output << tile.getSelectedTileIR();
             },
             diagnostics))
       return false;
-    llvm::SmallString<256> instructionPath = rankPath(
-        instructionDirectory, rank.getLogicalRank(), ".mlir");
+    llvm::SmallString<256> instructionPath = physicalTilePath(
+        instructionDirectory, tile.getPhysicalTileId(), ".mlir");
     if (!writeIRFile(
             instructionPath,
             [&](llvm::raw_ostream &output) {
-              rank.getModule().print(output);
+              tile.getModule().print(output);
             },
             diagnostics))
       return false;
 
     llvm::SmallString<256> targetPath =
-        rankPath(targetLLVMDirectory, rank.getLogicalRank(), ".ll");
+        physicalTilePath(targetLLVMDirectory, tile.getPhysicalTileId(), ".ll");
     if (!writeIRFile(
             targetPath,
             [&](llvm::raw_ostream &output) {

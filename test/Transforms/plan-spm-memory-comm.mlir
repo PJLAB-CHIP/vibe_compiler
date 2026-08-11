@@ -1,5 +1,9 @@
 // RUN: wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66048' %s | FileCheck %s
 
+wafer.target.topology @default
+    {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+     tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+
 func.func @ncc_join_extends_prior_local_write(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
   %region = wafer.tile.region(%boundary
@@ -43,7 +47,7 @@ func.func @dte_recv_token_extends_destination_until_wait(
     %zero = arith.constant 0.000000e+00 : f16
     %dest = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     %token = wafer.instr.dte_recv %dest {peer = 1 : i64, bytes = 256 : i64,
-        message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+        message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
     wafer.instr.ncc_join [0]
     %before_wait = memref.alloc()
@@ -151,7 +155,7 @@ func.func @branch_dte_waits_clear_all_paths(
         : memref<128xf16, #wafer.memory<spm, tensor>>
     %token = wafer.instr.dte_send %source
         {peer = 1 : i64, bytes = 256 : i64,
-         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
     scf.if %c {
       wafer.instr.dte_wait %token : !async.token
@@ -186,7 +190,7 @@ func.func @typed_dte_resource_does_not_observe_disjoint_pending_ncc_buffer(
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
     %token = wafer.instr.dte_recv %received
         {peer = 1 : i64, bytes = 256 : i64,
-         message = #wafer.dte_message<communication = 1, phase = peer_dataflow, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 1, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
     wafer.instr.dte_wait %token : !async.token
     wafer.instr.ncc_join [0]

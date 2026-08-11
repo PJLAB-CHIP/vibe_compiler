@@ -3,7 +3,6 @@
 # RUN: not wafer-opt --wafer-materialize-multi-tile-no-comm %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-MULTI-NOCOMM
 # RUN: not wafer-opt --wafer-form-group-candidates %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-FORM-GROUP-CANDIDATES
 # RUN: not wafer-opt --wafer-form-groups %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-FORM-GROUPS
-# RUN: not wafer-opt --wafer-materialize-single-tile %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-SINGLE-TILE
 # RUN: not wafer-opt --wafer-compact-layout-assignment %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-COMPACT-LAYOUT
 # RUN: not wafer-opt --wafer-check-spm-allocation %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-SPM-ALLOCATION
 # RUN: not wafer-opt --wafer-materialize-ddr-external-bindings %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-DDR-BINDINGS
@@ -28,7 +27,6 @@
 # NO-MULTI-NOCOMM: Unknown command line argument '--wafer-materialize-multi-tile-no-comm'
 # NO-FORM-GROUP-CANDIDATES: Unknown command line argument '--wafer-form-group-candidates'
 # NO-FORM-GROUPS: Unknown command line argument '--wafer-form-groups'
-# NO-SINGLE-TILE: Unknown command line argument '--wafer-materialize-single-tile'
 # NO-COMPACT-LAYOUT: Unknown command line argument '--wafer-compact-layout-assignment'
 # NO-SPM-ALLOCATION: Unknown command line argument '--wafer-check-spm-allocation'
 # NO-DDR-BINDINGS: Unknown command line argument '--wafer-materialize-ddr-external-bindings'

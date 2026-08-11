@@ -12,32 +12,19 @@ endforeach()
 
 add_mlir_library(WaferCompiler
   AcceptedCallClosure.cpp
-  AttentionImplementationAlternative.cpp
   Compilation.cpp
   CompilationOrchestration.cpp
   CompilationStages.cpp
-  CoordinatedCommunicationAction.cpp
-  CoordinatedDataflowSearch.cpp
-  CoordinatedExecutableAdmission.cpp
-  CoordinatedStructuredCandidateDerivation.cpp
-  CoordinatedStructuredFrontier.cpp
-  CoordinatedExecutableFinalization.cpp
-  CoordinatedVariantSelection.cpp
+  WholeCardExecutableAdmission.cpp
   DirectDTETransport.cpp
   ExecutableBundle.cpp
-  GlobalTileRelation.cpp
-  NoCCommunicationAction.cpp
-  NoCIntermediateDataflow.cpp
-  NoCPartialDataflow.cpp
   TensorProgramCompilation.cpp
   Package.cpp
   ProgramDirectoryTransaction.cpp
   ProgramInvocation.cpp
   ProgramTensorComparison.cpp
-  ScheduledRankFinalization.cpp
+  PhysicalTileFinalization.cpp
   SpmdCompilationBridge.cpp
-  StaticFixedSlotQualification.cpp
-  StructuredImplementationAlternative.cpp
   TargetABIPreparation.cpp
   TargetArtifact.cpp
   TargetArtifactPublication.cpp
@@ -47,9 +34,16 @@ add_mlir_library(WaferCompiler
   TargetModuleReadback.cpp
   TargetPackagePublication.cpp
   TargetInstrumentation.cpp
-  TargetRankPreflight.cpp
+  PhysicalTilePreflight.cpp
+  SelectedBufferMaterialization.cpp
   TargetCallFrontend.cpp
-  WholeVariantResourceAcceptance.cpp
+  WholeDAGCandidateSchedule.cpp
+  WholeDAGPlacementFrontier.cpp
+  WholeDAGEdgeStrategyPlan.cpp
+  WholeDAGSchedule.cpp
+  WholeDAGSchedulePlan.cpp
+  WholeCardExecutableSynthesis.cpp
+  WholeCardResourceAcceptance.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport
@@ -68,7 +62,10 @@ add_mlir_library(WaferCompiler
   WaferPipelines
   WaferRuntime
   WaferTarget
+  WaferCardProgramToTileModules
+  WaferTensorProgramToCardProgram
   WaferTensorProgramToTileRegion
+  WaferTileRegionToInstr
   WaferTransforms
   MLIRAffineToStandard
   MLIRAffineDialect

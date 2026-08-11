@@ -22,9 +22,10 @@ import wafer_pytorch_board_cases as board_cases
 
 TARGET_IDENTITY = "wafer-tx81-single-card"
 LAUNCH_KIND = "kernel"
-DIRECT_DTE_STATUS_ABI = "wafer-direct-dte-status-v2"
+PHYSICAL_TILE_COUNT = 16
 PROCESS_TIMEOUT_MARGIN_SECONDS = 60
 COMPILE_TIMEOUT_SECONDS = 1800
+DIRECT_DTE_STATUS_ABI = "wafer-direct-dte-status-v2"
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,7 +38,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
     parser.add_argument("--dump-compiler-ir", type=pathlib.Path)
     parser.add_argument("--compile-timing", action="store_true")
-    parser.add_argument("--require-implementation-alternative", action="store_true")
+    parser.add_argument(
+        "--optimization-policy",
+        choices=board_cases.OPTIMIZATION_POLICIES,
+        default="search",
+    )
     parser.add_argument("--no-card", action="store_true")
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--expected-runtime-version", type=int)
@@ -77,6 +82,33 @@ def run(
             f"command failed with exit code {result.returncode}: {command}"
         )
     return result
+
+
+def validate_compiler_search_evidence(
+    stderr: str,
+    case: board_cases.PyTorchBoardCase,
+    optimization_policy: str,
+) -> None:
+    minimum = getattr(case, "minimum_search_actual_fused_edges", 0)
+    if optimization_policy != "search" or minimum == 0:
+        return
+    selected = re.findall(
+        r"^wafer-compile: whole-card-selection .*?"
+        r"\bactual_fused_edges=(\d+)(?:\s|$)",
+        stderr,
+        re.MULTILINE,
+    )
+    if len(selected) != 1:
+        raise RuntimeError(
+            "search-policy compiler output omitted the unique selected "
+            "whole-card fusion evidence"
+        )
+    actual = int(selected[0])
+    if actual < minimum:
+        raise RuntimeError(
+            "search-policy whole-card winner did not materialize the required "
+            f"operator fusion: expected at least {minimum}, got {actual}"
+        )
 
 
 def prepare_work_dir(work_dir: pathlib.Path) -> None:
@@ -128,19 +160,19 @@ def validate_structured_program(
 def _boundary_tensor(
     tensor: torch.Tensor,
     binding: dict[str, object],
-    rank: int,
+    partition_id: int,
 ) -> torch.Tensor:
-    ranks = binding.get("ranks")
-    if not isinstance(ranks, list):
-        raise RuntimeError("distributed boundary ranks must be a list")
+    partitions = binding.get("partitions")
+    if not isinstance(partitions, list):
+        raise RuntimeError("distributed boundary partitions must be a list")
     records = [
         record
-        for record in ranks
-        if isinstance(record, dict) and record.get("rank") == rank
+        for record in partitions
+        if isinstance(record, dict) and record.get("partition_id") == partition_id
     ]
     if len(records) != 1:
         raise RuntimeError(
-            f"distributed boundary must contain exactly one record for rank {rank}"
+            f"distributed boundary must contain exactly one record for partition_id {partition_id}"
         )
     record = records[0]
     offsets = record.get("offsets")
@@ -154,7 +186,7 @@ def _boundary_tensor(
         or len(sizes) != tensor.ndim
         or strides != [1] * tensor.ndim
     ):
-        raise RuntimeError(f"rank {rank} distributed boundary geometry is invalid")
+        raise RuntimeError(f"partition_id {partition_id} distributed boundary geometry is invalid")
     if not all(
         isinstance(offset, int)
         and isinstance(size, int)
@@ -165,7 +197,7 @@ def _boundary_tensor(
             offsets, sizes, tensor.shape, strict=True
         )
     ):
-        raise RuntimeError(f"rank {rank} distributed boundary slice is invalid")
+        raise RuntimeError(f"partition_id {partition_id} distributed boundary slice is invalid")
     slices = tuple(
         slice(offset, offset + size)
         for offset, size in zip(offsets, sizes, strict=True)
@@ -183,8 +215,8 @@ def _boundary_maps(
     )
     boundary = metadata.get("distributed_boundary")
     if not isinstance(boundary, dict):
-        if case.rank_count != 1:
-            raise RuntimeError("multi-rank PyTorch case has no distributed boundary")
+        if case.num_partitions != 1:
+            raise RuntimeError("multi-partition_id PyTorch case has no distributed boundary")
         return (
             {(0, index): tensor for index, tensor in enumerate(case.inputs)},
             {
@@ -192,8 +224,10 @@ def _boundary_maps(
                 for index, tensor in enumerate(expected_outputs)
             },
         )
-    if boundary.get("logical_rank_count") != case.rank_count:
-        raise RuntimeError("distributed boundary rank count differs from the case")
+    if boundary.get("num_partitions") != case.num_partitions:
+        raise RuntimeError(
+            "distributed boundary partition count differs from the case"
+        )
     locations = metadata.get("input_locations")
     inputs = boundary.get("inputs")
     outputs = boundary.get("outputs")
@@ -213,13 +247,15 @@ def _boundary_maps(
         position = location.get("position")
         if not isinstance(position, int) or position >= len(case.inputs):
             raise RuntimeError("distributed input position is invalid")
-        for rank in range(case.rank_count):
+        for partition_id in range(case.num_partitions):
             # Manifest user_input.role_index preserves the function argument
             # identity even when earlier arguments are parameters.
-            key = (rank, argument_index)
+            key = (partition_id, argument_index)
             if key in local_inputs:
                 raise RuntimeError(f"duplicate distributed input binding: {key}")
-            local_inputs[key] = _boundary_tensor(case.inputs[position], binding, rank)
+            local_inputs[key] = _boundary_tensor(
+                case.inputs[position], binding, partition_id
+            )
 
     local_outputs: dict[tuple[int, int], torch.Tensor] = {}
     for binding in outputs:
@@ -228,40 +264,62 @@ def _boundary_maps(
         result_index = binding.get("result_index")
         if not isinstance(result_index, int) or result_index >= len(expected_outputs):
             raise RuntimeError("distributed result index is invalid")
-        for rank in range(case.rank_count):
-            key = (rank, result_index)
+        for partition_id in range(case.num_partitions):
+            key = (partition_id, result_index)
             if key in local_outputs:
                 raise RuntimeError(f"duplicate distributed output binding: {key}")
             local_outputs[key] = _boundary_tensor(
-                expected_outputs[result_index], binding, rank
+                expected_outputs[result_index], binding, partition_id
             )
     return local_inputs, local_outputs
 
 
-def _manifest_resources(
-    package: pathlib.Path, case: board_cases.PyTorchBoardCase
-) -> tuple[
-    dict[tuple[int, str, int], dict[str, object]],
+def _manifest_resources(package: pathlib.Path) -> tuple[
+    dict[tuple[str, int], dict[str, object]],
     set[int],
 ]:
     manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
     if (
-        manifest.get("rank_count") != case.rank_count
+        manifest.get("schema_version") != 8
+        or manifest.get("card_count") != 1
+        or manifest.get("tile_count") != PHYSICAL_TILE_COUNT
         or manifest.get("target", {}).get("identity") != TARGET_IDENTITY
     ):
-        raise RuntimeError("PyTorch package target/rank contract is invalid")
+        raise RuntimeError("PyTorch package physical target contract is invalid")
     resources = manifest.get("resources")
     entries = manifest.get("entries")
-    completions = manifest.get("completions")
-    if not all(isinstance(value, list) for value in (resources, entries, completions)):
+    if not isinstance(resources, list) or not isinstance(entries, list):
         raise RuntimeError("PyTorch package domains must be lists")
-    expected_ranks = list(range(case.rank_count))
-    if sorted(entry.get("rank") for entry in entries) != expected_ranks:
-        raise RuntimeError("PyTorch package entries do not cover all ranks")
-    if sorted(completion.get("rank") for completion in completions) != expected_ranks:
-        raise RuntimeError("PyTorch package completions do not cover all ranks")
 
-    host_resources: dict[tuple[int, str, int], dict[str, object]] = {}
+    physical_tiles: set[int] = set()
+    launch_slots: set[int] = set()
+    if len(entries) != PHYSICAL_TILE_COUNT:
+        raise RuntimeError("PyTorch package must contain one entry per physical Tile")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise RuntimeError("manifest entry must be an object")
+        card_id = entry.get("card_id")
+        tile_id = entry.get("tile_id")
+        launch_slot = entry.get("launch_slot")
+        if (
+            type(card_id) is not int
+            or type(tile_id) is not int
+            or type(launch_slot) is not int
+            or card_id != 0
+            or not 0 <= tile_id < PHYSICAL_TILE_COUNT
+            or not 0 <= launch_slot < PHYSICAL_TILE_COUNT
+            or entry.get("completion") != "return_after_local_drain"
+        ):
+            raise RuntimeError("manifest entry physical binding is invalid")
+        if tile_id in physical_tiles or launch_slot in launch_slots:
+            raise RuntimeError("manifest entry physical binding is duplicated")
+        physical_tiles.add(tile_id)
+        launch_slots.add(launch_slot)
+    expected_domain = set(range(PHYSICAL_TILE_COUNT))
+    if physical_tiles != expected_domain or launch_slots != expected_domain:
+        raise RuntimeError("manifest entries do not cover the physical Tile domains")
+
+    host_resources: dict[tuple[str, int], dict[str, object]] = {}
     output_ids: set[int] = set()
     for resource in resources:
         if not isinstance(resource, dict):
@@ -269,12 +327,17 @@ def _manifest_resources(
         role = resource.get("role")
         if role not in ("user_input", "output"):
             continue
-        rank = resource.get("rank")
         role_index = resource.get("role_index")
         resource_id = resource.get("id")
-        if not all(isinstance(value, int) for value in (rank, role_index, resource_id)):
+        if (
+            type(role_index) is not int
+            or type(resource_id) is not int
+            or role_index < 0
+            or resource_id < 0
+            or resource.get("scope") != {"kind": "card", "card_id": 0}
+        ):
             raise RuntimeError("host tensor resource identity is invalid")
-        key = (rank, role, role_index)
+        key = (role, role_index)
         if key in host_resources or resource.get("host_visible") is not True:
             raise RuntimeError(f"invalid duplicate/non-visible host resource: {key}")
         host_resources[key] = resource
@@ -292,17 +355,21 @@ def prepare_runtime_payloads(
     list[str],
     dict[pathlib.Path, torch.Tensor],
     set[int],
-    dict[tuple[int, int], pathlib.Path],
+    dict[int, pathlib.Path],
 ]:
     local_inputs, local_outputs = _boundary_maps(package, case, expected_outputs)
-    resources, output_ids = _manifest_resources(package, case)
+    if (
+        case.num_partitions != 1
+        or any(partition_id != 0 for partition_id, _ in local_inputs)
+        or any(partition_id != 0 for partition_id, _ in local_outputs)
+    ):
+        raise RuntimeError(
+            "single-card package publication requires one source partition"
+        )
+    resources, output_ids = _manifest_resources(package)
     expected_keys = {
-        *(rank_role_index for rank_role_index in (
-            (rank, "user_input", index) for rank, index in local_inputs
-        )),
-        *(rank_role_index for rank_role_index in (
-            (rank, "output", index) for rank, index in local_outputs
-        )),
+        *(("user_input", index) for _, index in local_inputs),
+        *(("output", index) for _, index in local_outputs),
     }
     if set(resources) != expected_keys:
         raise RuntimeError(
@@ -315,48 +382,48 @@ def prepare_runtime_payloads(
     raw.mkdir()
     arguments: list[str] = []
     captures: dict[pathlib.Path, torch.Tensor] = {}
-    result_capture_paths: dict[tuple[int, int], pathlib.Path] = {}
+    result_capture_paths: dict[int, pathlib.Path] = {}
     for key, resource in sorted(resources.items()):
-        rank, role, index = key
+        role, index = key
         tensor = (
-            local_inputs[(rank, index)]
+            local_inputs[(0, index)]
             if role == "user_input"
-            else local_outputs[(rank, index)]
+            else local_outputs[(0, index)]
         )
         common.require_manifest_tensor(resource, tensor, context=str(key))
         resource_id = resource["id"]
         manifest_dtype = resource["type"]["dtype"]
         if role == "user_input":
             input_path = raw / (
-                f"rank_{rank:02d}_{role}_{index}.{manifest_dtype}.raw"
+                f"card_00_{role}_{index}.{manifest_dtype}.raw"
             )
             common.write_tensor_raw(input_path, tensor)
             arguments.extend(["--resource", f"{resource_id}={input_path}"])
             continue
         capture_path = raw / (
-            f"rank_{rank:02d}_output_{index}.capture.{manifest_dtype}.raw"
+            f"card_00_output_{index}.capture.{manifest_dtype}.raw"
         )
         arguments.extend(["--output", f"{resource_id}={capture_path}"])
         captures[capture_path] = tensor
-        result_capture_paths[(rank, index)] = capture_path
+        result_capture_paths[index] = capture_path
     if len(captures) != len(output_ids):
         raise RuntimeError("PyTorch output captures are not all-and-only")
     return arguments, captures, output_ids, result_capture_paths
 
 
-def read_rank_one_continuation_outputs(
-    result_capture_paths: dict[tuple[int, int], pathlib.Path],
+def read_single_card_continuation_outputs(
+    result_capture_paths: dict[int, pathlib.Path],
     expected_outputs: tuple[torch.Tensor, ...],
 ) -> tuple[torch.Tensor, ...]:
-    expected_keys = {(0, index) for index in range(len(expected_outputs))}
+    expected_keys = set(range(len(expected_outputs)))
     if set(result_capture_paths) != expected_keys:
         raise RuntimeError(
-            "functional continuation requires complete rank-one result "
+            "functional continuation requires complete single-card result "
             "captures"
         )
     return tuple(
         common.read_tensor_raw(
-            result_capture_paths[(0, index)],
+            result_capture_paths[index],
             dtype=expected.dtype,
             shape=expected.shape,
         )
@@ -364,9 +431,9 @@ def read_rank_one_continuation_outputs(
     )
 
 
-def verify_no_card(stdout: str, case: board_cases.PyTorchBoardCase) -> None:
+def verify_no_card(stdout: str) -> None:
     required = {
-        f"package: id=0 schema=7 ranks={case.rank_count}",
+        "package: id=0 schema=8 cards=1 tiles=16",
         "board_execution: false",
     }
     if not required.issubset(set(stdout.splitlines())):
@@ -418,7 +485,7 @@ def prepare_case_step(
     list[str],
     dict[pathlib.Path, torch.Tensor],
     set[int],
-    dict[tuple[int, int], pathlib.Path],
+    dict[int, pathlib.Path],
 ]:
     step_number = step_index + 1
     export_start_ns = time.monotonic_ns()
@@ -434,8 +501,9 @@ def prepare_case_step(
         str(source),
         "--output-program-dir",
         str(package),
-        f"--execution-ranks={case.rank_count}",
+        f"--num-partitions={case.num_partitions}",
         f"--launch-kind={LAUNCH_KIND}",
+        f"--optimization-policy={args.optimization_policy}",
     ]
     if args.compile_timing:
         compile_command.append("--compile-timing")
@@ -447,39 +515,28 @@ def prepare_case_step(
         compile_command,
         timeout_seconds=COMPILE_TIMEOUT_SECONDS,
     )
+    validate_compiler_search_evidence(
+        compile_result.stderr, case, args.optimization_policy
+    )
     if args.compile_timing:
         print(compile_result.stderr, end="", file=sys.stderr)
     if (
-        f"published verified package with execution-ranks={case.rank_count}"
+        "published verified package with num-partitions=1 physical-tiles=16"
         not in compile_result.stdout
     ):
         raise RuntimeError("wafer-compile did not publish the PyTorch package")
-    if args.require_implementation_alternative and not re.search(
-        r"^wafer-compile: coordinated whole-rank selection .*"
-        r"implementation_alternative=true(?: |$)",
-        compile_result.stderr,
-        re.MULTILINE,
-    ):
-        # Preserve the compiler's exact rejection ledger and final selection
-        # evidence when this integration gate fails.  A successful compiler
-        # invocation is otherwise captured by the wrapper, which used to hide
-        # the only facts needed to distinguish failed materialization, a late
-        # exact-gate rejection, and a conservative baseline winner.
-        print(compile_result.stderr, end="", file=sys.stderr)
-        raise RuntimeError(
-            "production did not select an exact-admitted implementation "
-            "alternative"
-        )
     if dump_compiler_ir is not None:
-        expected_stems = [f"rank_{rank:05d}" for rank in range(case.rank_count)]
+        expected_stems = [
+            f"tile_{tile_id:05d}" for tile_id in range(PHYSICAL_TILE_COUNT)
+        ]
         tile_files = sorted(
-            (dump_compiler_ir / "tile-dataflow").glob("rank_*.mlir")
+            (dump_compiler_ir / "tile-dataflow").glob("tile_*.mlir")
         )
         instruction_files = sorted(
-            (dump_compiler_ir / "instruction").glob("rank_*.mlir")
+            (dump_compiler_ir / "instruction").glob("tile_*.mlir")
         )
         target_files = sorted(
-            (dump_compiler_ir / "target-llvm").glob("rank_*.ll")
+            (dump_compiler_ir / "target-llvm").glob("tile_*.ll")
         )
         if (
             [path.stem for path in tile_files] != expected_stems
@@ -493,10 +550,28 @@ def prepare_case_step(
             raise RuntimeError("compiler IR dump is incomplete")
         for tile_file in tile_files:
             tile_ir = tile_file.read_text(encoding="utf-8")
-            if "wafer.tile.region" not in tile_ir or "wafer.instr." in tile_ir:
+            if "wafer.instr." in tile_ir:
                 raise RuntimeError(
                     "compiler Tile/dataflow evidence is not a selected "
                     "pre-Instr artifact"
+                )
+            # A selected MPMD candidate still publishes all-and-only the 16
+            # physical Tile interfaces. Tiles outside the winner's active
+            # placement intentionally contain the typed function boundary and
+            # observable empty results but no TileRegion. Accept that canonical
+            # inactive pre-Instr artifact; requiring every interface to carry
+            # work would invalidate the legal less-than-16-Tile spatial axis.
+            if (
+                "wafer.tile.region" not in tile_ir
+                and (
+                    "func.func @main" not in tile_ir
+                    or "wafer.tile." in tile_ir
+                    or "memref.alloc" in tile_ir
+                )
+            ):
+                raise RuntimeError(
+                    "compiler inactive Tile/dataflow evidence is not a "
+                    "canonical selected pre-Instr artifact"
                 )
     validate_structured_program(package, case)
 
@@ -533,13 +608,12 @@ def prepare_case_step(
 def base_runtime_command(
     wafer_run: pathlib.Path,
     package: pathlib.Path,
-    case: board_cases.PyTorchBoardCase,
 ) -> list[str]:
-    command = [str(wafer_run), "--package-dir", str(package)]
-    command.extend(
-        ["--entry-id", "0"] if case.rank_count == 1 else ["--all-ranks"]
-    )
-    return command
+    return [
+        str(wafer_run),
+        "--package-dir",
+        str(package),
+    ]
 
 
 def main() -> int:
@@ -563,16 +637,15 @@ def main() -> int:
     dtype = board_cases.parse_torch_dtype(args.dtype)
     case_start_ns = time.monotonic_ns()
     case = board_cases.make_case(args.case, dtype=dtype, seed=args.seed)
-    if case.rank_count > 1:
-        os.environ.setdefault("CPU_NUM_DEVICES", str(case.rank_count))
-        os.environ.setdefault("PJRT_DEVICE", "CPU")
+    os.environ["CPU_NUM_DEVICES"] = str(case.num_partitions)
+    os.environ["PJRT_DEVICE"] = "CPU"
     print(
         "pytorch-board-timing stage=case-materialization "
         "step=1 "
         f"wall_ms={(time.monotonic_ns() - case_start_ns) // 1_000_000}"
     )
-    if not args.no_card and args.expected_tile_count < case.rank_count:
-        raise RuntimeError("PyTorch case exceeds the qualified tile count")
+    if not args.no_card and args.expected_tile_count != PHYSICAL_TILE_COUNT:
+        raise RuntimeError("PyTorch package requires the qualified 16-Tile card")
     is_chain = case.continuation_factory is not None
     prepare_work_dir(args.work_dir)
     current_case = case
@@ -604,25 +677,27 @@ def main() -> int:
             dump_compiler_ir=dump_compiler_ir,
         )
 
-        command = base_runtime_command(
-            args.wafer_run, package, current_case
-        )
+        command = base_runtime_command(args.wafer_run, package)
         if args.no_card:
-            if current_case.rank_count > 1:
-                command.extend(
-                    [
-                        "--direct-dte-status-abi",
-                        DIRECT_DTE_STATUS_ABI,
-                        "--supports-host-watchdog",
-                    ]
-                )
-            command.append("--no-card")
+            # Direct DTE is selected by the common whole-card search, so a
+            # board-ready no-card runner must advertise the same transport
+            # capabilities regardless of which candidate wins.  This remains
+            # side-effect-free preflight; it does not claim hardware execution.
+            command.extend(
+                [
+                    "--no-card",
+                    "--direct-dte-status-abi",
+                    DIRECT_DTE_STATUS_ABI,
+                    "--supports-host-watchdog",
+                ]
+            )
             result = run(command)
-            verify_no_card(result.stdout, current_case)
+            verify_no_card(result.stdout)
             print(
                 f"pytorch_board_no_card: case={current_case.name} "
                 f"dtype={args.dtype} seed={args.seed} "
                 f"step={step_index + 1} "
+                f"optimization_policy={args.optimization_policy} "
                 "source_export=true torch_eager_reference=true "
                 "runtime_payload=true"
             )
@@ -650,6 +725,7 @@ def main() -> int:
                 ]
             )
             for iteration in range(args.repeat):
+                iteration_start_ns = time.monotonic_ns()
                 result = run(
                     command,
                     timeout_seconds=(
@@ -667,12 +743,15 @@ def main() -> int:
                     f"pytorch_board_iteration: case={current_case.name} "
                     f"dtype={args.dtype} seed={args.seed} "
                     f"step={step_index + 1} "
+                    f"optimization_policy={args.optimization_policy} "
                     f"iteration={iteration + 1}/{args.repeat} "
+                    f"wall_ms="
+                    f"{(time.monotonic_ns() - iteration_start_ns) // 1_000_000} "
                     "torch_close=true"
                 )
                 print(result.stdout, end="")
             continuation_outputs = (
-                read_rank_one_continuation_outputs(
+                read_single_card_continuation_outputs(
                     result_capture_paths, expected_outputs
                 )
                 if current_case.continuation_factory is not None
@@ -682,9 +761,9 @@ def main() -> int:
         continuation_factory = current_case.continuation_factory
         if continuation_factory is None:
             break
-        if current_case.rank_count != 1 or step_index != 0:
+        if current_case.num_partitions != 1 or step_index != 0:
             raise RuntimeError(
-                "functional state chain must be one bounded rank-one "
+                "functional state chain must be one bounded single-card "
                 "continuation"
             )
         continuation_start_ns = time.monotonic_ns()
@@ -696,11 +775,8 @@ def main() -> int:
             f"wall_ms="
             f"{(time.monotonic_ns() - continuation_start_ns) // 1_000_000}"
         )
-        if (
-            not args.no_card
-            and args.expected_tile_count < current_case.rank_count
-        ):
-            raise RuntimeError("PyTorch continuation exceeds qualified tiles")
+        if current_case.num_partitions != 1:
+            raise RuntimeError("PyTorch continuation changed source partitions")
     return 0
 
 

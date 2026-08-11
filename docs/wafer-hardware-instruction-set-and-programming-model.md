@@ -619,6 +619,9 @@ Stream、mailbox和CSR的具体wrapper/API表放在register-level evidence annex
 
 ### Current profile板端校准
 
+本节沿用`16-rank`等原始board fixture术语以便核对历史记录；它表示当时16个launch participant，
+不定义current compiler中的logical rank、physical mapping或package ABI。current身份和wire只看编号设计。
+
 Q37在当前安装profile上用强sentinel、完整DMA round-trip、PMU前后差值和16-rank Direct DTE status形成下列
 环境绑定事实；profile身份、证据等级、probe matrix和未闭合项统一记录在
 `docs/tx81-compiler-hardware-calibration.md`，实施顺序才由对应任务计划拥有。下列摘要不把cycle常数提升成

@@ -64,7 +64,7 @@ bool isSafeRelativePath(llvm::StringRef path) {
 }
 
 struct ParameterShardSlice {
-  int64_t rank = -1;
+  int64_t partitionId = -1;
   int64_t replicaId = -1;
   std::vector<int64_t> offsets;
   std::vector<int64_t> sizes;
@@ -73,29 +73,29 @@ struct ParameterShardSlice {
   std::string relativePath;
 };
 
-wafer::frontend::ProgramRankSlice
-getVerifiedRankSlice(const ParameterShardSlice &slice) {
-  return {slice.rank,  slice.replicaId, slice.offsets,
-          slice.sizes, slice.strides,   slice.relativePath};
+wafer::frontend::ProgramPartitionSlice
+getVerifiedPartitionSlice(const ParameterShardSlice &slice) {
+  return {slice.partitionId, slice.replicaId, slice.offsets,
+          slice.sizes,       slice.strides,   slice.relativePath};
 }
 
 bool verifyShardEntry(const llvm::json::Object &object,
-                      int64_t logicalRankCount,
+                      int64_t numPartitions,
                       llvm::ArrayRef<int64_t> globalShape,
                       llvm::ArrayRef<int64_t> localShape, Type elementType,
                       llvm::StringRef parameterName, llvm::StringRef programDir,
                       llvm::StringRef distribution,
-                      std::vector<bool> &seenRanks,
+                      std::vector<bool> &seenPartitions,
                       std::vector<bool> &seenReplicaIds,
                       std::vector<ParameterShardSlice> &verifiedSlices,
                       llvm::raw_ostream &diagnostics) {
-  int64_t rank = -1;
+  int64_t partitionId = -1;
   int64_t replicaId = -1;
   std::string file;
   std::vector<int64_t> offsets;
   std::vector<int64_t> sizes;
   std::vector<int64_t> strides;
-  if (readIntegerField(object, "rank", rank, diagnostics) ||
+  if (readIntegerField(object, "partition_id", partitionId, diagnostics) ||
       readIntegerField(object, "replica_id", replicaId, diagnostics) ||
       readStringField(object, "file", file, diagnostics) ||
       readIntegerArrayField(object, "offsets", offsets, diagnostics) ||
@@ -104,13 +104,13 @@ bool verifyShardEntry(const llvm::json::Object &object,
                             /*requirePositive=*/true))
     return true;
 
-  if (rank < 0 || rank >= logicalRankCount)
-    return rejectProgramDirectory("parameter shard rank is out of range",
+  if (partitionId < 0 || partitionId >= numPartitions)
+    return rejectProgramDirectory(
+        "parameter shard partition_id is out of range", diagnostics);
+  if (seenPartitions[partitionId])
+    return rejectProgramDirectory("duplicate parameter shard partition_id",
                                   diagnostics);
-  if (seenRanks[rank])
-    return rejectProgramDirectory("duplicate parameter shard rank",
-                                  diagnostics);
-  seenRanks[rank] = true;
+  seenPartitions[partitionId] = true;
 
   if (replicaId < 0)
     return rejectProgramDirectory(
@@ -119,7 +119,7 @@ bool verifyShardEntry(const llvm::json::Object &object,
     return rejectProgramDirectory(
         "partitioned parameter shard replica_id must be 0", diagnostics);
   if (distribution == "replicated") {
-    if (replicaId >= logicalRankCount)
+    if (replicaId >= numPartitions)
       return rejectProgramDirectory(
           "replicated parameter shard replica_id is out of range", diagnostics);
     if (seenReplicaIds[replicaId])
@@ -169,8 +169,8 @@ bool verifyShardEntry(const llvm::json::Object &object,
   if (verifyNpyTensorPayloadFile(path, file, sizes, elementType, diagnostics))
     return true;
   verifiedSlices.push_back(ParameterShardSlice{
-      rank, replicaId, std::move(offsets), std::move(sizes), std::move(strides),
-      std::move(path), std::move(file)});
+      partitionId, replicaId, std::move(offsets), std::move(sizes),
+      std::move(strides), std::move(path), std::move(file)});
   return false;
 }
 
@@ -255,7 +255,7 @@ bool verifyParameterShardCoverage(llvm::ArrayRef<ParameterShardSlice> slices,
 
 bool verifyParameterShardMetadata(
     const llvm::json::Object &object, const ProgramMetadata &meta,
-    FunctionType functionType, int64_t logicalRankCount,
+    FunctionType functionType, int64_t numPartitions,
     std::vector<bool> &seenParameterArgs, llvm::StringRef programDir,
     llvm::raw_ostream &diagnostics,
     wafer::frontend::ProgramParameterBinding *verifiedBinding) {
@@ -325,13 +325,13 @@ bool verifyParameterShardMetadata(
   const llvm::json::Array *shards = object.getArray("shards");
   if (!shards)
     return rejectProgramDirectory("expected array field 'shards'", diagnostics);
-  if (shards->size() != static_cast<size_t>(logicalRankCount))
+  if (shards->size() != static_cast<size_t>(numPartitions))
     return rejectProgramDirectory("parameter shard count does not match "
-                                  "logical_rank_count",
+                                  "num_partitions",
                                   diagnostics);
 
-  std::vector<bool> seenRanks(logicalRankCount, false);
-  std::vector<bool> seenReplicaIds(logicalRankCount, false);
+  std::vector<bool> seenPartitions(numPartitions, false);
+  std::vector<bool> seenReplicaIds(numPartitions, false);
   std::vector<ParameterShardSlice> verifiedSlices;
   verifiedSlices.reserve(shards->size());
   for (const llvm::json::Value &value : *shards) {
@@ -339,9 +339,10 @@ bool verifyParameterShardMetadata(
     if (!shardObject)
       return rejectProgramDirectory("parameter shard entries must be objects",
                                     diagnostics);
-    if (verifyShardEntry(*shardObject, logicalRankCount, globalShape,
+    if (verifyShardEntry(*shardObject, numPartitions, globalShape,
                          localShape, tensorType.getElementType(), name,
-                         programDir, distribution, seenRanks, seenReplicaIds,
+                         programDir, distribution, seenPartitions,
+                         seenReplicaIds,
                          verifiedSlices, diagnostics))
       return true;
   }
@@ -362,9 +363,10 @@ bool verifyParameterShardMetadata(
     verifiedBinding->globalShape = std::move(globalShape);
     verifiedBinding->localShape = std::move(localShape);
     verifiedBinding->dtype = normalizeProgramDtype(dtype);
-    verifiedBinding->rankSlices.reserve(verifiedSlices.size());
+    verifiedBinding->partitionSlices.reserve(verifiedSlices.size());
     for (const ParameterShardSlice &slice : verifiedSlices)
-      verifiedBinding->rankSlices.push_back(getVerifiedRankSlice(slice));
+      verifiedBinding->partitionSlices.push_back(
+          getVerifiedPartitionSlice(slice));
   }
   return false;
 }
@@ -397,32 +399,32 @@ bool verifyParameterShards(
 
   int64_t version = 0;
   std::string function;
-  int64_t logicalRankCount = 0;
+  int64_t numPartitions = 0;
   if (readIntegerField(*root, "parameter_shards_version", version,
                        diagnostics) ||
       readStringField(*root, "function", function, diagnostics) ||
-      readIntegerField(*root, "logical_rank_count", logicalRankCount,
+      readIntegerField(*root, "num_partitions", numPartitions,
                        diagnostics))
     return true;
-  if (version != 3)
+  if (version != 4)
     return rejectProgramDirectory(
         "unsupported parameter shard metadata version", diagnostics);
   if (function != meta.name)
     return rejectProgramDirectory(
         "parameter shard function does not match program directory meta",
         diagnostics);
-  if (logicalRankCount <= 0)
-    return rejectProgramDirectory("logical_rank_count must be positive",
+  if (numPartitions <= 0)
+    return rejectProgramDirectory("num_partitions must be positive",
                                   diagnostics);
 
-  FailureOr<int64_t> meshRankCount =
-      getSingleExecutionMeshRankCount(module, diagnostics);
-  if (failed(meshRankCount))
+  FailureOr<int64_t> meshPartitionCount =
+      getSingleExecutionMeshPartitionCount(module, diagnostics);
+  if (failed(meshPartitionCount))
     return true;
-  if (*meshRankCount != logicalRankCount)
+  if (*meshPartitionCount != numPartitions)
     return rejectProgramDirectory(
-        "parameter shard logical_rank_count does not match execution mesh "
-        "rank count",
+        "parameter shard num_partitions does not match execution mesh "
+        "partition count",
         diagnostics);
 
   const llvm::json::Array *parameters = root->getArray("parameters");
@@ -440,7 +442,7 @@ bool verifyParameterShards(
           "parameter shard metadata entries must be objects", diagnostics);
     wafer::frontend::ProgramParameterBinding verifiedBinding;
     if (verifyParameterShardMetadata(
-            *object, meta, functionType, logicalRankCount, seenParameterArgs,
+            *object, meta, functionType, numPartitions, seenParameterArgs,
             programDir, diagnostics, result ? &verifiedBinding : nullptr))
       return true;
     if (result)

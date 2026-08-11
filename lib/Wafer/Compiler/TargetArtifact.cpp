@@ -5,12 +5,13 @@
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
 
-#include <optional>
 #include <utility>
 
 namespace wafer::compiler {
 
-TargetLLVMModule::TargetLLVMModule(int64_t logicalRank,
+TargetLLVMModule::TargetLLVMModule(PhysicalCardId physicalCardId,
+                                   PhysicalTileId physicalTileId,
+                                   LaunchSlotId launchSlotId,
                                    llvm::StringRef entrySymbol,
                                    TargetIdentityId targetIdentity,
                                    KernelRuntimeABIId kernelRuntimeABI,
@@ -18,7 +19,8 @@ TargetLLVMModule::TargetLLVMModule(int64_t logicalRank,
                                    std::vector<KernelABISlot> kernelABISlots,
                                    std::unique_ptr<llvm::LLVMContext> context,
                                    std::unique_ptr<llvm::Module> module)
-    : logicalRank(logicalRank), entrySymbol(entrySymbol.str()),
+    : physicalCardId(physicalCardId), physicalTileId(physicalTileId),
+      launchSlotId(launchSlotId), entrySymbol(entrySymbol.str()),
       targetIdentity(targetIdentity),
       kernelRuntimeABI(kernelRuntimeABI), moduleFormat(moduleFormat.str()),
       kernelABISlots(std::move(kernelABISlots)), context(std::move(context)),
@@ -58,13 +60,6 @@ TargetToolchain::create(llvm::StringRef pythonExecutable,
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "LLVM clang++ must not be empty");
   return TargetToolchain(pythonExecutable, deviceLinkerScript, llvmClangXX);
-}
-
-llvm::Expected<TargetArtifactBundle> compileExecutableBundleToTargetArtifacts(
-    const ExecutableBundle &executableBundle, llvm::StringRef outputDirectory,
-    const TargetToolchain &toolchain, llvm::raw_ostream &diagnostics) {
-  return detail::compileExecutableBundleToTargetArtifactsImpl(
-      executableBundle, outputDirectory, toolchain, diagnostics, std::nullopt);
 }
 
 llvm::Expected<TargetLLVMModuleBundle>

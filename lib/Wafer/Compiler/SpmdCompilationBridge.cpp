@@ -17,18 +17,18 @@ bool runSpmdHelper(llvm::StringRef helper,
                    const ExecutionConfig &config,
                    llvm::raw_ostream &diagnostics) {
   wafer::support::ScopedCompileTimingSpan timing(
-      "external-pipeline", "source-to-tensor-program",
-      "xla-spmd-partitioning");
+      "external-pipeline", "source-to-tensor-program", "xla-spmd-partitioning");
   std::string helperStorage = helper.str();
   std::string inputStorage = inputProgramDirectory.str();
   std::string outputStorage = outputProgramDirectory.str();
-  std::string rankCountStorage = std::to_string(config.getRankCount());
+  std::string partitionCountStorage =
+      std::to_string(config.getNumPartitions());
   llvm::SmallVector<llvm::StringRef, 9> arguments = {
       helperStorage,    "--input-program-dir",
       inputStorage,     "--output-program-dir",
       outputStorage,    "--entry-function",
-      "forward",        "--logical-rank-count",
-      rankCountStorage,
+      "forward",        "--num-partitions",
+      partitionCountStorage,
   };
   int exitCode = llvm::sys::ExecuteAndWait(helperStorage, arguments);
   if (exitCode == 0)

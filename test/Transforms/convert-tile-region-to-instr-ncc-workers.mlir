@@ -1,5 +1,9 @@
 // RUN: wafer-opt --wafer-convert-tile-region-to-instr %s | FileCheck %s
 
+wafer.target.topology @default
+    {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+     tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+
 func.func @cross_worker_alias(%zero: f32) {
   %shared = memref.alloc()
       : memref<4xf32, #wafer.memory<spm, tensor>>
@@ -36,7 +40,7 @@ func.func @mixed_dte_ncc_backedge(%zero: f32) {
         : memref<4xf32, #wafer.memory<spm, tensor>>, f32
     %token = wafer.instr.dte_send %shared
         {peer = 1 : i64, bytes = 16 : i64,
-         message = #wafer.dte_message<communication = 9, phase = peer_dataflow, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 9, round = 0, slice = 0>}
         : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
     wafer.instr.dte_wait %token : !async.token
     wafer.instr.elementwise <add> %shared, %shared into %shared
@@ -263,6 +267,33 @@ func.func @same_worker_backedge(%zero: f32) {
 // CHECK: }
 // CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK-NEXT: return
+
+func.func @conditional_same_worker_backedge(%condition: i1, %zero: f32)
+    -> memref<4xf32, #wafer.memory<spm, tensor>> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %shared = memref.alloc()
+      : memref<4xf32, #wafer.memory<spm, tensor>>
+  scf.for %iv = %c0 to %c4 step %c1 {
+    scf.if %condition {
+      wafer.instr.fill %shared, %zero
+          {worker = #wafer.ncc_worker<worker0>}
+          : memref<4xf32, #wafer.memory<spm, tensor>>, f32
+    }
+  }
+  return %shared : memref<4xf32, #wafer.memory<spm, tensor>>
+}
+
+// CHECK-LABEL: func.func @conditional_same_worker_backedge
+// CHECK: scf.for
+// CHECK: scf.if
+// CHECK: wafer.instr.fill
+// CHECK: }
+// CHECK-NEXT: wafer.instr.ncc_join [0]
+// CHECK-NEXT: }
+// CHECK-NOT: wafer.instr.ncc_join
+// CHECK-NEXT: return %{{.*}} : memref<4xf32, #wafer.memory<spm, tensor>>
 
 func.func @region_exit_completes_only_region_local_roots(%zero: f32) {
   %outer = memref.alloc()

@@ -34,8 +34,8 @@ struct ProgramInputLocation {
   std::string name;
 };
 
-struct DistributedBoundaryRank {
-  int64_t rank = -1;
+struct DistributedBoundaryPartition {
+  int64_t partitionId = -1;
   int64_t replicaId = -1;
   std::vector<int64_t> offsets;
   std::vector<int64_t> sizes;
@@ -48,12 +48,12 @@ struct DistributedBoundaryBinding {
   std::vector<int64_t> globalShape;
   std::vector<int64_t> localShape;
   std::string dtype;
-  std::vector<DistributedBoundaryRank> ranks;
+  std::vector<DistributedBoundaryPartition> partitions;
 };
 
 struct DistributedBoundary {
   int64_t version = 0;
-  int64_t logicalRankCount = 0;
+  int64_t numPartitions = 0;
   std::vector<DistributedBoundaryBinding> inputs;
   std::vector<DistributedBoundaryBinding> outputs;
 };
@@ -107,8 +107,8 @@ bool hasSpmdParameterShardings(mlir::ModuleOp module);
 ProgramDistributionKind
 getVerifiedDistributionKind(llvm::StringRef distribution);
 mlir::FailureOr<int64_t>
-getSingleExecutionMeshRankCount(mlir::ModuleOp module,
-                                llvm::raw_ostream &diagnostics);
+getSingleExecutionMeshPartitionCount(mlir::ModuleOp module,
+                                     llvm::raw_ostream &diagnostics);
 bool verifyDistributedBoundary(mlir::ModuleOp module,
                                const ProgramMetadata &meta,
                                mlir::func::FuncOp func, bool postSpmdMarker,

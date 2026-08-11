@@ -57,9 +57,10 @@ void wafer_tx81_tdma_img2col_v3(
     uint32_t stride_y, uint32_t format, uint32_t worker);
 void wafer_tx81_ncc_join(uint32_t participant_mask);
 
-void wafer_tx81_direct_dte_begin(uint64_t status_addr, uint32_t rank_count);
+void wafer_tx81_direct_dte_begin(uint64_t status_addr,
+                                 uint32_t participant_count);
 void wafer_tx81_direct_dte_begin_after_prepare(uint64_t status_addr,
-                                               uint32_t rank_count);
+                                               uint32_t participant_count);
 uint64_t wafer_tx81_direct_dte_send_prepare(
     uint64_t src, uint64_t remote_dst, uint32_t byte_count, uint32_t local_tile,
     uint32_t remote_tile, uint32_t remote_fsm_id, uint32_t is_high_performance);

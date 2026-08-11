@@ -5,8 +5,7 @@ module {
       {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
        tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh
-      {topology = @default, axes = ["rank"], shape = array<i64: 16>,
-       policy = "all_available", endpoints = array<i64>}
+      {axes = ["card_partition"], shape = array<i64: 1>}
 
   func.func @oriented_gemm() {
     %lhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}

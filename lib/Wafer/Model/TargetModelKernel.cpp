@@ -16,11 +16,11 @@ executeTargetModelCommand(const compiler::TargetTransaction &transaction,
                           TargetModelExecutionPolicy policy) {
   if (llvm::Error error = validateTargetModelTransactionFields(transaction))
     return std::move(error);
-  if (!llvm::is_contained(memory.getAddressPlan().getLogicalRanks(),
-                          transaction.logicalRank))
+  if (!llvm::is_contained(memory.getAddressPlan().getLaunchSlots(),
+                          transaction.launchSlotId.getValue()))
     return kernel_detail::kernelError(
         TargetModelKernelErrorCode::InvalidTransactionField,
-        "transaction logical rank is outside invocation");
+        "transaction launch slot is outside invocation");
 
   if (const auto *value = std::get_if<compiler::TargetStridedDMATransaction>(
           &transaction.payload))

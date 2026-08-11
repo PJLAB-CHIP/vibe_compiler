@@ -202,13 +202,14 @@ sliceRowMajorPayload(const TensorPayload &payload,
   return output;
 }
 
-static ParameterShard shardForRank(const xla::Shape &globalShape,
-                                   const xla::HloSharding *sharding,
-                                   int64_t rank, std::string file) {
+static ParameterShard shardForPartition(const xla::Shape &globalShape,
+                                        const xla::HloSharding *sharding,
+                                        int64_t partitionId,
+                                        std::string file) {
   ParameterShard shard;
-  shard.rank = rank;
+  shard.partitionId = partitionId;
   bool replicated = !sharding || sharding->IsReplicated();
-  shard.replicaId = replicated ? rank : 0;
+  shard.replicaId = replicated ? partitionId : 0;
   shard.file = std::move(file);
   shard.strides = ones(globalShape.rank());
 
@@ -218,8 +219,9 @@ static ParameterShard shardForRank(const xla::Shape &globalShape,
     return shard;
   }
 
-  shard.offsets = sharding->TileOffsetForDevice(globalShape, rank);
-  std::vector<int64_t> limits = sharding->TileLimitForDevice(globalShape, rank);
+  shard.offsets = sharding->TileOffsetForDevice(globalShape, partitionId);
+  std::vector<int64_t> limits =
+      sharding->TileLimitForDevice(globalShape, partitionId);
   for (auto [offset, limit] : llvm::zip(shard.offsets, limits))
     shard.sizes.push_back(limit - offset);
   return shard;
@@ -262,12 +264,12 @@ materializeParameterShards(const Options &options, const ProgramMetadata &meta,
     if (sharding && sharding->HasPartialReplication())
       return absl::InvalidArgumentError(absl::StrCat(
           "parameter '", binding.name,
-          "' uses partial replication, which parameter shard schema v3 does "
+          "' uses partial replication, which parameter shard schema v4 does "
           "not encode"));
     if (sharding && sharding->IsTileMaximal() && !sharding->IsReplicated())
       return absl::InvalidArgumentError(absl::StrCat(
           "parameter '", binding.name,
-          "' uses single-device sharding, which parameter shard schema v3 "
+          "' uses single-device sharding, which parameter shard schema v4 "
           "does not encode"));
     binding.distribution =
         (!sharding || sharding->IsReplicated()) ? "replicated" : "partitioned";
@@ -279,12 +281,14 @@ materializeParameterShards(const Options &options, const ProgramMetadata &meta,
       return absl::InvalidArgumentError(
           absl::StrCat("unsupported parameter dtype: ", binding.dtype));
 
-    for (int64_t rank = 0; rank < options.logicalRankCount; ++rank) {
+    for (int64_t partitionId = 0; partitionId < options.numPartitions;
+         ++partitionId) {
       std::string relative =
-          absl::StrCat("parameter_shards/", binding.name, "/rank_",
-                       llvm::formatv("{0:05}", rank).str(), ".npy");
+          absl::StrCat("parameter_shards/", binding.name, "/partition_",
+                       llvm::formatv("{0:05}", partitionId).str(), ".npy");
       ParameterShard shard =
-          shardForRank(preParam->shape(), sharding, rank, relative);
+          shardForPartition(preParam->shape(), sharding, partitionId,
+                            relative);
       TF_ASSIGN_OR_RETURN(std::vector<uint8_t> rawShard,
                           sliceRowMajorPayload(payload, binding.globalShape,
                                                shard.offsets, shard.sizes,

@@ -5,6 +5,7 @@
 #include "Wafer/InitAll.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
+#include "Wafer/Compiler/CompilationInternal.h"
 #include "Wafer/Compiler/ExecutableBundleInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -16,11 +17,13 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -29,14 +32,17 @@
 
 #include "gtest/gtest.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -50,53 +56,43 @@ frontend::ProgramBoundaryBinding boundary(int64_t index) {
   frontend::ProgramBoundaryBinding binding;
   binding.index = index;
   binding.programIndex = index;
-  binding.distribution = frontend::ProgramDistributionKind::Partitioned;
-  binding.globalShape = {128};
+  binding.distribution = frontend::ProgramDistributionKind::Replicated;
+  binding.globalShape = {8};
   binding.localShape = {8};
   binding.dtype = "f32";
-  for (int64_t rank = 0; rank < 16; ++rank) {
-    frontend::ProgramRankSlice slice;
-    slice.logicalRank = rank;
-    slice.replicaId = 0;
-    slice.offsets = {rank * 8};
-    slice.sizes = {8};
-    slice.strides = {1};
-    binding.rankSlices.push_back(std::move(slice));
-  }
+  frontend::ProgramPartitionSlice slice;
+  slice.partitionId = 0;
+  slice.replicaId = 0;
+  slice.offsets = {0};
+  slice.sizes = {8};
+  slice.strides = {1};
+  binding.partitionSlices.push_back(std::move(slice));
   return binding;
 }
 
 std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
   mlir::DialectRegistry registry;
-  registry.insert<mlir::arith::ArithDialect,
-                  mlir::bufferization::BufferizationDialect,
-                  mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
-                  mlir::LLVM::LLVMDialect, mlir::linalg::LinalgDialect,
-                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
-                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
-  registerAllDialects(registry);
-  mlir::registerBuiltinDialectTranslation(registry);
-  mlir::registerLLVMDialectTranslation(registry);
-  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
-      registry);
-  mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
+  compiler::detail::registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
   return context;
 }
 
-llvm::Expected<TargetLLVMModuleBundle>
+struct CompiledElementwiseProgram {
+  ExecutableBundle executable;
+  TargetLLVMModuleBundle target;
+};
+
+llvm::Expected<CompiledElementwiseProgram>
 buildElementwiseTargetBundle(std::string &diagnosticText) {
   auto context = createCompilerContext();
   auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
   wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64>, policy = "all_available", shape = array<i64: 16>, topology = @default}
-  func.func @main(%lhs: tensor<8xf32>, %rhs: tensor<8xf32>) -> tensor<8xf32> {
+  wafer.execution.mesh @default_mesh {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%lhs: tensor<8xf32>, %rhs: tensor<8xf32>)
+      -> tensor<8xf32> {
     %out = tensor.empty() : tensor<8xf32>
     %sum = linalg.generic {
         indexing_maps = [affine_map<(d0) -> (d0)>,
@@ -118,30 +114,27 @@ module {
     return llvm::createStringError("failed to parse SystemC model module");
 
   frontend::FrontendProgramVerificationResult program;
-  program.logicalRankCount = 16;
+  program.numPartitions = 1;
   program.programUserInputCount = 2;
   program.distributedInputs = {boundary(0), boundary(1)};
   program.distributedOutputs = {boundary(0)};
-  llvm::Expected<ExecutionConfig> config = ExecutionConfig::createForSingleCard(
-      16, RuntimeLaunchKind::Kernel);
+  llvm::Expected<ExecutionConfig> config =
+      ExecutionConfig::createForSingleCard(1, RuntimeLaunchKind::Kernel);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
   llvm::Expected<ExecutableBundle> executable =
       wafer::compiler::detail::buildExecutableBundle(
-          context, *tensorProgram, std::move(program), *config, diagnostics,
-          std::nullopt);
+          context, *tensorProgram, std::move(program), *config,
+          OptimizationConfig::none(), diagnostics, std::nullopt);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
-  return compileExecutableBundleToTargetLLVMModules(*executable, diagnostics);
-}
-
-std::vector<RawLogicalValue> makeF32Values(llvm::ArrayRef<uint64_t> bits) {
-  std::vector<RawLogicalValue> values;
-  for (uint64_t value : bits)
-    values.push_back({LogicalFormat::F32, value});
-  return values;
+  llvm::Expected<TargetLLVMModuleBundle> target =
+      compileExecutableBundleToTargetLLVMModules(*executable, diagnostics);
+  if (!target)
+    return target.takeError();
+  return CompiledElementwiseProgram{std::move(*executable), std::move(*target)};
 }
 
 uint64_t f32Bits(float value) {
@@ -151,68 +144,126 @@ uint64_t f32Bits(float value) {
   return bits;
 }
 
-std::vector<RawLogicalValue> makeSequentialF32Values(int64_t logicalRank,
+std::vector<RawLogicalValue> makeSequentialF32Values(int64_t globalOffset,
+                                                     int64_t elementCount,
                                                      float addend) {
   std::vector<RawLogicalValue> values;
-  values.reserve(8);
-  for (int64_t index = 0; index < 8; ++index) {
-    const float value =
-        static_cast<float>(logicalRank * 8 + index + 1) + addend;
+  values.reserve(static_cast<size_t>(elementCount));
+  for (int64_t index = 0; index < elementCount; ++index) {
+    const float value = static_cast<float>(globalOffset + index + 1) + addend;
     values.push_back({LogicalFormat::F32, f32Bits(value)});
   }
   return values;
 }
 
+const ProgramResourceBinding *
+findProgramBinding(const PhysicalTileExecutable &tile,
+                   const KernelABISlot &slot) {
+  ProgramResourceRole role;
+  switch (slot.role) {
+  case KernelABISlotRole::UserInput:
+    role = ProgramResourceRole::UserInput;
+    break;
+  case KernelABISlotRole::Parameter:
+    role = ProgramResourceRole::Parameter;
+    break;
+  case KernelABISlotRole::Constant:
+    role = ProgramResourceRole::Constant;
+    break;
+  case KernelABISlotRole::Output:
+    role = ProgramResourceRole::Output;
+    break;
+  case KernelABISlotRole::Workspace:
+  case KernelABISlotRole::TransportStatus:
+    return nullptr;
+  }
+  auto match = llvm::find_if(
+      tile.getProgramBindings(), [&](const ProgramResourceBinding &binding) {
+        return binding.role == role && binding.index == slot.resourceIndex;
+      });
+  return match == tile.getProgramBindings().end() ? nullptr : &*match;
+}
+
 TEST(SystemCTargetModelIntegrationTest,
      ExecutesSourceProducedNumericTransactionsAcrossDeltaCycles) {
   std::string diagnostics;
-  llvm::Expected<TargetLLVMModuleBundle> bundle =
+  llvm::Expected<CompiledElementwiseProgram> compiled =
       buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  ASSERT_EQ(bundle->getModules().size(), 16u);
+  ASSERT_TRUE(static_cast<bool>(compiled))
+      << diagnostics << llvm::toString(compiled.takeError());
+  const auto &tiles = compiled->executable.getPhysicalTileExecutables();
+  const auto &modules = compiled->target.getModules();
+  ASSERT_EQ(tiles.size(), 16u);
+  ASSERT_EQ(modules.size(), 16u);
 
-  std::vector<TargetCallRankArguments> arguments;
+  std::vector<TargetCallTileArguments> arguments;
   std::vector<TargetModelInputBinding> inputs;
-  std::vector<std::vector<RawLogicalValue>> expectedByRank;
   NumericTensorKey tensorKey = llvm::cantFail(
       NumericTensorKey::create(LogicalFormat::F32, MemLayout::Tensor, {8}));
-  for (const TargetLLVMModule &module : bundle->getModules()) {
-    const int64_t rank = module.getLogicalRank();
-    arguments.push_back({rank, {}});
-    std::vector<std::vector<RawLogicalValue>> logicalInputs{
-        makeSequentialF32Values(rank, 0.0f),
-        makeF32Values({UINT64_C(0x3f800000), UINT64_C(0x3f800000),
-                       UINT64_C(0x3f800000), UINT64_C(0x3f800000),
-                       UINT64_C(0x3f800000), UINT64_C(0x3f800000),
-                       UINT64_C(0x3f800000), UINT64_C(0x3f800000)}),
-    };
-    if (rank == 0)
-      logicalInputs[1][0].bits = UINT64_C(0x33800000); // 2^-24, RNE tie.
-    size_t inputIndex = 0;
+  const std::vector<RawLogicalValue> lhs =
+      makeSequentialF32Values(/*globalOffset=*/0, /*elementCount=*/8, 0.0f);
+  std::vector<RawLogicalValue> rhs(8,
+                                   {LogicalFormat::F32, UINT64_C(0x3f800000)});
+  rhs.front().bits = UINT64_C(0x33800000); // 2^-24, RNE tie.
+  for (auto [tileIndex, module] : llvm::enumerate(modules)) {
+    const PhysicalTileExecutable &tile = tiles[tileIndex];
+    ASSERT_EQ(module.getPhysicalCardId(), tile.getPhysicalCardId());
+    ASSERT_EQ(module.getPhysicalTileId(), tile.getPhysicalTileId());
+    ASSERT_EQ(module.getLaunchSlotId(), tile.getLaunchSlotId());
+    const int64_t launchSlot = module.getLaunchSlotId().getValue();
+    arguments.push_back({module.getPhysicalCardId(),
+                         module.getPhysicalTileId(),
+                         module.getLaunchSlotId(),
+                         {}});
+    size_t userInputCount = 0;
+    size_t outputCount = 0;
     for (const KernelABISlot &slot : module.getKernelABISlots()) {
+      const bool tileOwned = slot.role == KernelABISlotRole::Workspace ||
+                             slot.role == KernelABISlotRole::TransportStatus;
       const uint64_t base =
-          UINT64_C(0x100000) +
-          static_cast<uint64_t>(rank) * UINT64_C(0x100000) +
-          static_cast<uint64_t>(slot.ordinal) * UINT64_C(0x10000);
+          tileOwned
+              ? UINT64_C(0x10000000) +
+                    static_cast<uint64_t>(launchSlot) * UINT64_C(0x100000) +
+                    static_cast<uint64_t>(slot.ordinal) * UINT64_C(0x10000)
+              : (slot.role == KernelABISlotRole::Output
+                     ? UINT64_C(0x400000)
+                     : UINT64_C(0x100000) +
+                           static_cast<uint64_t>(slot.resourceIndex) *
+                               UINT64_C(0x100000));
       arguments.back().slots.push_back(base);
+      const ProgramResourceBinding *binding = findProgramBinding(tile, slot);
+      if (!binding)
+        continue;
+      ASSERT_EQ(slot.shape, binding->localShape);
+      ASSERT_EQ(binding->slice.sizes, binding->localShape);
+      ASSERT_EQ(binding->slice.offsets.size(), 1u);
+      EXPECT_EQ(binding->slice.offsets.front(), 0);
+      EXPECT_EQ(slot.shape, (std::vector<int64_t>{8}));
       if (slot.role == KernelABISlotRole::UserInput) {
-        ASSERT_LT(inputIndex, logicalInputs.size());
-        std::vector<uint8_t> bytes =
-            llvm::cantFail(packPhysicalTensorLogicalValues(
-                tensorKey, logicalInputs[inputIndex++], UINT8_C(0)));
+        ASSERT_LT(slot.resourceIndex, 2);
+        const llvm::ArrayRef<RawLogicalValue> values =
+            slot.resourceIndex == 0 ? llvm::ArrayRef<RawLogicalValue>(lhs)
+                                    : llvm::ArrayRef<RawLogicalValue>(rhs);
+        std::vector<uint8_t> bytes = llvm::cantFail(
+            packPhysicalTensorLogicalValues(tensorKey, values, UINT8_C(0)));
         ASSERT_EQ(bytes.size(), static_cast<uint64_t>(slot.byteSize));
-        inputs.push_back({rank, slot.ordinal, std::move(bytes)});
+        if (launchSlot == 0)
+          inputs.push_back(
+              {getTargetModelResourceId(module.getPhysicalCardId(),
+                                        module.getPhysicalTileId(), slot.role,
+                                        slot.resourceIndex),
+               std::move(bytes)});
+        ++userInputCount;
+      } else if (slot.role == KernelABISlotRole::Output) {
+        ++outputCount;
       }
     }
-    ASSERT_EQ(inputIndex, logicalInputs.size());
-    expectedByRank.push_back(makeSequentialF32Values(rank, 1.0f));
-    if (rank == 0)
-      expectedByRank.back()[0].bits = UINT64_C(0x3f800000);
+    EXPECT_EQ(userInputCount, 2u);
+    EXPECT_EQ(outputCount, 1u);
   }
 
   llvm::Expected<TargetCallExecutable> frontend =
-      prepareTargetCallFrontend(*bundle, arguments);
+      prepareTargetCallFrontend(compiled->target, arguments);
   ASSERT_TRUE(static_cast<bool>(frontend))
       << llvm::toString(frontend.takeError());
   llvm::Expected<TargetModelResult> result = executeSystemCTargetModel(
@@ -223,8 +274,8 @@ TEST(SystemCTargetModelIntegrationTest,
                                       /*maximumMovementBytes=*/4096,
                                       /*maximumMovementSegments=*/256));
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
-  EXPECT_EQ(result->completedRankCount, 16);
-  EXPECT_GE(result->issuedTransactionCount, 16u * 4u);
+  EXPECT_EQ(result->completedTileCount, 16);
+  EXPECT_GE(result->issuedTransactionCount, 8u * 4u);
   EXPECT_GE(result->systemCThreadProcessCount, 17u);
   EXPECT_GT(result->finalDeltaCount, 0u);
   EXPECT_FALSE(result->systemCVersion.empty());
@@ -234,20 +285,40 @@ TEST(SystemCTargetModelIntegrationTest,
   EXPECT_FALSE(result->numericFlags.divByZero);
   EXPECT_FALSE(result->numericFlags.overflow);
   EXPECT_FALSE(result->numericFlags.underflow);
-  ASSERT_EQ(result->outputs.size(), 16u);
+  ASSERT_EQ(result->outputs.size(), 1u);
 
+  const std::vector<RawLogicalValue> expected = {
+      {LogicalFormat::F32, UINT64_C(0x3f800000)},
+      {LogicalFormat::F32, f32Bits(3.0f)},
+      {LogicalFormat::F32, f32Bits(4.0f)},
+      {LogicalFormat::F32, f32Bits(5.0f)},
+      {LogicalFormat::F32, f32Bits(6.0f)},
+      {LogicalFormat::F32, f32Bits(7.0f)},
+      {LogicalFormat::F32, f32Bits(8.0f)},
+      {LogicalFormat::F32, f32Bits(9.0f)},
+  };
   for (const TargetModelOutput &modelOutput : result->outputs) {
-    ASSERT_GE(modelOutput.logicalRank, 0);
-    ASSERT_LT(modelOutput.logicalRank, 16);
+    auto module =
+        llvm::find_if(modules, [&](const TargetLLVMModule &candidate) {
+          return candidate.getPhysicalCardId() == modelOutput.physicalCardId &&
+                 candidate.getPhysicalTileId() == modelOutput.physicalTileId &&
+                 candidate.getLaunchSlotId() == modelOutput.launchSlotId;
+        });
+    ASSERT_NE(module, modules.end());
+    auto outputSlot = llvm::find_if(
+        module->getKernelABISlots(), [&](const KernelABISlot &slot) {
+          return slot.ordinal == modelOutput.slotOrdinal &&
+                 slot.role == KernelABISlotRole::Output;
+        });
+    ASSERT_NE(outputSlot, module->getKernelABISlots().end());
     llvm::Expected<std::vector<RawLogicalValue>> output =
         unpackPhysicalTensorLogicalValues(tensorKey, modelOutput.bytes);
     ASSERT_TRUE(static_cast<bool>(output))
         << llvm::toString(output.takeError());
-    const std::vector<RawLogicalValue> &expected =
-        expectedByRank[static_cast<size_t>(modelOutput.logicalRank)];
     ASSERT_EQ(output->size(), expected.size());
-    for (size_t index = 0; index < expected.size(); ++index)
+    for (size_t index = 0; index < expected.size(); ++index) {
       EXPECT_EQ((*output)[index].bits, expected[index].bits);
+    }
   }
 }
 

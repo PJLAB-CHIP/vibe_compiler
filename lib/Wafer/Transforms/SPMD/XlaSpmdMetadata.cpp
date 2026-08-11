@@ -117,29 +117,30 @@ signaturesToJson(const std::vector<TensorSignature> &signatures) {
   return array;
 }
 
-static llvm::json::Object distributedRankToJson(const DistributedRank &rank) {
+static llvm::json::Object
+distributedPartitionToJson(const DistributedPartition &partition) {
   return llvm::json::Object{
-      {"rank", rank.rank},
-      {"replica_id", rank.replicaId},
-      {"offsets", shapeToJson(rank.offsets)},
-      {"sizes", shapeToJson(rank.sizes)},
-      {"strides", shapeToJson(rank.strides)},
+      {"partition_id", partition.partitionId},
+      {"replica_id", partition.replicaId},
+      {"offsets", shapeToJson(partition.offsets)},
+      {"sizes", shapeToJson(partition.sizes)},
+      {"strides", shapeToJson(partition.strides)},
   };
 }
 
 static llvm::json::Object
 distributedBindingToJson(const DistributedBoundaryBinding &binding,
                          llvm::StringRef indexField) {
-  llvm::json::Array ranks;
-  for (const DistributedRank &rank : binding.ranks)
-    ranks.push_back(distributedRankToJson(rank));
+  llvm::json::Array partitions;
+  for (const DistributedPartition &partition : binding.partitions)
+    partitions.push_back(distributedPartitionToJson(partition));
   return llvm::json::Object{
       {indexField, binding.index},
       {"distribution", binding.distribution},
       {"global_shape", shapeToJson(binding.globalShape)},
       {"local_shape", shapeToJson(binding.localShape)},
       {"dtype", binding.dtype},
-      {"ranks", std::move(ranks)},
+      {"partitions", std::move(partitions)},
   };
 }
 
@@ -152,8 +153,8 @@ distributedBoundaryToJson(const DistributedBoundary &boundary) {
   for (const DistributedBoundaryBinding &binding : boundary.outputs)
     outputs.push_back(distributedBindingToJson(binding, "result_index"));
   return llvm::json::Object{
-      {"version", 1},
-      {"logical_rank_count", boundary.logicalRankCount},
+      {"version", 2},
+      {"num_partitions", boundary.numPartitions},
       {"inputs", std::move(inputs)},
       {"outputs", std::move(outputs)},
   };
@@ -250,7 +251,7 @@ outputSignaturesFromFunc(mlir::func::FuncOp func, const ProgramMetadata &meta) {
 
 static llvm::json::Object shardToJson(const ParameterShard &shard) {
   return llvm::json::Object{
-      {"rank", shard.rank},
+      {"partition_id", shard.partitionId},
       {"replica_id", shard.replicaId},
       {"file", shard.file},
       {"offsets", shapeToJson(shard.offsets)},
@@ -275,15 +276,15 @@ static llvm::json::Object bindingToJson(const ParameterBinding &binding) {
 }
 
 std::string bindingsToJson(const std::string &functionName,
-                           int64_t logicalRankCount,
+                           int64_t numPartitions,
                            const std::vector<ParameterBinding> &bindings) {
   llvm::json::Array parameters;
   for (const ParameterBinding &binding : bindings)
     parameters.push_back(bindingToJson(binding));
   llvm::json::Object root{
-      {"parameter_shards_version", 3},
+      {"parameter_shards_version", 4},
       {"function", functionName},
-      {"logical_rank_count", logicalRankCount},
+      {"num_partitions", numPartitions},
       {"parameters", std::move(parameters)},
   };
   return llvm::formatv("{0:2}", llvm::json::Value(std::move(root))).str() +

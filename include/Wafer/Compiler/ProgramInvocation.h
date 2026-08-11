@@ -54,31 +54,33 @@ private:
   std::vector<uint8_t> bytes;
 };
 
-/// Exact non-output source resource supplied to one accepted rank.
+/// Exact non-output source resource supplied to one accepted physical Tile.
 struct ProgramInputBinding {
   ProgramResourceRole role;
   int64_t index;
   ProgramTensor tensor;
 };
 
-/// Complete source invocation inputs for one logical rank.
-struct ProgramRankInvocation {
-  int64_t logicalRank;
+/// Complete source invocation inputs for one physical Tile launch entry.
+struct ProgramTileInvocation {
+  PhysicalCardId physicalCardId;
+  PhysicalTileId physicalTileId;
+  LaunchSlotId launchSlotId;
   std::vector<ProgramInputBinding> inputs;
 };
 
-/// One complete logical user input before accepted rank slicing.
+/// One complete logical user input before accepted partition slicing.
 struct ProgramGlobalInputBinding {
   int64_t index;
   ProgramTensor tensor;
 };
 
-/// Builds all rank-local source bindings from typed bundle slices. User
+/// Builds all Tile-local source bindings from typed bundle slices. User
 /// inputs are sliced from complete logical tensors; parameters/constants are
 /// loaded from their already-verified package-relative NPY payload paths.
 /// The function performs no compute and is shared by independent execution
 /// consumers without sharing their numeric kernels or schedulers.
-llvm::Expected<std::vector<ProgramRankInvocation>> prepareProgramInvocations(
+llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
     const ExecutableBundle &bundle, llvm::StringRef packageRoot,
     llvm::ArrayRef<ProgramGlobalInputBinding> globalInputs);
 
@@ -87,7 +89,7 @@ llvm::Expected<std::vector<ProgramRankInvocation>> prepareProgramInvocations(
 /// operation; it performs no reference or target compute.
 llvm::Expected<ProgramTensor>
 sliceProgramTensorForBinding(const ProgramTensor &global,
-                             const RankProgramBinding &binding);
+                             const ProgramResourceBinding &binding);
 
 } // namespace wafer::compiler
 

@@ -49,8 +49,8 @@ getVerifiedDistributionKind(llvm::StringRef distribution) {
 }
 
 FailureOr<int64_t>
-getSingleExecutionMeshRankCount(ModuleOp module,
-                                llvm::raw_ostream &diagnostics) {
+getSingleExecutionMeshPartitionCount(ModuleOp module,
+                                     llvm::raw_ostream &diagnostics) {
   SmallVector<wafer::ExecutionMeshOp, 2> meshes;
   for (wafer::ExecutionMeshOp mesh : module.getOps<wafer::ExecutionMeshOp>())
     meshes.push_back(mesh);
@@ -74,17 +74,17 @@ getSingleExecutionMeshRankCount(ModuleOp module,
     return failure();
   }
 
-  int64_t rankCount = 1;
+  int64_t partitionCount = 1;
   for (int64_t dim : meshes.front().getShapeAttr().asArrayRef()) {
     int64_t next = 0;
-    if (dim <= 0 || !checkedMul(rankCount, dim, next)) {
-      rejectProgramDirectory("execution mesh rank count is invalid",
+    if (dim <= 0 || !checkedMul(partitionCount, dim, next)) {
+      rejectProgramDirectory("execution mesh partition count is invalid",
                              diagnostics);
       return failure();
     }
-    rankCount = next;
+    partitionCount = next;
   }
-  return rankCount;
+  return partitionCount;
 }
 
 } // namespace wafer::frontend::program_detail

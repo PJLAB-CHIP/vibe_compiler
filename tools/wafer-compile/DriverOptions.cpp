@@ -17,10 +17,10 @@ namespace wafer::compile_driver {
 
 void printHelp() {
   llvm::outs() << "usage: wafer-compile --input-program-dir <dir> "
-                  "--output-program-dir <dir> --execution-ranks <1|16> "
+                  "--output-program-dir <dir> --num-partitions <1> "
                   "--launch-kind <kernel|model> "
                   "[--dump-compiler-ir <dir>] "
-                  "[--optimization-preset <production|none>] "
+                  "[--optimization-policy <search|none>] "
                   "[--compile-timing] "
                   "[--profile] "
                   "[--target-model "
@@ -111,9 +111,9 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       continue;
     }
-    if (arg == "--execution-ranks" || arg.starts_with("--execution-ranks=")) {
-      if (parseValueOption(argc, argv, index, arg, "--execution-ranks",
-                           options.executionRanks))
+    if (arg == "--num-partitions" || arg.starts_with("--num-partitions=")) {
+      if (parseValueOption(argc, argv, index, arg, "--num-partitions",
+                           options.numPartitions))
         return false;
       continue;
     }
@@ -123,17 +123,16 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       continue;
     }
-    if (arg == "--dump-compiler-ir" ||
-        arg.starts_with("--dump-compiler-ir=")) {
+    if (arg == "--dump-compiler-ir" || arg.starts_with("--dump-compiler-ir=")) {
       if (parseValueOption(argc, argv, index, arg, "--dump-compiler-ir",
                            options.compilerIRDumpDirectory))
         return false;
       continue;
     }
-    if (arg == "--optimization-preset" ||
-        arg.starts_with("--optimization-preset=")) {
-      if (parseValueOption(argc, argv, index, arg, "--optimization-preset",
-                           options.optimizationPreset))
+    if (arg == "--optimization-policy" ||
+        arg.starts_with("--optimization-policy=")) {
+      if (parseValueOption(argc, argv, index, arg, "--optimization-policy",
+                           options.optimizationPolicy))
         return false;
       continue;
     }
@@ -333,16 +332,16 @@ std::optional<double> parseTolerance(const std::optional<std::string> &value,
 
 std::optional<OptimizationConfig>
 parseOptimizationConfig(const CommandLineOptions &options) {
-  OptimizationConfig config = OptimizationConfig::production();
-  if (options.optimizationPreset) {
-    if (*options.optimizationPreset == "production")
-      config = OptimizationConfig::production();
-    else if (*options.optimizationPreset == "none")
+  OptimizationConfig config = OptimizationConfig::search();
+  if (options.optimizationPolicy) {
+    if (*options.optimizationPolicy == "search")
+      config = OptimizationConfig::search();
+    else if (*options.optimizationPolicy == "none")
       config = OptimizationConfig::none();
     else {
-      llvm::errs() << "wafer-compile: invalid --optimization-preset value: "
-                   << *options.optimizationPreset
-                   << " (expected production or none)\n";
+      llvm::errs() << "wafer-compile: invalid --optimization-policy value: "
+                   << *options.optimizationPolicy
+                   << " (expected search or none)\n";
       return std::nullopt;
     }
   }

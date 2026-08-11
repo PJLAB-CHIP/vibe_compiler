@@ -53,22 +53,22 @@
 # RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.positions.program 2>&1 | FileCheck %s --check-prefix=INPUT-POSITIONS
 
 # RUN: rm -rf %t.shards.program && mkdir -p %t.shards.program/functions %t.shards.program/parameter_shards/weight
-# RUN: printf '%b' 'module attributes {"mhlo.spmd_parameters_shardings" = ""} {\n  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}\n  wafer.execution.mesh @default_mesh {topology = @default, axes = ["rank"], shape = array<i64: 16>, policy = "all_available", endpoints = array<i64>}\n  func.func @main(%%arg0: tensor<1x4xf32>) -> tensor<1x4xf32> {\n    return %%arg0 : tensor<1x4xf32>\n  }\n}\n' > %t.shards.program/functions/forward.mlir
+# RUN: printf '%b' 'module attributes {"mhlo.spmd_parameters_shardings" = ""} {\n  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}\n  wafer.execution.mesh @default_mesh {axes = ["card_partition"], shape = array<i64: 2>}\n  func.func @main(%%arg0: tensor<1x4xf32>) -> tensor<1x4xf32> {\n    return %%arg0 : tensor<1x4xf32>\n  }\n}\n' > %t.shards.program/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[1,4],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[1,4],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.shards.program/functions/forward.meta
-# RUN: %python -c 'import json, numpy as np; from pathlib import Path; root=Path("%t.shards.program"); ranks=[{"rank":i,"replica_id":0,"offsets":[i,0],"sizes":[1,4],"strides":[1,1]} for i in range(16)]; p=root/"functions/forward.meta"; d=json.loads(p.read_text()); d["distributed_boundary"]={"version":1,"logical_rank_count":16,"inputs":[],"outputs":[{"result_index":0,"distribution":"partitioned","global_shape":[16,4],"local_shape":[1,4],"dtype":"float32","ranks":ranks}]}; p.write_text(json.dumps(d)); shards=[dict(r,file=f"parameter_shards/weight/rank_{i:05d}.npy") for i,r in enumerate(ranks)]; (root/"functions/forward.parameter_shards.json").write_text(json.dumps({"parameter_shards_version":3,"function":"forward","logical_rank_count":16,"parameters":[{"argument_index":0,"name":"weight","distribution":"partitioned","global_shape":[16,4],"local_shape":[1,4],"dtype":"float32","shards":shards}]})); [(np.save(root/f"parameter_shards/weight/rank_{i:05d}.npy",np.zeros((1,4),dtype=np.float32))) for i in range(16)]'
+# RUN: %python -c 'import json, numpy as np; from pathlib import Path; root=Path("%t.shards.program"); partitions=[{"partition_id":i,"replica_id":0,"offsets":[i,0],"sizes":[1,4],"strides":[1,1]} for i in range(2)]; p=root/"functions/forward.meta"; d=json.loads(p.read_text()); d["distributed_boundary"]={"version":2,"num_partitions":2,"inputs":[],"outputs":[{"result_index":0,"distribution":"partitioned","global_shape":[2,4],"local_shape":[1,4],"dtype":"float32","partitions":partitions}]}; p.write_text(json.dumps(d)); shards=[dict(partition,file=f"parameter_shards/weight/partition_{i:05d}.npy") for i,partition in enumerate(partitions)]; (root/"functions/forward.parameter_shards.json").write_text(json.dumps({"parameter_shards_version":4,"function":"forward","num_partitions":2,"parameters":[{"argument_index":0,"name":"weight","distribution":"partitioned","global_shape":[2,4],"local_shape":[1,4],"dtype":"float32","shards":shards}]})); [(np.save(root/f"parameter_shards/weight/partition_{i:05d}.npy",np.zeros((1,4),dtype=np.float32))) for i in range(2)]'
 # RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.shards.program | FileCheck %s --check-prefix=SHARD-PROGRAM
 
 # RUN: rm -rf %t.boundary-without-marker.program && mkdir -p %t.boundary-without-marker.program && cp -R %t.program/. %t.boundary-without-marker.program
-# RUN: %python -c 'import json, pathlib; p=pathlib.Path("%t.boundary-without-marker.program/functions/forward.meta"); d=json.loads(p.read_text()); rank={"rank":0,"replica_id":0,"offsets":[0,0],"sizes":[2,4],"strides":[1,1]}; d["distributed_boundary"]={"version":1,"logical_rank_count":1,"inputs":[],"outputs":[{"result_index":0,"distribution":"replicated","global_shape":[2,4],"local_shape":[2,4],"dtype":"float32","ranks":[rank]}]}; p.write_text(json.dumps(d))'
+# RUN: %python -c 'import json, pathlib; p=pathlib.Path("%t.boundary-without-marker.program/functions/forward.meta"); d=json.loads(p.read_text()); partition={"partition_id":0,"replica_id":0,"offsets":[0,0],"sizes":[2,4],"strides":[1,1]}; d["distributed_boundary"]={"version":2,"num_partitions":1,"inputs":[],"outputs":[{"result_index":0,"distribution":"replicated","global_shape":[2,4],"local_shape":[2,4],"dtype":"float32","partitions":[partition]}]}; p.write_text(json.dumps(d))'
 # RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.boundary-without-marker.program 2>&1 | FileCheck %s --check-prefix=BOUNDARY-WITHOUT-MARKER
 
 # RUN: rm -rf %t.bad-boundary-identity.program && mkdir -p %t.bad-boundary-identity.program && cp -R %t.shards.program/. %t.bad-boundary-identity.program
 # RUN: %python -c 'import json, pathlib; p=pathlib.Path("%t.bad-boundary-identity.program/functions/forward.meta"); d=json.loads(p.read_text()); d["distributed_boundary"]["outputs"][0]["result_index"]=1; p.write_text(json.dumps(d))'
 # RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.bad-boundary-identity.program 2>&1 | FileCheck %s --check-prefix=BAD-BOUNDARY-IDENTITY
 
-# RUN: rm -rf %t.duplicate-boundary-rank.program && mkdir -p %t.duplicate-boundary-rank.program && cp -R %t.shards.program/. %t.duplicate-boundary-rank.program
-# RUN: %python -c 'import json, pathlib; p=pathlib.Path("%t.duplicate-boundary-rank.program/functions/forward.meta"); d=json.loads(p.read_text()); d["distributed_boundary"]["outputs"][0]["ranks"][1]["rank"]=0; p.write_text(json.dumps(d))'
-# RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.duplicate-boundary-rank.program 2>&1 | FileCheck %s --check-prefix=DUPLICATE-BOUNDARY-RANK
+# RUN: rm -rf %t.duplicate-boundary-partition.program && mkdir -p %t.duplicate-boundary-partition.program && cp -R %t.shards.program/. %t.duplicate-boundary-partition.program
+# RUN: %python -c 'import json, pathlib; p=pathlib.Path("%t.duplicate-boundary-partition.program/functions/forward.meta"); d=json.loads(p.read_text()); d["distributed_boundary"]["outputs"][0]["partitions"][1]["partition_id"]=0; p.write_text(json.dumps(d))'
+# RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.duplicate-boundary-partition.program 2>&1 | FileCheck %s --check-prefix=DUPLICATE-BOUNDARY-PARTITION
 
 # RUN: rm -rf %t.bad-boundary-local.program && mkdir -p %t.bad-boundary-local.program && cp -R %t.shards.program/. %t.bad-boundary-local.program
 # RUN: %python -c 'import json, pathlib; p=pathlib.Path("%t.bad-boundary-local.program/functions/forward.meta"); d=json.loads(p.read_text()); d["distributed_boundary"]["outputs"][0]["local_shape"]=[2,4]; p.write_text(json.dumps(d))'
@@ -91,7 +91,7 @@
 # RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.overlap-shards.program 2>&1 | FileCheck %s --check-prefix=OVERLAP-SHARDS
 
 # RUN: rm -rf %t.gap-shards.program && mkdir -p %t.gap-shards.program && cp -R %t.shards.program/. %t.gap-shards.program
-# RUN: %python -c 'import json, pathlib, numpy as np; root=pathlib.Path("%t.gap-shards.program"); p=root/"functions/forward.parameter_shards.json"; d=json.loads(p.read_text()); d["parameters"][0]["shards"][1]["sizes"]=[1,3]; p.write_text(json.dumps(d)); np.save(root/"parameter_shards/weight/rank_00001.npy", np.zeros((1,3), dtype=np.float32))'
+# RUN: %python -c 'import json, pathlib, numpy as np; root=pathlib.Path("%t.gap-shards.program"); p=root/"functions/forward.parameter_shards.json"; d=json.loads(p.read_text()); d["parameters"][0]["shards"][1]["sizes"]=[1,3]; p.write_text(json.dumps(d)); np.save(root/"parameter_shards/weight/partition_00001.npy", np.zeros((1,3), dtype=np.float32))'
 # RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.gap-shards.program 2>&1 | FileCheck %s --check-prefix=GAP-SHARDS
 
 # RUN: rm -rf %t.replica-shards.program && mkdir -p %t.replica-shards.program && cp -R %t.shards.program/. %t.replica-shards.program
@@ -103,7 +103,7 @@
 # RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.replicated.program | FileCheck %s --check-prefix=REPLICATED
 
 # RUN: rm -rf %t.mismatched-replica.program && mkdir -p %t.mismatched-replica.program && cp -R %t.replicated.program/. %t.mismatched-replica.program
-# RUN: %python -c 'import numpy as np; from pathlib import Path; np.save(Path("%t.mismatched-replica.program/parameter_shards/weight/rank_00001.npy"), np.ones((1,4), dtype=np.float32))'
+# RUN: %python -c 'import numpy as np; from pathlib import Path; np.save(Path("%t.mismatched-replica.program/parameter_shards/weight/partition_00001.npy"), np.ones((1,4), dtype=np.float32))'
 # RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.mismatched-replica.program 2>&1 | FileCheck %s --check-prefix=MISMATCHED-REPLICA
 
 # RUN: rm -rf %t.missing-shards.program && mkdir -p %t.missing-shards.program && cp -R %t.shards.program/. %t.missing-shards.program
@@ -111,7 +111,7 @@
 # RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.missing-shards.program 2>&1 | FileCheck %s --check-prefix=MISSING-SHARDS
 
 # RUN: rm -rf %t.missing-shard-file.program && mkdir -p %t.missing-shard-file.program && cp -R %t.shards.program/. %t.missing-shard-file.program
-# RUN: rm %t.missing-shard-file.program/parameter_shards/weight/rank_00001.npy
+# RUN: rm %t.missing-shard-file.program/parameter_shards/weight/partition_00001.npy
 # RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.missing-shard-file.program 2>&1 | FileCheck %s --check-prefix=MISSING-SHARD-FILE
 
 # RUN: rm -rf %t.bad-shape.program && mkdir -p %t.bad-shape.program && cp -R %t.program/. %t.bad-shape.program
@@ -171,7 +171,7 @@
 
 # BOUNDARY-WITHOUT-MARKER: distributed_boundary requires a post-SPMD marker
 # BAD-BOUNDARY-IDENTITY: distributed boundary result_index is out of range
-# DUPLICATE-BOUNDARY-RANK: duplicate distributed boundary rank
+# DUPLICATE-BOUNDARY-PARTITION: duplicate distributed boundary partition_id
 # BAD-BOUNDARY-LOCAL: distributed boundary local_shape does not match module and metadata
 
 # DUPLICATE-SHARD-RECORD: duplicate parameter shard metadata record for parameter argument

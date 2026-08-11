@@ -1178,6 +1178,9 @@ multi_tile_arrival          // hrt_barrier / SPM handshake candidates
 
 ### Current profile execution校准
 
+本节的`16-rank`是原始board fixture对16个launch participant的历史叫法，不是current compiler identity、
+spatial mapping或package ABI；current合同使用显式card/Tile/launch-slot关系。
+
 当前安装profile的板端microcase补充了以下register/wrapper解释，精确样本保留在Q37任务计划：
 
 - worker 0上预构packet后紧邻发射，RDMA/CT backlog 2已出现PMU union重叠；one-shot CRT因packet构造与heap
@@ -1382,7 +1385,7 @@ entry并把原始BootParam head作为唯一entry参数。V5.6随包module在one-
 `12 group data dump`、`13 max marker`。
 
 这些结构是qualified V5.6 binary、随包device module和两个legacy builder交叉得到的exact-build ABI证据，不是公开稳定wire。
-Wafer唯一current schema-v7以顶层`kind=model`和nested `entry_abi=tx81-model-bootparam-v1`
+Wafer唯一current schema-v8以顶层`kind=model`和nested `entry_abi=tx81-model-bootparam`
 （该model BootParam ABI最初在schema-v4引入，schema-v6只保留为历史publication evidence）表达此路径；它现已由typed graph artifact、ordinal verifier、checked allocation/lifetime、module identity、
 artifact export/readback和fake provider共同拥有，并已在限定V5.6/full-good设备完成两轮type-6/type-7 Add完整exact gate；该gate只形成
 logical tile `0..15`执行依据，不声明physical coordinate。该wire不能成为opaque payload sidecar，也不能静默解释kernel launch。

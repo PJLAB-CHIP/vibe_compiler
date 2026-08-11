@@ -11,6 +11,7 @@ add_mlir_dialect_library(WaferIR
   LinalgExt/CollectiveOps.cpp
   Program/ProgramOps.cpp
   Resource/SPMOps.cpp
+  Target/PhysicalTopology.cpp
   Target/TopologyOps.cpp
   Tile/CommOps.cpp
   Tile/ComputeOps.cpp

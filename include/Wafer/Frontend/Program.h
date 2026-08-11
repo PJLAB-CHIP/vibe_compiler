@@ -21,8 +21,8 @@ namespace wafer::frontend {
 
 enum class ProgramDistributionKind { Replicated, Partitioned };
 
-struct ProgramRankSlice {
-  int64_t logicalRank = -1;
+struct ProgramPartitionSlice {
+  int64_t partitionId = -1;
   int64_t replicaId = -1;
   std::vector<int64_t> offsets;
   std::vector<int64_t> sizes;
@@ -40,7 +40,7 @@ struct ProgramBoundaryBinding {
   std::vector<int64_t> globalShape;
   std::vector<int64_t> localShape;
   std::string dtype;
-  std::vector<ProgramRankSlice> rankSlices;
+  std::vector<ProgramPartitionSlice> partitionSlices;
 };
 
 struct ProgramParameterBinding {
@@ -50,7 +50,7 @@ struct ProgramParameterBinding {
   std::vector<int64_t> globalShape;
   std::vector<int64_t> localShape;
   std::string dtype;
-  std::vector<ProgramRankSlice> rankSlices;
+  std::vector<ProgramPartitionSlice> partitionSlices;
 };
 
 struct ProgramConstantBinding {
@@ -66,7 +66,7 @@ struct FrontendProgramVerificationResult {
   unsigned programUserInputCount = 0;
   unsigned programConstantCount = 0;
   unsigned programParameterShardCount = 0;
-  int64_t logicalRankCount = 0;
+  int64_t numPartitions = 0;
   std::vector<ProgramBoundaryBinding> distributedInputs;
   std::vector<ProgramBoundaryBinding> distributedOutputs;
   std::vector<ProgramParameterBinding> parameters;

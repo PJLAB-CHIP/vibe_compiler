@@ -7,14 +7,15 @@
 
 namespace wafer::model::testing {
 
-/// Runs the production SystemC model while failing the selected rank at its
-/// terminal callback. This is only for source/driver atomicity tests; normal
+/// Runs the production SystemC model while failing the selected Tile at its
+/// completion callback. This is only for source/driver atomicity tests; normal
 /// model execution must use executeSystemCTargetModel.
-llvm::Expected<TargetModelResult> executeSystemCTargetModelWithTerminalFailure(
+llvm::Expected<TargetModelResult>
+executeSystemCTargetModelWithTileCompletionFailure(
     compiler::TargetCallExecutable executable,
     llvm::ArrayRef<TargetModelInputBinding> inputBindings,
     TargetModelKernelBudget budget, TargetModelExecutionPolicy policy,
-    int64_t failureLogicalRank);
+    int64_t failureLaunchSlot);
 
 } // namespace wafer::model::testing
 

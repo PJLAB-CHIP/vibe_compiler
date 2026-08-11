@@ -14,35 +14,12 @@ def Wafer_CommunicationResource
     : Resource<"::wafer::WaferCommunicationResource">;
 def Wafer_SyncResource : Resource<"::wafer::WaferSyncResource">;
 
-def WaferTargetImplementationOpInterface
-    : OpInterface<"WaferTargetImplementationOpInterface"> {
-  let cppNamespace = "::wafer";
-  let description = [{
-    Interface for bounded target implementation enumeration on source
-    structured operations. Standard MLIR interfaces remain authoritative for
-    source semantics, tiling, DPS roles, layout, and effects.
-  }];
-  let methods = [
-    InterfaceMethod<
-      "Collect deterministic target implementation candidates for this source operation.",
-      "void", "collectTargetImplementationCandidates",
-      (ins "const ::wafer::WaferTargetCapabilities &":$capabilities,
-           "::llvm::SmallVectorImpl<::wafer::TargetImplementationCandidate> &":$candidates)>,
-    InterfaceMethod<
-      "Materialize one selected candidate into typed target-abstract IR.",
-      "::mlir::LogicalResult", "materializeSelectedTargetImplementation",
-      (ins "const ::wafer::TargetImplementationCandidate &":$candidate,
-           "::wafer::WaferTargetImplementationMaterializer &":$materializer,
-           "::mlir::OpBuilder &":$builder)>
-  ];
-}
-
 def WaferLinalgExtCollectiveOpInterface
     : OpInterface<"WaferLinalgExtCollectiveOpInterface"> {
   let cppNamespace = "::wafer";
   let description = [{
     Minimal family query for generic traversal of Wafer linalg-extension
-    collectives. Rank groups, channels, axes, and combiner regions remain
+    collectives. Partition groups, channels, axes, and combiner regions remain
     directly represented by the concrete typed operation.
   }];
   let methods = [

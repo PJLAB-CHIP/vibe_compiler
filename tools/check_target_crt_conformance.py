@@ -463,7 +463,7 @@ def check_direct_dte_lifecycle(source_text: str) -> None:
     )
     require_contains(
         begin,
-        "direct_sync_init((int)rank_count);",
+        "direct_sync_init((int)participant_count);",
         "standalone Direct DTE begin synchronization initialization",
     )
 
@@ -472,8 +472,8 @@ def check_direct_dte_lifecycle(source_text: str) -> None:
     )
     require_contains(
         after_prepare,
-        "(void)rank_count;",
-        "prepared Direct DTE begin rank-count contract",
+        "(void)participant_count;",
+        "prepared Direct DTE begin participant-count contract",
     )
     require_contains(
         after_prepare,
@@ -836,9 +836,9 @@ def check_ncc_worker_command_abi(
     shared_signatures = {
         "wafer_tx81_ncc_join": "uint32_t participant_mask",
         "wafer_tx81_direct_dte_begin":
-            "uint64_t status_addr, uint32_t rank_count",
+            "uint64_t status_addr, uint32_t participant_count",
         "wafer_tx81_direct_dte_begin_after_prepare":
-            "uint64_t status_addr, uint32_t rank_count",
+            "uint64_t status_addr, uint32_t participant_count",
         "wafer_tx81_direct_dte_send_prepare":
             "uint64_t src, uint64_t remote_dst, uint32_t byte_count, "
             "uint32_t local_tile, uint32_t remote_tile, "

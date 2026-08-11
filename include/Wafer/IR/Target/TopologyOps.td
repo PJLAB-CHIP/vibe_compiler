@@ -28,23 +28,18 @@ def Wafer_TargetTopologyOp : Wafer_Op<"target.topology", [Symbol]> {
 }
 
 def Wafer_ExecutionMeshOp : Wafer_Op<"execution.mesh", [Symbol]> {
-  let summary = "program execution rank mesh";
+  let summary = "logical card-partition mesh";
   let description = [{
-    `wafer.execution.mesh` records the rank domain selected for a program.
-    It references a `wafer.target.topology` fact source instead of copying
-    topology dimensions, unavailable tile state, or connectivity. The default
-    `all_available` policy derives ranks from every available endpoint in the
-    referenced topology; the `explicit` policy is an override for debug,
-    resource isolation, small workloads, or non-default rank endpoint order.
+    `wafer.execution.mesh` records only the logical card-partition domain
+    selected for a program. Its axis-shape product is `num_partitions`.
+    Physical Tile participation and placement are selected downstream and
+    are not part of this IR object.
   }];
 
   let arguments = (ins
     SymbolNameAttr:$sym_name,
-    FlatSymbolRefAttr:$topology,
     StrArrayAttr:$axes,
-    DenseI64ArrayAttr:$shape,
-    StrAttr:$policy,
-    DenseI64ArrayAttr:$endpoints
+    DenseI64ArrayAttr:$shape
   );
 
   let hasVerifier = 1;

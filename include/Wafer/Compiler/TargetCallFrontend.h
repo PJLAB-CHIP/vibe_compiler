@@ -24,18 +24,23 @@ struct TargetNCCIssueDomain {
   LocalInstructionCompletion completionBehavior;
 };
 
-/// One dynamic call effect. Rank is explicitly bound by the JIT bridge. The
-/// ordinal is assigned monotonically inside that rank context; neither field
-/// is used to recover call semantics from a symbol spelling or OS thread.
+/// One dynamic call effect. Physical identity and launch slot are explicitly
+/// bound by the JIT bridge. The ordinal is assigned monotonically inside that
+/// Tile context; none of these fields is recovered from a symbol spelling or
+/// OS thread.
 struct TargetTransaction {
-  int64_t logicalRank;
+  PhysicalCardId physicalCardId;
+  PhysicalTileId physicalTileId;
+  LaunchSlotId launchSlotId;
   uint64_t issueOrdinal;
   TargetTransactionPayload payload;
   std::optional<TargetNCCIssueDomain> nccIssueDomain = std::nullopt;
 };
 
-struct TargetCallRankDescriptor {
-  int64_t logicalRank;
+struct TargetCallTileDescriptor {
+  PhysicalCardId physicalCardId;
+  PhysicalTileId physicalTileId;
+  LaunchSlotId launchSlotId;
   std::vector<KernelABISlot> kernelABISlots;
   std::vector<uint64_t> slotValues;
   TargetIdentityId targetIdentity;
@@ -44,11 +49,13 @@ struct TargetCallRankDescriptor {
 
 struct TargetCallInvocationDescriptor {
   TargetIdentityId targetIdentity;
-  std::vector<TargetCallRankDescriptor> ranks;
+  std::vector<TargetCallTileDescriptor> tiles;
 };
 
-struct TargetCallRankArguments {
-  int64_t logicalRank;
+struct TargetCallTileArguments {
+  PhysicalCardId physicalCardId;
+  PhysicalTileId physicalTileId;
+  LaunchSlotId launchSlotId;
   std::vector<uint64_t> slots;
 };
 
@@ -63,21 +70,23 @@ public:
   begin(const TargetCallInvocationDescriptor &invocation) = 0;
   virtual llvm::Expected<uint64_t>
   issue(const TargetTransaction &transaction) = 0;
-  virtual llvm::Error terminal(int64_t logicalRank) = 0;
+  virtual llvm::Error completeTile(PhysicalCardId physicalCardId,
+                                   PhysicalTileId physicalTileId,
+                                   LaunchSlotId launchSlotId) = 0;
   virtual llvm::Error prepareCommit() = 0;
   virtual void commit() = 0;
   virtual void abort(llvm::StringRef diagnostic) = 0;
 };
 
 struct TargetCallExecutionResult {
-  int64_t completedRankCount;
+  int64_t completedTileCount;
   uint64_t issuedTransactionCount;
 };
 
-/// Owner of one all-rank host materialization. All slots and JIT entries are
+/// Owner of one whole-card host materialization. All slots and JIT entries are
 /// closed before construction succeeds. A downstream scheduler calls begin,
-/// runs each rank entry from its own process, and commits only after every
-/// rank is terminal. executeRank may suspend inside a synchronous sink issue;
+/// runs each Tile entry from its own process, and commits only after every
+/// Tile completes. executeTile may suspend inside a synchronous sink issue;
 /// this is how a SystemC SC_THREAD preserves the JIT stack across wait().
 /// Destroying or move-assigning a running executable aborts its sink, so the
 /// sink must remain alive until commit or an explicit abort.
@@ -91,7 +100,7 @@ public:
 
   const TargetCallInvocationDescriptor &getInvocationDescriptor() const;
   llvm::Error begin(TargetTransactionSink &sink);
-  llvm::Error executeRank(int64_t logicalRank);
+  llvm::Error executeTile(LaunchSlotId launchSlotId);
   llvm::Expected<TargetCallExecutionResult> commit();
   void abort(llvm::StringRef diagnostic);
 
@@ -102,22 +111,23 @@ private:
 
   friend llvm::Expected<TargetCallExecutable>
   prepareTargetCallFrontend(const TargetLLVMModuleBundle &,
-                            llvm::ArrayRef<TargetCallRankArguments>);
+                            llvm::ArrayRef<TargetCallTileArguments>);
 };
 
-/// Atomically preflights/materializes all ranks and owns a copy of every
+/// Atomically preflights/materializes the complete physical Tile domain and
+/// owns a copy of every
 /// fixed ABI slot before returning. No sink effect occurs during preparation.
 /// This path does not compile the repository CRT or construct vendor packets.
 llvm::Expected<TargetCallExecutable>
 prepareTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
-                          llvm::ArrayRef<TargetCallRankArguments> arguments);
+                          llvm::ArrayRef<TargetCallTileArguments> arguments);
 
 /// Convenience orchestration for transaction sinks that never suspend on a
-/// cross-rank dependency. SystemC consumers use prepareTargetCallFrontend and
-/// invoke executeRank from one SC_THREAD per rank instead.
+/// cross-Tile dependency. SystemC consumers use prepareTargetCallFrontend and
+/// invoke executeTile from one SC_THREAD per Tile instead.
 llvm::Expected<TargetCallExecutionResult>
 executeTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
-                          llvm::ArrayRef<TargetCallRankArguments> arguments,
+                          llvm::ArrayRef<TargetCallTileArguments> arguments,
                           TargetTransactionSink &sink);
 
 } // namespace wafer::compiler

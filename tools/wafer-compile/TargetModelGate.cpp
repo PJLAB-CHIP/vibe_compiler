@@ -70,18 +70,20 @@ bool runTargetModelGate(
   }
   llvm::Expected<wafer::model::TargetModelResult> result = [&]() {
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
-    if (const char *failureRank =
-            std::getenv("WAFER_TEST_FAIL_TARGET_MODEL_TERMINAL_RANK")) {
-      int64_t parsedFailureRank = -1;
-      if (llvm::StringRef(failureRank).getAsInteger(10, parsedFailureRank))
+    if (const char *failureLaunchSlot =
+            std::getenv("WAFER_TEST_FAIL_TARGET_MODEL_TILE_COMPLETION_SLOT")) {
+      int64_t parsedFailureLaunchSlot = -1;
+      if (llvm::StringRef(failureLaunchSlot)
+              .getAsInteger(10, parsedFailureLaunchSlot))
         return llvm::Expected<wafer::model::TargetModelResult>(
             llvm::createStringError(
-                "invalid test-only target model terminal failure rank"));
+                "invalid test-only target model Tile completion failure "
+                "launch slot"));
       return wafer::model::testing::
-          executeSystemCTargetModelWithTerminalFailure(
+          executeSystemCTargetModelWithTileCompletionFailure(
               std::move(invocation->getExecutable()),
               invocation->getInputBindings(), budget, executionPolicy,
-              parsedFailureRank);
+              parsedFailureLaunchSlot);
     }
 #endif
     return wafer::model::executeSystemCTargetModel(
@@ -94,48 +96,59 @@ bool runTargetModelGate(
     return true;
   }
 
-  const auto &rankExecutables =
-      product.getExecutableBundle().getRankExecutables();
+  const auto &physicalTileExecutables =
+      product.getExecutableBundle().getPhysicalTileExecutables();
   const auto &targetModules = product.getTargetLLVMModuleBundle().getModules();
-  size_t expectedOutputCount = 0;
-  for (const auto &module : targetModules)
-    expectedOutputCount +=
-        llvm::count_if(module.getKernelABISlots(), [](const auto &slot) {
-          return slot.role == wafer::compiler::KernelABISlotRole::Output;
-        });
-  if (result->completedRankCount !=
-          static_cast<int64_t>(rankExecutables.size()) ||
+  const size_t expectedOutputCount = llvm::count_if(
+      targetModules.front().getKernelABISlots(), [](const auto &slot) {
+        return slot.role == wafer::compiler::KernelABISlotRole::Output;
+      });
+  if (result->completedTileCount !=
+          static_cast<int64_t>(physicalTileExecutables.size()) ||
       result->outputs.size() != expectedOutputCount) {
-    llvm::errs() << "wafer-compile: target model output rank/domain is "
+    llvm::errs() << "wafer-compile: target model output Tile domain is "
                     "incomplete\n";
     return true;
   }
 
-  std::set<std::pair<int64_t, int64_t>> seenOutputs;
+  std::set<int64_t> seenOutputs;
   for (const wafer::model::TargetModelOutput &output : result->outputs) {
-    if (output.logicalRank < 0 ||
-        static_cast<size_t>(output.logicalRank) >= targetModules.size()) {
-      llvm::errs() << "wafer-compile: target model output rank is invalid\n";
+    const int64_t launchSlot = output.launchSlotId.getValue();
+    if (launchSlot < 0 ||
+        static_cast<size_t>(launchSlot) >= targetModules.size()) {
+      llvm::errs() << "wafer-compile: target model output launch slot is "
+                      "invalid\n";
       return true;
     }
-    if (!seenOutputs.emplace(output.logicalRank, output.slotOrdinal).second) {
+    if (!seenOutputs.insert(output.resourceIndex).second) {
       llvm::errs() << "wafer-compile: target model output is duplicated\n";
       return true;
     }
-    const auto &module = targetModules[static_cast<size_t>(output.logicalRank)];
+    const auto &module = targetModules[static_cast<size_t>(launchSlot)];
+    if (module.getPhysicalCardId() != output.physicalCardId ||
+        module.getPhysicalTileId() != output.physicalTileId ||
+        module.getLaunchSlotId() != output.launchSlotId) {
+      llvm::errs() << "wafer-compile: target model output physical Tile "
+                      "identity is invalid\n";
+      return true;
+    }
     const wafer::compiler::KernelABISlot *slot = nullptr;
     for (const auto &candidate : module.getKernelABISlots())
       if (candidate.ordinal == output.slotOrdinal)
         slot = &candidate;
     if (!slot || slot->role != wafer::compiler::KernelABISlotRole::Output ||
-        slot->resourceIndex != output.resourceIndex) {
+        slot->resourceIndex != output.resourceIndex ||
+        output.resource != wafer::model::getTargetModelResourceId(
+                               module.getPhysicalCardId(),
+                               module.getPhysicalTileId(), slot->role,
+                               slot->resourceIndex)) {
       llvm::errs() << "wafer-compile: target model output disagrees with the "
                       "Kernel ABI\n";
       return true;
     }
-    const auto &rank = rankExecutables[static_cast<size_t>(output.logicalRank)];
-    const wafer::compiler::RankProgramBinding *binding = nullptr;
-    for (const auto &candidate : rank.getProgramBindings())
+    const auto &tile = physicalTileExecutables[static_cast<size_t>(launchSlot)];
+    const wafer::compiler::ProgramResourceBinding *binding = nullptr;
+    for (const auto &candidate : tile.getProgramBindings())
       if (candidate.role == wafer::compiler::ProgramResourceRole::Output &&
           candidate.index == slot->resourceIndex)
         binding = &candidate;
@@ -174,13 +187,13 @@ bool runTargetModelGate(
       if (!statistics) {
         llvm::errs() << "wafer-compile: target model numeric statistics "
                         "failed at index "
-                     << binding->programIndex << " rank " << output.logicalRank
+                     << binding->programIndex << " launch slot " << launchSlot
                      << ": " << llvm::toString(statistics.takeError()) << "\n";
         return true;
       }
       llvm::outs()
           << "wafer-compile: target model numeric statistics index="
-          << binding->programIndex << " rank=" << output.logicalRank
+          << binding->programIndex << " launch_slot=" << launchSlot
           << " dtype=" << actual->getDType()
           << " elements=" << statistics->elementCount
           << " exact=" << statistics->exactElementCount << " exact_fraction="
@@ -199,13 +212,13 @@ bool runTargetModelGate(
             wafer::compiler::compareProgramTensorExpectedOutput(
                 *actual, *expected, atol, rtol)) {
       llvm::errs() << "wafer-compile: target model output differs at index "
-                   << binding->programIndex << " rank " << output.logicalRank
+                   << binding->programIndex << " launch slot " << launchSlot
                    << ": " << llvm::toString(std::move(comparison)) << "\n";
       return true;
     }
   }
-  llvm::outs() << "wafer-compile: target model outputs matched; ranks="
-               << result->completedRankCount
+  llvm::outs() << "wafer-compile: target model outputs matched; tiles="
+               << result->completedTileCount
                << " transactions=" << result->issuedTransactionCount
                << " systemc_threads=" << result->systemCThreadProcessCount
                << " final_delta=" << result->finalDeltaCount

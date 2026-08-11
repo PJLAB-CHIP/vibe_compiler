@@ -15,8 +15,27 @@
 #include "gtest/gtest.h"
 
 #include <memory>
+#include <string>
 
 namespace {
+
+static std::string withDTEPhysicalTopology(llvm::StringRef source) {
+  std::string text = source.str();
+  if (!source.contains("wafer.instr.dte_") ||
+      source.contains("wafer.target.topology"))
+    return text;
+  size_t module = text.find("module");
+  size_t body = module == std::string::npos ? std::string::npos
+                                             : text.find('{', module);
+  if (body == std::string::npos)
+    return text;
+  text.insert(body + 1, R"mlir(
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+)mlir");
+  return text;
+}
 
 template <typename OpTy> unsigned countOps(mlir::ModuleOp root) {
   unsigned count = 0;
@@ -36,8 +55,9 @@ protected:
   }
 
   mlir::OwningOpRef<mlir::ModuleOp> parse(llvm::StringRef source) {
+    std::string sourceWithTopology = withDTEPhysicalTopology(source);
     return mlir::parseSourceString<mlir::ModuleOp>(
-        source, mlir::ParserConfig(context.get()));
+        sourceWithTopology, mlir::ParserConfig(context.get()));
   }
 
   void expectTransferPreserved(llvm::StringRef source) {
@@ -736,7 +756,7 @@ module {
     wafer.instr.ncc_join [0]
     %token = wafer.instr.dte_send %dest
         {peer = 1 : i64, bytes = 12 : i64,
-         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
     memref.store %zero, %source[%c0, %c0]
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
@@ -762,7 +782,7 @@ module {
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     %token = wafer.instr.dte_send %source
         {peer = 1 : i64, bytes = 12 : i64,
-         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
     wafer.instr.gather_scatter %source to %dest
         {byte_count = 12 : i64, inner_bytes = 12 : i64,
@@ -805,7 +825,7 @@ module {
     wafer.instr.ncc_join [0]
     %token = wafer.instr.dte_send %dest
         {peer = 1 : i64, bytes = 12 : i64,
-         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
     wafer.instr.dte_wait %token : !async.token
     %source_value = memref.load %source[%c0, %c0]
@@ -937,7 +957,7 @@ module {
       wafer.instr.ncc_join [0]
       %token = wafer.instr.dte_send %dest
           {peer = 1 : i64, bytes = 12 : i64,
-           message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+           message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
       wafer.instr.dte_wait %token : !async.token
       %unused = memref.load %dest[%c0, %c0]
@@ -1287,7 +1307,7 @@ module {
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     %initial = wafer.instr.dte_send %source
         {peer = 1 : i64, bytes = 12 : i64,
-         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
     %pending = scf.for %index = %c0 to %c2 step %c1
         iter_args(%previous = %initial) -> (!async.token) {
@@ -1303,7 +1323,7 @@ module {
       wafer.instr.ncc_join [0]
       %next = wafer.instr.dte_send %dest
           {peer = 1 : i64, bytes = 12 : i64,
-           message = #wafer.dte_message<communication = 1, phase = collective_permute, round = 0, slice = 0>}
+           message = #wafer.dte_message<communication = 1, round = 0, slice = 0>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
       scf.yield %next : !async.token
     }
@@ -1329,7 +1349,7 @@ module {
     scf.for %index = %c0 to %c2 step %c1 {
       %token = wafer.instr.dte_send %source
           {peer = 1 : i64, bytes = 12 : i64,
-           message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+           message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
           : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
       wafer.instr.gather_scatter %source to %dest
           {byte_count = 12 : i64, inner_bytes = 12 : i64,

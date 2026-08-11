@@ -4,6 +4,7 @@
 #define WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H
 
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Target/PhysicalIds.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
@@ -35,8 +36,9 @@ struct CalleeSignature {
 };
 
 struct DirectDTEEndpointDomain {
-  int64_t logicalRank = -1;
-  llvm::SmallVector<int64_t, 16> rankToTile;
+  PhysicalCardId physicalCardId = PhysicalCardId(-1);
+  PhysicalTileId physicalTileId = PhysicalTileId(-1);
+  llvm::SmallVector<PhysicalTileId, 16> availableTileIds;
 };
 
 struct DynamicSubviewAddressPlan {
@@ -78,7 +80,9 @@ getDataFormatCode(mlir::Operation *op, mlir::Value value, llvm::StringRef role);
 mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp);
 mlir::LogicalResult preflightTargetAddresses(mlir::ModuleOp moduleOp);
 mlir::FailureOr<DirectDTEEndpointDomain>
-resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp, int64_t logicalRank);
+resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp,
+                               PhysicalCardId physicalCardId,
+                               PhysicalTileId physicalTileId);
 
 struct FunctionLowering {
   mlir::OpBuilder &builder;
@@ -183,14 +187,16 @@ void populateTargetInstructionConversionPatterns(
 mlir::LogicalResult
 injectDirectDTEStatusLifecycle(mlir::ModuleOp moduleOp,
                                llvm::StringRef entrySymbol,
-                               int64_t statusArgumentIndex, int64_t rankCount,
+                               int64_t statusArgumentIndex,
+                               int64_t participantCount,
                                TargetCallBuiltin beginBuiltin,
                                llvm::StringMap<CalleeSignature> &usedCallees);
 
 mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
                                        bool transportPreparedBeforeEntry,
                                        int64_t defaultDDRArenaArgumentIndex,
-                                       int64_t logicalRank,
+                                       int64_t physicalCardId,
+                                       int64_t physicalTileId,
                                        int64_t transportStatusArgumentIndex,
                                        int64_t profileRecordArgumentIndex);
 

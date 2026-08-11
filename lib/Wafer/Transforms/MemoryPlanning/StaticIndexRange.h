@@ -39,7 +39,8 @@ struct StaticIndexRangeResult {
 /// Conservatively evaluates a non-negative index value from constants,
 /// constant-bounded scf.for induction variables, checked addition/subtraction,
 /// multiplication with at least one singleton operand, static unsigned
-/// division, and identity-preserving wafer.tile.region block/result edges.
+/// division, signed min/max interval expressions, and identity-preserving
+/// wafer.tile.region block/result edges.
 /// When `use` is present, constant integer comparisons on enclosing scf.if
 /// paths refine the same SSA values before arithmetic is evaluated. Unknown
 /// expressions and arithmetic overflow fail closed.

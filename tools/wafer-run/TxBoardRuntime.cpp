@@ -74,14 +74,12 @@ RuntimeEnvironment makeTxProviderEnvironment() {
                                  KernelRuntimeABIId::waferTx81Kernel(),
                                  kCurrentTargetModuleFormat);
   environment.supportedKernelLaunchForms = {
-      KernelLaunchForm::PerRank,
       KernelLaunchForm::Grid,
       KernelLaunchForm::Cluster,
   };
   environment.supportedKernelEntryABIs = {
-      KernelEntryABI::RankLocalPointerBlock,
-      KernelEntryABI::RankMajorPointerTable,
-      KernelEntryABI::RankRowPointerTable,
+      KernelEntryABI::TileMajorPointerTable,
+      KernelEntryABI::TileRowPointerTable,
   };
   environment.supportedModelEntryABIs = {
       ModelEntryABI::Tx81ModelBootParam,
@@ -221,9 +219,13 @@ stageGraphModules(llvm::ArrayRef<BoardGraphModuleSnapshot> modules) {
     return std::move(error);
   };
   uint64_t aggregateModuleBytes = 0;
-  for (auto [tile, module] : llvm::enumerate(modules)) {
-    if (module.logicalTile != tile || !module.module.isValid() ||
-        module.bytes.empty() ||
+  std::array<bool, 16> seenPhysicalTiles{};
+  for (auto [launchSlot, module] : llvm::enumerate(modules)) {
+    const int64_t tileId = module.tileId.getValue();
+    if (module.cardId != PhysicalCardId(0) || tileId < 0 || tileId >= 16 ||
+        seenPhysicalTiles[tileId] ||
+        module.launchSlot != LaunchSlotId(launchSlot) ||
+        !module.module.isValid() || module.bytes.empty() ||
         module.bytes.size() > std::numeric_limits<uint32_t>::max() ||
         module.digest.empty() ||
         module.bytes.size() >
@@ -231,6 +233,7 @@ stageGraphModules(llvm::ArrayRef<BoardGraphModuleSnapshot> modules) {
       return fail(llvm::createStringError(
           llvm::errc::invalid_argument,
           "TX graph module snapshots have an invalid tile domain or size"));
+    seenPhysicalTiles[tileId] = true;
     aggregateModuleBytes += module.bytes.size();
     llvm::SHA256 hasher;
     hasher.update(
@@ -243,7 +246,7 @@ stageGraphModules(llvm::ArrayRef<BoardGraphModuleSnapshot> modules) {
           llvm::errc::invalid_argument,
           "TX graph module snapshot digest does not match its bytes"));
     llvm::SmallString<256> tileDirectory(pattern);
-    llvm::sys::path::append(tileDirectory, "tile" + std::to_string(tile));
+    llvm::sys::path::append(tileDirectory, "tile" + std::to_string(launchSlot));
     std::string tileStorage = tileDirectory.str().str();
     if (::mkdir(tileStorage.c_str(), 0700) != 0)
       return fail(llvm::createStringError(
@@ -357,9 +360,17 @@ public:
     info.pciBusId.assign(pciBusId, strnlen(pciBusId, sizeof(pciBusId)));
     info.runtimeLibraryDigest = runtimeLibraryDigest;
     info.tiles.reserve(NPU_TILE_COUNT_MAX);
-    for (const tileFullInfo &tile : tileInfo.tilesFullInfo)
-      info.tiles.push_back(
-          {tile.index, tile.isAvailable == 1, tile.phyTilex, tile.phyTiley});
+    for (const tileFullInfo &tile : tileInfo.tilesFullInfo) {
+      if (tile.phyTilex >= 4 || tile.phyTiley >= 4)
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "TX inventory contains an out-of-range physical Tile coordinate");
+      const int64_t physicalTileId =
+          static_cast<int64_t>(tile.phyTiley) * 4 + tile.phyTilex;
+      info.tiles.push_back({PhysicalTileId(physicalTileId),
+                            LaunchSlotId(tile.index), tile.isAvailable == 1,
+                            tile.phyTilex, tile.phyTiley});
+    }
     return info;
   }
 
@@ -442,11 +453,11 @@ public:
       if (iterator->second.digest != digest)
         return poisonContractViolation(
             "txModuleLoad aliased different code objects to one module handle");
-      if (iterator->second.logicalReferences ==
+      if (iterator->second.referenceCount ==
           std::numeric_limits<uint64_t>::max())
         return poisonContractViolation(
-            "TX logical module ownership count overflowed");
-      ++iterator->second.logicalReferences;
+            "TX module ownership reference count overflowed");
+      ++iterator->second.referenceCount;
     }
     return BoardModuleHandle{handle};
   }
@@ -460,9 +471,9 @@ public:
     auto iterator = moduleOwnership.find(module.value);
     if (iterator == moduleOwnership.end())
       return poisonContractViolation(
-          "logical TX module ownership is missing during unload");
-    if (iterator->second.logicalReferences > 1) {
-      --iterator->second.logicalReferences;
+          "TX module ownership is missing during unload");
+    if (iterator->second.referenceCount > 1) {
+      --iterator->second.referenceCount;
       return llvm::Error::success();
     }
     if (llvm::Error error =
@@ -563,18 +574,11 @@ public:
 
   llvm::Error submitKernelPhase(KernelLaunchForm form,
                                 RuntimeLaunchPhaseRole phaseRole,
-                                llvm::ArrayRef<BoardRankLaunch> launches,
+                                llvm::ArrayRef<BoardTileLaunch> launches,
                                 BoardDeviceTimingPolicy timingPolicy) override {
     if (llvm::Error error = requireUsable("kernel phase submission"))
       return error;
-    const bool perRank = form == KernelLaunchForm::PerRank;
     const bool cluster = form == KernelLaunchForm::Cluster;
-    if (perRank && launches.size() > 1 &&
-        timingPolicy == BoardDeviceTimingPolicy::StreamEvents)
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "TX same-stream device timing does not support the multi-stream "
-          "per-rank launch form");
     if ((cluster && !api.launchClusterKernel) ||
         (!cluster && !api.launchKernel))
       return llvm::createStringError(
@@ -585,7 +589,7 @@ public:
         launches.size() > std::numeric_limits<uint32_t>::max())
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "TX kernel phase requires a nonempty uint32_t rank domain");
+          "TX kernel phase requires a nonempty uint32_t physical-Tile domain");
 
     const bool firstPhase = !submissionActive;
     if (firstPhase) {
@@ -611,66 +615,53 @@ public:
 
     const uintptr_t sharedFunction = launches.front().function.value;
     const size_t sharedSlotCount = launches.front().arguments.size();
-    std::vector<std::vector<uint64_t>> argumentBlocks;
-    if (perRank)
-      argumentBlocks.reserve(launches.size());
-    else
-      argumentBlocks.emplace_back();
+    std::vector<std::vector<uint64_t>> argumentBlocks(1);
 
-    for (auto [rankIndex, launch] : llvm::enumerate(launches)) {
-      if (launch.logicalRank != static_cast<int64_t>(rankIndex) ||
+    std::array<bool, 16> seenPhysicalTiles{};
+    for (auto [launchIndex, launch] : llvm::enumerate(launches)) {
+      const int64_t tileId = launch.tileId.getValue();
+      if (launch.cardId != PhysicalCardId(0) || tileId < 0 || tileId >= 16 ||
+          seenPhysicalTiles[tileId] ||
+          launch.launchSlot != LaunchSlotId(launchIndex) ||
           !launch.entry.isValid() || launch.function.value == 0)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "TX kernel phase is not a canonical rank/function domain");
-      if (!perRank && (launch.function.value != sharedFunction ||
-                       launch.arguments.size() != sharedSlotCount))
+            "TX kernel phase is not a canonical physical-Tile/function "
+            "domain");
+      seenPhysicalTiles[tileId] = true;
+      if (launch.function.value != sharedFunction ||
+          launch.arguments.size() != sharedSlotCount)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
             "TX shared kernel phase does not use one function and slot shape");
-      if (perRank) {
-        if (launch.arguments.size() >
-            kTx81KernelArgumentBytesMax / sizeof(uint64_t))
-          return llvm::createStringError(
-              llvm::errc::invalid_argument,
-              "TX per-rank argument block exceeds the qualified packet limit");
-        argumentBlocks.emplace_back(launch.arguments.begin(),
+      argumentBlocks.front().insert(argumentBlocks.front().end(),
+                                    launch.arguments.begin(),
                                     launch.arguments.end());
-      } else {
-        argumentBlocks.front().insert(argumentBlocks.front().end(),
-                                      launch.arguments.begin(),
-                                      launch.arguments.end());
-      }
     }
 
-    if (!perRank) {
-      const uint64_t byteLimit = cluster ? kTx81ClusterKernelArgumentBytesMax
-                                         : kTx81KernelArgumentBytesMax;
-      if (argumentBlocks.front().size() > byteLimit / sizeof(uint64_t))
-        return llvm::createStringError(
-            llvm::errc::invalid_argument,
-            "TX shared rank-major argument table exceeds the qualified packet "
-            "limit");
-    }
+    const uint64_t byteLimit = cluster ? kTx81ClusterKernelArgumentBytesMax
+                                       : kTx81KernelArgumentBytesMax;
+    if (argumentBlocks.front().size() > byteLimit / sizeof(uint64_t))
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "TX shared Tile-major argument table exceeds the qualified packet "
+          "limit");
 
     if (firstPhase) {
       submissionArgumentBlocks = argumentBlocks;
       submissionEntries.reserve(launches.size());
-      for (const BoardRankLaunch &launch : launches)
+      for (const BoardTileLaunch &launch : launches)
         submissionEntries.push_back(launch.entry);
 
-      const size_t streamCount = perRank ? launches.size() : 1;
-      activeStreams.reserve(streamCount);
-      for (size_t index = 0; index < streamCount; ++index) {
-        txStream_t stream = nullptr;
-        txError_t status = api.streamCreate(&stream);
-        if (status != TX_SUCCESS)
-          return txError("txStreamCreate(kernel)", status);
-        if (!stream)
-          return poisonContractViolation(
-              "txStreamCreate(kernel) returned a null stream");
-        activeStreams.push_back(stream);
-      }
+      activeStreams.reserve(1);
+      txStream_t stream = nullptr;
+      txError_t status = api.streamCreate(&stream);
+      if (status != TX_SUCCESS)
+        return txError("txStreamCreate(kernel)", status);
+      if (!stream)
+        return poisonContractViolation(
+            "txStreamCreate(kernel) returned a null stream");
+      activeStreams.push_back(stream);
       if (llvm::Error error = initializeDeviceTiming(timingPolicy, "kernel"))
         return error;
       submissionKind = SubmissionKind::Kernel;
@@ -680,11 +671,11 @@ public:
       if (submissionEntries.size() != launches.size() ||
           submissionArgumentBlocks != argumentBlocks)
         return poisonContractViolation(
-            "TX later kernel phase changed rank identity or argument storage");
+            "TX later kernel phase changed Tile identity or argument storage");
       for (auto [index, launch] : llvm::enumerate(launches))
         if (submissionEntries[index] != launch.entry)
           return poisonContractViolation(
-              "TX later kernel phase changed rank entry identity");
+              "TX later kernel phase changed Tile entry identity");
     }
 
     completedStreams.assign(activeStreams.size(), false);
@@ -696,24 +687,6 @@ public:
     if (llvm::Error error =
             recordDeviceTimingStart(activeStreams.front(), "kernel"))
       return error;
-    if (perRank) {
-      dim3 gridDim = {1, 1, 1};
-      for (auto [index, launch] : llvm::enumerate(launches)) {
-        txError_t status = api.launchKernel(
-            reinterpret_cast<txFunction_t>(launch.function.value), gridDim,
-            blockDim, submissionArgumentBlocks[index].data(),
-            static_cast<uint32_t>(submissionArgumentBlocks[index].size() *
-                                  sizeof(uint64_t)),
-            0, activeStreams[index]);
-        if (status != TX_SUCCESS)
-          return txError("txLaunchKernel(per-rank:" + phaseName + ")", status);
-      }
-      if (llvm::Error error =
-              recordDeviceTimingEnd(activeStreams.front(), "kernel"))
-        return error;
-      return llvm::Error::success();
-    }
-
     dim3 gridDim = {static_cast<uint32_t>(launches.size()), 1, 1};
     txError_t status;
     if (cluster) {
@@ -783,8 +756,8 @@ public:
             llvm::errc::invalid_argument,
             "TX model launch contains an unsupported resource role");
       }
-      descriptors.push_back({tensorClass, tensor.logicalRank,
-                             tensor.slotOrdinal,
+      descriptors.push_back({tensorClass, tensor.cardId, tensor.tileId,
+                             tensor.launchSlot, tensor.slotOrdinal,
                              static_cast<uint64_t>(tensor.memory.value),
                              tensor.bytes, tensor.dtype, tensor.shape});
     }
@@ -1165,7 +1138,7 @@ private:
   BoardRuntimeContextState contextState = BoardRuntimeContextState::Usable;
   struct ModuleOwnership {
     std::string digest;
-    uint64_t logicalReferences = 0;
+    uint64_t referenceCount = 0;
   };
   struct GraphOwnership {
     std::string stagingRoot;

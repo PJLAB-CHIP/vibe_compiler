@@ -14,11 +14,11 @@
 
 namespace wafer::model::detail {
 
-/// Rank-local transaction completion state shared by the SystemC scheduler
+/// Tile-local transaction completion state shared by the SystemC scheduler
 /// and its focused tests. Direct-DTE ordinals are deliberately absent from
 /// the worker sets and can advance the prefix only through their own event
 /// completion path.
-class TargetModelRankCompletionState {
+class TargetModelTileCompletionState {
 public:
   bool beginIssue(uint64_t issueOrdinal) {
     if (issueOrdinal != nextIssuedOrdinal)

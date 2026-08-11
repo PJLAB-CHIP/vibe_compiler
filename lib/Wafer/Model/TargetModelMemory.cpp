@@ -75,13 +75,32 @@ bool permitsAccess(compiler::KernelABISlotRole role, TargetModelAccess access) {
   llvm_unreachable("unknown target model access");
 }
 
-std::string rankSlot(int64_t logicalRank, int64_t slotOrdinal) {
-  return (llvm::Twine("rank ") + llvm::Twine(logicalRank) + " slot " +
+std::string tileSlot(int64_t launchSlot, int64_t slotOrdinal) {
+  return (llvm::Twine("launch slot ") + llvm::Twine(launchSlot) + " ABI slot " +
           llvm::Twine(slotOrdinal))
       .str();
 }
 
+bool haveSameResourceGeometry(const compiler::KernelABISlot &lhs,
+                              const compiler::KernelABISlot &rhs) {
+  return lhs.role == rhs.role && lhs.resourceIndex == rhs.resourceIndex &&
+         lhs.dtype == rhs.dtype && lhs.layout == rhs.layout &&
+         lhs.shape == rhs.shape && lhs.byteSize == rhs.byteSize &&
+         lhs.alignment == rhs.alignment;
+}
+
 } // namespace
+
+TargetModelResourceId getTargetModelResourceId(PhysicalCardId physicalCardId,
+                                               PhysicalTileId physicalTileId,
+                                               compiler::KernelABISlotRole role,
+                                               int64_t resourceIndex) {
+  std::optional<PhysicalTileId> ownerTile;
+  if (role == compiler::KernelABISlotRole::Workspace ||
+      role == compiler::KernelABISlotRole::TransportStatus)
+    ownerTile = physicalTileId;
+  return {physicalCardId, ownerTile, role, resourceIndex};
+}
 
 llvm::StringRef
 stringifyTargetModelMemoryErrorCode(TargetModelMemoryErrorCode code) {
@@ -124,55 +143,53 @@ std::error_code TargetModelMemoryError::convertToErrorCode() const {
 llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
     const compiler::TargetCallInvocationDescriptor &invocation,
     llvm::ArrayRef<TargetModelInputBinding> inputBindings) {
-  if (invocation.ranks.empty())
+  if (invocation.tiles.empty())
     return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
-                       "invocation has no logical ranks");
+                       "invocation has no physical Tiles");
 
   if (invocation.targetIdentity != TargetIdentityId::waferTx81SingleCard())
     return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
                        "invocation target identity is unsupported");
-  const size_t rankCount = invocation.ranks.size();
-  std::vector<const compiler::TargetCallRankDescriptor *> ranks(rankCount,
+  const size_t tileCount = invocation.tiles.size();
+  std::vector<const compiler::TargetCallTileDescriptor *> tiles(tileCount,
                                                                 nullptr);
-  for (const compiler::TargetCallRankDescriptor &rank : invocation.ranks) {
-    if (rank.logicalRank < 0 ||
-        static_cast<uint64_t>(rank.logicalRank) >= rankCount)
+  std::set<std::pair<int64_t, int64_t>> physicalTiles;
+  for (const compiler::TargetCallTileDescriptor &tile : invocation.tiles) {
+    const int64_t launchSlot = tile.launchSlotId.getValue();
+    if (launchSlot < 0 || static_cast<uint64_t>(launchSlot) >= tileCount)
       return memoryError(
           TargetModelMemoryErrorCode::InvalidInvocation,
-          llvm::Twine("logical rank domain must be exactly [0, ") +
-              llvm::Twine(rankCount) + ")");
-    if (ranks[static_cast<size_t>(rank.logicalRank)])
+          llvm::Twine("launch-slot domain must be exactly [0, ") +
+              llvm::Twine(tileCount) + ")");
+    if (tiles[static_cast<size_t>(launchSlot)])
       return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
-                         llvm::Twine("duplicate logical rank ") +
-                             llvm::Twine(rank.logicalRank));
-    if (rank.targetIdentity != invocation.targetIdentity ||
-        rank.kernelRuntimeABI != KernelRuntimeABIId::waferTx81Kernel())
+                         llvm::Twine("duplicate launch slot ") +
+                             llvm::Twine(launchSlot));
+    if (tile.physicalCardId != PhysicalCardId(0) ||
+        tile.physicalTileId.getValue() < 0 ||
+        !physicalTiles
+             .emplace(tile.physicalCardId.getValue(),
+                      tile.physicalTileId.getValue())
+             .second)
+      return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
+                         "physical Tile identity is invalid or duplicate");
+    if (tile.targetIdentity != invocation.targetIdentity ||
+        tile.kernelRuntimeABI != KernelRuntimeABIId::waferTx81Kernel())
       return memoryError(
           TargetModelMemoryErrorCode::InvalidInvocation,
-          llvm::Twine("rank ") + llvm::Twine(rank.logicalRank) +
-              " identity or kernel runtime ABI is inconsistent");
-    ranks[static_cast<size_t>(rank.logicalRank)] = &rank;
+          llvm::Twine("launch slot ") + llvm::Twine(launchSlot) +
+              " Tile identity or kernel runtime ABI is inconsistent");
+    tiles[static_cast<size_t>(launchSlot)] = &tile;
   }
-  if (llvm::is_contained(ranks, nullptr))
+  if (llvm::is_contained(tiles, nullptr))
     return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
-                       "logical rank domain is incomplete");
+                       "launch-slot domain is incomplete");
 
-  std::set<std::pair<int64_t, int64_t>> boundInputs;
-  for (const TargetModelInputBinding &binding : inputBindings) {
-    if (binding.logicalRank < 0 ||
-        static_cast<uint64_t>(binding.logicalRank) >= rankCount)
-      return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
-                         "input binding names an unknown logical rank");
-    const compiler::TargetCallRankDescriptor &rank =
-        *ranks[static_cast<size_t>(binding.logicalRank)];
-    if (binding.slotOrdinal < 0 || static_cast<uint64_t>(binding.slotOrdinal) >=
-                                       rank.kernelABISlots.size())
-      return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
-                         "input binding names an unknown slot ordinal");
-    if (!boundInputs.emplace(binding.logicalRank, binding.slotOrdinal).second)
-      return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
-                         "duplicate input binding identity");
-  }
+  for (auto [index, binding] : llvm::enumerate(inputBindings))
+    for (size_t previous = 0; previous < index; ++previous)
+      if (inputBindings[previous].resource == binding.resource)
+        return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
+                           "duplicate input resource identity");
 
   const TargetMemoryPolicy memoryPolicy = getDefaultWaferTargetPolicy().memory;
   if (memoryPolicy.spmBase < 0 || memoryPolicy.spmLimit <= memoryPolicy.spmBase)
@@ -181,84 +198,138 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
   const uint64_t spmBase = static_cast<uint64_t>(memoryPolicy.spmBase);
   const uint64_t spmLimit = static_cast<uint64_t>(memoryPolicy.spmLimit);
 
-  std::vector<int64_t> logicalRanks;
+  std::vector<int64_t> launchSlots;
   std::vector<TargetModelPlannedSlot> slots;
-  std::vector<InitialSlotStorage> initialStorage;
-  logicalRanks.reserve(rankCount);
-  for (size_t rankIndex = 0; rankIndex < rankCount; ++rankIndex) {
-    const compiler::TargetCallRankDescriptor &rank = *ranks[rankIndex];
-    logicalRanks.push_back(rank.logicalRank);
-    if (rank.kernelABISlots.size() != rank.slotValues.size())
+  std::vector<InitialResourceStorage> initialStorage;
+  struct ResourceFacts {
+    TargetModelResourceId id;
+    compiler::KernelABISlot slot;
+    uint64_t base = 0;
+    uint64_t byteSize = 0;
+    uint64_t alignment = 0;
+    std::vector<int64_t> launchSlots;
+  };
+  std::vector<ResourceFacts> resources;
+  launchSlots.reserve(tileCount);
+  for (size_t launchSlotIndex = 0; launchSlotIndex < tileCount;
+       ++launchSlotIndex) {
+    const compiler::TargetCallTileDescriptor &tile = *tiles[launchSlotIndex];
+    const int64_t launchSlot = tile.launchSlotId.getValue();
+    launchSlots.push_back(launchSlot);
+    if (tile.kernelABISlots.size() != tile.slotValues.size())
       return memoryError(
           TargetModelMemoryErrorCode::InvalidInvocation,
-          llvm::Twine("rank ") + llvm::Twine(rank.logicalRank) +
+          llvm::Twine("launch slot ") + llvm::Twine(launchSlot) +
               " ABI slot metadata and values have different lengths");
-    for (size_t slotIndex = 0; slotIndex < rank.kernelABISlots.size();
+    for (size_t slotIndex = 0; slotIndex < tile.kernelABISlots.size();
          ++slotIndex) {
-      const compiler::KernelABISlot &slot = rank.kernelABISlots[slotIndex];
-      if (slot.ordinal != static_cast<int64_t>(slotIndex))
+      const compiler::KernelABISlot &slot = tile.kernelABISlots[slotIndex];
+      if (slot.ordinal != static_cast<int64_t>(slotIndex) ||
+          slot.resourceIndex < 0)
         return memoryError(TargetModelMemoryErrorCode::InvalidSlot,
-                           rankSlot(rank.logicalRank, slot.ordinal) +
-                               " is not in ordinal order");
+                           tileSlot(launchSlot, slot.ordinal) +
+                               " has invalid ordinal or resource index");
       if (slot.byteSize <= 0 || slot.alignment <= 0 ||
           !isPowerOfTwo(static_cast<uint64_t>(slot.alignment)))
         return memoryError(TargetModelMemoryErrorCode::InvalidSlot,
-                           rankSlot(rank.logicalRank, slot.ordinal) +
+                           tileSlot(launchSlot, slot.ordinal) +
                                " has invalid size or alignment");
-      const uint64_t base = rank.slotValues[slotIndex];
+      const uint64_t base = tile.slotValues[slotIndex];
       const uint64_t byteSize = static_cast<uint64_t>(slot.byteSize);
       const uint64_t alignment = static_cast<uint64_t>(slot.alignment);
       uint64_t end = 0;
       if (!checkedAdd(base, byteSize, end))
         return memoryError(TargetModelMemoryErrorCode::AddressOverflow,
-                           rankSlot(rank.logicalRank, slot.ordinal) +
+                           tileSlot(launchSlot, slot.ordinal) +
                                " address range overflows");
       if (base % alignment != 0)
         return memoryError(TargetModelMemoryErrorCode::AddressMisaligned,
-                           rankSlot(rank.logicalRank, slot.ordinal) +
+                           tileSlot(launchSlot, slot.ordinal) +
                                " base does not satisfy ABI alignment");
 
-      slots.push_back({rank.logicalRank, slot.ordinal, slot.role,
-                       slot.resourceIndex, base, byteSize, alignment});
-
-      const TargetModelInputBinding *input = nullptr;
-      for (const TargetModelInputBinding &candidate : inputBindings)
-        if (candidate.logicalRank == rank.logicalRank &&
-            candidate.slotOrdinal == slot.ordinal) {
-          input = &candidate;
+      const TargetModelResourceId resource =
+          getTargetModelResourceId(tile.physicalCardId, tile.physicalTileId,
+                                   slot.role, slot.resourceIndex);
+      ResourceFacts *facts = nullptr;
+      for (ResourceFacts &candidate : resources)
+        if (candidate.id == resource) {
+          facts = &candidate;
           break;
         }
-      if (isInputRole(slot.role)) {
-        if (!input)
-          return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
-                             rankSlot(rank.logicalRank, slot.ordinal) +
-                                 " requires exact initial bytes");
-        if (input->bytes.size() != byteSize)
-          return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
-                             rankSlot(rank.logicalRank, slot.ordinal) +
-                                 " initial byte count differs from ABI size");
-        initialStorage.push_back(
-            {rank.logicalRank, slot.ordinal, input->bytes});
+      if (facts) {
+        if (llvm::is_contained(facts->launchSlots, launchSlot))
+          return memoryError(TargetModelMemoryErrorCode::InvalidSlot,
+                             tileSlot(launchSlot, slot.ordinal) +
+                                 " duplicates one resource in a Tile ABI");
+        if (!haveSameResourceGeometry(facts->slot, slot) ||
+            facts->base != base || facts->byteSize != byteSize ||
+            facts->alignment != alignment)
+          return memoryError(
+              TargetModelMemoryErrorCode::InvalidSlot,
+              tileSlot(launchSlot, slot.ordinal) +
+                  " disagrees with another slot for the same resource");
+        facts->launchSlots.push_back(launchSlot);
       } else {
-        if (input)
-          return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
-                             rankSlot(rank.logicalRank, slot.ordinal) +
-                                 " is model-owned and cannot be prebound");
-        initialStorage.push_back(
-            {rank.logicalRank, slot.ordinal,
-             std::vector<uint8_t>(static_cast<size_t>(byteSize), 0)});
+        const TargetModelInputBinding *input = nullptr;
+        for (const TargetModelInputBinding &candidate : inputBindings)
+          if (candidate.resource == resource) {
+            input = &candidate;
+            break;
+          }
+        if (isInputRole(slot.role)) {
+          if (!input)
+            return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
+                               tileSlot(launchSlot, slot.ordinal) +
+                                   " requires exact initial bytes");
+          if (input->bytes.size() != byteSize)
+            return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
+                               tileSlot(launchSlot, slot.ordinal) +
+                                   " initial byte count differs from ABI size");
+          initialStorage.push_back({resource, input->bytes});
+        } else {
+          if (input)
+            return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
+                               tileSlot(launchSlot, slot.ordinal) +
+                                   " is model-owned and cannot be prebound");
+          initialStorage.push_back(
+              {resource,
+               std::vector<uint8_t>(static_cast<size_t>(byteSize), 0)});
+        }
+        resources.push_back(
+            {resource, slot, base, byteSize, alignment, {launchSlot}});
       }
+      slots.push_back({launchSlot, slot.ordinal, slot.role, slot.resourceIndex,
+                       resource, base, byteSize, alignment});
     }
   }
 
-  std::vector<const TargetModelPlannedSlot *> byBase;
-  byBase.reserve(slots.size());
-  for (const TargetModelPlannedSlot &slot : slots)
-    byBase.push_back(&slot);
-  llvm::sort(byBase, [](const TargetModelPlannedSlot *lhs,
-                        const TargetModelPlannedSlot *rhs) {
-    return std::tie(lhs->base, lhs->logicalRank, lhs->slotOrdinal) <
-           std::tie(rhs->base, rhs->logicalRank, rhs->slotOrdinal);
+  for (const TargetModelInputBinding &binding : inputBindings) {
+    const auto resource = llvm::find_if(resources, [&](const ResourceFacts &r) {
+      return r.id == binding.resource;
+    });
+    if (resource == resources.end())
+      return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
+                         "input binding names an unknown resource");
+    if (!isInputRole(resource->slot.role))
+      return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
+                         "model-owned resource cannot be prebound");
+  }
+  for (const ResourceFacts &resource : resources) {
+    const bool cardOwned = !resource.id.physicalTileId.has_value();
+    if ((cardOwned && resource.launchSlots.size() != tileCount) ||
+        (!cardOwned && resource.launchSlots.size() != 1))
+      return memoryError(
+          TargetModelMemoryErrorCode::InvalidSlot,
+          "resource owner does not match its physical Tile reference domain");
+  }
+
+  std::vector<const ResourceFacts *> byBase;
+  byBase.reserve(resources.size());
+  for (const ResourceFacts &resource : resources)
+    byBase.push_back(&resource);
+  llvm::sort(byBase, [](const ResourceFacts *lhs, const ResourceFacts *rhs) {
+    return std::tie(lhs->base, lhs->slot.role, lhs->slot.resourceIndex) <
+           std::tie(rhs->base, rhs->slot.role, rhs->slot.resourceIndex);
   });
   for (size_t index = 1; index < byBase.size(); ++index) {
     uint64_t previousEnd = 0;
@@ -267,44 +338,30 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
     if (byBase[index]->base < previousEnd)
       return memoryError(
           TargetModelMemoryErrorCode::InvalidSlot,
-          rankSlot(byBase[index - 1]->logicalRank,
-                   byBase[index - 1]->slotOrdinal) +
-              " overlaps " +
-              rankSlot(byBase[index]->logicalRank, byBase[index]->slotOrdinal));
+          "distinct target model resources have overlapping addresses");
   }
 
   return InvocationAddressPlan(invocation.targetIdentity,
-                               std::move(logicalRanks), std::move(slots),
+                               std::move(launchSlots), std::move(slots),
                                std::move(initialStorage), spmBase, spmLimit);
 }
 
 const TargetModelPlannedSlot *
-InvocationAddressPlan::findSlot(int64_t logicalRank,
-                                int64_t slotOrdinal) const {
+InvocationAddressPlan::findSlot(int64_t launchSlot, int64_t slotOrdinal) const {
   for (const TargetModelPlannedSlot &slot : slots)
-    if (slot.logicalRank == logicalRank && slot.slotOrdinal == slotOrdinal)
+    if (slot.launchSlot == launchSlot && slot.slotOrdinal == slotOrdinal)
       return &slot;
   return nullptr;
 }
 
-const InvocationAddressPlan::InitialSlotStorage *
-InvocationAddressPlan::findInitialStorage(int64_t logicalRank,
-                                          int64_t slotOrdinal) const {
-  for (const InitialSlotStorage &storage : initialStorage)
-    if (storage.logicalRank == logicalRank &&
-        storage.slotOrdinal == slotOrdinal)
-      return &storage;
-  return nullptr;
-}
-
 llvm::Expected<TargetModelResolvedRange> InvocationAddressPlan::resolve(
-    int64_t logicalRank, TargetModelAddressSpace addressSpace,
+    int64_t launchSlot, TargetModelAddressSpace addressSpace,
     TargetModelAccess access, uint64_t address, uint64_t byteCount,
     uint64_t requiredAlignment) const {
-  if (!llvm::is_contained(logicalRanks, logicalRank))
+  if (!llvm::is_contained(launchSlots, launchSlot))
     return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
-                       llvm::Twine("unknown logical rank ") +
-                           llvm::Twine(logicalRank));
+                       llvm::Twine("unknown launch slot ") +
+                           llvm::Twine(launchSlot));
   if (byteCount == 0)
     return memoryError(TargetModelMemoryErrorCode::UnknownResource,
                        "zero-byte ranges are not addressable resources");
@@ -316,18 +373,21 @@ llvm::Expected<TargetModelResolvedRange> InvocationAddressPlan::resolve(
     return memoryError(TargetModelMemoryErrorCode::AddressOverflow,
                        "address plus byte count overflows");
 
-  if (addressSpace == TargetModelAddressSpace::RankSPM) {
+  if (addressSpace == TargetModelAddressSpace::TileSPM) {
     if (address < spmBase || end > spmLimit)
       return memoryError(
           TargetModelMemoryErrorCode::ReservedSPM,
           llvm::Twine("SPM range is outside the planned tensor window [") +
               llvm::Twine(spmBase) + ", " + llvm::Twine(spmLimit) + ")");
-    return TargetModelResolvedRange{logicalRank, addressSpace, std::nullopt,
+    return TargetModelResolvedRange{launchSlot,        addressSpace,
+                                    std::nullopt,      std::nullopt,
                                     address - spmBase, byteCount};
   }
 
   const TargetModelPlannedSlot *containingStart = nullptr;
   for (const TargetModelPlannedSlot &slot : slots) {
+    if (slot.launchSlot != launchSlot)
+      continue;
     uint64_t slotEnd = 0;
     (void)checkedAdd(slot.base, slot.byteSize, slotEnd);
     if (address >= slot.base && address < slotEnd) {
@@ -346,11 +406,12 @@ llvm::Expected<TargetModelResolvedRange> InvocationAddressPlan::resolve(
   if (!permitsAccess(containingStart->role, access))
     return memoryError(
         TargetModelMemoryErrorCode::AccessDenied,
-        rankSlot(containingStart->logicalRank, containingStart->slotOrdinal) +
+        tileSlot(containingStart->launchSlot, containingStart->slotOrdinal) +
             " does not permit the requested access");
-  return TargetModelResolvedRange{containingStart->logicalRank, addressSpace,
-                                  containingStart->slotOrdinal,
-                                  address - containingStart->base, byteCount};
+  return TargetModelResolvedRange{
+      containingStart->launchSlot,     addressSpace,
+      containingStart->slotOrdinal,    containingStart->resource,
+      address - containingStart->base, byteCount};
 }
 
 llvm::Expected<InvocationMemoryRegistry>
@@ -359,62 +420,59 @@ InvocationMemoryRegistry::create(InvocationAddressPlan plan) {
   if (spmBytes > std::numeric_limits<size_t>::max())
     return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
                        "SPM planned window exceeds host size_t");
-  std::vector<RankSPMStorage> spmStorage;
-  spmStorage.reserve(plan.logicalRanks.size());
-  for (int64_t logicalRank : plan.logicalRanks)
+  std::vector<TileSPMStorage> spmStorage;
+  spmStorage.reserve(plan.launchSlots.size());
+  for (int64_t launchSlot : plan.launchSlots)
     spmStorage.push_back(
-        {logicalRank, std::vector<uint8_t>(static_cast<size_t>(spmBytes), 0)});
+        {launchSlot, std::vector<uint8_t>(static_cast<size_t>(spmBytes), 0)});
 
-  std::vector<SlotStorage> slotStorage;
-  slotStorage.reserve(plan.initialStorage.size());
-  for (const InvocationAddressPlan::InitialSlotStorage &initial :
+  std::vector<ResourceStorage> resourceStorage;
+  resourceStorage.reserve(plan.initialStorage.size());
+  for (const InvocationAddressPlan::InitialResourceStorage &initial :
        plan.initialStorage)
-    slotStorage.push_back(
-        {initial.logicalRank, initial.slotOrdinal, initial.bytes});
+    resourceStorage.push_back({initial.resource, initial.bytes});
   return InvocationMemoryRegistry(std::move(plan), std::move(spmStorage),
-                                  std::move(slotStorage));
+                                  std::move(resourceStorage));
 }
 
-InvocationMemoryRegistry::RankSPMStorage *
-InvocationMemoryRegistry::findSPM(int64_t logicalRank) {
-  for (RankSPMStorage &storage : spmStorage)
-    if (storage.logicalRank == logicalRank)
+InvocationMemoryRegistry::TileSPMStorage *
+InvocationMemoryRegistry::findSPM(int64_t launchSlot) {
+  for (TileSPMStorage &storage : spmStorage)
+    if (storage.launchSlot == launchSlot)
       return &storage;
   return nullptr;
 }
 
-const InvocationMemoryRegistry::RankSPMStorage *
-InvocationMemoryRegistry::findSPM(int64_t logicalRank) const {
-  for (const RankSPMStorage &storage : spmStorage)
-    if (storage.logicalRank == logicalRank)
+const InvocationMemoryRegistry::TileSPMStorage *
+InvocationMemoryRegistry::findSPM(int64_t launchSlot) const {
+  for (const TileSPMStorage &storage : spmStorage)
+    if (storage.launchSlot == launchSlot)
       return &storage;
   return nullptr;
 }
 
-InvocationMemoryRegistry::SlotStorage *
-InvocationMemoryRegistry::findSlot(int64_t logicalRank, int64_t slotOrdinal) {
-  for (SlotStorage &storage : slotStorage)
-    if (storage.logicalRank == logicalRank &&
-        storage.slotOrdinal == slotOrdinal)
+InvocationMemoryRegistry::ResourceStorage *
+InvocationMemoryRegistry::findResource(const TargetModelResourceId &resource) {
+  for (ResourceStorage &storage : resourceStorage)
+    if (storage.resource == resource)
       return &storage;
   return nullptr;
 }
 
-const InvocationMemoryRegistry::SlotStorage *
-InvocationMemoryRegistry::findSlot(int64_t logicalRank,
-                                   int64_t slotOrdinal) const {
-  for (const SlotStorage &storage : slotStorage)
-    if (storage.logicalRank == logicalRank &&
-        storage.slotOrdinal == slotOrdinal)
+const InvocationMemoryRegistry::ResourceStorage *
+InvocationMemoryRegistry::findResource(
+    const TargetModelResourceId &resource) const {
+  for (const ResourceStorage &storage : resourceStorage)
+    if (storage.resource == resource)
       return &storage;
   return nullptr;
 }
 
 llvm::Expected<std::vector<uint8_t>> InvocationMemoryRegistry::readSnapshot(
-    int64_t logicalRank, TargetModelAddressSpace addressSpace, uint64_t address,
+    int64_t launchSlot, TargetModelAddressSpace addressSpace, uint64_t address,
     uint64_t byteCount, uint64_t requiredAlignment) const {
   llvm::Expected<TargetModelResolvedRange> resolved =
-      plan.resolve(logicalRank, addressSpace, TargetModelAccess::Read, address,
+      plan.resolve(launchSlot, addressSpace, TargetModelAccess::Read, address,
                    byteCount, requiredAlignment);
   if (!resolved)
     return resolved.takeError();
@@ -423,13 +481,12 @@ llvm::Expected<std::vector<uint8_t>> InvocationMemoryRegistry::readSnapshot(
     return memoryError(TargetModelMemoryErrorCode::AddressOverflow,
                        "resolved read range exceeds host size_t");
   const std::vector<uint8_t> *bytes = nullptr;
-  if (addressSpace == TargetModelAddressSpace::RankSPM) {
-    const RankSPMStorage *storage = findSPM(logicalRank);
+  if (addressSpace == TargetModelAddressSpace::TileSPM) {
+    const TileSPMStorage *storage = findSPM(launchSlot);
     if (storage)
       bytes = &storage->bytes;
-  } else if (resolved->slotOrdinal) {
-    const SlotStorage *storage =
-        findSlot(resolved->logicalRank, *resolved->slotOrdinal);
+  } else if (resolved->resource) {
+    const ResourceStorage *storage = findResource(*resolved->resource);
     if (storage)
       bytes = &storage->bytes;
   }
@@ -443,11 +500,12 @@ llvm::Expected<std::vector<uint8_t>> InvocationMemoryRegistry::readSnapshot(
 }
 
 llvm::Expected<std::vector<uint8_t>>
-InvocationMemoryRegistry::readSlotSnapshot(int64_t logicalRank,
+InvocationMemoryRegistry::readSlotSnapshot(int64_t launchSlot,
                                            int64_t slotOrdinal) const {
   const TargetModelPlannedSlot *planned =
-      plan.findSlot(logicalRank, slotOrdinal);
-  const SlotStorage *storage = findSlot(logicalRank, slotOrdinal);
+      plan.findSlot(launchSlot, slotOrdinal);
+  const ResourceStorage *storage =
+      planned ? findResource(planned->resource) : nullptr;
   if (!planned || !storage)
     return memoryError(TargetModelMemoryErrorCode::UnknownResource,
                        "unknown ABI slot resource");

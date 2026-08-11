@@ -41,30 +41,30 @@ class Wafer_LinalgExtCollectiveOp<string mnemonic, list<Trait> traits = []>
   }];
 }
 
-class Wafer_LinalgExtCollectiveRankGroupOp<string mnemonic,
-                                        list<Trait> traits = []>
+class Wafer_LinalgExtCollectivePartitionGroupOp<string mnemonic,
+                                                list<Trait> traits = []>
     : Wafer_LinalgExtCollectiveOp<mnemonic, traits> {
   let arguments = (ins
     Variadic<AnyType>:$inputs,
     Variadic<AnyType>:$outs,
     I64Attr:$axis,
-    OptionalAttr<DenseI64ArrayAttr>:$rank_group,
-    OptionalAttr<I64ElementsAttr>:$rank_groups,
+    OptionalAttr<DenseI64ArrayAttr>:$partition_group,
+    OptionalAttr<I64ElementsAttr>:$partition_groups,
     OptionalAttr<I64Attr>:$channel_id,
     OptionalAttr<BoolAttr>:$use_global_device_ids
   );
 }
 
 def Wafer_LinalgExtCollectiveAllGatherOp
-    : Wafer_LinalgExtCollectiveRankGroupOp<"linalg_ext.collective.all_gather"> {
+    : Wafer_LinalgExtCollectivePartitionGroupOp<"linalg_ext.collective.all_gather"> {
   let summary = "linalg-extension post-SPMD all-gather handoff";
   let description = [{
     Carries StableHLO all_gather semantics after SPMD partitioning as a
-    destination-style tensor op. It preserves logical rank group and gather
-    axis facts for group/tiling. `rank_group` entries are logical execution
-    ranks in the current `wafer.execution.mesh`; if the enclosing module has an
-    execution mesh, the verifier checks those ranks against the mesh rank
-    domain. The op does not own physical endpoint mapping, SPM buffers, DTE
+    destination-style tensor op. It preserves logical partition group and gather
+    axis facts for group/tiling. `partition_group` entries are logical card
+    partition IDs in the current `wafer.execution.mesh`; if the enclosing
+    module has an execution mesh, the verifier checks those IDs against the
+    mesh partition domain. The op does not own physical endpoint mapping, SPM buffers, DTE
     tokens, byte schedules, or runtime handles.
   }];
   let assemblyFormat = [{
@@ -75,12 +75,12 @@ def Wafer_LinalgExtCollectiveAllGatherOp
 }
 
 def Wafer_LinalgExtCollectiveReduceScatterOp
-    : Wafer_LinalgExtCollectiveRankGroupOp<"linalg_ext.collective.reduce_scatter",
+    : Wafer_LinalgExtCollectivePartitionGroupOp<"linalg_ext.collective.reduce_scatter",
         [SingleBlockImplicitTerminator<"LinalgExtCollectiveYieldOp">]> {
   let summary = "linalg-extension post-SPMD reduce-scatter handoff";
   let description = [{
     Carries linalg-extension reduce-scatter semantics after SPMD partitioning.
-    `rank_group` entries are logical execution ranks in the current
+    `partition_group` entries are logical card partition IDs in the current
     `wafer.execution.mesh`; physical endpoint selection is deferred to
     topology/execution-mesh consumers.
   }];
@@ -99,16 +99,16 @@ def Wafer_LinalgExtCollectiveAllReduceOp
   let summary = "linalg-extension post-SPMD all-reduce handoff";
   let description = [{
     Carries linalg-extension all-reduce semantics after SPMD partitioning.
-    `rank_group` entries are logical execution ranks in the current
-    `wafer.execution.mesh`; the verifier checks the mesh rank domain when an
+    `partition_group` entries are logical card partition IDs in the current
+    `wafer.execution.mesh`; the verifier checks the mesh partition domain when an
     execution mesh is present. Physical routes and endpoints are not encoded in
     this op.
   }];
   let arguments = (ins
     Variadic<AnyType>:$inputs,
     Variadic<AnyType>:$outs,
-    OptionalAttr<DenseI64ArrayAttr>:$rank_group,
-    OptionalAttr<I64ElementsAttr>:$rank_groups,
+    OptionalAttr<DenseI64ArrayAttr>:$partition_group,
+    OptionalAttr<I64ElementsAttr>:$partition_groups,
     OptionalAttr<I64Attr>:$channel_id,
     OptionalAttr<BoolAttr>:$use_global_device_ids
   );
@@ -126,7 +126,7 @@ def Wafer_LinalgExtCollectiveAllToAllOp
   let summary = "linalg-extension post-SPMD all-to-all handoff";
   let description = [{
     Carries linalg-extension all-to-all semantics after SPMD partitioning.
-    `rank_group` entries are logical execution ranks in the current
+    `partition_group` entries are logical card partition IDs in the current
     `wafer.execution.mesh`; physical exchange endpoints are derived later from
     the execution mesh and target topology.
   }];
@@ -136,8 +136,8 @@ def Wafer_LinalgExtCollectiveAllToAllOp
     I64Attr:$split_axis,
     I64Attr:$concat_axis,
     I64Attr:$split_count,
-    OptionalAttr<DenseI64ArrayAttr>:$rank_group,
-    OptionalAttr<I64ElementsAttr>:$rank_groups,
+    OptionalAttr<DenseI64ArrayAttr>:$partition_group,
+    OptionalAttr<I64ElementsAttr>:$partition_groups,
     OptionalAttr<I64Attr>:$channel_id,
     OptionalAttr<BoolAttr>:$use_global_device_ids
   );
@@ -153,9 +153,9 @@ def Wafer_LinalgExtCollectiveCollectivePermuteOp
   let summary = "linalg-extension post-SPMD collective-permute handoff";
   let description = [{
     Carries linalg-extension collective-permute semantics after SPMD partitioning.
-    `source_target_pairs` contains source/target logical execution-rank pairs,
+    `source_target_pairs` contains source/target logical card partition pairs,
     not physical endpoint encodings. If the enclosing module has an execution
-    mesh, the verifier checks every pair entry against the mesh rank domain.
+    mesh, the verifier checks every pair entry against the mesh partition domain.
   }];
   let arguments = (ins
     Variadic<AnyType>:$inputs,

@@ -46,38 +46,20 @@ PackageModuleExportRole exportRoleForPhase(RuntimeLaunchPhaseRole phase) {
              : PackageModuleExportRole::Main;
 }
 
-} // namespace
-
-llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
-    const VerifiedPackageManifest &package, EntryId entryId,
-    llvm::ArrayRef<RuntimeInvocationBinding> invocationBindings,
+llvm::Expected<RuntimeSessionPlan> buildRuntimeTilePlan(
+    const PackageManifest &manifest, const PackageEntrypointRecord &entry,
+    llvm::ArrayRef<const RuntimeInvocationBinding *> bindingsByResource,
     const RuntimeEnvironment &environment) {
-  const PackageManifest &manifest = package.getManifest();
-  if (llvm::Error error = validateRuntimeEnvironment(manifest, environment))
-    return std::move(error);
-  auto entryIterator = llvm::find_if(
-      manifest.entries, [&](const auto &entry) { return entry.id == entryId; });
-  if (entryIterator == manifest.entries.end())
-    return invalid("runtime entry ID is not present in package");
-  const PackageEntrypointRecord &entry = *entryIterator;
   const PackageModuleRecord *module =
       findModule(manifest.modules, entry.module);
   if (!module)
     return invalid("runtime entry references a missing module");
-  std::vector<const RuntimeInvocationBinding *> bindingsByResource(
-      manifest.resources.size(), nullptr);
-  for (const RuntimeInvocationBinding &binding : invocationBindings) {
-    if (!binding.resource.isValid() ||
-        binding.resource.getValue() >= bindingsByResource.size() ||
-        bindingsByResource[binding.resource.getValue()])
-      return invalid(
-          "runtime invocation contains duplicate or unknown resource");
-    bindingsByResource[binding.resource.getValue()] = &binding;
-  }
 
   RuntimeSessionPlan plan;
   plan.entry = entry.id;
-  plan.logicalRank = entry.logicalRank;
+  plan.cardId = entry.cardId;
+  plan.tileId = entry.tileId;
+  plan.launchSlot = entry.launchSlot;
   plan.module = module->id;
   plan.modulePath = module->relativePath;
   for (RuntimeLaunchPhaseRole phase : manifest.launch.getPhases()) {
@@ -88,7 +70,7 @@ llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
           "runtime entry module is missing a required typed launch phase");
     plan.phases.push_back({phase, moduleExport->symbol});
   }
-  plan.terminalCompletion = entry.terminalCompletion;
+  plan.completion = entry.completion;
   plan.transport = entry.transport;
   if (auto *requirements =
           std::get_if<DirectDTETransportRequirements>(&entry.transport)) {
@@ -123,16 +105,10 @@ llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
                               binding != nullptr});
     plan.launchOrder.push_back(resource->id);
   }
-  for (const RuntimeInvocationBinding &binding : invocationBindings) {
-    const PackageResourceRecord *resource =
-        findResource(manifest.resources, binding.resource);
-    if (!resource || resource->logicalRank != entry.logicalRank ||
-        !resource->hostVisible)
-      return invalid("runtime invocation contains an extra binding");
-  }
-  plan.executesBoard = false;
   return plan;
 }
+
+} // namespace
 
 llvm::Expected<RuntimeInvocationPlan> preflightNoCardRuntimeInvocation(
     const VerifiedPackageManifest &package,
@@ -142,49 +118,50 @@ llvm::Expected<RuntimeInvocationPlan> preflightNoCardRuntimeInvocation(
   if (llvm::Error error = validateRuntimeEnvironment(manifest, environment))
     return std::move(error);
 
-  std::vector<const PackageEntrypointRecord *> entriesByRank(manifest.rankCount,
-                                                             nullptr);
+  std::vector<const PackageEntrypointRecord *> entriesByLaunchSlot(
+      manifest.tileCount, nullptr);
   for (const PackageEntrypointRecord &entry : manifest.entries)
-    entriesByRank[entry.logicalRank] = &entry;
+    entriesByLaunchSlot[entry.launchSlot.getValue()] = &entry;
 
-  const size_t transportKind = entriesByRank.front()->transport.index();
-  if (llvm::any_of(entriesByRank, [&](const auto *entry) {
+  const size_t transportKind = entriesByLaunchSlot.front()->transport.index();
+  if (llvm::any_of(entriesByLaunchSlot, [&](const auto *entry) {
         return entry->transport.index() != transportKind;
       }))
     return invalid("runtime invocation contains mixed transport requirements");
 
-  std::vector<std::vector<RuntimeInvocationBinding>> bindingsByRank(
-      manifest.rankCount);
-  std::vector<bool> seenBindings(manifest.resources.size(), false);
+  std::vector<const RuntimeInvocationBinding *> bindingsByResource(
+      manifest.resources.size(), nullptr);
   for (const RuntimeInvocationBinding &binding : invocationBindings) {
     if (!binding.resource.isValid() ||
         binding.resource.getValue() >= manifest.resources.size() ||
-        seenBindings[binding.resource.getValue()])
+        bindingsByResource[binding.resource.getValue()])
       return invalid(
           "runtime invocation contains duplicate or unknown resource");
     const PackageResourceRecord &resource =
         manifest.resources[binding.resource.getValue()];
-    seenBindings[binding.resource.getValue()] = true;
     if (!resource.hostVisible)
       return invalid("runtime invocation contains an extra binding");
-    bindingsByRank[resource.logicalRank].push_back(binding);
+    bindingsByResource[binding.resource.getValue()] = &binding;
   }
   for (const PackageResourceRecord &resource : manifest.resources)
-    if (resource.hostVisible && !seenBindings[resource.id.getValue()])
+    if (resource.hostVisible &&
+        !bindingsByResource[resource.id.getValue()])
       return invalid(
           "runtime invocation is missing a host-visible resource binding");
 
   RuntimeInvocationPlan plan;
-  plan.rankCount = manifest.rankCount;
-  plan.ranks.reserve(manifest.rankCount);
-  for (int64_t logicalRank = 0; logicalRank < manifest.rankCount;
-       ++logicalRank) {
-    const PackageEntrypointRecord &entry = *entriesByRank[logicalRank];
-    llvm::Expected<RuntimeSessionPlan> session = preflightNoCardRuntimeSession(
-        package, entry.id, bindingsByRank[logicalRank], environment);
-    if (!session)
-      return session.takeError();
-    plan.ranks.push_back(std::move(*session));
+  plan.cardCount = manifest.cardCount;
+  plan.tileCount = manifest.tileCount;
+  plan.tiles.reserve(manifest.tileCount);
+  for (int64_t launchSlot = 0; launchSlot < manifest.tileCount;
+       ++launchSlot) {
+    const PackageEntrypointRecord &entry =
+        *entriesByLaunchSlot[launchSlot];
+    llvm::Expected<RuntimeSessionPlan> tile = buildRuntimeTilePlan(
+        manifest, entry, bindingsByResource, environment);
+    if (!tile)
+      return tile.takeError();
+    plan.tiles.push_back(std::move(*tile));
   }
   return plan;
 }

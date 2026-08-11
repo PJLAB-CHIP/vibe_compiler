@@ -2,6 +2,8 @@
 
 #include "OpVerifierUtils.h"
 
+#include "Wafer/IR/Target/PhysicalTopology.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/IR/AffineExpr.h"
@@ -81,7 +83,7 @@ bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
 }
 
 mlir::FailureOr<std::optional<int64_t>>
-getOptionalExecutionMeshRankCount(mlir::Operation *op) {
+getOptionalExecutionMeshPartitionCount(mlir::Operation *op) {
   mlir::ModuleOp moduleOp = op->getParentOfType<mlir::ModuleOp>();
   if (!moduleOp)
     return std::optional<int64_t>();
@@ -99,52 +101,89 @@ getOptionalExecutionMeshRankCount(mlir::Operation *op) {
     });
     if (multipleMeshes)
       return op->emitOpError(
-          "execution mesh rank validation requires @default_mesh when "
+          "execution mesh partition validation requires @default_mesh when "
           "multiple execution meshes exist");
   }
   if (!meshOp)
     return std::optional<int64_t>();
 
-  int64_t rankCount = 1;
+  int64_t partitionCount = 1;
   for (int64_t dim : meshOp.getShapeAttr().asArrayRef()) {
-    if (dim <= 0 || !checkedMul(rankCount, dim, rankCount))
-      return op->emitOpError("execution mesh rank count is invalid");
+    if (dim <= 0 ||
+        !checkedMul(partitionCount, dim, partitionCount))
+      return op->emitOpError("execution mesh partition count is invalid");
   }
-  return std::optional<int64_t>(rankCount);
+  return std::optional<int64_t>(partitionCount);
 }
 
 mlir::LogicalResult
-verifyLogicalRankWithinExecutionMesh(mlir::Operation *op, int64_t rank,
+verifyPartitionIdWithinExecutionMesh(mlir::Operation *op, int64_t partitionId,
                                      llvm::StringRef subject) {
-  mlir::FailureOr<std::optional<int64_t>> rankCount =
-      getOptionalExecutionMeshRankCount(op);
-  if (mlir::failed(rankCount))
+  mlir::FailureOr<std::optional<int64_t>> partitionCount =
+      getOptionalExecutionMeshPartitionCount(op);
+  if (mlir::failed(partitionCount))
     return mlir::failure();
-  if (!*rankCount)
+  if (!*partitionCount)
     return mlir::success();
-  if (rank < 0 || rank >= **rankCount)
+  if (partitionId < 0 || partitionId >= **partitionCount)
     return op->emitOpError()
-           << subject << " must be within execution mesh rank count";
+           << subject << " must be within execution mesh partition count";
   return mlir::success();
 }
 
 mlir::LogicalResult
-verifyLogicalRanksWithinExecutionMesh(mlir::Operation *op,
-                                      llvm::ArrayRef<int64_t> ranks,
+verifyPartitionIdsWithinExecutionMesh(mlir::Operation *op,
+                                      llvm::ArrayRef<int64_t> partitionIds,
                                       llvm::StringRef subject) {
-  mlir::FailureOr<std::optional<int64_t>> rankCount =
-      getOptionalExecutionMeshRankCount(op);
-  if (mlir::failed(rankCount))
+  mlir::FailureOr<std::optional<int64_t>> partitionCount =
+      getOptionalExecutionMeshPartitionCount(op);
+  if (mlir::failed(partitionCount))
     return mlir::failure();
-  if (!*rankCount)
+  if (!*partitionCount)
     return mlir::success();
-  for (int64_t rank : ranks) {
-    if (rank < 0 || rank >= **rankCount)
+  for (int64_t partitionId : partitionIds) {
+    if (partitionId < 0 || partitionId >= **partitionCount)
       return op->emitOpError()
              << subject
-             << " logical ranks must be within execution mesh rank count";
+             << " partition IDs must be within execution mesh partition "
+                "count";
   }
   return mlir::success();
+}
+
+static PhysicalCardId getEnclosingPhysicalCardId(mlir::Operation *op) {
+  if (auto tileProgram = op->getParentOfType<TileProgramOp>())
+    if (auto cardProgram = tileProgram->getParentOfType<CardProgramOp>())
+      return PhysicalCardId(cardProgram.getCardIdAttr().getInt());
+  return PhysicalCardId(0);
+}
+
+mlir::LogicalResult verifyPhysicalTileIdsWithinTopology(
+    mlir::Operation *op, llvm::ArrayRef<int64_t> physicalTileIds,
+    llvm::StringRef subject) {
+  mlir::ModuleOp module = op->getParentOfType<mlir::ModuleOp>();
+  if (!module)
+    return op->emitOpError() << subject << " requires a module topology";
+  std::string reason;
+  mlir::FailureOr<PhysicalTopology> topology =
+      PhysicalTopology::create(module, &reason);
+  if (mlir::failed(topology))
+    return op->emitOpError()
+           << subject << " requires a valid physical topology: " << reason;
+  PhysicalCardId cardId = getEnclosingPhysicalCardId(op);
+  for (int64_t tileId : physicalTileIds) {
+    if (tileId < 0 ||
+        !topology->isTileAvailable(cardId, PhysicalTileId(tileId)))
+      return op->emitOpError()
+             << subject << " contains unavailable physical tile_id "
+             << tileId;
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult verifyPhysicalTileIdWithinTopology(
+    mlir::Operation *op, int64_t physicalTileId, llvm::StringRef subject) {
+  return verifyPhysicalTileIdsWithinTopology(op, {physicalTileId}, subject);
 }
 
 static std::optional<int64_t> getElementBitWidth(mlir::Type elementType) {
@@ -207,6 +246,97 @@ std::optional<int64_t> getCompactByteSize(mlir::Type type) {
 int64_t getCompactByteSizeOrUnknown(mlir::Type type) {
   std::optional<int64_t> bytes = getCompactByteSize(type);
   return bytes ? *bytes : -1;
+}
+
+mlir::LogicalResult verifyCanonicalConv2DGeometry(
+    mlir::Operation *op, mlir::RankedTensorType input,
+    mlir::RankedTensorType weight, mlir::RankedTensorType output,
+    llvm::ArrayRef<int64_t> pads, llvm::ArrayRef<int64_t> unpads,
+    llvm::ArrayRef<int64_t> strides, llvm::ArrayRef<int64_t> dilations,
+    llvm::StringRef diagnosticPrefix) {
+  auto error = [&](llvm::Twine message) -> mlir::LogicalResult {
+    return op->emitOpError() << diagnosticPrefix << message;
+  };
+  if (input.getRank() != 4 || weight.getRank() != 4 ||
+      output.getRank() != 4)
+    return error("ordinary convolution requires rank-4 input, weight and "
+                 "output");
+  if (!input.hasStaticShape() || !weight.hasStaticShape() ||
+      !output.hasStaticShape())
+    return error("ordinary convolution requires static geometry");
+  if (pads.size() != 4 || unpads.size() != 4 || strides.size() != 2 ||
+      dilations.size() != 2)
+    return error("ordinary convolution geometry attribute lengths are "
+                 "invalid");
+  if (llvm::any_of(input.getShape(), [](int64_t value) { return value <= 0; }) ||
+      llvm::any_of(weight.getShape(),
+                   [](int64_t value) { return value <= 0; }) ||
+      llvm::any_of(output.getShape(),
+                   [](int64_t value) { return value <= 0; }) ||
+      llvm::any_of(pads, [](int64_t value) { return value < 0; }) ||
+      llvm::any_of(unpads, [](int64_t value) { return value < 0; }) ||
+      llvm::any_of(strides, [](int64_t value) { return value <= 0; }) ||
+      llvm::any_of(dilations, [](int64_t value) { return value <= 0; }))
+    return error("ordinary convolution dimensions and stride/dilation must be "
+                 "positive and pad/unpad must be non-negative");
+
+  // Canonical storage is input/output NHWC and weight XYOI.
+  if (output.getDimSize(0) != input.getDimSize(0))
+    return error("convolution batch dimensions must match");
+  if (input.getDimSize(3) != weight.getDimSize(3))
+    return error("convolution input channels must match the weight input "
+                 "channels");
+  if (output.getDimSize(3) != weight.getDimSize(2))
+    return error("convolution output channels do not match the weight "
+                 "relation");
+
+  auto inferOutput = [&](int64_t inputSize, int64_t kernel, int64_t stride,
+                         int64_t dilation, int64_t padBefore,
+                         int64_t padAfter, int64_t unpadBefore,
+                         int64_t unpadAfter,
+                         llvm::StringRef role) -> mlir::FailureOr<int64_t> {
+    int64_t padded = 0;
+    int64_t dilatedSpan = 0;
+    int64_t effectiveKernel = 0;
+    if (!checkedAdd(inputSize, padBefore, padded) ||
+        !checkedAdd(padded, padAfter, padded) ||
+        !checkedMul(kernel - 1, dilation, dilatedSpan) ||
+        !checkedAdd(dilatedSpan, 1, effectiveKernel)) {
+      (void)error(llvm::Twine("convolution ") + role +
+                  " geometry overflows int64");
+      return mlir::failure();
+    }
+    if (padded < effectiveKernel) {
+      (void)error(llvm::Twine("convolution ") + role +
+                  " kernel exceeds the padded input");
+      return mlir::failure();
+    }
+    int64_t windowed = (padded - effectiveKernel) / stride + 1;
+    int64_t totalUnpad = 0;
+    if (!checkedAdd(unpadBefore, unpadAfter, totalUnpad) ||
+        windowed <= totalUnpad) {
+      (void)error(llvm::Twine("convolution ") + role +
+                  " unpadding removes the complete output");
+      return mlir::failure();
+    }
+    return windowed - totalUnpad;
+  };
+
+  mlir::FailureOr<int64_t> expectedH =
+      inferOutput(input.getDimSize(1), weight.getDimSize(1), strides[0],
+                  dilations[0], pads[0], pads[1], unpads[0], unpads[1],
+                  "height");
+  mlir::FailureOr<int64_t> expectedW =
+      inferOutput(input.getDimSize(2), weight.getDimSize(0), strides[1],
+                  dilations[1], pads[2], pads[3], unpads[2], unpads[3],
+                  "width");
+  if (mlir::failed(expectedH) || mlir::failed(expectedW))
+    return mlir::failure();
+  if (output.getDimSize(1) != *expectedH ||
+      output.getDimSize(2) != *expectedW)
+    return error("convolution output spatial shape does not match "
+                 "input/kernel/stride/dilation/pad/unpad");
+  return mlir::success();
 }
 
 mlir::LogicalResult verifyDTEP2P(mlir::Operation *op, mlir::Value buffer,

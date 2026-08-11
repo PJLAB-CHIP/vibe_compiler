@@ -810,7 +810,8 @@ static mlir::LogicalResult
 planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
              int64_t spmAlignment,
              const llvm::DenseSet<mlir::Operation *> &mayClobberFunctions,
-             llvm::SmallVectorImpl<PendingSPMPlacement> &pendingPlacements) {
+             llvm::SmallVectorImpl<PendingSPMPlacement> &pendingPlacements,
+             SPMMemoryPlanningFailure *failure) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "transformation-phase", "planFunction(SPM)", "total");
   bool hasTileRegion = false;
@@ -862,8 +863,11 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
   });
   mp::LifetimeFailure lifetimeFailure;
   if (mlir::failed(dataflow.run(funcOp.getOperation(), &localCompletion,
-                                &lifetimeFailure)))
+                                &lifetimeFailure))) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::UnsupportedLifetime;
     return emitLifetimeFailure(funcOp, lifetimeFailure);
+  }
   if (mlir::failed(verifyLiveSPMAcrossCalls(funcOp, *timeline, demands,
                                             mayClobberFunctions)))
     return mlir::failure();
@@ -881,9 +885,79 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
     }
     switch (packing.status) {
     case mp::PackingStatus::ProvenInfeasible: {
+      if (failure)
+        failure->kind = SPMMemoryPlanningFailureKind::CapacityOverflow;
       mlir::InFlightDiagnostic diagnostic = origin->emitError();
       diagnostic << "capacity_overflow: SPM planning range [" << spmBase << ", "
                  << spmLimit << ") has no valid static placement";
+      if (!packing.capacityConflictDemandIndices.empty()) {
+        uint64_t capacityConflictByteTotal = 0;
+        if (failure)
+          failure->capacityConflictDemands.reserve(
+              packing.capacityConflictDemandIndices.size());
+        for (unsigned demandIndex : packing.capacityConflictDemandIndices) {
+          if (demandIndex >= demands.size())
+            return origin->emitError()
+                   << "SPM allocator returned an invalid capacity-conflict "
+                      "demand index";
+          mp::LifetimeDemand &conflictDemand = demands[demandIndex];
+          const uint64_t bytes =
+              static_cast<uint64_t>(conflictDemand.sizeBytes);
+          capacityConflictByteTotal =
+              capacityConflictByteTotal >
+                      std::numeric_limits<uint64_t>::max() - bytes
+                  ? std::numeric_limits<uint64_t>::max()
+                  : capacityConflictByteTotal + bytes;
+          if (!failure)
+            continue;
+          SPMMemoryPlanningFailure::DemandEvidence evidence{
+              conflictDemand.allocation.getLoc(),
+              conflictDemand.allocation.getType(),
+              bytes,
+              {}};
+          for (mlir::Operation *user :
+               conflictDemand.allocation.getResult().getUsers())
+            evidence.userLocations.push_back(user->getLoc());
+          failure->capacityConflictDemands.push_back(std::move(evidence));
+        }
+        diagnostic << "; capacity_conflict_demands="
+                   << packing.capacityConflictDemandIndices.size()
+                   << ", capacity_conflict_bytes=" << capacityConflictByteTotal;
+      }
+      if (!packing.individuallyOversizedDemandIndices.empty()) {
+        uint64_t oversizedBytes = 0;
+        if (failure)
+          failure->individuallyOversizedDemands.reserve(
+              packing.individuallyOversizedDemandIndices.size());
+        for (unsigned demandIndex :
+             packing.individuallyOversizedDemandIndices) {
+          if (demandIndex >= demands.size())
+            return origin->emitError()
+                   << "SPM allocator returned an invalid individually "
+                      "oversized demand index";
+          mp::LifetimeDemand &oversizedDemand = demands[demandIndex];
+          const uint64_t bytes =
+              static_cast<uint64_t>(oversizedDemand.sizeBytes);
+          oversizedBytes =
+              oversizedBytes > std::numeric_limits<uint64_t>::max() - bytes
+                  ? std::numeric_limits<uint64_t>::max()
+                  : oversizedBytes + bytes;
+          if (!failure)
+            continue;
+          SPMMemoryPlanningFailure::DemandEvidence evidence{
+              oversizedDemand.allocation.getLoc(),
+              oversizedDemand.allocation.getType(),
+              bytes,
+              {}};
+          for (mlir::Operation *user :
+               oversizedDemand.allocation.getResult().getUsers())
+            evidence.userLocations.push_back(user->getLoc());
+          failure->individuallyOversizedDemands.push_back(std::move(evidence));
+        }
+        diagnostic << "; individually_oversized_demands="
+                   << packing.individuallyOversizedDemandIndices.size()
+                   << ", individually_oversized_bytes=" << oversizedBytes;
+      }
       if (demand)
         diagnostic << " for an IR-derived lifetime demand of "
                    << demand->sizeBytes << " bytes, type "
@@ -894,9 +968,32 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
                                            const mp::LifetimeDemand &rhs) {
               return lhs.sizeBytes < rhs.sizeBytes;
             });
+        if (failure) {
+          failure->largestDemandLocation = largest.allocation.getLoc();
+          failure->largestDemandType = largest.allocation.getType();
+          failure->largestDemandBytes = largest.sizeBytes;
+          failure->demandCount = demands.size();
+          for (mp::LifetimeDemand &candidate : demands) {
+            if (candidate.sizeBytes != largest.sizeBytes)
+              continue;
+            SPMMemoryPlanningFailure::DemandEvidence evidence{
+                candidate.allocation.getLoc(),
+                candidate.allocation.getType(),
+                static_cast<uint64_t>(candidate.sizeBytes),
+                {}};
+            for (mlir::Operation *user :
+                 candidate.allocation.getResult().getUsers())
+              evidence.userLocations.push_back(user->getLoc());
+            failure->largestDemands.push_back(std::move(evidence));
+          }
+        }
         diagnostic << "; demand_count=" << demands.size()
                    << ", largest_demand_bytes=" << largest.sizeBytes
-                   << ", largest_demand_type=" << largest.allocation.getType();
+                   << ", largest_demand_type=" << largest.allocation.getType()
+                   << ", largest_demand_ties="
+                   << llvm::count_if(demands, [&](const auto &candidate) {
+                        return candidate.sizeBytes == largest.sizeBytes;
+                      });
         llvm::SmallVector<llvm::StringRef, 4> userNames;
         for (mlir::Operation *user :
              largest.allocation.getResult().getUsers()) {
@@ -962,17 +1059,26 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
 
 mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t spmBase, int64_t spmLimit,
-                                        int64_t spmAlignment) {
+                                        int64_t spmAlignment,
+                                        SPMMemoryPlanningFailure *failure) {
+  if (failure)
+    *failure = {};
   wafer::support::recordCompileWork(
       wafer::support::CompileWorkKind::SPMPlanning);
   wafer::support::ScopedCompileTimingSpan timing(
       "transformation", "planSPMMemoryModule", "total");
-  if (spmBase < 0 || spmLimit <= spmBase)
+  if (spmBase < 0 || spmLimit <= spmBase) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::Other;
     return moduleOp->emitError()
            << "invalid_spm_range: expected 0 <= spm-base < spm-limit";
-  if (spmAlignment <= 0)
+  }
+  if (spmAlignment <= 0) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::Other;
     return moduleOp->emitError()
            << "alignment_unsatisfied: spm-alignment must be positive";
+  }
   auto scopeVerificationTiming =
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
           "analysis-phase", "planSPMMemoryModule", "verify-scopes");
@@ -987,16 +1093,25 @@ mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
                    "allocation must be owned by a wafer.tile.region";
             return mlir::WalkResult::interrupt();
           });
-  if (escapedAllocation.wasInterrupted())
+  if (escapedAllocation.wasInterrupted()) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::Other;
     return mlir::failure();
+  }
   llvm::DenseSet<mlir::Operation *> mayClobberFunctions =
       collectFunctionsThatMayClobberSPMArena(moduleOp);
   if (mlir::failed(verifySPMRegionExecutionScopes(moduleOp)) ||
       mlir::failed(verifySPMValueScopes(moduleOp)) ||
-      mlir::failed(verifySPMCallScopes(moduleOp, mayClobberFunctions)))
+      mlir::failed(verifySPMCallScopes(moduleOp, mayClobberFunctions))) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::Other;
     return mlir::failure();
-  if (mlir::failed(verifySPMAsyncFunctionClosures(moduleOp)))
+  }
+  if (mlir::failed(verifySPMAsyncFunctionClosures(moduleOp))) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::Other;
     return mlir::failure();
+  }
   scopeVerificationTiming.reset();
 
   mlir::LogicalResult result = mlir::success();
@@ -1007,10 +1122,13 @@ mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
     if (funcOp.isExternal())
       continue;
     result = planFunction(funcOp, spmBase, spmLimit, spmAlignment,
-                          mayClobberFunctions, pendingPlacements);
+                          mayClobberFunctions, pendingPlacements, failure);
   }
-  if (mlir::failed(result))
+  if (mlir::failed(result)) {
+    if (failure && failure->kind == SPMMemoryPlanningFailureKind::None)
+      failure->kind = SPMMemoryPlanningFailureKind::Other;
     return result;
+  }
 
   for (PendingSPMPlacement placement : pendingPlacements) {
     placement.allocation->setAttr(

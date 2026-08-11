@@ -5,7 +5,6 @@
 #include "CompilationStatistics.h"
 #include "ExecutableBundleInternal.h"
 #include "PackageInternal.h"
-#include "StaticFixedSlotQualification.h"
 #include "TargetArtifactInternal.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
@@ -32,6 +31,7 @@
 
 #include <array>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -100,8 +100,8 @@ static mlir::LogicalResult stageExecutablePackage(
     const ExecutableBundle &executableBundle,
     llvm::StringRef stagedTargetArtifacts, llvm::StringRef stagedPackage,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterTargetLogicalRank,
-    std::optional<int64_t> failAfterPackageLogicalRank,
+    std::optional<int64_t> failAfterTargetLaunchSlot,
+    std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle,
     ProfileCaptureKind profileCapture = ProfileCaptureKind::None) {
   const CompileClock::time_point totalStart = CompileClock::now();
@@ -113,7 +113,7 @@ static mlir::LogicalResult stageExecutablePackage(
           "stage", "executable-to-package", "target-ir-lowering");
   llvm::Expected<TargetLLVMModuleBundle> targetLLVMModules =
       compileExecutableBundleToTargetLLVMModulesImpl(
-          executableBundle, diagnostics, failAfterTargetLogicalRank,
+          executableBundle, diagnostics, failAfterTargetLaunchSlot,
           profileCapture);
   if (!targetLLVMModules) {
     llvm::consumeError(targetLLVMModules.takeError());
@@ -142,7 +142,7 @@ static mlir::LogicalResult stageExecutablePackage(
           "stage", "executable-to-package", "package-assembly");
   llvm::Expected<PackageBundle> package = assemblePackageBundleImpl(
       tensorProgramDirectory, executableBundle, *targetArtifacts, stagedPackage,
-      diagnostics, failAfterPackageLogicalRank);
+      diagnostics, failAfterPackageLaunchSlot);
   if (!package) {
     llvm::consumeError(package.takeError());
     return mlir::failure();
@@ -153,7 +153,7 @@ static mlir::LogicalResult stageExecutablePackage(
               << " wall_ms=" << targetIRWallMs
               << " peak_rss_kib=" << getCompilePeakRSSKiB()
               << " capture=" << stringifyProfileCaptureKind(profileCapture)
-              << " rank_lowerings=" << targetLLVMModules->getModules().size()
+              << " tile_lowerings=" << targetLLVMModules->getModules().size()
               << "\n";
   diagnostics << "wafer-compile: compile-stats stage=target-artifact"
               << " wall_ms=" << targetArtifactWallMs
@@ -165,8 +165,9 @@ static mlir::LogicalResult stageExecutablePackage(
               << " wall_ms=" << packageWallMs
               << " peak_rss_kib=" << getCompilePeakRSSKiB()
               << " capture=" << stringifyProfileCaptureKind(profileCapture)
-              << " rank_count="
-              << executableBundle.getExecutionConfig().getRankCount() << "\n";
+              << " tile_count="
+              << executableBundle.getExecutionConfig().getPhysicalTileCount()
+              << "\n";
   diagnostics << "wafer-compile: compile-stats stage=target-package"
               << " wall_ms=" << elapsedCompileMilliseconds(totalStart)
               << " peak_rss_kib=" << getCompilePeakRSSKiB()
@@ -189,39 +190,58 @@ makeProfileStaticCostMetric(const analysis::ScheduleCostMetric &metric) {
 
 static llvm::Expected<runtime::ProfileStaticCostModel>
 collectProfileStaticCostModel(const ExecutableBundle &bundle) {
-  const auto &rankExecutables = bundle.getRankExecutables();
-  if (rankExecutables.size() !=
-      static_cast<size_t>(bundle.getExecutionConfig().getRankCount()))
+  const auto &physicalTileExecutables = bundle.getPhysicalTileExecutables();
+  if (physicalTileExecutables.size() !=
+      static_cast<size_t>(bundle.getExecutionConfig().getPhysicalTileCount()))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "profile static cost rank domain differs from execution config");
+        "profile static cost physical Tile domain differs from execution "
+        "config");
 
-  llvm::SmallVector<mlir::Operation *, 16> rankRoots;
-  rankRoots.reserve(rankExecutables.size());
-  for (auto [expectedRank, rank] : llvm::enumerate(rankExecutables)) {
-    if (rank.getLogicalRank() != static_cast<int64_t>(expectedRank))
+  std::set<int64_t> tileIds;
+  std::vector<const PhysicalTileExecutable *> tilesByLaunchSlot(
+      physicalTileExecutables.size(), nullptr);
+  for (const PhysicalTileExecutable &tile : physicalTileExecutables) {
+    const int64_t launchSlot = tile.getLaunchSlotId().getValue();
+    if (tile.getPhysicalCardId() != PhysicalCardId(0) ||
+        tile.getPhysicalTileId().getValue() < 0 || launchSlot < 0 ||
+        launchSlot >= static_cast<int64_t>(physicalTileExecutables.size()) ||
+        !tileIds.insert(tile.getPhysicalTileId().getValue()).second ||
+        tilesByLaunchSlot[launchSlot] != nullptr)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "profile static cost rank domain is not canonical");
+          "profile static cost physical Tile identity is invalid or "
+          "duplicated");
+    tilesByLaunchSlot[launchSlot] = &tile;
+  }
+  if (llvm::is_contained(tilesByLaunchSlot, nullptr))
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "profile static cost launch-slot domain is not dense and complete");
+
+  llvm::SmallVector<analysis::PhysicalTileInstructionProgram, 16> tilePrograms;
+  tilePrograms.reserve(tilesByLaunchSlot.size());
+  for (const PhysicalTileExecutable *tile : tilesByLaunchSlot) {
     llvm::Expected<AcceptedCallClosure> closure =
-        analyzeAcceptedCallClosure(rank.getModule(), rank.getEntrySymbol());
+        analyzeAcceptedCallClosure(tile->getModule(), tile->getEntrySymbol());
     if (!closure)
       return llvm::joinErrors(
           llvm::createStringError(
               llvm::errc::invalid_argument,
               "profile static cost accepted call closure is invalid"),
           closure.takeError());
-    rankRoots.push_back(closure->entry.getOperation());
+    tilePrograms.push_back(
+        {tile->getPhysicalTileId(), closure->entry.getOperation()});
   }
 
   const analysis::TargetScheduleCostPolicy policy =
       analysis::getTargetScheduleCostPolicy();
   analysis::WholeCardInstructionProgramCost cost =
-      analysis::analyzeWholeCardInstructionProgramCost(rankRoots, policy);
-  if (cost.rankCosts.size() != rankExecutables.size())
+      analysis::analyzeWholeCardInstructionProgramCost(tilePrograms, policy);
+  if (cost.tileCosts.size() != physicalTileExecutables.size())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "profile static cost analysis omitted an accepted rank");
+        "profile static cost analysis omitted an accepted physical Tile");
 
   runtime::ProfileStaticCostModel model;
   model.model = runtime::kProfileStaticCostModelName.str();
@@ -236,128 +256,126 @@ collectProfileStaticCostModel(const ExecutableBundle &bundle) {
   model.rates.f32VectorLogicalOpsPerSecondPerTile =
       policy.f32VectorLogicalOpsPerSecondPerTile;
   model.rates.spmMovementBytesPerSecond = std::nullopt;
-  model.ranks.reserve(cost.rankCosts.size());
-  for (auto [logicalRank, rankCost] : llvm::enumerate(cost.rankCosts)) {
-    runtime::ProfileStaticRankWork work;
+  model.tiles.reserve(cost.tileCosts.size());
+  for (auto [launchSlot, tileCost] : llvm::enumerate(cost.tileCosts)) {
+    const PhysicalTileExecutable &tile = *tilesByLaunchSlot[launchSlot];
+    runtime::ProfileStaticTileWork work;
     work.npuF16Bf16LogicalOps =
-        makeProfileStaticCostMetric(rankCost.compute.npuF16Bf16LogicalOps);
+        makeProfileStaticCostMetric(tileCost.compute.npuF16Bf16LogicalOps);
     work.npuOtherLogicalOps =
-        makeProfileStaticCostMetric(rankCost.compute.npuOtherLogicalOps);
+        makeProfileStaticCostMetric(tileCost.compute.npuOtherLogicalOps);
     work.vectorF16Bf16LogicalOps =
-        makeProfileStaticCostMetric(rankCost.compute.vectorF16Bf16LogicalOps);
+        makeProfileStaticCostMetric(tileCost.compute.vectorF16Bf16LogicalOps);
     work.vectorF32LogicalOps =
-        makeProfileStaticCostMetric(rankCost.compute.vectorF32LogicalOps);
+        makeProfileStaticCostMetric(tileCost.compute.vectorF32LogicalOps);
     work.vectorOtherLogicalOps =
-        makeProfileStaticCostMetric(rankCost.compute.vectorOtherLogicalOps);
-    work.ddrReadBytes = makeProfileStaticCostMetric(rankCost.ddrReadBytes);
-    work.ddrWriteBytes = makeProfileStaticCostMetric(rankCost.ddrWriteBytes);
+        makeProfileStaticCostMetric(tileCost.compute.vectorOtherLogicalOps);
+    work.ddrReadBytes = makeProfileStaticCostMetric(tileCost.ddrReadBytes);
+    work.ddrWriteBytes = makeProfileStaticCostMetric(tileCost.ddrWriteBytes);
     work.spmMovementBytes =
-        makeProfileStaticCostMetric(rankCost.spmMovementBytes);
+        makeProfileStaticCostMetric(tileCost.spmMovementBytes);
     work.nocTransmitBytes =
-        makeProfileStaticCostMetric(rankCost.noc.aggregateTransmitBytes);
+        makeProfileStaticCostMetric(tileCost.noc.aggregateTransmitBytes);
     work.nocReceiveBytes =
-        makeProfileStaticCostMetric(rankCost.noc.aggregateReceiveBytes);
+        makeProfileStaticCostMetric(tileCost.noc.aggregateReceiveBytes);
     work.directionalNoCTransmitBytes.north = makeProfileStaticCostMetric(
-        rankCost.noc.directional(analysis::NoCDirection::North));
+        tileCost.noc.directional(analysis::NoCDirection::North));
     work.directionalNoCTransmitBytes.east = makeProfileStaticCostMetric(
-        rankCost.noc.directional(analysis::NoCDirection::East));
+        tileCost.noc.directional(analysis::NoCDirection::East));
     work.directionalNoCTransmitBytes.south = makeProfileStaticCostMetric(
-        rankCost.noc.directional(analysis::NoCDirection::South));
+        tileCost.noc.directional(analysis::NoCDirection::South));
     work.directionalNoCTransmitBytes.west = makeProfileStaticCostMetric(
-        rankCost.noc.directional(analysis::NoCDirection::West));
-    work.collectiveNoCTransmitBytes.collectivePermute =
-        makeProfileStaticCostMetric(rankCost.noc.collective(
-            analysis::NoCCollectiveKind::CollectivePermute));
-    work.collectiveNoCTransmitBytes.allToAll = makeProfileStaticCostMetric(
-        rankCost.noc.collective(analysis::NoCCollectiveKind::AllToAll));
-    work.collectiveNoCTransmitBytes.allGather = makeProfileStaticCostMetric(
-        rankCost.noc.collective(analysis::NoCCollectiveKind::AllGather));
-    work.collectiveNoCTransmitBytes.reduceScatter = makeProfileStaticCostMetric(
-        rankCost.noc.collective(analysis::NoCCollectiveKind::ReduceScatter));
-    work.collectiveNoCTransmitBytes.allReduce = makeProfileStaticCostMetric(
-        rankCost.noc.collective(analysis::NoCCollectiveKind::AllReduce));
-    model.ranks.push_back({static_cast<int64_t>(logicalRank), std::move(work)});
+        tileCost.noc.directional(analysis::NoCDirection::West));
+    runtime::ProfileStaticTileCost profiledTile;
+    profiledTile.cardId = tile.getPhysicalCardId();
+    profiledTile.tileId = tile.getPhysicalTileId();
+    profiledTile.launchSlot = runtime::LaunchSlotId(
+        static_cast<uint64_t>(tile.getLaunchSlotId().getValue()));
+    profiledTile.work = std::move(work);
+    model.tiles.push_back(std::move(profiledTile));
   }
   return model;
 }
 
-static void
-writeVariantMetadata(llvm::json::OStream &json, llvm::StringRef id,
-                     llvm::StringRef role, llvm::StringRef packageReference,
-                     llvm::StringRef manifestDigest,
-                     const runtime::ProfileStaticCostModel &staticCostModel) {
-  json.object([&] {
-    json.attribute("id", id);
-    json.attribute("role", role);
-    json.attribute("package_ref", packageReference);
-    json.attribute("manifest_sha256", manifestDigest);
-    json.attributeBegin("static_cost_model");
-    runtime::writeProfileStaticCostModel(json, staticCostModel);
-    json.attributeEnd();
-  });
-}
-
-struct ProfileVariantSiteMaps {
-  std::string variantId;
-  std::vector<std::vector<ProfileTargetCallSite>> ranks;
+struct ProfileTileTargetCallSites {
+  PhysicalCardId cardId{0};
+  PhysicalTileId tileId{0};
+  LaunchSlotId launchSlotId{0};
+  std::vector<ProfileTargetCallSite> sites;
 };
 
-static llvm::Expected<ProfileVariantSiteMaps>
-collectTargetCallSites(llvm::StringRef variantId,
-                       const TargetLLVMModuleBundle &bundle) {
-  ProfileVariantSiteMaps maps;
-  maps.variantId = variantId.str();
-  maps.ranks.reserve(bundle.getModules().size());
-  for (auto [expectedRank, rankModule] : llvm::enumerate(bundle.getModules())) {
-    if (rankModule.getLogicalRank() != static_cast<int64_t>(expectedRank))
+struct ProfileSiteMap {
+  std::vector<ProfileTileTargetCallSites> tiles;
+};
+
+static llvm::Expected<ProfileSiteMap>
+collectTargetCallSites(const TargetLLVMModuleBundle &bundle) {
+  ProfileSiteMap maps;
+  std::set<int64_t> tileIds;
+  std::vector<const TargetLLVMModule *> modulesByLaunchSlot(
+      bundle.getModules().size(), nullptr);
+  for (const TargetLLVMModule &module : bundle.getModules()) {
+    const int64_t launchSlot = module.getLaunchSlotId().getValue();
+    if (module.getPhysicalCardId() != PhysicalCardId(0) ||
+        module.getPhysicalTileId().getValue() < 0 || launchSlot < 0 ||
+        launchSlot >= static_cast<int64_t>(bundle.getModules().size()) ||
+        !tileIds.insert(module.getPhysicalTileId().getValue()).second ||
+        modulesByLaunchSlot[launchSlot] != nullptr)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "profile site-map rank domain is not canonical");
+          "profile site-map physical identity is invalid or duplicated");
+    modulesByLaunchSlot[launchSlot] = &module;
+  }
+  if (llvm::is_contained(modulesByLaunchSlot, nullptr))
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "profile site-map launch-slot domain is not dense and complete");
+
+  maps.tiles.reserve(modulesByLaunchSlot.size());
+  for (const TargetLLVMModule *module : modulesByLaunchSlot) {
     llvm::Expected<std::vector<ProfileTargetCallSite>> sites =
-        collectProfileTargetCallSites(rankModule.getModule(),
-                                      rankModule.getEntrySymbol());
+        collectProfileTargetCallSites(module->getModule(),
+                                      module->getEntrySymbol());
     if (!sites)
       return sites.takeError();
     for (auto [expectedSite, site] : llvm::enumerate(*sites))
       if (site.siteId != expectedSite)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "profile site-map IDs are not rank-local dense");
-    maps.ranks.push_back(std::move(*sites));
+            "profile site-map IDs are not physical-Tile-local dense");
+    maps.tiles.push_back({module->getPhysicalCardId(),
+                          module->getPhysicalTileId(),
+                          module->getLaunchSlotId(), std::move(*sites)});
   }
   return maps;
 }
 
 static void writeTargetCallSites(llvm::json::OStream &json,
-                                 const ProfileVariantSiteMaps &maps) {
-  json.object([&] {
-    json.attribute("variant_id", maps.variantId);
-    json.attributeArray("ranks", [&] {
-      for (auto [logicalRank, sites] : llvm::enumerate(maps.ranks)) {
-        json.object([&] {
-          json.attribute("logical_rank", static_cast<int64_t>(logicalRank));
-          json.attributeArray("sites", [&] {
-            for (const ProfileTargetCallSite &site : sites)
-              json.object([&] {
-                json.attribute("site_id", site.siteId);
-                json.attribute("target_call_ordinal", site.targetCallOrdinal);
-                json.attribute("target_call_symbol", site.targetCallSymbol);
-                json.attribute(
-                    "site_kind",
-                    runtime::stringifyProfileTargetSiteKind(site.siteKind));
-                if (site.engine)
-                  json.attribute("engine",
-                                 stringifyTargetCallTSMEngine(*site.engine));
-                json.attribute("correlation_key", site.correlationKey);
-                json.attribute("function_ordinal", site.functionOrdinal);
-                json.attribute("block_ordinal", site.blockOrdinal);
-                json.attribute("instruction_ordinal", site.instructionOrdinal);
-              });
+                                 const ProfileSiteMap &maps) {
+  for (const ProfileTileTargetCallSites &tile : maps.tiles) {
+    json.object([&] {
+      json.attribute("card_id", tile.cardId.getValue());
+      json.attribute("tile_id", tile.tileId.getValue());
+      json.attribute("launch_slot", tile.launchSlotId.getValue());
+      json.attributeArray("sites", [&] {
+        for (const ProfileTargetCallSite &site : tile.sites)
+          json.object([&] {
+            json.attribute("site_id", site.siteId);
+            json.attribute("target_call_ordinal", site.targetCallOrdinal);
+            json.attribute("target_call_symbol", site.targetCallSymbol);
+            json.attribute("site_kind", runtime::stringifyProfileTargetSiteKind(
+                                            site.siteKind));
+            if (site.engine)
+              json.attribute("engine",
+                             stringifyTargetCallTSMEngine(*site.engine));
+            json.attribute("correlation_key", site.correlationKey);
+            json.attribute("function_ordinal", site.functionOrdinal);
+            json.attribute("block_ordinal", site.blockOrdinal);
+            json.attribute("instruction_ordinal", site.instructionOrdinal);
           });
-        });
-      }
+      });
     });
-  });
+  }
 }
 
 struct ProfileCapturePackageMetadata {
@@ -366,29 +384,26 @@ struct ProfileCapturePackageMetadata {
   std::string manifestDigest;
 };
 
-struct ProfileVariantCapturePackages {
-  std::string variantId;
+struct ProfileCapturePackages {
   std::array<ProfileCapturePackageMetadata, 2> captures;
 };
 
 static constexpr std::array<ProfileCaptureKind, 2> kProfileCaptures = {
     ProfileCaptureKind::Count, ProfileCaptureKind::Trace};
 
-static mlir::LogicalResult stageVariantCapturePackages(
+static mlir::LogicalResult stageCapturePackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
-    llvm::StringRef companionRoot, llvm::StringRef variantId,
-    const ExecutableBundle &executableBundle,
+    llvm::StringRef companionRoot, const ExecutableBundle &executableBundle,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
-    ProfileVariantCapturePackages &metadata,
+    ProfileCapturePackages &metadata,
     std::optional<TargetLLVMModuleBundle> &traceTargetLLVM) {
-  metadata.variantId = variantId.str();
   for (auto [index, capture] : llvm::enumerate(kProfileCaptures)) {
     llvm::SmallString<256> package(companionRoot);
-    llvm::sys::path::append(package, "captures", variantId,
+    llvm::sys::path::append(package, "captures",
                             stringifyProfileCaptureKind(capture));
     llvm::SmallString<256> artifacts(transactionRoot);
     llvm::sys::path::append(artifacts, "profile-capture-target-artifacts",
-                            variantId, stringifyProfileCaptureKind(capture));
+                            stringifyProfileCaptureKind(capture));
     std::optional<TargetLLVMModuleBundle> targetLLVM;
     if (mlir::failed(stageExecutablePackage(
             tensorProgramDirectory, executableBundle, artifacts, package,
@@ -405,7 +420,7 @@ static mlir::LogicalResult stageVariantCapturePackages(
       return mlir::failure();
     }
     llvm::SmallString<128> reference;
-    llvm::sys::path::append(reference, "captures", variantId,
+    llvm::sys::path::append(reference, "captures",
                             stringifyProfileCaptureKind(capture));
     metadata.captures[index] = {capture, reference.str().str(), *digest};
     if (capture == ProfileCaptureKind::Trace)
@@ -414,13 +429,14 @@ static mlir::LogicalResult stageVariantCapturePackages(
   return mlir::success();
 }
 
-static mlir::LogicalResult writeProfileCompanion(
-    llvm::StringRef companionRoot, llvm::StringRef publishedPackageName,
-    llvm::StringRef productionPackage, const ExecutableBundle &productionBundle,
-    const TargetLLVMModuleBundle &productionTargetLLVM,
-    const TargetLLVMModuleBundle &productionTraceTargetLLVM,
-    const ProfileVariantCapturePackages &productionCaptures,
-    llvm::raw_ostream &diagnostics) {
+static mlir::LogicalResult
+writeProfileCompanion(llvm::StringRef companionRoot,
+                      llvm::StringRef productionPackage,
+                      const ExecutableBundle &productionBundle,
+                      const TargetLLVMModuleBundle &productionTargetLLVM,
+                      const TargetLLVMModuleBundle &productionTraceTargetLLVM,
+                      const ProfileCapturePackages &productionCaptures,
+                      llvm::raw_ostream &diagnostics) {
   if (createDirectory(companionRoot, diagnostics))
     return mlir::failure();
 
@@ -431,35 +447,59 @@ static mlir::LogicalResult writeProfileCompanion(
     return mlir::failure();
   }
 
-  std::string productionReference = ("../" + publishedPackageName).str();
   if (productionTargetLLVM.getModules().size() !=
       productionTraceTargetLLVM.getModules().size()) {
     reject(diagnostics,
-           "profile trace rank domain differs from final production");
+           "profile trace physical Tile domain differs from final production");
     return mlir::failure();
   }
-  for (auto [expectedRank, pair] :
-       llvm::enumerate(llvm::zip(productionTargetLLVM.getModules(),
-                                 productionTraceTargetLLVM.getModules()))) {
-    const TargetLLVMModule &finalRank = std::get<0>(pair);
-    const TargetLLVMModule &traceRank = std::get<1>(pair);
-    if (finalRank.getLogicalRank() != static_cast<int64_t>(expectedRank) ||
-        traceRank.getLogicalRank() != static_cast<int64_t>(expectedRank) ||
-        finalRank.getEntrySymbol() != traceRank.getEntrySymbol()) {
+  std::vector<const TargetLLVMModule *> traceByLaunchSlot(
+      productionTraceTargetLLVM.getModules().size(), nullptr);
+  for (const TargetLLVMModule &traceTile :
+       productionTraceTargetLLVM.getModules()) {
+    const int64_t launchSlot = traceTile.getLaunchSlotId().getValue();
+    if (launchSlot < 0 ||
+        launchSlot >= static_cast<int64_t>(traceByLaunchSlot.size()) ||
+        traceByLaunchSlot[launchSlot] != nullptr) {
       reject(diagnostics,
-             "profile trace rank or entry identity differs from final "
-             "production");
+             "profile trace launch-slot identity is invalid or duplicated");
+      return mlir::failure();
+    }
+    traceByLaunchSlot[launchSlot] = &traceTile;
+  }
+  if (llvm::is_contained(traceByLaunchSlot, nullptr)) {
+    reject(diagnostics,
+           "profile trace launch-slot domain is not dense and complete");
+    return mlir::failure();
+  }
+  for (const TargetLLVMModule &finalTile : productionTargetLLVM.getModules()) {
+    const int64_t launchSlot = finalTile.getLaunchSlotId().getValue();
+    if (launchSlot < 0 ||
+        launchSlot >= static_cast<int64_t>(traceByLaunchSlot.size())) {
+      reject(diagnostics,
+             "final production launch-slot identity is outside the trace "
+             "domain");
+      return mlir::failure();
+    }
+    const TargetLLVMModule &traceTile = *traceByLaunchSlot[launchSlot];
+    if (finalTile.getPhysicalCardId() != traceTile.getPhysicalCardId() ||
+        finalTile.getPhysicalTileId() != traceTile.getPhysicalTileId() ||
+        finalTile.getLaunchSlotId() != traceTile.getLaunchSlotId() ||
+        finalTile.getEntrySymbol() != traceTile.getEntrySymbol()) {
+      reject(diagnostics,
+             "profile trace physical Tile or entry identity differs from "
+             "final production");
       return mlir::failure();
     }
     if (llvm::Error error = verifyProfileTargetCallSiteIdentity(
-            finalRank.getModule(), finalRank.getEntrySymbol(),
-            traceRank.getModule(), traceRank.getEntrySymbol())) {
+            finalTile.getModule(), finalTile.getEntrySymbol(),
+            traceTile.getModule(), traceTile.getEntrySymbol())) {
       reject(diagnostics, llvm::toString(std::move(error)));
       return mlir::failure();
     }
   }
-  llvm::Expected<ProfileVariantSiteMaps> productionSites =
-      collectTargetCallSites("final-artifact", productionTargetLLVM);
+  llvm::Expected<ProfileSiteMap> productionSites =
+      collectTargetCallSites(productionTargetLLVM);
   if (!productionSites) {
     reject(diagnostics, llvm::toString(productionSites.takeError()));
     return mlir::failure();
@@ -471,28 +511,6 @@ static mlir::LogicalResult writeProfileCompanion(
     return mlir::failure();
   }
 
-  llvm::SmallString<256> variantsPath(companionRoot);
-  llvm::sys::path::append(variantsPath, "variants.json");
-  if (mlir::failed(writeJSONFile(
-          variantsPath,
-          [&](llvm::json::OStream &json) {
-            json.object([&] {
-              json.attribute("schema", "wafer-profile-variants");
-              json.attribute("schema_version",
-                             int64_t(runtime::kProfileCompanionSchemaVersion));
-              json.attribute(
-                  "rank_count",
-                  productionBundle.getExecutionConfig().getRankCount());
-              json.attributeArray("variants", [&] {
-                writeVariantMetadata(json, "final-artifact", "final-artifact",
-                                     productionReference, *productionDigest,
-                                     *productionStaticCost);
-              });
-            });
-          },
-          diagnostics)))
-    return mlir::failure();
-
   llvm::SmallString<256> siteMapPath(companionRoot);
   llvm::sys::path::append(siteMapPath, "site-map.json");
   if (mlir::failed(writeJSONFile(
@@ -502,15 +520,17 @@ static mlir::LogicalResult writeProfileCompanion(
               json.attribute("schema", "wafer-profile-target-call-site-map");
               json.attribute("schema_version",
                              int64_t(runtime::kProfileCompanionSchemaVersion));
+              json.attribute("card_count", runtime::kProfileCompanionCardCount);
+              json.attribute("tile_count", runtime::kProfileCompanionTileCount);
               json.attribute("site_basis",
-                             "verified-target-llvm-entry-reachable-profile-"
-                             "target-call-preorder");
+                             "verified-target-llvm-entry-reachable-physical-"
+                             "tile-target-call-preorder");
               json.attribute("correlation_basis",
                              runtime::kProfileSiteCorrelationBasis);
               json.attribute(
                   "target_call_registry_size",
                   static_cast<int64_t>(getTargetCallDescriptors().size()));
-              json.attributeArray("variants", [&] {
+              json.attributeArray("tiles", [&] {
                 writeTargetCallSites(json, *productionSites);
               });
             });
@@ -527,26 +547,19 @@ static mlir::LogicalResult writeProfileCompanion(
               json.attribute("schema", "wafer-profile-plan");
               json.attribute("schema_version",
                              int64_t(runtime::kProfileCompanionSchemaVersion));
-              json.attribute(
-                  "rank_count",
-                  productionBundle.getExecutionConfig().getRankCount());
-              json.attribute("variant_metadata", "variants.json");
+              json.attribute("card_count", runtime::kProfileCompanionCardCount);
+              json.attribute("tile_count", runtime::kProfileCompanionTileCount);
               json.attribute("site_map", "site-map.json");
               json.attribute("site_identity",
-                             "final-rank-local-typed-target-site-id-and-"
-                             "correlation-key");
-              json.attributeArray("execution_packages", [&] {
-                json.object([&] {
-                  json.attribute("variant_id", "final-artifact");
-                  json.attribute("package_ref", productionReference);
-                  json.attribute("manifest_sha256", *productionDigest);
-                });
-              });
+                             "final-physical-tile-local-typed-target-site-id-"
+                             "and-correlation-key");
+              json.attributeBegin("static_cost_model");
+              runtime::writeProfileStaticCostModel(json, *productionStaticCost);
+              json.attributeEnd();
               json.attributeArray("capture_packages", [&] {
                 for (const ProfileCapturePackageMetadata &capture :
                      productionCaptures.captures)
                   json.object([&] {
-                    json.attribute("variant_id", productionCaptures.variantId);
                     json.attribute("capture", stringifyProfileCaptureKind(
                                                   capture.capture));
                     json.attribute("package_ref", capture.packageReference);
@@ -562,13 +575,10 @@ static mlir::LogicalResult writeProfileCompanion(
     return mlir::failure();
 
   llvm::Expected<std::string> planDigest = getFileDigest(planPath);
-  llvm::Expected<std::string> variantsDigest = getFileDigest(variantsPath);
   llvm::Expected<std::string> siteMapDigest = getFileDigest(siteMapPath);
-  if (!planDigest || !variantsDigest || !siteMapDigest) {
+  if (!planDigest || !siteMapDigest) {
     if (!planDigest)
       reject(diagnostics, llvm::toString(planDigest.takeError()));
-    if (!variantsDigest)
-      reject(diagnostics, llvm::toString(variantsDigest.takeError()));
     if (!siteMapDigest)
       reject(diagnostics, llvm::toString(siteMapDigest.takeError()));
     return mlir::failure();
@@ -588,7 +598,6 @@ static mlir::LogicalResult writeProfileCompanion(
           json.attribute("production_manifest_sha256", *productionDigest);
           json.attributeObject("metadata_sha256", [&] {
             json.attribute("plan.json", *planDigest);
-            json.attribute("variants.json", *variantsDigest);
             json.attribute("site-map.json", *siteMapDigest);
           });
         });
@@ -645,10 +654,9 @@ mlir::LogicalResult stageTargetPackage(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
-    WholeVariantSelectionMode selectionMode,
-    std::optional<int64_t> failAfterLogicalRank,
-    std::optional<int64_t> failAfterTargetLogicalRank,
-    std::optional<int64_t> failAfterPackageLogicalRank,
+    std::optional<int64_t> failAfterLaunchSlot,
+    std::optional<int64_t> failAfterTargetLaunchSlot,
+    std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<ExecutableBundle> &executableBundle,
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle) {
   const CompileClock::time_point totalStart = CompileClock::now();
@@ -657,7 +665,7 @@ mlir::LogicalResult stageTargetPackage(
   llvm::Expected<ExecutableBundle> compiledExecutableBundle =
       compileTensorProgramToExecutableBundleImpl(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
-          failAfterLogicalRank, selectionMode);
+          failAfterLaunchSlot);
   if (!compiledExecutableBundle) {
     llvm::consumeError(compiledExecutableBundle.takeError());
     return mlir::failure();
@@ -670,20 +678,9 @@ mlir::LogicalResult stageTargetPackage(
   if (mlir::failed(stageExecutablePackage(
           tensorProgramDirectory, *compiledExecutableBundle,
           stagedTargetArtifacts, stagedPackage, targetToolchain, diagnostics,
-          failAfterTargetLogicalRank, failAfterPackageLogicalRank,
+          failAfterTargetLaunchSlot, failAfterPackageLaunchSlot,
           targetLLVMModuleBundle)))
     return mlir::failure();
-
-  if (producesStaticFixedSlotQualificationCompanion(selectionMode)) {
-    llvm::SmallString<256> qualificationCompanion(transactionRoot);
-    llvm::sys::path::append(qualificationCompanion, "qualification-companion");
-    if (mlir::failed(stageStaticFixedSlotQualificationCompanion(
-            qualificationCompanion, stagedPackage, *compiledExecutableBundle,
-            selectionMode ==
-                WholeVariantSelectionMode::QualifyDirectDTEComputeOverlap,
-            diagnostics)))
-      return mlir::failure();
-  }
 
   executableBundle.emplace(std::move(*compiledExecutableBundle));
   diagnostics << "wafer-compile: compile-stats stage=ordinary-product"
@@ -695,12 +692,11 @@ mlir::LogicalResult stageTargetPackage(
 
 mlir::LogicalResult stageProfileTargetPackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
-    llvm::StringRef publishedPackageName,
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank,
-    std::optional<int64_t> failAfterTargetLogicalRank,
-    std::optional<int64_t> failAfterPackageLogicalRank,
+    std::optional<int64_t> failAfterLaunchSlot,
+    std::optional<int64_t> failAfterTargetLaunchSlot,
+    std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<ExecutableBundle> &executableBundle,
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle) {
   const CompileClock::time_point totalStart = CompileClock::now();
@@ -709,7 +705,7 @@ mlir::LogicalResult stageProfileTargetPackages(
   llvm::Expected<ExecutableBundle> compiled =
       compileTensorProgramToExecutableBundleImpl(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
-          failAfterLogicalRank, WholeVariantSelectionMode::Production);
+          failAfterLaunchSlot);
   if (!compiled) {
     llvm::consumeError(compiled.takeError());
     return mlir::failure();
@@ -723,26 +719,25 @@ mlir::LogicalResult stageProfileTargetPackages(
   if (mlir::failed(stageExecutablePackage(
           tensorProgramDirectory, *compiled, productionTargetArtifacts,
           productionPackage, targetToolchain, diagnostics,
-          failAfterTargetLogicalRank, failAfterPackageLogicalRank,
+          failAfterTargetLaunchSlot, failAfterPackageLaunchSlot,
           productionTargetLLVM)))
     return mlir::failure();
 
   llvm::SmallString<256> companionRoot(transactionRoot);
   llvm::sys::path::append(companionRoot, "profile-companion");
 
-  ProfileVariantCapturePackages productionCaptures;
+  ProfileCapturePackages productionCaptures;
   std::optional<TargetLLVMModuleBundle> productionTraceTargetLLVM;
-  if (mlir::failed(stageVariantCapturePackages(
-          tensorProgramDirectory, transactionRoot, companionRoot,
-          "final-artifact", *compiled, targetToolchain, diagnostics,
-          productionCaptures, productionTraceTargetLLVM)))
+  if (mlir::failed(stageCapturePackages(
+          tensorProgramDirectory, transactionRoot, companionRoot, *compiled,
+          targetToolchain, diagnostics, productionCaptures,
+          productionTraceTargetLLVM)))
     return mlir::failure();
 
   if (!productionTargetLLVM || !productionTraceTargetLLVM ||
       mlir::failed(writeProfileCompanion(
-          companionRoot, publishedPackageName, productionPackage, *compiled,
-          *productionTargetLLVM, *productionTraceTargetLLVM, productionCaptures,
-          diagnostics)))
+          companionRoot, productionPackage, *compiled, *productionTargetLLVM,
+          *productionTraceTargetLLVM, productionCaptures, diagnostics)))
     return mlir::failure();
   if (mlir::failed(
           makeProfileCompanionWorldAccessible(companionRoot, diagnostics)))
@@ -755,8 +750,8 @@ mlir::LogicalResult stageProfileTargetPackages(
               << " peak_rss_kib=" << getCompilePeakRSSKiB()
               << " capture_packages=" << kProfileCaptures.size()
               << " target_bundle_count=" << 1 + kProfileCaptures.size()
-              << " target_rank_lowerings="
-              << executionConfig.getRankCount() *
+              << " target_tile_lowerings="
+              << executionConfig.getPhysicalTileCount() *
                      static_cast<int64_t>(1 + kProfileCaptures.size())
               << "\n";
   return mlir::success();

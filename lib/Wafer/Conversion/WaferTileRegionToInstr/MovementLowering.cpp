@@ -209,6 +209,47 @@ private:
   std::string *failureReason;
 };
 
+class TileCopyIntoLowering
+    : public mlir::OpRewritePattern<MoveCopyIntoOp> {
+public:
+  TileCopyIntoLowering(mlir::MLIRContext *context,
+                       std::string *failureReason)
+      : mlir::OpRewritePattern<MoveCopyIntoOp>(context),
+        failureReason(failureReason) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(MoveCopyIntoOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
+    auto destType = mlir::dyn_cast<mlir::MemRefType>(op.getDest().getType());
+    if (!sourceType || !destType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.copy_into lowering requires memref types");
+    analysis::IndexRelationResult relation =
+        analysis::IndexRelation::identity(destType.getShape());
+    if (!relation.isExact())
+      return failPattern(rewriter, op, failureReason,
+                         "tile.copy_into identity relation is not exact");
+    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
+        getRelationMovementDescriptors(
+            rewriter, op, sourceType, destType, destType.getShape(),
+            *relation.get(), *relation.get(), MovementEngine::GatherScatter,
+            failureReason, "tile.copy_into lowering");
+    if (mlir::failed(descriptors))
+      return mlir::failure();
+
+    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                   op.getDest(), *descriptors);
+    rewriter.eraseOp(op);
+    return mlir::success();
+  }
+
+private:
+  std::string *failureReason;
+};
+
 class MoveExtractSliceLowering
     : public mlir::OpRewritePattern<MoveExtractSliceOp> {
 public:
@@ -857,7 +898,7 @@ void wafer::tile_region_to_instr::populateMovementLoweringPatterns(
     mlir::RewritePatternSet &patterns, std::string *failureReason) {
   mlir::MLIRContext *context = patterns.getContext();
   patterns.add<TileLoadLowering, TileStoreLowering, LayoutMaterializeLowering,
-               TileCopyLowering, MoveExtractSliceLowering,
+               TileCopyLowering, TileCopyIntoLowering, MoveExtractSliceLowering,
                MoveInsertSliceLowering, MoveTransposeLowering,
                InstrTDMADataMoveLowering, MoveBroadcastLowering>(context,
                                                                  failureReason);

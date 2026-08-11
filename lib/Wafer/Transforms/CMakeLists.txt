@@ -1,13 +1,6 @@
 add_mlir_library(WaferTransforms
   PhysicalDataflow/CandidateRewrites.cpp
-  PhysicalDataflow/CompleteRankMaterialization.cpp
-  PhysicalDataflow/LayoutMovementOptimization.cpp
-  PhysicalDataflow/ReadyOrder.cpp
-  PhysicalDataflow/StructuredOpInterfaceModels.cpp
-  Scheduling/FixedSlotPipeline.cpp
   Scheduling/RedundantTransferElimination.cpp
-  Scheduling/RankTileMaterialization.cpp
-  Scheduling/WorkerPlacement.cpp
   DDR/PlanDDRMemory.cpp
   MemoryPlanning/LifetimeAnalysis.cpp
   MemoryPlanning/MiniMallocPacking.cpp

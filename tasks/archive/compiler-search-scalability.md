@@ -93,10 +93,11 @@ correspondence、admission、cost、late legality或selection policy。
 
 ### Q49 current recipe-first复用边界
 
-- complete-rank structured proposal先在query-local facts/DP/Pareto beam中剪枝，invocation-wide structural frontier最多64项；
-  graph-changing实现由typed implementation provider贡献opaque point，common coordinator不解析provider key或按workload分支。
+- structured proposal先在query-local facts/DP/Pareto beam中剪枝，invocation-wide structural frontier最多64项；spatial、temporal
+  和implementation候选从current structured IR的op interface、indexing map、SSA/effect与target capability生成，不建立算法族
+  provider、opaque point或workload分支。
 - mandatory baseline canonical seed外置于A/B轮转，但其attempt/success计入全局16/8。其余action按stable A-first在new-Tile
-  canonical seed和已有exact-seeded cursor expansion之间轮转；不存在per-Tile/provider-local quota。
+  canonical seed和已有exact-seeded cursor expansion之间轮转；不存在per-Tile或candidate-family-local quota。
 - 包含baseline在内，全invocation最多16次actual materialization attempt和8个successful exact action。setup前failure不计
   attempt；已开始action无论成功或materialization/exact rejection都消耗attempt并换lane。live cursor最多8，peak action clone为1；
   每个action进入相同completion、SPM/DDR、transport、ABI和final recost。diagnostics分别报告structural frontier、baseline、A/B选择、
@@ -184,7 +185,7 @@ artifact/buffering/worker tuple以及完整module文本。它证明candidate集�
 
 `wafer-compile`当前稳定输出source-to-tensor、coordinated Tile frontier、coordinated executable finalization、
 coordinated variant selection、target IR/artifact、package、profile product、publication和transaction的wall time与process peak RSS，
-并报告structural proposal/actual materialization、implementation provider、schedule recipe enumeration/retention、
+并报告structural proposal/actual materialization、interface-derived implementation point、schedule recipe enumeration/retention、
 materialization attempt/failure/backfill、successful action clone、actual rank clone、late gate、rank lowering、worker和capture计数。
 统计仅存在于本次compiler
 invocation，不进入IR、package或selection input。
@@ -192,7 +193,7 @@ invocation，不进入IR、package或selection input。
 详细计时在上述低开销稳定统计之上按需启用：
 
 - `--compile-timing`默认关闭；打开后记录`stage -> pipeline -> pass/analysis`和candidate search内部的
-  structural derivation/provider query、recipe selection/materialization、tile-region lowering、instr lowering、SPM/DDR planning、verifier与
+  structural/implementation derivation、recipe selection/materialization、tile-region lowering、instr lowering、SPM/DDR planning、verifier与
   cost analysis边界。索引只写入本次diagnostic detail，用于关联一次search request，不恢复或改变IR语义。
 - 每个完成项记录调用次数、累计wall/线程CPU、平均wall、最大wall和失败次数；最终按累计wall降序输出Markdown
   表格。并行worker的累计wall是work量，允许超过transaction wall，不能把它当成串行关键路径。

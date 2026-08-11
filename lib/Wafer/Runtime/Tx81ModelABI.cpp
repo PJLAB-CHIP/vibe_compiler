@@ -6,6 +6,7 @@
 #include "llvm/Support/Errc.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -107,9 +108,9 @@ uint8_t classOrder(Tx81ModelTensorClass tensorClass) {
 
 } // namespace
 
-llvm::Expected<Tx81ModelBootParamImage> buildTx81ModelBootParam(
-    llvm::ArrayRef<Tx81ModelTensorDescriptor> tensors,
-    uint64_t dynamicTLVDeviceAddress) {
+llvm::Expected<Tx81ModelBootParamImage>
+buildTx81ModelBootParam(llvm::ArrayRef<Tx81ModelTensorDescriptor> tensors,
+                        uint64_t dynamicTLVDeviceAddress) {
   if (tensors.empty())
     return invalid("TX81 model BootParam requires at least one tensor");
   if (dynamicTLVDeviceAddress == 0 ||
@@ -120,21 +121,39 @@ llvm::Expected<Tx81ModelBootParamImage> buildTx81ModelBootParam(
   Tx81ModelBootParamImage image;
   image.canonicalTensors.assign(tensors.begin(), tensors.end());
   llvm::sort(image.canonicalTensors, [](const auto &lhs, const auto &rhs) {
-    return std::tuple(classOrder(lhs.tensorClass), lhs.logicalRank,
-                      lhs.slotOrdinal) <
-           std::tuple(classOrder(rhs.tensorClass), rhs.logicalRank,
-                      rhs.slotOrdinal);
+    return std::tuple(classOrder(lhs.tensorClass), lhs.launchSlot.getValue(),
+                      lhs.slotOrdinal) < std::tuple(classOrder(rhs.tensorClass),
+                                                    rhs.launchSlot.getValue(),
+                                                    rhs.slotOrdinal);
   });
 
   uint64_t inputCount = 0;
   uint64_t outputCount = 0;
   uint64_t parameterCount = 0;
-  std::set<std::tuple<uint8_t, int64_t, uint64_t>> identities;
+  std::array<int64_t, 16> tileByLaunchSlot;
+  std::array<int64_t, 16> launchSlotByTile;
+  tileByLaunchSlot.fill(-1);
+  launchSlotByTile.fill(-1);
+  std::set<std::tuple<uint8_t, int64_t, int64_t, int64_t, uint64_t>> identities;
   for (const Tx81ModelTensorDescriptor &tensor : image.canonicalTensors) {
-    if (tensor.logicalRank < 0 || tensor.logicalRank >= 16)
-      return invalid("TX81 model tensor logical rank is outside 0..15");
+    if (tensor.cardId != PhysicalCardId(0) || tensor.tileId.getValue() < 0 ||
+        tensor.tileId.getValue() >= 16 || tensor.launchSlot.getValue() < 0 ||
+        tensor.launchSlot.getValue() >= 16)
+      return invalid("TX81 model tensor physical Tile/launch-slot identity is "
+                     "outside the qualified card0 Tile0..15 domain");
+    const int64_t tileId = tensor.tileId.getValue();
+    const int64_t launchSlot = tensor.launchSlot.getValue();
+    if ((tileByLaunchSlot[launchSlot] != -1 &&
+         tileByLaunchSlot[launchSlot] != tileId) ||
+        (launchSlotByTile[tileId] != -1 &&
+         launchSlotByTile[tileId] != launchSlot))
+      return invalid("TX81 model tensor physical Tile/launch-slot mapping is "
+                     "not one-to-one");
+    tileByLaunchSlot[launchSlot] = tileId;
+    launchSlotByTile[tileId] = launchSlot;
     if (!identities
-             .emplace(classOrder(tensor.tensorClass), tensor.logicalRank,
+             .emplace(classOrder(tensor.tensorClass), tensor.cardId.getValue(),
+                      tensor.tileId.getValue(), tensor.launchSlot.getValue(),
                       tensor.slotOrdinal)
              .second)
       return invalid("TX81 model tensor identity is duplicated");
@@ -201,8 +220,7 @@ llvm::Expected<Tx81ModelBootParamImage> buildTx81ModelBootParam(
   writeLittleEndian<uint64_t>(image.bytes, 24, 0);
   writeLittleEndian<uint64_t>(image.bytes, 32, 0);
   writeLittleEndian<uint32_t>(image.bytes, 40, sizeof(GraphTLVLayout));
-  writeLittleEndian<uint32_t>(image.bytes, 44,
-                              kNoKcoreCalculationCount);
+  writeLittleEndian<uint32_t>(image.bytes, 44, kNoKcoreCalculationCount);
   writeLittleEndian<uint64_t>(image.bytes, 48, dynamicTLVDeviceAddress);
 
   for (auto [index, tensor] : llvm::enumerate(image.canonicalTensors)) {
@@ -210,9 +228,8 @@ llvm::Expected<Tx81ModelBootParamImage> buildTx81ModelBootParam(
     writeLittleEndian<uint64_t>(image.bytes, offset, tensor.deviceAddress);
     writeLittleEndian<uint64_t>(image.bytes, offset + 8, tensor.bytes);
     writeLittleEndian<uint32_t>(image.bytes, offset + 16, kF32DataFormat);
-    writeLittleEndian<uint32_t>(
-        image.bytes, offset + 20,
-        static_cast<uint32_t>(tensor.shape.size()));
+    writeLittleEndian<uint32_t>(image.bytes, offset + 20,
+                                static_cast<uint32_t>(tensor.shape.size()));
     for (auto [dimension, extent] : llvm::enumerate(tensor.shape))
       writeLittleEndian<uint64_t>(image.bytes, offset + 24 + dimension * 8,
                                   static_cast<uint64_t>(extent));
@@ -222,11 +239,13 @@ llvm::Expected<Tx81ModelBootParamImage> buildTx81ModelBootParam(
 
 llvm::Expected<std::vector<uint8_t>>
 buildTx81DynlibRunModules(llvm::StringRef moduleName) {
-  if (moduleName.empty() || moduleName.size() >= 128 || moduleName.contains('\0'))
+  if (moduleName.empty() || moduleName.size() >= 128 ||
+      moduleName.contains('\0'))
     return invalid("TX81 type-7 module name has invalid length or NUL");
   std::vector<uint8_t> bytes(sizeof(DynModsLayout), 0);
   writeLittleEndian<uint16_t>(bytes, 0, 1);
-  std::copy(moduleName.bytes_begin(), moduleName.bytes_end(), bytes.begin() + 8);
+  std::copy(moduleName.bytes_begin(), moduleName.bytes_end(),
+            bytes.begin() + 8);
   return bytes;
 }
 

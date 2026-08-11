@@ -37,7 +37,7 @@ prototype与repo-local实现分别查看`runtime/wafer_crt/include/wafer_tx81_cr
 | Direct DTE | old source contains `__Send` and an empty `__Recv`; current public/Kcore headers and installed firmware additionally expose direct sync、FSM、async send/wait/release、tile-id和peer-SPM helpers | Wafer CRT implements typed begin/begin-after-prepare、send/recv prepare、wait和finish status lifecycle。sender source与receiver FSM使用raw local SPM offset，sender destination使用`get_tile_spm_addr_base(remote,4,4)+offset`；status-v2以64-byte storage/alignment独占cache line，offset 0的`u32`写入cacheable DDR后执行C908 cache clean/invalidate |
 | Count / composite helpers | old source contains `__Count`, GELU, MXFP, reduce-mul and layout helpers | these helper names are not observed in the repo-local CRT source snapshot; the old source alone does not establish reusable Wafer IR / ABI or completion semantics |
 
-Direct DTE当前只消费compiler已经all-rank accepted的physical binding、remote receiver offset、token/wait和typed status slot；
+Direct DTE当前只消费compiler已经整卡验收的per-physical-Tile binding、remote receiver offset、token/wait和typed status slot；
 target conversion/CRT不重新选择endpoint、FSM或route。cluster prepare先执行`init_tile_id(__get_pid(0),4)`，再执行
 `direct_sync_init(16)`；main不重复清ready slots。只有arena-relative offset、没有explicit arena base binding的
 compiler-managed DDR allocation仍会判为`unsupported_target_address`，不能由runtime或CRT补做语义恢复。

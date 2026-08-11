@@ -13,7 +13,8 @@
 
 namespace wafer::runtime {
 
-/// One structurally decoded per-tile profiler record. Schema v3 separates
+/// One structurally decoded per-tile profiler record. The current schema
+/// separates
 /// conservative PMU observation, typed-site and exact target-operation spans.
 /// NCC counter_delta is the vendor execution-time counter delta in nanoseconds;
 /// Direct-DTE counter_delta remains raw and is usable only when its validity
@@ -24,7 +25,6 @@ struct Tx81ProfilerRecord {
 };
 
 enum class Tx81ProfilerCaptureKind {
-  Summary,
   Count,
   Trace,
 };
@@ -46,7 +46,7 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes);
 
 /// Requires all-and-only tile ids 0..15, a common record contract and
 /// complete, non-overflowing records. Every stored event requires a static
-/// final-artifact site identity; an unbracketed completion wait is an
+/// production-artifact site identity; an unbracketed completion wait is an
 /// instrumentation-contract failure rather than anonymous evidence. Worker
 /// attribution remains optional and is governed solely by validity bits.
 llvm::Error
@@ -67,10 +67,10 @@ isTx81ProfilerSiteValid(const WaferTx81ProfilerTSMCallEvent &event) {
   return (event.metadata & WAFER_TX81_PROFILER_EVENT_SITE_VALID) != 0;
 }
 
-inline bool isTx81ProfilerObservationSpanValid(
-    const WaferTx81ProfilerTSMCallEvent &event) {
-  return (event.metadata &
-          WAFER_TX81_PROFILER_EVENT_OBSERVATION_SPAN_VALID) != 0;
+inline bool
+isTx81ProfilerObservationSpanValid(const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata & WAFER_TX81_PROFILER_EVENT_OBSERVATION_SPAN_VALID) !=
+         0;
 }
 
 inline bool
@@ -80,21 +80,19 @@ isTx81ProfilerSiteSpanValid(const WaferTx81ProfilerTSMCallEvent &event) {
 
 inline bool
 isTx81ProfilerOperationSpanValid(const WaferTx81ProfilerTSMCallEvent &event) {
-  return (event.metadata &
-          WAFER_TX81_PROFILER_EVENT_OPERATION_SPAN_VALID) != 0;
+  return (event.metadata & WAFER_TX81_PROFILER_EVENT_OPERATION_SPAN_VALID) != 0;
 }
 
 inline bool
-isTx81ProfilerCounterDeltaPositive(
-    const WaferTx81ProfilerTSMCallEvent &event) {
-  return (event.metadata &
-          WAFER_TX81_PROFILER_EVENT_COUNTER_DELTA_POSITIVE) != 0;
+isTx81ProfilerCounterDeltaPositive(const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata & WAFER_TX81_PROFILER_EVENT_COUNTER_DELTA_POSITIVE) !=
+         0;
 }
 
-inline bool isTx81ProfilerSameEngineAmbiguous(
-    const WaferTx81ProfilerTSMCallEvent &event) {
-  return (event.metadata &
-          WAFER_TX81_PROFILER_EVENT_SAME_ENGINE_AMBIGUOUS) != 0;
+inline bool
+isTx81ProfilerSameEngineAmbiguous(const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata & WAFER_TX81_PROFILER_EVENT_SAME_ENGINE_AMBIGUOUS) !=
+         0;
 }
 
 inline bool
@@ -117,15 +115,13 @@ isTx81ProfilerDirectDTEReceive(const WaferTx81ProfilerTSMCallEvent &event) {
   return (event.metadata & WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_RECV) != 0;
 }
 
-inline bool
-isTx81ProfilerDirectDTECounterValid(
+inline bool isTx81ProfilerDirectDTECounterValid(
     const WaferTx81ProfilerTSMCallEvent &event) {
   return (event.metadata & WAFER_TX81_PROFILER_EVENT_DTE_COUNTER_VALID) != 0;
 }
 
 inline bool
-isTx81ProfilerNCCCounterValid(
-    const WaferTx81ProfilerTSMCallEvent &event) {
+isTx81ProfilerNCCCounterValid(const WaferTx81ProfilerTSMCallEvent &event) {
   return (event.metadata & WAFER_TX81_PROFILER_EVENT_NCC_COUNTER_VALID) != 0;
 }
 

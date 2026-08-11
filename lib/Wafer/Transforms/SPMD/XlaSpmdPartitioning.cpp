@@ -150,7 +150,7 @@ void canonicalizeFrontendShardingAttrs(mlir::ModuleOp module) {
 }
 
 absl::StatusOr<std::unique_ptr<xla::HloModule>>
-stablehloToHloModule(mlir::ModuleOp module, int64_t logicalRankCount) {
+stablehloToHloModule(mlir::ModuleOp module, int64_t numPartitions) {
   xla::XlaComputation computation;
   TF_RETURN_IF_ERROR(xla::MlirToXlaComputation(
       module, computation, /*use_tuple_args=*/false, /*return_tuple=*/false,
@@ -160,7 +160,7 @@ stablehloToHloModule(mlir::ModuleOp module, int64_t logicalRankCount) {
   xla::ProgramShape programShape(computation.proto().host_program_shape());
   config.SetDefaultComputationLayout(programShape);
   config.set_use_spmd_partitioning(true);
-  config.set_num_partitions(logicalRankCount);
+  config.set_num_partitions(numPartitions);
   config.set_replica_count(1);
   absl::InlinedVector<bool, 8> allowParams(programShape.parameters_size(),
                                            false);
@@ -188,16 +188,16 @@ absl::Status prepareSpmdPartitioning(xla::HloModule *module) {
 }
 
 absl::Status runSpmdPartitioner(xla::HloModule *module,
-                                int64_t logicalRankCount) {
+                                int64_t numPartitions) {
   xla::spmd::SpmdPartitionerOptions options;
   options.allow_module_signature_change = true;
   auto collectiveOpsCreator =
-      xla::spmd::GetDefaultCollectiveOpsCreator(logicalRankCount,
+      xla::spmd::GetDefaultCollectiveOpsCreator(numPartitions,
                                                 /*num_replicas=*/1);
 
   xla::HloPassPipeline pipeline("wafer-spmd-partitioning");
   pipeline.AddPass<xla::spmd::SpmdPartitioner>(
-      logicalRankCount, /*num_replicas=*/1, options, collectiveOpsCreator);
+      numPartitions, /*num_replicas=*/1, options, collectiveOpsCreator);
   pipeline.AddPass<xla::HloVerifier>(/*layout_sensitive=*/false,
                                      /*allow_mixed_precision=*/false);
   TF_RETURN_IF_ERROR(pipeline.Run(module).status());

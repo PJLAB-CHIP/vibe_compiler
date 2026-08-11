@@ -4,8 +4,8 @@
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetIdentity.h"
 
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
@@ -24,18 +24,19 @@
 
 namespace {
 
-wafer::RuntimeLaunchContract makePerRankLaunch() {
-  return llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
-      wafer::KernelLaunchForm::PerRank,
-      wafer::KernelEntryABI::RankLocalPointerBlock,
-      {wafer::RuntimeLaunchPhaseRole::Main}));
-}
-
 wafer::RuntimeLaunchContract makeGridLaunch() {
   return llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
       wafer::KernelLaunchForm::Grid,
-      wafer::KernelEntryABI::RankMajorPointerTable,
+      wafer::KernelEntryABI::TileMajorPointerTable,
       {wafer::RuntimeLaunchPhaseRole::Main}));
+}
+
+wafer::RuntimeLaunchContract makeClusterLaunch() {
+  return llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
+      wafer::KernelLaunchForm::Cluster,
+      wafer::KernelEntryABI::TileMajorPointerTable,
+      {wafer::RuntimeLaunchPhaseRole::Prepare,
+       wafer::RuntimeLaunchPhaseRole::Main}));
 }
 
 class ProfileCompanionTest : public ::testing::Test {
@@ -95,7 +96,15 @@ protected:
     return {"known", value, "none"};
   }
 
-  static wafer::runtime::ProfileStaticCostModel makeStaticCostModel() {
+  static int64_t physicalTileForLaunchSlot(int64_t launchSlot,
+                                           bool permuteTiles) {
+    if (!permuteTiles || launchSlot > 1)
+      return launchSlot;
+    return 1 - launchSlot;
+  }
+
+  static wafer::runtime::ProfileStaticCostModel
+  makeStaticCostModel(bool permuteTiles = false) {
     using namespace wafer::runtime;
     ProfileStaticCostModel model;
     model.model = kProfileStaticCostModelName.str();
@@ -105,13 +114,14 @@ protected:
     model.rates.f16Bf16NPULogicalOpsPerSecondPerTile = UINT64_C(8000000000000);
     model.rates.f16Bf16VectorLogicalOpsPerSecondPerTile = UINT64_C(64000000000);
     model.rates.f32VectorLogicalOpsPerSecondPerTile = UINT64_C(32000000000);
-    for (int64_t rank = 0; rank < 16; ++rank) {
-      ProfileStaticRankWork work;
+    for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
+      const int64_t tile = physicalTileForLaunchSlot(launchSlot, permuteTiles);
+      ProfileStaticTileWork work;
       work.npuF16Bf16LogicalOps = knownStaticCost(0);
       work.npuOtherLogicalOps = {"unsupported", std::nullopt,
                                  "unsupported-compute-type"};
       work.vectorF16Bf16LogicalOps =
-          knownStaticCost(static_cast<uint64_t>(rank + 1));
+          knownStaticCost(static_cast<uint64_t>(tile + 1));
       work.vectorF32LogicalOps = knownStaticCost(0);
       work.vectorOtherLogicalOps = knownStaticCost(0);
       work.ddrReadBytes = knownStaticCost(64);
@@ -119,31 +129,25 @@ protected:
       work.spmMovementBytes = knownStaticCost(96);
       work.nocTransmitBytes = knownStaticCost(0);
       work.nocReceiveBytes = knownStaticCost(0);
-      work.directionalNoCTransmitBytes.north = knownStaticCost(0);
+      work.directionalNoCTransmitBytes.north = {"unavailable", std::nullopt,
+                                                "unresolved-noc-route"};
       work.directionalNoCTransmitBytes.east = knownStaticCost(0);
       work.directionalNoCTransmitBytes.south = knownStaticCost(0);
       work.directionalNoCTransmitBytes.west = knownStaticCost(0);
-      work.collectiveNoCTransmitBytes.collectivePermute = knownStaticCost(0);
-      work.collectiveNoCTransmitBytes.allToAll = knownStaticCost(0);
-      work.collectiveNoCTransmitBytes.allGather = knownStaticCost(0);
-      work.collectiveNoCTransmitBytes.reduceScatter = knownStaticCost(0);
-      work.collectiveNoCTransmitBytes.allReduce =
-          knownStaticCost(rank == 15 ? UINT64_MAX : 0);
-      model.ranks.push_back({rank, std::move(work)});
+      model.tiles.push_back(
+          {wafer::PhysicalCardId(0), wafer::PhysicalTileId(tile),
+           wafer::runtime::LaunchSlotId(launchSlot), std::move(work)});
     }
     return model;
   }
 
-  void writeActivation() {
+  void writeActivation(llvm::StringRef productionDigestOverride = {}) {
     llvm::SmallString<256> activationPath(companion);
     llvm::sys::path::append(
         activationPath, wafer::runtime::kProfileCompanionActivationFileName);
     llvm::SmallString<256> planPath(companion);
     llvm::sys::path::append(planPath,
                             wafer::runtime::kProfileCompanionPlanFileName);
-    llvm::SmallString<256> variantsPath(companion);
-    llvm::sys::path::append(variantsPath,
-                            wafer::runtime::kProfileCompanionVariantsFileName);
     llvm::SmallString<256> siteMapPath(companion);
     llvm::sys::path::append(siteMapPath,
                             wafer::runtime::kProfileCompanionSiteMapFileName);
@@ -155,10 +159,12 @@ protected:
       json.attribute("schema", "wafer-profile-activation");
       json.attribute("schema_version",
                      int64_t(wafer::runtime::kProfileCompanionSchemaVersion));
-      json.attribute("production_manifest_sha256", manifestDigest(production));
+      json.attribute("production_manifest_sha256",
+                     productionDigestOverride.empty()
+                         ? manifestDigest(production)
+                         : productionDigestOverride);
       json.attributeObject("metadata_sha256", [&] {
         json.attribute("plan.json", digestFile(planPath));
-        json.attribute("variants.json", digestFile(variantsPath));
         json.attribute("site-map.json", digestFile(siteMapPath));
       });
     });
@@ -171,72 +177,69 @@ protected:
       llvm::StringRef package, uint64_t outputBytes, uint64_t recordBytes,
       llvm::StringRef profilerName = "tx81_profiler_record",
       llvm::StringRef resourceNamePrefix = "",
-      wafer::KernelLaunchForm launchForm = wafer::KernelLaunchForm::PerRank,
+      wafer::KernelLaunchForm launchForm = wafer::KernelLaunchForm::Grid,
       wafer::TargetIdentityId targetIdentity =
-          wafer::TargetIdentityId::waferTx81SingleCard()) {
+          wafer::TargetIdentityId::waferTx81SingleCard(),
+      bool permuteTiles = false) {
     using namespace wafer::runtime;
     llvm::SmallString<256> modules(package);
     llvm::sys::path::append(modules, "modules");
     ASSERT_FALSE(llvm::sys::fs::create_directories(modules));
 
-    PackageManifest manifest(
-        targetIdentity, wafer::kCurrentKernelRuntimeABI,
-        launchForm == wafer::KernelLaunchForm::Grid ? makeGridLaunch()
-                                                    : makePerRankLaunch(),
-        wafer::kCurrentTargetModuleFormat);
+    PackageManifest manifest(targetIdentity, wafer::kCurrentKernelRuntimeABI,
+                             launchForm == wafer::KernelLaunchForm::Cluster
+                                 ? makeClusterLaunch()
+                                 : makeGridLaunch(),
+                             wafer::kCurrentTargetModuleFormat);
     manifest.program = ProgramId(0);
-    manifest.rankCount = 16;
-    for (int64_t rank = 0; rank < 16; ++rank) {
-      std::string rankText = std::to_string(rank);
-      std::string moduleName =
-          "rank_" + std::string(5 - rankText.size(), '0') + rankText + ".so";
-      llvm::SmallString<256> modulePath(modules);
-      llvm::sys::path::append(modulePath, moduleName);
-      if (launchForm == wafer::KernelLaunchForm::PerRank || rank == 0) {
-        writeText(modulePath, llvm::StringRef("\x7f"
-                                              "ELFprofile-companion-test"));
-      } else if (llvm::sys::fs::exists(modulePath)) {
-        ASSERT_FALSE(llvm::sys::fs::remove(modulePath));
-      }
-
-      uint64_t resourcesPerRank = recordBytes == 0 ? 2 : 3;
-      ResourceId input(static_cast<uint64_t>(rank) * resourcesPerRank);
-      ResourceId output(input.getValue() + 1);
-      manifest.resources.push_back({input,
-                                    rank,
-                                    PackageResourceRole::UserInput,
-                                    0,
-                                    (resourceNamePrefix + "input").str(),
-                                    {"f32", {1}},
-                                    4,
-                                    4,
-                                    PackageAccessMode::ReadOnly,
-                                    true});
-      manifest.resources.push_back({output,
-                                    rank,
-                                    PackageResourceRole::Output,
-                                    0,
-                                    (resourceNamePrefix + "output").str(),
-                                    {"f32", {1}},
-                                    outputBytes,
-                                    4,
-                                    PackageAccessMode::WriteOnly,
-                                    true});
-      if (launchForm == wafer::KernelLaunchForm::PerRank || rank == 0)
-        manifest.modules.push_back(
-            {ModuleId(launchForm == wafer::KernelLaunchForm::Grid ? 0 : rank),
-             "modules/" + moduleName,
-             moduleDigest(),
-             wafer::kCurrentTargetModuleFormat.str(),
-             {{PackageModuleExportRole::Main, "main"}}});
+    manifest.cardCount = 1;
+    manifest.tileCount = 16;
+    manifest.resources = {{ResourceId(0),
+                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           PackageResourceRole::UserInput,
+                           0,
+                           (resourceNamePrefix + "input").str(),
+                           {"f32", {1}},
+                           4,
+                           4,
+                           PackageAccessMode::ReadOnly,
+                           true},
+                          {ResourceId(1),
+                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           PackageResourceRole::Output,
+                           0,
+                           (resourceNamePrefix + "output").str(),
+                           {"f32", {1}},
+                           outputBytes,
+                           4,
+                           PackageAccessMode::WriteOnly,
+                           true}};
+    llvm::SmallString<256> modulePath(modules);
+    llvm::sys::path::append(modulePath, "kernel.so");
+    writeText(modulePath, llvm::StringRef("\x7f"
+                                          "ELFprofile-companion-test"));
+    manifest.modules.push_back(
+        {ModuleId(0), "modules/kernel.so", moduleDigest(),
+         wafer::kCurrentTargetModuleFormat.str(),
+         launchForm == wafer::KernelLaunchForm::Cluster
+             ? std::vector<
+                   PackageModuleExportRecord>{{PackageModuleExportRole::Prepare,
+                                               "prepare"},
+                                              {PackageModuleExportRole::Main,
+                                               "main"}}
+             : std::vector<PackageModuleExportRecord>{
+                   {PackageModuleExportRole::Main, "main"}}});
+    for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
+      const int64_t tile = physicalTileForLaunchSlot(launchSlot, permuteTiles);
       std::vector<PackageABISlotBinding> slots = {
-          {0, input, PackageAccessMode::ReadOnly},
-          {1, output, PackageAccessMode::WriteOnly}};
+          {0, ResourceId(0), PackageAccessMode::ReadOnly},
+          {1, ResourceId(1), PackageAccessMode::WriteOnly}};
       if (recordBytes != 0) {
-        ResourceId profiler(output.getValue() + 1);
+        ResourceId profiler(static_cast<uint64_t>(launchSlot) + 2);
         manifest.resources.push_back(
             {profiler,
-             rank,
+             TileResourceScope{wafer::PhysicalCardId(0),
+                               wafer::PhysicalTileId(tile)},
              PackageResourceRole::Workspace,
              1,
              profilerName.str(),
@@ -248,11 +251,10 @@ protected:
         slots.push_back({2, profiler, PackageAccessMode::ReadWrite});
       }
       manifest.entries.push_back(
-          {EntryId(rank), rank,
-           ModuleId(launchForm == wafer::KernelLaunchForm::Grid ? 0 : rank),
-           std::move(slots), CompletionId(rank)});
-      manifest.completions.push_back(
-          {CompletionId(rank), rank, "entry_return"});
+          {EntryId(launchSlot), wafer::PhysicalCardId(0),
+           wafer::PhysicalTileId(tile), LaunchSlotId(launchSlot), ModuleId(0),
+           std::move(slots), PackageEntryCompletionKind::ReturnAfterLocalDrain,
+           NoTransportRequirements{}});
     }
     llvm::Expected<VerifiedPackageManifest> verified =
         verifyPackageManifest(std::move(manifest), package);
@@ -266,11 +268,8 @@ protected:
   void writeCompanion(bool badSiteSymbol = false,
                       llvm::StringRef finalDigestOverride = {},
                       llvm::StringRef profilerName = "tx81_profiler_record",
-                      llvm::StringRef resourceNamePrefix = "") {
-    std::string digest = finalDigestOverride.empty()
-                             ? manifestDigest(production)
-                             : finalDigestOverride.str();
-    llvm::StringRef packageReference = "../package";
+                      llvm::StringRef resourceNamePrefix = "",
+                      bool permuteTiles = false) {
     struct CaptureFixture {
       llvm::StringRef name;
       uint64_t recordBytes;
@@ -282,46 +281,16 @@ protected:
          std::array<std::pair<llvm::StringRef, uint64_t>, 2>{
              {{"count", WAFER_TX81_PROFILER_MIN_BUFFER_BYTES},
               {"trace", 1024 * 1024}}}) {
-      std::string reference = ("captures/final-artifact/" + name).str();
+      std::string reference = ("captures/" + name).str();
       llvm::SmallString<256> capturePath(companion);
       llvm::sys::path::append(capturePath, reference);
       ASSERT_FALSE(llvm::sys::fs::create_directories(capturePath));
-      ASSERT_NO_FATAL_FAILURE(writePackage(capturePath, /*outputBytes=*/4,
-                                           recordBytes, profilerName,
-                                           resourceNamePrefix,
-                                           wafer::KernelLaunchForm::PerRank,
-                                           wafer::kCurrentTargetIdentity));
+      ASSERT_NO_FATAL_FAILURE(writePackage(
+          capturePath, /*outputBytes=*/4, recordBytes, profilerName,
+          resourceNamePrefix, wafer::KernelLaunchForm::Grid,
+          wafer::kCurrentTargetIdentity, permuteTiles));
       captures.push_back(
           {name, recordBytes, reference, manifestDigest(capturePath)});
-    }
-
-    llvm::SmallString<256> variantsPath(companion);
-    llvm::sys::path::append(variantsPath,
-                            wafer::runtime::kProfileCompanionVariantsFileName);
-    {
-      std::error_code error;
-      llvm::raw_fd_ostream output(variantsPath, error, llvm::sys::fs::OF_Text);
-      ASSERT_FALSE(error);
-      llvm::json::OStream json(output, 2);
-      json.object([&] {
-        json.attribute("schema", "wafer-profile-variants");
-        json.attribute("schema_version",
-                       int64_t(wafer::runtime::kProfileCompanionSchemaVersion));
-        json.attribute("rank_count", int64_t(16));
-        json.attributeArray("variants", [&] {
-          json.object([&] {
-            json.attribute("id", "final-artifact");
-            json.attribute("role", "final-artifact");
-            json.attribute("package_ref", packageReference);
-            json.attribute("manifest_sha256", digest);
-            json.attributeBegin("static_cost_model");
-            wafer::runtime::writeProfileStaticCostModel(json,
-                                                        makeStaticCostModel());
-            json.attributeEnd();
-          });
-        });
-      });
-      output << "\n";
     }
 
     llvm::SmallString<256> siteMapPath(companion);
@@ -338,69 +307,68 @@ protected:
         json.attribute("schema", "wafer-profile-target-call-site-map");
         json.attribute("schema_version",
                        int64_t(wafer::runtime::kProfileCompanionSchemaVersion));
+        json.attribute("card_count", int64_t(1));
+        json.attribute("tile_count", int64_t(16));
         json.attribute("site_basis", "verified-target-llvm-entry-reachable-"
-                                     "profile-target-call-preorder");
+                                     "physical-tile-target-call-preorder");
         json.attribute("correlation_basis",
                        wafer::runtime::kProfileSiteCorrelationBasis);
         json.attribute("target_call_registry_size",
                        static_cast<int64_t>(descriptors.size()));
-        json.attributeArray("variants", [&] {
-          json.object([&] {
-            json.attribute("variant_id", "final-artifact");
-            json.attributeArray("ranks", [&] {
-              for (int64_t rank = 0; rank < 16; ++rank) {
-                json.object([&] {
-                  json.attribute("logical_rank", rank);
-                  json.attributeArray("sites", [&] {
-                    struct SiteFixture {
-                      wafer::TargetCallBuiltin builtin;
-                      llvm::StringRef kind;
-                      std::optional<llvm::StringRef> engine;
-                    };
-                    std::vector<SiteFixture> sites = {
-                        {wafer::TargetCallBuiltin::RDMA, "ncc-command", "RDMA"},
-                        {wafer::TargetCallBuiltin::NCCJoin, "ncc-completion",
-                         std::nullopt},
-                        {wafer::TargetCallBuiltin::DirectDTEBegin,
-                         "direct-dte-control", std::nullopt},
-                    };
-                    sites.push_back(
-                        {wafer::TargetCallBuiltin::DirectDTESendIssue,
-                         "direct-dte-issue", "DIRECT_DTE"});
-                    sites.push_back(
-                        {wafer::TargetCallBuiltin::DirectDTEWait,
-                         "direct-dte-wait", "DIRECT_DTE"});
-                    for (auto [siteId, site] : llvm::enumerate(sites)) {
-                      const wafer::TargetCallDescriptor &descriptor =
-                          wafer::getTargetCallDescriptor(site.builtin);
-                      const auto *begin = descriptors.data();
-                      const uint64_t ordinal =
-                          static_cast<uint64_t>(&descriptor - begin);
-                      json.object([&] {
-                        json.attribute("site_id", static_cast<int64_t>(siteId));
-                        json.attribute("function_ordinal", int64_t(0));
-                        json.attribute("block_ordinal", int64_t(0));
-                        json.attribute("instruction_ordinal",
-                                       static_cast<int64_t>(siteId));
-                        json.attribute("target_call_ordinal",
-                                       static_cast<int64_t>(ordinal));
-                        json.attribute("target_call_symbol",
-                                       badSiteSymbol && siteId == 0
-                                           ? "wafer_invalid_target_call"
-                                           : descriptor.symbol);
-                        json.attribute("site_kind", site.kind);
-                        if (site.engine)
-                          json.attribute("engine", *site.engine);
-                        json.attribute("correlation_key",
-                                       "registry:" + std::to_string(ordinal) +
-                                           ":structural-occurrence:0");
-                      });
-                    }
+        json.attributeArray("tiles", [&] {
+          for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
+            const int64_t tile =
+                physicalTileForLaunchSlot(launchSlot, permuteTiles);
+            json.object([&] {
+              json.attribute("card_id", int64_t(0));
+              json.attribute("tile_id", tile);
+              json.attribute("launch_slot", launchSlot);
+              json.attributeArray("sites", [&] {
+                struct SiteFixture {
+                  wafer::TargetCallBuiltin builtin;
+                  llvm::StringRef kind;
+                  std::optional<llvm::StringRef> engine;
+                };
+                std::vector<SiteFixture> sites = {
+                    {wafer::TargetCallBuiltin::RDMA, "ncc-command", "RDMA"},
+                    {wafer::TargetCallBuiltin::NCCJoin, "ncc-completion",
+                     std::nullopt},
+                    {wafer::TargetCallBuiltin::DirectDTEBegin,
+                     "direct-dte-control", std::nullopt},
+                };
+                sites.push_back({wafer::TargetCallBuiltin::DirectDTESendIssue,
+                                 "direct-dte-issue", "DIRECT_DTE"});
+                sites.push_back({wafer::TargetCallBuiltin::DirectDTEWait,
+                                 "direct-dte-wait", "DIRECT_DTE"});
+                for (auto [siteId, site] : llvm::enumerate(sites)) {
+                  const wafer::TargetCallDescriptor &descriptor =
+                      wafer::getTargetCallDescriptor(site.builtin);
+                  const auto *begin = descriptors.data();
+                  const uint64_t ordinal =
+                      static_cast<uint64_t>(&descriptor - begin);
+                  json.object([&] {
+                    json.attribute("site_id", static_cast<int64_t>(siteId));
+                    json.attribute("function_ordinal", int64_t(0));
+                    json.attribute("block_ordinal", int64_t(0));
+                    json.attribute("instruction_ordinal",
+                                   static_cast<int64_t>(siteId));
+                    json.attribute("target_call_ordinal",
+                                   static_cast<int64_t>(ordinal));
+                    json.attribute("target_call_symbol",
+                                   badSiteSymbol && siteId == 0
+                                       ? "wafer_invalid_target_call"
+                                       : descriptor.symbol);
+                    json.attribute("site_kind", site.kind);
+                    if (site.engine)
+                      json.attribute("engine", *site.engine);
+                    json.attribute("correlation_key",
+                                   "registry:" + std::to_string(ordinal) +
+                                       ":structural-occurrence:0");
                   });
-                });
-              }
+                }
+              });
             });
-          });
+          }
         });
       });
       output << "\n";
@@ -418,23 +386,20 @@ protected:
         json.attribute("schema", "wafer-profile-plan");
         json.attribute("schema_version",
                        int64_t(wafer::runtime::kProfileCompanionSchemaVersion));
-        json.attribute("rank_count", int64_t(16));
-        json.attribute("variant_metadata", "variants.json");
+        json.attribute("card_count", int64_t(1));
+        json.attribute("tile_count", int64_t(16));
         json.attribute("site_map", "site-map.json");
         json.attribute(
             "site_identity",
-            "final-rank-local-typed-target-site-id-and-correlation-key");
-        json.attributeArray("execution_packages", [&] {
-          json.object([&] {
-            json.attribute("variant_id", "final-artifact");
-            json.attribute("package_ref", packageReference);
-            json.attribute("manifest_sha256", digest);
-          });
-        });
+            "final-physical-tile-local-typed-target-site-id-and-correlation-"
+            "key");
+        json.attributeBegin("static_cost_model");
+        wafer::runtime::writeProfileStaticCostModel(
+            json, makeStaticCostModel(permuteTiles));
+        json.attributeEnd();
         json.attributeArray("capture_packages", [&] {
           for (const CaptureFixture &capture : captures)
             json.object([&] {
-              json.attribute("variant_id", "final-artifact");
               json.attribute("capture", capture.name);
               json.attribute("package_ref", capture.reference);
               json.attribute("manifest_sha256", capture.digest);
@@ -446,7 +411,7 @@ protected:
       });
       output << "\n";
     }
-    ASSERT_NO_FATAL_FAILURE(writeActivation());
+    ASSERT_NO_FATAL_FAILURE(writeActivation(finalDigestOverride));
   }
 
   llvm::SmallString<256> root;
@@ -454,75 +419,100 @@ protected:
   llvm::SmallString<256> companion;
 };
 
-TEST_F(ProfileCompanionTest, LoadsExactBoundCompanionAndSixteenRankSiteMap) {
+TEST_F(ProfileCompanionTest, LoadsExactBoundCompanionAndSixteenTileSiteMap) {
   llvm::Expected<wafer::runtime::VerifiedProfileCompanion> loaded =
       wafer::runtime::loadVerifiedProfileCompanion(companion, production);
   ASSERT_TRUE(static_cast<bool>(loaded)) << llvm::toString(loaded.takeError());
   EXPECT_EQ(loaded->getSchemaVersion(),
             wafer::runtime::kProfileCompanionSchemaVersion);
-  EXPECT_EQ(loaded->getProductionManifestDigest(), manifestDigest(production));
-  EXPECT_EQ(loaded->getRankCount(), 16);
-  EXPECT_EQ(loaded->getVariants().size(), 1u);
+  EXPECT_EQ(loaded->getProductionArtifact().getManifestDigest(),
+            manifestDigest(production));
+  EXPECT_EQ(loaded->getCardCount(), 1);
+  EXPECT_EQ(loaded->getTileCount(), 16);
   EXPECT_EQ(loaded->getCaptures().size(), 2u);
-  EXPECT_EQ(loaded->getSiteMaps().size(), 1u);
+  EXPECT_EQ(loaded->getSiteMap().size(), 16u);
   EXPECT_EQ(loaded->getSiteCount(), 80u);
-  const auto *final =
-      loaded->findVariant(wafer::runtime::ProfileVariantRole::FinalArtifact);
-  ASSERT_NE(final, nullptr);
-  EXPECT_EQ(final->getPackage().getManifest().rankCount, 16);
-  const auto &staticCost = final->getStaticCostModel();
+  const auto &productionArtifact = loaded->getProductionArtifact();
+  EXPECT_EQ(productionArtifact.getPackage().getManifest().cardCount, 1);
+  EXPECT_EQ(productionArtifact.getPackage().getManifest().tileCount, 16);
+  const auto &staticCost = productionArtifact.getStaticCostModel();
   EXPECT_EQ(staticCost.model, wafer::runtime::kProfileStaticCostModelName);
   EXPECT_EQ(staticCost.scope, wafer::runtime::kProfileStaticCostModelScope);
-  ASSERT_EQ(staticCost.ranks.size(), 16u);
+  ASSERT_EQ(staticCost.tiles.size(), 16u);
   ASSERT_TRUE(
-      staticCost.ranks.front().work.vectorF16Bf16LogicalOps.value.has_value());
-  EXPECT_EQ(*staticCost.ranks.front().work.vectorF16Bf16LogicalOps.value, 1u);
-  EXPECT_EQ(staticCost.ranks.front().work.npuOtherLogicalOps.knowledge,
+      staticCost.tiles.front().work.vectorF16Bf16LogicalOps.value.has_value());
+  EXPECT_EQ(*staticCost.tiles.front().work.vectorF16Bf16LogicalOps.value, 1u);
+  EXPECT_EQ(staticCost.tiles.front().work.npuOtherLogicalOps.knowledge,
             "unsupported");
   EXPECT_FALSE(
-      staticCost.ranks.front().work.npuOtherLogicalOps.value.has_value());
-  ASSERT_TRUE(staticCost.ranks.back()
-                  .work.collectiveNoCTransmitBytes.allReduce.value.has_value());
+      staticCost.tiles.front().work.npuOtherLogicalOps.value.has_value());
   EXPECT_EQ(
-      *staticCost.ranks.back().work.collectiveNoCTransmitBytes.allReduce.value,
-      UINT64_MAX);
+      staticCost.tiles.front().work.directionalNoCTransmitBytes.north.knowledge,
+      "unavailable");
+  EXPECT_FALSE(staticCost.tiles.front()
+                   .work.directionalNoCTransmitBytes.north.value.has_value());
   EXPECT_FALSE(staticCost.rates.spmMovementBytesPerSecond.has_value());
-  const auto *trace = loaded->findCapture(
-      "final-artifact", wafer::runtime::ProfileCaptureKind::Trace);
+  const auto *trace =
+      loaded->findCapture(wafer::runtime::ProfileCaptureKind::Trace);
   ASSERT_NE(trace, nullptr);
   EXPECT_EQ(trace->getRecordBytes(), UINT64_C(1024) * 1024);
   EXPECT_EQ(trace->getRecordABI(), wafer::runtime::kProfileRecordABI);
   for (wafer::runtime::ProfileCaptureKind capture :
        {wafer::runtime::ProfileCaptureKind::Count,
         wafer::runtime::ProfileCaptureKind::Trace}) {
-    ASSERT_NE(loaded->findCapture("final-artifact", capture), nullptr);
+    ASSERT_NE(loaded->findCapture(capture), nullptr);
   }
-  EXPECT_EQ(loaded->findCapture("final-artifact",
-                                wafer::runtime::ProfileCaptureKind::Summary),
-            nullptr);
-  const auto *siteMap = loaded->findSiteMap("final-artifact");
-  ASSERT_NE(siteMap, nullptr);
-  ASSERT_EQ(siteMap->ranks.size(), 16u);
-  ASSERT_EQ(siteMap->ranks.front().sites.size(), 5u);
-  EXPECT_EQ(siteMap->ranks.front().sites[0].siteKind,
+  llvm::ArrayRef<wafer::runtime::ProfileTileSiteMap> siteMap =
+      loaded->getSiteMap();
+  ASSERT_EQ(siteMap.size(), 16u);
+  ASSERT_EQ(siteMap.front().sites.size(), 5u);
+  EXPECT_EQ(siteMap.front().sites[0].siteKind,
             wafer::runtime::ProfileTargetSiteKind::NCCCommand);
-  EXPECT_EQ(siteMap->ranks.front().sites[0].engine,
+  EXPECT_EQ(siteMap.front().sites[0].engine,
             wafer::runtime::ProfileTSMEngine::RDMA);
-  EXPECT_EQ(siteMap->ranks.front().sites[1].siteKind,
+  EXPECT_EQ(siteMap.front().sites[1].siteKind,
             wafer::runtime::ProfileTargetSiteKind::NCCCompletion);
-  EXPECT_FALSE(siteMap->ranks.front().sites[1].engine);
-  EXPECT_EQ(siteMap->ranks.front().sites[2].siteKind,
+  EXPECT_FALSE(siteMap.front().sites[1].engine);
+  EXPECT_EQ(siteMap.front().sites[2].siteKind,
             wafer::runtime::ProfileTargetSiteKind::DirectDTEControl);
-  EXPECT_FALSE(siteMap->ranks.front().sites[2].engine);
-  EXPECT_EQ(siteMap->ranks.front().sites[3].siteKind,
+  EXPECT_FALSE(siteMap.front().sites[2].engine);
+  EXPECT_EQ(siteMap.front().sites[3].siteKind,
             wafer::runtime::ProfileTargetSiteKind::DirectDTEIssue);
-  EXPECT_EQ(siteMap->ranks.front().sites[3].engine,
+  EXPECT_EQ(siteMap.front().sites[3].engine,
             wafer::runtime::ProfileTSMEngine::DirectDTE);
-  EXPECT_EQ(siteMap->ranks.front().sites[4].siteKind,
+  EXPECT_EQ(siteMap.front().sites[4].siteKind,
             wafer::runtime::ProfileTargetSiteKind::DirectDTEWait);
-  EXPECT_EQ(siteMap->ranks.front().sites[4].engine,
+  EXPECT_EQ(siteMap.front().sites[4].engine,
             wafer::runtime::ProfileTSMEngine::DirectDTE);
-  EXPECT_FALSE(siteMap->ranks.front().sites.front().correlationKey.empty());
+  EXPECT_FALSE(siteMap.front().sites.front().correlationKey.empty());
+}
+
+TEST_F(ProfileCompanionTest,
+       PreservesExplicitPhysicalTileAndLaunchSlotBinding) {
+  ASSERT_NO_FATAL_FAILURE(writePackage(
+      production, /*outputBytes=*/4, /*recordBytes=*/0,
+      /*profilerName=*/"tx81_profiler_record", /*resourceNamePrefix=*/"",
+      wafer::KernelLaunchForm::Grid, wafer::kCurrentTargetIdentity,
+      /*permuteTiles=*/true));
+  ASSERT_NO_FATAL_FAILURE(writeCompanion(
+      /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
+      /*profilerName=*/"tx81_profiler_record", /*resourceNamePrefix=*/"",
+      /*permuteTiles=*/true));
+
+  llvm::Expected<wafer::runtime::VerifiedProfileCompanion> loaded =
+      wafer::runtime::loadVerifiedProfileCompanion(companion, production);
+  ASSERT_TRUE(static_cast<bool>(loaded)) << llvm::toString(loaded.takeError());
+  const auto &productionArtifact = loaded->getProductionArtifact();
+  llvm::ArrayRef<wafer::runtime::ProfileTileSiteMap> siteMap =
+      loaded->getSiteMap();
+  ASSERT_EQ(productionArtifact.getStaticCostModel().tiles.size(), 16u);
+  ASSERT_EQ(siteMap.size(), 16u);
+  EXPECT_EQ(productionArtifact.getStaticCostModel().tiles[0].tileId,
+            wafer::PhysicalTileId(1));
+  EXPECT_EQ(productionArtifact.getStaticCostModel().tiles[0].launchSlot,
+            wafer::runtime::LaunchSlotId(0));
+  EXPECT_EQ(siteMap[1].tileId, wafer::PhysicalTileId(0));
+  EXPECT_EQ(siteMap[1].launchSlot, wafer::runtime::LaunchSlotId(1));
 }
 
 TEST_F(ProfileCompanionTest, MissingSiblingIsNotAnError) {
@@ -544,10 +534,10 @@ TEST_F(ProfileCompanionTest, RejectsStaleManifestDigest) {
 }
 
 TEST_F(ProfileCompanionTest, RejectsDifferentRuntimeLaunchContract) {
-  ASSERT_NO_FATAL_FAILURE(
-      writePackage(production, /*outputBytes=*/4, /*recordBytes=*/0,
-                   /*profilerName=*/"tx81_profiler_record",
-                   /*resourceNamePrefix=*/"", wafer::KernelLaunchForm::Grid));
+  ASSERT_NO_FATAL_FAILURE(writePackage(
+      production, /*outputBytes=*/4, /*recordBytes=*/0,
+      /*profilerName=*/"tx81_profiler_record",
+      /*resourceNamePrefix=*/"", wafer::KernelLaunchForm::Cluster));
   ASSERT_NO_FATAL_FAILURE(writeCompanion());
   auto loaded =
       wafer::runtime::loadVerifiedProfileCompanion(companion, production);
@@ -599,7 +589,7 @@ TEST_F(ProfileCompanionTest, RejectsLegacyRecordABIWithCurrentRecordBytes) {
             std::string::npos);
 }
 
-TEST_F(ProfileCompanionTest, RejectsPreviousActivationSchema) {
+TEST_F(ProfileCompanionTest, RejectsRetiredSchemaV8) {
   llvm::SmallString<256> activationPath(companion);
   llvm::sys::path::append(activationPath,
                           wafer::runtime::kProfileCompanionActivationFileName);
@@ -607,10 +597,10 @@ TEST_F(ProfileCompanionTest, RejectsPreviousActivationSchema) {
       llvm::MemoryBuffer::getFile(activationPath);
   ASSERT_TRUE(static_cast<bool>(existing));
   std::string corrupted = (*existing)->getBuffer().str();
-  const std::string current = "\"schema_version\": 7";
+  const std::string current = "\"schema_version\": 9";
   size_t version = corrupted.find(current);
   ASSERT_NE(version, std::string::npos);
-  corrupted.replace(version, current.size(), "\"schema_version\": 6");
+  corrupted.replace(version, current.size(), "\"schema_version\": 8");
   ASSERT_NO_FATAL_FAILURE(writeText(activationPath, corrupted));
 
   auto loaded =
@@ -622,18 +612,18 @@ TEST_F(ProfileCompanionTest, RejectsPreviousActivationSchema) {
 }
 
 TEST_F(ProfileCompanionTest, RejectsNonCanonicalStaticCostValue) {
-  llvm::SmallString<256> variantsPath(companion);
-  llvm::sys::path::append(variantsPath,
-                          wafer::runtime::kProfileCompanionVariantsFileName);
+  llvm::SmallString<256> planPath(companion);
+  llvm::sys::path::append(planPath,
+                          wafer::runtime::kProfileCompanionPlanFileName);
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> existing =
-      llvm::MemoryBuffer::getFile(variantsPath);
+      llvm::MemoryBuffer::getFile(planPath);
   ASSERT_TRUE(static_cast<bool>(existing));
   std::string corrupted = (*existing)->getBuffer().str();
   const std::string value = "\"value\": \"0\"";
   size_t position = corrupted.find(value);
   ASSERT_NE(position, std::string::npos);
   corrupted.replace(position, value.size(), "\"value\": \"00\"");
-  ASSERT_NO_FATAL_FAILURE(writeText(variantsPath, corrupted));
+  ASSERT_NO_FATAL_FAILURE(writeText(planPath, corrupted));
   ASSERT_NO_FATAL_FAILURE(writeActivation());
 
   auto loaded =
@@ -642,6 +632,29 @@ TEST_F(ProfileCompanionTest, RejectsNonCanonicalStaticCostValue) {
   EXPECT_NE(llvm::toString(loaded.takeError())
                 .find("canonical uint64 decimal string"),
             std::string::npos);
+}
+
+TEST_F(ProfileCompanionTest, RejectsRetiredUnknownStaticCostKnowledge) {
+  llvm::SmallString<256> planPath(companion);
+  llvm::sys::path::append(planPath,
+                          wafer::runtime::kProfileCompanionPlanFileName);
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> existing =
+      llvm::MemoryBuffer::getFile(planPath);
+  ASSERT_TRUE(static_cast<bool>(existing));
+  std::string corrupted = (*existing)->getBuffer().str();
+  const std::string current = "\"knowledge\": \"unavailable\"";
+  size_t position = corrupted.find(current);
+  ASSERT_NE(position, std::string::npos);
+  corrupted.replace(position, current.size(), "\"knowledge\": \"unknown\"");
+  ASSERT_NO_FATAL_FAILURE(writeText(planPath, corrupted));
+  ASSERT_NO_FATAL_FAILURE(writeActivation());
+
+  auto loaded =
+      wafer::runtime::loadVerifiedProfileCompanion(companion, production);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(
+      llvm::toString(loaded.takeError()).find("knowledge is not supported"),
+      std::string::npos);
 }
 
 TEST_F(ProfileCompanionTest, RejectsEngineOnCompletionSite) {
@@ -690,7 +703,7 @@ TEST_F(ProfileCompanionTest, RejectsMissingEngineOnNCCCommandSite) {
       std::string::npos);
 }
 
-TEST_F(ProfileCompanionTest, RejectsSummaryCaptureInVersionFive) {
+TEST_F(ProfileCompanionTest, RejectsUnsupportedSummaryCapture) {
   llvm::SmallString<256> planPath(companion);
   llvm::sys::path::append(planPath,
                           wafer::runtime::kProfileCompanionPlanFileName);
@@ -760,19 +773,6 @@ TEST_F(ProfileCompanionTest, AcceptsRenamedTypedProfilerWorkspaceAndResources) {
       wafer::runtime::loadVerifiedProfileCompanion(companion, production);
   ASSERT_TRUE(static_cast<bool>(loaded)) << llvm::toString(loaded.takeError());
   EXPECT_EQ(loaded->getCaptures().size(), 2u);
-}
-
-TEST_F(ProfileCompanionTest, RejectsProductionReferenceBoundToAnotherPackage) {
-  llvm::SmallString<256> other(root);
-  llvm::sys::path::append(other, "other-package");
-  ASSERT_FALSE(llvm::sys::fs::create_directories(other));
-  ASSERT_NO_FATAL_FAILURE(
-      writePackage(other, /*outputBytes=*/4, /*recordBytes=*/0));
-  auto loaded = wafer::runtime::loadVerifiedProfileCompanion(companion, other);
-  ASSERT_FALSE(static_cast<bool>(loaded));
-  EXPECT_NE(
-      llvm::toString(loaded.takeError()).find("selected ordinary package"),
-      std::string::npos);
 }
 
 } // namespace

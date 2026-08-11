@@ -61,7 +61,7 @@ TEST(BidirectionalTilingTest,
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
-  func.func @generic(%input: tensor<4x6xf32>, %out: tensor<4x6xf32>)
+  func.func @generic(%input: tensor<4x6xf32>, %init: tensor<4x6xf32>)
       -> tensor<4x6xf32> {
     %result = linalg.generic {
         indexing_maps = [
@@ -70,7 +70,7 @@ module {
         ],
         iterator_types = ["parallel", "parallel"]
       } ins(%input : tensor<4x6xf32>)
-        outs(%out : tensor<4x6xf32>) {
+        outs(%init : tensor<4x6xf32>) {
     ^bb0(%value: f32, %old: f32):
       %next = arith.addf %value, %old : f32
       linalg.yield %next : f32
@@ -117,10 +117,10 @@ TEST(BidirectionalTilingTest,
       R"mlir(
 module {
   func.func @matmul(%lhs: tensor<4x8xf32>, %rhs: tensor<8x6xf32>,
-                    %out: tensor<4x6xf32>) -> tensor<4x6xf32> {
+                    %init: tensor<4x6xf32>) -> tensor<4x6xf32> {
     %result = linalg.matmul
         ins(%lhs, %rhs : tensor<4x8xf32>, tensor<8x6xf32>)
-        outs(%out : tensor<4x6xf32>) -> tensor<4x6xf32>
+        outs(%init : tensor<4x6xf32>) -> tensor<4x6xf32>
     return %result : tensor<4x6xf32>
   }
 }
@@ -161,7 +161,7 @@ TEST(BidirectionalTilingTest,
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
-  func.func @reduce(%input: tensor<4x8xf32>, %out: tensor<4xf32>)
+  func.func @reduce(%input: tensor<4x8xf32>, %init: tensor<4xf32>)
       -> tensor<4xf32> {
     %result = linalg.generic {
         indexing_maps = [
@@ -170,9 +170,9 @@ module {
         ],
         iterator_types = ["parallel", "reduction"]
       } ins(%input : tensor<4x8xf32>)
-        outs(%out : tensor<4xf32>) {
+        outs(%init : tensor<4xf32>) {
     ^bb0(%value: f32, %acc: f32):
-      %sum = arith.addf %value, %acc : f32
+      %sum = arith.addf %value, %acc fastmath<reassoc> : f32
       linalg.yield %sum : f32
     } -> tensor<4xf32>
     return %result : tensor<4xf32>
@@ -219,12 +219,12 @@ TEST(BidirectionalTilingTest,
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
-  func.func @matmul(%lhs: tensor<4x8xf32>, %rhs: tensor<8x6xf32>,
-                    %out: tensor<4x6xf32>) -> tensor<4x6xf32> {
+  func.func @matmul(%lhs: tensor<4x8xi32>, %rhs: tensor<8x6xi32>,
+                    %init: tensor<4x6xi32>) -> tensor<4x6xi32> {
     %result = linalg.matmul
-        ins(%lhs, %rhs : tensor<4x8xf32>, tensor<8x6xf32>)
-        outs(%out : tensor<4x6xf32>) -> tensor<4x6xf32>
-    return %result : tensor<4x6xf32>
+        ins(%lhs, %rhs : tensor<4x8xi32>, tensor<8x6xi32>)
+        outs(%init : tensor<4x6xi32>) -> tensor<4x6xi32>
+    return %result : tensor<4x6xi32>
   }
 }
 )mlir",
@@ -267,7 +267,7 @@ TEST(BidirectionalTilingTest,
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
-  func.func @reduce(%input: tensor<4x8xi32>, %out: tensor<4xi32>)
+  func.func @reduce(%input: tensor<4x8xi32>, %init: tensor<4xi32>)
       -> tensor<4xi32> {
     %result = linalg.generic {
         indexing_maps = [
@@ -276,7 +276,7 @@ module {
         ],
         iterator_types = ["parallel", "reduction"]
       } ins(%input : tensor<4x8xi32>)
-        outs(%out : tensor<4xi32>) {
+        outs(%init : tensor<4xi32>) {
     ^bb0(%value: i32, %acc: i32):
       %maximum = arith.maxui %value, %acc : i32
       linalg.yield %maximum : i32

@@ -13,7 +13,7 @@ namespace wafer::xla_spmd_helper {
 void printUsage() {
   std::cerr << "wafer_xla_spmd_partitioner "
                "--input-program-dir <dir> --output-program-dir <dir> "
-               "--entry-function forward --logical-rank-count <n>\n";
+               "--entry-function forward --num-partitions <n>\n";
 }
 
 absl::StatusOr<Options> parseOptions(int argc, char **argv) {
@@ -36,13 +36,13 @@ absl::StatusOr<Options> parseOptions(int argc, char **argv) {
     } else if (arg == "--entry-function") {
       TF_ASSIGN_OR_RETURN(char *value, requireValue(arg));
       options.entryFunction = value;
-    } else if (arg == "--logical-rank-count") {
+    } else if (arg == "--num-partitions") {
       TF_ASSIGN_OR_RETURN(char *value, requireValue(arg));
       try {
-        options.logicalRankCount = std::stoll(value);
+        options.numPartitions = std::stoll(value);
       } catch (...) {
         return absl::InvalidArgumentError(
-            "--logical-rank-count must be an integer");
+            "--num-partitions must be an integer");
       }
     } else if (arg == "--help") {
       printUsage();
@@ -61,8 +61,8 @@ absl::StatusOr<Options> parseOptions(int argc, char **argv) {
   if (options.entryFunction != "forward")
     return absl::InvalidArgumentError(
         "--entry-function must be the canonical entry 'forward'");
-  if (options.logicalRankCount <= 0)
-    return absl::InvalidArgumentError("--logical-rank-count must be positive");
+  if (options.numPartitions <= 0)
+    return absl::InvalidArgumentError("--num-partitions must be positive");
   return options;
 }
 

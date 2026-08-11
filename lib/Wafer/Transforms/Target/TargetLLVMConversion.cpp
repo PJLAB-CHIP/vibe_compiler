@@ -3,6 +3,7 @@
 #include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/IR/Target/PhysicalTopology.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
@@ -100,43 +101,32 @@ declareCallees(mlir::ModuleOp moduleOp,
 }
 
 static mlir::FailureOr<int64_t>
-resolveDirectDTEContractRankCount(mlir::ModuleOp moduleOp) {
-  ExecutionMeshOp mesh;
-  bool duplicateMesh = false;
-  moduleOp.walk([&](ExecutionMeshOp candidate) {
-    if (!mesh)
-      mesh = candidate;
-    else
-      duplicateMesh = true;
-  });
-  if (!mesh || duplicateMesh)
+resolveDirectDTEContractParticipantCount(mlir::ModuleOp moduleOp,
+                                         PhysicalCardId physicalCardId) {
+  std::string reason;
+  mlir::FailureOr<PhysicalTopology> topology =
+      PhysicalTopology::create(moduleOp, &reason);
+  if (mlir::failed(topology))
     return moduleOp.emitError()
            << "unsupported_target_transport: Direct DTE status contract "
-              "requires exactly one execution mesh";
-
-  llvm::ArrayRef<int64_t> shape = mesh.getShapeAttr().asArrayRef();
-  int64_t rankCount = 1;
-  for (int64_t dimension : shape) {
-    if (dimension <= 0 ||
-        rankCount > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) /
-                        dimension)
-      return mesh.emitError()
-             << "target_abi_narrowing: Direct DTE rank count must fit a "
-                "positive uint32_t";
-    rankCount *= dimension;
-  }
-  if (shape.empty())
-    return mesh.emitError()
-           << "unsupported_target_transport: Direct DTE execution mesh "
-              "shape must not be empty";
-  return rankCount;
+              "requires a valid physical topology: "
+           << reason;
+  std::optional<llvm::ArrayRef<PhysicalTileId>> available =
+      topology->getAvailableTileIds(physicalCardId);
+  if (!available || available->empty() ||
+      available->size() > std::numeric_limits<uint32_t>::max())
+    return moduleOp.emitError()
+           << "target_abi_narrowing: Direct DTE participant count must fit "
+              "a positive uint32_t";
+  return static_cast<int64_t>(available->size());
 }
 } // namespace
 
 mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
                                        bool transportPreparedBeforeEntry,
                                        int64_t defaultDDRArenaArgumentIndex,
-                                       int64_t logicalRank,
+                                       int64_t physicalCardId,
+                                       int64_t physicalTileId,
                                        int64_t transportStatusArgumentIndex,
                                        int64_t profileRecordArgumentIndex) {
   if (mlir::failed(flattenTileRegions(moduleOp)))
@@ -153,26 +143,29 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
            << "unsupported_target_transport: Direct DTE requires a "
               "launch-observable status argument";
 
-  std::optional<int64_t> dteRankCount;
+  std::optional<int64_t> dteParticipantCount;
   if (hasDirectDTEContract) {
     mlir::FailureOr<int64_t> resolved =
-        resolveDirectDTEContractRankCount(moduleOp);
+        resolveDirectDTEContractParticipantCount(
+            moduleOp, PhysicalCardId(physicalCardId));
     if (mlir::failed(resolved))
       return mlir::failure();
-    dteRankCount = *resolved;
+    dteParticipantCount = *resolved;
   }
 
   std::optional<DirectDTEEndpointDomain> dteDomain;
   if (hasDirectDTEOps) {
     mlir::FailureOr<DirectDTEEndpointDomain> resolved =
-        resolveDirectDTEEndpointDomain(moduleOp, logicalRank);
+        resolveDirectDTEEndpointDomain(moduleOp, PhysicalCardId(physicalCardId),
+                                       PhysicalTileId(physicalTileId));
     if (mlir::failed(resolved))
       return mlir::failure();
     dteDomain = std::move(*resolved);
-    if (static_cast<int64_t>(dteDomain->rankToTile.size()) != *dteRankCount)
+    if (static_cast<int64_t>(dteDomain->availableTileIds.size()) !=
+        *dteParticipantCount)
       return moduleOp.emitError()
              << "unsupported_target_transport: Direct DTE endpoint domain "
-                "does not match the execution mesh rank count";
+                "does not match the physical Tile participant count";
   }
 
   DirectCallGraph callGraph;
@@ -266,7 +259,8 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
           : TargetCallBuiltin::DirectDTEBegin;
   if (hasDirectDTEContract &&
       mlir::failed(injectDirectDTEStatusLifecycle(
-          moduleOp, dteEntrySymbol, transportStatusArgumentIndex, *dteRankCount,
+          moduleOp, dteEntrySymbol, transportStatusArgumentIndex,
+          *dteParticipantCount,
           dteBeginBuiltin, usedCallees)))
     return mlir::failure();
 

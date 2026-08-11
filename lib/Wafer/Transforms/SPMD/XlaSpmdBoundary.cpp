@@ -30,7 +30,7 @@ makeDistributedBoundaryBinding(int64_t index, std::string dtype,
                                const xla::Shape &globalShape,
                                const xla::Shape &localShape,
                                const xla::HloSharding &sharding,
-                               int64_t logicalRankCount) {
+                               int64_t numPartitions) {
   if (!globalShape.IsArray() || !localShape.IsArray())
     return absl::InvalidArgumentError(
         "distributed function boundary must contain array shapes");
@@ -47,7 +47,7 @@ makeDistributedBoundaryBinding(int64_t index, std::string dtype,
   if (sharding.IsTileMaximal() && !sharding.IsReplicated())
     return absl::InvalidArgumentError(
         "single-device sharding at the function boundary is unsupported");
-  TF_RETURN_IF_ERROR(sharding.Validate(globalShape, logicalRankCount));
+  TF_RETURN_IF_ERROR(sharding.Validate(globalShape, numPartitions));
 
   DistributedBoundaryBinding binding;
   binding.index = index;
@@ -61,45 +61,47 @@ makeDistributedBoundaryBinding(int64_t index, std::string dtype,
     if (!sharding.IsTiled())
       return absl::InvalidArgumentError(
           "function boundary sharding is neither replicated nor tiled");
-    if (sharding.TotalNumTiles() != logicalRankCount)
+    if (sharding.TotalNumTiles() != numPartitions)
       return absl::InvalidArgumentError(absl::StrCat(
-          "partitioned function boundary does not cover every logical rank: ",
+          "partitioned function boundary does not cover every partition: ",
           sharding.ToString()));
-    for (int64_t rank = 0; rank < logicalRankCount; ++rank) {
-      if (!sharding.UsesDevice(rank))
+    for (int64_t partitionId = 0; partitionId < numPartitions;
+         ++partitionId) {
+      if (!sharding.UsesDevice(partitionId))
         return absl::InvalidArgumentError(absl::StrCat(
-            "partitioned function boundary rank domain is not exact: ",
+            "partitioned function boundary partition domain is not exact: ",
             sharding.ToString()));
     }
   }
 
   std::vector<int64_t> maxSizes(globalShape.rank(), 0);
-  binding.ranks.reserve(logicalRankCount);
-  for (int64_t rank = 0; rank < logicalRankCount; ++rank) {
-    DistributedRank rankBinding;
-    rankBinding.rank = rank;
-    rankBinding.replicaId = replicated ? rank : 0;
-    rankBinding.strides = ones(globalShape.rank());
+  binding.partitions.reserve(numPartitions);
+  for (int64_t partitionId = 0; partitionId < numPartitions; ++partitionId) {
+    DistributedPartition partition;
+    partition.partitionId = partitionId;
+    partition.replicaId = replicated ? partitionId : 0;
+    partition.strides = ones(globalShape.rank());
     if (replicated) {
-      rankBinding.offsets = zeros(globalShape.rank());
-      rankBinding.sizes = binding.globalShape;
+      partition.offsets = zeros(globalShape.rank());
+      partition.sizes = binding.globalShape;
     } else {
-      rankBinding.offsets = sharding.TileOffsetForDevice(globalShape, rank);
+      partition.offsets =
+          sharding.TileOffsetForDevice(globalShape, partitionId);
       std::vector<int64_t> limits =
-          sharding.TileLimitForDevice(globalShape, rank);
-      for (auto [offset, limit] : llvm::zip(rankBinding.offsets, limits))
-        rankBinding.sizes.push_back(limit - offset);
+          sharding.TileLimitForDevice(globalShape, partitionId);
+      for (auto [offset, limit] : llvm::zip(partition.offsets, limits))
+        partition.sizes.push_back(limit - offset);
     }
-    if (rankBinding.sizes.size() != binding.localShape.size())
+    if (partition.sizes.size() != binding.localShape.size())
       return absl::InvalidArgumentError(
           "distributed slice rank differs from local tensor rank");
-    for (auto [dim, size] : llvm::enumerate(rankBinding.sizes)) {
+    for (auto [dim, size] : llvm::enumerate(partition.sizes)) {
       if (size < 0 || size > binding.localShape[dim])
         return absl::InvalidArgumentError(
             "distributed slice does not fit the local tensor shape");
       maxSizes[dim] = std::max(maxSizes[dim], size);
     }
-    binding.ranks.push_back(std::move(rankBinding));
+    binding.partitions.push_back(std::move(partition));
   }
 
   if (replicated) {
@@ -150,7 +152,7 @@ resultSharding(const xla::HloInstruction &root, size_t resultCount,
 
 absl::StatusOr<DistributedBoundary> buildDistributedBoundary(
     const ProgramMetadata &meta, const xla::HloModule &distributedModule,
-    const xla::HloModule &partitionedModule, int64_t logicalRankCount) {
+    const xla::HloModule &partitionedModule, int64_t numPartitions) {
   const xla::HloComputation *distributedEntry =
       distributedModule.entry_computation();
   const xla::HloComputation *partitionedEntry =
@@ -166,7 +168,7 @@ absl::StatusOr<DistributedBoundary> buildDistributedBoundary(
         "HLO parameters do not match program directory metadata");
 
   DistributedBoundary boundary;
-  boundary.logicalRankCount = logicalRankCount;
+  boundary.numPartitions = numPartitions;
   for (size_t index = 0; index < meta.inputLocations.size(); ++index) {
     if (meta.inputLocations[index].type != "input_arg")
       continue;
@@ -185,7 +187,7 @@ absl::StatusOr<DistributedBoundary> buildDistributedBoundary(
                             static_cast<int64_t>(index),
                             meta.inputSignatures[index].dtype,
                             globalParameter->shape(), localParameter->shape(),
-                            sharding, logicalRankCount));
+                            sharding, numPartitions));
     boundary.inputs.push_back(std::move(binding));
   }
 
@@ -207,7 +209,7 @@ absl::StatusOr<DistributedBoundary> buildDistributedBoundary(
                         makeDistributedBoundaryBinding(
                             static_cast<int64_t>(index),
                             meta.outputSignatures[index].dtype, *globalShape,
-                            *localShape, sharding, logicalRankCount));
+                            *localShape, sharding, numPartitions));
     boundary.outputs.push_back(std::move(binding));
   }
   return boundary;

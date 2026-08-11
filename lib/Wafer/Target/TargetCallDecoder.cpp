@@ -154,9 +154,10 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
   }
   case TargetCallBuiltin::DirectDTEBegin:
   case TargetCallBuiltin::DirectDTEBeginAfterPrepare:
-    if (argument32(arguments, 1) != context.rankCount)
+    if (argument32(arguments, 1) != context.physicalTileCount)
       return llvm::createStringError(
-          "Direct-DTE begin rank count does not match the invocation");
+          "Direct-DTE begin participant count does not match the physical "
+          "Tile invocation domain");
     return TargetTransactionPayload{TargetDirectDTEBeginTransaction{
         arguments[0], argument32(arguments, 1)}};
   case TargetCallBuiltin::DirectDTESendPrepare:

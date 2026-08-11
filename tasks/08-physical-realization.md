@@ -1,917 +1,205 @@
-# Wafer Physical Realization：MLIR-native Encoding、Relation 与 Transfer
+# Wafer Physical Realization：Relation、Encoding 与 Transfer
 
-状态：本文定义 physical realization 的终态边界；Q32.R已落地current encoding interface、relation/transfer
-proof和resident纵向，Q32.V已闭合mapped target纵向，Q46已闭合relation-guided layout movement机制；Q49把这些
-mechanism迁入complete-rank、pre-Instr共同candidate owner。
-实现状态只看`tasks/progress.md`。
+状态：2026-08-09按whole-card CardProgram / physical-Tile MPMD主线重写。本文拥有current-IR-derived
+`IndexRelation`、physical encoding和transfer realizability合同；不拥有spatial/temporal/fusion winner。
+Q49正在收口同路径baseline；现有relation、encoding、descriptor与per-Tile lowering由Q50保全迁移，dependent mapping
+remap、partial-overlap redistribution以及NoC与residency的联合搜索由Q51闭合。实现状态只看`tasks/progress.md`。
 
-Q49复用本文件现有relation、encoding、realizability和invalid-lane owner，在完整rank selected Tile clone上实现跨op
-relation传播与联合physical-version选择；它不改变这些接口的事实边界，也不增加target identity参数。
-
-本文不建立独立 layout planner，也不建立 encoding/route 查询层。implementation、tile、physical
-version、residency、spill 和执行顺序的联合选择归 `tasks/06-physical-dataflow-synthesis.md`；accepted
-physical dataflow IR 的合同归 `tasks/07-tile-region.md`。本文只回答：
-
-1. 如何从当前 IR 派生 logical index relation；
-2. physical encoding 的行为由哪个 IR 对象解释和验证；
-3. 如何判断 source、destination、relation 和 encoding 之间的 view 或 transfer 是否可实现；
-4. 如何在 isolated candidate clone 中直接物化 typed view、movement、temporary 和 event IR；
-5. instruction lowering 如何从 accepted IR 重建 exact DMA/GS descriptor proof。
-
-硬件字段和限制以current target helpers、typed instruction contract、
-`docs/wafer-hardware-instruction-set-and-programming-model.md` 和
-`docs/wafer-register-level-instruction-spec.md` 为事实输入。planner 的历史选择、诊断摘要和成本估算不是
-physical realization 的语义输入。
-
-## 1. 终态原则
-
-physical realization 遵守以下 MLIR-native 边界：
-
-- **当前 IR 是唯一事实源**。shape、dtype、indexing map、view、memory space、physical encoding、
-  allocation root、movement、effect 和 completion 都从当前 clone 的 op/type/attr/SSA 得到。
-- **`IndexRelation` 是 analysis value**。它从当前 IR 派生、可失效、可重算，不写成 attr，不跨 rewrite
-  保存，也不序列化成另一套 relation IR。
-- **physical encoding 行为属于 attr/type interface**。footprint、logical-to-physical mapping、
-  valid/padding domain、alignment 和 physical segments 由承载 encoding 的 typed attr/type 解释。
-- **transfer 是跨对象分析**。它同时读取 source、destination、`IndexRelation`、两端 encoding、
-  alias/effect和current target limits，因此是普通analysis/helper，不是某个op的隐藏状态。
-- **候选就是 isolated clone**。选择一种实现方式时，直接在 clone 中创建 typed view、movement、
-  temporary、fill/mask 和 event；成功后只保留 IR，失败则丢弃 clone。
-- **lowering 不重新规划**。下游可以从 typed IR 重证 descriptor cover，但不能改 route、换 encoding、
-  插入隐式 fallback 或读取 planner side table。
-
-扩展点只保留 MLIR interface、普通 analysis/helper 和 typed rewrite；不增加平行查询、身份、序列化或
-dispatch 协议。为了队列排序而临时计算的 bytes、command count 和 resource estimate 也不能成为 legality
-的第二事实源。
-
-## 2. Pipeline Contract
-
-### 2.1 Relation 与 Physical Realizability Analysis
+## 1. Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  verifier-legal 的当前 structured tensor/tile-dataflow clone；其 op、indexing maps、view chain、SSA
-  def-use、shape/dtype、typed memory space/encoding、effect，以及compiler固定的current target limits。
+  card-local structured tensor DAG，或whole-DAG scheduler准备物化的isolated whole-card candidate；current op、
+  indexing maps、Tiling/DPS interfaces、SSA/view/control flow、dtype/shape/effect与target topology均可验证，
+  selected physical Tile work domain尚可处于query-local proposal或actual CardProgram clone中。
 - Current stage responsibility:
-  从当前 IR 派生 IndexRelation、shape bounds、alias/root、valid/padding domain 和 physical map；
-  证明 metadata view、当前GS/staged movement，以及Q32.V已启用mapped DMA/WDMA参数是否可实现；对已启用的direct
-  movement 构造 exact descriptor cover proof；返回局部 proof 或带 location 的失败。
+  从当前IR派生logical IndexRelation、alias/root和shape bounds；由memref encoding解释footprint、alignment、
+  valid/padding domain与logical-to-physical bit mapping；证明metadata view或selected DDR/SPM/NoC movement是否exact
+  可实现，并在actual clone中物化typed view、allocation、movement、temporary、staging、token与wait。
 - Output artifact / IR:
-  transformation-local、只读且随 IR rewrite 失效的 analysis values。它们不进入 IR、package、cache
-  artifact 或跨候选 side table。
+  query-local且随rewrite失效的analysis proof，或自包含的selected wafer.card.program / wafer.tile.program body；
+  accepted事实只存在于typed memref、SSA/view、wafer.tile.region、movement/event和必要typed attrs中。
 - Downstream consumer:
-  同一次 isolated-clone transformation 立即消费 proof 并创建 typed IR；candidate exact gates 和
-  instruction lowering随后仅从当前 IR 重建所需 proof。
+  per-physical-Tile Tile-to-Instr conversion、fresh completion reconstruction、fixed-capacity SPM/DDR planning、
+  whole-card communication/resource admission、target conversion与package publication。
 - User-level driver / named pipeline:
-  production source-to-bundle named pipeline 内的 rank-local physical-dataflow synthesis；wafer-opt局部IR入口只用于
-  replay/verifier测试并调用同一transformation library，不冻结Transform Dialect控制面。
+  wafer-compile production pipeline；wafer-opt入口只用于parser/verifier/conversion replay，不能组成第二条production路径。
 - Explicit non-goals:
-  不选择全局 candidate，不保存 layout/route plan，不改变 compute implementation，不分配最终 SPM/DDR
-  offset，不根据成本放宽 legality，不从 value/op 名字恢复语义。
+  不选择全局placement、tile size、fusion/residency或route；不保存relation/descriptor/search side table；
+  不分配runtime handle或launch slot；不从op/value/symbol/workload名字恢复语义；lowering失败不隐式换路线。
 - Completion gate:
-  Q32完成要求AffineMap/Presburger/ValueBounds relation、view legality、Cx/NCx full/tail physical-map、当前GS/staged
-  movement、invalid-lane和rewrite后analysis失效重建tests通过；one/multi-descriptor mapped DMA/WDMA proof已由
-  Q32.V typed target vertical启用，并在Q32.M/S由同一candidate owner消费。
+  每个accepted view/movement只凭current IR可重建exact logical/physical cover、range、effect、lifetime和completion；
+  cross-Tile movement显式指向physical Tile并经whole-card matching；rewrite后旧analysis不再使用，late exact gate
+  不需要search proposal即可验证和lower。
 ```
 
-### 2.2 Isolated Candidate Physical Materialization
+## 2. 终态原则与所有权
 
-```text
-Pipeline position:
-- Upstream artifact / IR:
-  已形成完整rank selected tile-dataflow的isolated clone；current static rank entry含一个或多个non-nested
-  `wafer.tile.region` SPM residency domains，以及candidate generator当前准备尝试的region/implementation/tile/encoding/route transition。
-  strategy 只是调用哪组 rewrite 的栈上控制信息；任何已应用决定都必须立即出现在 clone IR 中。
-- Current stage responsibility:
-  使用 PatternRewriter、IRMapping 和需要时的 DialectConversion，在 clone 中创建 typed allocation/view、
-  boundary load/store、local movement、temporary、fill/mask、spill/reload 与 async event/completion；
-  每次 rewrite 后丢弃旧 relation、alias、range、descriptor 和 cost analysis，再从新 IR 重建。
-- Output artifact / IR:
-  自包含的 candidate clone。route 由 IR 形态和必要 typed fields 唯一表达；clone 外不保留与它并行的
-  selected physical-version、descriptor list 或重复 schedule。
-- Downstream consumer:
-  complete-rank Tile→Instr DialectConversion、worker/fixed-slot/ready-order sibling、compiler-derived completion fresh
-  reconstruction、从 finalized actual IR 的 SPM root/lifetime/control-flow coexistence 派生的 allocation-domain
-  fixed-capacity SPM planning、whole-variant DDR planning、post-memory transport/resource binding、
-  ABI/artifact preflight和target conversion。
-- User-level driver / named pipeline:
-  与 relation/realizability analysis 相同，由 production named pipeline 驱动。
-- Explicit non-goals:
-  不在 lowering 中尝试另一路径，不手工维护 Value-to-buffer 语义表，不把 descriptor/cost/failure 写入
-  attr，不让 rejected clone 修改 source IR 或其它 candidate。
-- Completion gate:
-  每种 accepted IR 形态都能只依赖自身通过 verifier、physical range、descriptor cover、invalid-lane、
-  lifetime、event 和 instruction legality；rejected clone 无残留；accepted clone 不需要 planner 对象
-  才能继续 lowering。
-```
+- 当前IR是shape、dtype、indexing、view、memory space、encoding、allocation root、movement和effect的唯一事实源。
+- `IndexRelation`是可失效、可重算的analysis value，不是attr、独立dialect、cache key或package字段。
+- encoding行为属于承载它的attr/type interface；consumer不能各自复制block/tail/padding公式。
+- transfer realizability同时读取source、destination、relation、encoding、alias/effect和current target limits，
+  因而是跨对象analysis/helper，不是某个op上的隐藏plan。
+- proposal只有物化成isolated actual IR后才可进入exact gate。未选路线、score、失败历史和descriptor列表不持久化。
+- lowering可以重证legality，不能重新规划、静默换encoding、插fallback或读取search state。
 
-### 2.3 Relation-backed Redundant Physical Transfer Normalization
-
-```text
-Pipeline position:
-- Upstream artifact / IR:
-  已完成 instruction legalization 以及 candidate-specific implementation、encoding、route 和 residency
-  物化的 complete-rank unplaced actual clone。source/destination root、view chain、typed encoding、
-  same-space movement descriptor、effect 和 completion 均在当前 IR 中显式；SPM/DDR offset 与 transport
-  binding 尚未提交。spill、resident 以及不同 operator family 使用同一入口。
-- Current stage responsibility:
-  对zero-offset、完整、连续、unit-descriptor的same-space GatherScatter，从当前
-  source/destination root、view、type、encoding、descriptor
-  和 SSA use-def 重建 exact IndexRelation，并用 TransferRealizability 证明完整 relation coverage、
-  functional/injective 条件和逐 logical point physical segment 等价；随后另行证明 destination 是由该
-  movement 首次定义的 compiler-owned storage，source同样来自compiler-owned allocation且到transfer
-  operand的view provenance不改变base address；外部/未知source、非零或动态view offset、任一侧显式
-  deallocation均fail closed。root/view alias、effect、lifetime、alignment、
-  valid/padding、snapshot 语义和Direct DTE exact-wait区间允许 storage coalescing。root path之外，
-  当前还可处理direct、无条件、static-positive `scf.for` body，但必须额外证明source/destination均为
-  loop-invariant compiler-owned roots、全部alias access/forwarding位于同一loop path、destination只在copy后
-  只读、source snapshot跨iteration不被破坏、replacement支配全部被替换use，且任一Direct-DTE issue在同一
-  path由exact wait完成。dynamic/zero/nested/conditional、iter-arg/yield、loop-local root、跨backedge
-  outstanding event或loop后destination use均fail closed。证明成功时直接把
-  destination consumers 改写到 source root 或标准 metadata view，删除 movement 与 dead allocation；
-  标准 view 保留 source storage 的 memory-space/encoding 类型，只有 replacement consumer 的完整 IR
-  verifier 仍合法时才提交；若被合并 destination 要求更强 alignment，则提升 compiler-owned source
-  allocation 的显式 alignment。每次 applied rewrite 后丢弃旧 relation/alias/effect/lifetime 事实并从
-  修改后的 IR 重建。rewrite后必须另行运行whole-rank completion normalization/verifier，重新证明NCC
-  participant frontier与cross-worker closure；局部rewrite不旁路该全程序门禁。production只在独立优化
-  sibling上提交该rewrite，未改写的reserved spill baseline持续通过相同late gates并提供target回退。
-- Output artifact / IR:
-  同层级的 complete-rank unplaced instruction actual clone。被消除的 movement 由 same-root SSA 或
-  verifier-legal 标准 view 表达，仍有语义作用的 movement 保持显式；不新增 relation attr、proof
-  sidecar、route id 或 shadow allocation plan。
-- Downstream consumer:
-  typed worker/fixed-slot/ready-order sibling derivation与fresh whole-rank completion reconstruction/verifier；canonical/unplaced
-  current Instr从SSA/effects/ranges原子派生siblings，删除全部compiler-derived`wafer.instr.ncc_join`并从current facts
-  fresh重建fixed-frontier latest-necessary completion；随后从完整finalized rank-entry的root、lifetime与可能并发关系
-  派生一个或多个fixed SPM allocation problems，验证all-and-only root coverage后进入whole-variant DDR、
-  post-memory Direct-DTE binding/all-rank resource、fresh final-IR cost和target lowering。
-- User-level driver / named pipeline:
-  现有 wafer-compile source-to-bundle production pipeline；局部测试调用同一 transformation library，
-  不增加用户开关、operator-specific mode 或手工 pass 协议。
-- Explicit non-goals:
-  不按 operator 名、通信协议、rank 数、shape、size-1 轴、地址、case 或 fixture 匹配；不把相同 byte
-  count 当作等价证明；不消除真实 permutation/broadcast/layout conversion、partial materialization、
-  padding 定义变化、snapshot/publication、跨 completion-domain transfer、arithmetic/reduction work，
-  或存在不安全独立观察/写入的 copy。SPM allocator 不反向决定 alias。
-- Completion gate:
-  多个 operator 来源、same-shape、相同非紧凑physical map以及无 size-1 轴的 rank/shape-changing
-  canonical relation 正例真实删除 movement 并形成标准 view；partial/general descriptor、
-  physical-map不等价的strided/permutation/broadcast、encoding/tail/padding 不等价、source 后续
-  overwrite、destination snapshot 分叉、external/unknown source、显式deallocation、非零view offset、
-  escape/unknown alias、未完成 DTE 访问和 unsupported control flow 负例均保留 movement。optimized
-  spill 与 resident actual clone 都执行本规范化，reserved spill保持原始copy；rewrite 后 completion、
-  lifetime、SPM、descriptor、cost 与 target gates 全部 fresh 通过。
-```
-
-## 3. 对象所有权
-
-| 事实或行为 | 所属对象 | 生命周期 |
+| 事实 | owner | 生命周期 |
 | --- | --- | --- |
-| structured op 的迭代和访问语义 | 当前 op、Linalg/indexing-map/Tiling 等 interface | IR 生命周期 |
-| logical index relation | `IndexRelation` analysis | 当前 IR epoch |
-| symbolic shape/range | ValueBounds、Affine/Presburger analysis | 当前 IR epoch |
-| physical layout 行为 | physical encoding attr/type interface | IR 生命周期 |
-| target field width、alignment、engine limit | current target helpers / typed instruction contract | 本次编译 |
-| view、DMA、GS 可实现性 | 跨 source/destination/relation/encoding 的 helper | 单次证明 |
-| descriptor cover | 从当前 typed IR 重建的 proof value | 单次证明 |
-| physical version | 搜索时为当前 clone 的 SSA/root/view 状态；accepted 后仅为正式 SSA IR | 当前 clone |
-| route choice | typed view/movement/temp/event IR | 当前 clone |
-| cost/command/bytes 摘要 | 从当前 clone 派生的排序 analysis | 当前 IR epoch |
+| iterator/indexing与tensor访问语义 | current structured op及标准interfaces | IR epoch |
+| logical index relation与shape bounds | `IndexRelation`、Affine/Presburger/ValueBounds | current IR epoch |
+| physical footprint、valid/padding和bit mapping | Wafer physical encoding attr/type interface | typed IR |
+| metadata view / transfer feasibility | source+destination+relation+encoding helper | 单次proof |
+| selected route、temporary与event | actual typed view/movement/SSA IR | candidate clone |
+| SPM/DDR accepted offset | memory planning attr及fresh validator | accepted Instr IR |
+| cross-Tile sender/receiver和message | physical Tile communication ops | selected whole-card IR |
 
-compute op 可以通过 Wafer-owned op interface 或挂在既有 structured op 上的 external model 暴露可用
-implementation 和 operand access contract；target-wide 行为可以由 target model/dialect interface 提供。本文不把这些
-事实复制进 detached semantic descriptor。transfer 又不属于任一端点 op，因此不把它硬塞进 op interface。
+## 3. `IndexRelation`
 
-## 4. `IndexRelation` Analysis
+`IndexRelation`描述一个iteration/domain坐标到operand/result logical coordinates的piecewise relation。它至少支持：
 
-### 4.1 定义
+- identity、composition、slice、permutation、reshape、broadcast和concat；
+- image/preimage及domain/range cover；
+- functional、injective、bijective和broadcast分类；
+- 两个relation在给定domain上的等价或蕴含；
+- 与static/dynamic shape bounds和valid domain求交。
 
-对一条 consumer edge，统一使用：
+无法证明时返回unsupported/unknown analysis结果并拒绝相应transition，不能按op名、shape或buffer名猜测。
+这里的unknown只表示“proof未建立”，不是performance cost值；Q51 cost comparison不传播performance Unknown。
 
-```text
-R: D_destination -> D_source
-```
-
-`R(d)` 表示产生 destination logical point `d` 时读取的 source logical point。broadcast 可以让多个
-destination points 映射到同一 source point；transfer 所需的是 destination 域上有定义的函数，不要求 source
-方向双射。
-
-analysis 按以下优先级构造 relation：
-
-1. 直接复用 structured op 的 `AffineMap`/indexing-map interface；
-2. compose `tensor.extract_slice`、`memref.subview`、transpose、expand/collapse shape、broadcast 等标准
-   view/shape op 的语义；
-3. 用 MLIR Presburger `IntegerRelation`/`PresburgerRelation` 表示带约束或 piecewise 的整数关系；
-4. 用 ValueBounds 推导 dynamic offset、size、stride 和 index range；
-5. 现有MLIR表示无法精确承载时，该rewrite返回unsupported并保留显式movement/baseline；若缺的是source
-   IR语义，先以有真实consumer的typed op/type/attr扩IR，再从该IR派生标准Affine/Presburger relation。
-
-Q32不增加私有relation primitive、node graph或expression language。`IndexRelation`只是对当前epoch中
-MLIR Affine/Presburger/ValueBounds结果和source/destination domain的analysis adapter，不拥有parser/printer、
-stable ID、digest、byte serialization或独立verifier。
-
-### 4.2 支持的分析操作
-
-`IndexRelation` 至少支持：
-
-- composition 和 identity；
-- destination domain 的 image/preimage；
-- functional、injective、bijective 和 broadcast 分类；
-- 两个 relation 在指定 domain 上的等价/蕴含判断；
-- 与 shape bounds、valid domain 和 physical segment 的交；
-- 无法证明时返回 unknown，而不是根据 op 名、buffer 名或常见 shape 猜测。
-
-relation 本身只描述 logical indexes，不包含 physical offset、route、descriptor、engine 或 cost。physical
-offset 必须通过两端 encoding interface 另行计算。
-
-跨rank NoC-resident candidate还需要把rank-local `IndexRelation`与frontend verifier给出的typed global/local
-rank slice组合，证明两个rank的boundary或intermediate view覆盖同一global logical region。组合结果仍是当前
-all-rank transformation epoch内的analysis value，不写入rank-local op；rewrite成功后只保留actual subview、
-peer movement和required boundary movement，whole-variant acceptance从这些IR与原program boundary重证coverage。
-
-### 4.3 失效规则
-
-任意可能改变 op、indexing map、shape、view chain、SSA use-def、encoding、allocation root 或 effect 的
-rewrite，都会使相关 `IndexRelation`、ValueBounds、alias、range 和 descriptor proof 失效。
-
-一个 candidate clone 应使用明确的 analysis epoch：
-
-1. 从当前 clone 构造只读 analysis snapshot；
-2. rewrite 只能读取该 snapshot；
-3. 一旦 rewrite applied，立即销毁 snapshot 和其中的 `Operation*`/`Value*` binding；
-4. 后续证明从 rewrite 后的 clone 重新构造。
-
-MLIR pass analysis 只能在没有修改 IR 时标记 preserved。一个大 transformation 内部的本地 cache 不会由
-AnalysisManager 自动清理，因此首版宁可重算，也不能复用可能过期的 relation。
-
-### 4.4 Relation-Guided Coordinate Propagation
-
-跨op view消除不是移动effectful operation，而是在current pure SSA region内为等价坐标系构造actual op candidate：
-
-1. 从每条view edge向producer和consumer双向传播canonical `IndexRelation`，使用stable worklist直到固定点；每个
-   origin/current pair和edge最多接受`IndexRelationLimits.maxDisjuncts`个alternatives，总处理量不超过checked
-   `maxDisjuncts * (values + uses)`；dedup只使用exact `isEquivalentTo`，不使用op名或文本hash；
-2. 对structured pointwise op组合operand/result indexing maps；对GEMM只接受能表达为现有orientation与
-   batch/M/N/K语义的关系；reduce必须同时闭合dimension/result mapping、init、combiner、valid-lane/neutral、
-   effect/completion和既有numeric contract，floating只是不要求保持leaf order；
-3. fanin要求各operand relation能同时满足同一个concrete op candidate；fanout允许各分支选择primary或一个共享
-   secondary physical version；
-4. relation组合为identity时删除相关view，单root非identity但physical access等价时形成metadata view，否则把每个source
-   root的composed relation交给movement realization；concat保持per-input `staticConcatPiece`并证明pieces互斥且full-cover，
-   只能合并为写同一destination的compound movement，不能成为跨root alias；
-5. 在selected region/traversal coupling/separation与tile schedule形成前，exact relation可通过旧structured scope的operand/result、yield和
-   受支持SCF SSA继续组合；旧container boundary本身不停止传播。最终`tile.region`表示SPM residency domain：current static
-   rank entry可有一个或多个non-nested regions，其内允许多个traversal/loop nest、不同tile shape、逐root lifetime和selective
-   spill/streaming；跨region data由显式DDR store/completion/load连接。06联合选择region partition、traversal fusion/separation、
-   tile与physical relation。SPM memref/root/alias不得越过region boundary；只有不携带SPM alias的DDR/scalar/event/control value
-   可按typed合同穿过。traversal或region结构不自动触发completion；root释放与entry terminal由completion owner从final
-   effects/events/ranges分别证明。effect、unknown alias、不可表达的control-flow join、
-   非不变loop-carried relation、checked overflow或任一proof/worklist预算耗尽只停止对应edge/dimension的传播并
-   保留显式movement baseline，不把整个周围图误切为DDR component。
-
-传播状态只活在一次candidate proposal/materialization调用中。rewrite成功后只保留重索引后的typed op、standard view或
-explicit movement IR；不得保存coordinate-frame attr、VirtualTensor、relation graph或跨pass cache。
-
-## 5. Physical Encoding Attr/Type Interface
-
-### 5.0 Composed Physical Access Relation
-
-`IndexRelation`继续只描述logical index之间的关系；layout不得作为枚举分支、padding常量或目标地址公式
-进入logical relation。统一的跨pass查询由当前IR即时派生一条composed physical access relation：
+relation只描述logical coordinates，不包含physical offset、Tile placement、route、descriptor、engine或cost。
+physical address关系必须将它与两端encoding interface组合后求得：
 
 ```text
-iteration --logical IndexRelation--> endpoint logical index
-          --encoding relation------> physical bit span
+iteration -> logical index -> physical bit segment
 ```
+
+任何改变op、indexing map、shape、view chain、SSA use-def、encoding、root或effect的rewrite都使相关relation、
+alias、range和descriptor proof失效。transformation必须在applied rewrite后销毁旧snapshot并从新IR重建。
+
+## 4. Physical Encoding
+
+Wafer memref以`#wafer.memory<space, layout>`携带memory space与encoding family。memref shape和element type仍是
+logical contract；encoding interface从完整memref type派生：
+
+- logical valid domain和physical padding domain；
+- physical footprint与natural alignment；
+- logical index到一个或多个physical bit segments的exact mapping；
+- standard view compatibility与full/tail block behavior。
+
+当前family为Tensor、NTensor、Cx和NCx。Cx/NCx的aligned block、tail和padding不能伪装成普通affine dense stride；
+BOOL/低精度bitpacking也必须以bit segment证明，不能先round成byte再假设等价。physical offset不是encoding字段，
+accepted SPM/DDR offset由memory planning在Instr层写入并验证。
+
+target instruction helper只判断当前dtype、layout、geometry、field width和engine是否可发射，不参与定义encoding几何。
+同一个encoding查询不得接收target identity或candidate score，否则会形成第二事实源。
+
+## 5. View 与 Transfer Realizability
+
+metadata view只有在以下条件全部成立时合法：
+
+1. logical relation在所需domain上exact且满足consumer要求的functional/injective条件；
+2. source与view的composed physical bit offsets逐点相等；
+3. view不越过source allocation range，不扩大defined logical data，也不把padding解释成valid data；
+4. alias、lifetime、alignment和effect保持；
+5. standard view/subset op的type与verifier能表达结果。
+
+否则必须由selected actual candidate物化真实movement。路线以不同IR表达：
+
+- compact direct DDR↔SPM load/store；
+- relation-mapped DMA/WDMA；
+- local GatherScatter或layout materialization；
+- staged movement及显式temporary/fill/mask；
+- physical-Tile peer send/recv及destination staging。
+
+一个movement op的operands、types、view chain和typed fields必须唯一决定direction、logical relation、physical
+span和effect。descriptor可以从current IR重建，不作为attr列表保存。direct route不可实现时只拒绝该candidate；
+另一路线必须从未修改parent产生另一份actual clone。
+
+### Boundary 与 local movement
+
+host-visible input/output的card DDR root保持current compact boundary合同。destination-style load/store直接消费既有
+destination，不创建隐藏storage。local layout change使用显式`wafer.tile.materialize_layout`或其它typed movement；
+只有composed physical mapping完全相同时才可canonicalize为metadata view。
+
+### Physical-Tile peer movement
+
+片内数据交换使用显式physical peer：
 
 ```text
-Pipeline position:
-- Upstream artifact / IR:
-  当前epoch中typed source/destination memref、structured/view/movement op派生的exact logical
-  `IndexRelation`，以及两端`WaferPhysicalEncodingAttrInterface`。
-- Current stage responsibility:
-  将logical relation与encoding拥有的logical-index-to-physical-bit-span关系组合，统一回答valid-domain、
-  footprint、alignment、physical range/segment、contiguity、overlap、physical equivalence和descriptor
-  geometry；Cx/NCx的dtype block、C0、folded/retained tail及bank padding只在encoding owner中解释。
-- Output artifact / IR:
-  invocation-local、可失效、可重算的physical access analysis value或query result；transform成功后仍只
-  产生typed view/movement/allocation/instruction IR，不保存relation、segment list或layout plan attr。
-- Downstream consumer:
-  candidate legality/cost、metadata-view与storage-coalescing证明、SPM/DDR footprint/range/lifetime、
-  RDMA/WDMA/GS lowering、instruction verifier、target binding及numeric/model codec。
-- User-level driver / named pipeline:
-  production source-to-bundle pipeline；局部analysis/unit/lit入口只验证同一library API。
-- Explicit non-goals:
-  不让logical `IndexRelation`识别layout enum，不把Cx/NCx伪装成普通affine memref stride，不新增跨pass
-  side table、serialized proof或pair-specific conversion matrix，不用`shape * elementBytes`替代physical
-  footprint。
-- Completion gate:
-  所有会改变legality、allocation bytes/range、movement bytes/stride、cost或target/model观察结果的layout
-  consumer均调用encoding/composed-relation owner；除typed capability admission外不按layout enum恢复物理
-  几何。Tensor/NTensor/Cx/NCx跨dtype、rank、full/tail/padding的慢oracle differential及至少一条
-  source-to-instruction集成链路证明各consumer得到同一physical事实。
+wafer.tile.peer_send %source_spm  {peer = <physical tile_id>, ...}
+wafer.tile.peer_recv %staging_spm {peer = <physical tile_id>, ...}
 ```
 
-这里的“组合”不要求把physical layout永久塞进`IndexRelation`类。底层可以复用同一Presburger relation
-运算表示piecewise logical-to-physical point map；bit length、footprint、alignment和padding domain仍由
-encoding typed result携带。若某个encoding无法在预算内形成精确关系，query返回
-`UnsupportedRepresentation`或`ResourceLimit`，consumer fail closed，不退回手写layout公式。
+peer op携带fixed bytes与stable message identity；source/destination storage、encoding、valid domain和effect由operand
+及current IR解释。它不携带logical card-partition ID、runtime launch slot、raw route、FSM或cost。Tile-to-Instr
+conversion产生`wafer.instr.dte_send` / `dte_recv` / `dte_wait`；memory planning后，whole-card admission才提交
+sender无法从单Tile module重算的remote accepted-address/resource binding。
 
-pass按职责消费不同投影，但事实源相同：memory planning读取footprint/alignment，alias/lifetime读取root-local
-physical range，movement lowering读取ordered segments与stride loops，cost读取logical payload和实际command/
-traffic envelope，target/model读取已验证的physical span。logical payload、physical allocation和transport
-traffic是三个不同量，不能因为都以byte表示就互相替代。
+相同bytes不证明相同logical region。合法peer transfer必须证明producer domain、consumer demanded domain、两端
+physical segment cover、sender readiness、receiver visibility和async lifetime。fanout需要多个显式messages或已闭合
+typed multicast capability；fanin/reduction必须显式包含receive、local compute和等待，不能藏在一个copy label里。
 
-encoding interface以半开logical rectangular domain加单结果AffineMap返回exact physical-layout pieces；map结果是相对
-当前view base的physical bit offset，element bit width、footprint、valid/padding和alignment仍是同一interface的typed
-投影。Tensor/NTensor产生一个static-stride piece；Cx/NCx按full-block与retained-tail语义产生最多两个piece，block中的
-`floorDiv`/`mod`保留为MLIR affine/Presburger local variable，不展开为logical element。piece union必须覆盖完整valid
-domain、是functional且对可寻址element start injective，offset加element width不得越过footprint。
+## 6. CardProgram、TileProgram 与 TileRegion 集成
 
-`PhysicalLayoutRelation`把这些encoding-owned pieces规范成exact
-`logical index -> physical bit offset` Presburger relation；`PhysicalAccessRelation`再组合
-`iteration -> logical index`，得到`iteration -> physical bit offset`。构造时证明logical relation覆盖完整iteration
-domain、range不越过endpoint logical domain，并按consumer要求证明functional/injective。点查询只用于diagnostic和测试，
-优先执行从logical relation投影出的AffineMap或canonical reshape；production legality不按element count遍历。
+`wafer.card.program`是whole-card verification scope，拥有all-and-only available `wafer.tile.program`。每个
+TileProgram绑定一个physical `tile_id`，可以包含不同op、loop、temporal tile shape和执行长度。SPM value不能跨
+TileProgram SSA传递；跨Tile依赖只能通过card DDR或explicit communication表达。
 
-metadata view的通用判定比较同一iteration domain上的两条组合physical relation：element width、view base、memory space和
-footprint兼容，并且source/destination physical-offset relation全域相等时才能alias；Presburger通过“offset不等反例集合为空”
-完成证明。这样blocked reshape不按layout pair或shape写特例：能证明则保留metadata view，不能证明则保留或materialize
-显式movement。descriptor synthesis从相同组合relation取base/stride，并按encoding piece、block period、tail和target三层
-loop/field budget分段、合并；它不能另建Cx/NCx地址公式。solver只负责exact legality/equivalence，最少command选择仍属于
-target-aware descriptor synthesis和cost。
+`wafer.tile.region`只表示一个physical Tile内的SPM residency domain。region内允许多个traversal和不同tile shape；
+root可以分别retain、spill、reload或release。跨region SPM root/value/alias非法，跨界数据必须显式materialize。
+region boundary不是自动completion，仍访问root的compute/movement/communication必须完成后才能释放。
 
-encoding/type组合同时承担结构门禁。Cx/NCx只接受rank大于零、identity memref layout且其dtype/packing已由
-current encoding implementation精确定义的typed buffer。Q46已在同一个encoding interface implementation内补齐
-bitpacked Cx/NCx的`i1` block/tail/bit offset；相同physical lane顺序由composed ordinal relation证明，consumer不再
-维护第二份blocked BOOL mapper。
-带第二套strided/offset memref view的blocked buffer不能由当前type唯一解释，因此在footprint、alignment、
-span和composed-relation查询处统一失败。需要这种view时必须保留logical `IndexRelation`并显式materialize movement，
-不能让generic memref view悄悄改变blocked地址。Tensor/NTensor上的标准collapse/expand仍可作为metadata view；
-blocked layout上的同类折叠只有经过上述physical equivalence证明后才能消除movement。任意non-affine、data-dependent或
-超出relation/disjunct预算的映射统一fail closed；dynamic stride与iteration相乘不能伪装成Presburger线性关系。
+spatial placement、temporal tile、fusion/residency、encoding和communication由06的同一个whole-DAG scheduler共同选择。
+本文只验证它物化的actual relation和physical dataflow，不因某个route更便宜而修改placement，也不创建独立layout或
+NoC selector。
 
-natural alignment也是encoding投影的一部分。SPM/DDR planner、candidate estimate、fixed-slot qualification、
-target ABI和storage coalescing通过同一checked-LCM入口组合target policy、allocation attr与encoding alignment；
-不得用`max`，也不得依赖当前default alignment恰好覆盖Cx/NCx的256B要求。
+## 7. Exact Descriptor 与 Invalid Lane
 
-### 5.1 IR 表达与接口责任
+instruction lowering从actual typed IR构造descriptor proof，至少证明：
 
-tile-dataflow 继续用 typed memref 表达 logical buffer，例如：
+- descriptor union对destination valid domainall-and-only覆盖；
+- source image正确，无hole、overlap或越界；
+- root-relative offset、byte/bit span、stride、iteration、alignment和field narrowing checked；
+- descriptor不能把padding lane作为defined logical payload；
+- source snapshot、destination publication和async completion满足lifetime。
 
-```mlir
-memref<64x64xf16, #wafer.memory<spm, tensor>>
-memref<64x64xf16, #wafer.memory<spm, cx>>
-memref<64x64xf16, #wafer.memory<ddr, tensor>>
-```
+padding默认是unobservable/undefined physical storage。逐lane compute只有在composed access证明valid lane互不污染时
+才可覆盖physical footprint；GEMM/reduction等会混合lane的实现必须证明invalid lane不进入valid result，或在actual
+IR中显式fill/mask/segmented movement。host-visible output不得把padding发布为logical data。
 
-memref shape 和 element type 是 logical contract。`#wafer.memory<space, encoding>` 当前同时打印 memory
-space 与 encoding，但二者在 API 上必须保持正交：
+## 8. Materialization 与 Cleanup
 
-- memory space 回答 allocation/visibility/address-space 问题；
-- physical encoding component 实现 attr/type interface，回答 layout 行为；
-- `#wafer.memory` 只把请求委托给 encoding component，不复制 Cx/NCx 公式。
+bounded shortlist中的proposal按以下transaction物化：
 
-interface 至少提供：
+1. clone未放置的whole-card parent或构造isolated CardProgram actual candidate；
+2. 从current clone建立relation、bounds、alias、physical-map和effect snapshot；
+3. 用PatternRewriter/IRMapping/DialectConversion创建typed views、roots、movement、temporary和events；
+4. rewrite后销毁旧analysis；
+5. 对新IR运行verifier、descriptor、invalid-lane、range、lifetime与completion gate；
+6. 失败销毁整个candidate，成功交还唯一whole-DAG owner。
 
-```text
-getPhysicalFootprintBytes(memrefType)
-getMinimumAlignmentBytes(memrefType)
-getValidElementCount(memrefType)
-getPaddingElementCount(memrefType)
-getPhysicalElementBitWidth(memrefType)
-getPhysicalLayoutPieces(memrefType)
-getPhysicalElementSpan(memrefType, logicalIndices)
-```
+cleanup只删除可由exact proof确认的冗余：same-root/same-map metadata view、dead无effect movement、完整等价
+same-space copy和不延长lifetime的duplicate materialization。它不能移动fusion cut、改变encoding/route、创造spill、
+重排execution或替search选择另一physical version。
 
-返回值使用 MLIR integer/affine/presburger 和 checked arithmetic；overflow、unsupported dtype 或不能表达的
-dynamic shape 返回 failure。新增 encoding 通过新的 typed attr/type 及其 interface implementation 扩展，不修改
-中央 op-pair matcher。当前encoding由attr、logical type和shape完整决定；target instruction field/engine限制仍由
-typed instruction contract验证，但不得反向成为上述physical encoding query的新参数。
+## 9. Failure 与 Verification
 
-Q32.R的current static实现以memref shape作为唯一logical valid domain，encoding interface返回valid/padding
-cardinality、physical footprint、natural alignment和逐valid logical index的physical bit segment；
-`TransferRealizability`据此证明current compact/GS/staged路线。它不定义padding内容，也不提前物化Q32.V的
-mapped descriptor或physical-fill domain；后者仍按typed target纵向扩展本接口的真实consumer。
+失败至少区分invalid IR、unsupported representation、unsupported target、infeasible physical realization和
+compile-time proof resource limit。分类只用于diagnostic与search control，不进入IR/package；任何失败都不得返回半份
+可继续lower的proof或留下partial clone。
 
-### 5.2 Compact `Tensor/NTensor`
+验证必须覆盖：
 
-compact encoding 保持 canonical logical linear order。static subview、collapse/expand 和 strided view 只有在
-标准 view relation、root range 和 alias effect 都能证明时才是 metadata view。host-visible dynamic input/output
-的 external storage contract 保持 compact；这不要求 device-side 中间版本也保持 compact。
+- encoding interface的Tensor/NTensor/Cx/NCx、dtype、full/tail/padding与checked arithmetic；
+- relation的identity/permutation/reshape/broadcast/slice/concat/composition及rewrite invalidation；
+- metadata view正负例、alias/range/lifetime与physical-map equality；
+- direct/mapped/staged/local movement和one/multi-descriptor cover；
+- invalid-lane fill/mask/segmented path及negative observation；
+- distinct physical Tile peer IDs、message matching、cross-Tile SPM SSA rejection；
+- actual CardProgram projection后每Tile Instr、SPM/DDR和whole-card communication gate重放；
+- source-to-package integration实际执行，不以单op FileCheck代替。
 
-### 5.3 `Cx/NCx` 与非 affine 风险
-
-当前 TX81 encoding implementation按dtype定义block geometry：INT8/UINT8的full block为128，其它当前
-byte-addressable dtype的full block为64；tail fold和256B bank padding同样是该encoding implementation的固定行为。
-
-full block 的概念 physical order 为：
-
-```text
-Cx:  [CBlock][Outer][Lane]
-NCx: [N][CBlock][HW][Lane]
-
-full block, c = cb * B + lane:
-  Cx  offset = cb * outer * B + outer_idx * B + lane
-  NCx offset = n * batch_mem_elems + cb * hw * B + hw_idx * B + lane
-```
-
-`aligned_C` 只参与 physical footprint，不能冒充 logical dense stride。full block、retained/folded tail 和
-bank padding 会形成 piecewise physical segments；一条 uniform affine stride 不能跨越这些边界。
-
-因此 Cx/NCx 不能伪装成普通 memref affine layout，也不能为了接入 generic lowering 而提供不真实的
-`MemRefLayoutAttrInterface` map。Wafer-tagged memref 必须在受控 conversion 中消费；generic
-memref-to-LLVM 不能按 `product(logical shape) * element bytes` 推断 footprint。如果长期发现 memref
-合同无法安全承载这种非 semi-affine storage，应升级为专用 physical buffer type，而不是继续补 side table。
-
-physical encoding 也不表示 semantic transpose。例如 logical `[N, K]` 可以按最后一维 `K` 使用 Cx，
-再由 compute op 的 access relation 解释；不能偷偷把 logical type 改成 `[K, N]`。
-
-### 5.4 BOOL 与低精度 Storage
-
-bitpacked `i1` 的 byte 内顺序、block/tail folding 和 bit offset 必须由 typed encoding implementation 明确。
-任一项未知时返回 unsupported，不按线性内存猜测。
-
-未来 quant/FP8 storage 必须在 attr/type 中明确 bit width、signedness/format、packing order、block axes、
-scale/zero-point relation、alignment、tail 和 exact byte count。accumulator 数学语义仍属于 compute
-implementation，不属于 storage encoding。
-
-## 6. View Legality
-
-metadata view 必须证明没有 real data movement。给定 source view `S`、destination view `D` 和 relation
-`R: D_dst -> D_src`，至少满足：
-
-1. 两端追溯到同一 allocation root，或由 IR 中明确的 alias contract 建立等价 storage；
-2. 对 destination valid domain 中每个 `d`：
-
-   ```text
-   physicalOffset(D, d) == physicalOffset(S, R(d))
-   ```
-
-3. relation 的 functional/injective 条件满足该 view 的读写 effect；可重复读取的 broadcast 不能被误当成
-   可写 alias；
-4. destination 可达 range 位于 root allocation 内，dynamic bounds 由 ValueBounds/Presburger 证明；
-5. view 不扩大有效内容，不把 source padding 重新解释为已定义 logical data；
-6. lifetime、alignment 和 overlapping write 均合法。
-
-`proveMetadataView` 只证明 relation/type/physical-map 层面的可共享性；它不能单独把两个独立 allocation
-宣布为同一 storage。若当前 IR 已经先物化为 `source -> destination` 的完整 copy，删除 copy 还必须证明：
-
-- destination allocation 由该 copy 首次定义，copy 前没有可观察 access；
-- destination 的全部 alias/use 都可被 source root 或同一标准 view 替换；
-- read-only sharing 下 source 不会在 destination 的观察期内被改写；
-- writable donation 下 source 在 copy 后没有独立观察或未完成异步访问，destination 的写不会破坏
-  snapshot 语义；
-- Direct DTE buffer access 延长到 exact wait；storage rewrite后先从fresh current IR重建canonical completion，
-  post-Instr worker sibling再以actual worker attrs进入统一latest-necessary completion reconstruction。已有nonzero
-  assignment不原地重写；unknown escape、unsupported control flow或不能闭合的completion一律保留copy。
-- 只可沿保持base address的`memref.cast`、static collapse/expand、zero-offset subview/reinterpret/view
-  provenance回溯compiler-owned root；dynamic或非零offset以及其它无法恢复exact transfer source的view
-  不能借此变成full-value storage alias。
-- cross-encoding view 不能让标准 memref op 改变 memory-space attr；replacement view 保留 source storage
-  encoding，并以原 destination encoding 的 physical-map proof 和 replacement consumer verifier 双重闭合。
-  compiler-owned source allocation 可显式提高 alignment，非 owned storage 的 alignment 不足则保留 copy。
-
-上述 storage-coalescing proof 成功后，IR 才从两个 distinct roots 变为一个 root 加标准 view。仅让 SPM
-planner 给两个 allocation 分配相同 offset 既不能表达 value identity，也不能替代此证明。
-
-证明成功后必须创建标准 `memref.subview`、reinterpret/collapse/expand 等合适的标准 op，或语义更强的
-typed Wafer view op。只改变 type、插入 cast 或记录 relation attr 都不算 view materialization。
-
-Cx/NCx tail、fold 和 padding 会让一些 logical reshape/transpose 在 compact encoding 下是 metadata view，
-在 Cx/NCx 下却不是。判断只能来自 relation 与 encoding interface 的逐 segment 证明，不能来自 op kind。
-
-compute absorption 也不是 metadata view。它由 selected compute op/interface 证明 operand access relation 能直接
-消费当前 encoding；若成立，IR 中应由 compute operand/type 表达该事实，不能创建假 view。
-
-Cx/NCx physical-version absorption是compute absorption的直接应用：packing identity只由dtype、typed encoding、shape/tail和
-本节唯一physical map决定，不是可编程`vector_width`或packing mode。Q32现有concrete verifier已接受GEMM/batched GEMM和
-native reduce的Cx/NCx形态；Q46在相同verifier边界补齐physical traversal兼容的CT
-elementwise/relation/logic/select/bitpacked/convert，不按family强制Tensor。若该implementation
-能直接消费同一Cx/NCx physical version，并且IndexRelation、valid/padding lane、effect和lifetime exact proof成立，另一个clone可以删除前置
-Tensor↔Cx/NCx `materialize_layout`、GS或等价pack/unpack movement。删除后compute operand仍携带原typed encoding，下游从它
-重建geometry；不得把packing复制到implementation parameter、Instr side attr或planner record。
-
-## 7. Transfer Realizability Helper
-
-transfer helper 的输入是当前 clone 中的真实对象：
-
-```text
-source value/root/view
-destination value/root/view
-IndexRelation
-source and destination physical encoding interfaces
-valid/padding domains
-alias and memory effects
-typed target instruction and descriptor limits
-```
-
-这里的current target helpers只约束engine、descriptor和instruction capability；encoding几何查询始终只接收当前typed
-memref，不把target identity转发给`WaferPhysicalEncodingAttrInterface`。
-
-它可以提供几个普通入口：
-
-```text
-proveMetadataView(...)
-proveMappedDma(...)
-proveMappedWdma(...)
-proveGatherScatter(...)
-proveStagedMovement(...)
-buildDescriptorCover(...)
-```
-
-这些不是用户可见协议，也不接受 detached semantic descriptor。每个 proof value 只在当前 analysis epoch 内
-有效，并由正在构造 clone 的 rewrite 立即消费。实现可以共享 Affine/Presburger、physical-map 和 checked-range
-utilities，但不能共享跨 rewrite 的 `Value*`、`Operation*` 或 descriptor cache。
-
-planner 尝试一种 route 的方式是：clone 当前 IR，运行对应 proof 和 rewrite，成功就得到新的 typed IR，失败就
-丢弃该 clone 并尝试别的 strategy。不存在先生成 detached route description、稍后再翻译成 IR 的阶段。
-
-## 8. Transfer IR 形态
-
-| 语义 | candidate clone 中的 IR |
-| --- | --- |
-| metadata alias/view | standard memref view 或 typed Wafer view；无 movement |
-| mapped DDR→SPM | typed destination-style `wafer.tile.load` |
-| mapped SPM→DDR | typed destination-style `wafer.tile.store` |
-| peer SPM→SPM | target-abstract `wafer.tile.peer_send` / `wafer.tile.peer_recv`及显式两端view；physical binding后置 |
-| local encoding change | `wafer.tile.materialize_layout` 或 route-specific typed movement op |
-| staged movement | explicit temporary、DMA、GS、fill/mask 和 event/completion graph |
-| spill/reload | explicit storage root、store/load 和 completion |
-| immutable encoded storage | typed resource/member、typed encoding 和对应 load |
-
-Q32.R后`StorageLoadOp`已经使用source+explicit destination、无result的destination-style合同；builder、
-parser/printer、verifier、conversion和tests消费同一表示。allocation identity由显式`memref.alloc`/view拥有，
-load lowering先以`TransferRealizability`重证compact DMA，再对已有destination发射RDMA，不创建隐藏storage。
-
-route choice优先由上述 IR 结构推导。如果同样的 operand/type/relation 可能合法 lower 成两种具有不同 effect、
-engine 或 ABI 的真实路线，下游不能自行挑选；必须在 movement op 上增加由 verifier 和 lowering 逐字段消费的
-typed enum/attr。不得使用字符串 route id、descriptor blob 或 buffer 名。
-
-### 8.1 Boundary Transfer
-
-host-visible input/output 的 DDR root 保持 compact ABI。boundary transfer 使用 destination-style op：
-
-```text
-wafer.tile.load  %ddr_view into %spm_view
-wafer.tile.store %spm_view into %ddr_view
-```
-
-op 在两端 typed view 所定义的 logical coordinates 上工作，不隐式创建 storage。identity、slice、
-permutation 或 piecewise relation 由标准 view chain 和 SSA 表达；pure view/permutation chain可以与consumer indexing
-semantics组合后驱动mapped load，不要求先物化完整logical transpose。当前mapped descriptor仍必须由concrete
-TransferRealizability证明；例如transpose relation优先被oriented GEMM吸收，再对effect-proven read-only、原始逻辑shape的
-weight使用exact composed Tensor DDR mapped transfer，而不是假定DMA能表达任意transpose或identity DMA。不能把 `IndexRelation`、descriptor list 或
-planner trace 附到 op 上。
-
-因此合法路径可以直接是：
-
-```text
-compact DDR view
-  -> mapped load producing Cx/NCx SPM version
-  -> selected compute
-```
-
-不要求先复制到 SPM compact 再做固定序列的 transpose/GS。若 direct descriptor proof 失败，当前 direct
-candidate 失败；另一个 candidate 可以显式构造 temporary + DMA + GS，但 lowering 不能偷偷这样做。
-
-### 8.2 Local Materialization
-
-`wafer.tile.materialize_layout` 表示真实 device-side movement：
-
-```mlir
-%dst = wafer.tile.materialize_layout %src
-    : memref<64x64xf16, #wafer.memory<spm, tensor>>
-   -> memref<64x64xf16, #wafer.memory<spm, cx>>
-```
-
-Verifier 至少检查：
-
-- source/result logical shape、element type 和 valid domain 一致；
-- physical maps 确实不同；same-map op 应被 canonicalize；
-- 两端 memory space、encoding 和 target movement contract 可实现；
-- exact cover、range、temporary 和 completion 可重建；
-- read/write effects 完整。
-
-该 op 不保存 cost、失败原因、替代路线或 descriptor list。若同一 generic op 不能唯一决定真实 engine/effect，
-应拆成语义明确的 typed movement op 或增加必要 typed field。
-
-### 8.3 Peer Transfer
-
-普通boundary、intermediate或output tile的cross-rank movement使用target-abstract peer pair：
-
-```text
-wafer.tile.peer_send %source_spm to logical_peer
-wafer.tile.peer_recv from logical_peer into %destination_spm
-```
-
-op只携带lowering与all-rank matching必须区分的logical peer、fixed bytes和typed communication identity；source/
-destination allocation、view、encoding、valid domain与effect由operands和current IR解释。它不携带owner kind、
-collective algorithm、physical endpoint、route、FSM、pipeline stage、slot或cost。tile-to-instruction conversion
-必须生成真实Direct-DTE issue/token/wait，memory planning后由all-rank acceptance提交physical binding。
-
-peer transfer只有在global logical region、两端physical segment cover、sender completion、receiver visibility与
-lifetime均可证明时合法。相同bytes不证明相同tile；broadcast fanout也不能只保留一个带隐式receiver集合的op。
-未经typed target capability闭合，fanout物化为多个send或receive-then-forward，reduction物化为recv、local
-compute和forward。
-
-当前production materializer已用该pair闭合typed input/parameter owner fanout、可证明的intermediate
-producer-store/consumer-reload zero-DDR cut和replicated output round-2 publication。partial路径保留typed
-tree/ring的原Instr message/local reduce语义，不把collective伪装成peer pair：tree按contribution、
-combiner、publisher和final writer验证，ring按slice-precise reduce-scatter/all-gather provenance验证。
-同一structured block中的新receive preparation必须先于所有既有/新增transport issue，matching wait保留在
-真实consumer/reuse cut；跨block或seed已有DTE的组合由call-expanded whole-program message wait graph重证，
-cycle、message/call occurrence错位和无法证明的control整代fail closed。
-
-### 8.4 Immutable Storage
-
-immutable prepack 只有在 IR/package 已能 typed 表达以下事实时才合法：
-
-- source 是 `ConstantLike` 或等价 compiler-owned immutable value；
-- logical slice/coverage 能从 current IR 重建；
-- typed storage encoding 有 exact footprint 和 round-trip proof；
-- package member 原子拥有 bytes、encoding、coverage 和 digest；
-- 所有 consumer、range 和 completion gate 通过。
-
-当前若 package 还不能发布这种 typed member，就必须返回 unsupported，不能用 parameter name、模型角色或
-旁路 metadata 暗示 prepack。未来启用时，candidate clone 先构造 typed resource use，package owner 只消费
-accepted IR。
-
-## 9. Exact DMA/GS Descriptor Proof
-
-descriptor 是 target instruction lowering 的结果，不是上层 route plan。对当前 typed load/store/movement，
-proof 按以下步骤构造：
-
-1. 从 destination encoding interface、valid domain 和 selected tile 取得 physical segments；full block、
-   tail、fold 和 padding 边界天然分段。
-2. 对每个 destination segment，用 `R` 求 source logical indexes，再通过 source encoding interface 求
-   physical bit/byte addresses。
-3. 合并 source/destination 都满足 inner-contiguous 要求的相邻 points。
-4. 从内向外识别重复 span、count 和 byte stride，且不超过 typed instruction contract 的 outer levels。
-5. 在 stride 变化、tail、field-width overflow、alignment、iteration limit 或 allocation range 边界切分。
-6. 验证 logical-data descriptors 对 destination valid domain 恰好写一次，无 hole、无 overlap。
-7. 额外 write 只能落入声明的 padding domain，并满足 invalid-lane postcondition；host-visible output 禁止
-   padding write。
-8. 验证 source read 按 `R` 完整；broadcast 可以重复读同一 source point，不能错误要求 source bijection。
-9. 验证 source/destination root-local offsets、allocation ranges、alias/effect 和 completion。
-
-RDMA/WDMA的循环证明还必须保留engine方向性：RDMA只编码DDR source的stride/iteration并证明
-SPM destination在同一组循环下连续，WDMA只编码DDR destination并证明SPM source连续。GS可以
-同时保留两侧stride。一条descriptor能以多层loop表达时不得降级为“一个连续段一条指令”；
-只在连续endpoint、layout piece或target field真实断开时拆command。Cx/NCx的invalid lane、C0对齐lane和
-bank padding不在logical valid cover内，不能因两端encoding相同而被movement descriptor附带copy。
-
-multi-command descriptor 必须携带各自相对 allocation root 的 local byte offset，不能默认每条 command 从
-offset zero 开始。descriptor 顺序由 destination traversal 的结构顺序决定；不用自定义 byte serialization
-承担语义或排序。
-
-生产实现必须在 Affine/Presburger domain 和 physical segments 上符号执行，复杂度依赖 rank、piece 数和
-descriptor 边界，而不是 tensor element count。逐元素 oracle 只用于 tests。
-
-proof result 可以临时包含：
-
-```text
-descriptors
-logical coverage
-physical read/write bytes
-command count
-temporary requirement
-completion requirement
-invalid-lane postcondition
-```
-
-candidate gate 和 instruction lowering 都从当前 IR 独立重建 proof。lowering 可无损发射 descriptors，但不能
-coalesce 成另一语义、改变 order 或在失败时切 staged route。
-
-## 10. Invalid Lane 与 Padding
-
-physical padding 不因“通常为零”而成为 defined logical data。encoding interface 只定义 valid/padding domain，
-不定义 padding content。
-
-analysis 使用有限的 `InvalidLaneState`：
-
-```text
-NoInvalidLanes
-Unknown
-KnownSplat(value)
-```
-
-它是由当前 producer/movement/compute IR 派生的数据流事实，不是 buffer attr。典型 transfer：
-
-- 只写 valid segments 的 mapped DMA：未写 padding 通常为 `Unknown`；
-- 完整 copy：在 relation 和 coverage 允许时保留 source state；
-- explicit fill 后覆盖全部 valid points：可产生 `KnownSplat` padding；
-- mask 或 segmented tail：证明 invalid lanes 不会被观察，但不伪造其内容。
-
-compute implementation 必须能从typed op、operand/result encoding和concrete verifier表达自身的valid-lane policy：
-
-```text
-exact logical points only
-segmented full blocks and tail
-full physical extent with proven invariant
-```
-
-逐位置instruction在composed physical access证明每个valid input lane只影响对应valid output lane时，可以处理完整
-physical extent；invalid input/output lane允许保持`Unknown`，不要求padding值在运算前后不变。relation产生的bitpacked
-结果和select mask也按相同physical lane顺序解释。reduce、GEMM或其它会混合lane的implementation仍必须证明invalid lane
-不会进入valid result，或在actual clone中显式建立neutral/mask。不能用op名白名单推断。
-
-需要 neutral padding 时，candidate clone 中必须出现 explicit fill、mask、valid-lane mode 或 segmented
-movement。TargetCall/SystemC 只执行最终命令，不能替 compiler 掩盖 invalid-lane 错误。
-
-## 11. Candidate Materialization 与 Conversion
-
-query-local proposal先按typed legality、relation、lower bound和DP/Pareto dominance进入structural frontier；只有统一
-actual-clone budget准入的有界代表才进入下列materialization步骤，actual失败按稳定顺序从未物化frontier补位：
-
-1. 用 `IRMapping` clone 当前 rank-local IR；Q46可以消费一个只含stable state ordinal的已准入PBQP proposal，但必须在
-   该clone上重新定位op/value并fresh重证全部relation与route；
-2. 在 clone 上构造 relation、bounds、alias、physical map 和 effect snapshot；
-3. 运行当前 view/transfer proof；
-4. 用 `PatternRewriter` 直接创建 typed allocation/view/movement/temp/event IR；
-5. rewrite applied 后销毁所有旧 analysis；
-6. 从新 clone 运行 verifier、descriptor、range、invalid-lane、lifetime 和 event gates；
-7. 成功则把 clone 交给candidate owner评估，失败则完整丢弃。
-
-structural frontier成员是query-local proposal，不拥有IR；actual frontier只保存统一预算准入并成功物化的有界clone。
-允许保存从proposal或clone派生的Pareto/cost摘要以便排序，但rewrite后必须重算，且摘要不能参与verifier或lowering。
-不得同时保存一份selected implementation/encoding/route/physical-version list。PBQP projection和assignment在actual clone
-进入worklist前销毁，不属于actual frontier entry。
-
-同一 IR level 的 view、tiling 和 movement creation 使用 rewrite patterns。跨 dialect/type legality 边界的
-source-to-tile 和 tile-to-instruction 使用 `DialectConversion`、`ConversionTarget`、conversion patterns 和
-必要的 `TypeConverter`。手工遍历 op 后维护 `Value -> buffer` 语义表，不是长期转换合同。
-
-atomicity 由 isolated clone 保证，不靠 snapshot/restore 一组 side maps。接受 clone 后，所有下游输入都必须能
-从其 op/type/attr/SSA 重建。
-
-## 12. Cleanup
-
-cleanup 只是 proof-preserving canonicalization/rewrite：
-
-- physical map、root、valid domain 和 effect 完全相同的 no-op materialization 删除；
-- 无 use 且无 observable effect/completion 的 movement 删除；
-- exact relation、physical-map 与 storage-coalescing proof 已把 destination 改写为 source root/view 的
-  完整 same-space movement 和 dead allocation 删除；
-- `A -> B -> A` 在中间值无其它 use、range/lifetime/event 均不改变时消除；
-- 同 source、destination map、logical domain 和 completion 的重复 materialization 在不延长 lifetime 时合并。
-
-cleanup 不得 hoist/sink conversion cut、创造current source/destination type和consumer verifier之外的新
-encoding、改变已经证明相同的logical-to-physical map、改route、插prepack、增加physical version或改变
-spill/buffering/order。允许删除physical-map等价且consumer可直接接受source encoding的冗余destination
-materialization；需要其它encoding或route变化时，必须从另一个isolated clone重新尝试并通过完整gates。
-
-cleanup只处理已经物化的精确冗余，不能成为producer-consumer fusion、materialization cut、resident edge或completion
-placement的主决策者。
-
-跨多个pure op移动view relation或选择新的conversion cut只由06的joint-assignment producer在独立clone中执行；本节cleanup
-不能通过descriptor archaeology或局部op顺序恢复该全图选择。
-
-## 13. Failure Contract
-
-analysis/helper 使用 `LogicalResult`、`FailureOr<T>` 和带 op location 的结构化 diagnostic。失败至少区分：
-
-- **InvalidIR**：输入 IR、type、attr 或 effect 违反 verifier；
-- **UnsupportedRepresentation**：当前 relation、dynamic bound 或 encoding 无法由已实现的精确分析表示；
-- **UnsupportedTarget**：current target/instruction contract不支持该dtype、encoding、engine或field；
-- **Infeasible**：表示和 target 都支持，但当前 shape/tile/range/alignment/descriptor limit 无解；
-- **ResourceLimit**：本次符号证明超过明确的 compile-time work limit，不能据此断言 infeasible。
-
-这些类别用于诊断和搜索控制，不构成序列化协议。失败应附当前 op/location、relation 类别、两端 type/encoding
-和首先违反的约束；不返回半份可继续 lowering 的 proof。
-
-direct proof 的 `Infeasible` 只拒绝当前 clone。统一搜索可以从原始 IR 创建另一个 staged candidate，但
-direct lowering 内部不能 fallback。`ResourceLimit` 也不能缓存为永久 unsupported 事实。
-
-## 14. Verification
-
-accepted physical-realization IR 至少验证：
-
-- op/type/attr interface 能解释当前 memory space、encoding、dtype、rank 和 shape；
-- logical shape、valid/padding domain、footprint、bit/byte offset 和 range end 一致且无 overflow；
-- metadata view 保持 physical offset equality、合法 alias、range 和 effects；
-- movement 两端 relation、encoding、allocation root 和 valid domain 可重建；
-- DMA/WDMA/GS descriptor 对 destination valid domain 无 hole/overlap，两端 range、stride、count、
-  alignment 和 narrow fields 合法；
-- staged route 的 temporary、fill/mask、event 和 completion 显式；
-- invalid lanes 不被未证明的 compute/store 观察；
-- host-visible output 不写 padding；
-- immutable resource 的 source、coverage、encoding、byte count 和 digest 可验证；
-- rewrite 后没有继续使用旧 analysis；
-- instruction lowering 不读取 planner/Transform side table，也不改变 route。
-
-验证分层：
-
-1. **encoding interface tests**：random shape/dtype/index、full/tail、checked arithmetic、Cx/NCx/BOOL；
-2. **relation tests**：identity、permutation、reshape、broadcast、slice、piecewise relation 和 dynamic bounds；
-3. **view tests**：same-root offset equality、negative alias/range、Cx/NCx tail 非 view；
-4. **storage-coalescing tests**：跨 operator 的 same-shape 与非 singleton reshape 正例、read-only fanout 和
-   writable last-use donation；partial/permutation/broadcast、encoding/padding 不等价、source/destination
-   snapshot 分叉、unknown escape、unsupported control flow，以及 DTE issue 到 exact wait 之间的 in-flight
-   read/write 负例；
-5. **physical-version absorption tests**：Q32现有direct Cx/NCx GEMM/batched-GEMM证据保持不变；Q46另覆盖native reduce及physical-traversal-compatible CT
-   pointwise/relation/select/convert与显式materialize/GS baseline的logical value、numeric
-   result及所有consumer-observable defined physical bytes一致；两条路径分别满足同一consumer precondition，unobservable padding的
-   `InvalidLaneState`可以不同。只有共同consumer contract要求padding可观察且defined（例如KnownSplat/full-fill）时才逐byte比较，
-   canary始终不变；Q46独立gate证明winner final IR中对应movement真实消失；
-6. **descriptor tests**：one/multi-command RDMA/WDMA、GS、field overflow、alignment、range、broadcast read；
-7. **invalid-lane tests**：unknown、known splat、fill + segmented write、mask、negative consumer observation；
-8. **IR tests**：clone 内 materialization、DialectConversion legality、canonicalization、atomic rejection；
-9. **integrated tests**：finalized actual IR的SPM allocation-domain覆盖/冲突/容量、whole-variant DDR、event、
-   instruction 和 SystemC logical round trip；problem/query数只作budget diagnostic，不作IR语义或固定test oracle。
-
-property tests 使用独立慢 oracle 与 interface/descriptor fast path differential。慢 oracle 可以逐元素；生产
-路径不能。
-
-## 15. 示例
-
-### 15.1 Compact DDR 直接映射到 Cx SPM（Q32.V）
-
-示例输入为 logical `[64, 64]xf16`，DDR root 是 compact，compute operand 要求 Cx：
-
-1. 当前 structured/view IR 派生 identity `IndexRelation`；
-2. compact 与 Cx interface 分别给出 source/destination segments；
-3. mapped-RDMA helper 证明 descriptor cover；
-4. isolated clone 创建 Cx SPM allocation 和 typed `wafer.tile.load`；
-5. verifier 和 instruction gate 从 clone 重建同一 cover。
-
-`64x64xf16`、Cx 和 RDMA 都只是示例参数。通用合同来自 relation、encoding interface、target instruction
-limits 和 typed movement IR。
-
-### 15.2 Transpose 不是假 view
-
-若 compact `[M, N]` transpose 后的 destination physical offset 与 source composed offset 不相等，
-metadata-view proof 失败。另一个 clone 可以：
-
-- 直接创建能表达 transpose relation 的 mapped transfer；或
-- 创建 temporary、DMA、GS 和 completion。
-
-不能只交换 memref shape，也不能附一个 transpose label 让 lowering 猜。
-
-### 15.3 Cx Tail 与 Invalid Lane
-
-当最后一维不是 full block 的整数倍时，encoding interface 把 full blocks、retained/folded tail 和 padding
-拆成 segments。若 compute 会读取完整 physical block：
-
-- 有 mask/valid-lane mode时，在 compute op 上显式表达；或
-- clone 先创建 fill，再用 segmented movement 覆盖所有 valid points。
-
-descriptor proof 检查 logical points 恰写一次，padding state 与 compute precondition 一致。具体block大小由typed
-encoding implementation和queried memref dtype/shape/tail唯一决定；current target helpers只验证instruction capability，不参与查询。
-
-### 15.4 Reshape Metadata View
-
-compact contiguous source 的 collapse/expand reshape 在 Affine/ValueBounds 证明 linear offset 相等且 range
-不变时可以物化为标准 metadata view。同一 logical reshape 若跨越 Cx block/tail 边界，可能必须使用真实
-movement。决定来自逐 segment physical equality，不来自 reshape op 名。
-
-## 16. 可选控制面
-
-当前不冻结Transform Dialect op、param、report或inspection合同。若Q32.T未来出现明确consumer，只能调用本文同一
-interface、analysis、rewrite和verifier，并且不能暴露relation/frontier/descriptor/physical-version graph或绕过
-whole-rank/whole-variant gates；该later工作不属于Q32或本文当前完成条件。
-
-## 17. 完成标准
-
-本文边界完成至少要求：
-
-- 不存在平行查询/schema/cache identity 或 detached route payload；
-- `WaferPhysicalEncodingAttrInterface`保持只接收queried memref type的现有签名，不增加target identity参数；
-- `IndexRelation`明确从当前IR派生并在rewrite后重建，identity/permutation/broadcast/slice/reshape/concat及composition
-  被tiling、view、propagation、transfer和reuse真实消费；
-- Cx/NCx/BOOL 等行为只有一个 attr/type-interface 事实源；
-- Q32现有Cx/NCx absorption证据只覆盖GEMM/batched GEMM；Q46终态由existing encoding与typed verifier唯一解释，扩展到
-  native reduce和physical-traversal-compatible CT。本层证明direct consumer的physical/invalid-lane legality，Q46独立gate再证明
-  至少一个production winner直接消费Cx/NCx并删除显式layout/GS movement；
-  无vector-width/packing side parameter；
-- current zero-copy/compact DMA/GS/staged及Q32.V mapped route alternatives在isolated clones中成为不同typed
-  view/movement/temp/event IR，并进入06同一candidate selection；
-- Q46的whole-graph proposal只由本层existing relation/encoding/realizability proof支持；proposal先进入query-local structural
-  frontier，只有统一预算准入的有界代表才物化actual clone，成功后销毁对应proposal；
-- exact descriptor、invalid-lane、range、lifetime 和 completion 能只从 accepted IR 重建；
-- direct failure 不在 lowering 中隐式 fallback；
-- calculator、relation、descriptor、verifier 和 integrated tests 有本轮真实执行结果；
-- 当前实现若仍维护语义性 `Value -> buffer` 或 route-dispatch side table，任务不得标记完成。
-
-## 18. 参考材料
-
-- MLIR Interfaces：<https://mlir.llvm.org/docs/Interfaces/>
-- MLIR Affine Dialect：<https://mlir.llvm.org/docs/Dialects/Affine/>
-- MLIR Presburger：<https://mlir.llvm.org/docs/Presburger/>
-- MLIR Value Bounds Constraint Set：<https://mlir.llvm.org/doxygen/classmlir_1_1ValueBoundsConstraintSet.html>
-- MLIR Dialect Conversion：<https://mlir.llvm.org/docs/DialectConversion/>
-- MLIR Bufferization：<https://mlir.llvm.org/docs/Bufferization/>
-- MLIR Transform Dialect：<https://mlir.llvm.org/docs/Dialects/Transform/>
-
-## 19. 规划中的 Semantic Proof 复用边界
-
-`semantic-superoptimization`继续把本文`IndexRelation`、Presburger、physical encoding interface和descriptor cover作为
-shape/index/layout/footprint的唯一证明来源。query-local SMT只翻译候选的scalar value、typed integer/Bool、observable
-memory/effect/completion差异，并通过本文现有relation结果施加已证明的index映射；不在solver中复制第二套shape/layout
-系统，也不增加Z3-backed `IndexRelation`、proof attr或长期cache。
-
-每个accepted source/Instr clone都使旧relation、alias和physical realization analysis失效并fresh重算。SAT、unknown、
-timeout或relation无法表达时只丢弃optimized clone；不能把solver当作descriptor、invalid-lane、capacity或target legality
-fallback。Q46 compiler-side layout assignment/probe已经闭合；Q49完成whole-rank cutover后，Q48只迁移输入并删除旧implementation抽象，不改写
-本文physical relation合同。
+Q51完成还需要同一search真正生成dependent producer/consumer remap、partial-overlap transfer和NoC-aware placement，
+并把这些与temporal tile、fusion和LiveSPM共同比较。当前output-result balanced sharding与既有per-Tile proof只能证明
+新的IR/pipeline seam可用，不能证明上述joint search已经完成。

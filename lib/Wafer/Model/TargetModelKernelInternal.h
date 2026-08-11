@@ -22,7 +22,7 @@ llvm::Expected<uint64_t>
 getDescriptorSegmentCount(const std::array<uint32_t, 3> &iterations);
 
 llvm::Expected<std::vector<uint8_t>>
-readSnapshot(const InvocationMemoryRegistry &memory, int64_t rank,
+readSnapshot(const InvocationMemoryRegistry &memory, int64_t launchSlot,
              TargetModelAddressSpace space, uint64_t address, uint64_t bytes,
              uint64_t alignment = 1);
 

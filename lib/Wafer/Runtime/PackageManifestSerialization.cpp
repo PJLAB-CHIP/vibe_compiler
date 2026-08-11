@@ -44,12 +44,24 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
       });
       json.attribute("module_format", manifest.moduleFormat);
     });
-    json.attribute("rank_count", manifest.rankCount);
+    json.attribute("card_count", manifest.cardCount);
+    json.attribute("tile_count", manifest.tileCount);
     json.attributeArray("resources", [&] {
       for (const PackageResourceRecord &resource : manifest.resources)
         json.object([&] {
           json.attribute("id", int64_t(resource.id.getValue()));
-          json.attribute("rank", resource.logicalRank);
+          json.attributeObject("scope", [&] {
+            if (const auto *card =
+                    std::get_if<CardResourceScope>(&resource.scope)) {
+              json.attribute("kind", "card");
+              json.attribute("card_id", card->cardId.getValue());
+              return;
+            }
+            const auto &tile = std::get<TileResourceScope>(resource.scope);
+            json.attribute("kind", "tile");
+            json.attribute("card_id", tile.cardId.getValue());
+            json.attribute("tile_id", tile.tileId.getValue());
+          });
           json.attribute("role", stringifyPackageResourceRole(resource.role));
           json.attribute("role_index", resource.roleIndex);
           json.attribute("name", resource.name);
@@ -87,7 +99,10 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
       for (const PackageEntrypointRecord &entry : manifest.entries)
         json.object([&] {
           json.attribute("id", int64_t(entry.id.getValue()));
-          json.attribute("rank", entry.logicalRank);
+          json.attribute("card_id", entry.cardId.getValue());
+          json.attribute("tile_id", entry.tileId.getValue());
+          json.attribute("launch_slot",
+                         int64_t(entry.launchSlot.getValue()));
           json.attribute("module", int64_t(entry.module.getValue()));
           json.attributeArray("slots", [&] {
             for (const PackageABISlotBinding &slot : entry.slots)
@@ -98,8 +113,9 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
                                stringifyPackageAccessMode(slot.access));
               });
           });
-          json.attribute("terminal_completion",
-                         int64_t(entry.terminalCompletion.getValue()));
+          json.attribute("completion",
+                         stringifyPackageEntryCompletionKind(
+                             entry.completion));
           json.attributeObject("transport", [&] {
             if (std::holds_alternative<NoTransportRequirements>(
                     entry.transport)) {
@@ -115,14 +131,6 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
             json.attribute("host_watchdog_required",
                            requirements.hostWatchdogRequired);
           });
-        });
-    });
-    json.attributeArray("completions", [&] {
-      for (const PackageCompletionRecord &completion : manifest.completions)
-        json.object([&] {
-          json.attribute("id", int64_t(completion.id.getValue()));
-          json.attribute("rank", completion.logicalRank);
-          json.attribute("kind", completion.kind);
         });
     });
   });

@@ -1,9 +1,9 @@
 //===- Target LLVM lowering implementation -------------------------------===//
 
 #include "Target/LowerInstrToTargetLLVMInternal.h"
-#include "Wafer/Analysis/ExecutionTopologyAnalysis.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/IR/Target/PhysicalTopology.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
@@ -44,40 +44,27 @@
 namespace wafer::target_llvm_detail {
 
 mlir::FailureOr<DirectDTEEndpointDomain>
-resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp, int64_t logicalRank) {
-  mlir::FailureOr<analysis::ExecutionTopologyAnalysis> topology =
-      analysis::ExecutionTopologyAnalysis::create(moduleOp);
+resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp,
+                               PhysicalCardId physicalCardId,
+                               PhysicalTileId physicalTileId) {
+  std::string reason;
+  mlir::FailureOr<PhysicalTopology> topology =
+      PhysicalTopology::create(moduleOp, &reason);
   if (mlir::failed(topology))
     return moduleOp.emitError()
-           << "unsupported_target_transport: Direct DTE requires one valid "
-              "execution topology and mesh";
-  llvm::ArrayRef<int64_t> cardGrid = topology->getCardGrid();
-  llvm::ArrayRef<int64_t> tileGrid = topology->getTileGrid();
-  if (cardGrid[0] != 1 || cardGrid[1] != 1)
+           << "unsupported_target_transport: cannot resolve physical Tile "
+              "topology: "
+           << reason;
+  std::optional<llvm::ArrayRef<PhysicalTileId>> available =
+      topology->getAvailableTileIds(physicalCardId);
+  if (!available || !llvm::is_contained(*available, physicalTileId))
     return moduleOp.emitError()
-           << "unsupported_target_transport: Direct DTE V0 requires one "
-              "single-card execution domain";
-
+           << "unsupported_target_transport: current physical Tile is not "
+              "available in the selected card topology";
   DirectDTEEndpointDomain domain;
-  domain.logicalRank = logicalRank;
-  for (const analysis::ExecutionEndpoint &endpoint :
-       topology->getRankEndpoints()) {
-    if (endpoint.cardY != 0 || endpoint.cardX != 0)
-      return moduleOp.emitError()
-             << "unsupported_target_transport: Direct DTE V0 endpoints must "
-                "remain on one card";
-    domain.rankToTile.push_back(endpoint.tileY * tileGrid[1] + endpoint.tileX);
-  }
-  if (logicalRank < 0 ||
-      logicalRank >= static_cast<int64_t>(domain.rankToTile.size()))
-    return moduleOp.emitError()
-           << "unsupported_target_transport: logical rank is outside the "
-              "Direct DTE endpoint domain";
-  for (int64_t tile : domain.rankToTile)
-    if (tile < 0 || tile > std::numeric_limits<uint16_t>::max())
-      return moduleOp.emitError()
-             << "target_abi_narrowing: Direct DTE tile endpoint must fit "
-                "uint16_t";
+  domain.physicalCardId = physicalCardId;
+  domain.physicalTileId = physicalTileId;
+  domain.availableTileIds.assign(available->begin(), available->end());
   return domain;
 }
 mlir::FailureOr<mlir::Value>
@@ -101,10 +88,13 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
            << "target_abi_narrowing: Direct DTE byte count must fit a "
               "positive int32_t packet size";
   int64_t peer = op.getPeerAttr().getInt();
-  if (peer < 0 || peer >= static_cast<int64_t>(domain.rankToTile.size()))
+  const PhysicalTileId peerTileId(peer);
+  if (peer < 0 ||
+      !llvm::is_contained(domain.availableTileIds, peerTileId) ||
+      peerTileId == domain.physicalTileId)
     return op.emitError()
            << "unsupported_target_transport: Direct DTE peer is outside "
-              "the accepted endpoint domain";
+              "the accepted physical Tile domain";
   mlir::FailureOr<mlir::Value> source =
       materializeAddress(op, op.getBuffer(), "direct DTE send source");
   if (mlir::failed(source))
@@ -201,9 +191,8 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
   args.push_back(*source);
   args.push_back(remoteDestination);
   appendI32(op.getLoc(), args, op.getBytesAttr().getInt());
-  appendI32(op.getLoc(), args,
-            domain.rankToTile[static_cast<size_t>(domain.logicalRank)]);
-  appendI32(op.getLoc(), args, domain.rankToTile[static_cast<size_t>(peer)]);
+  appendI32(op.getLoc(), args, domain.physicalTileId.getValue());
+  appendI32(op.getLoc(), args, peerTileId.getValue());
   args.push_back(remoteReceiverFsm);
   appendI32(op.getLoc(), args, /*isHighPerformance=*/0);
   mlir::Value event =
@@ -238,10 +227,13 @@ FunctionLowering::lowerDTERecv(InstrDTERecvOp op,
            << "target_abi_narrowing: Direct DTE byte count must fit a "
               "positive int32_t packet size";
   int64_t peer = op.getPeerAttr().getInt();
-  if (peer < 0 || peer >= static_cast<int64_t>(domain.rankToTile.size()))
+  const PhysicalTileId peerTileId(peer);
+  if (peer < 0 ||
+      !llvm::is_contained(domain.availableTileIds, peerTileId) ||
+      peerTileId == domain.physicalTileId)
     return op.emitError()
            << "unsupported_target_transport: Direct DTE peer is outside "
-              "the accepted endpoint domain";
+              "the accepted physical Tile domain";
   mlir::FailureOr<mlir::Value> destination =
       materializeAddress(op, op.getBuffer(), "direct DTE receive destination");
   if (mlir::failed(destination))
@@ -250,9 +242,8 @@ FunctionLowering::lowerDTERecv(InstrDTERecvOp op,
   llvm::SmallVector<mlir::Value, 8> args;
   args.push_back(*destination);
   appendI32(op.getLoc(), args, op.getBytesAttr().getInt());
-  appendI32(op.getLoc(), args,
-            domain.rankToTile[static_cast<size_t>(domain.logicalRank)]);
-  appendI32(op.getLoc(), args, domain.rankToTile[static_cast<size_t>(peer)]);
+  appendI32(op.getLoc(), args, domain.physicalTileId.getValue());
+  appendI32(op.getLoc(), args, peerTileId.getValue());
   appendI32(op.getLoc(), args, binding.getReceiverFsmId());
   return emitI64Call(
       op.getLoc(),
@@ -294,7 +285,7 @@ static void registerTargetCallee(mlir::MLIRContext *context,
 
 mlir::LogicalResult injectDirectDTEStatusLifecycle(
     mlir::ModuleOp moduleOp, llvm::StringRef entrySymbol,
-    int64_t statusArgumentIndex, int64_t rankCount,
+    int64_t statusArgumentIndex, int64_t participantCount,
     TargetCallBuiltin beginBuiltin,
     llvm::StringMap<CalleeSignature> &usedCallees) {
   auto entry = moduleOp.lookupSymbol<mlir::LLVM::LLVMFuncOp>(entrySymbol);
@@ -322,7 +313,7 @@ mlir::LogicalResult injectDirectDTEStatusLifecycle(
 
   builder.setInsertionPointToStart(&entry.getBody().front());
   mlir::Value count = builder.create<mlir::LLVM::ConstantOp>(
-      entry.getLoc(), i32Type, rankCount);
+      entry.getLoc(), i32Type, participantCount);
   builder.create<mlir::LLVM::CallOp>(
       entry.getLoc(), mlir::TypeRange(),
       mlir::FlatSymbolRefAttr::get(moduleOp.getContext(), begin.symbol),

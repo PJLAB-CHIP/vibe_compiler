@@ -1,8 +1,8 @@
 # Wafer Frontend 与 StableHLO Program Directory 设计
 
-状态：2026-07-16按Q29 structured-program handoff及已完成Q28 scale corpus/frontend边界同步。本文只拥有StableHLO
-program directory、metadata/payload和frontend admission合同；typed model/state/resource graph是后续扩展，不是当前pipeline事实。实现状态看
-`tasks/progress.md`。
+状态：2026-08-08按card-level GSPMD与whole-card MPMD边界同步。本文只拥有StableHLO program directory、
+metadata/payload和frontend admission合同；`num_partitions`描述card partition，不描述单卡16个physical Tile。
+typed model/state/resource graph与Tile级时空综合属于下游，不是frontend事实。实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
 
@@ -15,19 +15,20 @@ Pipeline position:
 - Current stage responsibility:
   parse并verify StableHLO module；校验单entry function与`forward.meta`的shape/dtype/arg-role关系；校验
   parameter/constant NPY payload；对post-SPMD program校验canonical `forward.meta.distributed_boundary`、
-  parameter shard metadata、logical rank domain和payload coverage；拒绝graph break、eager fallback、无界
+  parameter shard metadata、logical card-partition domain和payload coverage；拒绝graph break、eager fallback、无界
   dynamic shape及不安全路径。当前program-directory入口只接受static ranked boundary；bounded dynamic仅由
   IR-only frontend verifier检查，尚未进入directory schema或production lowering。
 - Output artifact / IR:
   verified StableHLO program directory。它仍由MLIR、`forward.meta`和必要payload共同组成，不是
   ExecutableBundle、target module或runtime package。
 - Downstream consumer:
-  Q15 typed compiler driver在transaction-owned snapshot上建立exact topology/execution mesh，调用pinned
-  XLA SPMD helper，然后做local compute normalization并发布verified rank-local structured tensor
-  program；05 structured optimization继续在同一IR上建立optimizer-ready handoff，physical-dataflow synthesis直接消费。
+  Q15 typed compiler driver在transaction-owned snapshot上建立card-partition mesh，调用pinned XLA SPMD helper，
+  然后做local compute normalization并发布verified card-local structured tensor program；05 structured
+  optimization继续在同一IR上建立optimizer-ready handoff。06随后以target physical topology为独立输入，形成
+  whole-card MPMD并联合搜索spatial placement、temporal tiling、fusion/SPM residency与communication。
 - User-level driver / named pipeline:
   `wafer-compile-stablehlo --verify-stablehlo-program`只做frontend admission；继续编译只经
-  `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --launch-kind={kernel|model}`；
+  `wafer-compile --input-program-dir=... --output-program-dir=... --num-partitions=1 --launch-kind={kernel|model}`；
   current target identity由compiler固定提供，不是用户选择。
   `wafer-opt`及named MLIR pipelines只处理显式IR，不拥有program-directory I/O。
 - Explicit non-goals:
@@ -72,7 +73,7 @@ absolute path、`..`或路径分隔符逃逸program root。name/path只负责在
 不能成为candidate/schedule、sharding、rank、resource或lowering分支条件。
 
 post-SPMD时同一份canonical metadata还包含`distributed_boundary`；这是function boundary由global tensor变成
-per-rank local tensor的typed artifact合同，不是planner sidecar。若未来需要typed mutable state、alias/mutation、
+per-card-partition local tensor的typed artifact合同，不是planner sidecar，也不是physical Tile placement。若未来需要typed mutable state、alias/mutation、
 多个entry或program graph，必须先设计可由IR/metadata verifier证明且有下游consumer的最小表示；不能恢复历史
 私有model dialect、复合frontend owner或side-table对象图作为前置。
 
@@ -115,28 +116,33 @@ public payload bytes，不把NumPy dtype或host endianness提升为target physic
 ### 3.3 Post-SPMD parameter shards
 
 post-SPMD marker存在时，每个parameter必须在
-`functions/forward.parameter_shards.json` schema version 3中有唯一记录。root至少包含：
+`functions/forward.parameter_shards.json` schema version 4中有唯一记录。root至少包含：
 
 ```text
-parameter_shards_version = 3
+parameter_shards_version = 4
 function
-logical_rank_count
+num_partitions
 parameters[]
 ```
 
+`num_partitions`只表示logical card-partition count，不表示physical Tile数量。旧schema-v3及其
+`logical_rank_count`/`rank`字段已删除，frontend不提供双reader或兼容翻译。
+
 每个parameter record通过`argument_index`绑定function argument，并声明`name`、dtype、global/local shape、
-`distribution`和每rank shard。`distribution`只接受：
+`distribution`和每partition shard。`distribution`只接受：
 
-- `replicated`：每个logical rank有完整global tensor，replica domain完整，所有payload byte-identical；
-- `partitioned`：当前每rank一个slice且`replica_id == 0`，所有slice无重叠并精确覆盖global tensor。
+- `replicated`：每个logical card partition有完整global tensor，replica domain完整，所有payload byte-identical；
+- `partitioned`：当前每partition一个slice且`replica_id == 0`，所有slice无重叠并精确覆盖global tensor。
 
-每个shard的rank必须唯一且位于`[0, logical_rank_count)`；offset/size/stride rank匹配，stride当前为1，slice
-不越global shape，NPY shape/dtype与slice一致。metadata中的logical rank count必须等于
-`wafer.execution.mesh` shape product。没有显式subgroup关系的partial replication拒绝，不能从重复offset或
+每个shard中的`partition_id`必须唯一且位于`[0, num_partitions)`；
+offset/size/stride的tensor rank匹配，stride当前为1，slice不越global shape，NPY shape/dtype与slice一致。
+metadata中的`num_partitions`必须等于
+logical `wafer.execution.mesh` shape product。没有显式subgroup关系的partial replication拒绝，不能从重复offset或
 文件名推测replica group。
 
 parameter shard JSON是post-SPMD payload绑定，不是第二份sharding planner、physical endpoint、memory plan或
-runtime manifest。它的consumer是frontend/program verifier和后续每rank artifact构造。
+runtime manifest。它的consumer是frontend/program verifier和后续card-partition artifact构造；单卡内部16个
+`tile_id`不出现在该schema中。
 
 ### 3.4 Post-SPMD distributed boundary
 
@@ -145,19 +151,21 @@ pre-SPMD `forward.meta`不得有`distributed_boundary`。明确post-SPMD marker�
 
 ```text
 distributed_boundary:
-  version = 1
-  logical_rank_count = 1 | 16
+  version = 2
+  num_partitions
   inputs[]   # 精确覆盖input_locations.type_ == input_arg
   outputs[]  # 精确覆盖全部function results
 ```
 
 input/output record分别以`argument_index`/`result_index`绑定原boundary identity，并包含`distribution`、
-`global_shape`、`local_shape`、dtype和每rank `{rank, replica_id, offsets, sizes, strides}`。helper从XLA
+`global_shape`、`local_shape`、dtype和`partitions[]`中的
+`{partition_id, replica_id, offsets, sizes, strides}`。旧schema-v1及其
+`logical_rank_count`/`ranks`/`rank`字段已删除。helper从XLA
 `HloSharding` typed API生成这些事实，不解析或反推opaque sharding string。
 
 verifier要求record coverage精确且无重复，dtype/local shape与post-SPMD module和`input/output_signature`逐项一致，
-logical rank count等于execution mesh。`replicated`要求global/local shape相同、每rank完整覆盖且replica id domain
-完整；`partitioned`要求每rank`replica_id == 0`、slice不重叠并完整覆盖global tensor，最大slice shape解释local
+`num_partitions`等于logical execution mesh product。`replicated`要求global/local shape相同、每partition完整覆盖且replica id domain
+完整；`partitioned`要求每partition `replica_id == 0`、slice不重叠并完整覆盖global tensor，最大slice shape解释local
 module shape；stride当前只能为1。partial replication、single-device、manual/unknown/shard-group等当前无法完整表达
 的boundary sharding fail closed，不能从字符串、名字或重复offset恢复语义。
 
@@ -198,13 +206,11 @@ variant仍由同一PyTorch eager block产生expected、由同一真实exporter�
 variant seed和原固定seed全部通过后，scale case只把source/model comparator policy收紧为`atol=0.004, rtol=0.002`；该字段
 不进入source/config/payload/program digest，也不把variant提升为corpus admission。
 
-Q44把常用板端tensor纵向的source ownership补齐，但不改变frontend artifact合同。rank-one GEMM、Q39同shape的
-16-rank `4096³` contracting-K sharded GEMM和实际shape的HuggingFace Llama-2 7B decoder block必须从
-`torch.nn.Module`、同一组保留自身dtype的`torch.Tensor`及
-真实PyTorch/XLA exporter形成program directory；后两者的AllReduce必须由exporter sharding与pinned SPMD helper
-自然产生，不能用手写StableHLO/MLIR代签。Llama block按Megatron TP16切分：Q/K/V与Gate/Up column-parallel，
-O与Down row-parallel，LayerNorm vector及用户边界replicated；parameter角色由module显式sharding spec声明，
-不得从parameter name恢复。
+旧Q44的TP16/rank-as-Tile资格只作历史背景，不属于current frontend合同。当前GEMM、HuggingFace attention、
+KV-cache decode与Llama-2 7B block都从真实framework module和原始dtype tensor导出
+`num_partitions=1`的card-local program；source IR不携带物理Tile mesh或卡内TP标记。Q49 baseline与Q51 production随后
+从同一structured DAG决定16个physical Tile上的spatial mapping、temporal tiling、fusion/SPM residency与通信。不得用手写
+StableHLO/MLIR、parameter name或测试fixture把这些卡内决定提前编码进frontend。
 同一组tensor先在PyTorch eager CPU执行形成唯一用户级expected；NumPy不得参与expected生成或最终结果比较。
 exporter因NPY artifact格式使用NumPy作payload序列化属于adapter transport，不取得数值参考结果的ownership。
 普通case以固定seed的PyTorch random API构造输入；周期pattern、one-hot和手写简化公式只用于失败后的定向debug。
@@ -222,8 +228,9 @@ helper不能消费的`sdy.constant`/`sdy.reshard`等语义，因此在完整SDY�
 driver。
 
 helper输出必须重新走本文件的metadata/payload verifier，包含上述distributed boundary，并与
-`ExecutionConfig`建立的execution mesh逐项一致。
-Q15随后做StableHLO-to-Linalg/collective normalization，再发布verified rank-local structured
+`ExecutionConfig::numPartitions`建立的logical execution mesh逐项一致；physical Tile数量只来自target topology，
+不得在此处用partition数推导。
+Q15随后做StableHLO-to-Linalg/collective normalization，再发布verified card-partition-local structured
 tensor program。frontend verifier本身不执行helper、不形成调度单元，也不公开SPMD stop-stage。
 
 ## 6. Ownership 与失败语义
@@ -234,8 +241,11 @@ target context或publication authority。
 
 production driver在parse前把source directory完整复制到transaction-owned snapshot；后续frontend verify、helper
 和IR transforms只读/改写staging内成员。source不得被原地补metadata、topology或shards。Q15最终发布的是重新
-parse/verify过的rank-local structured tensor program directory；fixed structured optimization完成后，physical-dataflow synthesis从该artifact构造全部
-per-rank task/dataflow candidates，全rank验证后再构造ExecutableBundle。structured tensor program是调度
+parse/verify过的card-partition-local structured tensor program directory；fixed structured optimization完成后，
+physical-dataflow synthesis从单卡partition artifact构造一个whole-card `wafer.card.program`，其中all-and-only
+available physical Tiles各有独立`wafer.tile.program`。每个Tile可有不同op、loop和temporal tile shape；whole-DAG
+scheduler联合决定placement、tiling、fusion/residency和显式NoC/DDR movement，whole-card exact gates通过后再构造
+physical-Tile launch bundle。structured tensor program是调度
 唯一输入artifact；已删除的`wafer.group` formation/selector没有兼容、debug或发布旁路。
 
 这种最小owner边界有意不保留历史讨论中的复合frontend/executable owner和model-interface registry链。若未来
@@ -246,8 +256,7 @@ per-rank task/dataflow candidates，全rank验证后再构造ExecutableBundle。
 frontend mandatory coverage包括：
 
 - 真实PyTorch/XLA capture → program directory → verifier；
-- Q44 rank-one GEMM、16-rank `4096³` contracting-K sharded GEMM/AllReduce及HuggingFace Llama-2 7B block
-  Megatron TP16
+- generic GEMM、mixed DAG、official HuggingFace prefill、functional KV-cache decode及card-local Llama-2 7B block
   由真实exporter进入production pipeline；同一
   PyTorch eager tensor形成expected，runtime按同shape/dtype完整capture回读为`torch.Tensor`且不做精度转换，
   再经`torch.testing`比较；
@@ -256,10 +265,10 @@ frontend mandatory coverage包括：
 - parameter/constant NPY shape/dtype/order/truncation与unsafe path负例；F16 `<f2`、host-compatible `=f2`、BF16 `|V2`
   canonical bytes正例及`>f2`拒绝；
 - `input_arg` position唯一连续；
-- `forward.parameter_shards.json` schema-v3 replicated/partitioned rank coverage、gap/overlap、payload一致性和mesh mismatch；
-- schema-v1 distributed input/result identity、global/local shape、dtype、rank/replica domain及data/column真实策略；
+- `forward.parameter_shards.json` schema-v4 replicated/partitioned card-partition coverage、gap/overlap、payload一致性和mesh mismatch；
+- schema-v2 distributed input/result identity、global/local shape、dtype、partition/replica domain及data/column真实策略；
 - pre-exported StableHLO parse/printer及显式IR-local lowering补充测试。
 
 完成记录必须区分真实exporter gate、program verifier和下游Q15 gate。FileCheck、手写MLIR或CPU oracle单独通过
-都不能证明structured tensor program的task/dataflow scheduling、ExecutableBundle、target artifact、runtime
+都不能证明whole-card spatial/temporal/fusion/communication scheduling、physical-Tile executable bundle、target artifact、runtime
 或board正确。

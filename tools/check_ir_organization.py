@@ -76,11 +76,7 @@ OP_FAMILIES = {
         "layer": "Tile",
         "td": "CommOps.td",
         "cpp": "CommOps.cpp",
-        "mnemonics": [
-            "tile.all_gather",
-            "tile.reduce_scatter",
-            "tile.all_reduce",
-        ],
+        "mnemonics": ["tile.peer_send", "tile.peer_recv"],
         "tests": "Tile/Comm",
     },
     "LinalgExtCollective": {
@@ -126,6 +122,10 @@ IR_LAYERS = {
     "Common",
 }
 CONVERSION_LIBRARIES = {
+    "WaferCardProgramToTileModules": {
+        "include": "include/Wafer/Conversion/WaferCardProgramToTileModules/WaferCardProgramToTileModules.h",
+        "lib": "lib/Wafer/Conversion/WaferCardProgramToTileModules/WaferCardProgramToTileModules.cpp",
+    },
     "WaferTensorProgramToTileRegion": {
         "include": "include/Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h",
         "lib": "lib/Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.cpp",

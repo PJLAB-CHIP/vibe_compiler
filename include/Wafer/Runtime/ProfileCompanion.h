@@ -25,8 +25,9 @@ struct TargetCallDescriptor;
 
 namespace runtime {
 
-inline constexpr uint32_t kProfileCompanionSchemaVersion = 7;
-inline constexpr int64_t kProfileCompanionRankCount = 16;
+inline constexpr uint32_t kProfileCompanionSchemaVersion = 9;
+inline constexpr int64_t kProfileCompanionCardCount = 1;
+inline constexpr int64_t kProfileCompanionTileCount = 16;
 inline constexpr llvm::StringLiteral kProfileSiteCorrelationBasis =
     "typed-target-call-ordinal-ssa-identity-occurrence-v2";
 inline constexpr llvm::StringLiteral kProfileRecordABI =
@@ -34,22 +35,15 @@ inline constexpr llvm::StringLiteral kProfileRecordABI =
 inline constexpr llvm::StringLiteral kProfileStaticCostModelName =
     "tx81-static-peak-lower-bound-v1";
 inline constexpr llvm::StringLiteral kProfileStaticCostModelScope =
-    "complete-final-instruction-program-per-rank";
+    "complete-final-instruction-program-per-physical-tile";
 inline constexpr llvm::StringLiteral kProfileCompanionActivationFileName =
     "activation.json";
 inline constexpr llvm::StringLiteral kProfileCompanionPlanFileName =
     "plan.json";
-inline constexpr llvm::StringLiteral kProfileCompanionVariantsFileName =
-    "variants.json";
 inline constexpr llvm::StringLiteral kProfileCompanionSiteMapFileName =
     "site-map.json";
 
-enum class ProfileVariantRole {
-  FinalArtifact,
-};
-
 enum class ProfileCaptureKind {
-  Summary,
   Count,
   Trace,
 };
@@ -97,15 +91,7 @@ struct ProfileStaticDirectionalNoCWork {
   ProfileStaticCostMetric west;
 };
 
-struct ProfileStaticCollectiveNoCWork {
-  ProfileStaticCostMetric collectivePermute;
-  ProfileStaticCostMetric allToAll;
-  ProfileStaticCostMetric allGather;
-  ProfileStaticCostMetric reduceScatter;
-  ProfileStaticCostMetric allReduce;
-};
-
-struct ProfileStaticRankWork {
+struct ProfileStaticTileWork {
   ProfileStaticCostMetric npuF16Bf16LogicalOps;
   ProfileStaticCostMetric npuOtherLogicalOps;
   ProfileStaticCostMetric vectorF16Bf16LogicalOps;
@@ -117,12 +103,13 @@ struct ProfileStaticRankWork {
   ProfileStaticCostMetric nocTransmitBytes;
   ProfileStaticCostMetric nocReceiveBytes;
   ProfileStaticDirectionalNoCWork directionalNoCTransmitBytes;
-  ProfileStaticCollectiveNoCWork collectiveNoCTransmitBytes;
 };
 
-struct ProfileStaticRankCost {
-  int64_t logicalRank = -1;
-  ProfileStaticRankWork work;
+struct ProfileStaticTileCost {
+  PhysicalCardId cardId{0};
+  PhysicalTileId tileId{0};
+  LaunchSlotId launchSlot;
+  ProfileStaticTileWork work;
 };
 
 /// Static target rates plus exact work derived from the accepted final
@@ -132,7 +119,7 @@ struct ProfileStaticCostModel {
   std::string model;
   std::string scope;
   ProfileStaticCostRates rates;
-  std::vector<ProfileStaticRankCost> ranks;
+  std::vector<ProfileStaticTileCost> tiles;
 };
 
 struct ProfileTargetCallSite {
@@ -150,32 +137,25 @@ struct ProfileTargetCallSite {
   std::optional<uint64_t> instructionOrdinal;
 };
 
-struct ProfileRankSiteMap {
-  int64_t logicalRank = -1;
+struct ProfileTileSiteMap {
+  PhysicalCardId cardId{0};
+  PhysicalTileId tileId{0};
+  LaunchSlotId launchSlot;
   std::vector<ProfileTargetCallSite> sites;
 };
 
-struct ProfileVariantSiteMap {
-  std::string variantId;
-  std::vector<ProfileRankSiteMap> ranks;
-};
-
-class ProfileVariantPackage {
+class ProfileProductionArtifact {
 public:
-  ProfileVariantPackage(std::string id, ProfileVariantRole role,
-                        std::string packageReference,
-                        std::string manifestDigest,
-                        ProfileStaticCostModel staticCostModel,
-                        std::string packageDirectory,
-                        VerifiedPackageManifest package);
-  ProfileVariantPackage(ProfileVariantPackage &&) = default;
-  ProfileVariantPackage &operator=(ProfileVariantPackage &&) = default;
-  ProfileVariantPackage(const ProfileVariantPackage &) = delete;
-  ProfileVariantPackage &operator=(const ProfileVariantPackage &) = delete;
+  ProfileProductionArtifact(std::string manifestDigest,
+                            ProfileStaticCostModel staticCostModel,
+                            std::string packageDirectory,
+                            VerifiedPackageManifest package);
+  ProfileProductionArtifact(ProfileProductionArtifact &&) = default;
+  ProfileProductionArtifact &operator=(ProfileProductionArtifact &&) = default;
+  ProfileProductionArtifact(const ProfileProductionArtifact &) = delete;
+  ProfileProductionArtifact &
+  operator=(const ProfileProductionArtifact &) = delete;
 
-  llvm::StringRef getId() const { return id; }
-  ProfileVariantRole getRole() const { return role; }
-  llvm::StringRef getPackageReference() const { return packageReference; }
   llvm::StringRef getManifestDigest() const { return manifestDigest; }
   const ProfileStaticCostModel &getStaticCostModel() const {
     return staticCostModel;
@@ -184,9 +164,6 @@ public:
   const VerifiedPackageManifest &getPackage() const { return package; }
 
 private:
-  std::string id;
-  ProfileVariantRole role;
-  std::string packageReference;
   std::string manifestDigest;
   ProfileStaticCostModel staticCostModel;
   std::string packageDirectory;
@@ -195,7 +172,7 @@ private:
 
 class ProfileCapturePackage {
 public:
-  ProfileCapturePackage(std::string variantId, ProfileCaptureKind capture,
+  ProfileCapturePackage(ProfileCaptureKind capture,
                         std::string packageReference,
                         std::string manifestDigest, std::string recordABI,
                         uint64_t recordBytes, std::string packageDirectory,
@@ -205,7 +182,6 @@ public:
   ProfileCapturePackage(const ProfileCapturePackage &) = delete;
   ProfileCapturePackage &operator=(const ProfileCapturePackage &) = delete;
 
-  llvm::StringRef getVariantId() const { return variantId; }
   ProfileCaptureKind getCaptureKind() const { return capture; }
   llvm::StringRef getPackageReference() const { return packageReference; }
   llvm::StringRef getManifestDigest() const { return manifestDigest; }
@@ -215,7 +191,6 @@ public:
   const VerifiedPackageManifest &getPackage() const { return package; }
 
 private:
-  std::string variantId;
   ProfileCaptureKind capture;
   std::string packageReference;
   std::string manifestDigest;
@@ -234,19 +209,16 @@ public:
   operator=(const VerifiedProfileCompanion &) = delete;
 
   uint32_t getSchemaVersion() const { return schemaVersion; }
-  int64_t getRankCount() const { return rankCount; }
+  int64_t getCardCount() const { return cardCount; }
+  int64_t getTileCount() const { return tileCount; }
   llvm::StringRef getRoot() const { return root; }
-  llvm::StringRef getProductionManifestDigest() const {
-    return productionManifestDigest;
+  const ProfileProductionArtifact &getProductionArtifact() const {
+    return productionArtifact;
   }
-  llvm::ArrayRef<ProfileVariantPackage> getVariants() const { return variants; }
   llvm::ArrayRef<ProfileCapturePackage> getCaptures() const { return captures; }
-  llvm::ArrayRef<ProfileVariantSiteMap> getSiteMaps() const { return siteMaps; }
+  llvm::ArrayRef<ProfileTileSiteMap> getSiteMap() const { return siteMap; }
 
-  const ProfileVariantPackage *findVariant(ProfileVariantRole role) const;
-  const ProfileCapturePackage *findCapture(llvm::StringRef variantId,
-                                           ProfileCaptureKind capture) const;
-  const ProfileVariantSiteMap *findSiteMap(llvm::StringRef variantId) const;
+  const ProfileCapturePackage *findCapture(ProfileCaptureKind capture) const;
   uint64_t getSiteCount() const;
 
 private:
@@ -255,31 +227,28 @@ private:
                                const PackageParseLimits &);
 
   VerifiedProfileCompanion(std::string root,
-                           std::string productionManifestDigest,
-                           std::vector<ProfileVariantPackage> variants,
+                           ProfileProductionArtifact productionArtifact,
                            std::vector<ProfileCapturePackage> captures,
-                           std::vector<ProfileVariantSiteMap> siteMaps)
+                           std::vector<ProfileTileSiteMap> siteMap)
       : root(std::move(root)),
-        productionManifestDigest(std::move(productionManifestDigest)),
-        variants(std::move(variants)), captures(std::move(captures)),
-        siteMaps(std::move(siteMaps)) {}
+        productionArtifact(std::move(productionArtifact)),
+        captures(std::move(captures)), siteMap(std::move(siteMap)) {}
 
   uint32_t schemaVersion = kProfileCompanionSchemaVersion;
-  int64_t rankCount = kProfileCompanionRankCount;
+  int64_t cardCount = kProfileCompanionCardCount;
+  int64_t tileCount = kProfileCompanionTileCount;
   std::string root;
-  std::string productionManifestDigest;
-  std::vector<ProfileVariantPackage> variants;
+  ProfileProductionArtifact productionArtifact;
   std::vector<ProfileCapturePackage> captures;
-  std::vector<ProfileVariantSiteMap> siteMaps;
+  std::vector<ProfileTileSiteMap> siteMap;
 };
 
-llvm::StringRef stringifyProfileVariantRole(ProfileVariantRole role);
 llvm::StringRef stringifyProfileCaptureKind(ProfileCaptureKind capture);
 llvm::StringRef stringifyProfileTSMEngine(ProfileTSMEngine engine);
 llvm::StringRef stringifyProfileTargetSiteKind(ProfileTargetSiteKind kind);
 
-/// Emits the canonical strict JSON representation used in both
-/// variants.json and top-level profile evidence.
+/// Emits the canonical strict JSON representation used in the profile plan
+/// and top-level profile evidence.
 void writeProfileStaticCostModel(llvm::json::OStream &json,
                                  const ProfileStaticCostModel &model);
 
@@ -291,7 +260,7 @@ getProfileTargetSiteKind(const TargetCallDescriptor &descriptor);
 
 /// Loads and fail-closed verifies one compiler-published profiler companion.
 /// `productionPackageRoot` is the ordinary package selected by the user; the
-/// final-artifact reference in the companion must resolve to exactly it.
+/// companion production digest must resolve to exactly it.
 llvm::Expected<VerifiedProfileCompanion>
 loadVerifiedProfileCompanion(llvm::StringRef companionRoot,
                              llvm::StringRef productionPackageRoot,

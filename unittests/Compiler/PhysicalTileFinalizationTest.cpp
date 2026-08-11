@@ -1,6 +1,6 @@
-//===- ScheduledRankFinalizationTest.cpp ---------------------------------===//
+//===- PhysicalTileFinalizationTest.cpp ---------------------------------===//
 
-#include "../../lib/Wafer/Compiler/ScheduledRankFinalization.h"
+#include "../../lib/Wafer/Compiler/PhysicalTileFinalization.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
@@ -23,9 +23,9 @@
 
 namespace {
 
-class ScheduledRankFinalizationTest : public ::testing::Test {
+class PhysicalTileFinalizationTest : public ::testing::Test {
 protected:
-  ScheduledRankFinalizationTest() {
+  PhysicalTileFinalizationTest() {
     wafer::compiler::detail::registerCompilationDialects(registry);
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
@@ -121,7 +121,7 @@ module {
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
-TEST_F(ScheduledRankFinalizationTest,
+TEST_F(PhysicalTileFinalizationTest,
        RejectsTileDataflowAtCanonicalInstrActionBoundary) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       candidateWithSPMElements(/*elements=*/128);
@@ -136,19 +136,20 @@ TEST_F(ScheduledRankFinalizationTest,
         os << "\n";
         return mlir::success();
       });
-  wafer::compiler::detail::RankFinalizationFailure failure;
-  auto finalized = wafer::compiler::detail::finalizeCoordinatedRankModule(
+  wafer::compiler::detail::PhysicalTileFinalizationFailure failure;
+  auto finalized = wafer::compiler::detail::finalizePhysicalTileModule(
       std::move(module), &failure);
   EXPECT_TRUE(mlir::failed(finalized));
-  EXPECT_EQ(failure.kind,
-            wafer::compiler::detail::RankFinalizationFailureKind::Contract);
-  EXPECT_NE(
-      diagnostics.find("rank_finalization_requires_canonical_instr_action"),
-      std::string::npos)
+  EXPECT_EQ(
+      failure.kind,
+      wafer::compiler::detail::PhysicalTileFinalizationFailureKind::Contract);
+  EXPECT_NE(diagnostics.find(
+                "physical_tile_finalization_requires_canonical_instr_action"),
+            std::string::npos)
       << diagnostics;
 }
 
-TEST_F(ScheduledRankFinalizationTest, ReportsSPMFailureForOwnedRankModule) {
+TEST_F(PhysicalTileFinalizationTest, ReportsSPMFailureForOwnedTileModule) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       candidateWithSPMElements(/*elements=*/2'000'000);
   ASSERT_TRUE(module);
@@ -163,19 +164,42 @@ TEST_F(ScheduledRankFinalizationTest, ReportsSPMFailureForOwnedRankModule) {
         os << "\n";
         return mlir::success();
       });
-  wafer::compiler::detail::RankFinalizationFailure failure;
-  auto finalized = wafer::compiler::detail::finalizeCoordinatedRankModule(
+  wafer::compiler::detail::PhysicalTileFinalizationFailure failure;
+  auto finalized = wafer::compiler::detail::finalizePhysicalTileModule(
       std::move(module), &failure);
   EXPECT_TRUE(mlir::failed(finalized));
-  EXPECT_EQ(
-      failure.kind,
-      wafer::compiler::detail::RankFinalizationFailureKind::SPMAllocation);
+  EXPECT_EQ(failure.kind,
+            wafer::compiler::detail::PhysicalTileFinalizationFailureKind::
+                SPMAllocation);
+  EXPECT_TRUE(failure.spmCapacityOverflow);
+  EXPECT_TRUE(static_cast<bool>(failure.spmLargestDemandLocation));
+  EXPECT_EQ(failure.spmLargestDemandBytes, 4'000'000u);
+  ASSERT_FALSE(failure.spmLargestDemands.empty());
+  EXPECT_EQ(failure.spmLargestDemands.front().location,
+            failure.spmLargestDemandLocation);
+  EXPECT_EQ(failure.spmLargestDemands.front().bytes,
+            failure.spmLargestDemandBytes);
+  ASSERT_EQ(failure.spmCapacityConflictDemands.size(), 1u);
+  EXPECT_EQ(failure.spmCapacityConflictDemands.front().location,
+            failure.spmLargestDemandLocation);
+  EXPECT_EQ(failure.spmCapacityConflictDemands.front().bytes,
+            failure.spmLargestDemandBytes);
+  ASSERT_EQ(failure.spmIndividuallyOversizedDemands.size(), 1u);
+  EXPECT_EQ(failure.spmIndividuallyOversizedDemands.front().location,
+            failure.spmLargestDemandLocation);
+  EXPECT_EQ(failure.spmIndividuallyOversizedDemands.front().bytes,
+            failure.spmLargestDemandBytes);
   EXPECT_NE(diagnostics.find("capacity_overflow"), std::string::npos)
+      << diagnostics;
+  EXPECT_NE(diagnostics.find("capacity_conflict_demands=1"), std::string::npos)
+      << diagnostics;
+  EXPECT_NE(diagnostics.find("individually_oversized_demands=1"),
+            std::string::npos)
       << diagnostics;
 }
 
-TEST_F(ScheduledRankFinalizationTest,
-       RejectsWholeVariantPlacementBeforeRankFinalization) {
+TEST_F(PhysicalTileFinalizationTest,
+       RejectsWholeCardPlacementBeforeTileFinalization) {
   mlir::OwningOpRef<mlir::ModuleOp> module = candidateWithDDRPlacement();
   ASSERT_TRUE(module);
 
@@ -187,19 +211,21 @@ TEST_F(ScheduledRankFinalizationTest,
         os << "\n";
         return mlir::success();
       });
-  wafer::compiler::detail::RankFinalizationFailure failure;
-  auto finalized = wafer::compiler::detail::finalizeCoordinatedRankModule(
+  wafer::compiler::detail::PhysicalTileFinalizationFailure failure;
+  auto finalized = wafer::compiler::detail::finalizePhysicalTileModule(
       std::move(module), &failure);
   EXPECT_TRUE(mlir::failed(finalized));
-  EXPECT_EQ(
-      failure.kind,
-      wafer::compiler::detail::RankFinalizationFailureKind::WholeVariantFacts);
-  EXPECT_NE(diagnostics.find("rank_finalization_contains_whole_variant_facts"),
+  EXPECT_EQ(failure.kind,
+            wafer::compiler::detail::PhysicalTileFinalizationFailureKind::
+                PrematureWholeCardFacts);
+  EXPECT_NE(diagnostics.find(
+                "physical_tile_finalization_contains_premature_whole_card_"
+                "facts"),
             std::string::npos)
       << diagnostics;
 }
 
-TEST_F(ScheduledRankFinalizationTest,
+TEST_F(PhysicalTileFinalizationTest,
        RebuildsRegionRootCompletionAfterBufferizationFromCurrentEffects) {
   mlir::OwningOpRef<mlir::ModuleOp> module = candidateWithStaleMidRegionJoin();
   ASSERT_TRUE(module);
@@ -208,7 +234,7 @@ TEST_F(ScheduledRankFinalizationTest,
   wafer::support::ScopedCompileWorkStatisticsActivation workActivation(
       workSession);
   auto finalized =
-      wafer::compiler::detail::finalizeCoordinatedRankModule(std::move(module));
+      wafer::compiler::detail::finalizePhysicalTileModule(std::move(module));
   ASSERT_TRUE(mlir::succeeded(finalized));
 
   llvm::SmallVector<wafer::SyncNCCJoinOp, 2> joins;
@@ -218,8 +244,8 @@ TEST_F(ScheduledRankFinalizationTest,
   EXPECT_TRUE(mlir::isa<wafer::TileYieldOp>(joins.front()->getNextNode()));
   EXPECT_TRUE(joins.front()->getParentOfType<wafer::TileRegionOp>());
   const wafer::support::CompileWorkStatistics work = workSession->snapshot();
-  EXPECT_EQ(work.finalizationCandidateClones, 1u);
-  EXPECT_EQ(work.finalizationInstructionLowerings, 0u);
+  EXPECT_EQ(work.physicalTileFinalizations, 1u);
+  EXPECT_EQ(work.tileToInstructionLowerings, 0u);
   EXPECT_EQ(work.spmPlanningInvocations, 1u);
 }
 

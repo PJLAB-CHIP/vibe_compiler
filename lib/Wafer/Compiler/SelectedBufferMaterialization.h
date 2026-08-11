@@ -1,0 +1,87 @@
+//===- SelectedBufferMaterialization.h - Joint buffer actualization -*- C++
+//-*-===//
+
+#pragma once
+
+#include "Wafer/Conversion/WaferTensorProgramToCardProgram/WaferTensorProgramToCardProgram.h"
+
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Support/LogicalResult.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
+
+#include <cstdint>
+#include <limits>
+#include <string>
+
+namespace wafer::compiler::detail {
+
+enum class SelectedBufferMessageDirection : uint8_t { Send, Receive };
+
+/// One exact Direct-DTE endpoint belonging to a selected logical edge on one
+/// physical Tile. Message identity is already part of typed Instr IR; this
+/// query-local record only binds that IR fact back to the joint-search edge.
+struct SelectedBufferMessage {
+  SelectedBufferMessageDirection direction =
+      SelectedBufferMessageDirection::Send;
+  int64_t communicationId = 0;
+  int64_t payloadSlice = 0;
+};
+
+/// Query-local exact-buffer request for one selected logical SSA edge on one
+/// physical Tile. Source lineage and Direct-DTE message identity are both
+/// stripped before artifact publication; neither becomes a second IR plan.
+struct SelectedBufferRequest {
+  const CardProgramSourceOperationLineage *producerLineage = nullptr;
+  const CardProgramSourceOperationLineage *consumerLineage = nullptr;
+  uint8_t bufferCount = 1;
+  bool requireLocalDataflow = false;
+  llvm::SmallVector<SelectedBufferMessage, 2> messages;
+};
+
+enum class SelectedBufferMaterializationFailureKind : uint8_t {
+  None,
+  InvalidRequest,
+  NoExactLoop,
+  EdgeNotWitnessed,
+  NestedRegion,
+  NoCrossEngineStage,
+  TripCountTooSmall,
+  MultiplicityMismatch,
+  UnsupportedStructure,
+};
+
+struct SelectedBufferMaterializationFailure {
+  SelectedBufferMaterializationFailureKind kind =
+      SelectedBufferMaterializationFailureKind::None;
+  size_t requestIndex = std::numeric_limits<size_t>::max();
+  const CardProgramSourceOperationLineage *producerLineage = nullptr;
+  const CardProgramSourceOperationLineage *consumerLineage = nullptr;
+  uint8_t bufferCount = 1;
+  std::string detail;
+};
+
+/// Materializes the buffer multiplicity already selected by the whole-DAG
+/// candidate into ordinary allocation, SSA recurrence and scf.for IR.  This
+/// is an exact actualization gate, not a second candidate owner: it either
+/// commits one (possibly nested) loop whose derived rotating-slot family has
+/// exactly `requestedBufferCount`, or leaves `module` unchanged and fails.
+/// This overload is the low-level mechanism test seam; search policy must use
+/// the exact logical-edge overload below.
+mlir::LogicalResult materializeSelectedBuffering(
+    mlir::OwningOpRef<mlir::ModuleOp> &module, uint8_t requestedBufferCount,
+    unsigned *materializedSlotAllocationCount = nullptr,
+    std::string *failureReason = nullptr, bool permitNoOpportunity = false);
+
+/// Search-policy exact gate. Unlike the low-level mechanism seam above, this
+/// overload must prove that the materialized stage dependency belongs to all
+/// selected logical-edge requests on the Tile. A loop for an unrelated edge
+/// is not an admissible witness.
+mlir::LogicalResult materializeSelectedBuffering(
+    mlir::OwningOpRef<mlir::ModuleOp> &module,
+    llvm::ArrayRef<SelectedBufferRequest> requests,
+    unsigned *materializedSlotAllocationCount = nullptr,
+    SelectedBufferMaterializationFailure *failure = nullptr);
+
+} // namespace wafer::compiler::detail

@@ -37,11 +37,11 @@ withReads(TargetModelCommandEffect effect,
 } // namespace
 
 llvm::Expected<std::vector<uint8_t>>
-readSnapshot(const InvocationMemoryRegistry &memory, int64_t rank,
+readSnapshot(const InvocationMemoryRegistry &memory, int64_t launchSlot,
              TargetModelAddressSpace space, uint64_t address, uint64_t bytes,
              uint64_t alignment) {
   llvm::Expected<std::vector<uint8_t>> result =
-      memory.readSnapshot(rank, space, address, bytes, alignment);
+      memory.readSnapshot(launchSlot, space, address, bytes, alignment);
   if (!result)
     return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
                        llvm::toString(result.takeError()));
@@ -63,38 +63,38 @@ executeMovement(const compiler::TargetTransaction &transaction,
 
   if (value.direction == compiler::TargetDMADirection::Read) {
     llvm::Expected<std::vector<uint8_t>> payload = memory.readStridedSnapshot(
-        transaction.logicalRank, TargetModelAddressSpace::CardDDR, value.source,
-        layout, 1);
+        transaction.launchSlotId.getValue(), TargetModelAddressSpace::CardDDR,
+        value.source, layout, 1);
     if (!payload)
       return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
                          llvm::toString(payload.takeError()));
     return withReads(
         TargetModelCommandEffect{
-            {TargetModelByteWrite{transaction.logicalRank,
-                                  TargetModelAddressSpace::RankSPM,
+            {TargetModelByteWrite{transaction.launchSlotId.getValue(),
+                                  TargetModelAddressSpace::TileSPM,
                                   value.destination, 1, std::move(*payload)}},
             {},
             TargetModelControlAction::None},
-        {TargetModelByteRead{transaction.logicalRank,
+        {TargetModelByteRead{transaction.launchSlotId.getValue(),
                              TargetModelAddressSpace::CardDDR, value.source,
                              value.byteCount, layout}});
   }
 
   llvm::Expected<std::vector<uint8_t>> payload = readSnapshot(
-      memory, transaction.logicalRank, TargetModelAddressSpace::RankSPM,
-      value.source, value.byteCount);
+      memory, transaction.launchSlotId.getValue(),
+      TargetModelAddressSpace::TileSPM, value.source, value.byteCount);
   if (!payload)
     return payload.takeError();
   return withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{transaction.logicalRank,
+          {TargetModelByteWrite{transaction.launchSlotId.getValue(),
                                 TargetModelAddressSpace::CardDDR,
                                 value.destination, 1, std::move(*payload),
                                 layout}},
           {},
           TargetModelControlAction::None},
-      {TargetModelByteRead{transaction.logicalRank,
-                           TargetModelAddressSpace::RankSPM, value.source,
+      {TargetModelByteRead{transaction.launchSlotId.getValue(),
+                           TargetModelAddressSpace::TileSPM, value.source,
                            value.byteCount, std::nullopt}});
 }
 
@@ -129,21 +129,21 @@ executeGatherScatter(const compiler::TargetTransaction &transaction,
   TargetModelStridedByteLayout destinationLayout = makeLayout(
       value.innerBytes, value.destinationStrides, value.destinationIterations);
   llvm::Expected<std::vector<uint8_t>> snapshot = memory.readStridedSnapshot(
-      transaction.logicalRank, TargetModelAddressSpace::RankSPM, value.source,
-      sourceLayout, 1);
+      transaction.launchSlotId.getValue(), TargetModelAddressSpace::TileSPM,
+      value.source, sourceLayout, 1);
   if (!snapshot)
     return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
                        llvm::toString(snapshot.takeError()));
   return withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{transaction.logicalRank,
-                                TargetModelAddressSpace::RankSPM,
+          {TargetModelByteWrite{transaction.launchSlotId.getValue(),
+                                TargetModelAddressSpace::TileSPM,
                                 value.destination, 1, std::move(*snapshot),
                                 destinationLayout}},
           {},
           TargetModelControlAction::None},
-      {TargetModelByteRead{transaction.logicalRank,
-                           TargetModelAddressSpace::RankSPM, value.source,
+      {TargetModelByteRead{transaction.launchSlotId.getValue(),
+                           TargetModelAddressSpace::TileSPM, value.source,
                            value.byteCount, sourceLayout}});
 }
 

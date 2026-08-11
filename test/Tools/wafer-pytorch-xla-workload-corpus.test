@@ -1,7 +1,7 @@
 # REQUIRES: stablehlo, pytorch-xla-importer
 
 # RUN: rm -rf %t.corpus
-# RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-workload-corpus --verify-corpus-reproducibility --output-corpus-dir %t.corpus
+# RUN: env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-workload-corpus --verify-corpus-reproducibility --output-corpus-dir %t.corpus
 # RUN: FileCheck %s --input-file=%t.corpus/corpus.json --check-prefix=CORPUS
 # RUN: FileCheck %s --input-file=%t.corpus/linear-residual-mlp-f32/program/functions/forward.mlir --check-prefix=LINEAR-MLIR
 # RUN: FileCheck %s --input-file=%t.corpus/tiny-llama-decoder-f32/program/functions/forward.mlir --check-prefix=LLAMA-MLIR
@@ -15,7 +15,7 @@
 # CORPUS: "case_id": "tiny-llama-decoder-f32"
 # CORPUS: "causal_attention": true
 # CORPUS: "corpus_id": "wafer-single-card-vertical-v1"
-# CORPUS: "exported_program": "sha256:ac61beec77477e9b5f7184b340254537bcdb4eaa1b2c4480ca5cedbdf645491c"
+# CORPUS: "exported_program": "sha256:51efa9d95cbf82c615690cea22fa80fb340b2220b9dcaddb66809962daecbd9c"
 # CORPUS: "repeat_export_canonical_equivalent": true
 # CORPUS: "git_revision": "396608c7105b3763874fe3800dfabdfa2b38a28a"
 

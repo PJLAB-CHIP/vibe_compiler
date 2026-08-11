@@ -84,19 +84,7 @@ void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
   addStablehloToLinalgBody(pm);
 }
 
-void buildFinalizeScheduledTensorProgramPipeline(mlir::OpPassManager &pm) {
-  buildFinalizeScheduledRankCandidatePipeline(pm);
-  buildPlanDDRMemoryPipeline(pm);
-  pm.addPass(mlir::createCanonicalizerPass());
-}
-
-void buildFinalizeScheduledRankCandidatePipeline(mlir::OpPassManager &pm) {
-  buildPrepareScheduledRankCandidatePipeline(pm);
-  buildPlanSPMMemoryPipeline(pm);
-  pm.addPass(mlir::createCanonicalizerPass());
-}
-
-void buildPrepareScheduledRankCandidatePipeline(mlir::OpPassManager &pm) {
+void buildPreparePhysicalTileCandidatePipeline(mlir::OpPassManager &pm) {
   pm.addPass(mlir::createCanonicalizerPass());
   addFunctionBoundaryBufferization(pm);
   pm.addPass(mlir::createCanonicalizerPass());

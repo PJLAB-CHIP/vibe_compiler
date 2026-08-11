@@ -2,90 +2,83 @@
 
 #include "Internal.h"
 
-
 using namespace wafer;
 using namespace wafer::tensor_program_to_tile_region;
 
-namespace {
-static mlir::FailureOr<mlir::func::FuncOp>
-cloneVerifiedTensorProgram(mlir::func::FuncOp function,
-                           mlir::OwningOpRef<mlir::ModuleOp> &module,
-                           std::string *failureReason) {
-  if (mlir::failed(verifyTensorProgramScope(function, failureReason)))
-    return mlir::failure();
-  module = wafer::detail::cloneTensorProgramToStandaloneModule(function);
-  mlir::func::FuncOp cloned = findSingleStandaloneTensorProgram(*module);
-  if (!cloned) {
-    setFailureReason(
-        failureReason,
-        "standalone module must contain exactly one tensor program");
+mlir::LogicalResult wafer::lowerSpatialOutputShardsToTileRegionModule(
+    mlir::ModuleOp sourceModule, unsigned functionalArgumentCount,
+    llvm::ArrayRef<SpatialOutputShard> outputShards,
+    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
+    int64_t currentLogicalPartition,
+    llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
+    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage) {
+  if (failureReason)
+    failureReason->clear();
+  if (!sourceModule) {
+    setFailureReason(failureReason,
+                     "spatial output lowering requires a source module");
     return mlir::failure();
   }
-  return cloned;
-}
-
-} // namespace
-
-mlir::LogicalResult wafer::lowerCandidateTensorProgramToTileRegionModule(
-    mlir::func::FuncOp function, llvm::ArrayRef<int64_t> candidateTileOffsets,
-    llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative,
-    bool useDirectMappedBoundaryTransfer) {
-  if (failureReason)
-    failureReason->clear();
-
-  mlir::FailureOr<mlir::func::FuncOp> cloned =
-      cloneVerifiedTensorProgram(function, module, failureReason);
-  if (mlir::failed(cloned))
+  if (currentLogicalPartition < 0) {
+    setFailureReason(
+        failureReason,
+        "spatial output lowering requires a non-negative logical partition");
     return mlir::failure();
-  TensorProgramScope scope(*cloned);
-  if (mlir::failed(materializeCandidateTileSlices(
-          scope, candidateTileOffsets, candidateTileSizes,
-          candidateReductionTileSizes, failureReason)))
-    return mlir::failure();
-  return convertTensorProgramToTileRegionModuleInPlace(
-      *module, function.getContext(), currentLogicalRank, failureReason,
-      /*suppressDiagnostics=*/true, /*verifyResult=*/true,
-      /*populateFallbackFailureReason=*/true, selectedAlternative,
-      useDirectMappedBoundaryTransfer);
-}
+  }
 
-mlir::LogicalResult
-wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
-    mlir::func::FuncOp function, llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative,
-    bool useDirectMappedBoundaryTransfer,
-    CandidateTileTraversalKind traversalKind) {
-  if (failureReason)
-    failureReason->clear();
+  // The complete module is the atomic transformation boundary. Keep every
+  // direct symbol and target fact alive while the ordinary candidate
+  // materializer resolves symbol references and rewrites the current SSA.
+  mlir::IRMapping cloneMapping;
+  mlir::OwningOpRef<mlir::ModuleOp> candidate =
+      mlir::cast<mlir::ModuleOp>(sourceModule->clone(cloneMapping));
+  mlir::func::FuncOp function = findSingleStandaloneTensorProgram(*candidate);
+  if (!function) {
+    setFailureReason(
+        failureReason,
+        "spatial output module must contain exactly one defined tensor "
+        "program function");
+    return mlir::failure();
+  }
+  if (mlir::failed(verifyTensorProgramScope(function, functionalArgumentCount,
+                                            failureReason)))
+    return mlir::failure();
 
-  mlir::OwningOpRef<mlir::ModuleOp> candidateModule;
-  mlir::FailureOr<mlir::func::FuncOp> cloned =
-      cloneVerifiedTensorProgram(function, candidateModule, failureReason);
-  if (mlir::failed(cloned))
-    return mlir::failure();
-  TensorProgramScope scope(*cloned);
-  mlir::LogicalResult materialized = materializeCompleteCandidateTraversal(
-      scope, candidateTileSizes, candidateReductionTileSizes, traversalKind,
-      failureReason);
-  if (mlir::failed(materialized))
-    return mlir::failure();
-  mlir::func::FuncOp completedFunction =
-      findSingleStandaloneTensorProgram(*candidateModule);
-  if (!completedFunction)
+  llvm::DenseSet<mlir::Operation *> seenTemporalOperations;
+  llvm::SmallVector<StructuredOpTemporalTile, 16> mappedTemporalTiles;
+  mappedTemporalTiles.reserve(operationTemporalTiles.size());
+  for (const StructuredOpTemporalTile &tile : operationTemporalTiles) {
+    if (!tile.operation || !seenTemporalOperations.insert(tile.operation).second) {
+      setFailureReason(failureReason,
+                       "structured temporal mapping contains a null or "
+                       "duplicate operation");
+      return mlir::failure();
+    }
+    mlir::Operation *mapped = cloneMapping.lookupOrNull(tile.operation);
+    if (!mapped) {
+      setFailureReason(
+          failureReason,
+          "structured temporal mapping operation is outside source module");
+      return mlir::failure();
+    }
+    mappedTemporalTiles.push_back(
+        StructuredOpTemporalTile{mapped, tile.iteratorTileSizes});
+  }
+
+  TensorProgramScope scope(function, functionalArgumentCount);
+  if (mlir::failed(materializeCandidateOutputTileSlices(
+          scope, outputShards, mappedTemporalTiles, failureReason)))
     return mlir::failure();
   if (mlir::failed(convertTensorProgramToTileRegionModuleInPlace(
-          *candidateModule, function.getContext(), currentLogicalRank,
-          failureReason, /*suppressDiagnostics=*/true, /*verifyResult=*/true,
-          /*populateFallbackFailureReason=*/true, selectedAlternative,
-          useDirectMappedBoundaryTransfer)))
+          *candidate, sourceModule.getContext(), functionalArgumentCount,
+          currentLogicalPartition, failureReason,
+          /*suppressDiagnostics=*/true,
+          /*verifyResult=*/true,
+          /*populateFallbackFailureReason=*/true,
+          /*peerEndpoints=*/{}, sourceLineage, operandDemandLineage)))
     return mlir::failure();
-  module = std::move(candidateModule);
+
+  module = std::move(candidate);
   return mlir::success();
 }

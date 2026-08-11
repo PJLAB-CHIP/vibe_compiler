@@ -54,14 +54,16 @@ public:
   static char ID;
 
   BoardRuntimeError(
-      BoardRuntimeStage stage, int64_t logicalRank, EntryId entry,
-      std::string detail,
+      BoardRuntimeStage stage, PhysicalCardId cardId, PhysicalTileId tileId,
+      LaunchSlotId launchSlot, EntryId entry, std::string detail,
       BoardRuntimeContextState contextState = BoardRuntimeContextState::Usable)
-      : stage(stage), logicalRank(logicalRank), entry(entry),
-        detail(std::move(detail)), contextState(contextState) {}
+      : stage(stage), cardId(cardId), tileId(tileId), launchSlot(launchSlot),
+        entry(entry), detail(std::move(detail)), contextState(contextState) {}
 
   BoardRuntimeStage getStage() const { return stage; }
-  int64_t getLogicalRank() const { return logicalRank; }
+  PhysicalCardId getPhysicalCardId() const { return cardId; }
+  PhysicalTileId getPhysicalTileId() const { return tileId; }
+  LaunchSlotId getLaunchSlot() const { return launchSlot; }
   EntryId getEntry() const { return entry; }
   llvm::StringRef getDetail() const { return detail; }
   BoardRuntimeContextState getContextState() const { return contextState; }
@@ -71,7 +73,9 @@ public:
 
 private:
   BoardRuntimeStage stage;
-  int64_t logicalRank;
+  PhysicalCardId cardId;
+  PhysicalTileId tileId;
+  LaunchSlotId launchSlot;
   EntryId entry;
   std::string detail;
   BoardRuntimeContextState contextState;
@@ -87,7 +91,8 @@ struct BoardDeviceInfo {
   std::string pciBusId;
   std::string runtimeLibraryDigest;
   struct Tile {
-    uint16_t logicalIndex = 0;
+    PhysicalTileId tileId{0};
+    LaunchSlotId launchSlot;
     bool available = false;
     uint32_t physicalX = 0;
     uint32_t physicalY = 0;
@@ -156,7 +161,9 @@ using BoardCompletionDeadline = std::chrono::steady_clock::time_point;
 /// One immutable, already-digest-verified tile module snapshot. Graph loading
 /// must synchronously consume the bytes; it may not retain the ArrayRef.
 struct BoardGraphModuleSnapshot {
-  uint16_t logicalTile = 0;
+  PhysicalCardId cardId{0};
+  PhysicalTileId tileId{0};
+  LaunchSlotId launchSlot;
   ModuleId module;
   llvm::StringRef digest;
   llvm::ArrayRef<uint8_t> bytes;
@@ -166,7 +173,9 @@ struct BoardGraphModuleSnapshot {
 /// receives typed semantics and a device allocation, never a caller-built raw
 /// BootParam buffer.
 struct BoardModelTensorLaunch {
-  int64_t logicalRank = -1;
+  PhysicalCardId cardId{0};
+  PhysicalTileId tileId{0};
+  LaunchSlotId launchSlot;
   uint64_t slotOrdinal = 0;
   PackageResourceRole role = PackageResourceRole::UserInput;
   BoardDeviceMemory memory;
@@ -175,12 +184,14 @@ struct BoardModelTensorLaunch {
   std::vector<int64_t> shape;
 };
 
-/// One canonical logical-rank launch owned by an all-rank provider
+/// One canonical physical-Tile launch owned by a whole-card provider
 /// submission. The provider may implement the common submission using
 /// multiple command queues, but callers cannot observe or assemble those
 /// queues themselves.
-struct BoardRankLaunch {
-  int64_t logicalRank = -1;
+struct BoardTileLaunch {
+  PhysicalCardId cardId{0};
+  PhysicalTileId tileId{0};
+  LaunchSlotId launchSlot;
   EntryId entry;
   BoardFunctionHandle function;
   std::vector<uint64_t> arguments;
@@ -232,14 +243,14 @@ public:
             llvm::StringRef symbol) = 0;
   virtual llvm::Error unloadGraph(BoardGraphHandle graph) = 0;
 
-  /// Submits exactly one typed kernel phase for the complete logical-rank
+  /// Submits exactly one typed kernel phase for the complete physical-Tile
   /// domain. The first phase establishes provider-owned stream and argument
   /// storage; a later phase may only reuse that state after the previous phase
   /// reached terminal. A failure after an unknown or non-empty accepted subset
   /// must poison the context.
   virtual llvm::Error
   submitKernelPhase(KernelLaunchForm form, RuntimeLaunchPhaseRole phaseRole,
-                    llvm::ArrayRef<BoardRankLaunch> launches,
+                    llvm::ArrayRef<BoardTileLaunch> launches,
                     BoardDeviceTimingPolicy timingPolicy) = 0;
 
   /// One txLaunchModel submission owned by a previously loaded graph. The TX
@@ -256,7 +267,7 @@ public:
   waitCurrentSubmission(BoardCompletionDeadline deadline,
                         BoardCompletionObservationPolicy observationPolicy) = 0;
 
-  /// Releases provider-owned submission state after every rank is known
+  /// Releases provider-owned submission state after every Tile is known
   /// terminal. It must never be called after poison.
   virtual llvm::Error releaseSubmission() = 0;
 };
@@ -267,15 +278,6 @@ public:
 struct BoardRuntimeBinding {
   ResourceId resource;
   std::vector<uint8_t> bytes;
-};
-
-struct BoardRuntimeRequest {
-  uint32_t deviceId = 0;
-  EntryId entry;
-  uint64_t completionTimeoutMilliseconds =
-      kDefaultBoardCompletionTimeoutMilliseconds;
-  BoardDeviceQualification qualification;
-  std::vector<BoardRuntimeBinding> bindings;
 };
 
 struct BoardRuntimeInvocationRequest {
@@ -300,29 +302,22 @@ struct BoardRuntimeOutput {
   std::vector<uint8_t> bytes;
 };
 
-struct BoardRuntimeResult {
-  BoardDeviceInfo device;
+struct BoardRuntimeTileResult {
   EntryId entry;
-  int64_t logicalRank = -1;
+  PhysicalCardId cardId{0};
+  PhysicalTileId tileId{0};
+  LaunchSlotId launchSlot;
   ModuleId module;
-  CompletionId terminalCompletion;
-  std::vector<BoardRuntimeStage> completedStages;
-  std::vector<BoardRuntimeOutput> outputs;
-};
-
-struct BoardRuntimeRankResult {
-  EntryId entry;
-  int64_t logicalRank = -1;
-  ModuleId module;
-  CompletionId terminalCompletion;
+  PackageEntryCompletionKind completion =
+      PackageEntryCompletionKind::ReturnAfterLocalDrain;
 };
 
 struct BoardRuntimeInvocationResult {
   BoardDeviceInfo device;
-  std::vector<BoardRuntimeRankResult> ranks;
+  std::vector<BoardRuntimeTileResult> tiles;
   std::vector<BoardRuntimeStage> completedStages;
   /// Host steady-clock interval from immediately before provider submission
-  /// through successful all-rank completion. This is a campaign-level latency
+  /// through successful whole-card completion. This is a campaign-level latency
   /// observation, not a tile clock and not per-instruction hardware time.
   uint64_t launchToCompletionNanoseconds = 0;
   /// Host steady-clock time spent strictly inside provider submission calls,
@@ -359,21 +354,17 @@ public:
 
 private:
   QualifiedBoardRuntimeSession(BoardRuntimeDriver &driver, uint32_t deviceId,
-                               uint32_t qualifiedLogicalRankCount,
+                               uint32_t qualifiedTileCount,
                                BoardDeviceQualification qualification,
                                BoardDeviceInfo device);
 
   BoardRuntimeDriver *driver = nullptr;
   uint32_t deviceId = 0;
-  uint32_t qualifiedLogicalRankCount = 0;
+  uint32_t qualifiedTileCount = 0;
   BoardDeviceQualification qualification;
   BoardDeviceInfo device;
   bool usable = false;
 
-  friend llvm::Expected<QualifiedBoardRuntimeSession>
-  qualifyBoardRuntimeSession(uint32_t, uint32_t,
-                             const BoardDeviceQualification &,
-                             BoardRuntimeDriver &);
   friend llvm::Expected<BoardRuntimeInvocationResult>
   executeBoardInvocationInSession(const VerifiedPackageManifest &,
                                   llvm::StringRef,
@@ -387,17 +378,9 @@ private:
                                         BoardRuntimeDriver &);
 };
 
-/// Performs device count/selection/inventory queries exactly once and returns
-/// a driver-bound capability. `requiredLogicalRankCount` qualifies the dense
-/// logical domain 0..N-1; profiler campaigns request all 16 tiles.
-llvm::Expected<QualifiedBoardRuntimeSession>
-qualifyBoardRuntimeSession(uint32_t deviceId, uint32_t requiredLogicalRankCount,
-                           const BoardDeviceQualification &qualification,
-                           BoardRuntimeDriver &driver);
-
 /// Executes one complete invocation using a previously qualified capability.
 /// The request must name the same device and qualification, and the package
-/// rank domain must exactly match the qualified domain. Device
+/// Tile domain must exactly match the qualified domain. Device
 /// count/selection/info are not repeated. A poisoned capability can never be
 /// used again.
 llvm::Expected<BoardRuntimeInvocationResult>
@@ -406,10 +389,11 @@ executeBoardInvocationInSession(const VerifiedPackageManifest &package,
                                 BoardRuntimeInvocationRequest request,
                                 QualifiedBoardRuntimeSession &session);
 
-/// Executes the first invocation through the ordinary one-shot path using the
-/// request's completion-observation policy, then returns a capability for
-/// later invocations on that already-qualified device. Qualification is
-/// performed exactly once. Failure returns no session capability.
+/// Executes the first complete whole-card invocation through the ordinary
+/// one-shot path using the request's completion-observation policy, then
+/// returns a capability for later complete invocations on that already-
+/// qualified device. There is no public empty-session or arbitrary Tile-count
+/// qualification path. Failure returns no session capability.
 llvm::Expected<
     std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
 executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,
@@ -417,21 +401,13 @@ executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,
                                       BoardRuntimeInvocationRequest request,
                                       BoardRuntimeDriver &driver);
 
-/// Executes the complete verified logical-rank domain as one owner-backed
+/// Executes the complete verified physical-Tile domain as one owner-backed
 /// provider session. The manifest selects exactly one kernel or model
 /// submission path. Entry transport requirements, including Direct DTE, are
 /// verified independently and never select another runtime entry point.
 llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
     const VerifiedPackageManifest &package, llvm::StringRef packageRoot,
     BoardRuntimeInvocationRequest request, BoardRuntimeDriver &driver);
-
-/// Rank-one convenience entry point. It delegates to the same owner-backed
-/// invocation implementation and cannot select one rank out of a multi-rank
-/// package.
-llvm::Expected<BoardRuntimeResult>
-executeBoardEntry(const VerifiedPackageManifest &package,
-                  llvm::StringRef packageRoot, BoardRuntimeRequest request,
-                  BoardRuntimeDriver &driver);
 
 } // namespace wafer::runtime
 

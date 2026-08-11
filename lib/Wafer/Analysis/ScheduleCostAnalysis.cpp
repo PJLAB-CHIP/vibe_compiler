@@ -3,10 +3,12 @@
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 
 #include "ScheduleCost/Internal.h"
-#include "Wafer/Analysis/ExecutionTopologyAnalysis.h"
+#include "Wafer/IR/Target/PhysicalTopology.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Parallel.h"
@@ -24,7 +26,7 @@ unsigned getKnowledgeSeverity(ScheduleCostKnowledge knowledge) {
   switch (knowledge) {
   case ScheduleCostKnowledge::Known:
     return 0;
-  case ScheduleCostKnowledge::Unknown:
+  case ScheduleCostKnowledge::Unavailable:
     return 1;
   case ScheduleCostKnowledge::Unsupported:
     return 2;
@@ -61,8 +63,8 @@ static bool checkedMul(uint64_t lhs, uint64_t rhs, uint64_t &result) {
   return true;
 }
 
-Quantity Quantity::unknown(ScheduleCostReason reason) {
-  return {0, ScheduleCostKnowledge::Unknown, reason};
+Quantity Quantity::unavailable(ScheduleCostReason reason) {
+  return {0, ScheduleCostKnowledge::Unavailable, reason};
 }
 
 Quantity Quantity::unsupported(ScheduleCostReason reason) {
@@ -77,7 +79,7 @@ Quantity Quantity::overflow() {
 Quantity multiply(Quantity lhs, Quantity rhs) {
   // A statically unreachable region contributes no work even when a nested
   // bound or path is dynamic. Preserve that exact zero instead of allowing an
-  // irrelevant Unknown to leak out of dead structured control flow.
+  // unavailable fact to leak out of dead structured control flow.
   if ((lhs.knowledge == ScheduleCostKnowledge::Known && lhs.value == 0) ||
       (rhs.knowledge == ScheduleCostKnowledge::Known && rhs.value == 0))
     return Quantity{0};
@@ -117,29 +119,12 @@ void add(ScheduleCostMetric &metric, Quantity quantity) {
 } // namespace detail
 
 TargetScheduleCostPolicy getTargetScheduleCostPolicy() {
-  TargetScheduleCostPolicy policy;
-  policy.qualifiedOverlapFamilyMask =
-      (uint32_t{1} << static_cast<uint32_t>(InstrFamily::CT)) |
-      (uint32_t{1} << static_cast<uint32_t>(InstrFamily::RDMA)) |
-      (uint32_t{1} << static_cast<uint32_t>(InstrFamily::WDMA));
-  policy.qualifiedOverlapWorker = static_cast<uint32_t>(NCCWorker::Worker0);
-  // This recognizes an auditable structural opportunity. Profitability stays
-  // Unknown until matched board evidence exists.
-  policy.qualifiedDirectDTEOverlapFamilyMask =
-      (uint32_t{1} << static_cast<uint32_t>(InstrFamily::DTE)) |
-      (uint32_t{1} << static_cast<uint32_t>(InstrFamily::CT)) |
-      (uint32_t{1} << static_cast<uint32_t>(InstrFamily::NE));
-  return policy;
+  return TargetScheduleCostPolicy{};
 }
 
 const ScheduleCostMetric &
 ScheduleNoCCost::directional(NoCDirection direction) const {
   return directionalTransmitBytes[static_cast<size_t>(direction)];
-}
-
-const ScheduleCostMetric &
-ScheduleNoCCost::collective(NoCCollectiveKind kind) const {
-  return collectiveTransmitBytes[static_cast<size_t>(kind)];
 }
 
 InstructionProgramCost
@@ -149,25 +134,38 @@ analyzeInstructionProgramCost(mlir::Operation *root,
   if (!root)
     return cost;
   detail::collectExecutionCost(root, cost);
-  detail::collectDataDependencyDepth(root, cost);
-  detail::collectQualifiedOverlapWindows(root, cost, policy);
   detail::collectSPMHighWater(root, cost, policy);
   detail::collectDDRHighWater(root, cost);
+  return cost;
+}
+
+static InstructionProgramCost analyzeInstructionProgramCostSlice(
+    mlir::Operation *root, const TargetScheduleCostPolicy &policy,
+    const llvm::DenseSet<mlir::Operation *> &includedOperations) {
+  InstructionProgramCost cost;
+  if (!root)
+    return cost;
+  auto include = [&](mlir::Operation *operation) {
+    return includedOperations.contains(operation);
+  };
+  detail::collectExecutionCost(root, cost, include);
+  detail::collectSPMHighWater(root, cost, policy, include);
+  detail::collectDDRHighWater(root, cost, include);
   return cost;
 }
 
 namespace {
 
 static void addMetric(ScheduleCostMetric &aggregate,
-                      const ScheduleCostMetric &rankMetric) {
-  if (!rankMetric.isKnown()) {
-    detail::degrade(aggregate, rankMetric.knowledge, rankMetric.reason);
+                      const ScheduleCostMetric &tileMetric) {
+  if (!tileMetric.isKnown()) {
+    detail::degrade(aggregate, tileMetric.knowledge, tileMetric.reason);
     return;
   }
   if (!aggregate.isKnown())
     return;
   uint64_t result = 0;
-  if (!detail::checkedAdd(aggregate.value, rankMetric.value, result)) {
+  if (!detail::checkedAdd(aggregate.value, tileMetric.value, result)) {
     detail::degrade(aggregate, ScheduleCostKnowledge::Overflow,
                     ScheduleCostReason::ArithmeticOverflow);
     return;
@@ -176,93 +174,89 @@ static void addMetric(ScheduleCostMetric &aggregate,
 }
 
 static void maximizeMetric(ScheduleCostMetric &aggregate,
-                           const ScheduleCostMetric &rankMetric) {
-  if (!rankMetric.isKnown()) {
-    detail::degrade(aggregate, rankMetric.knowledge, rankMetric.reason);
+                           const ScheduleCostMetric &tileMetric) {
+  if (!tileMetric.isKnown()) {
+    detail::degrade(aggregate, tileMetric.knowledge, tileMetric.reason);
     return;
   }
   if (aggregate.isKnown())
-    aggregate.value = std::max(aggregate.value, rankMetric.value);
+    aggregate.value = std::max(aggregate.value, tileMetric.value);
 }
 
 static void addComputeCost(ScheduleComputeCost &aggregate,
-                           const ScheduleComputeCost &rankCost) {
-  addMetric(aggregate.npuF16Bf16LogicalOps, rankCost.npuF16Bf16LogicalOps);
-  addMetric(aggregate.npuOtherLogicalOps, rankCost.npuOtherLogicalOps);
+                           const ScheduleComputeCost &tileCost) {
+  addMetric(aggregate.npuF16Bf16LogicalOps, tileCost.npuF16Bf16LogicalOps);
+  addMetric(aggregate.npuOtherLogicalOps, tileCost.npuOtherLogicalOps);
   addMetric(aggregate.vectorF16Bf16LogicalOps,
-            rankCost.vectorF16Bf16LogicalOps);
-  addMetric(aggregate.vectorF32LogicalOps, rankCost.vectorF32LogicalOps);
-  addMetric(aggregate.vectorOtherLogicalOps, rankCost.vectorOtherLogicalOps);
+            tileCost.vectorF16Bf16LogicalOps);
+  addMetric(aggregate.vectorF32LogicalOps, tileCost.vectorF32LogicalOps);
+  addMetric(aggregate.vectorOtherLogicalOps, tileCost.vectorOtherLogicalOps);
 }
 
 static void maximizeComputeCost(ScheduleComputeCost &maximum,
-                                const ScheduleComputeCost &rankCost) {
-  maximizeMetric(maximum.npuF16Bf16LogicalOps, rankCost.npuF16Bf16LogicalOps);
-  maximizeMetric(maximum.npuOtherLogicalOps, rankCost.npuOtherLogicalOps);
+                                const ScheduleComputeCost &tileCost) {
+  maximizeMetric(maximum.npuF16Bf16LogicalOps, tileCost.npuF16Bf16LogicalOps);
+  maximizeMetric(maximum.npuOtherLogicalOps, tileCost.npuOtherLogicalOps);
   maximizeMetric(maximum.vectorF16Bf16LogicalOps,
-                 rankCost.vectorF16Bf16LogicalOps);
-  maximizeMetric(maximum.vectorF32LogicalOps, rankCost.vectorF32LogicalOps);
-  maximizeMetric(maximum.vectorOtherLogicalOps, rankCost.vectorOtherLogicalOps);
+                 tileCost.vectorF16Bf16LogicalOps);
+  maximizeMetric(maximum.vectorF32LogicalOps, tileCost.vectorF32LogicalOps);
+  maximizeMetric(maximum.vectorOtherLogicalOps, tileCost.vectorOtherLogicalOps);
 }
 
 static void addNoCCost(ScheduleNoCCost &aggregate,
-                       const ScheduleNoCCost &rankCost) {
-  addMetric(aggregate.staticIssueSiteCount, rankCost.staticIssueSiteCount);
-  addMetric(aggregate.aggregateTransmitBytes, rankCost.aggregateTransmitBytes);
-  addMetric(aggregate.aggregateReceiveBytes, rankCost.aggregateReceiveBytes);
-  addMetric(aggregate.transmitMessageCount, rankCost.transmitMessageCount);
-  addMetric(aggregate.receiveMessageCount, rankCost.receiveMessageCount);
-  addMetric(aggregate.waitOperationCount, rankCost.waitOperationCount);
-  addMetric(aggregate.waitedEventCount, rankCost.waitedEventCount);
+                       const ScheduleNoCCost &tileCost) {
+  addMetric(aggregate.staticIssueSiteCount, tileCost.staticIssueSiteCount);
+  addMetric(aggregate.aggregateTransmitBytes, tileCost.aggregateTransmitBytes);
+  addMetric(aggregate.aggregateReceiveBytes, tileCost.aggregateReceiveBytes);
+  addMetric(aggregate.transmitMessageCount, tileCost.transmitMessageCount);
+  addMetric(aggregate.receiveMessageCount, tileCost.receiveMessageCount);
+  addMetric(aggregate.waitOperationCount, tileCost.waitOperationCount);
+  addMetric(aggregate.waitedEventCount, tileCost.waitedEventCount);
   for (size_t index = 0; index < aggregate.directionalTransmitBytes.size();
        ++index)
     addMetric(aggregate.directionalTransmitBytes[index],
-              rankCost.directionalTransmitBytes[index]);
-  for (size_t index = 0; index < aggregate.collectiveTransmitBytes.size();
-       ++index)
-    addMetric(aggregate.collectiveTransmitBytes[index],
-              rankCost.collectiveTransmitBytes[index]);
+              tileCost.directionalTransmitBytes[index]);
 }
 
 static void addExecutionCount(InstructionExecutionCount &aggregate,
-                              const InstructionExecutionCount &rankCount) {
-  addMetric(aggregate.staticSites, rankCount.staticSites);
-  addMetric(aggregate.exactExecutions, rankCount.exactExecutions);
-  addMetric(aggregate.lowerBound, rankCount.lowerBound);
-  addMetric(aggregate.upperBound, rankCount.upperBound);
+                              const InstructionExecutionCount &tileCount) {
+  addMetric(aggregate.staticSites, tileCount.staticSites);
+  addMetric(aggregate.exactExecutions, tileCount.exactExecutions);
+  addMetric(aggregate.lowerBound, tileCount.lowerBound);
+  addMetric(aggregate.upperBound, tileCount.upperBound);
 }
 
 static void maximizeExecutionCount(InstructionExecutionCount &maximum,
-                                   const InstructionExecutionCount &rankCount) {
-  maximizeMetric(maximum.staticSites, rankCount.staticSites);
-  maximizeMetric(maximum.exactExecutions, rankCount.exactExecutions);
-  maximizeMetric(maximum.lowerBound, rankCount.lowerBound);
-  maximizeMetric(maximum.upperBound, rankCount.upperBound);
+                                   const InstructionExecutionCount &tileCount) {
+  maximizeMetric(maximum.staticSites, tileCount.staticSites);
+  maximizeMetric(maximum.exactExecutions, tileCount.exactExecutions);
+  maximizeMetric(maximum.lowerBound, tileCount.lowerBound);
+  maximizeMetric(maximum.upperBound, tileCount.upperBound);
 }
 
 static void addWork(InstructionProgramWork &aggregate,
-                    const InstructionProgramWork &rankWork) {
+                    const InstructionProgramWork &tileWork) {
   for (detail::InstructionWorkCountMember member :
        detail::kInstructionWorkCountMembers)
-    addExecutionCount(aggregate.*member, rankWork.*member);
+    addExecutionCount(aggregate.*member, tileWork.*member);
 }
 
 static void maximizeWork(InstructionProgramWork &maximum,
-                         const InstructionProgramWork &rankWork) {
+                         const InstructionProgramWork &tileWork) {
   for (detail::InstructionWorkCountMember member :
        detail::kInstructionWorkCountMembers)
-    maximizeExecutionCount(maximum.*member, rankWork.*member);
+    maximizeExecutionCount(maximum.*member, tileWork.*member);
 }
 
-struct PendingHopTransmit {
-  size_t sourceRank = 0;
+struct PendingTileTransmit {
+  PhysicalTileId sourceTile = PhysicalTileId(-1);
   int64_t peer = -1;
   detail::Quantity payloadBytes;
   detail::Quantity messageCount;
 };
 
 struct ModeledDirectedLinkLoad {
-  ExecutionDirectedLink link;
+  PhysicalTileDirectedLink link;
   uint64_t bytes = 0;
 };
 
@@ -274,35 +268,130 @@ static mlir::ModuleOp getContainingModule(mlir::Operation *root) {
   return root->getParentOfType<mlir::ModuleOp>();
 }
 
+static bool
+hasEquivalentOnCardTopology(const PhysicalTopology &lhs,
+                            const PhysicalTopology &rhs,
+                            llvm::ArrayRef<PhysicalTileId> expectedTileIds) {
+  if (lhs.getCardCount() != 1 || rhs.getCardCount() != 1 ||
+      lhs.getTilesPerCard() != rhs.getTilesPerCard() ||
+      lhs.getCardGrid() != rhs.getCardGrid() ||
+      lhs.getTileGrid() != rhs.getTileGrid())
+    return false;
+  std::optional<llvm::ArrayRef<PhysicalTileId>> available =
+      rhs.getAvailableTileIds(PhysicalCardId(0));
+  return available && *available == expectedTileIds;
+}
+
+static void degradeInvalidPhysicalTopology(
+    bool hasTransmit, ScheduleCostMetric &minimumHopLinkByteDemand,
+    ScheduleCostMetric &minimumHopMessageDemand,
+    ScheduleCostMetric &directedNoCLinkCount,
+    ScheduleCostMetric &idealizedMinimumPeakLinkByteDemand,
+    ModeledNoCRouteCost &modeledNoCRoute,
+    ScheduleCostMetric &maximumNoCHopCount) {
+  detail::degrade(directedNoCLinkCount, ScheduleCostKnowledge::Unavailable,
+                  ScheduleCostReason::InvalidExecutionTopology);
+  if (!hasTransmit)
+    return;
+  detail::degrade(minimumHopLinkByteDemand, ScheduleCostKnowledge::Unavailable,
+                  ScheduleCostReason::InvalidExecutionTopology);
+  detail::degrade(minimumHopMessageDemand, ScheduleCostKnowledge::Unavailable,
+                  ScheduleCostReason::InvalidExecutionTopology);
+  detail::degrade(idealizedMinimumPeakLinkByteDemand,
+                  ScheduleCostKnowledge::Unavailable,
+                  ScheduleCostReason::InvalidExecutionTopology);
+  detail::degrade(modeledNoCRoute.peakDirectedLinkByteDemand,
+                  ScheduleCostKnowledge::Unavailable,
+                  ScheduleCostReason::InvalidExecutionTopology);
+  detail::degrade(maximumNoCHopCount, ScheduleCostKnowledge::Unavailable,
+                  ScheduleCostReason::InvalidExecutionTopology);
+}
+
 static void collectMinimumHopLinkByteDemand(
-    llvm::ArrayRef<mlir::Operation *> rankRoots,
+    llvm::ArrayRef<PhysicalTileInstructionProgram> tilePrograms,
+    llvm::ArrayRef<llvm::DenseSet<mlir::Operation *>> includedOperations,
     ScheduleCostMetric &minimumHopLinkByteDemand,
     ScheduleCostMetric &minimumHopMessageDemand,
     ScheduleCostMetric &directedNoCLinkCount,
     ScheduleCostMetric &idealizedMinimumPeakLinkByteDemand,
     ModeledNoCRouteCost &modeledNoCRoute,
     ScheduleCostMetric &maximumNoCHopCount) {
-  llvm::SmallVector<PendingHopTransmit, 32> transmits;
-  for (auto [sourceRank, root] : llvm::enumerate(rankRoots)) {
-    if (!root) {
-      detail::degrade(minimumHopLinkByteDemand, ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(minimumHopMessageDemand, ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(directedNoCLinkCount, ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(idealizedMinimumPeakLinkByteDemand,
-                      ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(modeledNoCRoute.peakDirectedLinkByteDemand,
-                      ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(maximumNoCHopCount, ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
+  // The caller supplies the complete single-card Tile programs with explicit
+  // physical identity.  The direct topology validates that domain; neither
+  // vector position nor logical partition identity is interpreted as tile_id.
+  std::optional<PhysicalTopology> topology;
+  bool validTopology = !tilePrograms.empty();
+  for (const PhysicalTileInstructionProgram &program : tilePrograms) {
+    mlir::ModuleOp module = getContainingModule(program.root);
+    mlir::FailureOr<PhysicalTopology> current =
+        PhysicalTopology::create(module);
+    if (mlir::failed(current) || current->getCardCount() != 1) {
+      validTopology = false;
       continue;
     }
+    std::optional<llvm::ArrayRef<PhysicalTileId>> available =
+        current->getAvailableTileIds(PhysicalCardId(0));
+    if (!available || available->size() != tilePrograms.size()) {
+      validTopology = false;
+      continue;
+    }
+    if (!topology) {
+      topology.emplace(std::move(*current));
+      continue;
+    }
+    std::optional<llvm::ArrayRef<PhysicalTileId>> expected =
+        topology->getAvailableTileIds(PhysicalCardId(0));
+    if (!expected ||
+        !hasEquivalentOnCardTopology(*topology, *current, *expected))
+      validTopology = false;
+  }
+
+  if (!topology)
+    validTopology = false;
+  llvm::SmallVector<PhysicalTileId, 16> providedTileIds;
+  providedTileIds.reserve(tilePrograms.size());
+  for (const PhysicalTileInstructionProgram &program : tilePrograms)
+    providedTileIds.push_back(program.tileId);
+  llvm::sort(providedTileIds, [](PhysicalTileId lhs, PhysicalTileId rhs) {
+    return lhs.getValue() < rhs.getValue();
+  });
+  std::optional<llvm::ArrayRef<PhysicalTileId>> availableTileIds =
+      topology ? topology->getAvailableTileIds(PhysicalCardId(0))
+               : std::nullopt;
+  if (!availableTileIds || !llvm::equal(providedTileIds, *availableTileIds) ||
+      std::adjacent_find(providedTileIds.begin(), providedTileIds.end()) !=
+          providedTileIds.end())
+    validTopology = false;
+  if (validTopology) {
+    for (PhysicalTileId tile : *availableTileIds) {
+      mlir::FailureOr<llvm::SmallVector<PhysicalTileId, 4>> neighbors =
+          topology->getOnCardNeighbors(PhysicalCardId(0), tile);
+      if (mlir::failed(neighbors)) {
+        validTopology = false;
+        break;
+      }
+      uint64_t count = 0;
+      if (!detail::checkedAdd(directedNoCLinkCount.value, neighbors->size(),
+                              count)) {
+        detail::degrade(directedNoCLinkCount, ScheduleCostKnowledge::Overflow,
+                        ScheduleCostReason::ArithmeticOverflow);
+        validTopology = false;
+        break;
+      }
+      directedNoCLinkCount.value = count;
+    }
+  }
+
+  llvm::SmallVector<PendingTileTransmit, 32> transmits;
+  for (auto [tileIndex, program] : llvm::enumerate(tilePrograms)) {
+    mlir::Operation *root = program.root;
+    if (!root)
+      continue;
     auto collect = [&](mlir::Operation *operation,
                        detail::Quantity multiplicity) {
+      if (!includedOperations.empty() &&
+          !includedOperations[tileIndex].contains(operation))
+        return;
       auto send = mlir::dyn_cast<InstrDTESendOp>(operation);
       if (!send)
         return;
@@ -320,8 +409,8 @@ static void collectMinimumHopLinkByteDemand(
       if (multiplicity.knowledge == ScheduleCostKnowledge::Known &&
           multiplicity.value == 0)
         return;
-      transmits.push_back({static_cast<size_t>(sourceRank),
-                           send.getPeerAttr().getInt(), payload, multiplicity});
+      transmits.push_back(
+          {program.tileId, send.getPeerAttr().getInt(), payload, multiplicity});
     };
     auto markUnsupported = [&]() {
       detail::degrade(minimumHopLinkByteDemand,
@@ -342,92 +431,38 @@ static void collectMinimumHopLinkByteDemand(
     detail::walkInstructionProgram(root, collect, markUnsupported);
   }
 
-  // Zero final sends imply exact zero traffic independently of topology, but
-  // directedNoCLinkCount is still a topology fact and must not remain a
-  // fabricated Known(0). A missing topology therefore degrades only that fact
-  // for an otherwise exact NoC-free program.
-  if (transmits.empty() && !minimumHopLinkByteDemand.isKnown())
-    detail::degrade(idealizedMinimumPeakLinkByteDemand,
-                    minimumHopLinkByteDemand.knowledge,
-                    minimumHopLinkByteDemand.reason);
-  if (rankRoots.empty()) {
-    detail::degrade(directedNoCLinkCount, ScheduleCostKnowledge::Unknown,
-                    ScheduleCostReason::InvalidExecutionTopology);
+  if (!validTopology) {
+    degradeInvalidPhysicalTopology(
+        !transmits.empty(), minimumHopLinkByteDemand, minimumHopMessageDemand,
+        directedNoCLinkCount, idealizedMinimumPeakLinkByteDemand,
+        modeledNoCRoute, maximumNoCHopCount);
     return;
   }
-
-  llvm::SmallVector<ExecutionTopologyAnalysis, 16> rankTopologies;
-  rankTopologies.reserve(rankRoots.size());
-  for (mlir::Operation *root : rankRoots) {
-    mlir::ModuleOp module = getContainingModule(root);
-    mlir::FailureOr<ExecutionTopologyAnalysis> topology =
-        ExecutionTopologyAnalysis::create(module);
-    if (mlir::failed(topology)) {
-      detail::degrade(directedNoCLinkCount, ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      if (transmits.empty())
-        return;
-      detail::degrade(minimumHopLinkByteDemand, ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(minimumHopMessageDemand, ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(idealizedMinimumPeakLinkByteDemand,
-                      ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(modeledNoCRoute.peakDirectedLinkByteDemand,
-                      ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(maximumNoCHopCount, ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      return;
-    }
-    if (topology->getRankCount() != static_cast<int64_t>(rankRoots.size()) ||
-        (!rankTopologies.empty() &&
-         !rankTopologies.front().isEquivalentTo(*topology))) {
-      detail::degrade(directedNoCLinkCount, ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      if (transmits.empty())
-        return;
-      detail::degrade(minimumHopLinkByteDemand, ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(minimumHopMessageDemand, ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(idealizedMinimumPeakLinkByteDemand,
-                      ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(modeledNoCRoute.peakDirectedLinkByteDemand,
-                      ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(maximumNoCHopCount, ScheduleCostKnowledge::Unknown,
-                      ScheduleCostReason::InvalidExecutionTopology);
-      return;
-    }
-    rankTopologies.push_back(std::move(*topology));
-  }
-
-  const ExecutionTopologyAnalysis &topology = rankTopologies.front();
-  directedNoCLinkCount.value = topology.getDirectedLinkCount();
   if (transmits.empty())
     return;
+
   llvm::SmallVector<ModeledDirectedLinkLoad, 32> modeledLinkLoads;
-  for (const PendingHopTransmit &transmit : transmits) {
-    std::optional<uint64_t> hops = topology.getShortestHopDistance(
-        static_cast<int64_t>(transmit.sourceRank), transmit.peer);
-    mlir::FailureOr<llvm::SmallVector<ExecutionDirectedLink, 8>> route =
-        topology.getCanonicalShortestPath(
-            static_cast<int64_t>(transmit.sourceRank), transmit.peer);
+  for (const PendingTileTransmit &transmit : transmits) {
+    PhysicalTileId peer(transmit.peer);
+    std::optional<uint64_t> hops = topology->getOnCardShortestHopDistance(
+        PhysicalCardId(0), transmit.sourceTile, peer);
+    mlir::FailureOr<llvm::SmallVector<PhysicalTileDirectedLink, 8>> route =
+        topology->getCanonicalOnCardPath(PhysicalCardId(0), transmit.sourceTile,
+                                         peer);
     if (!hops || mlir::failed(route) || route->size() != *hops) {
-      detail::degrade(minimumHopLinkByteDemand, ScheduleCostKnowledge::Unknown,
+      detail::degrade(minimumHopLinkByteDemand,
+                      ScheduleCostKnowledge::Unavailable,
                       ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(minimumHopMessageDemand, ScheduleCostKnowledge::Unknown,
+      detail::degrade(minimumHopMessageDemand,
+                      ScheduleCostKnowledge::Unavailable,
                       ScheduleCostReason::InvalidExecutionTopology);
       detail::degrade(idealizedMinimumPeakLinkByteDemand,
-                      ScheduleCostKnowledge::Unknown,
+                      ScheduleCostKnowledge::Unavailable,
                       ScheduleCostReason::InvalidExecutionTopology);
       detail::degrade(modeledNoCRoute.peakDirectedLinkByteDemand,
-                      ScheduleCostKnowledge::Unknown,
+                      ScheduleCostKnowledge::Unavailable,
                       ScheduleCostReason::InvalidExecutionTopology);
-      detail::degrade(maximumNoCHopCount, ScheduleCostKnowledge::Unknown,
+      detail::degrade(maximumNoCHopCount, ScheduleCostKnowledge::Unavailable,
                       ScheduleCostReason::InvalidExecutionTopology);
       return;
     }
@@ -439,7 +474,7 @@ static void collectMinimumHopLinkByteDemand(
                 detail::multiply(transmit.messageCount, *hops));
     if (transmit.payloadBytes.knowledge != ScheduleCostKnowledge::Known)
       continue;
-    for (const ExecutionDirectedLink &link : *route) {
+    for (const PhysicalTileDirectedLink &link : *route) {
       auto existing =
           std::find_if(modeledLinkLoads.begin(), modeledLinkLoads.end(),
                        [&](const ModeledDirectedLinkLoad &load) {
@@ -474,7 +509,7 @@ static void collectMinimumHopLinkByteDemand(
   if (links == 0) {
     if (minimumHopLinkByteDemand.value != 0)
       detail::degrade(idealizedMinimumPeakLinkByteDemand,
-                      ScheduleCostKnowledge::Unknown,
+                      ScheduleCostKnowledge::Unavailable,
                       ScheduleCostReason::InvalidExecutionTopology);
     return;
   }
@@ -485,60 +520,60 @@ static void collectMinimumHopLinkByteDemand(
 
 } // namespace
 
-WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
-    llvm::ArrayRef<mlir::Operation *> rankRoots,
-    const TargetScheduleCostPolicy &policy) {
+static WholeCardInstructionProgramCost
+analyzeWholeCardInstructionProgramCostImpl(
+    llvm::ArrayRef<PhysicalTileInstructionProgram> tilePrograms,
+    const TargetScheduleCostPolicy &policy,
+    llvm::ArrayRef<llvm::DenseSet<mlir::Operation *>> includedOperations) {
   WholeCardInstructionProgramCost result;
-  std::vector<InstructionProgramCost> rankCosts(rankRoots.size());
-  llvm::parallelFor(0, rankRoots.size(), [&](size_t rank) {
-    rankCosts[rank] = analyzeInstructionProgramCost(rankRoots[rank], policy);
+  std::vector<InstructionProgramCost> tileCosts(tilePrograms.size());
+  llvm::parallelFor(0, tilePrograms.size(), [&](size_t tileIndex) {
+    tileCosts[tileIndex] =
+        includedOperations.empty()
+            ? analyzeInstructionProgramCost(tilePrograms[tileIndex].root,
+                                            policy)
+            : analyzeInstructionProgramCostSlice(tilePrograms[tileIndex].root,
+                                                 policy,
+                                                 includedOperations[tileIndex]);
   });
-  result.rankCosts.reserve(rankRoots.size());
-  for (InstructionProgramCost &rankCost : rankCosts) {
-    addWork(result.aggregateWork, rankCost.work);
-    maximizeWork(result.maximumRankWork, rankCost.work);
-    addComputeCost(result.aggregateCompute, rankCost.compute);
-    maximizeComputeCost(result.maximumRankCompute, rankCost.compute);
-    addMetric(result.aggregateDDRReadBytes, rankCost.ddrReadBytes);
-    addMetric(result.aggregateDDRWriteBytes, rankCost.ddrWriteBytes);
-    addMetric(result.aggregateSPMMovementBytes, rankCost.spmMovementBytes);
-    addMetric(result.aggregateGatherScatterBytes, rankCost.gatherScatterBytes);
-    maximizeMetric(result.maximumRankSPMMovementBytes,
-                   rankCost.spmMovementBytes);
-    maximizeMetric(result.maximumRankGatherScatterBytes,
-                   rankCost.gatherScatterBytes);
-    addNoCCost(result.aggregateNoC, rankCost.noc);
-    maximizeMetric(result.maximumRankNoCTransmitBytes,
-                   rankCost.noc.aggregateTransmitBytes);
-    maximizeMetric(result.maximumRankNoCReceiveBytes,
-                   rankCost.noc.aggregateReceiveBytes);
-    maximizeMetric(result.maximumRankNoCTransmitMessageCount,
-                   rankCost.noc.transmitMessageCount);
-    maximizeMetric(result.maximumRankNoCReceiveMessageCount,
-                   rankCost.noc.receiveMessageCount);
-    maximizeMetric(result.maximumRankDataDependencyDepth,
-                   rankCost.dataDependencyDepth);
-    addMetric(result.aggregateReadyOrderPriorityInversions,
-              rankCost.readyOrderPriorityInversions);
-    addMetric(result.aggregateQualifiedOverlapWindowCount,
-              rankCost.qualifiedOverlapWindowCount);
-    addMetric(result.aggregateDirectDTEComputeOverlapWindowCount,
-              rankCost.directDTEComputeOverlapWindowCount);
-    maximizeMetric(result.maximumRankSPMHighWaterBytes,
-                   rankCost.spmHighWaterBytes);
-    addMetric(result.summedRankSPMHighWaterBytes, rankCost.spmHighWaterBytes);
-    maximizeMetric(result.maximumRankDDRHighWaterBytes,
-                   rankCost.ddrHighWaterBytes);
-    addMetric(result.summedRankDDRHighWaterBytes, rankCost.ddrHighWaterBytes);
+  result.tileCosts.reserve(tilePrograms.size());
+  for (InstructionProgramCost &tileCost : tileCosts) {
+    addWork(result.aggregateWork, tileCost.work);
+    maximizeWork(result.maximumTileWork, tileCost.work);
+    addComputeCost(result.aggregateCompute, tileCost.compute);
+    maximizeComputeCost(result.maximumTileCompute, tileCost.compute);
+    addMetric(result.aggregateDDRReadBytes, tileCost.ddrReadBytes);
+    addMetric(result.aggregateDDRWriteBytes, tileCost.ddrWriteBytes);
+    addMetric(result.aggregateSPMMovementBytes, tileCost.spmMovementBytes);
+    addMetric(result.aggregateGatherScatterBytes, tileCost.gatherScatterBytes);
+    maximizeMetric(result.maximumTileSPMMovementBytes,
+                   tileCost.spmMovementBytes);
+    maximizeMetric(result.maximumTileGatherScatterBytes,
+                   tileCost.gatherScatterBytes);
+    addNoCCost(result.aggregateNoC, tileCost.noc);
+    maximizeMetric(result.maximumTileNoCTransmitBytes,
+                   tileCost.noc.aggregateTransmitBytes);
+    maximizeMetric(result.maximumTileNoCReceiveBytes,
+                   tileCost.noc.aggregateReceiveBytes);
+    maximizeMetric(result.maximumTileNoCTransmitMessageCount,
+                   tileCost.noc.transmitMessageCount);
+    maximizeMetric(result.maximumTileNoCReceiveMessageCount,
+                   tileCost.noc.receiveMessageCount);
+    maximizeMetric(result.maximumTileSPMHighWaterBytes,
+                   tileCost.spmHighWaterBytes);
+    addMetric(result.summedTileSPMHighWaterBytes, tileCost.spmHighWaterBytes);
+    maximizeMetric(result.maximumTileDDRHighWaterBytes,
+                   tileCost.ddrHighWaterBytes);
+    addMetric(result.summedTileDDRHighWaterBytes, tileCost.ddrHighWaterBytes);
     addMetric(result.aggregateCompilerOwnedSPMBufferCount,
-              rankCost.compilerOwnedSPMBufferCount);
+              tileCost.compilerOwnedSPMBufferCount);
     addMetric(result.aggregateCompilerOwnedDDRBufferCount,
-              rankCost.compilerOwnedDDRBufferCount);
-    maximizeMetric(result.maximumRankCompilerOwnedSPMBufferCount,
-                   rankCost.compilerOwnedSPMBufferCount);
-    maximizeMetric(result.maximumRankCompilerOwnedDDRBufferCount,
-                   rankCost.compilerOwnedDDRBufferCount);
-    result.rankCosts.push_back(std::move(rankCost));
+              tileCost.compilerOwnedDDRBufferCount);
+    maximizeMetric(result.maximumTileCompilerOwnedSPMBufferCount,
+                   tileCost.compilerOwnedSPMBufferCount);
+    maximizeMetric(result.maximumTileCompilerOwnedDDRBufferCount,
+                   tileCost.compilerOwnedDDRBufferCount);
+    result.tileCosts.push_back(std::move(tileCost));
   }
   result.aggregateInstructionCount =
       result.aggregateWork.instructions.exactExecutions;
@@ -558,11 +593,33 @@ WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
   result.aggregateIntrinsicNCCDrainCount =
       result.aggregateWork.intrinsicNCCDrains.exactExecutions;
   collectMinimumHopLinkByteDemand(
-      rankRoots, result.minimumHopLinkByteDemand,
+      tilePrograms, includedOperations, result.minimumHopLinkByteDemand,
       result.minimumHopMessageDemand, result.directedNoCLinkCount,
       result.idealizedMinimumPeakLinkByteDemand, result.modeledNoCRoute,
       result.maximumNoCHopCount);
   return result;
+}
+
+WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
+    llvm::ArrayRef<PhysicalTileInstructionProgram> tilePrograms,
+    const TargetScheduleCostPolicy &policy) {
+  return analyzeWholeCardInstructionProgramCostImpl(tilePrograms, policy, {});
+}
+
+WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCostSlice(
+    llvm::ArrayRef<PhysicalTileInstructionProgramSlice> tilePrograms,
+    const TargetScheduleCostPolicy &policy) {
+  llvm::SmallVector<PhysicalTileInstructionProgram, 16> programs;
+  std::vector<llvm::DenseSet<mlir::Operation *>> includedOperations;
+  programs.reserve(tilePrograms.size());
+  includedOperations.reserve(tilePrograms.size());
+  for (const PhysicalTileInstructionProgramSlice &slice : tilePrograms) {
+    programs.push_back({slice.tileId, slice.root});
+    includedOperations.emplace_back(slice.includedOperations.begin(),
+                                    slice.includedOperations.end());
+  }
+  return analyzeWholeCardInstructionProgramCostImpl(programs, policy,
+                                                    includedOperations);
 }
 
 llvm::StringRef
@@ -570,8 +627,8 @@ stringifyScheduleCostKnowledge(ScheduleCostKnowledge knowledge) {
   switch (knowledge) {
   case ScheduleCostKnowledge::Known:
     return "known";
-  case ScheduleCostKnowledge::Unknown:
-    return "unknown";
+  case ScheduleCostKnowledge::Unavailable:
+    return "unavailable";
   case ScheduleCostKnowledge::Unsupported:
     return "unsupported";
   case ScheduleCostKnowledge::Overflow:
@@ -592,10 +649,10 @@ llvm::StringRef stringifyScheduleCostReason(ScheduleCostReason reason) {
     return "conditional-control-flow";
   case ScheduleCostReason::UnsupportedControlFlow:
     return "unsupported-control-flow";
-  case ScheduleCostReason::UnknownPhysicalGeometry:
-    return "unknown-physical-geometry";
-  case ScheduleCostReason::UnknownResourceBytes:
-    return "unknown-resource-bytes";
+  case ScheduleCostReason::UnavailablePhysicalGeometry:
+    return "unavailable-physical-geometry";
+  case ScheduleCostReason::UnavailableResourceBytes:
+    return "unavailable-resource-bytes";
   case ScheduleCostReason::MissingAcceptedSPMOffset:
     return "missing-accepted-spm-offset";
   case ScheduleCostReason::InvalidAcceptedSPMOffset:
@@ -614,8 +671,6 @@ llvm::StringRef stringifyScheduleCostReason(ScheduleCostReason reason) {
     return "unsupported-instruction-semantics";
   case ScheduleCostReason::UnsupportedComputeType:
     return "unsupported-compute-type";
-  case ScheduleCostReason::MissingPerformanceCalibration:
-    return "missing-performance-calibration";
   case ScheduleCostReason::ArithmeticOverflow:
     return "arithmetic-overflow";
   }

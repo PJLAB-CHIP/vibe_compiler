@@ -182,8 +182,6 @@ buildTx81ProfilerLaunchImage(uint64_t recordBytes, uint32_t tileId,
       image, offsetof(WaferTx81ProfilerLaunchConfig, tile_id), tileId);
   uint32_t flags = 0;
   switch (kind) {
-  case Tx81ProfilerCaptureKind::Summary:
-    break;
   case Tx81ProfilerCaptureKind::Count:
     flags = WAFER_TX81_PROFILER_ENTRY_COUNT_ONLY;
     break;
@@ -260,8 +258,9 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
       (header.flags & WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED) != 0;
   const bool countOnly =
       (header.flags & WAFER_TX81_PROFILER_RECORD_COUNT_ONLY) != 0;
-  if (traceEnabled && countOnly)
-    return invalid("TX81 profiler trace and count modes are both enabled");
+  if (traceEnabled == countOnly)
+    return invalid(
+        "TX81 profiler record must enable exactly one capture mode");
   if (traceEnabled &&
       header.next_sequence != static_cast<uint64_t>(header.event_count) +
                                   header.dropped_event_count)
@@ -536,9 +535,6 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
           "TX81 profiler Direct-DTE phase is not contained by a matching "
           "aggregate");
   }
-  if (!traceEnabled && !countOnly &&
-      (!record.events.empty() || header.next_sequence != 0))
-    return invalid("TX81 profiler summary record contains trace events");
   return record;
 }
 

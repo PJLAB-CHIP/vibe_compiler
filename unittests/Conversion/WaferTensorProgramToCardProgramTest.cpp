@@ -1,0 +1,2803 @@
+//===- WaferTensorProgramToCardProgramTest.cpp - Card baseline tests -----===//
+
+#include "Wafer/Conversion/WaferTensorProgramToCardProgram/WaferTensorProgramToCardProgram.h"
+#include "Wafer/Conversion/WaferCardProgramToTileModules/WaferCardProgramToTileModules.h"
+#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
+
+#include "Wafer/IR/WaferDialect.h"
+#include "Wafer/InitAll.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
+#include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/DestinationStyleOpInterface.h"
+#include "mlir/Interfaces/TilingInterface.h"
+#include "mlir/Parser/Parser.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include "gtest/gtest.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <initializer_list>
+#include <limits>
+#include <memory>
+#include <string>
+#include <tuple>
+
+namespace {
+
+static std::unique_ptr<mlir::MLIRContext> createContext() {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
+  wafer::registerAllDialects(registry);
+  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
+      registry);
+  mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  auto context = std::make_unique<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+  return context;
+}
+
+static std::string printOperation(mlir::Operation *operation) {
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  operation->print(stream);
+  stream.flush();
+  return text;
+}
+
+template <typename OpT> static unsigned countOps(mlir::Operation *operation) {
+  unsigned count = 0;
+  operation->walk([&](OpT) { ++count; });
+  return count;
+}
+
+template <typename LineageT>
+static bool locationContainsLineage(mlir::Location location,
+                                    const LineageT *expected) {
+  if (auto opaque = mlir::dyn_cast<mlir::OpaqueLoc>(location)) {
+    if (mlir::OpaqueLoc::getUnderlyingLocationOrNull<const LineageT *>(
+            opaque) == expected)
+      return true;
+    return locationContainsLineage(opaque.getFallbackLocation(), expected);
+  }
+  if (auto fused = mlir::dyn_cast<mlir::FusedLoc>(location))
+    return llvm::any_of(fused.getLocations(), [&](mlir::Location nested) {
+      return locationContainsLineage(nested, expected);
+    });
+  if (auto named = mlir::dyn_cast<mlir::NameLoc>(location))
+    return locationContainsLineage(named.getChildLoc(), expected);
+  if (auto callSite = mlir::dyn_cast<mlir::CallSiteLoc>(location))
+    return locationContainsLineage(callSite.getCallee(), expected) ||
+           locationContainsLineage(callSite.getCaller(), expected);
+  return false;
+}
+
+struct StoreShard {
+  int64_t tileId = -1;
+  int64_t offset = -1;
+  int64_t size = -1;
+
+  friend bool operator==(const StoreShard &lhs, const StoreShard &rhs) {
+    return std::tie(lhs.tileId, lhs.offset, lhs.size) ==
+           std::tie(rhs.tileId, rhs.offset, rhs.size);
+  }
+};
+
+static llvm::SmallVector<StoreShard, 16>
+collectSecondDimensionStoreShards(wafer::CardProgramOp card) {
+  llvm::SmallVector<StoreShard, 16> shards;
+  for (wafer::TileProgramOp tile :
+       card.getBody().front().getOps<wafer::TileProgramOp>()) {
+    tile.walk([&](wafer::StorageStoreOp store) {
+      auto view = store.getDest().getDefiningOp<mlir::memref::SubViewOp>();
+      EXPECT_TRUE(view);
+      if (!view || view.getStaticOffsets().size() < 2 ||
+          view.getStaticSizes().size() < 2)
+        return;
+      shards.push_back(StoreShard{tile.getTileIdAttr().getInt(),
+                                  view.getStaticOffsets()[1],
+                                  view.getStaticSizes()[1]});
+    });
+  }
+  llvm::sort(shards, [](const StoreShard &lhs, const StoreShard &rhs) {
+    return lhs.tileId < rhs.tileId;
+  });
+  return shards;
+}
+
+static mlir::OwningOpRef<mlir::ModuleOp> parseModule(mlir::MLIRContext &context,
+                                                     llvm::StringRef text) {
+  return mlir::parseSourceString<mlir::ModuleOp>(text,
+                                                 mlir::ParserConfig(&context));
+}
+
+static wafer::CardSpatialMapping
+mapping(unsigned shardDimension, std::initializer_list<int64_t> tileIds,
+        std::initializer_list<int64_t> temporalTileSizes) {
+  wafer::CardSpatialMapping result;
+  wafer::CardOutputSpatialMapping output;
+  output.outputIndex = 0;
+  output.shardDimension = shardDimension;
+  for (int64_t tileId : tileIds)
+    output.activeTileIds.push_back(wafer::PhysicalTileId(tileId));
+  output.temporalTileSizes.append(temporalTileSizes.begin(),
+                                  temporalTileSizes.end());
+  result.outputs.push_back(std::move(output));
+  return result;
+}
+
+static wafer::CardOutputSpatialMapping
+outputMapping(unsigned outputIndex, unsigned shardDimension,
+              std::initializer_list<int64_t> tileIds,
+              std::initializer_list<int64_t> temporalTileSizes) {
+  wafer::CardOutputSpatialMapping output;
+  output.outputIndex = outputIndex;
+  output.shardDimension = shardDimension;
+  for (int64_t tileId : tileIds)
+    output.activeTileIds.push_back(wafer::PhysicalTileId(tileId));
+  output.temporalTileSizes.append(temporalTileSizes.begin(),
+                                  temporalTileSizes.end());
+  return output;
+}
+
+static wafer::CardSpatialMapping multiOutputMapping(
+    std::initializer_list<wafer::CardOutputSpatialMapping> outputs) {
+  wafer::CardSpatialMapping result;
+  result.outputs.append(outputs.begin(), outputs.end());
+  return result;
+}
+
+static wafer::SpatialEdgeStrategy
+edgeStrategy(mlir::Operation *producer, mlir::Operation *consumer,
+             wafer::PhysicalTileId tile, wafer::SpatialEdgeAction action,
+             llvm::ArrayRef<int64_t> producerOffsets,
+             llvm::ArrayRef<int64_t> producerSizes,
+             llvm::ArrayRef<int64_t> consumerOffsets = {},
+             llvm::ArrayRef<int64_t> consumerSizes = {}) {
+  wafer::SpatialEdgeStrategy result;
+  result.producer = producer;
+  result.consumer = consumer;
+  result.producerOffsets.assign(producerOffsets.begin(), producerOffsets.end());
+  result.producerSizes.assign(producerSizes.begin(), producerSizes.end());
+  result.consumerOffsets.assign(consumerOffsets.begin(), consumerOffsets.end());
+  result.consumerSizes.assign(consumerSizes.begin(), consumerSizes.end());
+  result.sourceTile = tile;
+  result.destinationTile = tile;
+  result.action = action;
+  return result;
+}
+
+static wafer::CardSpatialMapping
+completeTemporalMapping(mlir::ModuleOp source,
+                        wafer::CardSpatialMapping mapping) {
+  llvm::DenseSet<mlir::Operation *> configured;
+  for (const wafer::StructuredOpTemporalTile &tile :
+       mapping.operationTemporalTiles)
+    configured.insert(tile.operation);
+
+  for (mlir::func::FuncOp function : source.getOps<mlir::func::FuncOp>()) {
+    if (function.isExternal() || !function.getBody().hasOneBlock())
+      continue;
+    for (mlir::Operation &operation :
+         function.getBody().front().without_terminator()) {
+      auto tiling = mlir::dyn_cast<mlir::TilingInterface>(&operation);
+      if (!tiling ||
+          !mlir::isa<mlir::DestinationStyleOpInterface>(&operation) ||
+          configured.contains(&operation))
+        continue;
+      llvm::SmallVector<int64_t, 4> ranges;
+      if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(&operation)) {
+        ranges = linalg.getStaticLoopRanges();
+      } else if (operation.getNumResults() == 1) {
+        auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
+            operation.getResult(0).getType());
+        if (resultType && resultType.hasStaticShape())
+          ranges.assign(resultType.getShape().begin(),
+                        resultType.getShape().end());
+      }
+      if (ranges.size() != tiling.getLoopIteratorTypes().size()) {
+        ADD_FAILURE() << "test fixture cannot derive complete iterator tiles";
+        continue;
+      }
+      mapping.operationTemporalTiles.push_back(
+          wafer::StructuredOpTemporalTile{&operation, std::move(ranges)});
+      configured.insert(&operation);
+    }
+
+    // Test mappings spell only the dimension under test. Complete every
+    // direct structured data edge with the ordinary fused action so fixtures
+    // exercise the production all-edge contract without a compatibility API.
+    for (mlir::Operation &operation :
+         function.getBody().front().without_terminator()) {
+      auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(&operation);
+      if (!dps || !mlir::isa<mlir::TilingInterface>(&operation) ||
+          mapping.outputs.empty() ||
+          mapping.outputs.front().activeTileIds.empty())
+        continue;
+      for (mlir::OpOperand *operand : dps.getDpsInputOperands()) {
+        auto producerResult = mlir::dyn_cast<mlir::OpResult>(operand->get());
+        mlir::Operation *producer =
+            producerResult ? producerResult.getOwner() : nullptr;
+        if (!producer || producer->getBlock() != operation.getBlock() ||
+            !mlir::isa<mlir::TilingInterface>(producer) ||
+            !mlir::isa<mlir::DestinationStyleOpInterface>(producer))
+          continue;
+        bool configuredEdge = llvm::any_of(
+            mapping.edgeStrategies,
+            [&](const wafer::SpatialEdgeStrategy &edge) {
+              return edge.producer == producer && edge.consumer == &operation &&
+                     edge.consumerOperand == operand->getOperandNumber();
+            });
+        if (configuredEdge)
+          continue;
+        auto producerType =
+            mlir::dyn_cast<mlir::RankedTensorType>(producerResult.getType());
+        if (!producerType || !producerType.hasStaticShape()) {
+          ADD_FAILURE() << "test fixture cannot derive a static edge demand";
+          continue;
+        }
+        llvm::SmallVector<int64_t, 4> offsets(producerType.getRank(), 0);
+        wafer::SpatialEdgeStrategy fused = edgeStrategy(
+            producer, &operation, mapping.outputs.front().activeTileIds.front(),
+            wafer::SpatialEdgeAction::CoupledFusion, offsets,
+            producerType.getShape());
+        fused.producerResult = producerResult.getResultNumber();
+        fused.consumerOperand = operand->getOperandNumber();
+        mapping.edgeStrategies.push_back(std::move(fused));
+      }
+    }
+  }
+  return mapping;
+}
+
+static mlir::LogicalResult lowerCompleteTensorProgramToCardProgram(
+    mlir::ModuleOp source, wafer::PhysicalCardId cardId,
+    wafer::CardSpatialMapping mapping,
+    mlir::OwningOpRef<mlir::ModuleOp> &cardModule,
+    std::string *failureReason = nullptr,
+    llvm::ArrayRef<wafer::CardProgramSourceOperationLineage> sourceLineage = {},
+    llvm::ArrayRef<wafer::StructuredOperandDemandLineage> operandDemandLineage =
+        {}) {
+  return wafer::lowerTensorProgramToCardProgram(
+      source, cardId, completeTemporalMapping(source, std::move(mapping)),
+      cardModule, failureReason, sourceLineage,
+      /*outputLineage=*/{}, operandDemandLineage);
+}
+
+static wafer::CardSpatialMapping
+mixedLocalRemoteFaninMapping(mlir::Operation *producer,
+                             mlir::Operation *consumer) {
+  wafer::CardSpatialMapping result =
+      mapping(/*shardDimension=*/1, {1, 2}, {4, 2});
+  result.materializationMode =
+      wafer::SpatialDataflowMaterializationMode::IndependentDDRStages;
+  wafer::SpatialEdgeStrategy first =
+      edgeStrategy(producer, consumer, wafer::PhysicalTileId(1),
+                   wafer::SpatialEdgeAction::PeerFragments,
+                   /*producerOffsets=*/{0, 0}, /*producerSizes=*/{4, 2},
+                   /*consumerOffsets=*/{0, 0}, /*consumerSizes=*/{4, 2});
+  first.fragments.push_back(
+      wafer::SpatialEdgeFragment{wafer::SpatialEdgeFragmentKind::Peer,
+                                 {0, 0},
+                                 {2, 2},
+                                 wafer::PhysicalTileId(0),
+                                 /*bytes=*/8,
+                                 /*communicationId=*/0,
+                                 /*payloadSlice=*/0});
+  first.fragments.push_back(
+      wafer::SpatialEdgeFragment{wafer::SpatialEdgeFragmentKind::Resident,
+                                 {2, 0},
+                                 {2, 2},
+                                 wafer::PhysicalTileId(1)});
+  result.edgeStrategies.push_back(std::move(first));
+
+  wafer::SpatialEdgeStrategy second =
+      edgeStrategy(producer, consumer, wafer::PhysicalTileId(2),
+                   wafer::SpatialEdgeAction::PeerFragments,
+                   /*producerOffsets=*/{0, 2}, /*producerSizes=*/{4, 2},
+                   /*consumerOffsets=*/{0, 2}, /*consumerSizes=*/{4, 2});
+  second.fragments.push_back(
+      wafer::SpatialEdgeFragment{wafer::SpatialEdgeFragmentKind::Peer,
+                                 {0, 2},
+                                 {2, 2},
+                                 wafer::PhysicalTileId(0),
+                                 /*bytes=*/8,
+                                 /*communicationId=*/0,
+                                 /*payloadSlice=*/1});
+  second.fragments.push_back(
+      wafer::SpatialEdgeFragment{wafer::SpatialEdgeFragmentKind::Peer,
+                                 {2, 2},
+                                 {2, 2},
+                                 wafer::PhysicalTileId(1),
+                                 /*bytes=*/8,
+                                 /*communicationId=*/0,
+                                 /*payloadSlice=*/2});
+  result.edgeStrategies.push_back(std::move(second));
+  return result;
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     CoversFourByFourCardWithDistinctBalancedTileBodies) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module attributes {test.card_baseline = "preserved"} {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  memref.global "private" @shared_weights
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+  func.func @matmul(%lhs: tensor<8x16xf16>, %rhs: tensor<16x64xf16>)
+      -> tensor<8x64xf16> {
+    %zero = arith.constant 0.0 : f16
+    %out = tensor.empty() : tensor<8x64xf16>
+    %init = linalg.fill ins(%zero : f16)
+        outs(%out : tensor<8x64xf16>) -> tensor<8x64xf16>
+    %result = linalg.matmul
+        ins(%lhs, %rhs : tensor<8x16xf16>, tensor<16x64xf16>)
+        outs(%init : tensor<8x64xf16>) -> tensor<8x64xf16>
+    return %result : tensor<8x64xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+  const std::string sourceBefore = printOperation(source->getOperation());
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      mapping(/*shardDimension=*/1,
+              {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}, {8, 4}),
+      cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(cardModule);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+  EXPECT_EQ(printOperation(source->getOperation()), sourceBefore);
+  EXPECT_TRUE(cardModule->getOperation()->hasAttr("test.card_baseline"));
+  EXPECT_EQ(countOps<wafer::TargetTopologyOp>(cardModule->getOperation()), 1u);
+  EXPECT_EQ(countOps<wafer::ExecutionMeshOp>(cardModule->getOperation()), 1u);
+  EXPECT_EQ(countOps<mlir::memref::GlobalOp>(cardModule->getOperation()), 1u);
+  EXPECT_EQ(countOps<wafer::CardProgramOp>(cardModule->getOperation()), 1u);
+  EXPECT_EQ(countOps<wafer::TileProgramOp>(cardModule->getOperation()), 16u);
+  EXPECT_EQ(countOps<mlir::func::FuncOp>(cardModule->getOperation()), 16u);
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(cardModule->getOperation()), 16u);
+
+  wafer::CardProgramOp card =
+      *cardModule->getOps<wafer::CardProgramOp>().begin();
+  llvm::SmallVector<StoreShard, 16> shards =
+      collectSecondDimensionStoreShards(card);
+  ASSERT_EQ(shards.size(), 16u);
+  for (unsigned index = 0; index < shards.size(); ++index) {
+    EXPECT_EQ(shards[index].tileId, static_cast<int64_t>(index));
+    EXPECT_EQ(shards[index].offset, static_cast<int64_t>(index * 4));
+    EXPECT_EQ(shards[index].size, 4);
+  }
+  for (unsigned index = 1; index < shards.size(); ++index)
+    EXPECT_EQ(shards[index - 1].offset + shards[index - 1].size,
+              shards[index].offset);
+  EXPECT_EQ(shards.back().offset + shards.back().size, 64);
+
+  llvm::SmallVector<std::string, 16> tileBodies;
+  for (wafer::TileProgramOp tile :
+       card.getBody().front().getOps<wafer::TileProgramOp>())
+    tileBodies.push_back(printOperation(tile.getOperation()));
+  EXPECT_NE(tileBodies.front(), tileBodies.back());
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     FailureProbeMaterializesOnlySelectedTileBody) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @elementwise(%input: tensor<8x64xf16>) -> tensor<8x64xf16> {
+    %zero = arith.constant 0.0 : f16
+    %out = tensor.empty() : tensor<8x64xf16>
+    %init = linalg.fill ins(%zero : f16)
+        outs(%out : tensor<8x64xf16>) -> tensor<8x64xf16>
+    %result = linalg.map ins(%input : tensor<8x64xf16>)
+        outs(%init : tensor<8x64xf16>)
+        (%value: f16) { linalg.yield %value : f16 }
+    return %result : tensor<8x64xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  wafer::CardSpatialMapping selected = completeTemporalMapping(
+      *source,
+      mapping(/*shardDimension=*/1,
+              {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}, {8, 4}));
+
+  mlir::OwningOpRef<mlir::ModuleOp> probeModule;
+  std::string failureReason;
+  ASSERT_TRUE(
+      mlir::succeeded(wafer::lowerTensorProgramToCardProgramFailureProbe(
+          *source, wafer::PhysicalCardId(0), wafer::PhysicalTileId(7), selected,
+          probeModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*probeModule)));
+  EXPECT_EQ(countOps<wafer::TileProgramOp>(probeModule->getOperation()), 16u);
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(probeModule->getOperation()), 1u);
+  wafer::CardProgramOp probeCard =
+      *probeModule->getOps<wafer::CardProgramOp>().begin();
+  llvm::SmallVector<StoreShard, 16> probeShards =
+      collectSecondDimensionStoreShards(probeCard);
+  ASSERT_EQ(probeShards.size(), 1u);
+  EXPECT_EQ(probeShards.front().tileId, 7);
+  EXPECT_EQ(probeShards.front().offset, 28);
+  EXPECT_EQ(probeShards.front().size, 4);
+
+  mlir::OwningOpRef<mlir::ModuleOp> fullModule;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), selected, fullModule, &failureReason)))
+      << failureReason;
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(fullModule->getOperation()), 16u);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     OperandDemandLineageMarksOnlyExplicitStructuredInputs) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @input_role(%input: tensor<4x4xf16>,
+                        %init: tensor<4x4xf16>) -> tensor<4x4xf16> {
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(m, n) -> (m, n)>,
+                         affine_map<(m, n) -> (m, n)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%input : tensor<4x4xf16>)
+        outs(%init : tensor<4x4xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %sum = arith.addf %value, %old : f16
+        linalg.yield %sum : f16
+    } -> tensor<4x4xf16>
+    return %result : tensor<4x4xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  auto function = *source->getOps<mlir::func::FuncOp>().begin();
+  auto generic = *function.getOps<mlir::linalg::GenericOp>().begin();
+
+  wafer::CardSpatialMapping selected = completeTemporalMapping(
+      *source, mapping(/*shardDimension=*/0, {0}, {4, 4}));
+  selected.outputs.front().temporalTileSizes = {4, 1};
+  ASSERT_EQ(selected.operationTemporalTiles.size(), 1u);
+  selected.operationTemporalTiles.front().iteratorTileSizes = {4, 1};
+  std::array<wafer::CardProgramSourceOperationLineage, 1> sourceLineage = {
+      wafer::CardProgramSourceOperationLineage{generic.getOperation(), 0}};
+  std::array<wafer::SpatialOutputLineage, 1> outputLineage = {
+      wafer::SpatialOutputLineage{0}};
+  std::array<wafer::StructuredOperandDemandLineage, 1> operandLineage = {
+      wafer::StructuredOperandDemandLineage{generic.getOperation(), 0}};
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), selected, cardModule, &failureReason,
+      sourceLineage, outputLineage, operandLineage)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+
+  unsigned markedLoads = 0;
+  unsigned unmarkedLoads = 0;
+  cardModule->walk([&](wafer::StorageLoadOp load) {
+    if (locationContainsLineage(load.getLoc(), &operandLineage.front())) {
+      ++markedLoads;
+      auto destinationType =
+          mlir::cast<mlir::MemRefType>(load.getDest().getType());
+      EXPECT_LE(destinationType.getNumElements(), 4);
+    } else {
+      ++unmarkedLoads;
+    }
+  });
+  EXPECT_GT(markedLoads, 0u);
+  EXPECT_GT(unmarkedLoads, 0u);
+
+  cardModule->walk([&](wafer::ComputeElementwiseOp compute) {
+    EXPECT_FALSE(
+        locationContainsLineage(compute.getLoc(), &operandLineage.front()));
+  });
+  cardModule->walk([&](wafer::StorageStoreOp store) {
+    EXPECT_FALSE(
+        locationContainsLineage(store.getLoc(), &operandLineage.front()));
+  });
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     OutputUpdateTileAllocationRetainsOutputQueryLineage) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @cache_update(%past: tensor<7x4xf16>,
+                          %row: tensor<1x4xf16>) -> tensor<8x4xf16> {
+    %empty = tensor.empty() : tensor<8x4xf16>
+    %prefix = tensor.insert_slice %past into %empty[0, 0] [7, 4] [1, 1]
+        : tensor<7x4xf16> into tensor<8x4xf16>
+    %result = tensor.insert_slice %row into %prefix[7, 0] [1, 4] [1, 1]
+        : tensor<1x4xf16> into tensor<8x4xf16>
+    return %result : tensor<8x4xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  wafer::CardSpatialMapping selected = completeTemporalMapping(
+      *source, mapping(/*shardDimension=*/0, {0}, {4, 4}));
+  std::array<wafer::SpatialOutputLineage, 1> outputLineage = {
+      wafer::SpatialOutputLineage{0}};
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), selected, cardModule, &failureReason,
+      /*sourceOperationLineage=*/{}, outputLineage,
+      /*operandDemandLineage=*/{})))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+
+  unsigned markedTileAllocations = 0;
+  cardModule->walk([&](mlir::memref::AllocOp allocation) {
+    if (!locationContainsLineage(allocation.getLoc(), &outputLineage.front()))
+      return;
+    ++markedTileAllocations;
+    EXPECT_LE(allocation.getType().getNumElements(), 16)
+        << printOperation(allocation.getOperation());
+  });
+  EXPECT_GT(markedTileAllocations, 0u);
+
+  // The 7-row prefix intersects 4-row traversal waves as the finite static
+  // classes {3, 4}. Their mutually exclusive scf.if branches may reuse the
+  // same pre-insert destination version, and must remain representable all the
+  // way through physical Tile instruction lowering.
+  auto projected = wafer::projectCardProgramToPhysicalTileModules(
+      *cardModule, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
+  for (wafer::ProjectedPhysicalTileModule &tile : *projected) {
+    ASSERT_TRUE(mlir::succeeded(
+        wafer::convertTileRegionToInstrModule(*tile.module, &failureReason)))
+        << "Tile " << tile.tileId.getValue() << ": " << failureReason;
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*tile.module)));
+  }
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     CoupledFullWindowKeepsProducerOperandLoadsTemporallyTiled) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @coupled(%weight: tensor<8x8xf16>, %lhs: tensor<1x8xf16>,
+                     %init: tensor<1x8xf16>) -> tensor<1x8xf16> {
+    %empty = tensor.empty() : tensor<8x8xf16>
+    %transpose = linalg.generic {
+        indexing_maps = [affine_map<(m, n) -> (n, m)>,
+                         affine_map<(m, n) -> (m, n)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%weight : tensor<8x8xf16>) outs(%empty : tensor<8x8xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        linalg.yield %value : f16
+    } -> tensor<8x8xf16>
+    %result = linalg.matmul ins(%lhs, %transpose
+        : tensor<1x8xf16>, tensor<8x8xf16>)
+        outs(%init : tensor<1x8xf16>) -> tensor<1x8xf16>
+    return %result : tensor<1x8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  auto function = *source->getOps<mlir::func::FuncOp>().begin();
+  llvm::SmallVector<mlir::linalg::LinalgOp, 2> structured;
+  function.walk([&](mlir::linalg::LinalgOp op) { structured.push_back(op); });
+  ASSERT_EQ(structured.size(), 2u);
+
+  wafer::CardSpatialMapping selected = completeTemporalMapping(
+      *source, mapping(/*shardDimension=*/1, {0}, {1, 8}));
+  ASSERT_EQ(selected.operationTemporalTiles.size(), 2u);
+  selected.operationTemporalTiles[0].iteratorTileSizes = {8, 2};
+  selected.operationTemporalTiles[1].iteratorTileSizes = {1, 2, 8};
+
+  std::array<wafer::CardProgramSourceOperationLineage, 2> sourceLineage = {
+      wafer::CardProgramSourceOperationLineage{structured[0].getOperation(), 0},
+      wafer::CardProgramSourceOperationLineage{structured[1].getOperation(),
+                                               1}};
+  std::array<wafer::SpatialOutputLineage, 1> outputLineage = {
+      wafer::SpatialOutputLineage{0}};
+  std::array<wafer::StructuredOperandDemandLineage, 2> operandLineage = {
+      wafer::StructuredOperandDemandLineage{structured[0].getOperation(), 0},
+      wafer::StructuredOperandDemandLineage{structured[1].getOperation(), 1}};
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), selected, cardModule, &failureReason,
+      sourceLineage, outputLineage, operandLineage)))
+      << failureReason;
+
+  unsigned producerLoads = 0;
+  cardModule->walk([&](wafer::StorageLoadOp load) {
+    if (!locationContainsLineage(load.getLoc(), &operandLineage[0]))
+      return;
+    ++producerLoads;
+    auto destinationType =
+        mlir::cast<mlir::MemRefType>(load.getDest().getType());
+    EXPECT_LE(destinationType.getNumElements(), 16)
+        << printOperation(load.getOperation());
+  });
+  EXPECT_GT(producerLoads, 0u);
+
+  cardModule->walk([&](mlir::memref::AllocOp allocation) {
+    auto type = allocation.getType();
+    EXPECT_LT(type.getNumElements(), 64)
+        << "a consumer-driven coupled wave must not assemble the full "
+           "producer window: "
+        << printOperation(allocation.getOperation());
+  });
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     SharedOutputClosuresKeepCoupledWeightWindowsTemporallyTiled) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @shared_outputs(%weight: tensor<8x8xf16>,
+                            %lhs: tensor<1x8xf16>,
+                            %init: tensor<1x8xf16>)
+      -> (tensor<1x2x1x4xf16>, tensor<1x2x1x4xf16>) {
+    %empty = tensor.empty() : tensor<8x8xf16>
+    %transpose = linalg.generic {
+        indexing_maps = [affine_map<(m, n) -> (n, m)>,
+                         affine_map<(m, n) -> (m, n)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%weight : tensor<8x8xf16>) outs(%empty : tensor<8x8xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        linalg.yield %value : f16
+    } -> tensor<8x8xf16>
+    %product = linalg.matmul ins(%lhs, %transpose
+        : tensor<1x8xf16>, tensor<8x8xf16>)
+        outs(%init : tensor<1x8xf16>) -> tensor<1x8xf16>
+    %expanded = tensor.expand_shape %product [[0], [1, 2, 3]]
+        output_shape [1, 2, 1, 4]
+        : tensor<1x8xf16> into tensor<1x2x1x4xf16>
+    %first_out = tensor.empty() : tensor<1x2x1x4xf16>
+    %first = linalg.map ins(%expanded : tensor<1x2x1x4xf16>)
+        outs(%first_out : tensor<1x2x1x4xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    %second_out = tensor.empty() : tensor<1x2x1x4xf16>
+    %second = linalg.map ins(%expanded : tensor<1x2x1x4xf16>)
+        outs(%second_out : tensor<1x2x1x4xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    %first_consumer_out = tensor.empty() : tensor<1x2x1x4xf16>
+    %first_consumer = linalg.map ins(%first : tensor<1x2x1x4xf16>)
+        outs(%first_consumer_out : tensor<1x2x1x4xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    %second_consumer_out = tensor.empty() : tensor<1x2x1x4xf16>
+    %second_consumer = linalg.map ins(%second : tensor<1x2x1x4xf16>)
+        outs(%second_consumer_out : tensor<1x2x1x4xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    return %first_consumer, %second_consumer
+        : tensor<1x2x1x4xf16>, tensor<1x2x1x4xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  auto function = *source->getOps<mlir::func::FuncOp>().begin();
+  llvm::SmallVector<mlir::linalg::LinalgOp, 6> structured;
+  function.walk([&](mlir::linalg::LinalgOp op) { structured.push_back(op); });
+  ASSERT_EQ(structured.size(), 6u);
+
+  wafer::CardSpatialMapping selected =
+      multiOutputMapping({outputMapping(0, 3, {0}, {1, 2, 1, 2}),
+                          outputMapping(1, 3, {0}, {1, 2, 1, 2})});
+  for (auto [producer, consumer, communicationId] :
+       {std::tuple(structured[2].getOperation(), structured[4].getOperation(),
+                   int64_t{0}),
+        std::tuple(structured[3].getOperation(), structured[5].getOperation(),
+                   int64_t{1})}) {
+    wafer::SpatialEdgeStrategy peer =
+        edgeStrategy(producer, consumer, wafer::PhysicalTileId(0),
+                     wafer::SpatialEdgeAction::PeerFragments,
+                     /*producerOffsets=*/{0, 0, 0, 0},
+                     /*producerSizes=*/{1, 2, 1, 4},
+                     /*consumerOffsets=*/{0, 0, 0, 0},
+                     /*consumerSizes=*/{1, 2, 1, 4});
+    peer.sourceTile = wafer::PhysicalTileId(1);
+    peer.fragments.push_back(wafer::SpatialEdgeFragment{
+        wafer::SpatialEdgeFragmentKind::Peer,
+        /*offsets=*/{0, 0, 0, 0}, /*sizes=*/{1, 2, 1, 4},
+        wafer::PhysicalTileId(1), /*bytes=*/16, communicationId,
+        /*payloadSlice=*/0});
+    selected.edgeStrategies.push_back(std::move(peer));
+  }
+  selected = completeTemporalMapping(*source, std::move(selected));
+  ASSERT_EQ(selected.operationTemporalTiles.size(), 6u);
+  selected.operationTemporalTiles[0].iteratorTileSizes = {8, 2};
+  selected.operationTemporalTiles[1].iteratorTileSizes = {1, 2, 4};
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), selected, cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+
+  bool sawCoupledWeightWindow = false;
+  cardModule->walk([&](wafer::StorageLoadOp load) {
+    auto type = mlir::dyn_cast<mlir::MemRefType>(load.getDest().getType());
+    if (type && type.getShape() == llvm::ArrayRef<int64_t>({2, 4}))
+      sawCoupledWeightWindow = true;
+  });
+  cardModule->walk([&](mlir::memref::AllocOp allocation) {
+    auto type = allocation.getType();
+    EXPECT_LT(type.getNumElements(), 64)
+        << "each shared-output traversal must consume the selected coupled "
+           "weight wave without assembling the full producer: "
+        << printOperation(allocation.getOperation());
+  });
+  EXPECT_TRUE(sawCoupledWeightWindow)
+      << printOperation(cardModule->getOperation());
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     DirectlyLowersExactGenericGemmFromStructuredSemantics) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @generic_gemm(%lhs: tensor<2x4xf16>, %rhs: tensor<4x3xf16>)
+      -> tensor<2x3xf16> {
+    %zero = arith.constant 0.0 : f16
+    %out = tensor.empty() : tensor<2x3xf16>
+    %init = linalg.fill ins(%zero : f16)
+        outs(%out : tensor<2x3xf16>) -> tensor<2x3xf16>
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(m, n, k) -> (m, k)>,
+                         affine_map<(m, n, k) -> (k, n)>,
+                         affine_map<(m, n, k) -> (m, n)>],
+        iterator_types = ["parallel", "parallel", "reduction"]
+      } ins(%lhs, %rhs : tensor<2x4xf16>, tensor<4x3xf16>)
+        outs(%init : tensor<2x3xf16>) {
+      ^bb0(%left: f16, %right: f16, %acc: f16):
+        %product = arith.mulf %left, %right : f16
+        %sum = arith.addf %product, %acc : f16
+        linalg.yield %sum : f16
+    } -> tensor<2x3xf16>
+    return %result : tensor<2x3xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      mapping(/*shardDimension=*/1, {0}, {2, 3}), cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+  EXPECT_EQ(countOps<wafer::ComputeGemmOp>(cardModule->getOperation()), 1u);
+
+  // Program boundaries use the one canonical staged path: DDR transfers
+  // enter and leave Tensor-layout SPM, while compute-specific layouts are
+  // represented by explicit materialization inside the Tile region.
+  unsigned loadCount = 0;
+  unsigned storeCount = 0;
+  bool boundaryTransfersUseTensorLayout = true;
+  cardModule->walk([&](wafer::StorageLoadOp load) {
+    ++loadCount;
+    auto type = mlir::dyn_cast<mlir::MemRefType>(load.getDest().getType());
+    auto memory = type ? wafer::getWaferMemoryAttr(type) : wafer::MemoryAttr{};
+    boundaryTransfersUseTensorLayout &=
+        memory && memory.getLayout() == wafer::MemLayout::Tensor;
+  });
+  cardModule->walk([&](wafer::StorageStoreOp store) {
+    ++storeCount;
+    auto type = mlir::dyn_cast<mlir::MemRefType>(store.getSource().getType());
+    auto memory = type ? wafer::getWaferMemoryAttr(type) : wafer::MemoryAttr{};
+    boundaryTransfersUseTensorLayout &=
+        memory && memory.getLayout() == wafer::MemLayout::Tensor;
+  });
+  EXPECT_GT(loadCount, 0u);
+  EXPECT_GT(storeCount, 0u);
+  EXPECT_TRUE(boundaryTransfersUseTensorLayout);
+  EXPECT_GT(countOps<wafer::LayoutMaterializeOp>(cardModule->getOperation()),
+            0u);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     DerivesBoundaryOperandWindowThroughStructuredProducerRelations) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @transpose_matmul(%lhs: tensor<1x2x4xf16>,
+                              %stored_rhs: tensor<3x4xf16>,
+                              %residual: tensor<1x2x3xf16>)
+      -> tensor<1x2x3xf16> {
+    %collapsed_lhs = tensor.collapse_shape %lhs [[0, 1], [2]]
+        : tensor<1x2x4xf16> into tensor<2x4xf16>
+    %rhs_out = tensor.empty() : tensor<4x3xf16>
+    %rhs = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d1, d0)>,
+                         affine_map<(d0, d1) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%stored_rhs : tensor<3x4xf16>)
+        outs(%rhs_out : tensor<4x3xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        linalg.yield %value : f16
+    } -> tensor<4x3xf16>
+    %zero = arith.constant 0.0 : f16
+    %out = tensor.empty() : tensor<2x3xf16>
+    %init = linalg.fill ins(%zero : f16)
+        outs(%out : tensor<2x3xf16>) -> tensor<2x3xf16>
+    %result = linalg.matmul
+        ins(%collapsed_lhs, %rhs : tensor<2x4xf16>, tensor<4x3xf16>)
+        outs(%init : tensor<2x3xf16>) -> tensor<2x3xf16>
+    %expanded = tensor.expand_shape %result [[0, 1], [2]]
+        output_shape [1, 2, 3]
+        : tensor<2x3xf16> into tensor<1x2x3xf16>
+    %add_out = tensor.empty() : tensor<1x2x3xf16>
+    %sum = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>],
+        iterator_types = ["parallel", "parallel", "parallel"]
+      } ins(%expanded, %residual : tensor<1x2x3xf16>, tensor<1x2x3xf16>)
+        outs(%add_out : tensor<1x2x3xf16>) {
+      ^bb0(%value: f16, %other: f16, %old: f16):
+        %added = arith.addf %value, %other : f16
+        linalg.yield %added : f16
+    } -> tensor<1x2x3xf16>
+    return %sum : tensor<1x2x3xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      mapping(/*shardDimension=*/2, {0}, {1, 2, 1}), cardModule,
+      &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+
+  bool sawExactStoredRhsWindow = false;
+  bool sawFullStoredRhs = false;
+  bool sawFullTransposedRhs = false;
+  cardModule->walk([&](wafer::StorageLoadOp load) {
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(load.getSource().getType());
+    if (!sourceType || sourceType.getRank() != 2)
+      return;
+    sawExactStoredRhsWindow |=
+        sourceType.getShape() == llvm::ArrayRef<int64_t>({1, 4});
+    sawFullStoredRhs |=
+        sourceType.getShape() == llvm::ArrayRef<int64_t>({3, 4});
+  });
+  cardModule->walk([&](mlir::Operation *operation) {
+    for (mlir::Type type : operation->getResultTypes()) {
+      auto memref = mlir::dyn_cast<mlir::MemRefType>(type);
+      sawFullTransposedRhs |=
+          memref && memref.getShape() == llvm::ArrayRef<int64_t>({4, 3});
+    }
+  });
+  EXPECT_TRUE(sawExactStoredRhsWindow);
+  EXPECT_FALSE(sawFullStoredRhs);
+  EXPECT_FALSE(sawFullTransposedRhs);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     MaterializesInternalReductionTemporalPrologueSteadyAndTail) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @internal_reduction(%lhs: tensor<5x10xf16>,
+                                %rhs: tensor<10x3xf16>)
+      -> tensor<5x3xf16> {
+    %zero = arith.constant 0.0 : f16
+    %matmul_out = tensor.empty() : tensor<5x3xf16>
+    %matmul_init = linalg.fill ins(%zero : f16)
+        outs(%matmul_out : tensor<5x3xf16>) -> tensor<5x3xf16>
+    %product = linalg.matmul
+        ins(%lhs, %rhs : tensor<5x10xf16>, tensor<10x3xf16>)
+        outs(%matmul_init : tensor<5x3xf16>) -> tensor<5x3xf16>
+    %result_out = tensor.empty() : tensor<5x3xf16>
+    %result = linalg.map ins(%product : tensor<5x3xf16>)
+        outs(%result_out : tensor<5x3xf16>) (%value: f16) {
+      %doubled = arith.addf %value, %value : f16
+      linalg.yield %doubled : f16
+    }
+    return %result : tensor<5x3xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::linalg::MatmulOp sourceMatmul;
+  source->walk(
+      [&](mlir::linalg::MatmulOp operation) { sourceMatmul = operation; });
+  ASSERT_TRUE(sourceMatmul);
+  wafer::CardSpatialMapping selected =
+      mapping(/*shardDimension=*/1, {0}, {5, 3});
+  selected.operationTemporalTiles.push_back(
+      wafer::StructuredOpTemporalTile{sourceMatmul.getOperation(), {5, 3, 4}});
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), selected, cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+
+  bool sawSteadyRhsWindow = false;
+  bool sawTailRhsWindow = false;
+  bool sawFullRhs = false;
+  cardModule->walk([&](wafer::StorageLoadOp load) {
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(load.getSource().getType());
+    if (!sourceType || sourceType.getRank() != 2)
+      return;
+    sawSteadyRhsWindow |=
+        sourceType.getShape() == llvm::ArrayRef<int64_t>({4, 3});
+    sawTailRhsWindow |=
+        sourceType.getShape() == llvm::ArrayRef<int64_t>({2, 3});
+    sawFullRhs |= sourceType.getShape() == llvm::ArrayRef<int64_t>({10, 3});
+  });
+  EXPECT_TRUE(sawSteadyRhsWindow);
+  EXPECT_TRUE(sawTailRhsWindow);
+  EXPECT_FALSE(sawFullRhs);
+  EXPECT_EQ(countOps<mlir::scf::ForOp>(cardModule->getOperation()), 1u);
+  EXPECT_EQ(countOps<wafer::ComputeGemmOp>(cardModule->getOperation()), 3u);
+
+  wafer::CardSpatialMapping mixedParallelReduction =
+      mapping(/*shardDimension=*/1, {0}, {5, 3});
+  mixedParallelReduction.operationTemporalTiles.push_back(
+      wafer::StructuredOpTemporalTile{sourceMatmul.getOperation(), {2, 3, 4}});
+  mlir::OwningOpRef<mlir::ModuleOp> mixedModule;
+  failureReason.clear();
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), mixedParallelReduction, mixedModule,
+      &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*mixedModule)));
+  EXPECT_GT(countOps<mlir::scf::ForOp>(mixedModule->getOperation()), 1u);
+  bool sawParallelTail = false;
+  mixedModule->walk([&](wafer::ComputeGemmOp gemm) {
+    auto resultType = mlir::cast<mlir::MemRefType>(gemm.getResult().getType());
+    sawParallelTail |= resultType.getShape() == llvm::ArrayRef<int64_t>({1, 3});
+  });
+  EXPECT_TRUE(sawParallelTail);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     MaterializesEveryConfiguredReductionIteratorCompactly) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @two_reduction_axes(%input: tensor<2x10x11xf16>,
+                                %init: tensor<2xf16>) -> tensor<2xf16> {
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0)>],
+        iterator_types = ["parallel", "reduction", "reduction"]
+      } ins(%input : tensor<2x10x11xf16>) outs(%init : tensor<2xf16>) {
+      ^bb0(%value: f16, %acc: f16):
+        %sum = arith.addf %value, %acc : f16
+        linalg.yield %sum : f16
+    } -> tensor<2xf16>
+    return %result : tensor<2xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::linalg::GenericOp sourceReduction;
+  source->walk(
+      [&](mlir::linalg::GenericOp operation) { sourceReduction = operation; });
+  ASSERT_TRUE(sourceReduction);
+  wafer::CardSpatialMapping selected = mapping(/*shardDimension=*/0, {0}, {2});
+  selected.operationTemporalTiles.push_back(wafer::StructuredOpTemporalTile{
+      sourceReduction.getOperation(), {2, 4, 3}});
+
+  mlir::OwningOpRef<mlir::ModuleOp> rejectedModule;
+  std::string failureReason;
+  EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), selected, rejectedModule,
+      &failureReason)));
+  EXPECT_EQ(failureReason,
+            "candidate reduction split changes floating-point addition order "
+            "without reassoc fastmath semantics");
+  EXPECT_FALSE(rejectedModule);
+
+  mlir::arith::AddFOp sourceAdd;
+  sourceReduction->walk(
+      [&](mlir::arith::AddFOp operation) { sourceAdd = operation; });
+  ASSERT_TRUE(sourceAdd);
+  sourceAdd.setFastmath(mlir::arith::FastMathFlags::reassoc);
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  failureReason.clear();
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), selected, cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+
+  bool sawSteadyWindow = false;
+  bool sawBothAxesTailWindow = false;
+  bool sawFullInput = false;
+  cardModule->walk([&](wafer::StorageLoadOp load) {
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(load.getSource().getType());
+    if (!sourceType || sourceType.getRank() != 3)
+      return;
+    sawSteadyWindow |=
+        sourceType.getShape() == llvm::ArrayRef<int64_t>({2, 4, 3});
+    sawBothAxesTailWindow |=
+        sourceType.getShape() == llvm::ArrayRef<int64_t>({2, 2, 2});
+    sawFullInput |=
+        sourceType.getShape() == llvm::ArrayRef<int64_t>({2, 10, 11});
+  });
+  EXPECT_TRUE(sawSteadyWindow);
+  EXPECT_TRUE(sawBothAxesTailWindow);
+  EXPECT_FALSE(sawFullInput);
+  // Static IR size depends on reduction rank, not the 3 x 4 runtime chunks:
+  // each configured axis contributes one prologue, steady loop and tail.
+  EXPECT_EQ(countOps<mlir::scf::ForOp>(cardModule->getOperation()), 4u);
+  EXPECT_EQ(countOps<wafer::ComputeReduceOp>(cardModule->getOperation()), 9u);
+
+  // Check the exact static templates represented by the nested compact
+  // traversal. A dynamic offset must be the induction variable of the
+  // corresponding reduction axis; when both are dynamic the inner axis must
+  // be nested in the outer one. This catches mutable offset state leaking
+  // from one outer prologue/steady/tail sibling into the next.
+  using WindowSignature = std::tuple<int64_t, int64_t, int64_t, int64_t>;
+  llvm::SmallVector<WindowSignature, 9> windows;
+  auto getLoop = [](mlir::OpFoldResult offset) -> mlir::scf::ForOp {
+    mlir::Value dynamic = mlir::dyn_cast<mlir::Value>(offset);
+    if (!dynamic)
+      return {};
+    auto argument = mlir::dyn_cast<mlir::BlockArgument>(dynamic);
+    if (!argument)
+      return {};
+    return mlir::dyn_cast<mlir::scf::ForOp>(argument.getOwner()->getParentOp());
+  };
+  auto expectLoopBounds = [](mlir::scf::ForOp loop, int64_t lower,
+                             int64_t upper, int64_t step) {
+    ASSERT_TRUE(loop);
+    EXPECT_EQ(mlir::getConstantIntValue(
+                  mlir::getAsOpFoldResult(loop.getLowerBound())),
+              lower);
+    EXPECT_EQ(mlir::getConstantIntValue(
+                  mlir::getAsOpFoldResult(loop.getUpperBound())),
+              upper);
+    EXPECT_EQ(
+        mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getStep())),
+        step);
+  };
+  cardModule->walk([&](mlir::memref::SubViewOp view) {
+    auto sourceType = mlir::dyn_cast<mlir::MemRefType>(view.getSourceType());
+    if (!sourceType || sourceType.getRank() != 3)
+      return;
+    ASSERT_EQ(view.getMixedOffsets().size(), 3u);
+    auto resultType = mlir::cast<mlir::MemRefType>(view.getType());
+    ASSERT_EQ(resultType.getRank(), 3);
+    EXPECT_EQ(resultType.getShape()[0], 2);
+
+    mlir::OpFoldResult outerOffset = view.getMixedOffsets()[1];
+    mlir::OpFoldResult innerOffset = view.getMixedOffsets()[2];
+    std::optional<int64_t> outerConstant =
+        mlir::getConstantIntValue(outerOffset);
+    std::optional<int64_t> innerConstant =
+        mlir::getConstantIntValue(innerOffset);
+    mlir::scf::ForOp outerLoop = getLoop(outerOffset);
+    mlir::scf::ForOp innerLoop = getLoop(innerOffset);
+    if (!outerConstant)
+      expectLoopBounds(outerLoop, 4, 8, 4);
+    if (!innerConstant)
+      expectLoopBounds(innerLoop, 3, 9, 3);
+    if (outerLoop && innerLoop)
+      EXPECT_TRUE(
+          outerLoop.getOperation()->isProperAncestor(innerLoop.getOperation()));
+
+    windows.emplace_back(outerConstant.value_or(-1), innerConstant.value_or(-1),
+                         resultType.getShape()[1], resultType.getShape()[2]);
+  });
+  llvm::SmallVector<WindowSignature, 9> expectedWindows{
+      {0, 0, 4, 3},  {0, -1, 4, 3},  {0, 9, 4, 2},
+      {-1, 0, 4, 3}, {-1, -1, 4, 3}, {-1, 9, 4, 2},
+      {8, 0, 2, 3},  {8, -1, 2, 3},  {8, 9, 2, 2},
+  };
+  llvm::sort(windows);
+  llvm::sort(expectedWindows);
+  EXPECT_EQ(windows, expectedWindows);
+
+  // Numerically execute the runtime instances described by those checked
+  // prologue/steady/tail templates. Every source element must contribute
+  // exactly once, and the carried accumulator must match the unsplit
+  // two-axis reduction for both output elements.
+  constexpr std::array<std::pair<int64_t, int64_t>, 3> outerChunks{
+      std::pair<int64_t, int64_t>{0, 4}, {4, 4}, {8, 2}};
+  constexpr std::array<std::pair<int64_t, int64_t>, 4> innerChunks{
+      std::pair<int64_t, int64_t>{0, 3}, {3, 3}, {6, 3}, {9, 2}};
+  std::array<std::array<std::array<unsigned, 11>, 10>, 2> coverage{};
+  std::array<int64_t, 2> direct{3, 5};
+  std::array<int64_t, 2> chunked = direct;
+  auto inputValue = [](int64_t output, int64_t outer, int64_t inner) {
+    return 1 + (output * 3 + outer * 5 + inner) % 7;
+  };
+  for (int64_t output = 0; output < 2; ++output)
+    for (int64_t outer = 0; outer < 10; ++outer)
+      for (int64_t inner = 0; inner < 11; ++inner)
+        direct[output] += inputValue(output, outer, inner);
+  for (auto [outerOffset, outerSize] : outerChunks)
+    for (auto [innerOffset, innerSize] : innerChunks)
+      for (int64_t output = 0; output < 2; ++output)
+        for (int64_t outer = outerOffset; outer < outerOffset + outerSize;
+             ++outer)
+          for (int64_t inner = innerOffset; inner < innerOffset + innerSize;
+               ++inner) {
+            ++coverage[output][outer][inner];
+            chunked[output] += inputValue(output, outer, inner);
+          }
+  EXPECT_EQ(chunked, direct);
+  for (const auto &outputCoverage : coverage)
+    for (const auto &outerCoverage : outputCoverage)
+      for (unsigned count : outerCoverage)
+        EXPECT_EQ(count, 1u);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     RejectsMissingStructuredIteratorTilesAtomically) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @pointwise(%input: tensor<4xf16>) -> tensor<4xf16> {
+    %out = tensor.empty() : tensor<4xf16>
+    %result = linalg.map ins(%input : tensor<4xf16>)
+        outs(%out : tensor<4xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    return %result : tensor<4xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  const std::string sourceBefore = printOperation(source->getOperation());
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  EXPECT_TRUE(mlir::failed(wafer::lowerTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      mapping(/*shardDimension=*/0, {0}, {4}), cardModule, &failureReason)));
+  EXPECT_EQ(failureReason,
+            "card structured temporal mapping must cover every scheduled "
+            "operation exactly once");
+  EXPECT_FALSE(cardModule);
+  EXPECT_EQ(printOperation(source->getOperation()), sourceBefore);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     DoesNotMakeAFullInternal4096SquareWeightResident) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @large_internal_weight(%lhs: tensor<1x4096xf16>,
+                                   %rhs: tensor<4096x4096xf16>)
+      -> tensor<1x4096xf16> {
+    %zero = arith.constant 0.0 : f16
+    %out = tensor.empty() : tensor<1x4096xf16>
+    %init = linalg.fill ins(%zero : f16)
+        outs(%out : tensor<1x4096xf16>) -> tensor<1x4096xf16>
+    %product = linalg.matmul
+        ins(%lhs, %rhs : tensor<1x4096xf16>, tensor<4096x4096xf16>)
+        outs(%init : tensor<1x4096xf16>) -> tensor<1x4096xf16>
+    %root_out = tensor.empty() : tensor<1x4096xf16>
+    %root = linalg.map ins(%product : tensor<1x4096xf16>)
+        outs(%root_out : tensor<1x4096xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    return %root : tensor<1x4096xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::linalg::MatmulOp sourceMatmul;
+  source->walk(
+      [&](mlir::linalg::MatmulOp operation) { sourceMatmul = operation; });
+  ASSERT_TRUE(sourceMatmul);
+  wafer::CardSpatialMapping selected =
+      mapping(/*shardDimension=*/1, {0}, {1, 64});
+  selected.operationTemporalTiles.push_back(wafer::StructuredOpTemporalTile{
+      sourceMatmul.getOperation(), {1, 4096, 256}});
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), selected, cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+
+  bool sawChunkWindow = false;
+  bool sawFullWeightLoad = false;
+  cardModule->walk([&](wafer::StorageLoadOp load) {
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(load.getSource().getType());
+    if (!sourceType || sourceType.getRank() != 2)
+      return;
+    sawChunkWindow |=
+        sourceType.getShape() == llvm::ArrayRef<int64_t>({256, 64});
+    sawFullWeightLoad |=
+        sourceType.getShape() == llvm::ArrayRef<int64_t>({4096, 4096});
+  });
+  EXPECT_TRUE(sawChunkWindow);
+  EXPECT_FALSE(sawFullWeightLoad);
+  EXPECT_GT(countOps<mlir::scf::ForOp>(cardModule->getOperation()), 0u);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     RejectsUnsupportedReductionRegroupingBeforeCardMutation) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @unsupported_regrouping(%input: tensor<4x8xi32>,
+                                    %init: tensor<4xi32>)
+      -> tensor<4xi32> {
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                         affine_map<(d0, d1) -> (d0)>],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%input : tensor<4x8xi32>) outs(%init : tensor<4xi32>) {
+      ^bb0(%value: i32, %acc: i32):
+        %maximum = arith.maxui %value, %acc : i32
+        linalg.yield %maximum : i32
+    } -> tensor<4xi32>
+    return %result : tensor<4xi32>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  mlir::linalg::GenericOp reduction;
+  source->walk(
+      [&](mlir::linalg::GenericOp operation) { reduction = operation; });
+  ASSERT_TRUE(reduction);
+
+  wafer::CardSpatialMapping selected = mapping(/*shardDimension=*/0, {0}, {4});
+  selected.operationTemporalTiles.push_back(
+      wafer::StructuredOpTemporalTile{reduction.getOperation(), {4, 4}});
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), selected, cardModule,
+      &failureReason)));
+  EXPECT_EQ(failureReason,
+            "candidate reduction split cannot preserve unsigned min/max "
+            "semantics with the current reduce kind");
+  EXPECT_FALSE(cardModule);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     DirectlyLowersOrdinaryGenericThroughBaseline) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @pointwise(%input: tensor<8xf16>) -> tensor<8xf16> {
+    %out = tensor.empty() : tensor<8xf16>
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%input : tensor<8xf16>) outs(%out : tensor<8xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %sum = arith.addf %value, %value : f16
+        linalg.yield %sum : f16
+    } -> tensor<8xf16>
+    return %result : tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      mapping(/*shardDimension=*/0, {0}, {8}), cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+  EXPECT_EQ(countOps<wafer::ComputeGemmOp>(cardModule->getOperation()), 0u);
+  EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(cardModule->getOperation()),
+            1u);
+  llvm::SmallVector<mlir::func::FuncOp, 1> entries;
+  cardModule->walk([&](mlir::func::FuncOp entry) { entries.push_back(entry); });
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_EQ(entries.front().getNumArguments(), 1u);
+  EXPECT_EQ(
+      entries.front().getArgument(0).getType(),
+      mlir::RankedTensorType::get({8}, mlir::Float16Type::get(context.get())));
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     SkipsUnavailablePhysicalIdsWithoutRenumberingShards) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 2, 2>,
+       unavailable_tiles = array<i64: 0, 0, 0, 1>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @matmul(%lhs: tensor<2x4xf16>, %rhs: tensor<4x6xf16>)
+      -> tensor<2x6xf16> {
+    %zero = arith.constant 0.0 : f16
+    %out = tensor.empty() : tensor<2x6xf16>
+    %init = linalg.fill ins(%zero : f16)
+        outs(%out : tensor<2x6xf16>) -> tensor<2x6xf16>
+    %result = linalg.matmul
+        ins(%lhs, %rhs : tensor<2x4xf16>, tensor<4x6xf16>)
+        outs(%init : tensor<2x6xf16>) -> tensor<2x6xf16>
+    return %result : tensor<2x6xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      mapping(/*shardDimension=*/1, {0, 2, 3}, {2, 2}), cardModule,
+      &failureReason)))
+      << failureReason;
+  wafer::CardProgramOp card =
+      *cardModule->getOps<wafer::CardProgramOp>().begin();
+  llvm::SmallVector<StoreShard, 16> shards =
+      collectSecondDimensionStoreShards(card);
+  ASSERT_EQ(shards.size(), 3u);
+  EXPECT_EQ(shards[0], (StoreShard{0, 0, 2}));
+  EXPECT_EQ(shards[1], (StoreShard{2, 2, 2}));
+  EXPECT_EQ(shards[2], (StoreShard{3, 4, 2}));
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     CreatesDefinedNoWorkEntriesOnlyBeyondNonemptyShardCount) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @fill() -> tensor<2x3xf16> {
+    %one = arith.constant 1.0 : f16
+    %out = tensor.empty() : tensor<2x3xf16>
+    %result = linalg.fill ins(%one : f16)
+        outs(%out : tensor<2x3xf16>) -> tensor<2x3xf16>
+    return %result : tensor<2x3xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      mapping(/*shardDimension=*/1, {0, 1, 2}, {2, 1}), cardModule,
+      &failureReason)))
+      << failureReason;
+  wafer::CardProgramOp card =
+      *cardModule->getOps<wafer::CardProgramOp>().begin();
+  unsigned active = 0;
+  unsigned noWork = 0;
+  for (wafer::TileProgramOp tile :
+       card.getBody().front().getOps<wafer::TileProgramOp>()) {
+    llvm::SmallVector<mlir::func::FuncOp, 1> functions(
+        tile.getBody().front().getOps<mlir::func::FuncOp>());
+    ASSERT_EQ(functions.size(), 1u);
+    ASSERT_FALSE(functions.front().isExternal());
+    if (countOps<wafer::TileRegionOp>(tile.getOperation()) == 0) {
+      ++noWork;
+      EXPECT_EQ(functions.front().getNumArguments(), 0u);
+      EXPECT_EQ(functions.front().getNumResults(), 1u);
+      EXPECT_EQ(countOps<mlir::tensor::EmptyOp>(tile.getOperation()), 1u);
+      EXPECT_EQ(functions.front().getBody().front().getOperations().size(), 2u);
+    } else {
+      ++active;
+    }
+  }
+  EXPECT_EQ(active, 3u);
+  EXPECT_EQ(noWork, 1u);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     MaterializesIndependentHeterogeneousOutputsOnDisjointTileGroups) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @branches(%lhs: tensor<8xf16>, %rhs: tensor<3x6xf16>)
+      -> (tensor<8xf16>, tensor<3x6xf16>) {
+    %out0 = tensor.empty() : tensor<8xf16>
+    %out1 = tensor.empty() : tensor<3x6xf16>
+    %first = linalg.map ins(%lhs : tensor<8xf16>)
+        outs(%out0 : tensor<8xf16>) (%value: f16) {
+      %result = arith.addf %value, %value : f16
+      linalg.yield %result : f16
+    }
+    %second = linalg.map ins(%rhs : tensor<3x6xf16>)
+        outs(%out1 : tensor<3x6xf16>) (%value: f16) {
+      %result = arith.mulf %value, %value : f16
+      linalg.yield %result : f16
+    }
+    return %first, %second : tensor<8xf16>, tensor<3x6xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      multiOutputMapping({outputMapping(0, 0, {0, 1}, {4}),
+                          outputMapping(1, 1, {2, 3}, {3, 3})}),
+      cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+
+  wafer::CardProgramOp card =
+      *cardModule->getOps<wafer::CardProgramOp>().begin();
+  for (wafer::TileProgramOp tile :
+       card.getBody().front().getOps<wafer::TileProgramOp>()) {
+    const int64_t tileId = tile.getTileIdAttr().getInt();
+    llvm::SmallVector<mlir::func::FuncOp, 1> functions(
+        tile.getBody().front().getOps<mlir::func::FuncOp>());
+    ASSERT_EQ(functions.size(), 1u);
+    EXPECT_EQ(functions.front().getNumArguments(), 2u);
+    EXPECT_EQ(functions.front().getNumResults(), 2u);
+    EXPECT_EQ(countOps<wafer::TileRegionOp>(tile.getOperation()), 1u);
+    EXPECT_EQ(countOps<wafer::StorageStoreOp>(tile.getOperation()), 1u);
+    llvm::SmallVector<wafer::ComputeElementwiseOp, 1> elementwise;
+    tile.walk([&](wafer::ComputeElementwiseOp operation) {
+      elementwise.push_back(operation);
+    });
+    ASSERT_EQ(elementwise.size(), 1u);
+    if (tileId < 2) {
+      EXPECT_EQ(elementwise.front().getKind(),
+                wafer::ComputeElementwiseKind::Add);
+    } else {
+      EXPECT_EQ(elementwise.front().getKind(),
+                wafer::ComputeElementwiseKind::Mul);
+    }
+  }
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     MaterializesObservableProducerAndDependentResultTogether) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @dependent_outputs(%input: tensor<8xf16>)
+      -> (tensor<8xf16>, tensor<8xf16>) {
+    %out0 = tensor.empty() : tensor<8xf16>
+    %out1 = tensor.empty() : tensor<8xf16>
+    %producer = linalg.map ins(%input : tensor<8xf16>)
+        outs(%out0 : tensor<8xf16>) (%value: f16) {
+      %result = arith.addf %value, %value : f16
+      linalg.yield %result : f16
+    }
+    %consumer = linalg.map ins(%producer : tensor<8xf16>)
+        outs(%out1 : tensor<8xf16>) (%value: f16) {
+      %result = arith.mulf %value, %value : f16
+      linalg.yield %result : f16
+    }
+    return %producer, %consumer : tensor<8xf16>, tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      multiOutputMapping(
+          {outputMapping(0, 0, {0}, {4}), outputMapping(1, 0, {0}, {4})}),
+      cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+  EXPECT_EQ(countOps<wafer::TileProgramOp>(cardModule->getOperation()), 1u);
+  EXPECT_EQ(countOps<wafer::StorageStoreOp>(cardModule->getOperation()), 4u);
+  EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(cardModule->getOperation()),
+            6u);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     MaterializesShapeViewResultThroughStructuredOutputAnchor) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @shape_views(%input: tensor<1x1x8xf16>)
+      -> tensor<1x1x8xf16> {
+    %collapsed = tensor.collapse_shape %input [[0, 1], [2]]
+        : tensor<1x1x8xf16> into tensor<1x8xf16>
+    %out = tensor.empty() : tensor<1x8xf16>
+    %mapped = linalg.map ins(%collapsed : tensor<1x8xf16>)
+        outs(%out : tensor<1x8xf16>) (%value: f16) {
+      %result = arith.addf %value, %value : f16
+      linalg.yield %result : f16
+    }
+    %expanded = tensor.expand_shape %mapped [[0], [1, 2]]
+        output_shape [1, 1, 8]
+        : tensor<1x8xf16> into tensor<1x1x8xf16>
+    return %expanded : tensor<1x1x8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      mapping(/*shardDimension=*/2, {0}, {1, 1, 4}), cardModule,
+      &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+  EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(cardModule->getOperation()),
+            2u);
+  EXPECT_EQ(countOps<wafer::StorageStoreOp>(cardModule->getOperation()), 2u);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     MaterializesPerOutputTemporalLoopsAndFiniteTailClasses) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @branches(%lhs: tensor<1x10xf16>, %rhs: tensor<1x9xf16>)
+      -> (tensor<1x10xf16>, tensor<1x9xf16>) {
+    %out0 = tensor.empty() : tensor<1x10xf16>
+    %out1 = tensor.empty() : tensor<1x9xf16>
+    %first = linalg.map ins(%lhs : tensor<1x10xf16>)
+        outs(%out0 : tensor<1x10xf16>) (%value: f16) {
+      %result = arith.addf %value, %value : f16
+      linalg.yield %result : f16
+    }
+    %second = linalg.map ins(%rhs : tensor<1x9xf16>)
+        outs(%out1 : tensor<1x9xf16>) (%value: f16) {
+      %result = arith.mulf %value, %value : f16
+      linalg.yield %result : f16
+    }
+    return %first, %second : tensor<1x10xf16>, tensor<1x9xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      multiOutputMapping(
+          {outputMapping(0, 1, {0}, {1, 4}), outputMapping(1, 1, {0}, {1, 3})}),
+      cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+  EXPECT_EQ(countOps<mlir::scf::ForOp>(cardModule->getOperation()), 2u);
+  // Output 0 has prologue, steady and a 2-element tail; output 1 has a
+  // prologue and steady loop with no tail.
+  EXPECT_EQ(countOps<wafer::StorageStoreOp>(cardModule->getOperation()), 5u);
+
+  llvm::SmallVector<llvm::SmallVector<int64_t, 2>, 4> shapes;
+  cardModule->walk([&](wafer::ComputeElementwiseOp operation) {
+    auto type = mlir::cast<mlir::MemRefType>(operation.getResult().getType());
+    shapes.emplace_back(type.getShape());
+  });
+  EXPECT_TRUE(llvm::is_contained(shapes, llvm::SmallVector<int64_t, 2>{1, 2}));
+  EXPECT_TRUE(llvm::is_contained(shapes, llvm::SmallVector<int64_t, 2>{1, 3}));
+  EXPECT_TRUE(llvm::is_contained(shapes, llvm::SmallVector<int64_t, 2>{1, 4}));
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     RejectsIncompleteOrDuplicatedOutputMappingsAtomically) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @branches(%lhs: tensor<4xf16>, %rhs: tensor<3xf16>)
+      -> (tensor<4xf16>, tensor<3xf16>) {
+    %out0 = tensor.empty() : tensor<4xf16>
+    %out1 = tensor.empty() : tensor<3xf16>
+    %first = linalg.map ins(%lhs : tensor<4xf16>)
+        outs(%out0 : tensor<4xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    %second = linalg.map ins(%rhs : tensor<3xf16>)
+        outs(%out1 : tensor<3xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    return %first, %second : tensor<4xf16>, tensor<3xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  const std::string sourceBefore = printOperation(source->getOperation());
+  mlir::OwningOpRef<mlir::ModuleOp> unchanged =
+      mlir::ModuleOp::create(mlir::UnknownLoc::get(context.get()));
+  unchanged->getOperation()->setAttr("test.unchanged",
+                                     mlir::UnitAttr::get(context.get()));
+  mlir::ModuleOp unchangedPointer = *unchanged;
+  std::string failureReason;
+
+  EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      multiOutputMapping({outputMapping(0, 0, {0, 1}, {2})}), unchanged,
+      &failureReason)));
+  EXPECT_EQ(failureReason,
+            "card spatial mapping must cover every function result exactly "
+            "once");
+  EXPECT_EQ(*unchanged, unchangedPointer);
+
+  EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      multiOutputMapping(
+          {outputMapping(0, 0, {0}, {4}), outputMapping(0, 0, {1}, {4})}),
+      unchanged, &failureReason)));
+  EXPECT_EQ(failureReason, "card spatial mapping output index is duplicated");
+  EXPECT_EQ(*unchanged, unchangedPointer);
+  EXPECT_TRUE(unchanged->getOperation()->hasAttr("test.unchanged"));
+  EXPECT_EQ(printOperation(source->getOperation()), sourceBefore);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     IsDeterministicThroughPhysicalTileProjection) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 3>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @fill() -> tensor<2x7xf16> {
+    %one = arith.constant 1.0 : f16
+    %out = tensor.empty() : tensor<2x7xf16>
+    %result = linalg.fill ins(%one : f16)
+        outs(%out : tensor<2x7xf16>) -> tensor<2x7xf16>
+    return %result : tensor<2x7xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::OwningOpRef<mlir::ModuleOp> first;
+  mlir::OwningOpRef<mlir::ModuleOp> second;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      mapping(/*shardDimension=*/1, {0, 1, 2}, {2, 3}), first, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0),
+      mapping(/*shardDimension=*/1, {0, 1, 2}, {2, 3}), second,
+      &failureReason)))
+      << failureReason;
+  EXPECT_EQ(printOperation(first->getOperation()),
+            printOperation(second->getOperation()));
+
+  auto firstProjection =
+      wafer::projectCardProgramToPhysicalTileModules(*first, &failureReason);
+  auto secondProjection =
+      wafer::projectCardProgramToPhysicalTileModules(*second, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(firstProjection)) << failureReason;
+  ASSERT_TRUE(mlir::succeeded(secondProjection)) << failureReason;
+  ASSERT_EQ(firstProjection->size(), 3u);
+  ASSERT_EQ(secondProjection->size(), 3u);
+  for (unsigned index = 0; index < firstProjection->size(); ++index) {
+    EXPECT_EQ((*firstProjection)[index].tileId.getValue(),
+              static_cast<int64_t>(index));
+    EXPECT_EQ(
+        printOperation((*firstProjection)[index].module->getOperation()),
+        printOperation((*secondProjection)[index].module->getOperation()));
+  }
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     MaterializesOnlyMissingDependentDomainsAsPeerInstructions) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 6>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @chain(%input: tensor<8xf16>) -> tensor<8xf16> {
+    %out0 = tensor.empty() : tensor<8xf16>
+    %out1 = tensor.empty() : tensor<8xf16>
+    %producer = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%input : tensor<8xf16>) outs(%out0 : tensor<8xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %result = arith.addf %value, %value : f16
+        linalg.yield %result : f16
+    } -> tensor<8xf16>
+    %consumer = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%producer : tensor<8xf16>) outs(%out1 : tensor<8xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %result = arith.mulf %value, %value : f16
+        linalg.yield %result : f16
+    } -> tensor<8xf16>
+    return %consumer : tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  llvm::SmallVector<mlir::linalg::GenericOp, 2> structured;
+  source->walk([&](mlir::linalg::GenericOp operation) {
+    structured.push_back(operation);
+  });
+  ASSERT_EQ(structured.size(), 2u);
+
+  wafer::CardSpatialMapping selected =
+      mapping(/*shardDimension=*/0, {0, 1, 4, 5}, {8});
+  wafer::SpatialEdgeStrategy first = edgeStrategy(
+      structured[0].getOperation(), structured[1].getOperation(),
+      wafer::PhysicalTileId(4), wafer::SpatialEdgeAction::PeerFragments,
+      /*producerOffsets=*/{4}, /*producerSizes=*/{2},
+      /*consumerOffsets=*/{4}, /*consumerSizes=*/{2});
+  first.fragments.push_back(
+      wafer::SpatialEdgeFragment{wafer::SpatialEdgeFragmentKind::Peer,
+                                 {4},
+                                 {2},
+                                 wafer::PhysicalTileId(2),
+                                 /*bytes=*/4,
+                                 /*communicationId=*/0,
+                                 /*payloadSlice=*/0});
+  selected.edgeStrategies.push_back(std::move(first));
+  wafer::SpatialEdgeStrategy second = edgeStrategy(
+      structured[0].getOperation(), structured[1].getOperation(),
+      wafer::PhysicalTileId(5), wafer::SpatialEdgeAction::PeerFragments,
+      /*producerOffsets=*/{6}, /*producerSizes=*/{2},
+      /*consumerOffsets=*/{6}, /*consumerSizes=*/{2});
+  second.fragments.push_back(
+      wafer::SpatialEdgeFragment{wafer::SpatialEdgeFragmentKind::Peer,
+                                 {6},
+                                 {2},
+                                 wafer::PhysicalTileId(3),
+                                 /*bytes=*/4,
+                                 /*communicationId=*/0,
+                                 /*payloadSlice=*/1});
+  selected.edgeStrategies.push_back(std::move(second));
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), selected, cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+  EXPECT_EQ(countOps<wafer::CommPeerSendOp>(cardModule->getOperation()), 2u);
+  EXPECT_EQ(countOps<wafer::CommPeerRecvOp>(cardModule->getOperation()), 2u);
+  EXPECT_EQ(countOps<mlir::async::AwaitOp>(cardModule->getOperation()), 4u);
+
+  auto projected = wafer::projectCardProgramToPhysicalTileModules(
+      *cardModule, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
+  ASSERT_EQ(projected->size(), 6u);
+  unsigned sends = 0;
+  unsigned receives = 0;
+  unsigned waits = 0;
+  for (wafer::ProjectedPhysicalTileModule &tile : *projected) {
+    ASSERT_TRUE(mlir::succeeded(
+        wafer::convertTileRegionToInstrModule(*tile.module, &failureReason)))
+        << "Tile " << tile.tileId.getValue() << ": " << failureReason;
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*tile.module)));
+    sends += countOps<wafer::InstrDTESendOp>(tile.module->getOperation());
+    receives += countOps<wafer::InstrDTERecvOp>(tile.module->getOperation());
+    waits += countOps<wafer::InstrDTEWaitOp>(tile.module->getOperation());
+  }
+  EXPECT_EQ(sends, 2u);
+  EXPECT_EQ(receives, 2u);
+  EXPECT_EQ(waits, 4u);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     MaterializesExactFaninWhileOneTileSendsReceivesAndOwnsOutput) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 3>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @partial_fanin(%input: tensor<4x4xf16>) -> tensor<4x4xf16> {
+    %producer_empty = tensor.empty() : tensor<4x4xf16>
+    %consumer_empty = tensor.empty() : tensor<4x4xf16>
+    %producer = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                         affine_map<(d0, d1) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%input : tensor<4x4xf16>)
+        outs(%producer_empty : tensor<4x4xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %sum = arith.addf %value, %value : f16
+        linalg.yield %sum : f16
+    } -> tensor<4x4xf16>
+    %consumer = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                         affine_map<(d0, d1) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%producer : tensor<4x4xf16>)
+        outs(%consumer_empty : tensor<4x4xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %product = arith.mulf %value, %value : f16
+        linalg.yield %product : f16
+    } -> tensor<4x4xf16>
+    return %consumer : tensor<4x4xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  llvm::SmallVector<mlir::linalg::GenericOp, 2> structured;
+  source->walk([&](mlir::linalg::GenericOp operation) {
+    structured.push_back(operation);
+  });
+  ASSERT_EQ(structured.size(), 2u);
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  wafer::CardSpatialMapping selected =
+      mixedLocalRemoteFaninMapping(structured[0], structured[1]);
+  // Each remote fragment spans more than one temporal consumer wave. The
+  // selected peer receive is one stable SPM endpoint outside those waves;
+  // prologue/steady/tail traversal must not clone the message endpoint. The
+  // baseline also completes one globally ordered endpoint before issuing the
+  // next, so the number of live receiver FSMs is independent of fan-in.
+  selected.outputs.front().temporalTileSizes = {1, 2};
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), selected, cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+  EXPECT_GT(countOps<mlir::scf::ForOp>(cardModule->getOperation()), 0u);
+  EXPECT_EQ(countOps<wafer::CommPeerSendOp>(cardModule->getOperation()), 3u);
+  EXPECT_EQ(countOps<wafer::CommPeerRecvOp>(cardModule->getOperation()), 3u);
+  EXPECT_EQ(countOps<mlir::async::AwaitOp>(cardModule->getOperation()), 6u);
+
+  wafer::CardProgramOp card =
+      *cardModule->getOps<wafer::CardProgramOp>().begin();
+  for (wafer::TileProgramOp tile :
+       card.getBody().front().getOps<wafer::TileProgramOp>()) {
+    const int64_t tileId = tile.getTileIdAttr().getInt();
+    const unsigned sends = countOps<wafer::CommPeerSendOp>(tile.getOperation());
+    const unsigned receives =
+        countOps<wafer::CommPeerRecvOp>(tile.getOperation());
+    const unsigned stores =
+        countOps<wafer::StorageStoreOp>(tile.getOperation());
+    if (tileId == 0) {
+      EXPECT_EQ(sends, 2u);
+      EXPECT_EQ(receives, 0u);
+      // The no-fusion baseline seals this source op in compiler-owned DDR
+      // before its exact shards are reloaded into the two peer sends.
+      EXPECT_GT(stores, 0u);
+    } else if (tileId == 1) {
+      EXPECT_EQ(sends, 1u);
+      EXPECT_EQ(receives, 1u);
+      EXPECT_GT(stores, 0u);
+    } else {
+      EXPECT_EQ(sends, 0u);
+      EXPECT_EQ(receives, 2u);
+      EXPECT_GT(stores, 0u);
+      unsigned liveReceives = 0;
+      unsigned maximumLiveReceives = 0;
+      tile.walk([&](mlir::Operation *operation) {
+        if (mlir::isa<wafer::CommPeerRecvOp>(operation)) {
+          ++liveReceives;
+          maximumLiveReceives = std::max(maximumLiveReceives, liveReceives);
+        }
+        if (auto await = mlir::dyn_cast<mlir::async::AwaitOp>(operation))
+          if (await.getOperand().getDefiningOp<wafer::CommPeerRecvOp>()) {
+            ASSERT_GT(liveReceives, 0u);
+            --liveReceives;
+          }
+      });
+      EXPECT_EQ(liveReceives, 0u);
+      EXPECT_EQ(maximumLiveReceives, 1u);
+    }
+  }
+
+  auto projected = wafer::projectCardProgramToPhysicalTileModules(
+      *cardModule, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
+  unsigned sends = 0;
+  unsigned receives = 0;
+  unsigned waits = 0;
+  for (wafer::ProjectedPhysicalTileModule &tile : *projected) {
+    ASSERT_TRUE(mlir::succeeded(
+        wafer::convertTileRegionToInstrModule(*tile.module, &failureReason)))
+        << "Tile " << tile.tileId.getValue() << ": " << failureReason;
+    sends += countOps<wafer::InstrDTESendOp>(tile.module->getOperation());
+    receives += countOps<wafer::InstrDTERecvOp>(tile.module->getOperation());
+    waits += countOps<wafer::InstrDTEWaitOp>(tile.module->getOperation());
+  }
+  EXPECT_EQ(sends, 3u);
+  EXPECT_EQ(receives, 3u);
+  EXPECT_EQ(waits, 6u);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     OrdersIndependentPeerMessagesByConsumerUseNotMessageIdentity) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 3>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @crossed_message_order(%first: tensor<8xf16>,
+                                   %second: tensor<8xf16>)
+      -> (tensor<8xf16>, tensor<8xf16>) {
+    %producer0_empty = tensor.empty() : tensor<8xf16>
+    %producer1_empty = tensor.empty() : tensor<8xf16>
+    %early_empty = tensor.empty() : tensor<8xf16>
+    %late_empty = tensor.empty() : tensor<8xf16>
+    %producer0 = linalg.map ins(%first : tensor<8xf16>)
+        outs(%producer0_empty : tensor<8xf16>) (%value: f16) {
+      %sum = arith.addf %value, %value : f16
+      linalg.yield %sum : f16
+    }
+    %producer1 = linalg.map ins(%second : tensor<8xf16>)
+        outs(%producer1_empty : tensor<8xf16>) (%value: f16) {
+      %sum = arith.addf %value, %value : f16
+      linalg.yield %sum : f16
+    }
+    %early = linalg.map ins(%producer1 : tensor<8xf16>)
+        outs(%early_empty : tensor<8xf16>) (%value: f16) {
+      %product = arith.mulf %value, %value : f16
+      linalg.yield %product : f16
+    }
+    %late = linalg.map ins(%producer0 : tensor<8xf16>)
+        outs(%late_empty : tensor<8xf16>) (%value: f16) {
+      %product = arith.mulf %value, %value : f16
+      linalg.yield %product : f16
+    }
+    return %early, %late : tensor<8xf16>, tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  llvm::SmallVector<mlir::linalg::MapOp, 4> structured;
+  source->walk(
+      [&](mlir::linalg::MapOp operation) { structured.push_back(operation); });
+  ASSERT_EQ(structured.size(), 4u);
+
+  wafer::CardSpatialMapping selected = multiOutputMapping(
+      {outputMapping(0, 0, {2}, {8}), outputMapping(1, 0, {2}, {8})});
+  selected.materializationMode =
+      wafer::SpatialDataflowMaterializationMode::IndependentDDRStages;
+  auto appendPeer = [&](mlir::Operation *producer, mlir::Operation *consumer,
+                        wafer::PhysicalTileId sourceTile,
+                        int64_t communicationId) {
+    wafer::SpatialEdgeStrategy strategy =
+        edgeStrategy(producer, consumer, wafer::PhysicalTileId(2),
+                     wafer::SpatialEdgeAction::PeerFragments,
+                     /*producerOffsets=*/{0}, /*producerSizes=*/{8},
+                     /*consumerOffsets=*/{0}, /*consumerSizes=*/{8});
+    strategy.sourceTile = sourceTile;
+    strategy.fragments.push_back(wafer::SpatialEdgeFragment{
+        wafer::SpatialEdgeFragmentKind::Peer,
+        /*offsets=*/{0}, /*sizes=*/{8}, sourceTile, /*bytes=*/16,
+        communicationId, /*payloadSlice=*/0});
+    selected.edgeStrategies.push_back(std::move(strategy));
+  };
+  // Message 0 feeds the later consumer, while message 1 feeds the earlier
+  // consumer. Message identity remains unchanged; only query-local issue order
+  // follows the first consumer use.
+  appendPeer(structured[0], structured[3], wafer::PhysicalTileId(0), 0);
+  appendPeer(structured[1], structured[2], wafer::PhysicalTileId(1), 1);
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), selected, cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+
+  llvm::SmallVector<int64_t, 2> destinationReceiveOrder;
+  wafer::CardProgramOp card =
+      *cardModule->getOps<wafer::CardProgramOp>().begin();
+  for (wafer::TileProgramOp tile :
+       card.getBody().front().getOps<wafer::TileProgramOp>()) {
+    if (tile.getTileIdAttr().getInt() != 2)
+      continue;
+    tile.walk([&](wafer::CommPeerRecvOp receive) {
+      destinationReceiveOrder.push_back(
+          receive.getMessage().getCommunicationId());
+    });
+  }
+  ASSERT_EQ(destinationReceiveOrder.size(), 2u);
+  EXPECT_EQ(destinationReceiveOrder[0], 1);
+  EXPECT_EQ(destinationReceiveOrder[1], 0);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     AcceptsExactBroadcastOperandDemandForOneConsumerShard) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @broadcast(%input: tensor<8xf16>) -> tensor<1x2x8xf16> {
+    %producer_empty = tensor.empty() : tensor<8xf16>
+    %consumer_empty = tensor.empty() : tensor<1x2x8xf16>
+    %producer = linalg.map ins(%input : tensor<8xf16>)
+        outs(%producer_empty : tensor<8xf16>) (%value: f16) {
+      %sum = arith.addf %value, %value : f16
+      linalg.yield %sum : f16
+    }
+    %consumer = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1, d2) -> (d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>],
+        iterator_types = ["parallel", "parallel", "parallel"]
+      } ins(%producer : tensor<8xf16>)
+        outs(%consumer_empty : tensor<1x2x8xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %sum = arith.addf %value, %old : f16
+        linalg.yield %sum : f16
+    } -> tensor<1x2x8xf16>
+    return %consumer : tensor<1x2x8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  llvm::SmallVector<mlir::Operation *, 2> structured;
+  source->walk([&](mlir::Operation *operation) {
+    if (mlir::isa<mlir::linalg::LinalgOp>(operation))
+      structured.push_back(operation);
+  });
+  ASSERT_EQ(structured.size(), 2u);
+
+  auto makeSelected = [&](int64_t producerSize) {
+    wafer::CardSpatialMapping selected =
+        mapping(/*shardDimension=*/1, {0, 1}, {1, 1, 8});
+    for (int64_t tile = 0; tile < 2; ++tile)
+      selected.edgeStrategies.push_back(edgeStrategy(
+          structured[0], structured[1], wafer::PhysicalTileId(tile),
+          wafer::SpatialEdgeAction::SpillReload,
+          /*producerOffsets=*/{0}, /*producerSizes=*/{producerSize},
+          /*consumerOffsets=*/{0, tile, 0},
+          /*consumerSizes=*/{1, 1, 8}));
+    return selected;
+  };
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), makeSelected(/*producerSize=*/8),
+      cardModule, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+
+  mlir::OwningOpRef<mlir::ModuleOp> invalidModule;
+  failureReason.clear();
+  EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), makeSelected(/*producerSize=*/4),
+      invalidModule, &failureReason)));
+  EXPECT_NE(failureReason.find("different producer demand"), std::string::npos)
+      << failureReason;
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     MaterializesDistinctLocalEdgeActionsInActualTileIR) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @chain(%input: tensor<8xf16>) -> tensor<8xf16> {
+    %producer_empty = tensor.empty() : tensor<8xf16>
+    %consumer_empty = tensor.empty() : tensor<8xf16>
+    %producer = linalg.map ins(%input : tensor<8xf16>)
+        outs(%producer_empty : tensor<8xf16>) (%value: f16) {
+      %sum = arith.addf %value, %value : f16
+      linalg.yield %sum : f16
+    }
+    %consumer = linalg.map ins(%producer : tensor<8xf16>)
+        outs(%consumer_empty : tensor<8xf16>) (%value: f16) {
+      %product = arith.mulf %value, %value : f16
+      linalg.yield %product : f16
+    }
+    return %consumer : tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  llvm::SmallVector<mlir::linalg::MapOp, 2> structured;
+  source->walk(
+      [&](mlir::linalg::MapOp operation) { structured.push_back(operation); });
+  ASSERT_EQ(structured.size(), 2u);
+
+  auto lowerAction = [&](wafer::SpatialEdgeAction action) {
+    wafer::CardSpatialMapping selected =
+        mapping(/*shardDimension=*/0, {0}, {8});
+    selected.edgeStrategies.push_back(
+        edgeStrategy(structured[0].getOperation(), structured[1].getOperation(),
+                     wafer::PhysicalTileId(0), action, /*producerOffsets=*/{0},
+                     /*producerSizes=*/{8}, /*consumerOffsets=*/{0},
+                     /*consumerSizes=*/{8}));
+    mlir::OwningOpRef<mlir::ModuleOp> result;
+    std::string failureReason;
+    EXPECT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+        *source, wafer::PhysicalCardId(0), std::move(selected), result,
+        &failureReason)))
+        << failureReason;
+    return result;
+  };
+
+  mlir::OwningOpRef<mlir::ModuleOp> fused =
+      lowerAction(wafer::SpatialEdgeAction::CoupledFusion);
+  mlir::OwningOpRef<mlir::ModuleOp> retained =
+      lowerAction(wafer::SpatialEdgeAction::RetainedTraversal);
+  mlir::OwningOpRef<mlir::ModuleOp> spilled =
+      lowerAction(wafer::SpatialEdgeAction::SpillReload);
+  mlir::OwningOpRef<mlir::ModuleOp> cut =
+      lowerAction(wafer::SpatialEdgeAction::RegionCut);
+  ASSERT_TRUE(fused && retained && spilled && cut);
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(fused->getOperation()), 1u);
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(retained->getOperation()), 1u);
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(spilled->getOperation()), 1u);
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(cut->getOperation()), 2u);
+  EXPECT_GT(countOps<wafer::MoveInsertSliceOp>(retained->getOperation()),
+            countOps<wafer::MoveInsertSliceOp>(fused->getOperation()));
+  EXPECT_GT(countOps<wafer::StorageStoreOp>(spilled->getOperation()),
+            countOps<wafer::StorageStoreOp>(fused->getOperation()));
+  EXPECT_GT(countOps<wafer::StorageLoadOp>(spilled->getOperation()),
+            countOps<wafer::StorageLoadOp>(fused->getOperation()));
+  EXPECT_GT(countOps<wafer::StorageStoreOp>(cut->getOperation()),
+            countOps<wafer::StorageStoreOp>(fused->getOperation()));
+  EXPECT_GT(countOps<wafer::StorageLoadOp>(cut->getOperation()),
+            countOps<wafer::StorageLoadOp>(fused->getOperation()));
+
+  std::string failureReason;
+  for (mlir::ModuleOp actual : {spilled.get(), cut.get()}) {
+    auto projected =
+        wafer::projectCardProgramToPhysicalTileModules(actual, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
+    ASSERT_EQ(projected->size(), 1u);
+    ASSERT_TRUE(mlir::succeeded(wafer::convertTileRegionToInstrModule(
+        *projected->front().module, &failureReason)))
+        << failureReason;
+    EXPECT_GT(
+        countOps<wafer::InstrRDMAOp>(projected->front().module->getOperation()),
+        1u);
+    EXPECT_GT(
+        countOps<wafer::InstrWDMAOp>(projected->front().module->getOperation()),
+        1u);
+  }
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     TemporallyFusedProducerRetainsDownstreamScheduleLineage) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @chain(%input: tensor<8xf16>) -> tensor<8xf16> {
+    %producer_empty = tensor.empty() : tensor<8xf16>
+    %consumer_empty = tensor.empty() : tensor<8xf16>
+    %producer = linalg.map ins(%input : tensor<8xf16>)
+        outs(%producer_empty : tensor<8xf16>) (%value: f16) {
+      %sum = arith.addf %value, %value : f16
+      linalg.yield %sum : f16
+    }
+    %consumer = linalg.map ins(%producer : tensor<8xf16>)
+        outs(%consumer_empty : tensor<8xf16>) (%value: f16) {
+      %product = arith.mulf %value, %value : f16
+      linalg.yield %product : f16
+    }
+    return %consumer : tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  llvm::SmallVector<mlir::linalg::MapOp, 2> structured;
+  source->walk(
+      [&](mlir::linalg::MapOp operation) { structured.push_back(operation); });
+  ASSERT_EQ(structured.size(), 2u);
+
+  llvm::SmallVector<wafer::CardProgramSourceOperationLineage, 2> sourceLineage{
+      {structured[0].getOperation(), 0}, {structured[1].getOperation(), 1}};
+  llvm::SmallVector<wafer::StructuredOperandDemandLineage, 2>
+      operandDemandLineage{{structured[0].getOperation(), 0},
+                           {structured[1].getOperation(), 1}};
+  wafer::CardSpatialMapping selected = mapping(/*shardDimension=*/0, {0}, {8});
+  selected.operationTemporalTiles.push_back(
+      {structured[0].getOperation(), {4}});
+  selected.operationTemporalTiles.push_back(
+      {structured[1].getOperation(), {4}});
+  selected.edgeStrategies.push_back(edgeStrategy(
+      structured[0].getOperation(), structured[1].getOperation(),
+      wafer::PhysicalTileId(0), wafer::SpatialEdgeAction::CoupledFusion,
+      /*producerOffsets=*/{0}, /*producerSizes=*/{8},
+      /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
+
+  mlir::OwningOpRef<mlir::ModuleOp> fused;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), std::move(selected), fused,
+      &failureReason, sourceLineage, operandDemandLineage)))
+      << failureReason;
+
+  bool sawFusedProducerConsumerLineage = false;
+  fused->walk([&](mlir::Operation *operation) {
+    sawFusedProducerConsumerLineage |=
+        locationContainsLineage(operation->getLoc(), &sourceLineage[0]) &&
+        locationContainsLineage(operation->getLoc(), &sourceLineage[1]);
+  });
+  EXPECT_TRUE(sawFusedProducerConsumerLineage)
+      << "actual coupled producer work must retain its downstream schedule "
+         "owner lineage";
+
+  auto projected =
+      wafer::projectCardProgramToPhysicalTileModules(*fused, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
+  ASSERT_EQ(projected->size(), 1u);
+  ASSERT_TRUE(mlir::succeeded(wafer::convertTileRegionToInstrModule(
+      *projected->front().module, &failureReason)))
+      << failureReason;
+  bool sawFusedSupportAllocation = false;
+  projected->front().module->walk([&](mlir::memref::AllocOp allocation) {
+    sawFusedSupportAllocation |=
+        locationContainsLineage(allocation.getLoc(), &sourceLineage[0]) &&
+        locationContainsLineage(allocation.getLoc(), &sourceLineage[1]);
+  });
+  EXPECT_TRUE(sawFusedSupportAllocation)
+      << "support storage materialized with a coupled producer must retain "
+         "the same downstream schedule owner lineage";
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     NestedTemporalTraversalPropagatesTensorSplatStateSafely) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @splat_chain() -> tensor<2x2x2x2xf16> {
+    %c0 = arith.constant dense<0.0> : tensor<2x2x2x2xf16>
+    %c1 = arith.constant dense<1.0> : tensor<2x2x2x2xf16>
+    %c2 = arith.constant dense<2.0> : tensor<2x2x2x2xf16>
+    %c3 = arith.constant dense<3.0> : tensor<2x2x2x2xf16>
+    %c4 = arith.constant dense<4.0> : tensor<2x2x2x2xf16>
+    %c5 = arith.constant dense<5.0> : tensor<2x2x2x2xf16>
+    %c6 = arith.constant dense<6.0> : tensor<2x2x2x2xf16>
+    %c7 = arith.constant dense<7.0> : tensor<2x2x2x2xf16>
+    %out = tensor.empty() : tensor<2x2x2x2xf16>
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(i, j, k, l) -> (i, j, k, l)>,
+                         affine_map<(i, j, k, l) -> (i, j, k, l)>,
+                         affine_map<(i, j, k, l) -> (i, j, k, l)>,
+                         affine_map<(i, j, k, l) -> (i, j, k, l)>,
+                         affine_map<(i, j, k, l) -> (i, j, k, l)>,
+                         affine_map<(i, j, k, l) -> (i, j, k, l)>,
+                         affine_map<(i, j, k, l) -> (i, j, k, l)>,
+                         affine_map<(i, j, k, l) -> (i, j, k, l)>,
+                         affine_map<(i, j, k, l) -> (i, j, k, l)>],
+        iterator_types = ["parallel", "parallel", "parallel", "parallel"]
+      } ins(%c0, %c1, %c2, %c3, %c4, %c5, %c6, %c7 :
+            tensor<2x2x2x2xf16>, tensor<2x2x2x2xf16>,
+            tensor<2x2x2x2xf16>, tensor<2x2x2x2xf16>,
+            tensor<2x2x2x2xf16>, tensor<2x2x2x2xf16>,
+            tensor<2x2x2x2xf16>, tensor<2x2x2x2xf16>)
+        outs(%out : tensor<2x2x2x2xf16>) {
+      ^bb0(%v0: f16, %v1: f16, %v2: f16, %v3: f16,
+           %v4: f16, %v5: f16, %v6: f16, %v7: f16, %unused: f16):
+        %s0 = arith.addf %v0, %v1 : f16
+        %s1 = arith.addf %s0, %v2 : f16
+        %s2 = arith.addf %s1, %v3 : f16
+        %s3 = arith.addf %s2, %v4 : f16
+        %s4 = arith.addf %s3, %v5 : f16
+        %s5 = arith.addf %s4, %v6 : f16
+        %s6 = arith.addf %s5, %v7 : f16
+        linalg.yield %s6 : f16
+    } -> tensor<2x2x2x2xf16>
+    return %result : tensor<2x2x2x2xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = *source->getOps<mlir::func::FuncOp>().begin();
+  mlir::linalg::GenericOp generic =
+      *function.getOps<mlir::linalg::GenericOp>().begin();
+
+  wafer::CardSpatialMapping selected =
+      mapping(/*shardDimension=*/3, {0}, {2, 2, 2, 2});
+  selected.operationTemporalTiles.push_back(
+      {generic.getOperation(), {1, 1, 1, 1}});
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), std::move(selected), cardModule,
+      &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+  EXPECT_GE(countOps<mlir::scf::ForOp>(cardModule->getOperation()), 4u);
+  EXPECT_GT(countOps<wafer::ComputeElementwiseOp>(cardModule->getOperation()),
+            0u);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     RecomputeClonesPureProducerInActualTileIR) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @fanout(%input: tensor<8xf16>)
+      -> (tensor<8xf16>, tensor<8xf16>) {
+    %producer_empty = tensor.empty() : tensor<8xf16>
+    %consumer_empty = tensor.empty() : tensor<8xf16>
+    %producer = linalg.map ins(%input : tensor<8xf16>)
+        outs(%producer_empty : tensor<8xf16>) (%value: f16) {
+      %sum = arith.addf %value, %value : f16
+      linalg.yield %sum : f16
+    }
+    %consumer = linalg.map ins(%producer : tensor<8xf16>)
+        outs(%consumer_empty : tensor<8xf16>) (%value: f16) {
+      %product = arith.mulf %value, %value : f16
+      linalg.yield %product : f16
+    }
+    return %producer, %consumer : tensor<8xf16>, tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  llvm::SmallVector<mlir::linalg::MapOp, 2> structured;
+  source->walk(
+      [&](mlir::linalg::MapOp operation) { structured.push_back(operation); });
+  ASSERT_EQ(structured.size(), 2u);
+
+  auto lowerAction = [&](wafer::SpatialEdgeAction action) {
+    wafer::CardSpatialMapping selected = multiOutputMapping(
+        {outputMapping(0, 0, {0}, {8}), outputMapping(1, 0, {0}, {8})});
+    selected.edgeStrategies.push_back(
+        edgeStrategy(structured[0].getOperation(), structured[1].getOperation(),
+                     wafer::PhysicalTileId(0), action, /*producerOffsets=*/{0},
+                     /*producerSizes=*/{8}, /*consumerOffsets=*/{0},
+                     /*consumerSizes=*/{8}));
+    mlir::OwningOpRef<mlir::ModuleOp> result;
+    std::string failureReason;
+    EXPECT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+        *source, wafer::PhysicalCardId(0), std::move(selected), result,
+        &failureReason)))
+        << failureReason;
+    return result;
+  };
+  mlir::OwningOpRef<mlir::ModuleOp> fused =
+      lowerAction(wafer::SpatialEdgeAction::CoupledFusion);
+  mlir::OwningOpRef<mlir::ModuleOp> recomputed =
+      lowerAction(wafer::SpatialEdgeAction::Recompute);
+  ASSERT_TRUE(fused && recomputed);
+  EXPECT_GT(countOps<wafer::ComputeElementwiseOp>(recomputed->getOperation()),
+            countOps<wafer::ComputeElementwiseOp>(fused->getOperation()));
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     PartialOutputTileKeepsSelectedSpillStorageExplicit) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @fanout(%input: tensor<8xf16>)
+      -> (tensor<8xf16>, tensor<8xf16>) {
+    %producer_empty = tensor.empty() : tensor<8xf16>
+    %consumer_empty = tensor.empty() : tensor<8xf16>
+    %producer = linalg.map ins(%input : tensor<8xf16>)
+        outs(%producer_empty : tensor<8xf16>) (%value: f16) {
+      %sum = arith.addf %value, %value : f16
+      linalg.yield %sum : f16
+    }
+    %consumer = linalg.map ins(%producer : tensor<8xf16>)
+        outs(%consumer_empty : tensor<8xf16>) (%value: f16) {
+      %product = arith.mulf %value, %value : f16
+      linalg.yield %product : f16
+    }
+    return %producer, %consumer : tensor<8xf16>, tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  llvm::SmallVector<mlir::linalg::MapOp, 2> structured;
+  source->walk(
+      [&](mlir::linalg::MapOp operation) { structured.push_back(operation); });
+  ASSERT_EQ(structured.size(), 2u);
+
+  wafer::CardSpatialMapping selected = multiOutputMapping(
+      {outputMapping(0, 0, {0}, {8}), outputMapping(1, 0, {1}, {8})});
+  selected.edgeStrategies.push_back(edgeStrategy(
+      structured[0].getOperation(), structured[1].getOperation(),
+      wafer::PhysicalTileId(1), wafer::SpatialEdgeAction::SpillReload,
+      /*producerOffsets=*/{0}, /*producerSizes=*/{8},
+      /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), std::move(selected), cardModule,
+      &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+
+  wafer::CardProgramOp card =
+      *cardModule->getOps<wafer::CardProgramOp>().begin();
+  for (wafer::TileProgramOp tile :
+       card.getBody().front().getOps<wafer::TileProgramOp>()) {
+    if (tile.getTileIdAttr().getInt() != 1)
+      continue;
+    EXPECT_GT(countOps<wafer::StorageStoreOp>(tile.getOperation()), 0u);
+    EXPECT_GT(countOps<wafer::StorageLoadOp>(tile.getOperation()), 0u);
+  }
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     MaterializesMultipleSelectedRegionCutsAsConsecutiveRegions) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @chain(%input: tensor<8xf16>) -> tensor<8xf16> {
+    %empty0 = tensor.empty() : tensor<8xf16>
+    %empty1 = tensor.empty() : tensor<8xf16>
+    %empty2 = tensor.empty() : tensor<8xf16>
+    %first = linalg.map ins(%input : tensor<8xf16>)
+        outs(%empty0 : tensor<8xf16>) (%value: f16) {
+      %next = arith.addf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    %second = linalg.map ins(%first : tensor<8xf16>)
+        outs(%empty1 : tensor<8xf16>) (%value: f16) {
+      %next = arith.mulf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    %third = linalg.map ins(%second : tensor<8xf16>)
+        outs(%empty2 : tensor<8xf16>) (%value: f16) {
+      %next = arith.subf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    return %third : tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  llvm::SmallVector<mlir::linalg::MapOp, 3> structured;
+  source->walk(
+      [&](mlir::linalg::MapOp operation) { structured.push_back(operation); });
+  ASSERT_EQ(structured.size(), 3u);
+  wafer::CardSpatialMapping selected = mapping(/*shardDimension=*/0, {0}, {8});
+  for (unsigned index = 0; index < 2; ++index)
+    selected.edgeStrategies.push_back(edgeStrategy(
+        structured[index].getOperation(), structured[index + 1].getOperation(),
+        wafer::PhysicalTileId(0), wafer::SpatialEdgeAction::RegionCut,
+        /*producerOffsets=*/{0}, /*producerSizes=*/{8},
+        /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), std::move(selected), cardModule,
+      &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(cardModule->getOperation()), 3u);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     RejectsLocalConversionWithoutTypedLayoutRequestAtomically) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @chain(%input: tensor<8xf16>) -> tensor<8xf16> {
+    %empty0 = tensor.empty() : tensor<8xf16>
+    %empty1 = tensor.empty() : tensor<8xf16>
+    %first = linalg.map ins(%input : tensor<8xf16>)
+        outs(%empty0 : tensor<8xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    %second = linalg.map ins(%first : tensor<8xf16>)
+        outs(%empty1 : tensor<8xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    return %second : tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  const std::string sourceBefore = printOperation(source->getOperation());
+  llvm::SmallVector<mlir::linalg::MapOp, 2> structured;
+  source->walk(
+      [&](mlir::linalg::MapOp operation) { structured.push_back(operation); });
+  ASSERT_EQ(structured.size(), 2u);
+  wafer::CardSpatialMapping selected = mapping(/*shardDimension=*/0, {0}, {8});
+  selected.edgeStrategies.push_back(
+      edgeStrategy(structured[0].getOperation(), structured[1].getOperation(),
+                   wafer::PhysicalTileId(0),
+                   wafer::SpatialEdgeAction::LocalPhysicalConversion,
+                   /*producerOffsets=*/{0}, /*producerSizes=*/{8},
+                   /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
+  mlir::OwningOpRef<mlir::ModuleOp> unchanged =
+      mlir::ModuleOp::create(mlir::UnknownLoc::get(context.get()));
+  mlir::ModuleOp unchangedPointer = *unchanged;
+  std::string failureReason;
+  EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), std::move(selected), unchanged,
+      &failureReason)));
+  EXPECT_EQ(failureReason,
+            "local physical conversion requires distinct typed layouts");
+  EXPECT_EQ(*unchanged, unchangedPointer);
+  EXPECT_EQ(printOperation(source->getOperation()), sourceBefore);
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     RejectsDependentFragmentCoverageHolesAndOverlapAtomically) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 3>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @partial_fanin(%input: tensor<4x4xf16>) -> tensor<4x4xf16> {
+    %producer_empty = tensor.empty() : tensor<4x4xf16>
+    %consumer_empty = tensor.empty() : tensor<4x4xf16>
+    %producer = linalg.map ins(%input : tensor<4x4xf16>)
+        outs(%producer_empty : tensor<4x4xf16>) (%value: f16) {
+      %sum = arith.addf %value, %value : f16
+      linalg.yield %sum : f16
+    }
+    %consumer = linalg.map ins(%producer : tensor<4x4xf16>)
+        outs(%consumer_empty : tensor<4x4xf16>) (%value: f16) {
+      %product = arith.mulf %value, %value : f16
+      linalg.yield %product : f16
+    }
+    return %consumer : tensor<4x4xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  llvm::SmallVector<mlir::linalg::MapOp, 2> structured;
+  source->walk(
+      [&](mlir::linalg::MapOp operation) { structured.push_back(operation); });
+  ASSERT_EQ(structured.size(), 2u);
+  const std::string sourceBefore = printOperation(source->getOperation());
+
+  mlir::OwningOpRef<mlir::ModuleOp> unchanged =
+      mlir::ModuleOp::create(mlir::UnknownLoc::get(context.get()));
+  unchanged->getOperation()->setAttr("test.unchanged",
+                                     mlir::UnitAttr::get(context.get()));
+  mlir::ModuleOp unchangedPointer = *unchanged;
+  std::string failureReason;
+
+  wafer::CardSpatialMapping hole =
+      mixedLocalRemoteFaninMapping(structured[0], structured[1]);
+  hole.edgeStrategies.front().fragments.pop_back();
+  EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), hole, unchanged, &failureReason)));
+  EXPECT_EQ(failureReason,
+            "dependent fragments do not exactly cover the consumer demand");
+  EXPECT_EQ(*unchanged, unchangedPointer);
+
+  wafer::CardSpatialMapping overlap =
+      mixedLocalRemoteFaninMapping(structured[0], structured[1]);
+  overlap.edgeStrategies.front().fragments.back().offsets = {0, 0};
+  EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), overlap, unchanged, &failureReason)));
+  EXPECT_EQ(failureReason,
+            "dependent fragments overlap within one consumer demand");
+  EXPECT_EQ(*unchanged, unchangedPointer);
+
+  wafer::CardSpatialMapping overflow =
+      mixedLocalRemoteFaninMapping(structured[0], structured[1]);
+  overflow.edgeStrategies.front().fragments.back().offsets = {
+      std::numeric_limits<int64_t>::max(), 0};
+  EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), overflow, unchanged, &failureReason)));
+  EXPECT_EQ(failureReason,
+            "dependent fragment extends outside its consumer demand");
+  EXPECT_EQ(*unchanged, unchangedPointer);
+  EXPECT_TRUE(unchanged->getOperation()->hasAttr("test.unchanged"));
+  EXPECT_EQ(printOperation(source->getOperation()), sourceBefore);
+}
+
+TEST(WaferTensorProgramToCardProgramTest, RejectsDynamicDomainsAtomically) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  mlir::OwningOpRef<mlir::ModuleOp> unchanged =
+      mlir::ModuleOp::create(mlir::UnknownLoc::get(context.get()));
+  unchanged->getOperation()->setAttr("test.unchanged",
+                                     mlir::UnitAttr::get(context.get()));
+  mlir::ModuleOp unchangedPointer = *unchanged;
+  std::string failureReason;
+  auto dynamic = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @dynamic(%size: index) -> tensor<?x8xf16> {
+    %out = tensor.empty(%size) : tensor<?x8xf16>
+    return %out : tensor<?x8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(dynamic);
+  EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardProgram(
+      *dynamic, wafer::PhysicalCardId(0),
+      mapping(/*shardDimension=*/0, {0}, {1, 8}), unchanged, &failureReason)));
+  EXPECT_EQ(failureReason,
+            "card spatial mapping requires static tensor-program "
+            "output shapes");
+  EXPECT_EQ(*unchanged, unchangedPointer);
+  EXPECT_TRUE(unchanged->getOperation()->hasAttr("test.unchanged"));
+}
+
+} // namespace

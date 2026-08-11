@@ -113,7 +113,8 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
     add(stem, Result::Void, std::move(arguments), semantic);
   };
 
-  // Synchronization and Direct-DTE lifecycle calls are shared by every rank.
+  // Synchronization and Direct-DTE lifecycle calls are shared by every
+  // physical Tile program.
   addVoid("ncc_join", {Scalar::I32}, TargetCallBuiltin::NCCJoin);
 
   addVoid("direct_dte_begin", {Scalar::I64, Scalar::I32},

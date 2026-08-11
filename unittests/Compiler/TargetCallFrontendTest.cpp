@@ -6,7 +6,6 @@
 
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
 #include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
-#include "../../lib/Wafer/Compiler/TargetArtifactInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -28,7 +27,6 @@
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Constants.h"
@@ -51,9 +49,9 @@
 
 namespace {
 
-wafer::frontend::ProgramRankSlice singleRankSlice() {
-  wafer::frontend::ProgramRankSlice slice;
-  slice.logicalRank = 0;
+wafer::frontend::ProgramPartitionSlice singlePartitionSlice() {
+  wafer::frontend::ProgramPartitionSlice slice;
+  slice.partitionId = 0;
   slice.replicaId = 0;
   slice.offsets = {0};
   slice.sizes = {8};
@@ -69,27 +67,7 @@ wafer::frontend::ProgramBoundaryBinding boundary(int64_t index) {
   binding.globalShape = {8};
   binding.localShape = {8};
   binding.dtype = "f32";
-  binding.rankSlices.push_back(singleRankSlice());
-  return binding;
-}
-
-wafer::frontend::ProgramBoundaryBinding partitionedBoundary(int64_t index) {
-  wafer::frontend::ProgramBoundaryBinding binding;
-  binding.index = index;
-  binding.programIndex = index;
-  binding.distribution = wafer::frontend::ProgramDistributionKind::Partitioned;
-  binding.globalShape = {64};
-  binding.localShape = {4};
-  binding.dtype = "f32";
-  for (int64_t rank = 0; rank < 16; ++rank) {
-    wafer::frontend::ProgramRankSlice slice;
-    slice.logicalRank = rank;
-    slice.replicaId = 0;
-    slice.offsets = {rank * 4};
-    slice.sizes = {4};
-    slice.strides = {1};
-    binding.rankSlices.push_back(std::move(slice));
-  }
+  binding.partitionSlices.push_back(singlePartitionSlice());
   return binding;
 }
 
@@ -109,8 +87,9 @@ buildElementwiseTargetBundle(std::string &diagnosticText) {
       R"mlir(
 module {
   wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>, policy = "explicit", shape = array<i64: 1>, topology = @default}
-  func.func @main(%lhs: tensor<8xf32>, %rhs: tensor<8xf32>) -> tensor<8xf32> {
+  wafer.execution.mesh @default_mesh {axes = ["partition"], shape = array<i64: 1>}
+  func.func @main(%lhs: tensor<8xf32>, %rhs: tensor<8xf32>)
+      -> tensor<8xf32> {
     %out = tensor.empty() : tensor<8xf32>
     %sum = linalg.generic {
         indexing_maps = [affine_map<(d0) -> (d0)>,
@@ -132,7 +111,7 @@ module {
     return llvm::createStringError("failed to parse target-call test module");
 
   wafer::frontend::FrontendProgramVerificationResult program;
-  program.logicalRankCount = 1;
+  program.numPartitions = 1;
   program.programUserInputCount = 2;
   program.distributedInputs = {boundary(0), boundary(1)};
   program.distributedOutputs = {boundary(0)};
@@ -142,53 +121,8 @@ module {
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto executable = wafer::compiler::detail::buildExecutableBundle(
-      context, *tensorProgram, std::move(program), *config, diagnostics,
-      std::nullopt);
-  if (!executable)
-    return executable.takeError();
-  tensorProgram = nullptr;
-  return wafer::compiler::compileExecutableBundleToTargetLLVMModules(
-      *executable, diagnostics);
-}
-
-llvm::Expected<wafer::compiler::TargetLLVMModuleBundle>
-buildDirectDTETargetBundle(std::string &diagnosticText) {
-  auto context = createCompilerContext();
-  auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
-      R"mlir(
-module {
-  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64>, policy = "all_available", shape = array<i64: 16>, topology = @default}
-  func.func @main(%input: tensor<4xf32>) -> tensor<4xf32> {
-    %out = tensor.empty() : tensor<4xf32>
-    %permuted = wafer.linalg_ext.collective.collective_permute
-        ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>)
-        {source_target_pairs = array<i64: 0, 1, 1, 0, 2, 3, 3, 2,
-                                          4, 5, 5, 4, 6, 7, 7, 6,
-                                          8, 9, 9, 8, 10, 11, 11, 10,
-                                          12, 13, 13, 12, 14, 15, 15, 14>,
-         channel_id = 91 : i64} -> tensor<4xf32>
-    return %permuted : tensor<4xf32>
-  }
-}
-)mlir",
-      mlir::ParserConfig(context.get()));
-  if (!tensorProgram)
-    return llvm::createStringError("failed to parse Direct-DTE test module");
-
-  wafer::frontend::FrontendProgramVerificationResult program;
-  program.logicalRankCount = 16;
-  program.programUserInputCount = 1;
-  program.distributedInputs = {partitionedBoundary(0)};
-  program.distributedOutputs = {partitionedBoundary(0)};
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::RuntimeLaunchKind::Kernel);
-  if (!config)
-    return config.takeError();
-  llvm::raw_string_ostream diagnostics(diagnosticText);
-  auto executable = wafer::compiler::detail::buildExecutableBundle(
-      context, *tensorProgram, std::move(program), *config, diagnostics,
-      std::nullopt);
+      context, *tensorProgram, std::move(program), *config,
+      wafer::OptimizationConfig::search(), diagnostics, std::nullopt);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
@@ -201,8 +135,8 @@ public:
   llvm::Error begin(const wafer::compiler::TargetCallInvocationDescriptor
                         &descriptor) override {
     began = true;
-    invocationRankCount = descriptor.ranks.size();
-    rankDescriptors = descriptor.ranks;
+    invocationTileCount = descriptor.tiles.size();
+    tileDescriptors = descriptor.tiles;
     return llvm::Error::success();
   }
 
@@ -211,20 +145,26 @@ public:
     if (reenterExecutable && !attemptedReentry) {
       attemptedReentry = true;
       llvm::Error error =
-          reenterExecutable->executeRank(transaction.logicalRank);
+          reenterExecutable->executeTile(transaction.launchSlotId);
       if (error)
         reentryDiagnostic = llvm::toString(std::move(error));
     }
-    if (failAtIssue && transactions.size() == *failAtIssue) {
-      failedLogicalRank = transaction.logicalRank;
+    if ((failAtIssue && transactions.size() == *failAtIssue) ||
+        (failAtLaunchSlot &&
+         transaction.launchSlotId.getValue() == *failAtLaunchSlot)) {
+      failedLaunchSlot = transaction.launchSlotId.getValue();
       return llvm::createStringError("injected transaction sink failure");
     }
     transactions.push_back(transaction);
     return nextEvent++;
   }
 
-  llvm::Error terminal(int64_t logicalRank) override {
-    finalizedRanks.push_back(logicalRank);
+  llvm::Error completeTile(wafer::PhysicalCardId physicalCardId,
+                           wafer::PhysicalTileId physicalTileId,
+                           wafer::LaunchSlotId launchSlotId) override {
+    completedCardIds.push_back(physicalCardId.getValue());
+    completedTileIds.push_back(physicalTileId.getValue());
+    completedLaunchSlots.push_back(launchSlotId.getValue());
     return llvm::Error::success();
   }
 
@@ -240,25 +180,57 @@ public:
     aborted = true;
     abortDiagnostic = diagnostic.str();
     transactions.clear();
-    finalizedRanks.clear();
+    completedCardIds.clear();
+    completedTileIds.clear();
+    completedLaunchSlots.clear();
   }
 
   bool began = false;
   bool committed = false;
   bool aborted = false;
-  size_t invocationRankCount = 0;
+  size_t invocationTileCount = 0;
   uint64_t nextEvent = 0x2000;
   std::optional<size_t> failAtIssue;
+  std::optional<int64_t> failAtLaunchSlot;
   bool failPrepareCommit = false;
   wafer::compiler::TargetCallExecutable *reenterExecutable = nullptr;
   bool attemptedReentry = false;
-  std::optional<int64_t> failedLogicalRank;
+  std::optional<int64_t> failedLaunchSlot;
   std::string reentryDiagnostic;
   std::string abortDiagnostic;
-  std::vector<wafer::compiler::TargetCallRankDescriptor> rankDescriptors;
+  std::vector<wafer::compiler::TargetCallTileDescriptor> tileDescriptors;
   std::vector<wafer::compiler::TargetTransaction> transactions;
-  std::vector<int64_t> finalizedRanks;
+  std::vector<int64_t> completedCardIds;
+  std::vector<int64_t> completedTileIds;
+  std::vector<int64_t> completedLaunchSlots;
 };
+
+wafer::compiler::TargetCallTileArguments
+makeTileArguments(const wafer::compiler::TargetLLVMModule &module,
+                  std::vector<uint64_t> slots) {
+  return {module.getPhysicalCardId(), module.getPhysicalTileId(),
+          module.getLaunchSlotId(), std::move(slots)};
+}
+
+std::vector<wafer::compiler::TargetCallTileArguments>
+makeInvocationArguments(const wafer::compiler::TargetLLVMModuleBundle &bundle,
+                        uint64_t baseAddress = UINT64_C(0x100000)) {
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments;
+  arguments.reserve(bundle.getModules().size());
+  for (const wafer::compiler::TargetLLVMModule &module : bundle.getModules()) {
+    std::vector<uint64_t> slots;
+    slots.reserve(module.getKernelABISlots().size());
+    for (const wafer::compiler::KernelABISlot &slot :
+         module.getKernelABISlots())
+      slots.push_back(
+          baseAddress +
+          static_cast<uint64_t>(module.getLaunchSlotId().getValue()) *
+              UINT64_C(0x100000) +
+          static_cast<uint64_t>(slot.ordinal) * UINT64_C(0x1000));
+    arguments.push_back(makeTileArguments(module, std::move(slots)));
+  }
+  return arguments;
+}
 
 uint64_t supportedF32Code(wafer::TargetFormatEngine engine) {
   const wafer::TargetFormatEncodingRecord *record =
@@ -554,7 +526,7 @@ void expectPayloadFields(
       const auto &value =
           std::get<wafer::compiler::TargetDirectDTEBeginTransaction>(payload);
       EXPECT_EQ(value.statusAddress, arguments[0]);
-      EXPECT_EQ(value.rankCount, u32(1));
+      EXPECT_EQ(value.participantCount, u32(1));
       return;
     }
     case wafer::TargetCallBuiltin::DirectDTESendPrepare: {
@@ -1009,14 +981,11 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
   auto bundle = buildElementwiseTargetBundle(diagnostics);
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
-  ASSERT_EQ(bundle->getModules().size(), 1u);
+  ASSERT_EQ(bundle->getModules().size(), 16u);
   std::string originalTriple =
       bundle->getModules().front().getTargetTriple().str();
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
-      {0, std::vector<uint64_t>(
-              bundle->getModules().front().getKernelABISlots().size())}};
-  for (size_t index = 0; index < arguments[0].slots.size(); ++index)
-    arguments[0].slots[index] = 0x100000 + index * 0x1000;
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
 
   RecordingSink sink;
   auto executable =
@@ -1025,33 +994,51 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
       << llvm::toString(executable.takeError());
   if (llvm::Error error = executable->begin(sink))
     FAIL() << llvm::toString(std::move(error));
-  if (llvm::Error error = executable->executeRank(0))
-    FAIL() << llvm::toString(std::move(error));
+  for (const wafer::compiler::TargetCallTileDescriptor &tile :
+       executable->getInvocationDescriptor().tiles)
+    if (llvm::Error error = executable->executeTile(tile.launchSlotId))
+      FAIL() << llvm::toString(std::move(error));
   auto result = executable->commit();
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   EXPECT_TRUE(sink.began);
   EXPECT_TRUE(sink.committed);
   EXPECT_FALSE(sink.aborted);
-  EXPECT_EQ(sink.invocationRankCount, 1u);
-  ASSERT_EQ(sink.rankDescriptors.size(), 1u);
-  EXPECT_EQ(sink.rankDescriptors[0].logicalRank, 0);
-  ASSERT_EQ(sink.rankDescriptors[0].kernelABISlots.size(),
+  EXPECT_EQ(sink.invocationTileCount, 16u);
+  ASSERT_EQ(sink.tileDescriptors.size(), 16u);
+  EXPECT_EQ(sink.tileDescriptors[0].physicalCardId.getValue(), 0);
+  EXPECT_EQ(sink.tileDescriptors[0].physicalTileId.getValue(), 0);
+  EXPECT_EQ(sink.tileDescriptors[0].launchSlotId.getValue(), 0);
+  ASSERT_EQ(sink.tileDescriptors[0].kernelABISlots.size(),
             bundle->getModules().front().getKernelABISlots().size());
-  ASSERT_FALSE(sink.rankDescriptors[0].kernelABISlots.empty());
-  EXPECT_EQ(sink.rankDescriptors[0].slotValues, arguments[0].slots);
-  EXPECT_EQ(sink.rankDescriptors[0].kernelABISlots.front().dtype,
+  ASSERT_FALSE(sink.tileDescriptors[0].kernelABISlots.empty());
+  EXPECT_EQ(sink.tileDescriptors[0].slotValues, arguments[0].slots);
+  EXPECT_EQ(sink.tileDescriptors[0].kernelABISlots.front().dtype,
             bundle->getModules().front().getKernelABISlots().front().dtype);
-  EXPECT_EQ(sink.finalizedRanks, std::vector<int64_t>({0}));
-  EXPECT_EQ(result->completedRankCount, 1);
+  ASSERT_EQ(sink.completedCardIds.size(), 16u);
+  ASSERT_EQ(sink.completedTileIds.size(), 16u);
+  ASSERT_EQ(sink.completedLaunchSlots.size(), 16u);
+  for (int64_t index = 0; index < 16; ++index) {
+    EXPECT_EQ(sink.completedCardIds[static_cast<size_t>(index)], 0);
+    EXPECT_EQ(sink.completedTileIds[static_cast<size_t>(index)], index);
+    EXPECT_EQ(sink.completedLaunchSlots[static_cast<size_t>(index)], index);
+  }
+  EXPECT_EQ(result->completedTileCount, 16);
   EXPECT_EQ(result->issuedTransactionCount, sink.transactions.size());
   ASSERT_FALSE(sink.transactions.empty());
   bool sawAdd = false;
   uint64_t totalAddElements = 0;
+  std::vector<uint64_t> nextIssueOrdinal(16, 0);
   for (size_t index = 0; index < sink.transactions.size(); ++index) {
     const wafer::compiler::TargetTransaction &transaction =
         sink.transactions[index];
-    EXPECT_EQ(transaction.logicalRank, 0);
-    EXPECT_EQ(transaction.issueOrdinal, index);
+    EXPECT_EQ(transaction.physicalCardId.getValue(), 0);
+    EXPECT_EQ(transaction.physicalTileId.getValue(),
+              transaction.launchSlotId.getValue());
+    const int64_t launchSlot = transaction.launchSlotId.getValue();
+    ASSERT_GE(launchSlot, 0);
+    ASSERT_LT(launchSlot, 16);
+    EXPECT_EQ(transaction.issueOrdinal,
+              nextIssueOrdinal[static_cast<size_t>(launchSlot)]++);
     if (transaction.nccIssueDomain) {
       EXPECT_NE(transaction.nccIssueDomain->engine,
                 wafer::TargetCallTSMEngine::DirectDTE);
@@ -1108,10 +1095,8 @@ TEST(TargetCallFrontendTest, CarriesExplicitWorkerOneAndTwoIntoTransactions) {
       }
   ASSERT_GT(rewritten, 0u);
 
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
-      {0, std::vector<uint64_t>(
-              bundle->getModules().front().getKernelABISlots().size(),
-              UINT64_C(0x100000))}};
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
   auto result =
       wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
@@ -1134,7 +1119,7 @@ TEST(TargetCallFrontendTest, CarriesExplicitWorkerOneAndTwoIntoTransactions) {
 TEST(TargetCallFrontendTest,
      CarriesSynchronousWritebackBehaviorIntoDynamicTransaction) {
   std::string diagnostics;
-  auto bundle = buildDirectDTETargetBundle(diagnostics);
+  auto bundle = buildElementwiseTargetBundle(diagnostics);
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
   ASSERT_EQ(bundle->getModules().size(), 16u);
@@ -1169,16 +1154,8 @@ TEST(TargetCallFrontendTest,
     builder.CreateCall(callee, callArguments);
   }
 
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments;
-  for (const wafer::compiler::TargetLLVMModule &rankModule :
-       bundle->getModules())
-    arguments.push_back(
-        {rankModule.getLogicalRank(),
-         std::vector<uint64_t>(
-             rankModule.getKernelABISlots().size(),
-             UINT64_C(0x100000) +
-                 static_cast<uint64_t>(rankModule.getLogicalRank()) *
-                     UINT64_C(0x10000))});
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
   auto result =
       wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
@@ -1214,10 +1191,8 @@ TEST(TargetCallFrontendTest, SinkFailureAbortsWithoutPartialResult) {
   auto bundle = buildElementwiseTargetBundle(diagnostics);
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
-      {0,
-       std::vector<uint64_t>(
-           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
   sink.failAtIssue = 0;
   auto result =
@@ -1230,146 +1205,30 @@ TEST(TargetCallFrontendTest, SinkFailureAbortsWithoutPartialResult) {
   EXPECT_TRUE(sink.aborted);
   EXPECT_FALSE(sink.committed);
   EXPECT_TRUE(sink.transactions.empty());
-  EXPECT_TRUE(sink.finalizedRanks.empty());
+  EXPECT_TRUE(sink.completedLaunchSlots.empty());
 }
 
-TEST(TargetCallFrontendTest, ExecutesAllRanksWithExplicitDTEOpaqueEvents) {
+TEST(TargetCallFrontendTest, LateTileFailureAbortsTheWholeInvocation) {
   std::string diagnostics;
-  auto bundle = buildDirectDTETargetBundle(diagnostics);
+  auto bundle = buildElementwiseTargetBundle(diagnostics);
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
-  ASSERT_EQ(bundle->getModules().size(), 16u);
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments;
-  for (const wafer::compiler::TargetLLVMModule &module : bundle->getModules())
-    arguments.push_back(
-        {module.getLogicalRank(),
-         std::vector<uint64_t>(module.getKernelABISlots().size(),
-                               0x100000 + module.getLogicalRank() * 0x10000)});
-
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
-  auto executable =
-      wafer::compiler::prepareTargetCallFrontend(*bundle, arguments);
-  ASSERT_TRUE(static_cast<bool>(executable))
-      << llvm::toString(executable.takeError());
-  if (llvm::Error error = executable->begin(sink))
-    FAIL() << llvm::toString(std::move(error));
-  for (int64_t rank = 15; rank >= 0; --rank)
-    if (llvm::Error error = executable->executeRank(rank))
-      FAIL() << llvm::toString(std::move(error));
-  auto result = executable->commit();
-  ASSERT_TRUE(static_cast<bool>(result))
-      << diagnostics << llvm::toString(result.takeError());
-  EXPECT_EQ(result->completedRankCount, 16);
-  EXPECT_EQ(sink.invocationRankCount, 16u);
-  ASSERT_EQ(sink.finalizedRanks.size(), 16u);
-  for (size_t index = 0; index < sink.finalizedRanks.size(); ++index)
-    EXPECT_EQ(sink.finalizedRanks[index], 15 - static_cast<int64_t>(index));
-
-  llvm::DenseSet<uint64_t> producedEvents;
-  llvm::DenseSet<int64_t> beginRanks;
-  llvm::DenseSet<int64_t> finishRanks;
-  size_t waitCount = 0;
-  for (size_t index = 0; index < sink.transactions.size(); ++index) {
-    const wafer::compiler::TargetTransaction &transaction =
-        sink.transactions[index];
-    if (std::holds_alternative<wafer::compiler::TargetDirectDTESendTransaction>(
-            transaction.payload) ||
-        std::holds_alternative<
-            wafer::compiler::TargetDirectDTEReceiveTransaction>(
-            transaction.payload)) {
-      EXPECT_FALSE(transaction.nccIssueDomain);
-      producedEvents.insert(0x2000 + index);
-    }
-    if (const auto *issue =
-            std::get_if<wafer::compiler::TargetDirectDTESendIssueTransaction>(
-                &transaction.payload)) {
-      EXPECT_FALSE(transaction.nccIssueDomain);
-      EXPECT_TRUE(producedEvents.contains(issue->event));
-    }
-    if (std::holds_alternative<
-            wafer::compiler::TargetDirectDTEBeginTransaction>(
-            transaction.payload))
-      beginRanks.insert(transaction.logicalRank);
-    if (std::holds_alternative<
-            wafer::compiler::TargetDirectDTEFinishTransaction>(
-            transaction.payload))
-      finishRanks.insert(transaction.logicalRank);
-    if (const auto *wait =
-            std::get_if<wafer::compiler::TargetDirectDTEWaitTransaction>(
-                &transaction.payload)) {
-      ++waitCount;
-      EXPECT_FALSE(transaction.nccIssueDomain);
-      EXPECT_TRUE(producedEvents.contains(wait->event));
-    }
-  }
-  EXPECT_EQ(beginRanks.size(), 16u);
-  EXPECT_EQ(finishRanks.size(), 16u);
-  EXPECT_GT(waitCount, 0u);
-}
-
-TEST(TargetCallFrontendTest,
-     ClusterAggregationConsumesProductionDirectDTERankModules) {
-  std::string diagnostics;
-  auto bundle = buildDirectDTETargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  auto aggregate =
-      wafer::compiler::detail::buildKernelAggregateTargetModule(*bundle);
-  ASSERT_TRUE(static_cast<bool>(aggregate))
-      << llvm::toString(aggregate.takeError());
-
-  size_t rankBodyCount = 0;
-  size_t afterPrepareCalls = 0;
-  size_t directSyncInitCalls = 0;
-  size_t initTileIdCalls = 0;
-  for (const llvm::Function &function : aggregate->module->functions()) {
-    if (function.getName().starts_with("__wafer_kernel_rank_") &&
-        function.getName().ends_with("_main_body"))
-      ++rankBodyCount;
-    for (const llvm::BasicBlock &block : function)
-      for (const llvm::Instruction &instruction : block) {
-        const auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
-        if (!call || !call->getCalledFunction())
-          continue;
-        if (call->getCalledFunction()->getName() ==
-            "wafer_tx81_direct_dte_begin_after_prepare")
-          ++afterPrepareCalls;
-        if (call->getCalledFunction()->getName() == "direct_sync_init")
-          ++directSyncInitCalls;
-        if (call->getCalledFunction()->getName() == "init_tile_id")
-          ++initTileIdCalls;
-      }
-  }
-  EXPECT_EQ(rankBodyCount, 16u);
-  EXPECT_EQ(afterPrepareCalls, 16u);
-  EXPECT_EQ(directSyncInitCalls, 1u);
-  EXPECT_EQ(initTileIdCalls, 1u);
-}
-
-TEST(TargetCallFrontendTest, LateRankFailureAbortsTheWholeInvocation) {
-  std::string diagnostics;
-  auto bundle = buildDirectDTETargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments;
-  for (const wafer::compiler::TargetLLVMModule &module : bundle->getModules())
-    arguments.push_back(
-        {module.getLogicalRank(),
-         std::vector<uint64_t>(module.getKernelABISlots().size(), 0x100000)});
-  RecordingSink sink;
-  sink.failAtIssue = 20;
+  sink.failAtLaunchSlot = 1;
   auto result =
       wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError())
                 .find("injected transaction sink failure"),
             std::string::npos);
-  ASSERT_TRUE(sink.failedLogicalRank.has_value());
-  EXPECT_GT(*sink.failedLogicalRank, 0);
+  ASSERT_TRUE(sink.failedLaunchSlot.has_value());
+  EXPECT_GT(*sink.failedLaunchSlot, 0);
   EXPECT_TRUE(sink.aborted);
   EXPECT_FALSE(sink.committed);
   EXPECT_TRUE(sink.transactions.empty());
-  EXPECT_TRUE(sink.finalizedRanks.empty());
+  EXPECT_TRUE(sink.completedLaunchSlots.empty());
 }
 
 TEST(TargetCallFrontendTest, NativeIllegalInlineAssemblyFailsBeforeSinkBegin) {
@@ -1389,10 +1248,8 @@ TEST(TargetCallFrontendTest, NativeIllegalInlineAssemblyFailsBeforeSinkBegin) {
   llvm::CallInst *call = builder.CreateCall(assembly);
   auto restore = llvm::make_scope_exit([&] { call->eraseFromParent(); });
 
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
-      {0,
-       std::vector<uint64_t>(
-           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
   auto result =
       wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
@@ -1416,10 +1273,8 @@ TEST(TargetCallFrontendTest, NativeTrapFailsBeforeSinkBegin) {
       llvm::Intrinsic::getDeclaration(&module, llvm::Intrinsic::trap);
   builder.CreateCall(trap);
 
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
-      {0,
-       std::vector<uint64_t>(
-           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
   auto result =
       wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
@@ -1445,10 +1300,8 @@ TEST(TargetCallFrontendTest, NativeAddressDereferenceFailsBeforeSinkBegin) {
       syntheticAddress, llvm::PointerType::get(module.getContext(), 0));
   (void)builder.CreateLoad(i64, pointer);
 
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
-      {0,
-       std::vector<uint64_t>(
-           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
   auto result =
       wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
@@ -1476,10 +1329,8 @@ TEST(TargetCallFrontendTest, NativePointerSelectFailsBeforeSinkBegin) {
       llvm::ConstantInt::getTrue(module.getContext()), nullPointer, nullPointer,
       "pointer-control", &entry->getEntryBlock().front());
 
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
-      {0,
-       std::vector<uint64_t>(
-           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
   auto result =
       wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
@@ -1504,10 +1355,8 @@ TEST(TargetCallFrontendTest, NativePointerCompareFailsBeforeSinkBegin) {
                            llvm::ICmpInst::ICMP_EQ, nullPointer, nullPointer,
                            "pointer-control");
 
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
-      {0,
-       std::vector<uint64_t>(
-           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
   auto result =
       wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
@@ -1533,10 +1382,8 @@ TEST(TargetCallFrontendTest, NativePointerPhiFailsBeforeSinkBegin) {
   builder.CreateBr(loop);
   phi->addIncoming(llvm::ConstantPointerNull::get(pointer), loop);
 
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
-      {0,
-       std::vector<uint64_t>(
-           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
   auto result =
       wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
@@ -1569,10 +1416,8 @@ TEST(TargetCallFrontendTest, WrongTargetCallSignatureFailsBeforeSinkBegin) {
                              "wafer_tx81_elementwise_add_v3", module);
   (void)wrong;
 
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
-      {0,
-       std::vector<uint64_t>(
-           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
   auto result =
       wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
@@ -1587,7 +1432,9 @@ TEST(TargetCallFrontendTest, SlotMismatchFailsBeforeSinkBegin) {
   auto bundle = buildElementwiseTargetBundle(diagnostics);
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {{0, {}}};
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
+  arguments.front().slots.clear();
   RecordingSink sink;
   auto result =
       wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
@@ -1598,15 +1445,13 @@ TEST(TargetCallFrontendTest, SlotMismatchFailsBeforeSinkBegin) {
   EXPECT_FALSE(sink.aborted);
 }
 
-TEST(TargetCallFrontendTest, RejectsRankReentryAndAbortsInvocation) {
+TEST(TargetCallFrontendTest, RejectsTileReentryAndAbortsInvocation) {
   std::string diagnostics;
   auto bundle = buildElementwiseTargetBundle(diagnostics);
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
-      {0,
-       std::vector<uint64_t>(
-           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
   auto executable =
       wafer::compiler::prepareTargetCallFrontend(*bundle, arguments);
@@ -1614,7 +1459,7 @@ TEST(TargetCallFrontendTest, RejectsRankReentryAndAbortsInvocation) {
       << llvm::toString(executable.takeError());
   sink.reenterExecutable = &*executable;
   ASSERT_FALSE(static_cast<bool>(executable->begin(sink)));
-  llvm::Error executionError = executable->executeRank(0);
+  llvm::Error executionError = executable->executeTile(wafer::LaunchSlotId(0));
   ASSERT_TRUE(static_cast<bool>(executionError));
   EXPECT_NE(llvm::toString(std::move(executionError)).find("already running"),
             std::string::npos);
@@ -1629,10 +1474,8 @@ TEST(TargetCallFrontendTest, PrepareCommitFailureCannotPublishResult) {
   auto bundle = buildElementwiseTargetBundle(diagnostics);
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
-      {0,
-       std::vector<uint64_t>(
-           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
   sink.failPrepareCommit = true;
   auto executable =
@@ -1640,7 +1483,9 @@ TEST(TargetCallFrontendTest, PrepareCommitFailureCannotPublishResult) {
   ASSERT_TRUE(static_cast<bool>(executable))
       << llvm::toString(executable.takeError());
   ASSERT_FALSE(static_cast<bool>(executable->begin(sink)));
-  ASSERT_FALSE(static_cast<bool>(executable->executeRank(0)));
+  for (const wafer::compiler::TargetCallTileDescriptor &tile :
+       executable->getInvocationDescriptor().tiles)
+    ASSERT_FALSE(static_cast<bool>(executable->executeTile(tile.launchSlotId)));
   auto result = executable->commit();
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError()).find("prepare-commit failure"),
@@ -1654,10 +1499,8 @@ TEST(TargetCallFrontendTest, RunningDestructionAbortsPrivateSinkState) {
   auto bundle = buildElementwiseTargetBundle(diagnostics);
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
-  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
-      {0,
-       std::vector<uint64_t>(
-           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  std::vector<wafer::compiler::TargetCallTileArguments> arguments =
+      makeInvocationArguments(*bundle);
   RecordingSink sink;
   {
     auto executable =

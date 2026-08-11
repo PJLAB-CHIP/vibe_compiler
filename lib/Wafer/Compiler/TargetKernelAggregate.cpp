@@ -24,6 +24,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,7 +33,7 @@
 namespace wafer::compiler::detail {
 namespace {
 
-constexpr int64_t kKernelAggregateRankCount = 16;
+constexpr int64_t kKernelAggregateTileCount = 16;
 constexpr int64_t kKernelAggregateRowLength = 4;
 
 bool haveSameKernelABISchema(llvm::ArrayRef<KernelABISlot> lhs,
@@ -98,25 +100,28 @@ llvm::Error validateLinkConstructs(const llvm::Module &module) {
 
 llvm::Expected<std::unique_ptr<llvm::Module>>
 importIntoContext(const llvm::Module &source, llvm::LLVMContext &context,
-                  int64_t logicalRank) {
+                  LaunchSlotId launchSlotId) {
   llvm::SmallVector<char, 0> storage;
   llvm::raw_svector_ostream output(storage);
   llvm::WriteBitcodeToFile(source, output);
   llvm::StringRef bytes(storage.data(), storage.size());
   llvm::MemoryBufferRef buffer(
-      bytes, llvm::formatv("wafer.kernel.rank.{0:D5}", logicalRank).str());
+      bytes,
+      llvm::formatv("wafer.kernel.launch_slot.{0:D5}",
+                    launchSlotId.getValue())
+          .str());
   llvm::Expected<std::unique_ptr<llvm::Module>> imported =
       llvm::parseBitcodeFile(buffer, context);
   if (!imported)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "failed to import logical rank %lld for kernel aggregation: %s",
-        static_cast<long long>(logicalRank),
+        "failed to import launch slot %lld for kernel aggregation: %s",
+        static_cast<long long>(launchSlotId.getValue()),
         llvm::toString(imported.takeError()).c_str());
   return imported;
 }
 
-void stripRankMetadata(llvm::Module &module) {
+void stripTileMetadata(llvm::Module &module) {
   llvm::SmallVector<llvm::NamedMDNode *, 8> erase;
   for (llvm::NamedMDNode &metadata : module.named_metadata())
     if (metadata.getName().starts_with("wafer.target.") ||
@@ -126,16 +131,18 @@ void stripRankMetadata(llvm::Module &module) {
     module.eraseNamedMetadata(metadata);
 }
 
-llvm::Expected<std::string> scopeRankDefinitions(llvm::Module &module,
-                                                 int64_t logicalRank,
-                                                 llvm::StringRef entrySymbol) {
+llvm::Expected<std::string>
+scopeLaunchSlotDefinitions(llvm::Module &module, LaunchSlotId launchSlotId,
+                           llvm::StringRef entrySymbol) {
   llvm::Function *entry = module.getFunction(entrySymbol);
   if (!entry || entry->isDeclaration())
     return llvm::createStringError(llvm::errc::invalid_argument,
-                                   "kernel rank entry body is missing");
+                                   "kernel launch-slot entry body is missing");
 
   const std::string prefix =
-      llvm::formatv("__wafer_kernel_rank_{0:D5}", logicalRank).str();
+      llvm::formatv("__wafer_kernel_launch_slot_{0:D5}",
+                    launchSlotId.getValue())
+          .str();
   const std::string bodyName = prefix + "_main_body";
   uint64_t functionOrdinal = 0;
   for (llvm::Function &function : module.functions()) {
@@ -148,7 +155,7 @@ llvm::Expected<std::string> scopeRankDefinitions(llvm::Module &module,
                   .str());
     // Keep each uniquely scoped definition externally linkable until it has
     // entered the aggregate. LLVM's IR linker may omit unreferenced local
-    // definitions, including the rank body that the dispatcher will use.
+    // definitions, including the launch-slot body that the dispatcher uses.
     function.setLinkage(llvm::GlobalValue::ExternalLinkage);
     function.setVisibility(llvm::GlobalValue::DefaultVisibility);
   }
@@ -165,7 +172,7 @@ llvm::Expected<std::string> scopeRankDefinitions(llvm::Module &module,
 }
 
 void internalizeScopedDefinitions(llvm::Module &module) {
-  constexpr llvm::StringLiteral prefix = "__wafer_kernel_rank_";
+  constexpr llvm::StringLiteral prefix = "__wafer_kernel_launch_slot_";
   for (llvm::Function &function : module.functions())
     if (!function.isDeclaration() && function.getName().starts_with(prefix))
       function.setLinkage(llvm::GlobalValue::InternalLinkage);
@@ -192,8 +199,10 @@ getOrInsertExactDeclaration(llvm::Module &module, llvm::StringRef symbol,
 
 llvm::Error createKernelAggregateExports(llvm::Module &module,
                                          llvm::ArrayRef<std::string> bodyNames,
+                                         llvm::ArrayRef<int64_t>
+                                             physicalTileIdsByLaunchSlot,
                                          llvm::StringRef mainSymbol,
-                                         uint64_t slotsPerRank,
+                                         uint64_t slotsPerTile,
                                          KernelEntryABI entryABI,
                                          bool includePrepare) {
   llvm::LLVMContext &context = module.getContext();
@@ -234,9 +243,9 @@ llvm::Error createKernelAggregateExports(llvm::Module &module,
     llvm::Function *prepare =
         llvm::Function::Create(wrapperType, llvm::GlobalValue::ExternalLinkage,
                                kKernelPrepareExportSymbol, module);
-    prepare->getArg(0)->setName(
-        entryABI == KernelEntryABI::RankRowPointerTable ? "rank_row_pointers"
-                                                          : "rank_major_slots");
+    prepare->getArg(0)->setName(entryABI == KernelEntryABI::TileRowPointerTable
+                                    ? "tile_row_pointers"
+                                    : "tile_major_slots");
     llvm::IRBuilder<> prepareBuilder(
         llvm::BasicBlock::Create(context, "entry", prepare));
     llvm::Value *preparePid = prepareBuilder.CreateCall(
@@ -249,15 +258,15 @@ llvm::Error createKernelAggregateExports(llvm::Module &module,
     prepareBuilder.CreateCall(
         *directSyncInit,
         llvm::ConstantInt::get(
-            i32, static_cast<uint64_t>(kKernelAggregateRankCount)));
+            i32, static_cast<uint64_t>(kKernelAggregateTileCount)));
     prepareBuilder.CreateRetVoid();
   }
 
   llvm::Function *main = llvm::Function::Create(
       wrapperType, llvm::GlobalValue::ExternalLinkage, mainSymbol, module);
-  main->getArg(0)->setName(entryABI == KernelEntryABI::RankRowPointerTable
-                               ? "rank_row_pointers"
-                               : "rank_major_slots");
+  main->getArg(0)->setName(entryABI == KernelEntryABI::TileRowPointerTable
+                               ? "tile_row_pointers"
+                               : "tile_major_slots");
   llvm::BasicBlock *entryBlock =
       llvm::BasicBlock::Create(context, "entry", main);
   llvm::BasicBlock *defaultBlock =
@@ -267,49 +276,60 @@ llvm::Error createKernelAggregateExports(llvm::Module &module,
   llvm::Value *pid =
       builder.CreateCall(*getPid, llvm::ConstantInt::get(i32, 0), "pid.x");
   llvm::SwitchInst *dispatch =
-      builder.CreateSwitch(pid, defaultBlock, kKernelAggregateRankCount);
+      builder.CreateSwitch(pid, defaultBlock, kKernelAggregateTileCount);
 
-  for (int64_t rank = 0; rank < kKernelAggregateRankCount; ++rank) {
-    llvm::Function *body = module.getFunction(bodyNames[rank]);
+  for (int64_t launchSlot = 0; launchSlot < kKernelAggregateTileCount;
+       ++launchSlot) {
+    llvm::Function *body = module.getFunction(bodyNames[launchSlot]);
     if (!body || body->isDeclaration() || body->isVarArg() ||
         !body->getReturnType()->isVoidTy() ||
-        body->arg_size() != slotsPerRank ||
+        body->arg_size() != slotsPerTile ||
         !llvm::all_of(body->args(), [](const llvm::Argument &argument) {
           return argument.getType()->isIntegerTy(64);
         }))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "kernel rank %lld body '%s' does not match the common typed slot "
-          "schema (present=%d declaration=%d vararg=%d arguments=%llu)",
-          static_cast<long long>(rank), bodyNames[rank].c_str(),
+          "kernel launch slot %lld body '%s' does not match the common typed "
+          "slot schema (present=%d declaration=%d vararg=%d arguments=%llu)",
+          static_cast<long long>(launchSlot), bodyNames[launchSlot].c_str(),
           body != nullptr, body ? body->isDeclaration() : 0,
           body ? body->isVarArg() : 0,
           static_cast<unsigned long long>(body ? body->arg_size() : 0));
-    llvm::BasicBlock *rankBlock = llvm::BasicBlock::Create(
-        context, llvm::formatv("pid.{0}", rank).str(), main);
-    dispatch->addCase(llvm::ConstantInt::get(i32, rank), rankBlock);
-    builder.SetInsertPoint(rankBlock);
+    const int64_t physicalTileId =
+        physicalTileIdsByLaunchSlot[launchSlot];
+    llvm::BasicBlock *slotBlock = llvm::BasicBlock::Create(
+        context,
+        llvm::formatv("physical_tile.{0}.launch_slot.{1}", physicalTileId,
+                      launchSlot)
+            .str(),
+        main);
+    dispatch->addCase(llvm::ConstantInt::get(i32, physicalTileId), slotBlock);
+    builder.SetInsertPoint(slotBlock);
     llvm::SmallVector<llvm::Value *, 16> arguments;
-    arguments.reserve(slotsPerRank);
+    arguments.reserve(slotsPerTile);
     llvm::Value *row = main->getArg(0);
-    uint64_t rowBase = static_cast<uint64_t>(rank) * slotsPerRank;
-    if (entryABI == KernelEntryABI::RankRowPointerTable) {
+    uint64_t rowBase = static_cast<uint64_t>(launchSlot) * slotsPerTile;
+    if (entryABI == KernelEntryABI::TileRowPointerTable) {
       llvm::Value *rowAddress = builder.CreateInBoundsGEP(
-          i64, main->getArg(0), llvm::ConstantInt::get(i64, rank),
-          llvm::formatv("rank.{0}.row.address", rank).str());
+          i64, main->getArg(0), llvm::ConstantInt::get(i64, launchSlot),
+          llvm::formatv("launch_slot.{0}.row.address", launchSlot).str());
       llvm::LoadInst *rowValue = builder.CreateLoad(
-          i64, rowAddress, llvm::formatv("rank.{0}.row", rank).str());
+          i64, rowAddress,
+          llvm::formatv("launch_slot.{0}.row", launchSlot).str());
       rowValue->setAlignment(llvm::Align(8));
-      row = builder.CreateIntToPtr(rowValue, pointer,
-                                   llvm::formatv("rank.{0}.slots", rank).str());
+      row = builder.CreateIntToPtr(
+          rowValue, pointer,
+          llvm::formatv("launch_slot.{0}.slots", launchSlot).str());
       rowBase = 0;
     }
-    for (uint64_t slot = 0; slot < slotsPerRank; ++slot) {
+    for (uint64_t slot = 0; slot < slotsPerTile; ++slot) {
       llvm::Value *address = builder.CreateInBoundsGEP(
           i64, row, llvm::ConstantInt::get(i64, rowBase + slot),
-          llvm::formatv("rank.{0}.slot.{1}.address", rank, slot).str());
+          llvm::formatv("launch_slot.{0}.slot.{1}.address", launchSlot, slot)
+              .str());
       llvm::LoadInst *value = builder.CreateLoad(
-          i64, address, llvm::formatv("rank.{0}.slot.{1}", rank, slot).str());
+          i64, address,
+          llvm::formatv("launch_slot.{0}.slot.{1}", launchSlot, slot).str());
       value->setAlignment(llvm::Align(8));
       arguments.push_back(value);
     }
@@ -338,14 +358,14 @@ llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
   const ExecutionConfig &config = targetLLVMModules.getExecutionConfig();
   const KernelRuntimeLaunchContract *kernel =
       targetLLVMModules.getRuntimeLaunchContract().getKernel();
-  if (!kernel || kernel->form == KernelLaunchForm::PerRank ||
-      (kernel->entryABI != KernelEntryABI::RankMajorPointerTable &&
-       kernel->entryABI != KernelEntryABI::RankRowPointerTable) ||
-      config.getRankCount() != kKernelAggregateRankCount ||
-      targetLLVMModules.getModules().size() != kKernelAggregateRankCount)
+  if (!kernel ||
+      (kernel->entryABI != KernelEntryABI::TileMajorPointerTable &&
+       kernel->entryABI != KernelEntryABI::TileRowPointerTable) ||
+      config.getPhysicalTileCount() != kKernelAggregateTileCount ||
+      targetLLVMModules.getModules().size() != kKernelAggregateTileCount)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "kernel target aggregation requires the complete typed 16-rank "
+        "kernel target aggregation requires the complete typed 16-Tile "
         "launch domain");
 
   const TargetLLVMModule &first = targetLLVMModules.getModules().front();
@@ -353,11 +373,11 @@ llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
                                    ? kTx81ClusterKernelArgumentBytesMax
                                    : kTx81KernelArgumentBytesMax;
   if (first.getKernelABISlots().empty() ||
-      (kernel->entryABI == KernelEntryABI::RankMajorPointerTable &&
+      (kernel->entryABI == KernelEntryABI::TileMajorPointerTable &&
        first.getKernelABISlots().size() >
-           packetBytes / sizeof(uint64_t) / kKernelAggregateRankCount) ||
-      (kernel->entryABI == KernelEntryABI::RankRowPointerTable &&
-       kKernelAggregateRankCount > packetBytes / sizeof(uint64_t)))
+           packetBytes / sizeof(uint64_t) / kKernelAggregateTileCount) ||
+      (kernel->entryABI == KernelEntryABI::TileRowPointerTable &&
+       kKernelAggregateTileCount > packetBytes / sizeof(uint64_t)))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "kernel aggregate argument packet exceeds the qualified V5.6 packet "
@@ -371,19 +391,29 @@ llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
         llvm::errc::invalid_argument,
         "kernel aggregate has more than one typed transport status slot");
 
-  auto context = std::make_unique<llvm::LLVMContext>();
-  auto aggregate =
-      std::make_unique<llvm::Module>("wafer.kernel.aggregate", *context);
-  aggregate->setTargetTriple(first.getModule().getTargetTriple());
-  aggregate->setDataLayout(first.getModule().getDataLayoutStr());
-  llvm::Linker linker(*aggregate);
-  std::vector<std::string> bodyNames;
-  bodyNames.reserve(kKernelAggregateRankCount);
-
-  for (int64_t rank = 0; rank < kKernelAggregateRankCount; ++rank) {
-    const TargetLLVMModule &source = targetLLVMModules.getModules()[rank];
-    if (source.getLogicalRank() != rank ||
-        source.getEntrySymbol() != first.getEntrySymbol() ||
+  std::optional<PhysicalCardId> physicalCardId;
+  std::set<int64_t> physicalTileIds;
+  std::vector<const TargetLLVMModule *> modulesByLaunchSlot(
+      kKernelAggregateTileCount, nullptr);
+  std::vector<int64_t> physicalTileIdsByLaunchSlot(kKernelAggregateTileCount,
+                                                   -1);
+  for (const TargetLLVMModule &source : targetLLVMModules.getModules()) {
+    if (!physicalCardId)
+      physicalCardId = source.getPhysicalCardId();
+    const int64_t launchSlot = source.getLaunchSlotId().getValue();
+    if (source.getPhysicalCardId() != *physicalCardId ||
+        source.getPhysicalCardId().getValue() < 0 ||
+        source.getPhysicalTileId().getValue() < 0 ||
+        source.getPhysicalTileId().getValue() >= kKernelAggregateTileCount ||
+        launchSlot < 0 ||
+        launchSlot >= kKernelAggregateTileCount ||
+        !physicalTileIds.insert(source.getPhysicalTileId().getValue()).second ||
+        modulesByLaunchSlot[launchSlot] != nullptr)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "kernel target aggregation has invalid or duplicate physical "
+          "identity");
+    if (source.getEntrySymbol() != first.getEntrySymbol() ||
         source.getTargetIdentityId() != first.getTargetIdentityId() ||
         source.getKernelRuntimeABIId() != first.getKernelRuntimeABIId() ||
         source.getModuleFormat() != first.getModuleFormat() ||
@@ -395,26 +425,47 @@ llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
                                  first.getKernelABISlots()))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "kernel target rank domain has inconsistent typed module facts");
+          "kernel target physical Tile domain has inconsistent typed module "
+          "facts");
+    modulesByLaunchSlot[launchSlot] = &source;
+    physicalTileIdsByLaunchSlot[launchSlot] =
+        source.getPhysicalTileId().getValue();
+  }
+  if (llvm::is_contained(modulesByLaunchSlot, nullptr))
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "kernel target launch-slot domain is not dense and complete");
+
+  auto context = std::make_unique<llvm::LLVMContext>();
+  auto aggregate =
+      std::make_unique<llvm::Module>("wafer.kernel.aggregate", *context);
+  aggregate->setTargetTriple(first.getModule().getTargetTriple());
+  aggregate->setDataLayout(first.getModule().getDataLayoutStr());
+  llvm::Linker linker(*aggregate);
+  std::vector<std::string> bodyNames(kKernelAggregateTileCount);
+
+  for (int64_t launchSlot = 0; launchSlot < kKernelAggregateTileCount;
+       ++launchSlot) {
+    const TargetLLVMModule &source = *modulesByLaunchSlot[launchSlot];
     if (llvm::Error error = validateLinkConstructs(source.getModule()))
       return std::move(error);
     llvm::Expected<std::unique_ptr<llvm::Module>> imported = importIntoContext(
-        source.getModule(), *context, source.getLogicalRank());
+        source.getModule(), *context, source.getLaunchSlotId());
     if (!imported)
       return imported.takeError();
-    stripRankMetadata(**imported);
-    llvm::Expected<std::string> bodyName = scopeRankDefinitions(
-        **imported, source.getLogicalRank(), source.getEntrySymbol());
+    stripTileMetadata(**imported);
+    llvm::Expected<std::string> bodyName = scopeLaunchSlotDefinitions(
+        **imported, source.getLaunchSlotId(), source.getEntrySymbol());
     if (!bodyName)
       return bodyName.takeError();
-    bodyNames.push_back(std::move(*bodyName));
+    bodyNames[launchSlot] = std::move(*bodyName);
     (*imported)->setModuleIdentifier(
-        llvm::formatv("wafer.kernel.rank.{0:D5}", rank).str());
+        llvm::formatv("wafer.kernel.launch_slot.{0:D5}", launchSlot).str());
     (*imported)->setSourceFileName("");
     if (linker.linkInModule(std::move(*imported)))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "kernel target rank modules could not be linked into one closed "
+          "kernel target launch-slot modules could not be linked into one closed "
           "module");
   }
 
@@ -423,7 +474,8 @@ llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
       targetLLVMModules.getRuntimeLaunchContract().getPhases(),
       RuntimeLaunchPhaseRole::Prepare);
   if (llvm::Error error = createKernelAggregateExports(
-          *aggregate, bodyNames, first.getEntrySymbol(),
+          *aggregate, bodyNames, physicalTileIdsByLaunchSlot,
+          first.getEntrySymbol(),
           first.getKernelABISlots().size(), kernel->entryABI, hasPrepare))
     return std::move(error);
   return OwnedTargetLLVMModule{std::move(context), std::move(aggregate)};

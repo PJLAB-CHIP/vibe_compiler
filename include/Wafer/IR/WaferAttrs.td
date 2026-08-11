@@ -144,65 +144,24 @@ def Wafer_DDROffsetAttr : AttrDef<Wafer_Dialect, "DDROffset"> {
   let assemblyFormat = "`<` $offset `>`";
 }
 
-def Wafer_DTEProtocolPhaseCollectivePermute
-    : I32EnumAttrCase<"CollectivePermute", 0, "collective_permute">;
-def Wafer_DTEProtocolPhaseAllToAll
-    : I32EnumAttrCase<"AllToAll", 1, "all_to_all">;
-def Wafer_DTEProtocolPhaseAllGatherDirect
-    : I32EnumAttrCase<"AllGatherDirect", 2, "all_gather_direct">;
-def Wafer_DTEProtocolPhaseAllGatherRing
-    : I32EnumAttrCase<"AllGatherRing", 3, "all_gather_ring">;
-def Wafer_DTEProtocolPhaseReduceScatterDirect
-    : I32EnumAttrCase<"ReduceScatterDirect", 4, "reduce_scatter_direct">;
-def Wafer_DTEProtocolPhaseAllReduceRing
-    : I32EnumAttrCase<"AllReduceRing", 5, "all_reduce_ring">;
-def Wafer_DTEProtocolPhaseAllReduceTreeReduce
-    : I32EnumAttrCase<"AllReduceTreeReduce", 6, "all_reduce_tree_reduce">;
-def Wafer_DTEProtocolPhaseAllReduceTreeBroadcast
-    : I32EnumAttrCase<"AllReduceTreeBroadcast", 7,
-                      "all_reduce_tree_broadcast">;
-def Wafer_DTEProtocolPhaseReduceScatterRing
-    : I32EnumAttrCase<"ReduceScatterRing", 8, "reduce_scatter_ring">;
-def Wafer_DTEProtocolPhasePeerDataflow
-    : I32EnumAttrCase<"PeerDataflow", 9, "peer_dataflow">;
-def Wafer_DTEProtocolPhase
-    : I32EnumAttr<"DTEProtocolPhase",
-                  "Wafer logical Direct DTE protocol phase", [
-  Wafer_DTEProtocolPhaseCollectivePermute,
-  Wafer_DTEProtocolPhaseAllToAll,
-  Wafer_DTEProtocolPhaseAllGatherDirect,
-  Wafer_DTEProtocolPhaseAllGatherRing,
-  Wafer_DTEProtocolPhaseReduceScatterDirect,
-  Wafer_DTEProtocolPhaseAllReduceRing,
-  Wafer_DTEProtocolPhaseAllReduceTreeReduce,
-  Wafer_DTEProtocolPhaseAllReduceTreeBroadcast,
-  Wafer_DTEProtocolPhaseReduceScatterRing,
-  Wafer_DTEProtocolPhasePeerDataflow
-]> {
-  let cppNamespace = "::wafer";
-  let genSpecializedAttr = 0;
-}
-
 def Wafer_DTEMessageAttr : AttrDef<Wafer_Dialect, "DTEMessage"> {
   let mnemonic = "dte_message";
   let summary = "Stable logical identity for a Direct DTE message";
   let description = [{
     Identifies one logical fixed-size unicast message without relying on op
     order, symbol names, buffers, or physical transport resources.
-    `communication_id` is the source collective channel identity; `phase`,
-    `round`, and `payload_slice` are derived from the selected protocol.
+    `communication_id`, `round`, and `payload_slice` are assigned by the
+    selected physical peer-dataflow plan.
     Physical endpoint, DTE allocation, FSM, and completion choices do not
     belong to this attribute.
   }];
   let parameters = (ins
     "int64_t":$communicationId,
-    "wafer::DTEProtocolPhase":$phase,
     "int64_t":$round,
     "int64_t":$payloadSlice
   );
   let assemblyFormat = [{
     `<` `communication` `=` $communicationId `,`
-        `phase` `=` $phase `,`
         `round` `=` $round `,`
         `slice` `=` $payloadSlice `>`
   }];
@@ -258,7 +217,7 @@ def Wafer_DirectDTEBindingAttr
     issue, the exact execution mesh, and accepted memory offsets. The public
     Direct DTE ABI selects an allocation profile rather than an exact DTE id,
     so this attribute does not invent a channel id. The remote receiver offset
-    is the cross-rank accepted memory fact that a rank-local sender cannot
+    is the cross-Tile accepted memory fact that a Tile-local sender cannot
     recompute after executable modules are separated. It is either one
     absolute remote SPM offset, a source-relative displacement proven across
     corresponding rotating slot families, or a compact periodic table indexed

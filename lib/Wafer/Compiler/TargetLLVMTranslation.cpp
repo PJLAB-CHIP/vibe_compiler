@@ -32,7 +32,12 @@ namespace {
 
 constexpr llvm::StringLiteral kTargetLLVMTriple = "riscv64-unknown-unknown-elf";
 constexpr llvm::StringLiteral kTargetLLVMSchemaMetadata = "wafer.target.schema";
-constexpr llvm::StringLiteral kTargetLLVMRankMetadata = "wafer.target.rank";
+constexpr llvm::StringLiteral kTargetLLVMCardIdMetadata =
+    "wafer.target.card_id";
+constexpr llvm::StringLiteral kTargetLLVMTileIdMetadata =
+    "wafer.target.tile_id";
+constexpr llvm::StringLiteral kTargetLLVMLaunchSlotMetadata =
+    "wafer.target.launch_slot";
 constexpr llvm::StringLiteral kTargetLLVMEntryMetadata = "wafer.target.entry";
 constexpr llvm::StringLiteral kTargetLLVMIdentityMetadata =
     "wafer.target.identity";
@@ -41,7 +46,7 @@ constexpr llvm::StringLiteral kTargetLLVMFormatMetadata =
     "wafer.target.module_format";
 constexpr llvm::StringLiteral kTargetLLVMSlotsMetadata =
     "wafer.target.abi_slots";
-constexpr llvm::StringLiteral kTargetLLVMSchema = "wafer-target-llvm-module-v3";
+constexpr llvm::StringLiteral kTargetLLVMSchema = "wafer-target-llvm-module-v4";
 
 llvm::StringRef stringifyKernelABISlotRole(KernelABISlotRole role) {
   switch (role) {
@@ -82,10 +87,15 @@ void addSignedMetadata(llvm::Module &module, llvm::StringRef name,
 }
 
 void attachTargetLLVMMetadata(llvm::Module &module,
-                              const PreparedTargetRank &prepared,
+                              const PreparedPhysicalTile &prepared,
                               llvm::StringRef entrySymbol) {
   addStringMetadata(module, kTargetLLVMSchemaMetadata, kTargetLLVMSchema);
-  addSignedMetadata(module, kTargetLLVMRankMetadata, prepared.logicalRank);
+  addSignedMetadata(module, kTargetLLVMCardIdMetadata,
+                    prepared.physicalCardId.getValue());
+  addSignedMetadata(module, kTargetLLVMTileIdMetadata,
+                    prepared.physicalTileId.getValue());
+  addSignedMetadata(module, kTargetLLVMLaunchSlotMetadata,
+                    prepared.launchSlotId.getValue());
   addStringMetadata(module, kTargetLLVMEntryMetadata, entrySymbol);
   addStringMetadata(module, kTargetLLVMIdentityMetadata,
                     stringifyTargetIdentityId(prepared.targetIdentity));
@@ -263,7 +273,10 @@ verifyTargetLLVMSlotMetadata(const llvm::Module &module,
 } // namespace
 
 llvm::Error
-verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
+verifyTargetLLVMModule(const llvm::Module &module,
+                       PhysicalCardId expectedPhysicalCardId,
+                       PhysicalTileId expectedPhysicalTileId,
+                       LaunchSlotId expectedLaunchSlotId,
                        llvm::StringRef expectedEntrySymbol,
                        TargetIdentityId expectedTargetIdentity,
                        KernelRuntimeABIId expectedKernelRuntimeABI,
@@ -276,11 +289,16 @@ verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
                                    "target LLVM module verification failed: %s",
                                    verifierOutput.c_str());
   std::string expectedIdentifier =
-      llvm::formatv("wafer.target.rank.{0:D5}", expectedLogicalRank).str();
+      llvm::formatv("wafer.target.card.{0}.tile.{1:D5}.launch.{2:D5}",
+                    expectedPhysicalCardId.getValue(),
+                    expectedPhysicalTileId.getValue(),
+                    expectedLaunchSlotId.getValue())
+          .str();
   if (module.getModuleIdentifier() != expectedIdentifier)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "target LLVM module identifier does not match logical rank");
+        "target LLVM module identifier does not match its physical Tile and "
+        "launch slot");
   if (module.getTargetTriple() != kTargetLLVMTriple)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
@@ -290,10 +308,18 @@ verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
       readSingleStringMetadata(module, kTargetLLVMSchemaMetadata);
   if (!schema)
     return schema.takeError();
-  llvm::Expected<int64_t> logicalRank =
-      readSingleSignedMetadata(module, kTargetLLVMRankMetadata);
-  if (!logicalRank)
-    return logicalRank.takeError();
+  llvm::Expected<int64_t> physicalCardId =
+      readSingleSignedMetadata(module, kTargetLLVMCardIdMetadata);
+  if (!physicalCardId)
+    return physicalCardId.takeError();
+  llvm::Expected<int64_t> physicalTileId =
+      readSingleSignedMetadata(module, kTargetLLVMTileIdMetadata);
+  if (!physicalTileId)
+    return physicalTileId.takeError();
+  llvm::Expected<int64_t> launchSlot =
+      readSingleSignedMetadata(module, kTargetLLVMLaunchSlotMetadata);
+  if (!launchSlot)
+    return launchSlot.takeError();
   llvm::Expected<llvm::StringRef> entrySymbol =
       readSingleStringMetadata(module, kTargetLLVMEntryMetadata);
   if (!entrySymbol)
@@ -318,13 +344,17 @@ verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
       parseKernelRuntimeABIId(*abiSpelling);
   if (!abi)
     return abi.takeError();
-  if (*schema != kTargetLLVMSchema || *logicalRank != expectedLogicalRank ||
+  if (*schema != kTargetLLVMSchema ||
+      *physicalCardId != expectedPhysicalCardId.getValue() ||
+      *physicalTileId != expectedPhysicalTileId.getValue() ||
+      *launchSlot != expectedLaunchSlotId.getValue() ||
       *entrySymbol != expectedEntrySymbol ||
       *identity != expectedTargetIdentity || *abi != expectedKernelRuntimeABI ||
       *moduleFormat != expectedModuleFormat)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "target LLVM module metadata does not match the typed rank identity");
+        "target LLVM module metadata does not match the typed physical Tile "
+        "identity");
 
   const llvm::Function *entry = module.getFunction(expectedEntrySymbol);
   if (!entry || entry->isDeclaration() || !entry->hasExternalLinkage())
@@ -344,10 +374,11 @@ verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
   return verifyTargetLLVMSlotMetadata(module, expectedSlots);
 }
 
-mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared) {
+mlir::LogicalResult lowerToTargetLLVM(PreparedPhysicalTile &prepared) {
   TargetConversionRequest request{};
   request.defaultDDRArenaArgumentIndex = prepared.defaultDDRArenaArgumentIndex;
-  request.logicalRank = prepared.logicalRank;
+  request.physicalCardId = prepared.physicalCardId.getValue();
+  request.physicalTileId = prepared.physicalTileId.getValue();
   request.transportStatusArgumentIndex = prepared.transportStatusArgumentIndex;
   request.transportPreparedBeforeEntry = prepared.transportPreparedBeforeEntry;
   request.profileRecordArgumentIndex = prepared.profileRecordArgumentIndex;
@@ -357,7 +388,7 @@ mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared) {
   return manager.run(*prepared.module);
 }
 
-mlir::LogicalResult verifyLoweredKernelABI(PreparedTargetRank &prepared,
+mlir::LogicalResult verifyLoweredKernelABI(PreparedPhysicalTile &prepared,
                                            llvm::StringRef entrySymbol) {
   auto entry =
       prepared.module->lookupSymbol<mlir::LLVM::LLVMFuncOp>(entrySymbol);
@@ -378,29 +409,35 @@ mlir::LogicalResult verifyLoweredKernelABI(PreparedTargetRank &prepared,
 }
 
 llvm::Expected<TargetLLVMModule>
-translatePreparedTargetRank(PreparedTargetRank prepared,
-                            llvm::StringRef entrySymbol) {
+translatePreparedPhysicalTile(PreparedPhysicalTile prepared,
+                              llvm::StringRef entrySymbol) {
   auto llvmContext = std::make_unique<llvm::LLVMContext>();
   std::unique_ptr<llvm::Module> llvmModule = mlir::translateModuleToLLVMIR(
-      *prepared.module, *llvmContext, "wafer_target_rank");
+      *prepared.module, *llvmContext, "wafer_target_physical_tile");
   if (!llvmModule)
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "target LLVM IR translation failed");
   llvmModule->setModuleIdentifier(
-      llvm::formatv("wafer.target.rank.{0:D5}", prepared.logicalRank).str());
+      llvm::formatv("wafer.target.card.{0}.tile.{1:D5}.launch.{2:D5}",
+                    prepared.physicalCardId.getValue(),
+                    prepared.physicalTileId.getValue(),
+                    prepared.launchSlotId.getValue())
+          .str());
   llvmModule->setTargetTriple(kTargetLLVMTriple);
   if (llvm::Error error = instrumentProfileTargetModule(
           *llvmModule, entrySymbol, prepared.profileCapture))
     return std::move(error);
   attachTargetLLVMMetadata(*llvmModule, prepared, entrySymbol);
   if (llvm::Error error = verifyTargetLLVMModule(
-          *llvmModule, prepared.logicalRank, entrySymbol,
+          *llvmModule, prepared.physicalCardId, prepared.physicalTileId,
+          prepared.launchSlotId, entrySymbol,
           prepared.targetIdentity, prepared.kernelRuntimeABI,
           prepared.moduleFormat, prepared.slots))
     return std::move(error);
   return TargetLLVMModuleBundleBuilder::makeModule(
-      prepared.logicalRank, entrySymbol, prepared.targetIdentity,
-      prepared.kernelRuntimeABI, prepared.moduleFormat,
+      prepared.physicalCardId, prepared.physicalTileId, prepared.launchSlotId,
+      entrySymbol, prepared.targetIdentity, prepared.kernelRuntimeABI,
+      prepared.moduleFormat,
       std::move(prepared.slots), std::move(llvmContext),
       std::move(llvmModule));
 }

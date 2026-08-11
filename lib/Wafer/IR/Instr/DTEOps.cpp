@@ -16,8 +16,8 @@ namespace {
 
 static mlir::LogicalResult verifyDTEPeer(mlir::Operation *op,
                                          mlir::IntegerAttr peerAttr) {
-  return verifyLogicalRankWithinExecutionMesh(op, peerAttr.getInt(),
-                                              "DTE peer logical rank");
+  return verifyPhysicalTileIdWithinTopology(op, peerAttr.getInt(),
+                                            "DTE peer tile_id");
 }
 
 } // namespace

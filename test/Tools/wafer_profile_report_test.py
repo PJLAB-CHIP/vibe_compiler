@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""No-card tests for final-artifact profile analysis and offline HTML."""
+"""No-card tests for production-artifact profile analysis and offline HTML."""
 
 from __future__ import annotations
 
@@ -87,8 +87,12 @@ def _test_final_artifact(module: object) -> None:
     first = module.analyze_evidence(evidence)
     second = module.analyze_evidence(copy.deepcopy(evidence))
     assert first == second
-    assert first["schema_version"] == 8
+    assert first["schema_version"] == 9
     assert first["record_abi"] == "wafer-tx81-profiler-record-v4"
+
+    permuted = make_evidence(permute_bindings=True)
+    module.validate_evidence(permuted)
+    assert module.analyze_evidence(permuted)["schema_version"] == 9
 
     final = first["final_artifact"]
     duration = final["duration"]
@@ -151,7 +155,10 @@ def _test_final_artifact(module: object) -> None:
     }
     hardware = final["hardware_cost_analysis"]
     assert hardware["model"] == "tx81-static-peak-lower-bound-v1"
-    assert hardware["scope"] == "complete-final-instruction-program-per-rank"
+    assert (
+        hardware["scope"]
+        == "complete-final-instruction-program-per-physical-tile"
+    )
     assert hardware["source"] == "compiler-static-final-instruction-program"
     assert hardware["relation_to_primary"] == "non-additive-model-reference"
     assert not hardware["additive_to_primary"]
@@ -192,7 +199,7 @@ def _test_final_artifact(module: object) -> None:
         1_280 * 16
     )
     assert hardware_by_engine["DIRECT_DTE"]["estimated_scope"] == (
-        "average-per-rank-single-link-payload-reference"
+        "average-per-tile-single-link-payload-reference"
     )
     assert hardware_by_engine["DIRECT_DTE"]["estimated_ns"] == 10.0
     assert hardware_by_engine["DIRECT_DTE"]["floor_ns"] is None
@@ -1251,26 +1258,42 @@ def _test_rejections(module: object) -> None:
     old_companion["identity"]["profile_companion_schema_version"] = 2
     _must_reject(module, old_companion, "profile_companion_schema_version")
 
+    inconsistent_binding = make_evidence(permute_bindings=True)
+    inconsistent_binding["experiment"]["clock"][0]["launch_slot"] = 0
+    inconsistent_binding["experiment"]["clock"][1]["launch_slot"] = 1
+    _must_reject(
+        module,
+        inconsistent_binding,
+        "explicit topology physical-Tile binding",
+    )
+
     wrong_static_scope = make_evidence()
     wrong_static_scope["static_cost_model"]["scope"] = "some-program"
     _must_reject(
         module,
         wrong_static_scope,
-        "complete-final-instruction-program-per-rank",
+        "complete-final-instruction-program-per-physical-tile",
     )
 
     invalid_overflow_reason = make_evidence()
-    overflow_metric = invalid_overflow_reason["static_cost_model"]["ranks"][0][
+    overflow_metric = invalid_overflow_reason["static_cost_model"]["tiles"][0][
         "work"
     ]["ddr_read_bytes"]
     overflow_metric.update(
         {
             "knowledge": "overflow",
             "value": None,
-            "reason": "unknown-resource-bytes",
+            "reason": "unavailable-resource-bytes",
         }
     )
     _must_reject(module, invalid_overflow_reason, "overflow metrics")
+
+    retired_unknown_cost = make_evidence()
+    retired_metric = retired_unknown_cost["static_cost_model"]["tiles"][0][
+        "work"
+    ]["directional_noc_transmit_bytes"]["north"]
+    retired_metric["knowledge"] = "unknown"
+    _must_reject(module, retired_unknown_cost, "knowledge")
 
     duplicate = make_evidence()
     duplicate["measurement"]["samples"].append(
@@ -1470,7 +1493,7 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
         analysis = json.loads(
             analysis_path.read_text(encoding="utf-8")
         )
-        assert analysis["schema_version"] == 8
+        assert analysis["schema_version"] == 9
         assert analysis["final_artifact"]["duration"]["qualified"]
 
         command = [
@@ -1489,12 +1512,12 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
             encoding="utf-8"
         )
     )
-    assert schema["properties"]["schema_version"]["const"] == 9
+    assert schema["properties"]["schema_version"]["const"] == 10
     assert (
         schema["$defs"]["sharedIdentity"]["properties"][
             "profile_companion_schema_version"
         ]["const"]
-        == 6
+        == 9
     )
     assert "experiment" in schema["required"]
     assert "static_cost_model" in schema["required"]
@@ -1529,11 +1552,17 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
         == "tx81-static-peak-lower-bound-v1"
     )
     assert static_model["properties"]["scope"]["const"] == (
-        "complete-final-instruction-program-per-rank"
+        "complete-final-instruction-program-per-physical-tile"
     )
-    assert static_model["properties"]["ranks"]["minItems"] == 16
+    assert static_model["properties"]["tiles"]["minItems"] == 16
     static_metric = schema["$defs"]["staticCostMetric"]
     assert set(static_metric["required"]) == {"knowledge", "value", "reason"}
+    assert set(static_metric["properties"]["knowledge"]["enum"]) == {
+        "known",
+        "unavailable",
+        "unsupported",
+        "overflow",
+    }
     assert (
         schema["$defs"]["sharedIdentity"]["properties"]["record_abi"]["const"]
         == "wafer-tx81-profiler-record-v4"

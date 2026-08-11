@@ -18,7 +18,7 @@
 
 namespace wafer::model {
 
-enum class TargetModelAddressSpace : uint8_t { RankSPM, CardDDR };
+enum class TargetModelAddressSpace : uint8_t { TileSPM, CardDDR };
 enum class TargetModelAccess : uint8_t { Read, Write, ReadWrite };
 
 enum class TargetModelMemoryErrorCode : uint8_t {
@@ -55,30 +55,62 @@ private:
   std::string detail;
 };
 
-/// Initial contents for one read-only model input resource. Bindings are
-/// keyed by ABI identity, never by a resource name or host pointer.
+/// Invocation-local physical allocation identity. Program-boundary resources
+/// are owned by the card and therefore omit physicalTileId. Compiler-managed
+/// workspace and transport status are owned by one physical Tile. Role and
+/// resourceIndex are the typed ABI identity; names never participate.
+struct TargetModelResourceId {
+  PhysicalCardId physicalCardId{0};
+  std::optional<PhysicalTileId> physicalTileId;
+  compiler::KernelABISlotRole role = compiler::KernelABISlotRole::UserInput;
+  int64_t resourceIndex = -1;
+
+  friend bool operator==(const TargetModelResourceId &lhs,
+                         const TargetModelResourceId &rhs) {
+    return lhs.physicalCardId == rhs.physicalCardId &&
+           lhs.physicalTileId == rhs.physicalTileId && lhs.role == rhs.role &&
+           lhs.resourceIndex == rhs.resourceIndex;
+  }
+  friend bool operator!=(const TargetModelResourceId &lhs,
+                         const TargetModelResourceId &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// Derives allocation identity from typed physical ownership and Kernel ABI
+/// facts. User input, parameter, constant and output slots are card-owned;
+/// workspace and transport status slots are Tile-owned.
+TargetModelResourceId getTargetModelResourceId(PhysicalCardId physicalCardId,
+                                               PhysicalTileId physicalTileId,
+                                               compiler::KernelABISlotRole role,
+                                               int64_t resourceIndex);
+
+/// Initial contents for one read-only model allocation. There is exactly one
+/// binding for a card-shared input resource, regardless of how many Tile ABI
+/// slots reference it. Bytes never alias caller storage.
 struct TargetModelInputBinding {
-  int64_t logicalRank = -1;
-  int64_t slotOrdinal = -1;
+  TargetModelResourceId resource;
   std::vector<uint8_t> bytes;
 };
 
 struct TargetModelPlannedSlot {
-  int64_t logicalRank = -1;
+  int64_t launchSlot = -1;
   int64_t slotOrdinal = -1;
   compiler::KernelABISlotRole role = compiler::KernelABISlotRole::UserInput;
   int64_t resourceIndex = -1;
+  TargetModelResourceId resource;
   uint64_t base = 0;
   uint64_t byteSize = 0;
   uint64_t alignment = 0;
 };
 
 /// A checked range identity. regionOffset is relative either to the private
-/// per-rank SPM planned window or to one exact DDR ABI slot.
+/// per-Tile SPM planned window or to one exact DDR ABI slot.
 struct TargetModelResolvedRange {
-  int64_t logicalRank = -1;
-  TargetModelAddressSpace addressSpace = TargetModelAddressSpace::RankSPM;
+  int64_t launchSlot = -1;
+  TargetModelAddressSpace addressSpace = TargetModelAddressSpace::TileSPM;
   std::optional<int64_t> slotOrdinal;
+  std::optional<TargetModelResourceId> resource;
   uint64_t regionOffset = 0;
   uint64_t byteCount = 0;
 };
@@ -97,41 +129,38 @@ public:
          llvm::ArrayRef<TargetModelInputBinding> inputBindings);
 
   TargetIdentityId getTargetIdentity() const { return targetIdentity; }
-  llvm::ArrayRef<int64_t> getLogicalRanks() const { return logicalRanks; }
+  llvm::ArrayRef<int64_t> getLaunchSlots() const { return launchSlots; }
   llvm::ArrayRef<TargetModelPlannedSlot> getSlots() const { return slots; }
   uint64_t getSPMBase() const { return spmBase; }
   uint64_t getSPMLimit() const { return spmLimit; }
 
   llvm::Expected<TargetModelResolvedRange>
-  resolve(int64_t logicalRank, TargetModelAddressSpace addressSpace,
+  resolve(int64_t launchSlot, TargetModelAddressSpace addressSpace,
           TargetModelAccess access, uint64_t address, uint64_t byteCount,
           uint64_t requiredAlignment) const;
 
 private:
-  struct InitialSlotStorage {
-    int64_t logicalRank = -1;
-    int64_t slotOrdinal = -1;
+  struct InitialResourceStorage {
+    TargetModelResourceId resource;
     std::vector<uint8_t> bytes;
   };
 
   InvocationAddressPlan(TargetIdentityId targetIdentity,
-                        std::vector<int64_t> logicalRanks,
+                        std::vector<int64_t> launchSlots,
                         std::vector<TargetModelPlannedSlot> slots,
-                        std::vector<InitialSlotStorage> initialStorage,
+                        std::vector<InitialResourceStorage> initialStorage,
                         uint64_t spmBase, uint64_t spmLimit)
-      : targetIdentity(targetIdentity), logicalRanks(std::move(logicalRanks)),
+      : targetIdentity(targetIdentity), launchSlots(std::move(launchSlots)),
         slots(std::move(slots)), initialStorage(std::move(initialStorage)),
         spmBase(spmBase), spmLimit(spmLimit) {}
 
-  const TargetModelPlannedSlot *findSlot(int64_t logicalRank,
+  const TargetModelPlannedSlot *findSlot(int64_t launchSlot,
                                          int64_t slotOrdinal) const;
-  const InitialSlotStorage *findInitialStorage(int64_t logicalRank,
-                                               int64_t slotOrdinal) const;
 
   TargetIdentityId targetIdentity;
-  std::vector<int64_t> logicalRanks;
+  std::vector<int64_t> launchSlots;
   std::vector<TargetModelPlannedSlot> slots;
-  std::vector<InitialSlotStorage> initialStorage;
+  std::vector<InitialResourceStorage> initialStorage;
   uint64_t spmBase;
   uint64_t spmLimit;
 
@@ -151,16 +180,16 @@ struct TargetModelStridedByteLayout {
 /// NCC completion is published. A strided layout describes the addressed
 /// segments; byteCount is the compact payload size.
 struct TargetModelByteRead {
-  int64_t logicalRank = -1;
-  TargetModelAddressSpace addressSpace = TargetModelAddressSpace::RankSPM;
+  int64_t launchSlot = -1;
+  TargetModelAddressSpace addressSpace = TargetModelAddressSpace::TileSPM;
   uint64_t address = 0;
   uint64_t byteCount = 0;
   std::optional<TargetModelStridedByteLayout> stridedLayout;
 };
 
 struct TargetModelByteWrite {
-  int64_t logicalRank = -1;
-  TargetModelAddressSpace addressSpace = TargetModelAddressSpace::RankSPM;
+  int64_t launchSlot = -1;
+  TargetModelAddressSpace addressSpace = TargetModelAddressSpace::TileSPM;
   uint64_t address = 0;
   uint64_t requiredAlignment = 1;
   std::vector<uint8_t> bytes;
@@ -183,14 +212,14 @@ public:
   const InvocationAddressPlan &getAddressPlan() const { return plan; }
 
   llvm::Expected<std::vector<uint8_t>>
-  readSnapshot(int64_t logicalRank, TargetModelAddressSpace addressSpace,
+  readSnapshot(int64_t launchSlot, TargetModelAddressSpace addressSpace,
                uint64_t address, uint64_t byteCount,
                uint64_t requiredAlignment) const;
 
   /// Returns one compact payload in descriptor iteration order. Repeated or
   /// overlapping source segments are legal and are snapshotted independently.
   llvm::Expected<std::vector<uint8_t>>
-  readStridedSnapshot(int64_t logicalRank, TargetModelAddressSpace addressSpace,
+  readStridedSnapshot(int64_t launchSlot, TargetModelAddressSpace addressSpace,
                       uint64_t address,
                       const TargetModelStridedByteLayout &layout,
                       uint64_t requiredAlignment) const;
@@ -199,33 +228,33 @@ public:
   applyAtomically(llvm::ArrayRef<TargetModelByteWrite> pendingWrites);
 
   llvm::Expected<std::vector<uint8_t>>
-  readSlotSnapshot(int64_t logicalRank, int64_t slotOrdinal) const;
+  readSlotSnapshot(int64_t launchSlot, int64_t slotOrdinal) const;
 
 private:
-  struct RankSPMStorage {
-    int64_t logicalRank = -1;
+  struct TileSPMStorage {
+    int64_t launchSlot = -1;
     std::vector<uint8_t> bytes;
   };
-  struct SlotStorage {
-    int64_t logicalRank = -1;
-    int64_t slotOrdinal = -1;
+  struct ResourceStorage {
+    TargetModelResourceId resource;
     std::vector<uint8_t> bytes;
   };
 
   InvocationMemoryRegistry(InvocationAddressPlan plan,
-                           std::vector<RankSPMStorage> spmStorage,
-                           std::vector<SlotStorage> slotStorage)
+                           std::vector<TileSPMStorage> spmStorage,
+                           std::vector<ResourceStorage> resourceStorage)
       : plan(std::move(plan)), spmStorage(std::move(spmStorage)),
-        slotStorage(std::move(slotStorage)) {}
+        resourceStorage(std::move(resourceStorage)) {}
 
-  RankSPMStorage *findSPM(int64_t logicalRank);
-  const RankSPMStorage *findSPM(int64_t logicalRank) const;
-  SlotStorage *findSlot(int64_t logicalRank, int64_t slotOrdinal);
-  const SlotStorage *findSlot(int64_t logicalRank, int64_t slotOrdinal) const;
+  TileSPMStorage *findSPM(int64_t launchSlot);
+  const TileSPMStorage *findSPM(int64_t launchSlot) const;
+  ResourceStorage *findResource(const TargetModelResourceId &resource);
+  const ResourceStorage *
+  findResource(const TargetModelResourceId &resource) const;
 
   InvocationAddressPlan plan;
-  std::vector<RankSPMStorage> spmStorage;
-  std::vector<SlotStorage> slotStorage;
+  std::vector<TileSPMStorage> spmStorage;
+  std::vector<ResourceStorage> resourceStorage;
 };
 
 } // namespace wafer::model

@@ -51,7 +51,7 @@ prepareBoardInvocationFiles(const PackageManifest &manifest,
                                 {});
 
 /// Rebinds one already prepared user invocation to another verified package
-/// using the stable `(logical_rank, role, role_index)` resource identity.
+/// using the stable `(scope, role, role_index)` resource identity.
 /// Every host-visible resource contract must match exactly; internal
 /// workspaces are intentionally outside this user-I/O projection.
 llvm::Expected<BoardInvocationFilePlan>

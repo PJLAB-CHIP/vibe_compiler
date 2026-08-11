@@ -28,16 +28,13 @@ bool hasPhases(llvm::ArrayRef<RuntimeLaunchPhaseRole> actual,
 llvm::Expected<RuntimeLaunchContract> RuntimeLaunchContract::createKernel(
     KernelLaunchForm form, KernelEntryABI entryABI,
     llvm::ArrayRef<RuntimeLaunchPhaseRole> phases) {
-  const bool valid = (form == KernelLaunchForm::PerRank &&
-                      entryABI == KernelEntryABI::RankLocalPointerBlock &&
-                      hasPhases(phases, {RuntimeLaunchPhaseRole::Main})) ||
-                     (form == KernelLaunchForm::Grid &&
-                      (entryABI == KernelEntryABI::RankMajorPointerTable ||
-                       entryABI == KernelEntryABI::RankRowPointerTable) &&
+  const bool valid = (form == KernelLaunchForm::Grid &&
+                      (entryABI == KernelEntryABI::TileMajorPointerTable ||
+                       entryABI == KernelEntryABI::TileRowPointerTable) &&
                       hasPhases(phases, {RuntimeLaunchPhaseRole::Main})) ||
                      (form == KernelLaunchForm::Cluster &&
-                      (entryABI == KernelEntryABI::RankMajorPointerTable ||
-                       entryABI == KernelEntryABI::RankRowPointerTable) &&
+                      (entryABI == KernelEntryABI::TileMajorPointerTable ||
+                       entryABI == KernelEntryABI::TileRowPointerTable) &&
                       hasPhases(phases, {RuntimeLaunchPhaseRole::Prepare,
                                          RuntimeLaunchPhaseRole::Main}));
   if (!valid)
@@ -119,8 +116,6 @@ parseRuntimeLaunchKind(llvm::StringRef canonicalSpelling) {
 
 llvm::StringRef stringifyKernelLaunchForm(KernelLaunchForm form) {
   switch (form) {
-  case KernelLaunchForm::PerRank:
-    return "per-rank";
   case KernelLaunchForm::Grid:
     return "grid";
   case KernelLaunchForm::Cluster:
@@ -131,8 +126,6 @@ llvm::StringRef stringifyKernelLaunchForm(KernelLaunchForm form) {
 
 llvm::Expected<KernelLaunchForm>
 parseKernelLaunchForm(llvm::StringRef canonicalSpelling) {
-  if (canonicalSpelling == "per-rank")
-    return KernelLaunchForm::PerRank;
   if (canonicalSpelling == "grid")
     return KernelLaunchForm::Grid;
   if (canonicalSpelling == "cluster")
@@ -143,24 +136,20 @@ parseKernelLaunchForm(llvm::StringRef canonicalSpelling) {
 
 llvm::StringRef stringifyKernelEntryABI(KernelEntryABI entryABI) {
   switch (entryABI) {
-  case KernelEntryABI::RankLocalPointerBlock:
-    return "rank-local-pointer-block";
-  case KernelEntryABI::RankMajorPointerTable:
-    return "rank-major-pointer-table";
-  case KernelEntryABI::RankRowPointerTable:
-    return "rank-row-pointer-table";
+  case KernelEntryABI::TileMajorPointerTable:
+    return "tile-major-pointer-table";
+  case KernelEntryABI::TileRowPointerTable:
+    return "tile-row-pointer-table";
   }
   llvm_unreachable("unknown kernel entry ABI");
 }
 
 llvm::Expected<KernelEntryABI>
 parseKernelEntryABI(llvm::StringRef canonicalSpelling) {
-  if (canonicalSpelling == "rank-local-pointer-block")
-    return KernelEntryABI::RankLocalPointerBlock;
-  if (canonicalSpelling == "rank-major-pointer-table")
-    return KernelEntryABI::RankMajorPointerTable;
-  if (canonicalSpelling == "rank-row-pointer-table")
-    return KernelEntryABI::RankRowPointerTable;
+  if (canonicalSpelling == "tile-major-pointer-table")
+    return KernelEntryABI::TileMajorPointerTable;
+  if (canonicalSpelling == "tile-row-pointer-table")
+    return KernelEntryABI::TileRowPointerTable;
   return invalidValue<KernelEntryABI>("kernel entry ABI", canonicalSpelling);
 }
 

@@ -45,6 +45,8 @@ std::vector<uint8_t> makeRecord(uint32_t tile, bool trace = true) {
                  WAFER_TX81_PROFILER_RECORD_PUBLISHED;
   if (trace)
     header.flags |= WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED;
+  else
+    header.flags |= WAFER_TX81_PROFILER_RECORD_COUNT_ONLY;
   header.trace_state = WAFER_TX81_PROFILER_TRACE_COMPLETE;
   header.event_capacity = (bytes.size() - WAFER_TX81_PROFILER_HEADER_BYTES -
                            WAFER_TX81_PROFILER_BUFFER_GUARD_BYTES) /
@@ -176,7 +178,6 @@ TEST(ProfilerRecordTest, CountOnlyCarriesRequiredCapacityWithoutEvents) {
   std::vector<uint8_t> bytes = makeRecord(0, /*trace=*/false);
   auto *header =
       reinterpret_cast<WaferTx81ProfilerRecordHeader *>(bytes.data());
-  header->flags |= WAFER_TX81_PROFILER_RECORD_COUNT_ONLY;
   header->next_sequence = 19;
   auto decoded = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_TRUE(static_cast<bool>(decoded))
@@ -187,7 +188,7 @@ TEST(ProfilerRecordTest, CountOnlyCarriesRequiredCapacityWithoutEvents) {
   header->flags |= WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED;
   auto invalid = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_FALSE(static_cast<bool>(invalid));
-  EXPECT_NE(llvm::toString(invalid.takeError()).find("both enabled"),
+  EXPECT_NE(llvm::toString(invalid.takeError()).find("exactly one"),
             std::string::npos);
 
   header->flags &= ~WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED;
@@ -195,6 +196,13 @@ TEST(ProfilerRecordTest, CountOnlyCarriesRequiredCapacityWithoutEvents) {
   auto storedEvent = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_FALSE(static_cast<bool>(storedEvent));
   EXPECT_NE(llvm::toString(storedEvent.takeError()).find("stored events"),
+            std::string::npos);
+
+  header->event_count = 0;
+  header->flags &= ~WAFER_TX81_PROFILER_RECORD_COUNT_ONLY;
+  auto missingMode = wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  ASSERT_FALSE(static_cast<bool>(missingMode));
+  EXPECT_NE(llvm::toString(missingMode.takeError()).find("exactly one"),
             std::string::npos);
 }
 

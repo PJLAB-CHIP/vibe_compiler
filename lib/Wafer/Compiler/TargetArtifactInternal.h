@@ -22,14 +22,16 @@ namespace wafer::compiler {
 
 struct TargetLLVMModuleBundleBuilder {
   static TargetLLVMModule
-  makeModule(int64_t logicalRank, llvm::StringRef entrySymbol,
+  makeModule(PhysicalCardId physicalCardId, PhysicalTileId physicalTileId,
+             LaunchSlotId launchSlotId, llvm::StringRef entrySymbol,
              TargetIdentityId targetIdentity,
              KernelRuntimeABIId kernelRuntimeABI, llvm::StringRef moduleFormat,
              std::vector<KernelABISlot> kernelABISlots,
              std::unique_ptr<llvm::LLVMContext> context,
              std::unique_ptr<llvm::Module> module) {
-    return TargetLLVMModule(logicalRank, entrySymbol, targetIdentity,
-                            kernelRuntimeABI, moduleFormat,
+    return TargetLLVMModule(physicalCardId, physicalTileId, launchSlotId,
+                            entrySymbol, targetIdentity, kernelRuntimeABI,
+                            moduleFormat,
                             std::move(kernelABISlots), std::move(context),
                             std::move(module));
   }
@@ -59,10 +61,13 @@ struct TargetArtifactBundleBuilder {
                                 std::move(exports));
   }
 
-  static VerifiedTargetRankInterface
-  makeRankInterface(int64_t logicalRank, TargetArtifactModuleId moduleId,
+  static VerifiedTargetTileInterface
+  makeTileInterface(PhysicalCardId physicalCardId,
+                    PhysicalTileId physicalTileId, LaunchSlotId launchSlotId,
+                    TargetArtifactModuleId moduleId,
                     std::vector<KernelABISlot> kernelABISlots) {
-    return VerifiedTargetRankInterface(logicalRank, moduleId,
+    return VerifiedTargetTileInterface(physicalCardId, physicalTileId,
+                                       launchSlotId, moduleId,
                                        std::move(kernelABISlots));
   }
 
@@ -70,10 +75,10 @@ struct TargetArtifactBundleBuilder {
   makeBundle(llvm::StringRef rootDirectory, ExecutionConfig executionConfig,
              RuntimeLaunchContract runtimeLaunchContract,
              std::vector<VerifiedTargetModule> modules,
-             std::vector<VerifiedTargetRankInterface> rankInterfaces) {
+             std::vector<VerifiedTargetTileInterface> tileInterfaces) {
     return TargetArtifactBundle(rootDirectory, executionConfig,
                                 std::move(runtimeLaunchContract),
-                                std::move(modules), std::move(rankInterfaces));
+                                std::move(modules), std::move(tileInterfaces));
   }
 };
 
@@ -84,7 +89,7 @@ inline constexpr llvm::StringLiteral kKernelPrepareExportSymbol =
 
 /// Compiler-internal target capture kinds. They are implementation details of
 /// the single profiling product and are never user-selectable driver modes.
-enum class ProfileCaptureKind : uint8_t { None, Summary, Count, Trace };
+enum class ProfileCaptureKind : uint8_t { None, Count, Trace };
 
 llvm::StringRef stringifyProfileCaptureKind(ProfileCaptureKind capture);
 uint64_t getProfileCaptureRecordBytes(ProfileCaptureKind capture);
@@ -113,7 +118,8 @@ collectProfileTargetCallSites(const llvm::Module &module,
                               llvm::StringRef entrySymbol);
 
 /// Verifies that a trace clone preserves the final production artifact's
-/// rank-local site order and exact typed target-call identity. Instrumentation
+/// physical-Tile-local site order and exact typed target-call identity.
+/// Instrumentation
 /// may shift LLVM instruction ordinals, so only the production module owns the
 /// canonical source position written to the companion.
 llvm::Error verifyProfileTargetCallSiteIdentity(
@@ -137,9 +143,9 @@ struct OwnedTargetLLVMModule {
   std::unique_ptr<llvm::Module> module;
 };
 
-struct PreparedTargetRank {
-  PreparedTargetRank(const ExecutionConfig &executionConfig,
-                     bool transportPreparedBeforeEntry);
+struct PreparedPhysicalTile {
+  PreparedPhysicalTile(const ExecutionConfig &executionConfig,
+                       bool transportPreparedBeforeEntry);
 
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::vector<KernelABISlot> slots;
@@ -147,7 +153,9 @@ struct PreparedTargetRank {
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId kernelRuntimeABI;
   std::string moduleFormat;
-  int64_t logicalRank = -1;
+  PhysicalCardId physicalCardId = PhysicalCardId(-1);
+  PhysicalTileId physicalTileId = PhysicalTileId(-1);
+  LaunchSlotId launchSlotId = LaunchSlotId(-1);
   int64_t defaultDDRArenaArgumentIndex = -1;
   int64_t transportStatusArgumentIndex = -1;
   int64_t profileRecordArgumentIndex = -1;
@@ -162,19 +170,21 @@ struct TargetModuleReadback {
 llvm::Error fail(llvm::raw_ostream &diagnostics, llvm::StringRef message);
 bool isRegularTargetFile(llvm::StringRef path);
 
-mlir::FailureOr<PreparedTargetRank>
-prepareTargetABI(const RankExecutable &rankExecutable,
+mlir::FailureOr<PreparedPhysicalTile>
+prepareTargetABI(const PhysicalTileExecutable &tileExecutable,
                  const ExecutionConfig &executionConfig,
                  bool transportPreparedBeforeEntry,
                  ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
-mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared);
-mlir::LogicalResult verifyLoweredKernelABI(PreparedTargetRank &prepared,
+mlir::LogicalResult lowerToTargetLLVM(PreparedPhysicalTile &prepared);
+mlir::LogicalResult verifyLoweredKernelABI(PreparedPhysicalTile &prepared,
                                            llvm::StringRef entrySymbol);
 llvm::Expected<TargetLLVMModule>
-translatePreparedTargetRank(PreparedTargetRank prepared,
-                            llvm::StringRef entrySymbol);
+translatePreparedPhysicalTile(PreparedPhysicalTile prepared,
+                              llvm::StringRef entrySymbol);
 llvm::Error verifyTargetLLVMModule(const llvm::Module &module,
-                                   int64_t expectedLogicalRank,
+                                   PhysicalCardId expectedPhysicalCardId,
+                                   PhysicalTileId expectedPhysicalTileId,
+                                   LaunchSlotId expectedLaunchSlotId,
                                    llvm::StringRef expectedEntrySymbol,
                                    TargetIdentityId expectedTargetIdentity,
                                    KernelRuntimeABIId expectedKernelRuntimeABI,
@@ -185,12 +195,13 @@ llvm::Error
 writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
             llvm::ArrayRef<KernelABISlot> slots,
             const RuntimeLaunchContract &runtimeLaunchContract,
-            int64_t logicalRank, int64_t rankCount, llvm::StringRef path,
+            LaunchSlotId launchSlotId, int64_t physicalTileCount,
+            llvm::StringRef path,
             ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
 llvm::Error writeTargetLLVMIR(const llvm::Module &module, llvm::StringRef path);
 
-/// Imports the complete rank domain into one context, scopes every supported
-/// definition by rank, links it, and creates the contract's ordered exports.
+/// Imports the complete physical-Tile domain into one context, scopes every
+/// supported definition by launch slot, links it, and creates ordered exports.
 llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
     const TargetLLVMModuleBundle &targetLLVMModules);
 llvm::Error
@@ -217,7 +228,7 @@ llvm::Expected<VerifiedTargetModule> verifyLinkedTargetModuleForTesting(
 llvm::Error
 verifyTargetLLVMModuleForTesting(const TargetLLVMModule &targetModule);
 
-/// Runs the side-effect-free all-rank runtime-launch contract preflight used
+/// Runs the side-effect-free whole-card runtime-launch contract preflight used
 /// before publication creates its private staging directory.
 llvm::Error validateRuntimeLaunchContractDomainForTesting(
     const TargetLLVMModuleBundle &targetLLVMModules);
@@ -225,7 +236,7 @@ llvm::Error validateRuntimeLaunchContractDomainForTesting(
 llvm::Expected<TargetLLVMModuleBundle>
 compileExecutableBundleToTargetLLVMModulesImpl(
     const ExecutableBundle &executableBundle, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank,
+    std::optional<int64_t> failAfterLaunchSlot,
     ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
 
 llvm::Expected<TargetArtifactBundle>
@@ -233,12 +244,6 @@ compileTargetLLVMModuleBundleToTargetArtifactsImpl(
     const TargetLLVMModuleBundle &targetLLVMModules,
     llvm::StringRef outputDirectory, const TargetToolchain &toolchain,
     llvm::raw_ostream &diagnostics, ProfileCaptureKind profileCapture);
-
-llvm::Expected<TargetArtifactBundle>
-compileExecutableBundleToTargetArtifactsImpl(
-    const ExecutableBundle &executableBundle, llvm::StringRef outputDirectory,
-    const TargetToolchain &toolchain, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank);
 
 } // namespace detail
 } // namespace wafer::compiler

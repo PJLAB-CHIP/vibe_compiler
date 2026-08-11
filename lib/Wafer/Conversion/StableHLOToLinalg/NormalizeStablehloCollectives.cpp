@@ -62,15 +62,15 @@ getReplicaGroups(mlir::DenseIntElementsAttr replicaGroups) {
   return groups;
 }
 
-static mlir::DenseI64ArrayAttr getRankGroupAttr(mlir::OpBuilder &builder,
-                                                const ReplicaGroups &groups) {
+static mlir::DenseI64ArrayAttr getPartitionGroupAttr(mlir::OpBuilder &builder,
+                                                     const ReplicaGroups &groups) {
   if (groups.groupCount != 1)
     return {};
   return mlir::DenseI64ArrayAttr::get(builder.getContext(), groups.flattened);
 }
 
 static mlir::DenseIntElementsAttr
-getRankGroupsAttr(const ReplicaGroups &groups) {
+getPartitionGroupsAttr(const ReplicaGroups &groups) {
   if (groups.groupCount == 1)
     return {};
   return groups.attr;
@@ -261,8 +261,8 @@ static bool lowerAllGather(mlir::stablehlo::AllGatherOp allGather) {
   auto lowered = builder.create<LinalgExtCollectiveAllGatherOp>(
       allGather.getLoc(), allGather->getResultTypes(), allGather.getOperands(),
       *outs, allGather.getAllGatherDimAttr(),
-      getRankGroupAttr(builder, *replicaGroups),
-      getRankGroupsAttr(*replicaGroups),
+      getPartitionGroupAttr(builder, *replicaGroups),
+      getPartitionGroupsAttr(*replicaGroups),
       getChannelIdAttr(builder, allGather.getChannelHandleAttr()),
       getUseGlobalDeviceIdsAttr(builder, allGather.getUseGlobalDeviceIds()));
   replaceAndErase(allGather, lowered);
@@ -283,8 +283,8 @@ static bool lowerAllReduce(mlir::stablehlo::AllReduceOp allReduce) {
 
   auto lowered = builder.create<LinalgExtCollectiveAllReduceOp>(
       allReduce.getLoc(), allReduce->getResultTypes(), allReduce.getOperands(),
-      *outs, getRankGroupAttr(builder, *replicaGroups),
-      getRankGroupsAttr(*replicaGroups),
+      *outs, getPartitionGroupAttr(builder, *replicaGroups),
+      getPartitionGroupsAttr(*replicaGroups),
       getChannelIdAttr(builder, allReduce.getChannelHandleAttr()),
       getUseGlobalDeviceIdsAttr(builder, allReduce.getUseGlobalDeviceIds()));
   if (mlir::failed(convertCombinerRegion(
@@ -314,8 +314,8 @@ static bool lowerReduceScatter(mlir::stablehlo::ReduceScatterOp reduceScatter) {
       reduceScatter.getLoc(), reduceScatter->getResultTypes(),
       reduceScatter->getOperands(), *outs,
       reduceScatter.getScatterDimensionAttr(),
-      getRankGroupAttr(builder, *replicaGroups),
-      getRankGroupsAttr(*replicaGroups),
+      getPartitionGroupAttr(builder, *replicaGroups),
+      getPartitionGroupsAttr(*replicaGroups),
       getChannelIdAttr(builder, reduceScatter.getChannelHandleAttr()),
       getUseGlobalDeviceIdsAttr(builder,
                                 reduceScatter.getUseGlobalDeviceIds()));
@@ -346,8 +346,8 @@ static bool lowerAllToAll(mlir::stablehlo::AllToAllOp allToAll) {
       allToAll.getLoc(), allToAll->getResultTypes(), allToAll.getOperands(),
       *outs, allToAll.getSplitDimensionAttr(),
       allToAll.getConcatDimensionAttr(), allToAll.getSplitCountAttr(),
-      getRankGroupAttr(builder, *replicaGroups),
-      getRankGroupsAttr(*replicaGroups),
+      getPartitionGroupAttr(builder, *replicaGroups),
+      getPartitionGroupsAttr(*replicaGroups),
       getChannelIdAttr(builder, allToAll.getChannelHandleAttr()),
       mlir::BoolAttr());
   replaceAndErase(allToAll, lowered);

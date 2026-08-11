@@ -153,6 +153,13 @@ parseModuleExportRole(llvm::StringRef role) {
   return invalid("unsupported package module export role '" + role + "'");
 }
 
+llvm::Expected<PackageEntryCompletionKind>
+parseEntryCompletionKind(llvm::StringRef kind) {
+  if (kind == "return_after_local_drain")
+    return PackageEntryCompletionKind::ReturnAfterLocalDrain;
+  return invalid("unsupported package entry completion kind '" + kind + "'");
+}
+
 llvm::Expected<std::vector<RuntimeLaunchPhaseRole>>
 parseRuntimeLaunchPhases(const llvm::json::Object &object,
                          llvm::StringRef context,
@@ -250,7 +257,7 @@ parseResource(const llvm::json::Value &value, uint64_t index,
     return invalid(context + " must be an object");
   if (llvm::Error error = requireExactFields(
           *object,
-          {"id", "rank", "role", "role_index", "name", "type", "bytes",
+          {"id", "scope", "role", "role_index", "name", "type", "bytes",
            "alignment", "access", "host_visible"},
           context))
     return std::move(error);
@@ -259,9 +266,39 @@ parseResource(const llvm::json::Value &value, uint64_t index,
   llvm::Expected<uint64_t> id = requireUnsigned(*object, "id", context);
   if (!id)
     return id.takeError();
-  llvm::Expected<int64_t> rank = requireInteger(*object, "rank", context);
-  if (!rank)
-    return rank.takeError();
+  llvm::Expected<const llvm::json::Object *> scope =
+      requireObject(*object, "scope", context);
+  if (!scope)
+    return scope.takeError();
+  llvm::Expected<std::string> scopeKind =
+      requireString(**scope, "kind", context + ".scope", limits);
+  if (!scopeKind)
+    return scopeKind.takeError();
+  const bool cardScope = *scopeKind == "card";
+  const bool tileScope = *scopeKind == "tile";
+  if (!cardScope && !tileScope)
+    return invalid(context + ".scope.kind is unsupported");
+  if (cardScope) {
+    if (llvm::Error error = requireExactFields(
+            **scope, {"kind", "card_id"}, context + ".scope"))
+      return std::move(error);
+  } else if (llvm::Error error = requireExactFields(
+                 **scope, {"kind", "card_id", "tile_id"},
+                 context + ".scope")) {
+    return std::move(error);
+  }
+  llvm::Expected<int64_t> cardId =
+      requireInteger(**scope, "card_id", context + ".scope");
+  if (!cardId)
+    return cardId.takeError();
+  int64_t tileId = 0;
+  if (tileScope) {
+    llvm::Expected<int64_t> parsedTileId =
+        requireInteger(**scope, "tile_id", context + ".scope");
+    if (!parsedTileId)
+      return parsedTileId.takeError();
+    tileId = *parsedTileId;
+  }
   llvm::Expected<std::string> roleText =
       requireString(*object, "role", context, limits);
   if (!roleText)
@@ -315,7 +352,11 @@ parseResource(const llvm::json::Value &value, uint64_t index,
     return access.takeError();
 
   record.id = ResourceId(*id);
-  record.logicalRank = *rank;
+  record.scope = cardScope
+                     ? PackageResourceScope(
+                           CardResourceScope{PhysicalCardId(*cardId)})
+                     : PackageResourceScope(TileResourceScope{
+                           PhysicalCardId(*cardId), PhysicalTileId(tileId)});
   record.role = *role;
   record.roleIndex = *roleIndex;
   record.name = std::move(*name);
@@ -397,29 +438,6 @@ parseModuleRecord(const llvm::json::Value &value, uint64_t index,
   return record;
 }
 
-llvm::Expected<PackageCompletionRecord>
-parseCompletionRecord(const llvm::json::Value &value, uint64_t index,
-                      const PackageParseLimits &limits) {
-  const llvm::json::Object *object = value.getAsObject();
-  std::string context = "completions[" + std::to_string(index) + "]";
-  if (!object)
-    return invalid(context + " must be an object");
-  if (llvm::Error error =
-          requireExactFields(*object, {"id", "rank", "kind"}, context))
-    return std::move(error);
-  llvm::Expected<uint64_t> id = requireUnsigned(*object, "id", context);
-  if (!id)
-    return id.takeError();
-  llvm::Expected<int64_t> rank = requireInteger(*object, "rank", context);
-  if (!rank)
-    return rank.takeError();
-  llvm::Expected<std::string> kind =
-      requireString(*object, "kind", context, limits);
-  if (!kind)
-    return kind.takeError();
-  return PackageCompletionRecord{CompletionId(*id), *rank, std::move(*kind)};
-}
-
 llvm::Expected<TransportRequirements>
 parseTransportRequirements(const llvm::json::Object &object,
                            llvm::StringRef context,
@@ -465,15 +483,23 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
     return invalid(context + " must be an object");
   if (llvm::Error error = requireExactFields(
           *object,
-          {"id", "rank", "module", "slots", "terminal_completion", "transport"},
+          {"id", "card_id", "tile_id", "launch_slot", "module", "slots",
+           "completion", "transport"},
           context))
     return std::move(error);
   llvm::Expected<uint64_t> id = requireUnsigned(*object, "id", context);
   if (!id)
     return id.takeError();
-  llvm::Expected<int64_t> rank = requireInteger(*object, "rank", context);
-  if (!rank)
-    return rank.takeError();
+  llvm::Expected<int64_t> cardId = requireInteger(*object, "card_id", context);
+  if (!cardId)
+    return cardId.takeError();
+  llvm::Expected<int64_t> tileId = requireInteger(*object, "tile_id", context);
+  if (!tileId)
+    return tileId.takeError();
+  llvm::Expected<uint64_t> launchSlot =
+      requireUnsigned(*object, "launch_slot", context);
+  if (!launchSlot)
+    return launchSlot.takeError();
   llvm::Expected<uint64_t> module = requireUnsigned(*object, "module", context);
   if (!module)
     return module.takeError();
@@ -481,10 +507,14 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
       requireArray(*object, "slots", context);
   if (!slots)
     return slots.takeError();
-  llvm::Expected<uint64_t> completion =
-      requireUnsigned(*object, "terminal_completion", context);
+  llvm::Expected<std::string> completion =
+      requireString(*object, "completion", context, limits);
   if (!completion)
     return completion.takeError();
+  llvm::Expected<PackageEntryCompletionKind> completionKind =
+      parseEntryCompletionKind(*completion);
+  if (!completionKind)
+    return completionKind.takeError();
   llvm::Expected<const llvm::json::Object *> transportObject =
       requireObject(*object, "transport", context);
   if (!transportObject)
@@ -498,9 +528,11 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
 
   PackageEntrypointRecord record;
   record.id = EntryId(*id);
-  record.logicalRank = *rank;
+  record.cardId = PhysicalCardId(*cardId);
+  record.tileId = PhysicalTileId(*tileId);
+  record.launchSlot = LaunchSlotId(*launchSlot);
   record.module = ModuleId(*module);
-  record.terminalCompletion = CompletionId(*completion);
+  record.completion = *completionKind;
   record.transport = std::move(*transport);
   for (auto [slotIndex, slotValue] : llvm::enumerate(**slots)) {
     const llvm::json::Object *slot = slotValue.getAsObject();
@@ -547,8 +579,8 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
     return invalid("package manifest must be a JSON object");
   if (llvm::Error error = requireExactFields(
           *root,
-          {"schema_version", "program", "target", "rank_count", "resources",
-           "modules", "entries", "completions"},
+          {"schema_version", "program", "target", "card_count", "tile_count",
+           "resources", "modules", "entries"},
           "manifest"))
     return std::move(error);
 
@@ -566,10 +598,14 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
       requireObject(*root, "target", "manifest");
   if (!target)
     return target.takeError();
-  llvm::Expected<int64_t> rankCount =
-      requireInteger(*root, "rank_count", "manifest");
-  if (!rankCount)
-    return rankCount.takeError();
+  llvm::Expected<int64_t> cardCount =
+      requireInteger(*root, "card_count", "manifest");
+  if (!cardCount)
+    return cardCount.takeError();
+  llvm::Expected<int64_t> tileCount =
+      requireInteger(*root, "tile_count", "manifest");
+  if (!tileCount)
+    return tileCount.takeError();
   llvm::Expected<const llvm::json::Array *> resources =
       requireArray(*root, "resources", "manifest");
   if (!resources)
@@ -582,13 +618,8 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
       requireArray(*root, "entries", "manifest");
   if (!entries)
     return entries.takeError();
-  llvm::Expected<const llvm::json::Array *> completions =
-      requireArray(*root, "completions", "manifest");
-  if (!completions)
-    return completions.takeError();
-
-  uint64_t totalRecords = (*resources)->size() + (*modules)->size() +
-                          (*entries)->size() + (*completions)->size();
+  uint64_t totalRecords =
+      (*resources)->size() + (*modules)->size() + (*entries)->size();
   if (totalRecords > limits.maxRecords)
     return invalid("package manifest exceeds record limit");
   if (llvm::Error error =
@@ -637,7 +668,8 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
 
   manifest.schemaVersion = static_cast<uint32_t>(*schemaVersion);
   manifest.program = ProgramId(*programId);
-  manifest.rankCount = *rankCount;
+  manifest.cardCount = *cardCount;
+  manifest.tileCount = *tileCount;
   for (auto [index, value] : llvm::enumerate(**resources)) {
     llvm::Expected<PackageResourceRecord> record =
         parseResource(value, index, limits);
@@ -658,13 +690,6 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
     if (!record)
       return record.takeError();
     manifest.entries.push_back(std::move(*record));
-  }
-  for (auto [index, value] : llvm::enumerate(**completions)) {
-    llvm::Expected<PackageCompletionRecord> record =
-        parseCompletionRecord(value, index, limits);
-    if (!record)
-      return record.takeError();
-    manifest.completions.push_back(std::move(*record));
   }
   return manifest;
 }

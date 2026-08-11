@@ -38,14 +38,6 @@ findModuleExport(const PackageModuleRecord &module,
   return iterator == module.exports.end() ? nullptr : &*iterator;
 }
 
-const PackageCompletionRecord *
-findCompletion(llvm::ArrayRef<PackageCompletionRecord> completions,
-               CompletionId id) {
-  auto iterator = llvm::find_if(
-      completions, [&](const auto &completion) { return completion.id == id; });
-  return iterator == completions.end() ? nullptr : &*iterator;
-}
-
 } // namespace detail
 
 llvm::StringRef stringifyPackageResourceRole(PackageResourceRole role) {
@@ -87,6 +79,15 @@ stringifyPackageModuleExportRole(PackageModuleExportRole role) {
     return "main";
   }
   llvm_unreachable("unknown package module export role");
+}
+
+llvm::StringRef
+stringifyPackageEntryCompletionKind(PackageEntryCompletionKind kind) {
+  switch (kind) {
+  case PackageEntryCompletionKind::ReturnAfterLocalDrain:
+    return "return_after_local_drain";
+  }
+  llvm_unreachable("unknown package entry completion kind");
 }
 
 } // namespace wafer::runtime

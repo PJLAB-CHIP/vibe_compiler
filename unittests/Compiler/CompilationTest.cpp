@@ -19,52 +19,39 @@
 
 namespace {
 
-TEST(CompilationTest, ExecutionConfigAcceptsOnlyCurrentSingleCardDomains) {
-  for (int64_t accepted : {int64_t{1}, int64_t{16}}) {
-    auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-        accepted, wafer::RuntimeLaunchKind::Kernel);
-    ASSERT_TRUE(static_cast<bool>(config));
-    EXPECT_EQ(config->getRankCount(), accepted);
-  }
+TEST(CompilationTest, ExecutionConfigSeparatesPartitionsFromPhysicalTiles) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::RuntimeLaunchKind::Kernel);
+  ASSERT_TRUE(static_cast<bool>(config));
+  EXPECT_EQ(config->getNumPartitions(), 1);
+  EXPECT_EQ(config->getPhysicalTileCount(), 16);
 
-  for (int64_t rejected : {std::numeric_limits<int64_t>::min(), int64_t{-1},
-                           int64_t{0}, int64_t{2}, int64_t{8}, int64_t{15},
-                           int64_t{17}, std::numeric_limits<int64_t>::max()}) {
-    auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+  for (int64_t rejected :
+       {std::numeric_limits<int64_t>::min(), int64_t{-1}, int64_t{0},
+        int64_t{2}, int64_t{8}, int64_t{15}, int64_t{16}, int64_t{17},
+        std::numeric_limits<int64_t>::max()}) {
+    auto rejectedConfig = wafer::compiler::ExecutionConfig::createForSingleCard(
         rejected, wafer::RuntimeLaunchKind::Kernel);
-    ASSERT_FALSE(static_cast<bool>(config));
-    EXPECT_FALSE(llvm::toString(config.takeError()).empty());
+    ASSERT_FALSE(static_cast<bool>(rejectedConfig));
+    EXPECT_FALSE(llvm::toString(rejectedConfig.takeError()).empty());
   }
 }
 
-TEST(CompilationTest, ExecutionConfigEqualityCoversRankAndLaunchKind) {
+TEST(CompilationTest, ExecutionConfigEqualityCoversTypedDomainsAndLaunchKind) {
   auto first = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::RuntimeLaunchKind::Kernel);
   auto same = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::RuntimeLaunchKind::Kernel);
-  auto differentRank = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::RuntimeLaunchKind::Kernel);
   auto differentLaunchKind =
       wafer::compiler::ExecutionConfig::createForSingleCard(
-          16, wafer::RuntimeLaunchKind::Model);
+          1, wafer::RuntimeLaunchKind::Model);
   ASSERT_TRUE(static_cast<bool>(first));
   ASSERT_TRUE(static_cast<bool>(same));
-  ASSERT_TRUE(static_cast<bool>(differentRank));
   ASSERT_TRUE(static_cast<bool>(differentLaunchKind));
   EXPECT_EQ(*first, *same);
-  EXPECT_NE(*first, *differentRank);
-  EXPECT_NE(*differentRank, *differentLaunchKind);
-
-  auto invalidModel = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Model);
-  ASSERT_FALSE(static_cast<bool>(invalidModel));
-  EXPECT_NE(llvm::toString(invalidModel.takeError())
-                .find("model runtime launch requires execution-ranks=16"),
-            std::string::npos);
-
-  auto completeModel = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::RuntimeLaunchKind::Model);
-  ASSERT_TRUE(static_cast<bool>(completeModel));
+  EXPECT_NE(*first, *differentLaunchKind);
+  EXPECT_EQ(differentLaunchKind->getNumPartitions(), 1);
+  EXPECT_EQ(differentLaunchKind->getPhysicalTileCount(), 16);
 }
 
 TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
@@ -76,10 +63,12 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
       !std::is_copy_constructible_v<wafer::compiler::CompilationRequest>);
   static_assert(
       std::is_move_constructible_v<wafer::compiler::CompilationRequest>);
+  static_assert(!std::is_default_constructible_v<
+                wafer::compiler::PhysicalTileExecutable>);
   static_assert(
-      !std::is_default_constructible_v<wafer::compiler::RankExecutable>);
-  static_assert(!std::is_copy_constructible_v<wafer::compiler::RankExecutable>);
-  static_assert(std::is_move_constructible_v<wafer::compiler::RankExecutable>);
+      !std::is_copy_constructible_v<wafer::compiler::PhysicalTileExecutable>);
+  static_assert(
+      std::is_move_constructible_v<wafer::compiler::PhysicalTileExecutable>);
   static_assert(
       !std::is_default_constructible_v<wafer::compiler::ExecutableBundle>);
   static_assert(
@@ -118,7 +107,8 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
   ASSERT_TRUE(static_cast<bool>(request));
   source.assign("/tmp/changed-after-request-construction.program");
   EXPECT_EQ(request->getSourceProgramDirectory(), "/tmp/source.program");
-  EXPECT_EQ(request->getExecutionConfig().getRankCount(), 1);
+  EXPECT_EQ(request->getExecutionConfig().getNumPartitions(), 1);
+  EXPECT_EQ(request->getExecutionConfig().getPhysicalTileCount(), 16);
   EXPECT_EQ(request->getExecutionConfig().getTargetIdentityId(),
             wafer::TargetIdentityId::waferTx81SingleCard());
   EXPECT_EQ(request->getExecutionConfig().getRuntimeLaunchKind(),
@@ -134,18 +124,9 @@ TEST(CompilationTest, CompilationRequestRejectsEmptySourceLocator) {
   EXPECT_FALSE(llvm::toString(request.takeError()).empty());
 }
 
-TEST(CompilationTest, ProfileOptionsRequireCompleteSingleCardRankDomain) {
-  auto rankOne = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Kernel);
-  ASSERT_TRUE(static_cast<bool>(rankOne));
-
-  auto rejected = wafer::compiler::CompilationOptions::profile(*rankOne);
-  ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError()).find("16-rank kernel launch"),
-            std::string::npos);
-
+TEST(CompilationTest, ProfileOptionsRequireCompletePhysicalTileKernelDomain) {
   auto fullCard = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::RuntimeLaunchKind::Kernel);
+      1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(fullCard));
   auto accepted = wafer::compiler::CompilationOptions::profile(*fullCard);
   ASSERT_TRUE(static_cast<bool>(accepted));
@@ -162,33 +143,32 @@ TEST(CompilationTest, ProfileOptionsRequireCompleteSingleCardRankDomain) {
   EXPECT_TRUE(acceptedTimed->shouldReportDetailedTiming());
 
   auto model = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::RuntimeLaunchKind::Model);
+      1, wafer::RuntimeLaunchKind::Model);
   ASSERT_TRUE(static_cast<bool>(model));
   auto rejectedModel = wafer::compiler::CompilationOptions::profile(*model);
   ASSERT_FALSE(static_cast<bool>(rejectedModel));
-  EXPECT_NE(
-      llvm::toString(rejectedModel.takeError()).find("16-rank kernel launch"),
-      std::string::npos);
+  EXPECT_NE(llvm::toString(rejectedModel.takeError())
+                .find("complete-card physical Tile kernel launch"),
+            std::string::npos);
   EXPECT_FALSE(wafer::compiler::CompilationOptions::standard()
                    .shouldProduceProfileCompanion());
   EXPECT_FALSE(wafer::compiler::CompilationOptions::standard()
                    .shouldReportDetailedTiming());
   EXPECT_TRUE(wafer::compiler::CompilationOptions::standard(
-                  wafer::OptimizationConfig::production(),
+                  wafer::OptimizationConfig::search(),
                   wafer::compiler::CompilationTimingMode::Detailed)
                   .shouldReportDetailedTiming());
 }
 
-TEST(CompilationTest, OptimizationConfigHasExactlyProductionAndNonePolicies) {
-  wafer::OptimizationConfig production =
-      wafer::OptimizationConfig::production();
+TEST(CompilationTest, OptimizationConfigHasExactlySearchAndNonePolicies) {
+  wafer::OptimizationConfig search = wafer::OptimizationConfig::search();
   wafer::OptimizationConfig none = wafer::OptimizationConfig::none();
 
-  EXPECT_TRUE(production.isProduction());
-  EXPECT_FALSE(production.isNone());
-  EXPECT_FALSE(none.isProduction());
+  EXPECT_TRUE(search.isSearch());
+  EXPECT_FALSE(search.isNone());
+  EXPECT_FALSE(none.isSearch());
   EXPECT_TRUE(none.isNone());
-  EXPECT_NE(production, none);
+  EXPECT_NE(search, none);
 
   wafer::compiler::CompilationOptions options =
       wafer::compiler::CompilationOptions::standard(none);

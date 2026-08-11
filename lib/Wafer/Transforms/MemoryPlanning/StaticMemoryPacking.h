@@ -68,6 +68,16 @@ struct PackingResult {
   uint64_t searchNodes = 0;
   bool fallbackAttempted = false;
   std::optional<unsigned> demandIndex;
+  /// Deterministic exact capacity certificate.  Every listed demand is a
+  /// member of one conflict-graph clique and their byte sum is strictly
+  /// larger than the usable arena.  It is populated only when that proof is
+  /// available; arbitrary solver failures must leave it empty.
+  llvm::SmallVector<unsigned, 8> capacityConflictDemandIndices;
+  /// Every actual demand whose size alone is larger than the usable arena.
+  /// These demands need not conflict with one another, but each is an
+  /// independent necessary rejection certificate and therefore all must be
+  /// addressed before the fixed problem can become legal.
+  llvm::SmallVector<unsigned, 8> individuallyOversizedDemandIndices;
 
   bool succeeded() const { return status == PackingStatus::Feasible; }
 };
@@ -110,7 +120,7 @@ std::optional<PackingValidationFailure>
 validatePlacements(const StaticPackingProblem &problem,
                    llvm::ArrayRef<Placement> placements);
 
-/// Production policy: MiniMalloc is always attempted first. Deterministic
+/// Normal-call policy: MiniMalloc is always attempted first. Deterministic
 /// first-fit is consulted only after MiniMalloc reports ResourceExhausted.
 /// Passing an explicit budget is an internal/offline and test control; normal
 /// callers use the computed generous default.

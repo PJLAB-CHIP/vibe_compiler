@@ -16,4 +16,4 @@ module {
   }
 }
 
-// CHECK: requires exactly one direct wafer.target.topology in its module
+// CHECK: expected exactly one direct wafer.target.topology in source module

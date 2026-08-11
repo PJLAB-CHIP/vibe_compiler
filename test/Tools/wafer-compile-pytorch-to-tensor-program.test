@@ -6,10 +6,10 @@
 # RUN: wafer-compile \
 # RUN:   --input-program-dir %t.input.program \
 # RUN:   --output-program-dir %t.package \
-# RUN:   --execution-ranks=16 --launch-kind=kernel | FileCheck %s --check-prefix=PIPELINE
+# RUN:   --num-partitions=1 --launch-kind=kernel | FileCheck %s --check-prefix=PIPELINE
 # RUN: FileCheck %s --input-file=%t.package/functions/forward.mlir --check-prefix=STRUCTURED
 
-# PIPELINE: wafer-compile: published verified package with execution-ranks=16:
+# PIPELINE: wafer-compile: published verified package with num-partitions=1 physical-tiles=16:
 
 # STRUCTURED: mhlo.spmd_parameters_shardings
 # STRUCTURED: func.func @main

@@ -31,7 +31,7 @@ analyzeAcceptedCallClosure(mlir::ModuleOp module,
   for (mlir::func::FuncOp function : module.getOps<mlir::func::FuncOp>())
     closure.functions.push_back(function);
   if (closure.functions.empty())
-    return invalid("accepted rank has no entry function");
+    return invalid("accepted physical-Tile executable has no entry function");
 
   llvm::SmallVector<mlir::func::FuncOp> externallyVisible;
   for (mlir::func::FuncOp function : closure.functions) {
@@ -44,11 +44,10 @@ analyzeAcceptedCallClosure(mlir::ModuleOp module,
   }
   if (externallyVisible.size() == 1) {
     closure.entry = externallyVisible.front();
-  } else if (externallyVisible.empty() && closure.functions.size() == 1) {
-    closure.entry = closure.functions.front();
   } else {
     return invalid(
-        "accepted rank must have one externally visible entry function");
+        "accepted physical-Tile executable must have one externally visible "
+        "entry function");
   }
   if (expectedEntry && closure.entry.getSymName() != *expectedEntry)
     return invalid("accepted entry symbol disagrees with the typed artifact");

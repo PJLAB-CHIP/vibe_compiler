@@ -25,7 +25,6 @@ add_mlir_library(WaferTarget
   TargetCallDecoder.cpp
   TargetFormat.cpp
   TargetIdentity.cpp
-  TargetSchedulingCapability.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport

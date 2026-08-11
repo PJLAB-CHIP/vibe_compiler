@@ -15,4 +15,4 @@ module {
 // CHECK: wafer.linalg_ext.collective.all_gather
 // CHECK-SAME: axis = 0 : i64
 // CHECK-SAME: channel_id = 7 : i64
-// CHECK-SAME: rank_groups = dense<{{.*}}> : tensor<2x2xi64>
+// CHECK-SAME: partition_groups = dense<{{.*}}> : tensor<2x2xi64>

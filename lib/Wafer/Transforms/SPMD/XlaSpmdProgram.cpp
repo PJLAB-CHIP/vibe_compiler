@@ -32,7 +32,7 @@ absl::Status run(const Options &options) {
   canonicalizeFrontendShardingAttrs(*inputModule);
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::HloModule> prePartitionModule,
-      stablehloToHloModule(*inputModule, options.logicalRankCount));
+      stablehloToHloModule(*inputModule, options.numPartitions));
 
   std::unique_ptr<xla::HloModule> distributedModule =
       prePartitionModule->Clone();
@@ -51,7 +51,7 @@ absl::Status run(const Options &options) {
   std::unique_ptr<xla::HloModule> partitionedModule =
       distributedModule->Clone();
   TF_RETURN_IF_ERROR(
-      runSpmdPartitioner(partitionedModule.get(), options.logicalRankCount));
+      runSpmdPartitioner(partitionedModule.get(), options.numPartitions));
   mlir::MLIRContext outputContext;
   TF_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> outputModule,
                       hloModuleToStablehlo(outputContext,
@@ -65,7 +65,7 @@ absl::Status run(const Options &options) {
   TF_ASSIGN_OR_RETURN(DistributedBoundary distributedBoundary,
                       buildDistributedBoundary(meta, *distributedModule,
                                                *partitionedModule,
-                                               options.logicalRankCount));
+                                               options.numPartitions));
 
   std::vector<ParameterBinding> bindings;
   TF_RETURN_IF_ERROR(materializeParameterShards(
@@ -82,7 +82,7 @@ absl::Status run(const Options &options) {
                              std::move(distributedBoundary))));
   TF_RETURN_IF_ERROR(writeFile(
       options.outputProgramDir / "functions" / "forward.parameter_shards.json",
-      bindingsToJson(options.entryFunction, options.logicalRankCount,
+      bindingsToJson(options.entryFunction, options.numPartitions,
                      bindings)));
   return absl::OkStatus();
 }

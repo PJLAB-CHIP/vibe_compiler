@@ -59,6 +59,26 @@ def Wafer_MoveCopyOp : Wafer_MoveOp<"tile.copy"> {
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
 }
 
+def Wafer_MoveCopyIntoOp : Wafer_MoveOp<"tile.copy_into"> {
+  let summary = "tile-local explicit copy into an existing storage view";
+  let description = [{
+    `wafer.tile.copy_into` copies one SPM storage into an existing same-shaped
+    SPM destination view. Dynamic placement is represented by the destination
+    memref view itself, so the movement operation does not carry a shadow
+    offset plan. The operation is used only when current SSA/effect analysis
+    proves that updating the destination storage preserves functional value
+    semantics.
+  }];
+
+  let arguments = (ins
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source,
+    Arg<Wafer_AnySPMMemRef, "", [MemWrite]>:$dest
+  );
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$source `into` $dest attr-dict `:` type($source) `into` type($dest)";
+}
+
 def Wafer_MoveTransposeOp : Wafer_MoveOp<"tile.transpose"> {
   let summary = "tile-local explicit transpose movement";
   let arguments = (ins

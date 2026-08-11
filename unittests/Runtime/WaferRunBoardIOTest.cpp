@@ -72,19 +72,21 @@ protected:
 
   PackageResourceRecord resource(uint64_t id, PackageResourceRole role,
                                  PackageAccessMode access) const {
-    return {ResourceId(id), 0, role, 0,      "resource",
-            {"u8", {4}},    4, 1,    access, true};
+    return {ResourceId(id),
+            wafer::runtime::CardResourceScope{wafer::PhysicalCardId(0)}, role,
+            0,              "resource", {"u8", {4}}, 4, 1, access, true};
   }
 
   PackageManifest manifest(std::vector<PackageResourceRecord> resources) const {
     PackageManifest manifest(
         wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
         llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
-            wafer::KernelLaunchForm::PerRank,
-            wafer::KernelEntryABI::RankLocalPointerBlock,
+            wafer::KernelLaunchForm::Grid,
+            wafer::KernelEntryABI::TileMajorPointerTable,
             {wafer::RuntimeLaunchPhaseRole::Main})),
         wafer::kCurrentTargetModuleFormat);
-    manifest.rankCount = 1;
+    manifest.cardCount = 1;
+    manifest.tileCount = 16;
     manifest.resources = std::move(resources);
     return manifest;
   }

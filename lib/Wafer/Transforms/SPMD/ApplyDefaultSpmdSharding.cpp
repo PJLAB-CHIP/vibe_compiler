@@ -34,7 +34,7 @@ namespace wafer {
 #ifdef WAFER_ENABLE_SHARDY
 namespace {
 
-constexpr llvm::StringLiteral kDefaultMeshName = "wafer_default_tile_mesh";
+constexpr llvm::StringLiteral kDefaultMeshName = "wafer_default_card_mesh";
 constexpr llvm::StringLiteral kMhloShardingAttr = "mhlo.sharding";
 constexpr llvm::StringLiteral kStablehloShardingAttr = "stablehlo.sharding";
 constexpr llvm::StringLiteral kCustomCallTargetAttr = "call_target_name";
@@ -43,7 +43,7 @@ constexpr llvm::StringLiteral kShardingCustomCallTarget = "Sharding";
 struct DefaultMeshSpec {
   llvm::SmallVector<std::string, 4> axes;
   llvm::SmallVector<int64_t, 4> shape;
-  int64_t rankCount = 1;
+  int64_t partitionCount = 1;
 };
 
 static bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
@@ -72,13 +72,14 @@ getExecutionMeshSpec(mlir::ModuleOp moduleOp, llvm::StringRef meshName) {
     spec.axes.push_back(
         mlir::cast<mlir::StringAttr>(axisAttr).getValue().str());
   for (int64_t dim : meshOp.getShapeAttr().asArrayRef()) {
-    int64_t rankCount = 0;
-    if (dim <= 0 || !checkedMul(spec.rankCount, dim, rankCount)) {
+    int64_t partitionCount = 0;
+    if (dim <= 0 ||
+        !checkedMul(spec.partitionCount, dim, partitionCount)) {
       meshOp.emitOpError("has invalid shape for default SPMD sharding");
       return mlir::failure();
     }
     spec.shape.push_back(dim);
-    spec.rankCount = rankCount;
+    spec.partitionCount = partitionCount;
   }
   if (spec.axes.empty() || spec.axes.size() != spec.shape.size()) {
     meshOp.emitOpError("has inconsistent axes and shape");
@@ -159,12 +160,13 @@ static bool hasShardingSeed(mlir::func::FuncOp funcOp) {
 }
 
 static std::optional<int64_t> findDefaultSplitDim(mlir::RankedTensorType type,
-                                                  int64_t rankCount) {
-  if (rankCount == 1)
+                                                  int64_t partitionCount) {
+  if (partitionCount == 1)
     return std::nullopt;
 
   for (auto [index, dim] : llvm::enumerate(type.getShape())) {
-    if (dim > 0 && !mlir::ShapedType::isDynamic(dim) && dim % rankCount == 0)
+    if (dim > 0 && !mlir::ShapedType::isDynamic(dim) &&
+        dim % partitionCount == 0)
       return static_cast<int64_t>(index);
   }
   return std::nullopt;
@@ -193,7 +195,7 @@ buildDefaultInputSharding(mlir::MLIRContext *context,
   llvm::SmallVector<mlir::sdy::AxisRefAttr> replicatedAxes;
 
   if (std::optional<int64_t> splitDim =
-          findDefaultSplitDim(type, meshSpec.rankCount)) {
+          findDefaultSplitDim(type, meshSpec.partitionCount)) {
     dimShardings[*splitDim] = mlir::sdy::DimensionShardingAttr::get(
         context, meshAxes, /*is_closed=*/true);
   } else {
@@ -283,9 +285,9 @@ buildFrontendSharding(mlir::Operation *op, mlir::StringAttr shardingAttr,
   for (auto [index, factor] : llvm::enumerate(tensorDimFactors)) {
     if (factor == 1)
       continue;
-    if (factor != meshSpec.rankCount)
+    if (factor != meshSpec.partitionCount)
       return op->emitError("frontend sharding factor does not match Wafer "
-                           "execution mesh rank count: ")
+                           "execution mesh partition count: ")
              << shardingText;
     if (shardedDim)
       return op->emitError("unsupported multi-dimension frontend sharding: ")

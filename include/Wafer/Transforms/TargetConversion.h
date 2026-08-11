@@ -18,7 +18,8 @@ namespace wafer {
 /// The production pipeline targets the one current Wafer backend.
 struct TargetConversionRequest {
   int64_t defaultDDRArenaArgumentIndex = -1;
-  int64_t logicalRank = -1;
+  int64_t physicalCardId = -1;
+  int64_t physicalTileId = -1;
   int64_t transportStatusArgumentIndex = -1;
   bool transportPreparedBeforeEntry = false;
   int64_t profileRecordArgumentIndex = -1;

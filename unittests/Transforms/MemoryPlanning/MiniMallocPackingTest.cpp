@@ -226,6 +226,10 @@ TEST(MiniMallocPackingTest, ProvenInfeasibleDoesNotInvokeFallback) {
   EXPECT_EQ(result.backend, PackingBackend::MiniMalloc);
   EXPECT_FALSE(result.fallbackAttempted);
   EXPECT_TRUE(result.placements.empty());
+  ASSERT_EQ(result.capacityConflictDemandIndices.size(), 2u);
+  EXPECT_EQ(result.capacityConflictDemandIndices[0], 0u);
+  EXPECT_EQ(result.capacityConflictDemandIndices[1], 1u);
+  EXPECT_TRUE(result.individuallyOversizedDemandIndices.empty());
 }
 
 TEST(MiniMallocPackingTest,
@@ -244,6 +248,29 @@ TEST(MiniMallocPackingTest,
   EXPECT_EQ(result.searchNodes, 0u);
   EXPECT_FALSE(result.fallbackAttempted);
   EXPECT_TRUE(result.placements.empty());
+  ASSERT_EQ(result.capacityConflictDemandIndices.size(), 4u);
+  EXPECT_TRUE(result.individuallyOversizedDemandIndices.empty());
+  uint64_t certificateBytes = 0;
+  for (unsigned index : result.capacityConflictDemandIndices)
+    certificateBytes += static_cast<uint64_t>(problem.demands[index].sizeBytes);
+  EXPECT_GT(certificateBytes,
+            static_cast<uint64_t>(problem.arena.end - problem.arena.begin));
+}
+
+TEST(MiniMallocPackingTest,
+     ReportsEveryIndependentlyOversizedDemandWithoutClaimingOneClique) {
+  StaticPackingProblem problem;
+  problem.arena = ArenaRange{3, 10};
+  problem.demands = {makeDemand(8, 1, 30), makeDemand(2, 1, 20),
+                     makeDemand(9, 1, 10)};
+
+  PackingResult result = solveWithMiniMalloc(problem, /*searchNodeBudget=*/0);
+  EXPECT_EQ(result.status, PackingStatus::ProvenInfeasible);
+  ASSERT_EQ(result.individuallyOversizedDemandIndices.size(), 2u);
+  EXPECT_EQ(result.individuallyOversizedDemandIndices[0], 2u);
+  EXPECT_EQ(result.individuallyOversizedDemandIndices[1], 0u);
+  ASSERT_EQ(result.capacityConflictDemandIndices.size(), 1u);
+  EXPECT_EQ(result.capacityConflictDemandIndices.front(), 2u);
 }
 
 TEST(MiniMallocPackingTest,

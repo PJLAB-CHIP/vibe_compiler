@@ -33,28 +33,18 @@ def MaterializeTargetTopologyPass
 
 def MaterializeExecutionMeshPass
     : Pass<"wafer-materialize-execution-mesh", "mlir::ModuleOp"> {
-  let summary = "Materialize Wafer program execution mesh facts";
+  let summary = "Materialize Wafer logical card-partition mesh facts";
   let dependentDialects = ["wafer::WaferDialect"];
   let options = [
     Option<"meshName", "mesh-name", "std::string",
            /*default=*/"\"default_mesh\"",
            "Symbol name for the materialized execution mesh">,
-    Option<"topologyName", "topology-name", "std::string",
-           /*default=*/"\"default\"",
-           "Referenced target topology symbol name">,
-    Option<"policy", "policy", "std::string",
-           /*default=*/"\"all_available\"",
-           "Execution mesh endpoint policy: all_available or explicit">,
     Option<"axes", "axes", "std::string",
-           /*default=*/"\"\"",
-           "Comma-separated logical mesh axis names; empty uses rank">,
+           /*default=*/"\"card_partition\"",
+           "Comma-separated logical card-partition axis names">,
     Option<"shape", "shape", "std::string",
            /*default=*/"\"\"",
-           "Comma-separated logical mesh axis sizes; empty uses rank count">,
-    Option<"endpoints", "endpoints", "std::string",
-           /*default=*/"\"\"",
-           "Comma-separated card_y,card_x,tile_y,tile_x tuples for explicit "
-           "execution endpoints">
+           "Comma-separated logical mesh axis sizes; must be explicit">
   ];
 }
 
@@ -77,8 +67,11 @@ def LowerInstrToTargetLLVMPass
            "default-ddr-arena-argument-index", "int64_t", /*default=*/"-1",
            "Entry argument carrying the default DDR arena base; -1 rejects "
            "compiler-managed DDR allocations">,
-    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"-1",
-           "Logical rank whose accepted Direct DTE endpoints are lowered; "
+    Option<"physicalCardId", "physical-card-id", "int64_t", /*default=*/"-1",
+           "Physical card containing the accepted Tile program; required "
+           "when Direct DTE instructions are present">,
+    Option<"physicalTileId", "physical-tile-id", "int64_t", /*default=*/"-1",
+           "Physical Tile whose accepted Direct DTE endpoints are lowered; "
            "required when Direct DTE instructions are present">,
     Option<"transportStatusArgumentIndex",
            "transport-status-argument-index", "int64_t", /*default=*/"-1",
@@ -97,52 +90,6 @@ def NormalizeStablehloCollectivesPass
       "Normalize post-SPMD StableHLO collectives to Wafer linalg extension collectives";
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect"
-  ];
-}
-
-def MaterializeFlashAttention2Pass
-    : Pass<"wafer-materialize-flash-attention-2", "mlir::ModuleOp"> {
-  let summary =
-      "Materialize selected FlashAttention-2 recurrence in structured tensor IR";
-  let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::bufferization::BufferizationDialect",
-                           "mlir::func::FuncDialect",
-                           "mlir::linalg::LinalgDialect",
-                           "mlir::math::MathDialect",
-                           "mlir::memref::MemRefDialect",
-                           "mlir::scf::SCFDialect",
-                           "mlir::tensor::TensorDialect",
-                           "wafer::WaferDialect"];
-  let options = [
-    Option<"outputTileSizes", "output-tile-sizes", "std::string",
-           /*default=*/"\"\"",
-           "Comma-separated output iteration tile sizes">,
-    Option<"keyValueTileSize", "key-value-tile-size", "int64_t",
-           /*default=*/"0", "Positive K/V reduction tile size">
-  ];
-}
-
-def MaterializeFlashDecodingPass
-    : Pass<"wafer-materialize-flash-decoding", "mlir::ModuleOp"> {
-  let summary =
-      "Materialize selected decode-only split-KV partials and LSE merge";
-  let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::bufferization::BufferizationDialect",
-                           "mlir::func::FuncDialect",
-                           "mlir::linalg::LinalgDialect",
-                           "mlir::math::MathDialect",
-                           "mlir::memref::MemRefDialect",
-                           "mlir::scf::SCFDialect",
-                           "mlir::tensor::TensorDialect",
-                           "wafer::WaferDialect"];
-  let options = [
-    Option<"outputTileSizes", "output-tile-sizes", "std::string",
-           /*default=*/"\"\"",
-           "Comma-separated output iteration tile sizes">,
-    Option<"keyValueTileSize", "key-value-tile-size", "int64_t",
-           /*default=*/"0", "Positive K/V reduction tile size">,
-    Option<"splitCount", "split-count", "int64_t", /*default=*/"0",
-           "Number of independent nonempty K/V splits">
   ];
 }
 

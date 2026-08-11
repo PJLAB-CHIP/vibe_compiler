@@ -1,6 +1,6 @@
 # UNSUPPORTED: systemc-model
 
-# RUN: not wafer-compile --input-program-dir %t.missing-input --output-program-dir %t.output --execution-ranks=1 --launch-kind=kernel --target-model --model-input 0=%t.input.npy --model-expected 0=%t.expected.npy 2>&1 | FileCheck %s
+# RUN: not wafer-compile --input-program-dir %t.missing-input --output-program-dir %t.output --num-partitions=1 --launch-kind=kernel --target-model --model-input 0=%t.input.npy --model-expected 0=%t.expected.npy 2>&1 | FileCheck %s
 
 # CHECK: wafer-compile: target model support is not configured
 # CHECK-NOT: published verified package

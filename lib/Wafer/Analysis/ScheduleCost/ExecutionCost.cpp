@@ -2,7 +2,6 @@
 
 #include "Internal.h"
 
-#include "Wafer/Analysis/StaticBufferRange.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -22,7 +21,6 @@
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
-#include <array>
 #include <optional>
 
 namespace wafer::analysis::detail {
@@ -31,11 +29,13 @@ namespace {
 static Quantity getElementCount(mlir::Value value) {
   auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
   if (!type || !type.hasStaticShape())
-    return Quantity::unknown(ScheduleCostReason::UnknownPhysicalGeometry);
+    return Quantity::unavailable(
+        ScheduleCostReason::UnavailablePhysicalGeometry);
   Quantity count{1};
   for (int64_t dim : type.getShape()) {
     if (dim < 0)
-      return Quantity::unknown(ScheduleCostReason::UnknownPhysicalGeometry);
+      return Quantity::unavailable(
+          ScheduleCostReason::UnavailablePhysicalGeometry);
     count = multiply(count, static_cast<uint64_t>(dim));
   }
   return count;
@@ -130,36 +130,9 @@ static void addNPUCost(InstructionProgramCost &cost, mlir::Type type,
   }
 }
 
-static std::optional<NoCCollectiveKind>
-classifyCollective(DTEProtocolPhase phase) {
-  switch (phase) {
-  case DTEProtocolPhase::CollectivePermute:
-    return NoCCollectiveKind::CollectivePermute;
-  case DTEProtocolPhase::AllToAll:
-    return NoCCollectiveKind::AllToAll;
-  case DTEProtocolPhase::AllGatherDirect:
-  case DTEProtocolPhase::AllGatherRing:
-    return NoCCollectiveKind::AllGather;
-  case DTEProtocolPhase::ReduceScatterDirect:
-  case DTEProtocolPhase::ReduceScatterRing:
-    return NoCCollectiveKind::ReduceScatter;
-  case DTEProtocolPhase::AllReduceRing:
-  case DTEProtocolPhase::AllReduceTreeReduce:
-  case DTEProtocolPhase::AllReduceTreeBroadcast:
-    return NoCCollectiveKind::AllReduce;
-  case DTEProtocolPhase::PeerDataflow:
-    // Peer-resident dataflow is an exact point-to-point transfer rather than
-    // an instance of one of the five collective families. Its payload still
-    // contributes to aggregate transmit/receive, event/instruction, and
-    // whole-card minimum-hop link-byte demand.
-    return std::nullopt;
-  }
-  llvm_unreachable("unhandled DTE protocol phase");
-}
-
-static void markDirectionalNoCUnknown(InstructionProgramCost &cost) {
+static void markDirectionalNoCUnavailable(InstructionProgramCost &cost) {
   for (ScheduleCostMetric &metric : cost.noc.directionalTransmitBytes)
-    degrade(metric, ScheduleCostKnowledge::Unknown,
+    degrade(metric, ScheduleCostKnowledge::Unavailable,
             ScheduleCostReason::UnresolvedNoCRoute);
 }
 
@@ -168,8 +141,8 @@ static void collectResourceCost(mlir::Operation *op,
                                 Quantity multiplicity) {
   auto addBytes = [&](ScheduleCostMetric &metric, int64_t bytes) {
     if (bytes < 0) {
-      degrade(metric, ScheduleCostKnowledge::Unknown,
-              ScheduleCostReason::UnknownResourceBytes);
+      degrade(metric, ScheduleCostKnowledge::Unavailable,
+              ScheduleCostReason::UnavailableResourceBytes);
       return;
     }
     add(metric, multiply(Quantity{static_cast<uint64_t>(bytes)}, multiplicity));
@@ -318,11 +291,7 @@ static void collectNoCCost(mlir::Operation *op, InstructionProgramCost &cost,
             : Quantity{static_cast<uint64_t>(send.getBytes())};
     Quantity total = multiply(bytes, multiplicity);
     add(cost.noc.aggregateTransmitBytes, total);
-    std::optional<NoCCollectiveKind> kind =
-        classifyCollective(send.getMessage().getPhase());
-    if (kind)
-      add(cost.noc.collectiveTransmitBytes[static_cast<size_t>(*kind)], total);
-    markDirectionalNoCUnknown(cost);
+    markDirectionalNoCUnavailable(cost);
     return;
   }
   if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(op)) {
@@ -439,20 +408,6 @@ static void collectInstructionWork(mlir::Operation *op,
   if (mlir::isa<InstrDTERecvOp>(op))
     addExecutionCount(work.dteReceiveOperations, multiplicity, 1,
                       countStaticSite);
-  if (auto send = mlir::dyn_cast<InstrDTESendOp>(op)) {
-    if (classifyCollective(send.getMessage().getPhase()))
-      addExecutionCount(work.collectiveDTEIssues, multiplicity, 1,
-                        countStaticSite);
-    else
-      addExecutionCount(work.peerDTEIssues, multiplicity, 1, countStaticSite);
-  } else if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(op)) {
-    if (classifyCollective(recv.getMessage().getPhase()))
-      addExecutionCount(work.collectiveDTEIssues, multiplicity, 1,
-                        countStaticSite);
-    else
-      addExecutionCount(work.peerDTEIssues, multiplicity, 1, countStaticSite);
-  }
-
   if (auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(op)) {
     InstructionExecutionCount *family = nullptr;
     switch (instruction.getInstructionFamily()) {
@@ -493,10 +448,10 @@ static void collectInstructionCost(mlir::Operation *op,
   collectNoCCost(op, cost, multiplicity.exact);
 }
 
-enum class ConstantIndexKnowledge { Known, Unknown, Overflow };
+enum class ConstantIndexKnowledge { Known, Unavailable, Overflow };
 
 struct ConstantIndex {
-  ConstantIndexKnowledge knowledge = ConstantIndexKnowledge::Unknown;
+  ConstantIndexKnowledge knowledge = ConstantIndexKnowledge::Unavailable;
   int64_t value = 0;
 };
 
@@ -541,7 +496,7 @@ evaluateConstantIndex(mlir::Value value,
       result =
           evaluateConstantIndex(tileRegion.getInputs()[index], activeValues);
   }
-  if (result.knowledge == ConstantIndexKnowledge::Unknown)
+  if (result.knowledge == ConstantIndexKnowledge::Unavailable)
     if (auto opResult = mlir::dyn_cast<mlir::OpResult>(value)) {
       if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(opResult.getOwner())) {
         auto yield = mlir::dyn_cast<TileYieldOp>(
@@ -552,7 +507,7 @@ evaluateConstantIndex(mlir::Value value,
               evaluateConstantIndex(yield.getValues()[index], activeValues);
       }
     }
-  if (result.knowledge == ConstantIndexKnowledge::Unknown) {
+  if (result.knowledge == ConstantIndexKnowledge::Unavailable) {
     if (auto add = value.getDefiningOp<mlir::arith::AddIOp>()) {
       result = evaluateBinary(add.getLhs(), add.getRhs(),
                               [](int64_t lhs, int64_t rhs, int64_t &folded) {
@@ -570,7 +525,7 @@ evaluateConstantIndex(mlir::Value value,
                               });
     }
   }
-  if (result.knowledge == ConstantIndexKnowledge::Unknown &&
+  if (result.knowledge == ConstantIndexKnowledge::Unavailable &&
       value.getType().isIndex()) {
     mlir::FailureOr<int64_t> constant =
         mlir::ValueBoundsConstraintSet::computeConstantBound(
@@ -597,7 +552,7 @@ static Quantity getTripCount(mlir::scf::ForOp loop) {
   if (lower.knowledge != ConstantIndexKnowledge::Known ||
       upper.knowledge != ConstantIndexKnowledge::Known ||
       step.knowledge != ConstantIndexKnowledge::Known)
-    return Quantity::unknown(ScheduleCostReason::DynamicLoopTripCount);
+    return Quantity::unavailable(ScheduleCostReason::DynamicLoopTripCount);
   if (step.value <= 0)
     return Quantity::unsupported(ScheduleCostReason::InvalidLoopStep);
   if (upper.value <= lower.value)
@@ -644,8 +599,8 @@ private:
   }
 
   static ExecutionMultiplicity
-  enterIndeterminateLoop(ExecutionMultiplicity multiplicity,
-                         Quantity tripCount) {
+  enterUnavailableTripLoop(ExecutionMultiplicity multiplicity,
+                           Quantity tripCount) {
     multiplicity.exact = multiply(multiplicity.exact, tripCount);
     multiplicity.lowerBound = Quantity{0};
     multiplicity.upperBound = multiply(multiplicity.upperBound, tripCount);
@@ -654,9 +609,9 @@ private:
 
   static ExecutionMultiplicity
   enterConditionalBranch(ExecutionMultiplicity multiplicity) {
-    multiplicity.exact =
-        multiply(multiplicity.exact,
-                 Quantity::unknown(ScheduleCostReason::ConditionalControlFlow));
+    multiplicity.exact = multiply(
+        multiplicity.exact,
+        Quantity::unavailable(ScheduleCostReason::ConditionalControlFlow));
     multiplicity.lowerBound = Quantity{0};
     // One branch cannot execute more often than its parent. Summing the two
     // branch-local upper bounds later is conservative for every work kind.
@@ -696,7 +651,7 @@ private:
         walkRegion(loop.getRegion(), multiplyAll(multiplicity, tripCount));
       else
         walkRegion(loop.getRegion(),
-                   enterIndeterminateLoop(multiplicity, tripCount));
+                   enterUnavailableTripLoop(multiplicity, tripCount));
       return;
     }
     if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(op)) {
@@ -765,8 +720,6 @@ static void forEachExactExecutionMetric(InstructionProgramCost &cost,
   callback(cost.noc.waitedEventCount);
   for (ScheduleCostMetric &metric : cost.noc.directionalTransmitBytes)
     callback(metric);
-  for (ScheduleCostMetric &metric : cost.noc.collectiveTransmitBytes)
-    callback(metric);
   for (InstructionWorkCountMember member : kInstructionWorkCountMembers)
     callback((cost.work.*member).exactExecutions);
 }
@@ -804,11 +757,6 @@ static void zipExactExecutionMetrics(InstructionProgramCost &result,
     callback(result.noc.directionalTransmitBytes[index],
              lhs.noc.directionalTransmitBytes[index],
              rhs.noc.directionalTransmitBytes[index]);
-  for (size_t index = 0; index < result.noc.collectiveTransmitBytes.size();
-       ++index)
-    callback(result.noc.collectiveTransmitBytes[index],
-             lhs.noc.collectiveTransmitBytes[index],
-             rhs.noc.collectiveTransmitBytes[index]);
   for (InstructionWorkCountMember member : kInstructionWorkCountMembers)
     callback((result.work.*member).exactExecutions,
              (lhs.work.*member).exactExecutions,
@@ -845,7 +793,7 @@ mergeConditionalExactMetric(const ScheduleCostMetric &thenMetric,
     return thenMetric;
   if (thenMetric.isKnown() && elseMetric.isKnown()) {
     ScheduleCostMetric result;
-    degrade(result, ScheduleCostKnowledge::Unknown,
+    degrade(result, ScheduleCostKnowledge::Unavailable,
             ScheduleCostReason::ConditionalControlFlow);
     return result;
   }
@@ -885,6 +833,10 @@ static void markExactExecutionCostUnsupported(InstructionProgramCost &cost) {
 /// Static-site counts and conservative bounds remain owned by ProgramWalker.
 class PathInvariantExactCostEvaluator {
 public:
+  explicit PathInvariantExactCostEvaluator(
+      llvm::function_ref<bool(mlir::Operation *)> includeOperation)
+      : includeOperation(includeOperation) {}
+
   InstructionProgramCost evaluateRoot(mlir::Operation *root) {
     InstructionProgramCost result;
     if (auto module = mlir::dyn_cast<mlir::ModuleOp>(root)) {
@@ -940,6 +892,8 @@ private:
       return;
     }
     if (isInstructionProgramOperation(operation)) {
+      if (!includeOperation(operation))
+        return;
       InstructionProgramCost instruction;
       collectInstructionCost(operation, instruction, ExecutionMultiplicity{},
                              /*countStaticSite=*/false);
@@ -993,12 +947,14 @@ private:
 
   llvm::DenseSet<mlir::Operation *> activeFunctions;
   llvm::DenseMap<mlir::Operation *, InstructionProgramCost> functionCosts;
+  llvm::function_ref<bool(mlir::Operation *)> includeOperation;
 };
 
-static void refinePathInvariantExactCost(mlir::Operation *root,
-                                         InstructionProgramCost &cost) {
+static void refinePathInvariantExactCost(
+    mlir::Operation *root, InstructionProgramCost &cost,
+    llvm::function_ref<bool(mlir::Operation *)> includeOperation) {
   InstructionProgramCost exact =
-      PathInvariantExactCostEvaluator().evaluateRoot(root);
+      PathInvariantExactCostEvaluator(includeOperation).evaluateRoot(root);
   zipExactExecutionMetrics(
       cost, cost, exact,
       [](ScheduleCostMetric &result, const ScheduleCostMetric &,
@@ -1037,10 +993,14 @@ void walkInstructionProgram(
   walkInstructionProgramWork(root, adapt, onUnsupportedControlFlow);
 }
 
-void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
+void collectExecutionCost(
+    mlir::Operation *root, InstructionProgramCost &cost,
+    llvm::function_ref<bool(mlir::Operation *)> includeOperation) {
   llvm::DenseSet<mlir::Operation *> countedStaticSites;
   auto collect = [&](mlir::Operation *operation,
                      ExecutionMultiplicity multiplicity) {
+    if (!includeOperation(operation))
+      return;
     bool executes =
         multiplicity.exact.knowledge != ScheduleCostKnowledge::Known ||
         multiplicity.exact.value != 0;
@@ -1071,8 +1031,6 @@ void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
     mark(cost.noc.waitedEventCount);
     for (ScheduleCostMetric &metric : cost.noc.directionalTransmitBytes)
       mark(metric);
-    for (ScheduleCostMetric &metric : cost.noc.collectiveTransmitBytes)
-      mark(metric);
     auto markCount = [&](InstructionExecutionCount &count) {
       mark(count.staticSites);
       mark(count.exactExecutions);
@@ -1083,7 +1041,7 @@ void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
       markCount(cost.work.*member);
   };
   walkInstructionProgramWork(root, collect, markAllUnsupported);
-  refinePathInvariantExactCost(root, cost);
+  refinePathInvariantExactCost(root, cost, includeOperation);
 
   auto exact = [](const InstructionExecutionCount &count) {
     return count.exactExecutions;
@@ -1109,540 +1067,8 @@ void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
   cost.noc.waitOperationCount = exact(cost.work.dteWaitOperations);
 }
 
-namespace {
-
-struct BufferDependencyState {
-  uint64_t lastWriterDepth = 0;
-  uint64_t maximumReaderDepth = 0;
-};
-
-struct StructuralScheduleFacts {
-  uint64_t maximumDependencyDepth = 0;
-  uint64_t readyPriorityInversions = 0;
-};
-
-struct NCCWorkerScheduleState {
-  /// Maximum depth among ordered issues that have not crossed a completion
-  /// boundary. Independent engines on one worker are deliberately not chained
-  /// here; the participant join consumes their maximum frontier.
-  uint64_t pendingIssueDepth = 0;
-  /// A participant join is an issue-order floor only for the workers that it
-  /// names. Unrelated workers and Direct DTE remain independent.
-  uint64_t completionDepth = 0;
-};
-
-static unsigned getStaticReadyPriority(mlir::Operation *operation) {
-  auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(operation);
-  if (!instruction)
-    return 3;
-  switch (instruction.getInstructionFamily()) {
-  case InstrFamily::RDMA:
-  case InstrFamily::WDMA:
-  case InstrFamily::TDMA:
-    return 0;
-  case InstrFamily::DTE:
-    return 1;
-  case InstrFamily::CT:
-  case InstrFamily::NE:
-    return 2;
-  }
-  llvm_unreachable("unknown instruction family");
-}
-
-class StructuralScheduleAnalyzer {
-public:
-  explicit StructuralScheduleAnalyzer(mlir::func::FuncOp function)
-      : function(function) {}
-
-  std::optional<StructuralScheduleFacts> analyze() {
-    if (function.isDeclaration() || !function.getBody().hasOneBlock() ||
-        !walkBlock(function.getBody().front()))
-      return std::nullopt;
-    return StructuralScheduleFacts{maximumDepth, readyPriorityInversions};
-  }
-
-private:
-  // This is a production-analysis work bound, not an IR or shape protocol.
-  // Fixed loops usually converge after a small structural body; the generous
-  // cap prevents malformed accepted IR from turning selection into unbounded
-  // dynamic expansion while covering normal final instruction programs.
-  static constexpr uint64_t kMaximumExpandedInstructions = 1ULL << 20;
-
-  mlir::Value canonicalResource(mlir::Value value) const {
-    if (!value)
-      return value;
-    auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
-    if (!argument)
-      return value;
-    auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(
-        argument.getOwner()->getParentOp());
-    if (!loop)
-      return value;
-    auto iterArgs = loop.getRegionIterArgs();
-    auto found = llvm::find(iterArgs, argument);
-    if (found == iterArgs.end())
-      return value;
-    return canonicalResource(
-        loop.getInitArgs()[static_cast<size_t>(found - iterArgs.begin())]);
-  }
-
-  void resetLoopLocalState(mlir::scf::ForOp loop) {
-    loop.getRegion().walk([&](mlir::Operation *operation) {
-      operationDepths.erase(operation);
-      for (mlir::Value result : operation->getResults())
-        buffers.erase(result);
-    });
-    for (mlir::Block &block : loop.getRegion())
-      for (mlir::BlockArgument argument : block.getArguments())
-        buffers.erase(argument);
-  }
-
-  bool walkBlock(mlir::Block &block) {
-    // A structured block invocation has a fresh ready queue. Re-entering a
-    // fixed loop body therefore does not compare priorities across dynamic
-    // iterations, while the inversion count still accumulates exactly.
-    readyBlock = nullptr;
-    std::fill_n(seenReadyPriorities, 3, 0);
-    for (mlir::Operation &operation : block)
-      if (!walkOperation(&operation))
-        return false;
-    return true;
-  }
-
-  bool walkOperation(mlir::Operation *operation) {
-    if (isInstructionProgramOperation(operation))
-      return analyzeInstruction(operation);
-
-    if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(operation)) {
-      Quantity tripCount = getTripCount(loop);
-      if (tripCount.knowledge != ScheduleCostKnowledge::Known)
-        return false;
-      if (tripCount.value == 0)
-        return true;
-      // Dependency depth is a structural path metric, not dynamic consumed
-      // work. A fixed loop contributes its verified body graph once; exact
-      // execution multiplicity is already owned by InstructionProgramWork.
-      // Loop-carried memrefs are canonicalized to their init resources, so
-      // real carried hazards remain visible without expanding by trip count.
-      resetLoopLocalState(loop);
-      return walkBlock(*loop.getBody());
-    }
-
-    if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(operation)) {
-      std::optional<int64_t> condition = mlir::getConstantIntValue(
-          mlir::getAsOpFoldResult(ifOp.getCondition()));
-      if (!condition)
-        return false;
-      mlir::Region &selected =
-          *condition ? ifOp.getThenRegion() : ifOp.getElseRegion();
-      return selected.empty() ||
-             (selected.hasOneBlock() && walkBlock(selected.front()));
-    }
-
-    if (mlir::isa<mlir::func::CallOp>(operation))
-      return false;
-    for (mlir::Region &region : operation->getRegions()) {
-      if (!region.hasOneBlock() || !walkBlock(region.front()))
-        return false;
-    }
-    return true;
-  }
-
-  bool analyzeInstruction(mlir::Operation *operation) {
-    if (expandedInstructions == kMaximumExpandedInstructions)
-      return false;
-    ++expandedInstructions;
-
-    auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
-    if (!effects)
-      return false;
-
-    uint64_t predecessorDepth = 0;
-    for (mlir::Value operand : operation->getOperands()) {
-      auto definition = operationDepths.find(operand.getDefiningOp());
-      if (definition != operationDepths.end())
-        predecessorDepth = std::max(predecessorDepth, definition->second);
-    }
-
-    llvm::DenseMap<mlir::Value, unsigned> accesses;
-    llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> instances;
-    effects.getEffects(instances);
-    for (const auto &effect : instances) {
-      mlir::Value value = canonicalResource(effect.getValue());
-      if (!value)
-        continue;
-      unsigned &flags = accesses[value];
-      flags |=
-          llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect()) ? 1u : 0u;
-      flags |=
-          llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect()) ? 2u : 0u;
-    }
-    for (auto [value, flags] : accesses) {
-      const BufferDependencyState &state = buffers[value];
-      if (flags & 1u)
-        predecessorDepth = std::max(predecessorDepth, state.lastWriterDepth);
-      if (flags & 2u)
-        predecessorDepth = std::max({predecessorDepth, state.lastWriterDepth,
-                                     state.maximumReaderDepth});
-    }
-
-    NCCCompletionContract completion = getNCCCompletionContract(operation);
-    bool isCompletionBarrier =
-        completion.behavior == LocalInstructionCompletion::ParticipantJoin ||
-        completion.behavior == LocalInstructionCompletion::SynchronousWriteback;
-    if (completion.behavior == LocalInstructionCompletion::OrderedPending &&
-        completion.issueWorker) {
-      const auto worker = static_cast<uint32_t>(*completion.issueWorker);
-      if (worker >= nccWorkers.size())
-        return false;
-      predecessorDepth =
-          std::max(predecessorDepth, nccWorkers[worker].completionDepth);
-    } else if (isCompletionBarrier) {
-      uint32_t participants = completion.participantMask;
-      for (uint32_t worker = 0; worker < nccWorkers.size(); ++worker) {
-        if ((participants & (uint32_t{1} << worker)) == 0)
-          continue;
-        predecessorDepth =
-            std::max({predecessorDepth, nccWorkers[worker].pendingIssueDepth,
-                      nccWorkers[worker].completionDepth});
-      }
-    }
-    uint64_t depth = 0;
-    if (!checkedAdd(predecessorDepth, 1, depth))
-      return false;
-    operationDepths[operation] = depth;
-    maximumDepth = std::max(maximumDepth, depth);
-
-    for (auto [value, flags] : accesses) {
-      BufferDependencyState &state = buffers[value];
-      if (flags & 2u) {
-        state.lastWriterDepth = depth;
-        state.maximumReaderDepth = 0;
-      } else if (flags & 1u) {
-        state.maximumReaderDepth = std::max(state.maximumReaderDepth, depth);
-      }
-    }
-    if (completion.behavior == LocalInstructionCompletion::OrderedPending &&
-        completion.issueWorker) {
-      const auto worker = static_cast<uint32_t>(*completion.issueWorker);
-      nccWorkers[worker].pendingIssueDepth =
-          std::max(nccWorkers[worker].pendingIssueDepth, depth);
-    } else if (isCompletionBarrier) {
-      uint32_t participants = completion.participantMask;
-      for (uint32_t worker = 0; worker < nccWorkers.size(); ++worker) {
-        if ((participants & (uint32_t{1} << worker)) == 0)
-          continue;
-        nccWorkers[worker].pendingIssueDepth = 0;
-        nccWorkers[worker].completionDepth = depth;
-      }
-    }
-
-    if (operation->getBlock() != readyBlock || isCompletionBarrier) {
-      readyBlock = operation->getBlock();
-      std::fill_n(seenReadyPriorities, 3, 0);
-    }
-    if (!isCompletionBarrier) {
-      unsigned priority = getStaticReadyPriority(operation);
-      uint64_t precedingLowerPriority = 0;
-      for (unsigned index = priority + 1; index < 3; ++index)
-        if (!checkedAdd(precedingLowerPriority, seenReadyPriorities[index],
-                        precedingLowerPriority))
-          return false;
-      if (!checkedAdd(readyPriorityInversions, precedingLowerPriority,
-                      readyPriorityInversions))
-        return false;
-      if (!checkedAdd(seenReadyPriorities[priority], 1,
-                      seenReadyPriorities[priority]))
-        return false;
-    }
-    return true;
-  }
-
-  mlir::func::FuncOp function;
-  llvm::DenseMap<mlir::Value, BufferDependencyState> buffers;
-  llvm::DenseMap<mlir::Operation *, uint64_t> operationDepths;
-  std::array<NCCWorkerScheduleState, kNCCWorkerCount> nccWorkers;
-  uint64_t maximumDepth = 0;
-  uint64_t readyPriorityInversions = 0;
-  uint64_t seenReadyPriorities[3] = {};
-  mlir::Block *readyBlock = nullptr;
-  uint64_t expandedInstructions = 0;
-};
-
-static std::optional<StructuralScheduleFacts>
-analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
-  return StructuralScheduleAnalyzer(function).analyze();
-}
-
-} // namespace
-
-void collectDataDependencyDepth(mlir::Operation *root,
-                                InstructionProgramCost &cost) {
-  bool sawFunction = false;
-  bool unknown = false;
-  root->walk([&](mlir::func::FuncOp function) {
-    if (function.isDeclaration())
-      return;
-    sawFunction = true;
-    std::optional<StructuralScheduleFacts> facts =
-        analyzeFunctionStructuralSchedule(function);
-    if (!facts) {
-      unknown = true;
-      return;
-    }
-    cost.dataDependencyDepth.value =
-        std::max(cost.dataDependencyDepth.value, facts->maximumDependencyDepth);
-    add(cost.readyOrderPriorityInversions,
-        Quantity{facts->readyPriorityInversions});
-  });
-  if (!sawFunction || unknown) {
-    degrade(cost.dataDependencyDepth, ScheduleCostKnowledge::Unknown,
-            ScheduleCostReason::UnsupportedControlFlow);
-    degrade(cost.readyOrderPriorityInversions, ScheduleCostKnowledge::Unknown,
-            ScheduleCostReason::UnsupportedControlFlow);
-  }
-}
-
-namespace {
-
-static bool isSPMValue(mlir::Value value) {
-  auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
-  MemoryAttr memory = type ? getWaferMemoryAttr(type) : MemoryAttr{};
-  return memory && memory.getSpace() == MemorySpace::SPM;
-}
-
-static bool hasRotatingSPMState(mlir::scf::ForOp loop) {
-  mlir::Block::BlockArgListType iterArgs = loop.getRegionIterArgs();
-  if (iterArgs.empty())
-    return false;
-  auto yield = mlir::cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
-  for (auto [index, iterArg] : llvm::enumerate(iterArgs)) {
-    if (!isSPMValue(iterArg))
-      continue;
-    mlir::Value yielded = yield.getOperand(index);
-    if (yielded != iterArg && isSPMValue(yielded) &&
-        llvm::is_contained(iterArgs, yielded))
-      return true;
-  }
-  return false;
-}
-
-static bool instructionUsesOnlyF16Bf16ShapedValues(mlir::Operation *operation) {
-  bool sawShaped = false;
-  for (mlir::Value operand : operation->getOperands()) {
-    auto shaped = mlir::dyn_cast<mlir::ShapedType>(operand.getType());
-    if (!shaped)
-      continue;
-    sawShaped = true;
-    mlir::Type elementType = shaped.getElementType();
-    if (!elementType.isF16() && !mlir::isa<mlir::BFloat16Type>(elementType))
-      return false;
-  }
-  return sawShaped;
-}
-
-static bool hasStaticPositiveTripCount(mlir::scf::ForOp loop) {
-  Quantity tripCount = getTripCount(loop);
-  return tripCount.knowledge == ScheduleCostKnowledge::Known &&
-         tripCount.value > 0;
-}
-
-static bool
-isQualifiedNCCOverlapWindow(mlir::scf::ForOp loop,
-                            const TargetScheduleCostPolicy &policy) {
-  if (policy.qualifiedOverlapFamilyMask == 0)
-    return false;
-
-  uint32_t familyMask = 0;
-  for (mlir::Operation &operation : loop.getBody()->without_terminator()) {
-    auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(&operation);
-    if (!instruction)
-      continue;
-    NCCCompletionContract completion = getNCCCompletionContract(&operation);
-    if (completion.behavior != LocalInstructionCompletion::OrderedPending ||
-        !completion.issueWorker ||
-        static_cast<uint32_t>(*completion.issueWorker) !=
-            policy.qualifiedOverlapWorker ||
-        !instructionUsesOnlyF16Bf16ShapedValues(&operation))
-      return false;
-    const uint32_t family =
-        static_cast<uint32_t>(instruction.getInstructionFamily());
-    if (family >= 32)
-      return false;
-    familyMask |= uint32_t{1} << family;
-  }
-  return familyMask == policy.qualifiedOverlapFamilyMask;
-}
-
-static bool
-isDTEFootprintCompatibleWithOperation(mlir::Operation *operation,
-                                      const StaticBufferRange &eventRange,
-                                      bool eventWritesBuffer) {
-  if (operation->getNumRegions() != 0)
-    return false;
-  if (mlir::isMemoryEffectFree(operation))
-    return true;
-
-  auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
-  if (!effects)
-    return false;
-  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> instances;
-  effects.getEffects(instances);
-
-  // Rootless resource effects describe an execution engine, not an operand
-  // range. Every concrete memref operand must still have an operand-specific
-  // effect so an omitted access cannot be mistaken for independence.
-  for (mlir::Value operand : operation->getOperands()) {
-    if (!mlir::isa<mlir::MemRefType>(operand.getType()))
-      continue;
-    if (llvm::none_of(instances, [&](const auto &effect) {
-          return effect.getValue() == operand;
-        }))
-      return false;
-  }
-
-  for (const auto &effect : instances) {
-    mlir::Value value = effect.getValue();
-    if (!value || !mlir::isa<mlir::MemRefType>(value.getType()))
-      continue;
-    std::optional<StaticBufferRange> accessRange =
-        resolveStaticBufferRange(value);
-    if (!accessRange)
-      return false;
-    if (accessRange->root != eventRange.root ||
-        staticByteRangesAreDisjoint(accessRange->bytes, eventRange.bytes))
-      continue;
-    const bool read = llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
-    // The Direct-DTE sender and compute may read the same bytes concurrently.
-    // A receive owns a pending write, while any send-source write is a true
-    // issue-to-wait hazard.
-    if (eventWritesBuffer || !read)
-      return false;
-  }
-  return true;
-}
-
-static bool
-isQualifiedDirectDTEComputeWindow(mlir::Operation *issue,
-                                  const TargetScheduleCostPolicy &policy) {
-  if (policy.qualifiedDirectDTEOverlapFamilyMask == 0)
-    return false;
-
-  const uint32_t dteFamily = static_cast<uint32_t>(InstrFamily::DTE);
-  if (dteFamily >= 32 || (policy.qualifiedDirectDTEOverlapFamilyMask &
-                          (uint32_t{1} << dteFamily)) == 0)
-    return false;
-
-  mlir::Value token;
-  mlir::Value buffer;
-  bool eventWritesBuffer = false;
-  if (auto send = mlir::dyn_cast<InstrDTESendOp>(issue)) {
-    if (!send.getBinding())
-      return false;
-    token = send.getToken();
-    buffer = send.getBuffer();
-  } else if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(issue)) {
-    if (!recv.getBinding())
-      return false;
-    token = recv.getToken();
-    buffer = recv.getBuffer();
-    eventWritesBuffer = true;
-  } else {
-    return false;
-  }
-  if (!instructionUsesOnlyF16Bf16ShapedValues(issue) || !token.hasOneUse())
-    return false;
-  auto wait = mlir::dyn_cast<InstrDTEWaitOp>(*token.getUsers().begin());
-  if (!wait || wait->getBlock() != issue->getBlock() ||
-      !issue->isBeforeInBlock(wait))
-    return false;
-  std::optional<StaticBufferRange> eventRange =
-      resolveStaticBufferRange(buffer);
-  if (!eventRange)
-    return false;
-
-  bool hasQualifiedCompute = false;
-  for (mlir::Operation *between = issue->getNextNode();
-       between && between != wait.getOperation();
-       between = between->getNextNode()) {
-    if (!isDTEFootprintCompatibleWithOperation(between, *eventRange,
-                                               eventWritesBuffer))
-      return false;
-    auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(between);
-    if (!instruction || instruction.getInstructionFamily() == InstrFamily::DTE)
-      continue;
-    const uint32_t family =
-        static_cast<uint32_t>(instruction.getInstructionFamily());
-    hasQualifiedCompute |= family < 32 &&
-                           (policy.qualifiedDirectDTEOverlapFamilyMask &
-                            (uint32_t{1} << family)) != 0 &&
-                           instructionUsesOnlyF16Bf16ShapedValues(between);
-  }
-  return hasQualifiedCompute;
-}
-
-static bool isUnreachableUnderConstantConditional(mlir::Operation *operation) {
-  for (mlir::Operation *child = operation; child && child->getParentOp();) {
-    mlir::Operation *parent = child->getParentOp();
-    if (auto conditional = mlir::dyn_cast<mlir::scf::IfOp>(parent)) {
-      std::optional<int64_t> condition = mlir::getConstantIntValue(
-          mlir::getAsOpFoldResult(conditional.getCondition()));
-      if (condition) {
-        mlir::Region *selected = *condition ? &conditional.getThenRegion()
-                                            : &conditional.getElseRegion();
-        if (child->getParentRegion() != selected)
-          return true;
-      }
-    }
-    child = parent;
-  }
-  return false;
-}
-
-} // namespace
-
-void collectQualifiedOverlapWindows(mlir::Operation *root,
-                                    InstructionProgramCost &cost,
-                                    const TargetScheduleCostPolicy &policy) {
-  bool unsupportedControlFlow = false;
-  root->walk([&](mlir::Operation *operation) {
-    if (isUnreachableUnderConstantConditional(operation))
-      return;
-    if (auto conditional = mlir::dyn_cast<mlir::scf::IfOp>(operation)) {
-      if (!mlir::getConstantIntValue(
-              mlir::getAsOpFoldResult(conditional.getCondition())))
-        unsupportedControlFlow = true;
-      return;
-    }
-    if (mlir::isa<mlir::func::CallOp>(operation)) {
-      unsupportedControlFlow = true;
-      return;
-    }
-    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation) &&
-        isQualifiedDirectDTEComputeWindow(operation, policy))
-      add(cost.directDTEComputeOverlapWindowCount, Quantity{1});
-
-    auto loop = mlir::dyn_cast<mlir::scf::ForOp>(operation);
-    if (!loop || !hasStaticPositiveTripCount(loop))
-      return;
-    if (!hasRotatingSPMState(loop))
-      return;
-    const bool ncc = isQualifiedNCCOverlapWindow(loop, policy);
-    const bool directDTE = llvm::any_of(
-        loop.getBody()->without_terminator(), [&](mlir::Operation &nested) {
-          return mlir::isa<InstrDTESendOp, InstrDTERecvOp>(&nested) &&
-                 isQualifiedDirectDTEComputeWindow(&nested, policy);
-        });
-    if (ncc || directDTE)
-      add(cost.qualifiedOverlapWindowCount, Quantity{1});
-  });
-  if (unsupportedControlFlow) {
-    degrade(cost.qualifiedOverlapWindowCount, ScheduleCostKnowledge::Unknown,
-            ScheduleCostReason::UnsupportedControlFlow);
-    degrade(cost.directDTEComputeOverlapWindowCount,
-            ScheduleCostKnowledge::Unknown,
-            ScheduleCostReason::UnsupportedControlFlow);
-  }
+void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
+  collectExecutionCost(root, cost, [](mlir::Operation *) { return true; });
 }
 
 } // namespace wafer::analysis::detail

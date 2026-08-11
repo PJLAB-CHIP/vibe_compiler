@@ -339,6 +339,10 @@ func.func @reject_factorize() {
 
 //--- dte-atomic.mlir
 
+wafer.target.topology @default
+    {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+     tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+
 func.func @valid_before_transport_failure() {
   wafer.instr.ncc_join [0]
   return
@@ -348,7 +352,7 @@ func.func @transport_failure() {
   %spm = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
       : memref<4xf16, #wafer.memory<spm, tensor>>
   %token = wafer.instr.dte_send %spm {peer = 1 : i64, bytes = 8 : i64,
-      message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+      message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
       : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
   return
 }

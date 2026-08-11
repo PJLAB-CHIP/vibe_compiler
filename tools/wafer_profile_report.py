@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate final-artifact profiler evidence and publish an offline report."""
+"""Validate production-artifact profiler evidence and publish an offline report."""
 
 from __future__ import annotations
 
@@ -16,13 +16,13 @@ from typing import Any
 
 
 SCHEMA_NAME = "wafer.profile.evidence"
-SCHEMA_VERSION = 9
-COMPANION_SCHEMA_VERSION = 6
+SCHEMA_VERSION = 10
+COMPANION_SCHEMA_VERSION = 9
 RECORD_ABI = "wafer-tx81-profiler-record-v4"
 ANALYSIS_SCHEMA_NAME = "wafer.profile.analysis"
-ANALYSIS_SCHEMA_VERSION = 8
+ANALYSIS_SCHEMA_VERSION = 9
 STATIC_COST_MODEL = "tx81-static-peak-lower-bound-v1"
-STATIC_COST_SCOPE = "complete-final-instruction-program-per-rank"
+STATIC_COST_SCOPE = "complete-final-instruction-program-per-physical-tile"
 TILES = tuple(range(16))
 NCC_ENGINES = ("CT", "NE", "RDMA", "WDMA", "TDMA")
 ENGINES = NCC_ENGINES + ("DIRECT_DTE",)
@@ -77,17 +77,19 @@ UINT32_MAX = (1 << 32) - 1
 TRACE_COMPLETE_FLAGS = 71
 TRACE_COMPLETE_STATE = 2
 MAX_COMPLETION_RESOLUTION_FRACTION = 0.0025
-STATIC_COST_KNOWLEDGE = ("known", "unknown", "unsupported", "overflow")
+STATIC_COST_KNOWLEDGE = ("known", "unavailable", "unsupported", "overflow")
 STATIC_COST_REASONS = (
     "none",
     "dynamic-loop-trip-count",
     "invalid-loop-step",
     "conditional-control-flow",
     "unsupported-control-flow",
-    "unknown-physical-geometry",
-    "unknown-resource-bytes",
+    "unavailable-physical-geometry",
+    "unavailable-resource-bytes",
     "missing-accepted-spm-offset",
     "invalid-accepted-spm-offset",
+    "missing-accepted-ddr-offset",
+    "invalid-accepted-ddr-offset",
     "unsupported-spm-root",
     "unresolved-noc-route",
     "invalid-execution-topology",
@@ -115,17 +117,10 @@ STATIC_COST_WORK_METRICS = (
     "noc_receive_bytes",
 )
 STATIC_COST_DIRECTIONS = ("north", "east", "south", "west")
-STATIC_COST_COLLECTIVES = (
-    "collective_permute",
-    "all_to_all",
-    "all_gather",
-    "reduce_scatter",
-    "all_reduce",
-)
 
 
 class EvidenceError(ValueError):
-    """The evidence does not conform to the final-artifact contract."""
+    """The evidence does not conform to the production-artifact contract."""
 
 
 def _fail(path: str, message: str) -> None:
@@ -214,20 +209,64 @@ def _tile_rows(value: object, path: str) -> tuple[Mapping[str, Any], ...]:
         _mapping(row, f"{path}[{index}]")
         for index, row in enumerate(_sequence(value, path))
     )
-    ids = [
-        _integer(row.get("tile"), f"{path}[{index}].tile")
+    tile_ids = [
+        _integer(
+            row.get("tile_id"),
+            f"{path}[{index}].tile_id",
+            minimum=0,
+            maximum=15,
+        )
         for index, row in enumerate(rows)
     ]
-    duplicates = sorted(key for key, count in Counter(ids).items() if count > 1)
-    missing = sorted(set(TILES) - set(ids))
-    extra = sorted(set(ids) - set(TILES))
-    if len(rows) != 16 or duplicates or missing or extra:
+    launch_slots: list[int] = []
+    for index, row in enumerate(rows):
+        if _integer(row.get("card_id"), f"{path}[{index}].card_id") != 0:
+            _fail(f"{path}[{index}].card_id", "must be 0")
+        launch_slots.append(
+            _integer(
+                row.get("launch_slot"),
+                f"{path}[{index}].launch_slot",
+                minimum=0,
+                maximum=15,
+            )
+        )
+    duplicate_tiles = sorted(
+        key for key, count in Counter(tile_ids).items() if count > 1
+    )
+    missing_tiles = sorted(set(TILES) - set(tile_ids))
+    duplicate_slots = sorted(
+        key for key, count in Counter(launch_slots).items() if count > 1
+    )
+    missing_slots = sorted(set(TILES) - set(launch_slots))
+    if (
+        len(rows) != 16
+        or duplicate_tiles
+        or missing_tiles
+        or duplicate_slots
+        or missing_slots
+    ):
         _fail(
             path,
-            "must contain all-and-only tiles 0..15 exactly once "
-            f"(duplicates={duplicates}, missing={missing}, extra={extra})",
+            "must contain unique physical Tiles 0..15 and unique dense "
+            "launch slots 0..15 "
+            f"(duplicate_tiles={duplicate_tiles}, "
+            f"missing_tiles={missing_tiles}, "
+            f"duplicate_launch_slots={duplicate_slots}, "
+            f"missing_launch_slots={missing_slots})",
         )
     return rows
+
+
+def _validate_tile_binding(
+    row: Mapping[str, Any], path: str, topology: Mapping[int, int]
+) -> None:
+    tile_id = int(row["tile_id"])
+    launch_slot = int(row["launch_slot"])
+    if topology.get(tile_id) != launch_slot:
+        _fail(
+            f"{path}.launch_slot",
+            "must match the explicit topology physical-Tile binding",
+        )
 
 
 def _validate_launch(value: object, path: str) -> Mapping[str, Any]:
@@ -244,14 +283,14 @@ def _validate_launch(value: object, path: str) -> Mapping[str, Any]:
             )
         )
         contracts = {
-            "per-rank": ("rank-local-pointer-block", ("main",)),
-            "grid": ("rank-major-pointer-table", ("main",)),
-            "cluster": (
-                "rank-major-pointer-table",
-                ("prepare", "main"),
-            ),
+            "grid": ("main",),
+            "cluster": ("prepare", "main"),
         }
-        if contracts.get(form) != (entry_abi, phases):
+        if (
+            entry_abi
+            not in {"tile-major-pointer-table", "tile-row-pointer-table"}
+            or contracts.get(form) != phases
+        ):
             _fail(path, "kernel form, entry ABI and phases are incompatible")
         return launch
     if kind == "model":
@@ -289,7 +328,8 @@ def _validate_identity(evidence: Mapping[str, Any]) -> None:
             "profile_companion_schema_version",
             "target_identity",
             "launch",
-            "execution_ranks",
+            "card_count",
+            "tile_count",
             "site_correlation_basis",
             "record_abi",
         },
@@ -310,8 +350,10 @@ def _validate_identity(evidence: Mapping[str, Any]) -> None:
         )
     _string(identity["target_identity"], "identity.target_identity")
     _validate_launch(identity["launch"], "identity.launch")
-    if _integer(identity["execution_ranks"], "identity.execution_ranks") != 16:
-        _fail("identity.execution_ranks", "must be 16")
+    if _integer(identity["card_count"], "identity.card_count") != 1:
+        _fail("identity.card_count", "must be 1")
+    if _integer(identity["tile_count"], "identity.tile_count") != 16:
+        _fail("identity.tile_count", "must be 16")
     basis = _string(
         identity["site_correlation_basis"],
         "identity.site_correlation_basis",
@@ -322,11 +364,18 @@ def _validate_identity(evidence: Mapping[str, Any]) -> None:
         _fail("identity.record_abi", f"must be {RECORD_ABI!r}")
 
 
-def _validate_topology(evidence: Mapping[str, Any]) -> None:
+def _validate_topology(evidence: Mapping[str, Any]) -> dict[int, int]:
     coordinates: set[tuple[int, int]] = set()
+    bindings: dict[int, int] = {}
     for index, row in enumerate(_tile_rows(evidence["topology"], "topology")):
         path = f"topology[{index}]"
-        _exact_keys(row, {"tile", "x", "y"}, path)
+        _exact_keys(
+            row, {"card_id", "tile_id", "launch_slot", "x", "y"}, path
+        )
+        if _integer(row["card_id"], f"{path}.card_id") != 0:
+            _fail(f"{path}.card_id", "must be 0")
+        tile_id = int(row["tile_id"])
+        bindings[tile_id] = int(row["launch_slot"])
         coordinate = (
             _integer(row["x"], f"{path}.x", minimum=0),
             _integer(row["y"], f"{path}.y", minimum=0),
@@ -334,6 +383,7 @@ def _validate_topology(evidence: Mapping[str, Any]) -> None:
         if coordinate in coordinates:
             _fail(path, f"duplicate physical coordinate {coordinate}")
         coordinates.add(coordinate)
+    return bindings
 
 
 def _validate_measurement(evidence: Mapping[str, Any]) -> None:
@@ -423,14 +473,14 @@ def _validate_output(evidence: Mapping[str, Any]) -> None:
     )
     if not rows:
         _fail("output_validation.resources", "must not be empty")
-    keys: set[tuple[int, str, int]] = set()
+    keys: set[tuple[str, int, int | None, str, int]] = set()
     comparisons: list[str | None] = []
     for index, row in enumerate(rows):
         path = f"output_validation.resources[{index}]"
         _exact_keys(
             row,
             {
-                "logical_rank",
+                "scope",
                 "role",
                 "role_index",
                 "bytes",
@@ -441,8 +491,35 @@ def _validate_output(evidence: Mapping[str, Any]) -> None:
             },
             path,
         )
+        scope = _mapping(row["scope"], f"{path}.scope")
+        scope_kind = _string(scope.get("kind"), f"{path}.scope.kind")
+        expected_scope_keys = (
+            {"kind", "card_id"}
+            if scope_kind == "card"
+            else {"kind", "card_id", "tile_id"}
+            if scope_kind == "tile"
+            else set()
+        )
+        if not expected_scope_keys:
+            _fail(f"{path}.scope.kind", "must be 'card' or 'tile'")
+        _exact_keys(scope, expected_scope_keys, f"{path}.scope")
+        card_id = _integer(scope["card_id"], f"{path}.scope.card_id")
+        if card_id != 0:
+            _fail(f"{path}.scope.card_id", "must be 0")
+        tile_id = (
+            _integer(
+                scope["tile_id"],
+                f"{path}.scope.tile_id",
+                minimum=0,
+                maximum=15,
+            )
+            if scope_kind == "tile"
+            else None
+        )
         key = (
-            _integer(row["logical_rank"], f"{path}.logical_rank", minimum=-1),
+            scope_kind,
+            card_id,
+            tile_id,
             _string(row["role"], f"{path}.role"),
             _integer(row["role_index"], f"{path}.role_index", minimum=0),
         )
@@ -487,13 +564,16 @@ def _validate_output(evidence: Mapping[str, Any]) -> None:
 
 def _validate_sites(
     evidence: Mapping[str, Any],
+    topology: Mapping[int, int],
 ) -> dict[tuple[int, int], Mapping[str, Any]]:
     sites: dict[tuple[int, int], Mapping[str, Any]] = {}
     for index, row_value in enumerate(_sequence(evidence["sites"], "sites")):
         row = _mapping(row_value, f"sites[{index}]")
         path = f"sites[{index}]"
         required = {
-            "tile",
+            "card_id",
+            "tile_id",
+            "launch_slot",
             "site_id",
             "site_kind",
             "correlation_key",
@@ -505,7 +585,15 @@ def _validate_sites(
             required | {"position"}
         ):
             _exact_keys(row, required | ({"position"} if "position" in row else set()), path)
-        tile = _integer(row["tile"], f"{path}.tile", minimum=0, maximum=15)
+        if _integer(row["card_id"], f"{path}.card_id") != 0:
+            _fail(f"{path}.card_id", "must be 0")
+        tile = _integer(
+            row["tile_id"], f"{path}.tile_id", minimum=0, maximum=15
+        )
+        _integer(
+            row["launch_slot"], f"{path}.launch_slot", minimum=0, maximum=15
+        )
+        _validate_tile_binding(row, path, topology)
         site_id = _integer(row["site_id"], f"{path}.site_id", minimum=0)
         key = (tile, site_id)
         if key in sites:
@@ -548,22 +636,23 @@ def _validate_sites(
 def _validate_experiment(
     evidence: Mapping[str, Any],
     sites: Mapping[tuple[int, int], Mapping[str, Any]],
+    topology: Mapping[int, int],
 ) -> None:
     experiment = _mapping(evidence["experiment"], "experiment")
     _exact_keys(experiment, {"artifact", "clock", "trace", "pmu"}, "experiment")
     artifact = _mapping(experiment["artifact"], "experiment.artifact")
     _exact_keys(
         artifact,
-        {"digest", "target_identity", "launch", "execution_ranks"},
+        {"digest", "target_identity", "launch", "card_count", "tile_count"},
         "experiment.artifact",
     )
     _sha256(artifact["digest"], "experiment.artifact.digest")
     _string(artifact["target_identity"], "experiment.artifact.target_identity")
     _validate_launch(artifact["launch"], "experiment.artifact.launch")
-    if _integer(
-        artifact["execution_ranks"], "experiment.artifact.execution_ranks"
-    ) != 16:
-        _fail("experiment.artifact.execution_ranks", "must be 16")
+    if _integer(artifact["card_count"], "experiment.artifact.card_count") != 1:
+        _fail("experiment.artifact.card_count", "must be 1")
+    if _integer(artifact["tile_count"], "experiment.artifact.tile_count") != 16:
+        _fail("experiment.artifact.tile_count", "must be 16")
 
     for index, row in enumerate(
         _tile_rows(experiment["clock"], "experiment.clock")
@@ -572,7 +661,9 @@ def _validate_experiment(
         _exact_keys(
             row,
             {
-                "tile",
+                "card_id",
+                "tile_id",
+                "launch_slot",
                 "slope",
                 "offset",
                 "uncertainty",
@@ -582,6 +673,7 @@ def _validate_experiment(
             },
             path,
         )
+        _validate_tile_binding(row, path, topology)
         if _number(row["slope"], f"{path}.slope") <= 0:
             _fail(f"{path}.slope", "must be positive")
         _number(row["offset"], f"{path}.offset")
@@ -601,7 +693,9 @@ def _validate_experiment(
         _exact_keys(
             row,
             {
-                "tile",
+                "card_id",
+                "tile_id",
+                "launch_slot",
                 "entry_begin_cycle",
                 "entry_end_cycle",
                 "capacity",
@@ -617,7 +711,8 @@ def _validate_experiment(
             },
             path,
         )
-        tile = int(row["tile"])
+        _validate_tile_binding(row, path, topology)
+        tile = int(row["tile_id"])
         for key in ("entry_begin_cycle", "entry_end_cycle"):
             _integer(row[key], f"{path}.{key}", minimum=0, maximum=UINT64_MAX)
         for key in ("capacity", "count"):
@@ -925,7 +1020,12 @@ def _validate_experiment(
     _exact_keys(pmu, {"tiles"}, "experiment.pmu")
     for index, row in enumerate(_tile_rows(pmu["tiles"], "experiment.pmu.tiles")):
         path = f"experiment.pmu.tiles[{index}]"
-        _exact_keys(row, {"tile", "aggregates", "workers"}, path)
+        _exact_keys(
+            row,
+            {"card_id", "tile_id", "launch_slot", "aggregates", "workers"},
+            path,
+        )
+        _validate_tile_binding(row, path, topology)
         aggregates = _mapping(row["aggregates"], f"{path}.aggregates")
         _exact_keys(aggregates, set(AGGREGATE_COUNTERS), f"{path}.aggregates")
         for name in AGGREGATE_COUNTERS:
@@ -1032,10 +1132,12 @@ def _validate_static_cost_metric(value: object, path: str) -> None:
         )
 
 
-def _validate_static_cost_model(evidence: Mapping[str, Any]) -> None:
+def _validate_static_cost_model(
+    evidence: Mapping[str, Any], topology: Mapping[int, int]
+) -> None:
     path = "static_cost_model"
     model = _mapping(evidence[path], path)
-    _exact_keys(model, {"model", "scope", "rates", "ranks"}, path)
+    _exact_keys(model, {"model", "scope", "rates", "tiles"}, path)
     if model["model"] != STATIC_COST_MODEL:
         _fail(f"{path}.model", f"must be {STATIC_COST_MODEL!r}")
     if model["scope"] != STATIC_COST_SCOPE:
@@ -1060,83 +1162,57 @@ def _validate_static_cost_model(evidence: Mapping[str, Any]) -> None:
             "current model requires null because SPM bandwidth is uncalibrated",
         )
 
-    rows = tuple(
-        _mapping(row, f"{path}.ranks[{index}]")
-        for index, row in enumerate(_sequence(model["ranks"], f"{path}.ranks"))
-    )
-    logical_ranks: list[int] = []
+    rows = _tile_rows(model["tiles"], f"{path}.tiles")
     for index, row in enumerate(rows):
-        rank_path = f"{path}.ranks[{index}]"
-        _exact_keys(row, {"logical_rank", "work"}, rank_path)
-        logical_rank = _integer(
-            row["logical_rank"],
-            f"{rank_path}.logical_rank",
+        tile_path = f"{path}.tiles[{index}]"
+        _exact_keys(
+            row, {"card_id", "tile_id", "launch_slot", "work"}, tile_path
+        )
+        if _integer(row["card_id"], f"{tile_path}.card_id") != 0:
+            _fail(f"{tile_path}.card_id", "must be 0")
+        _integer(
+            row["tile_id"],
+            f"{tile_path}.tile_id",
             minimum=0,
             maximum=15,
         )
-        logical_ranks.append(logical_rank)
-        work = _mapping(row["work"], f"{rank_path}.work")
+        _integer(
+            row["launch_slot"],
+            f"{tile_path}.launch_slot",
+            minimum=0,
+            maximum=15,
+        )
+        _validate_tile_binding(row, tile_path, topology)
+        work = _mapping(row["work"], f"{tile_path}.work")
         _exact_keys(
             work,
             set(STATIC_COST_WORK_METRICS)
             | {
                 "directional_noc_transmit_bytes",
-                "collective_noc_transmit_bytes",
             },
-            f"{rank_path}.work",
+            f"{tile_path}.work",
         )
         for name in STATIC_COST_WORK_METRICS:
             _validate_static_cost_metric(
-                work[name], f"{rank_path}.work.{name}"
+                work[name], f"{tile_path}.work.{name}"
             )
         directional = _mapping(
             work["directional_noc_transmit_bytes"],
-            f"{rank_path}.work.directional_noc_transmit_bytes",
+            f"{tile_path}.work.directional_noc_transmit_bytes",
         )
         _exact_keys(
             directional,
             set(STATIC_COST_DIRECTIONS),
-            f"{rank_path}.work.directional_noc_transmit_bytes",
+            f"{tile_path}.work.directional_noc_transmit_bytes",
         )
         for direction in STATIC_COST_DIRECTIONS:
             _validate_static_cost_metric(
                 directional[direction],
                 (
-                    f"{rank_path}.work.directional_noc_transmit_bytes."
+                    f"{tile_path}.work.directional_noc_transmit_bytes."
                     f"{direction}"
                 ),
             )
-        collectives = _mapping(
-            work["collective_noc_transmit_bytes"],
-            f"{rank_path}.work.collective_noc_transmit_bytes",
-        )
-        _exact_keys(
-            collectives,
-            set(STATIC_COST_COLLECTIVES),
-            f"{rank_path}.work.collective_noc_transmit_bytes",
-        )
-        for collective in STATIC_COST_COLLECTIVES:
-            _validate_static_cost_metric(
-                collectives[collective],
-                (
-                    f"{rank_path}.work.collective_noc_transmit_bytes."
-                    f"{collective}"
-                ),
-            )
-
-    duplicates = sorted(
-        rank for rank, count in Counter(logical_ranks).items() if count > 1
-    )
-    missing = sorted(set(TILES) - set(logical_ranks))
-    extra = sorted(set(logical_ranks) - set(TILES))
-    if len(rows) != len(TILES) or duplicates or missing or extra:
-        _fail(
-            f"{path}.ranks",
-            "must contain all-and-only logical ranks 0..15 exactly once "
-            f"(duplicates={duplicates}, missing={missing}, extra={extra})",
-        )
-
-
 def validate_evidence(value: object) -> Mapping[str, Any]:
     evidence = _mapping(value, "$")
     _exact_keys(
@@ -1162,11 +1238,11 @@ def validate_evidence(value: object) -> Mapping[str, Any]:
         _fail("schema_version", f"must be {SCHEMA_VERSION}")
     _string(evidence["run_id"], "run_id")
     _validate_identity(evidence)
-    _validate_topology(evidence)
+    topology = _validate_topology(evidence)
     _validate_measurement(evidence)
     _validate_output(evidence)
-    sites = _validate_sites(evidence)
-    _validate_static_cost_model(evidence)
+    sites = _validate_sites(evidence, topology)
+    _validate_static_cost_model(evidence, topology)
     validity = _mapping(evidence["validity"], "validity")
     _exact_keys(
         validity,
@@ -1175,7 +1251,7 @@ def validate_evidence(value: object) -> Mapping[str, Any]:
     )
     for key in validity:
         _boolean(validity[key], f"validity.{key}")
-    _validate_experiment(evidence, sites)
+    _validate_experiment(evidence, sites, topology)
     identity = evidence["identity"]
     artifact = evidence["experiment"]["artifact"]
     for key, left, right in (
@@ -1187,9 +1263,14 @@ def validate_evidence(value: object) -> Mapping[str, Any]:
         ("target_identity", identity["target_identity"], artifact["target_identity"]),
         ("launch", identity["launch"], artifact["launch"]),
         (
-            "execution_ranks",
-            identity["execution_ranks"],
-            artifact["execution_ranks"],
+            "card_count",
+            identity["card_count"],
+            artifact["card_count"],
+        ),
+        (
+            "tile_count",
+            identity["tile_count"],
+            artifact["tile_count"],
         ),
     ):
         if left != right:
@@ -1206,7 +1287,7 @@ def load_evidence(path: os.PathLike[str] | str) -> Mapping[str, Any]:
 
 
 def _by_tile(rows: Sequence[Mapping[str, Any]]) -> dict[int, Mapping[str, Any]]:
-    return {int(row["tile"]): row for row in rows}
+    return {int(row["tile_id"]): row for row in rows}
 
 
 def _counter_value(counter: Mapping[str, Any]) -> tuple[int | None, str | None]:
@@ -1332,17 +1413,17 @@ def _known_static_metric(metric: Mapping[str, Any]) -> int | None:
     return int(metric["value"])
 
 
-def _static_rank_metric_values(
-    rank_rows: Sequence[Mapping[str, Any]], name: str
+def _static_tile_metric_values(
+    tile_rows: Sequence[Mapping[str, Any]], name: str
 ) -> tuple[list[int] | None, list[str]]:
     values: list[int] = []
     unavailable: list[str] = []
-    for rank in rank_rows:
-        metric = rank["work"][name]
+    for tile in tile_rows:
+        metric = tile["work"][name]
         value = _known_static_metric(metric)
         if value is None:
             unavailable.append(
-                f"rank {rank['logical_rank']}: "
+                f"tile {tile['tile_id']}: "
                 f"{metric['knowledge']} ({metric['reason']})"
             )
         else:
@@ -1358,13 +1439,13 @@ def _static_work_summary(
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "unit": unit,
-        "known_rank_count": len(values) if values is not None else 0,
+        "known_tile_count": len(values) if values is not None else 0,
         "aggregate": str(sum(values)) if values is not None else None,
-        "minimum_per_rank": str(min(values)) if values else None,
-        "average_per_rank": (
+        "minimum_per_tile": str(min(values)) if values else None,
+        "average_per_tile": (
             sum(values) / len(values) if values is not None and values else None
         ),
-        "maximum_per_rank": str(max(values)) if values else None,
+        "maximum_per_tile": str(max(values)) if values else None,
     }
     if breakdown is not None:
         result["breakdown"] = {
@@ -1406,8 +1487,8 @@ def _hardware_cost_analysis(
     """Compare exact static work with explicitly bounded hardware references."""
 
     rates = static_model["rates"]
-    rank_rows = sorted(
-        static_model["ranks"], key=lambda row: int(row["logical_rank"])
+    tile_rows = sorted(
+        static_model["tiles"], key=lambda row: int(row["launch_slot"])
     )
 
     def unavailable_row(
@@ -1440,11 +1521,11 @@ def _hardware_cost_analysis(
         rate: int,
         rate_label: str,
     ) -> dict[str, Any]:
-        primary, primary_unavailable = _static_rank_metric_values(
-            rank_rows, primary_name
+        primary, primary_unavailable = _static_tile_metric_values(
+            tile_rows, primary_name
         )
-        other, other_unavailable = _static_rank_metric_values(
-            rank_rows, other_name
+        other, other_unavailable = _static_tile_metric_values(
+            tile_rows, other_name
         )
         work_values = (
             [left + right for left, right in zip(primary, other)]
@@ -1513,14 +1594,14 @@ def _hardware_cost_analysis(
             "limitations": limitations,
         }
 
-    vector_f16, vector_f16_unavailable = _static_rank_metric_values(
-        rank_rows, "vector_f16_bf16_logical_ops"
+    vector_f16, vector_f16_unavailable = _static_tile_metric_values(
+        tile_rows, "vector_f16_bf16_logical_ops"
     )
-    vector_f32, vector_f32_unavailable = _static_rank_metric_values(
-        rank_rows, "vector_f32_logical_ops"
+    vector_f32, vector_f32_unavailable = _static_tile_metric_values(
+        tile_rows, "vector_f32_logical_ops"
     )
-    vector_other, vector_other_unavailable = _static_rank_metric_values(
-        rank_rows, "vector_other_logical_ops"
+    vector_other, vector_other_unavailable = _static_tile_metric_values(
+        tile_rows, "vector_other_logical_ops"
     )
     ct_work_values = (
         [
@@ -1622,7 +1703,7 @@ def _hardware_cost_analysis(
     )
 
     def ddr_row(engine: str, metric_name: str) -> dict[str, Any]:
-        values, unavailable = _static_rank_metric_values(rank_rows, metric_name)
+        values, unavailable = _static_tile_metric_values(tile_rows, metric_name)
         work = _static_work_summary(values, "bytes")
         limitations = [
             "200 GB/s is a shared whole-card DDR peak, not a per-tile RDMA "
@@ -1660,7 +1741,7 @@ def _hardware_cost_analysis(
         )
         if not symmetric:
             limitations.append(
-                "Rank workloads differ, so no equal-share per-tile time "
+                "Physical-Tile workloads differ, so no equal-share per-tile time "
                 "comparison is formed; only the whole-card traffic floor is "
                 "reported."
             )
@@ -1672,7 +1753,7 @@ def _hardware_cost_analysis(
             ),
             "model_basis": "200 GB/s whole-card DDR peak",
             "estimated_scope": (
-                "symmetric-all-rank-whole-card-bandwidth-reference"
+                "symmetric-all-tile-whole-card-bandwidth-reference"
                 if symmetric
                 else None
             ),
@@ -1687,14 +1768,14 @@ def _hardware_cost_analysis(
     rdma = ddr_row("RDMA", "ddr_read_bytes")
     wdma = ddr_row("WDMA", "ddr_write_bytes")
 
-    spm_values, spm_unavailable = _static_rank_metric_values(
-        rank_rows, "spm_movement_bytes"
+    spm_values, spm_unavailable = _static_tile_metric_values(
+        tile_rows, "spm_movement_bytes"
     )
-    read_values, read_unavailable = _static_rank_metric_values(
-        rank_rows, "ddr_read_bytes"
+    read_values, read_unavailable = _static_tile_metric_values(
+        tile_rows, "ddr_read_bytes"
     )
-    write_values, write_unavailable = _static_rank_metric_values(
-        rank_rows, "ddr_write_bytes"
+    write_values, write_unavailable = _static_tile_metric_values(
+        tile_rows, "ddr_write_bytes"
     )
     residual_values: list[int] | None = None
     residual_problem: str | None = None
@@ -1737,11 +1818,11 @@ def _hardware_cost_analysis(
         ),
     )
 
-    transmit_values, transmit_unavailable = _static_rank_metric_values(
-        rank_rows, "noc_transmit_bytes"
+    transmit_values, transmit_unavailable = _static_tile_metric_values(
+        tile_rows, "noc_transmit_bytes"
     )
-    receive_values, receive_unavailable = _static_rank_metric_values(
-        rank_rows, "noc_receive_bytes"
+    receive_values, receive_unavailable = _static_tile_metric_values(
+        tile_rows, "noc_receive_bytes"
     )
     dte_work = _static_work_summary(
         transmit_values,
@@ -1757,7 +1838,7 @@ def _hardware_cost_analysis(
     )
     dte_limitations = [
         "128 GB/s is a single directional NoC link peak. The reference only "
-        "serializes the average injected payload for one rank on one ideal "
+        "serializes the average injected payload for one physical Tile on one ideal "
         "link.",
         "It is not a collective lower bound or expected Direct-DTE latency: "
         "route, hops, phase dependencies, peer-ready, FSM, setup, completion "
@@ -1792,7 +1873,7 @@ def _hardware_cost_analysis(
             "model_status": "reference-only",
             "model_basis": "128 GB/s single-direction NoC link peak",
             "estimated_scope": (
-                "average-per-rank-single-link-payload-reference"
+                "average-per-tile-single-link-payload-reference"
             ),
             "estimated_ns": serialization_reference,
             "floor_ns": None,
@@ -2220,7 +2301,8 @@ def analyze_evidence(value: object) -> dict[str, Any]:
     pmu = _by_tile(experiment["pmu"]["tiles"])
     clocks = _by_tile(experiment["clock"])
     sites = {
-        (int(row["tile"]), int(row["site_id"])): row for row in evidence["sites"]
+        (int(row["tile_id"]), int(row["site_id"])): row
+        for row in evidence["sites"]
     }
     timeline_events: list[dict[str, Any]] = []
     tile_rows: list[dict[str, Any]] = []
@@ -3096,7 +3178,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         "method": {
             "kernel_launch_to_completion": "one uninstrumented Primary production launch measured by same-stream TX start/end events; this launch-to-completion envelope includes device-side dispatch, Kcore control, submits, waits, DTE lifecycle, scheduling gaps, and retirement; it is not engine-only time",
             "host_submit_time": "host steady-clock provider submit path, including provider argument preparation and stream/event setup where applicable; not pure TX API time",
-            "host_envelope_time": "host steady-clock first submit through all-rank trusted completion; diagnostic envelope, not kernel execution time",
+            "host_envelope_time": "host steady-clock first submit through all-Tile trusted completion; diagnostic envelope, not kernel execution time",
             "host_envelope_ledger": "host envelope is partitioned only on its own clock into host submit and host non-submit envelope; the latter includes host waiting/polling/phase control concurrent with the Primary TX stream envelope, is not pure overhead, and is never reduced by device elapsed",
             "queue_delay": "unavailable; no queue-delay value is inferred by subtracting host and device measurements",
             "timeline_axis": "tile-local Kcore rdcycle entry span partitioned into named semantic costs; every cycle has an explicit category or reason-specific capture-boundary residual",
@@ -3262,7 +3344,7 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
       <div class="card" style="margin-bottom:10px"><div class="section-head"><div><h2>Timing domains · not additive</h2><p>TX stream包络、Host submit与Host completion使用不同边界；不通过相减虚构queue delay或engine-only时间。</p></div></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Scope</th><th>Clock / source</th><th class="num">Duration</th><th class="num">Nanoseconds</th><th>Status</th><th>Interpretation</th></tr></thead><tbody id="timingRows"></tbody></table></div></div>
       <div class="card"><div class="section-head"><div><h2>Card 0 · Tile map</h2><p>点击 tile 进入本地 engine timeline。</p></div></div><div id="overviewTiles" class="tile-grid"></div></div>
       <div class="card" style="margin-top:10px"><div class="section-head"><div><h2>NCC engine active time · Trace PMU</h2><p>五类NCC engine均为另一轮Trace diagnostic的per-tile PMU ns。最小/平均/最大用于看Tile分布；Σ仅是work volume，不是wall time。Direct-DTE没有calibrated engine ns，单独在Communication展示。</p></div></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Engine</th><th>Source / unit</th><th class="num">Min / Tile</th><th class="num">Avg / Tile</th><th class="num">Max / Tile</th><th class="num">Active Tiles</th><th class="num">Available Tiles</th><th class="num">Σ Tile Work</th><th>Status</th></tr></thead><tbody id="overviewEngineRows"></tbody></table></div></div>
-      <div class="card" style="margin-top:10px"><div class="section-head"><div><h2>Hardware cost reference · static model</h2><p>基于最终Instr workload与硬件峰值的非加和参考。它不是实测值，不是Primary分项，也不会回灌编译器winner选择。</p></div></div><div class="notice">CT/NE显示per-tile理论峰值下界；RDMA/WDMA只有16-rank workload对称时才显示整卡带宽共享启发式；TDMA因SPM带宽未知不估时；Direct-DTE只显示单链路payload序列化参考，不代表collective耗时。</div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Engine</th><th>Exact final-program work</th><th>Model / status</th><th class="num">Model reference</th><th class="num">Measured active</th><th class="num">Measured ÷ model</th><th>Boundary / caveat</th></tr></thead><tbody id="hardwareCostRows"></tbody></table></div></div>
+      <div class="card" style="margin-top:10px"><div class="section-head"><div><h2>Hardware cost reference · static model</h2><p>基于最终Instr workload与硬件峰值的非加和参考。它不是实测值，不是Primary分项，也不会回灌编译器winner选择。</p></div></div><div class="notice">CT/NE显示per-tile理论峰值下界；RDMA/WDMA只有16-Tile workload对称时才显示整卡带宽共享启发式；TDMA因SPM带宽未知不估时；Direct-DTE只显示单链路payload序列化参考，不代表collective耗时。</div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Engine</th><th>Exact final-program work</th><th>Model / status</th><th class="num">Model reference</th><th class="num">Measured active</th><th class="num">Measured ÷ model</th><th>Boundary / caveat</th></tr></thead><tbody id="hardwareCostRows"></tbody></table></div></div>
       <div class="card" style="margin-top:10px"><div class="section-head"><div><h2>Measurement contract</h2><p>计时边界、时钟域和证据解释集中放在页面末尾，供需要时查阅。</p></div></div><div id="methodList" class="method-list"></div></div>
     </section>
 
@@ -3639,8 +3721,8 @@ function renderOverview(){
   const modelStatus={["theoretical-lower-bound"]:"理论峰值下界",heuristic:"显式启发式",["reference-only"]:"序列化参考",unavailable:"不可估算"};
   q("#hardwareCostRows").innerHTML=finalArtifact.hardware_cost_analysis.by_engine.map(row=>{
     const work=row.work;
-    const perRank=work.minimum_per_rank===work.maximum_per_rank?`${exactInteger(work.minimum_per_rank)} / rank`:`${exactInteger(work.minimum_per_rank)}–${exactInteger(work.maximum_per_rank)} / rank`;
-    const workText=work.aggregate==null?"—":`${perRank} ${escapeHtml(work.unit)}<br><span class="metric-note">Σ ${exactInteger(work.aggregate)} ${escapeHtml(work.unit)}</span>`;
+    const perTile=work.minimum_per_tile===work.maximum_per_tile?`${exactInteger(work.minimum_per_tile)} / tile`:`${exactInteger(work.minimum_per_tile)}–${exactInteger(work.maximum_per_tile)} / tile`;
+    const workText=work.aggregate==null?"—":`${perTile} ${escapeHtml(work.unit)}<br><span class="metric-note">Σ ${exactInteger(work.aggregate)} ${escapeHtml(work.unit)}</span>`;
     const floorNote=(row.engine==="RDMA"||row.engine==="WDMA")?"whole-card DDR traffic floor":"theoretical throughput floor";
     const modelReference=row.estimated_ns!=null?`${durationText(row.estimated_ns)}<br><span class="metric-note">${escapeHtml(row.estimated_scope)}</span>`:row.floor_ns!=null?`${durationText(row.floor_ns)}<br><span class="metric-note">${floorNote}</span>`:"—";
     const measured=row.measured_active_ns.average_per_tile_ns==null?`—<br><span class="metric-note">${escapeHtml(row.measured_active_ns.status)}</span>`:`${durationText(row.measured_active_ns.average_per_tile_ns)}<br><span class="metric-note">Trace PMU avg / tile</span>`;
@@ -3956,7 +4038,7 @@ def generate_report(
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate final-artifact profile evidence and generate HTML."
+        description="Validate production-artifact profile evidence and generate HTML."
     )
     parser.add_argument("evidence", type=pathlib.Path)
     parser.add_argument(

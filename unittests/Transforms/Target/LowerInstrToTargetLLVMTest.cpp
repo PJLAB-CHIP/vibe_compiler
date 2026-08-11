@@ -35,144 +35,6 @@ template <typename OpT> unsigned countOps(mlir::ModuleOp module) {
 }
 
 TEST(LowerInstrToTargetLLVMTest,
-     ResolvesAllAvailableDirectDTEEndpointsFromSharedTopologyAnalysis) {
-  mlir::DialectRegistry registry;
-  registerTargetConversionDialects(registry);
-  mlir::MLIRContext context(registry);
-  context.loadAllAvailableDialects();
-
-  auto source = mlir::parseSourceString<mlir::ModuleOp>(
-      R"mlir(
-module {
-  wafer.target.topology @default
-      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
-       tile_grid = array<i64: 2, 3>,
-       unavailable_tiles = array<i64: 0, 0, 0, 0, 0, 0, 1, 2>}
-  wafer.execution.mesh @default_mesh
-      {topology = @default, axes = ["rank"], shape = array<i64: 4>,
-       policy = "all_available", endpoints = array<i64>}
-}
-)mlir",
-      mlir::ParserConfig(&context));
-  ASSERT_TRUE(source);
-
-  mlir::FailureOr<wafer::target_llvm_detail::DirectDTEEndpointDomain> domain =
-      wafer::target_llvm_detail::resolveDirectDTEEndpointDomain(
-          *source, /*logicalRank=*/2);
-  ASSERT_TRUE(mlir::succeeded(domain));
-  EXPECT_EQ(domain->logicalRank, 2);
-  const llvm::SmallVector<int64_t, 4> expected{1, 2, 3, 4};
-  EXPECT_EQ(domain->rankToTile, expected);
-}
-
-TEST(LowerInstrToTargetLLVMTest,
-     ResolvesExplicitDirectDTEEndpointOrderFromSharedTopologyAnalysis) {
-  mlir::DialectRegistry registry;
-  registerTargetConversionDialects(registry);
-  mlir::MLIRContext context(registry);
-  context.loadAllAvailableDialects();
-
-  auto source = mlir::parseSourceString<mlir::ModuleOp>(
-      R"mlir(
-module {
-  wafer.target.topology @default
-      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
-       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @default_mesh
-      {topology = @default, axes = ["rank"], shape = array<i64: 3>,
-       policy = "explicit",
-       endpoints = array<i64: 0, 0, 3, 3, 0, 0, 0, 2, 0, 0, 2, 1>}
-}
-)mlir",
-      mlir::ParserConfig(&context));
-  ASSERT_TRUE(source);
-
-  mlir::FailureOr<wafer::target_llvm_detail::DirectDTEEndpointDomain> domain =
-      wafer::target_llvm_detail::resolveDirectDTEEndpointDomain(
-          *source, /*logicalRank=*/1);
-  ASSERT_TRUE(mlir::succeeded(domain));
-  EXPECT_EQ(domain->logicalRank, 1);
-  const llvm::SmallVector<int64_t, 4> expected{15, 2, 9};
-  EXPECT_EQ(domain->rankToTile, expected);
-}
-
-TEST(LowerInstrToTargetLLVMTest,
-     PreservesDirectDTEV0SingleCardDiagnosticCategory) {
-  mlir::DialectRegistry registry;
-  registerTargetConversionDialects(registry);
-  mlir::MLIRContext context(registry);
-  context.loadAllAvailableDialects();
-
-  auto source = mlir::parseSourceString<mlir::ModuleOp>(
-      R"mlir(
-module {
-  wafer.target.topology @default
-      {card_grid = array<i64: 1, 2>, card_interconnect = "mesh",
-       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @default_mesh
-      {topology = @default, axes = ["rank"], shape = array<i64: 2>,
-       policy = "all_available", endpoints = array<i64>}
-}
-)mlir",
-      mlir::ParserConfig(&context));
-  ASSERT_TRUE(source);
-
-  std::string diagnostics;
-  mlir::ScopedDiagnosticHandler handler(
-      &context, [&](mlir::Diagnostic &diagnostic) {
-        llvm::raw_string_ostream stream(diagnostics);
-        diagnostic.print(stream);
-        return mlir::success();
-      });
-  mlir::FailureOr<wafer::target_llvm_detail::DirectDTEEndpointDomain> domain =
-      wafer::target_llvm_detail::resolveDirectDTEEndpointDomain(
-          *source, /*logicalRank=*/0);
-  EXPECT_TRUE(mlir::failed(domain));
-  EXPECT_NE(diagnostics.find("unsupported_target_transport: Direct DTE V0 "
-                             "requires one single-card execution domain"),
-            std::string::npos)
-      << diagnostics;
-}
-
-TEST(LowerInstrToTargetLLVMTest,
-     PreservesDirectDTETileEndpointABINarrowingDiagnosticCategory) {
-  mlir::DialectRegistry registry;
-  registerTargetConversionDialects(registry);
-  mlir::MLIRContext context(registry);
-  context.loadAllAvailableDialects();
-
-  auto source = mlir::parseSourceString<mlir::ModuleOp>(
-      R"mlir(
-module {
-  wafer.target.topology @default
-      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
-       tile_grid = array<i64: 1, 65537>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @default_mesh
-      {topology = @default, axes = ["rank"], shape = array<i64: 1>,
-       policy = "explicit", endpoints = array<i64: 0, 0, 0, 65536>}
-}
-)mlir",
-      mlir::ParserConfig(&context));
-  ASSERT_TRUE(source);
-
-  std::string diagnostics;
-  mlir::ScopedDiagnosticHandler handler(
-      &context, [&](mlir::Diagnostic &diagnostic) {
-        llvm::raw_string_ostream stream(diagnostics);
-        diagnostic.print(stream);
-        return mlir::success();
-      });
-  mlir::FailureOr<wafer::target_llvm_detail::DirectDTEEndpointDomain> domain =
-      wafer::target_llvm_detail::resolveDirectDTEEndpointDomain(
-          *source, /*logicalRank=*/0);
-  EXPECT_TRUE(mlir::failed(domain));
-  EXPECT_NE(diagnostics.find("target_abi_narrowing: Direct DTE tile endpoint "
-                             "must fit uint16_t"),
-            std::string::npos)
-      << diagnostics;
-}
-
-TEST(LowerInstrToTargetLLVMTest,
      RejectsResidualElementwiseMapsWithoutMutatingSource) {
   mlir::DialectRegistry registry;
   registerTargetConversionDialects(registry);
@@ -281,6 +143,56 @@ module {
 }
 
 TEST(LowerInstrToTargetLLVMTest,
+     LowersStaticallyBoundedClampedSubviewToDynamicByteAddress) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @main(
+      %input: memref<5x8xf16, #wafer.memory<ddr, tensor>>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    %c4 = arith.constant 4 : index
+    scf.for %row = %c0 to %c4 step %c1 {
+      %lower_clamped = arith.maxsi %row, %c1 : index
+      %clamped = arith.minsi %lower_clamped, %c3 : index
+      %view = memref.subview %input[%clamped, 2] [1, 3] [1, 1]
+          : memref<5x8xf16, #wafer.memory<ddr, tensor>>
+         to memref<1x3xf16, strided<[8, 1], offset: ?>,
+              #wafer.memory<ddr, tensor>>
+      %spm = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+          : memref<1x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.rdma %view to %spm
+          {byte_count = 6 : i64, inner_bytes = 6 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>}
+          : memref<1x3xf16, strided<[8, 1], offset: ?>,
+              #wafer.memory<ddr, tensor>>
+         to memref<1x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.ncc_join [0]
+    }
+    return
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+
+  mlir::PassManager manager(&context);
+  wafer::TargetConversionRequest request{};
+  manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
+
+  EXPECT_TRUE(mlir::succeeded(manager.run(*source)));
+  EXPECT_EQ(countOps<mlir::memref::SubViewOp>(*source), 0u);
+  EXPECT_EQ(countOps<mlir::scf::ForOp>(*source), 0u);
+}
+
+TEST(LowerInstrToTargetLLVMTest,
      RejectsUnsupportedDynamicSubviewOffsetWithoutMutatingSource) {
   mlir::DialectRegistry registry;
   registerTargetConversionDialects(registry);
@@ -344,8 +256,7 @@ module {
       {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
        tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh
-      {topology = @default, axes = ["rank"], shape = array<i64: 16>,
-       policy = "all_available", endpoints = array<i64>}
+      {axes = ["card_partition"], shape = array<i64: 1>}
   func.func @main(%status: i64) {
     return
   }
@@ -356,7 +267,8 @@ module {
 
   mlir::PassManager manager(&context);
   wafer::TargetConversionRequest request{};
-  request.logicalRank = 15;
+  request.physicalCardId = 0;
+  request.physicalTileId = 15;
   request.transportStatusArgumentIndex = 0;
   request.transportPreparedBeforeEntry = true;
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
@@ -373,12 +285,12 @@ module {
   EXPECT_TRUE(source->lookupSymbol<mlir::LLVM::LLVMFuncOp>(
       "wafer_tx81_direct_dte_finish"));
 
-  int64_t rankCount = -1;
+  int64_t physicalTileCount = -1;
   source->walk([&](mlir::LLVM::ConstantOp constant) {
     if (auto value = mlir::dyn_cast<mlir::IntegerAttr>(constant.getValue()))
-      rankCount = value.getInt();
+      physicalTileCount = value.getInt();
   });
-  EXPECT_EQ(rankCount, 16);
+  EXPECT_EQ(physicalTileCount, 16);
 }
 
 TEST(LowerInstrToTargetLLVMTest,

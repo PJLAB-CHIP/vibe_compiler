@@ -1,2 +1,1 @@
 # RUN: test ! -e %wafer_src_root/tools/wafer_export_package_metadata.py
-# RUN: not rg -n "instruction-ir|llvm-ir|binding_order" %wafer_src_root/tools/wafer_runtime_adapter.py

@@ -280,6 +280,19 @@ INSTANTIATE_TEST_SUITE_P(F16BF16F32, BulkFormatQualificationTest,
                                          LogicalFormat::F32));
 
 TEST(BulkQualificationTest,
+     RawExactComparisonDoesNotTreatPhysicalPaddingAsTensorPayload) {
+  TemporaryDirectory files;
+  BulkExecutionEnvironment environment =
+      llvm::cantFail(createManagedBulkExecutionEnvironment());
+  // Cx f16 [4, 16] has physical padding in the current target codec.  oneDNN
+  // may write that padding even when every logical result bit is exact.
+  QualifiedRow qualified = llvm::cantFail(
+      qualify(environment, files, LogicalFormat::F16, 4, 16, 16));
+  EXPECT_EQ(qualified.record.getKind(),
+            BulkQualificationKind::ProfileBounded);
+}
+
+TEST(BulkQualificationTest,
      LargeGemmExceedsRuntimeFormalBudgetButExecutesOnlyAdmittedMatmul) {
   TemporaryDirectory files;
   BulkExecutionEnvironment environment =

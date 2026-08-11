@@ -63,7 +63,8 @@ llvm::Error requireEngineFormat(LogicalFormat format, TargetFormatEngine engine,
                                 llvm::StringRef role) {
   if (llvm::Error error = requireFormat(format, role))
     return error;
-  const TargetFormatEncodingRecord *record = findTargetFormatEncoding(engine, format);
+  const TargetFormatEncodingRecord *record =
+      findTargetFormatEncoding(engine, format);
   if (!record)
     return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
                        llvm::Twine(role) +
@@ -583,8 +584,8 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
                 "peripheral element_count must be positive");
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "peripheral");
-        } else if constexpr (
-            std::is_same_v<T, compiler::TargetNCCJoinTransaction>) {
+        } else if constexpr (std::is_same_v<
+                                 T, compiler::TargetNCCJoinTransaction>) {
           if (value.participantMask == 0 ||
               (value.participantMask & ~kAllNCCWorkersMask) != 0)
             return kernelError(
@@ -595,10 +596,10 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
         } else if constexpr (std::is_same_v<
                                  T,
                                  compiler::TargetDirectDTEBeginTransaction>) {
-          if (value.rankCount == 0)
+          if (value.participantCount == 0)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
-                "Direct DTE begin rank_count must be positive");
+                "Direct DTE begin participant_count must be positive");
           return llvm::Error::success();
         } else if constexpr (
             std::is_same_v<T, compiler::TargetDirectDTESendTransaction> ||
@@ -609,8 +610,7 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
                 "Direct DTE byte_count must be positive");
           return llvm::Error::success();
         } else if constexpr (
-            std::is_same_v<T,
-                           compiler::TargetDirectDTESendIssueTransaction> ||
+            std::is_same_v<T, compiler::TargetDirectDTESendIssueTransaction> ||
             std::is_same_v<T, compiler::TargetDirectDTEWaitTransaction>) {
           if (value.event == 0)
             return kernelError(
@@ -670,12 +670,14 @@ std::error_code TargetModelKernelError::convertToErrorCode() const {
 
 llvm::Error validateTargetModelTransactionFields(
     const compiler::TargetTransaction &transaction) {
-  if (transaction.logicalRank < 0)
+  if (transaction.physicalCardId.getValue() < 0 ||
+      transaction.physicalTileId.getValue() < 0 ||
+      transaction.launchSlotId.getValue() < 0)
     return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
-                       "transaction logical rank must be non-negative");
+                       "transaction physical identity and launch slot must be "
+                       "non-negative");
   if (transaction.nccIssueDomain) {
-    uint32_t worker =
-        static_cast<uint32_t>(transaction.nccIssueDomain->worker);
+    uint32_t worker = static_cast<uint32_t>(transaction.nccIssueDomain->worker);
     if (worker >= kNCCWorkerCount ||
         transaction.nccIssueDomain->engine == TargetCallTSMEngine::DirectDTE)
       return kernelError(
@@ -685,9 +687,8 @@ llvm::Error validateTargetModelTransactionFields(
             LocalInstructionCompletion::OrderedPending &&
         transaction.nccIssueDomain->completionBehavior !=
             LocalInstructionCompletion::SynchronousWriteback)
-      return kernelError(
-          TargetModelKernelErrorCode::InvalidTransactionField,
-          "NCC issue domain has an invalid completion behavior");
+      return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
+                         "NCC issue domain has an invalid completion behavior");
   }
   return validatePayload(transaction.payload);
 }

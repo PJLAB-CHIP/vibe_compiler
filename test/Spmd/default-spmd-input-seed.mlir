@@ -9,11 +9,8 @@ module {
        unavailable_tiles = array<i64>}
 
   wafer.execution.mesh @default_mesh
-      {topology = @default,
-       axes = ["rank"],
-       shape = array<i64: 16>,
-       policy = "all_available",
-       endpoints = array<i64>}
+      {axes = ["card"],
+       shape = array<i64: 1>}
 
   func.func @no_user_seed(
       %x: tensor<4096x4096xf32>,
@@ -42,18 +39,18 @@ module {
       %x: tensor<1x4x64xf32>) -> tensor<1x4x64xf32> {
     %0 = stablehlo.custom_call @Sharding(%x)
         {backend_config = "",
-         mhlo.sharding = "{devices=[1,1,16]0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"}
+         mhlo.sharding = "{devices=[1,1,1]0}"}
         : (tensor<1x4x64xf32>) -> tensor<1x4x64xf32>
     return %0 : tensor<1x4x64xf32>
   }
 }
 
-// DEFAULT: sdy.mesh @wafer_default_tile_mesh = <["rank"=16]>
+// DEFAULT: sdy.mesh @wafer_default_card_mesh = <["card"=1]>
 // DEFAULT: func.func @no_user_seed(
-// DEFAULT-SAME: %{{[^:]+}}: tensor<4096x4096xf32> {sdy.sharding = #sdy.sharding<@wafer_default_tile_mesh, [{"rank"}, {}]>}
-// DEFAULT-SAME: %{{[^:]+}}: tensor<4096x4096xf32> {sdy.sharding = #sdy.sharding<@wafer_default_tile_mesh, [{"rank"}, {}]>}
-// DEFAULT-SAME: %{{[^:]+}}: tensor<7xf32> {sdy.sharding = #sdy.sharding<@wafer_default_tile_mesh, [{}], replicated={"rank"}>}
-// DEFAULT-SAME: %{{[^:]+}}: tensor<f32> {sdy.sharding = #sdy.sharding<@wafer_default_tile_mesh, [], replicated={"rank"}>}
+// DEFAULT-SAME: %{{[^:]+}}: tensor<4096x4096xf32> {sdy.sharding = #sdy.sharding<@wafer_default_card_mesh, [{}, {}], replicated={"card"}>}
+// DEFAULT-SAME: %{{[^:]+}}: tensor<4096x4096xf32> {sdy.sharding = #sdy.sharding<@wafer_default_card_mesh, [{}, {}], replicated={"card"}>}
+// DEFAULT-SAME: %{{[^:]+}}: tensor<7xf32> {sdy.sharding = #sdy.sharding<@wafer_default_card_mesh, [{}], replicated={"card"}>}
+// DEFAULT-SAME: %{{[^:]+}}: tensor<f32> {sdy.sharding = #sdy.sharding<@wafer_default_card_mesh, [], replicated={"card"}>}
 // DEFAULT-SAME: -> tensor<4096x4096xf32>
 // DEFAULT-NOT: -> (tensor<4096x4096xf32> {sdy.sharding
 
@@ -66,5 +63,5 @@ module {
 // DEFAULT: sdy.sharding_constraint
 
 // DEFAULT: func.func @frontend_activation_seed(
-// DEFAULT: sdy.sharding_constraint %{{[^ ]+}} <@wafer_default_tile_mesh, [{}, {}, {"rank"}]>
+// DEFAULT: sdy.sharding_constraint %{{[^ ]+}} <@wafer_default_card_mesh, [{}, {}, {}], replicated={"card"}>
 // DEFAULT-NOT: stablehlo.custom_call @Sharding

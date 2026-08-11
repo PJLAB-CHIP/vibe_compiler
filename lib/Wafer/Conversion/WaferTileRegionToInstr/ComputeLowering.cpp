@@ -5,6 +5,7 @@
 #include "Wafer/Target/TargetCall.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
@@ -285,6 +286,48 @@ public:
 class ElementwiseLowering
     : public mlir::OpRewritePattern<ComputeElementwiseOp> {
 public:
+  struct InputMovementPlan {
+    mlir::Value source;
+    mlir::MemRefType materializedType;
+    llvm::SmallVector<MovementDescriptorPair> descriptors;
+  };
+
+  /// Returns the in-place destination for a loop-carried accumulation: the
+  /// elementwise result is the value yielded by an enclosing scf.for and one
+  /// of its inputs is that loop's carried iter_arg.  The update then writes
+  /// directly into the carried buffer so no SPM allocation is created inside
+  /// the loop body.  Returns {} when the pattern does not hold or the carried
+  /// input would need a layout materialization first.
+  static mlir::Value
+  findLoopCarriedAccumulateDest(ComputeElementwiseOp op,
+                                llvm::ArrayRef<InputMovementPlan> plans) {
+    mlir::Operation *user = nullptr;
+    for (mlir::Operation *candidate : op.getResult().getUsers()) {
+      if (user)
+        return {};
+      user = candidate;
+    }
+    auto yield = mlir::dyn_cast_or_null<mlir::scf::YieldOp>(user);
+    if (!yield)
+      return {};
+    auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(yield->getParentOp());
+    if (!loop || !loop->isAncestor(op.getOperation()))
+      return {};
+    for (auto [index, yielded] : llvm::enumerate(yield.getResults())) {
+      if (yielded != op.getResult() ||
+          index >= loop.getNumRegionIterArgs())
+        continue;
+      mlir::Value iterArg = loop.getRegionIterArgs()[index];
+      for (auto [inputIndex, input] : llvm::enumerate(op.getInputs())) {
+        if (input != iterArg || inputIndex >= plans.size() ||
+            plans[inputIndex].materializedType)
+          continue;
+        return iterArg;
+      }
+    }
+    return {};
+  }
+
   ElementwiseLowering(mlir::MLIRContext *context, std::string *failureReason)
       : mlir::OpRewritePattern<ComputeElementwiseOp>(context),
         failureReason(failureReason) {}
@@ -306,12 +349,6 @@ public:
             rewriter, op, failureReason,
             "target select lowering currently requires floating-point values");
     }
-
-    struct InputMovementPlan {
-      mlir::Value source;
-      mlir::MemRefType materializedType;
-      llvm::SmallVector<MovementDescriptorPair> descriptors;
-    };
 
     auto resultType =
         mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
@@ -474,9 +511,19 @@ public:
       inputs.push_back(materialized);
       materializedMappedInput = true;
     }
+    // A loop-carried accumulation lowers in place on the carried buffer:
+    // its result is the value yielded by an enclosing scf.for and one of its
+    // inputs is that loop's carried iter_arg.  A fresh SPM allocation inside
+    // the loop body would itself be carried across the backedge, which the
+    // SPM memory planner rejects without multi-instance placement.
+    mlir::Value inPlaceDest = {};
+    if (op.getKind() != ComputeElementwiseKind::Select)
+      inPlaceDest = findLoopCarriedAccumulateDest(op, movementPlans);
     mlir::Value dest =
-        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
-            .getResult();
+        inPlaceDest
+            ? inPlaceDest
+            : rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
+                  .getResult();
 
     if (op.getKind() == ComputeElementwiseKind::Select) {
       createGatherScatterDescriptors(rewriter, op.getLoc(), inputs[2], dest,
@@ -915,6 +962,63 @@ private:
   std::string *failureReason;
 };
 
+class ConvLowering : public mlir::OpRewritePattern<ComputeConvOp> {
+public:
+  ConvLowering(mlir::MLIRContext *context, std::string *failureReason)
+      : mlir::OpRewritePattern<ComputeConvOp>(context),
+        failureReason(failureReason) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(ComputeConvOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
+    std::optional<mlir::RankedTensorType> input =
+        getLogicalTensorTypeFromMemRef(op.getInput().getType());
+    std::optional<mlir::RankedTensorType> weight =
+        getLogicalTensorTypeFromMemRef(op.getWeight().getType());
+    std::optional<mlir::RankedTensorType> output =
+        getLogicalTensorTypeFromMemRef(op.getResult().getType());
+    if (!input || !weight || !output || input->getRank() != 4 ||
+        weight->getRank() != 4 || output->getRank() != 4 ||
+        !input->hasStaticShape() || !weight->hasStaticShape() ||
+        !output->hasStaticShape())
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.conv lowering requires static rank-4 Wafer memrefs");
+    llvm::ArrayRef<int64_t> strides = op.getStrides();
+    llvm::ArrayRef<int64_t> dilations = op.getDilations();
+    if (strides.size() != 2 || dilations.size() != 2)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.conv lowering requires two spatial strides and "
+                         "dilations");
+
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    if (mlir::failed(dest))
+      return mlir::failure();
+    auto kind =
+        InstrConvKindAttr::get(rewriter.getContext(), InstrConvKind::Conv);
+    auto inputShape = rewriter.getDenseI64ArrayAttr(input->getShape());
+    auto weightShape = rewriter.getDenseI64ArrayAttr(weight->getShape());
+    auto outputShape = rewriter.getDenseI64ArrayAttr(output->getShape());
+    // Instruction fields use X/Y order while tile.conv keeps semantic H/W
+    // order. Weight is already canonical XYOI at this boundary.
+    auto kernelStrides = rewriter.getDenseI64ArrayAttr(
+        {weight->getDimSize(0), weight->getDimSize(1), strides[1], strides[0]});
+    auto instructionDilations =
+        rewriter.getDenseI64ArrayAttr({dilations[1], dilations[0]});
+    rewriter.create<InstrConvOp>(
+        op.getLoc(), kind, op.getInput(), op.getWeight(), *dest, inputShape,
+        weightShape, outputShape, op.getPadsAttr(), op.getUnpadsAttr(),
+        kernelStrides, instructionDilations, getDefaultNCCWorkerAttr(rewriter));
+    rewriter.replaceOp(op, *dest);
+    return mlir::success();
+  }
+
+private:
+  std::string *failureReason;
+};
+
 static mlir::FailureOr<InstrElementwiseKindAttr> getInstrElementwiseKindAttr(
     mlir::PatternRewriter &rewriter, mlir::Operation *op,
     ComputeElementwiseKindAttr computeKind, std::string *failureReason) {
@@ -1016,11 +1120,11 @@ wafer::tile_region_to_instr::getAccumulationElementwiseKind(
 }
 
 void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
-    mlir::RewritePatternSet &patterns, const TileRegionToInstrOptions &options,
-    std::string *failureReason) {
+    mlir::RewritePatternSet &patterns, std::string *failureReason) {
   mlir::MLIRContext *context = patterns.getContext();
-  patterns.add<ConvertLowering, ElementwiseLowering, GemmLowering>(
-      context, failureReason);
+  patterns
+      .add<ConvertLowering, ElementwiseLowering, GemmLowering, ConvLowering>(
+          context, failureReason);
   patterns.add<ReduceLowering>(context, failureReason);
 }
 

@@ -70,11 +70,11 @@ bool isSafeRelativePath(llvm::StringRef path) {
 
 llvm::Expected<ProgramTensor>
 sliceProgramTensor(const ProgramTensor &global,
-                   const RankProgramBinding &binding) {
+                   const ProgramResourceBinding &binding) {
   if (global.getDType() != binding.dtype ||
       global.getShape() != llvm::ArrayRef<int64_t>(binding.globalShape))
     return invalid("global program input disagrees with typed binding");
-  const frontend::ProgramRankSlice &slice = binding.slice;
+  const frontend::ProgramPartitionSlice &slice = binding.slice;
   const size_t rank = binding.globalShape.size();
   if (slice.offsets.size() != rank || slice.sizes.size() != rank ||
       slice.strides.size() != rank || slice.sizes != binding.localShape)
@@ -172,19 +172,25 @@ llvm::Expected<ProgramTensor> ProgramTensor::loadNpy(llvm::StringRef path) {
   return create(payload->dtype, payload->shape, payload->bytes);
 }
 
-llvm::Expected<std::vector<ProgramRankInvocation>> prepareProgramInvocations(
+llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
     const ExecutableBundle &bundle, llvm::StringRef packageRoot,
     llvm::ArrayRef<ProgramGlobalInputBinding> globalInputs) {
   if (packageRoot.empty())
     return invalid("program invocation package root must not be empty");
-  if (bundle.getRankExecutables().empty())
+  if (bundle.getPhysicalTileExecutables().empty())
     return invalid("program invocation executable domain must not be empty");
-  std::vector<ProgramRankInvocation> invocations;
-  invocations.reserve(bundle.getRankExecutables().size());
-  for (const RankExecutable &rank : bundle.getRankExecutables()) {
-    ProgramRankInvocation invocation;
-    invocation.logicalRank = rank.getLogicalRank();
-    for (const RankProgramBinding &binding : rank.getProgramBindings()) {
+  std::vector<ProgramTileInvocation> invocations;
+  invocations.reserve(bundle.getPhysicalTileExecutables().size());
+  for (const PhysicalTileExecutable &tile :
+       bundle.getPhysicalTileExecutables()) {
+    if (tile.getPhysicalCardId() != PhysicalCardId(0))
+      return invalid(
+          "program invocation supports only the current single-card domain");
+    ProgramTileInvocation invocation{tile.getPhysicalCardId(),
+                                     tile.getPhysicalTileId(),
+                                     tile.getLaunchSlotId(),
+                                     {}};
+    for (const ProgramResourceBinding &binding : tile.getProgramBindings()) {
       if (binding.role == ProgramResourceRole::Output)
         continue;
       llvm::Expected<ProgramTensor> tensor =
@@ -210,7 +216,7 @@ llvm::Expected<std::vector<ProgramRankInvocation>> prepareProgramInvocations(
           return loaded.takeError();
         if (loaded->getDType() != binding.dtype ||
             loaded->getShape() != llvm::ArrayRef<int64_t>(binding.localShape))
-          return invalid("program payload disagrees with typed rank binding");
+          return invalid("program payload disagrees with typed Tile binding");
         return loaded;
       }();
       if (!tensor)
@@ -221,9 +227,9 @@ llvm::Expected<std::vector<ProgramRankInvocation>> prepareProgramInvocations(
     invocations.push_back(std::move(invocation));
   }
   const auto &firstBindings =
-      bundle.getRankExecutables().front().getProgramBindings();
+      bundle.getPhysicalTileExecutables().front().getProgramBindings();
   if (globalInputs.size() !=
-      llvm::count_if(firstBindings, [](const RankProgramBinding &binding) {
+      llvm::count_if(firstBindings, [](const ProgramResourceBinding &binding) {
         return binding.role == ProgramResourceRole::UserInput;
       }))
     return invalid("unexpected global program input index");
@@ -232,7 +238,7 @@ llvm::Expected<std::vector<ProgramRankInvocation>> prepareProgramInvocations(
 
 llvm::Expected<ProgramTensor>
 sliceProgramTensorForBinding(const ProgramTensor &global,
-                             const RankProgramBinding &binding) {
+                             const ProgramResourceBinding &binding) {
   return sliceProgramTensor(global, binding);
 }
 

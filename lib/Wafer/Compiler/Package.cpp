@@ -12,9 +12,11 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -167,6 +169,36 @@ runtime::PackageAccessMode getAccess(KernelABISlotRole role) {
   llvm_unreachable("unknown kernel ABI slot role");
 }
 
+bool haveSameProgramSlice(const frontend::ProgramPartitionSlice &lhs,
+                          const frontend::ProgramPartitionSlice &rhs) {
+  return lhs.partitionId == rhs.partitionId &&
+         lhs.replicaId == rhs.replicaId && lhs.offsets == rhs.offsets &&
+         lhs.sizes == rhs.sizes && lhs.strides == rhs.strides &&
+         lhs.payloadPath == rhs.payloadPath;
+}
+
+bool haveSameProgramBinding(const ProgramResourceBinding &lhs,
+                            const ProgramResourceBinding &rhs) {
+  return lhs.role == rhs.role && lhs.index == rhs.index &&
+         lhs.programIndex == rhs.programIndex && lhs.dtype == rhs.dtype &&
+         lhs.distribution == rhs.distribution &&
+         lhs.globalShape == rhs.globalShape &&
+         lhs.localShape == rhs.localShape &&
+         haveSameProgramSlice(lhs.slice, rhs.slice);
+}
+
+bool doesSlotMatchPackageResource(
+    const KernelABISlot &slot,
+    const runtime::PackageResourceRecord &resource) {
+  return resource.role == getPackageRole(slot.role) &&
+         resource.roleIndex == slot.resourceIndex &&
+         resource.type.dtype == slot.dtype &&
+         resource.type.shape == slot.shape &&
+         resource.bytes == static_cast<uint64_t>(slot.byteSize) &&
+         resource.alignment == static_cast<uint64_t>(slot.alignment) &&
+         resource.access == getAccess(slot.role) && resource.hostVisible;
+}
+
 runtime::PackageModuleExportRole getPackageExportRole(TargetExportRole role) {
   switch (role) {
   case TargetExportRole::Prepare:
@@ -195,13 +227,13 @@ buildManifest(const ExecutableBundle &executableBundle,
                 "package runtime launch contract does not match executable "
                 "and target artifact bundles");
   if (targetArtifacts.getExecutionConfig() != config ||
-      executableBundle.getRankExecutables().size() !=
-          targetArtifacts.getRankInterfaces().size() ||
-      executableBundle.getRankExecutables().size() !=
-          static_cast<size_t>(config.getRankCount()))
+      executableBundle.getPhysicalTileExecutables().size() !=
+          targetArtifacts.getTileInterfaces().size() ||
+      executableBundle.getPhysicalTileExecutables().size() !=
+          static_cast<size_t>(config.getPhysicalTileCount()))
     return fail(diagnostics,
-                "package rank domain does not match executable and target "
-                "artifact bundles");
+                "package physical Tile domain does not match executable and "
+                "target artifact bundles");
 
   if (targetArtifacts.getModules().empty())
     return fail(diagnostics, "package target module domain is empty");
@@ -219,19 +251,69 @@ buildManifest(const ExecutableBundle &executableBundle,
                                     targetArtifacts.getRuntimeLaunchContract(),
                                     firstTargetModule.getModuleFormat());
   manifest.program = runtime::ProgramId(0);
-  manifest.rankCount = config.getRankCount();
+  manifest.cardCount = 1;
+  manifest.tileCount = config.getPhysicalTileCount();
 
   const KernelRuntimeLaunchContract *kernelLaunch =
       targetArtifacts.getRuntimeLaunchContract().getKernel();
-  const bool sharedModule =
-      kernelLaunch && kernelLaunch->form != KernelLaunchForm::PerRank;
+  const bool sharedModule = kernelLaunch != nullptr;
   const bool hasPrepare =
       llvm::is_contained(targetArtifacts.getRuntimeLaunchContract().getPhases(),
                          RuntimeLaunchPhaseRole::Prepare);
   if (targetArtifacts.getModules().size() !=
-      (sharedModule ? 1u : static_cast<size_t>(config.getRankCount())))
+      (sharedModule ? 1u : static_cast<size_t>(config.getPhysicalTileCount())))
     return fail(diagnostics, "package target module topology does not match "
                              "runtime launch contract");
+
+  const size_t physicalTileCount =
+      executableBundle.getPhysicalTileExecutables().size();
+  std::vector<const PhysicalTileExecutable *> tilesByLaunchSlot(
+      physicalTileCount, nullptr);
+  std::vector<const VerifiedTargetTileInterface *> interfacesByLaunchSlot(
+      physicalTileCount, nullptr);
+  std::set<int64_t> physicalTileIds;
+  for (const PhysicalTileExecutable &tile :
+       executableBundle.getPhysicalTileExecutables()) {
+    const int64_t launchSlot = tile.getLaunchSlotId().getValue();
+    if (tile.getPhysicalCardId() != PhysicalCardId(0) ||
+        tile.getPhysicalTileId().getValue() < 0 || launchSlot < 0 ||
+        launchSlot >= static_cast<int64_t>(physicalTileCount) ||
+        !physicalTileIds.insert(tile.getPhysicalTileId().getValue()).second ||
+        tilesByLaunchSlot[launchSlot] != nullptr)
+      return fail(diagnostics,
+                  "package executable has invalid or duplicate physical "
+                  "Tile identity");
+    tilesByLaunchSlot[launchSlot] = &tile;
+  }
+  for (const VerifiedTargetTileInterface &tileInterface :
+       targetArtifacts.getTileInterfaces()) {
+    const int64_t launchSlot = tileInterface.getLaunchSlotId().getValue();
+    if (tileInterface.getPhysicalCardId() != PhysicalCardId(0) ||
+        tileInterface.getPhysicalTileId().getValue() < 0 || launchSlot < 0 ||
+        launchSlot >= static_cast<int64_t>(physicalTileCount) ||
+        interfacesByLaunchSlot[launchSlot] != nullptr)
+      return fail(diagnostics,
+                  "package target artifact has invalid or duplicate physical "
+                  "Tile interface identity");
+    interfacesByLaunchSlot[launchSlot] = &tileInterface;
+  }
+  if (llvm::is_contained(tilesByLaunchSlot, nullptr) ||
+      llvm::is_contained(interfacesByLaunchSlot, nullptr))
+    return fail(diagnostics,
+                "package launch-slot domain is not dense and complete");
+
+  const std::vector<ProgramResourceBinding> &sharedProgramBindings =
+      tilesByLaunchSlot.front()->getProgramBindings();
+  for (const PhysicalTileExecutable *tile : tilesByLaunchSlot) {
+    const std::vector<ProgramResourceBinding> &bindings =
+        tile->getProgramBindings();
+    if (bindings.size() != sharedProgramBindings.size() ||
+        !std::equal(bindings.begin(), bindings.end(),
+                    sharedProgramBindings.begin(), haveSameProgramBinding))
+      return fail(diagnostics,
+                  "physical Tile program boundaries do not agree on the "
+                  "typed card-shared resource domain");
+  }
 
   for (auto [expectedModuleId, target] :
        llvm::enumerate(targetArtifacts.getModules())) {
@@ -269,45 +351,55 @@ buildManifest(const ExecutableBundle &executableBundle,
   }
 
   uint64_t nextResourceId = 0;
-  for (int64_t logicalRank = 0; logicalRank < config.getRankCount();
-       ++logicalRank) {
-    const RankExecutable &rank =
-        executableBundle.getRankExecutables()[logicalRank];
-    const VerifiedTargetRankInterface &rankInterface =
-        targetArtifacts.getRankInterfaces()[logicalRank];
-    const uint64_t moduleId = rankInterface.getModuleId().getValue();
+  std::vector<std::optional<runtime::ResourceId>> sharedProgramResources(
+      sharedProgramBindings.size());
+  std::set<uint64_t> usedModuleIds;
+  for (int64_t launchSlot = 0;
+       launchSlot < static_cast<int64_t>(physicalTileCount); ++launchSlot) {
+    const PhysicalTileExecutable &tile = *tilesByLaunchSlot[launchSlot];
+    const VerifiedTargetTileInterface &tileInterface =
+        *interfacesByLaunchSlot[launchSlot];
+    const uint64_t moduleId = tileInterface.getModuleId().getValue();
     if (moduleId >= targetArtifacts.getModules().size())
       return fail(diagnostics,
-                  "package rank interface references an unknown module");
+                  "package Tile launch interface references an unknown "
+                  "module");
     const VerifiedTargetModule &target = targetArtifacts.getModules()[moduleId];
-    if (rank.getLogicalRank() != logicalRank ||
-        rankInterface.getLogicalRank() != logicalRank ||
-        target.getId() != rankInterface.getModuleId() ||
-        moduleId != static_cast<uint64_t>(sharedModule ? 0 : logicalRank) ||
-        rank.getEntrySymbol() != getMainExport(target))
+    if (tile.getPhysicalCardId() != PhysicalCardId(0) ||
+        tile.getPhysicalCardId() != tileInterface.getPhysicalCardId() ||
+        tile.getPhysicalTileId() != tileInterface.getPhysicalTileId() ||
+        tile.getLaunchSlotId() != tileInterface.getLaunchSlotId() ||
+        target.getId() != tileInterface.getModuleId() ||
+        (sharedModule && moduleId != 0) ||
+        (!sharedModule && !usedModuleIds.insert(moduleId).second) ||
+        tile.getEntrySymbol() != getMainExport(target))
       return fail(diagnostics,
-                  "package rank/module/entry/profile domain is not canonical");
+                  "package Tile/module/entry/profile domain is not canonical");
 
-    std::vector<bool> usedProgramBindings(rank.getProgramBindings().size(),
+    std::vector<bool> usedProgramBindings(tile.getProgramBindings().size(),
                                           false);
     runtime::PackageEntrypointRecord entry;
-    entry.id = runtime::EntryId(logicalRank);
-    entry.logicalRank = logicalRank;
+    entry.id = runtime::EntryId(static_cast<uint64_t>(launchSlot));
+    entry.cardId = tile.getPhysicalCardId();
+    entry.tileId = tile.getPhysicalTileId();
+    entry.launchSlot = runtime::LaunchSlotId(
+        static_cast<uint64_t>(tile.getLaunchSlotId().getValue()));
     entry.module = runtime::ModuleId(moduleId);
-    entry.terminalCompletion = runtime::CompletionId(logicalRank);
+    entry.completion =
+        runtime::PackageEntryCompletionKind::ReturnAfterLocalDrain;
     std::optional<runtime::ResourceId> transportStatusResource;
 
-    for (const KernelABISlot &slot : rankInterface.getKernelABISlots()) {
+    for (const KernelABISlot &slot : tileInterface.getKernelABISlots()) {
       if (slot.ordinal != static_cast<int64_t>(entry.slots.size()) ||
           slot.byteSize <= 0 || slot.alignment <= 0)
         return fail(diagnostics,
                     "package input Kernel ABI slots are not canonical");
+      const ProgramResourceBinding *binding = nullptr;
+      size_t bindingPosition = 0;
       if (slot.role != KernelABISlotRole::Workspace &&
           slot.role != KernelABISlotRole::TransportStatus) {
-        const RankProgramBinding *binding = nullptr;
-        size_t bindingPosition = 0;
         for (auto [position, candidate] :
-             llvm::enumerate(rank.getProgramBindings())) {
+             llvm::enumerate(tile.getProgramBindings())) {
           if (!detail::doesPackageSlotMatchProgramBinding(slot, candidate))
             continue;
           if (binding)
@@ -332,30 +424,48 @@ buildManifest(const ExecutableBundle &executableBundle,
                     "package Direct DTE status ABI slot identity is invalid");
       }
 
-      runtime::PackageResourceRecord resource;
-      resource.id = runtime::ResourceId(nextResourceId++);
-      resource.logicalRank = logicalRank;
-      resource.role = getPackageRole(slot.role);
-      resource.roleIndex = slot.resourceIndex;
-      resource.name = slot.name;
-      resource.type = {slot.dtype, slot.shape};
-      resource.bytes = static_cast<uint64_t>(slot.byteSize);
-      resource.alignment = static_cast<uint64_t>(slot.alignment);
-      resource.access = getAccess(slot.role);
-      resource.hostVisible = slot.role != KernelABISlotRole::Workspace &&
-                             slot.role != KernelABISlotRole::TransportStatus;
+      std::optional<runtime::ResourceId> resourceId;
+      if (binding && sharedProgramResources[bindingPosition]) {
+        resourceId = sharedProgramResources[bindingPosition];
+        const runtime::PackageResourceRecord &resource =
+            manifest.resources[resourceId->getValue()];
+        if (!doesSlotMatchPackageResource(slot, resource))
+          return fail(diagnostics,
+                      "physical Tile ABI slots disagree on a typed "
+                      "card-shared program resource");
+      } else {
+        runtime::PackageResourceRecord resource;
+        resource.id = runtime::ResourceId(nextResourceId++);
+        resource.scope =
+            binding
+                ? runtime::PackageResourceScope(
+                      runtime::CardResourceScope{tile.getPhysicalCardId()})
+                : runtime::PackageResourceScope(runtime::TileResourceScope{
+                      tile.getPhysicalCardId(), tile.getPhysicalTileId()});
+        resource.role = getPackageRole(slot.role);
+        resource.roleIndex = slot.resourceIndex;
+        resource.name = slot.name;
+        resource.type = {slot.dtype, slot.shape};
+        resource.bytes = static_cast<uint64_t>(slot.byteSize);
+        resource.alignment = static_cast<uint64_t>(slot.alignment);
+        resource.access = getAccess(slot.role);
+        resource.hostVisible = binding != nullptr;
+        resourceId = resource.id;
+        manifest.resources.push_back(std::move(resource));
+        if (binding)
+          sharedProgramResources[bindingPosition] = resourceId;
+      }
       if (slot.role == KernelABISlotRole::TransportStatus)
-        transportStatusResource = resource.id;
-      entry.slots.push_back(
-          {static_cast<uint64_t>(slot.ordinal), resource.id, resource.access});
-      manifest.resources.push_back(std::move(resource));
+        transportStatusResource = resourceId;
+      entry.slots.push_back({static_cast<uint64_t>(slot.ordinal), *resourceId,
+                             getAccess(slot.role)});
     }
     if (!llvm::all_of(usedProgramBindings, [](bool used) { return used; }))
       return fail(diagnostics,
                   "package ABI slots omit executable program resource "
                   "bindings");
 
-    if (rank.getTransportContract() == TransportContract::DirectDTE) {
+    if (tile.getTransportContract() == TransportContract::DirectDTE) {
       if (!transportStatusResource)
         return fail(diagnostics,
                     "Direct DTE entry is missing its transport status slot");
@@ -367,16 +477,18 @@ buildManifest(const ExecutableBundle &executableBundle,
     }
 
     manifest.entries.push_back(std::move(entry));
-    manifest.completions.push_back(
-        {runtime::CompletionId(logicalRank), logicalRank, "entry_return"});
   }
+  if (!sharedModule &&
+      usedModuleIds.size() != targetArtifacts.getModules().size())
+    return fail(diagnostics,
+                "package per-Tile module domain is not covered exactly once");
   return manifest;
 }
 
 llvm::Error copyTargetModules(const TargetArtifactBundle &targetArtifacts,
                               llvm::StringRef stagingRoot,
                               llvm::raw_ostream &diagnostics,
-                              std::optional<int64_t> failAfterLogicalRank) {
+                              std::optional<int64_t> failAfterLaunchSlot) {
   for (const VerifiedTargetModule &module : targetArtifacts.getModules()) {
     llvm::SmallString<256> source(targetArtifacts.getRootDirectory());
     llvm::sys::path::append(source, module.getRelativePath());
@@ -394,12 +506,12 @@ llvm::Error copyTargetModules(const TargetArtifactBundle &targetArtifacts,
       return fail(diagnostics,
                   "failed to copy verified target module: " + error.message());
   }
-  if (failAfterLogicalRank && *failAfterLogicalRank >= 0 &&
-      *failAfterLogicalRank <
-          static_cast<int64_t>(targetArtifacts.getRankInterfaces().size()))
+  if (failAfterLaunchSlot && *failAfterLaunchSlot >= 0 &&
+      *failAfterLaunchSlot <
+          static_cast<int64_t>(targetArtifacts.getTileInterfaces().size()))
     return fail(diagnostics,
-                "test-only injected package failure after logical rank " +
-                    std::to_string(*failAfterLogicalRank));
+                "test-only injected package failure after launch slot " +
+                    std::to_string(*failAfterLaunchSlot));
   return llvm::Error::success();
 }
 
@@ -500,7 +612,7 @@ bool publishDirectoryNoReplace(llvm::StringRef source,
 } // namespace
 
 bool detail::doesPackageSlotMatchProgramBinding(
-    const KernelABISlot &slot, const RankProgramBinding &binding) {
+    const KernelABISlot &slot, const ProgramResourceBinding &binding) {
   if (slot.role == KernelABISlotRole::Workspace ||
       slot.role == KernelABISlotRole::TransportStatus)
     return false;
@@ -539,7 +651,7 @@ detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
                                   const TargetArtifactBundle &targetArtifacts,
                                   llvm::StringRef outputDirectory,
                                   llvm::raw_ostream &diagnostics,
-                                  std::optional<int64_t> failAfterLogicalRank) {
+                                  std::optional<int64_t> failAfterLaunchSlot) {
   if (tensorProgramDirectory.empty() || outputDirectory.empty())
     return fail(diagnostics,
                 "package input/output directory must not be empty");
@@ -577,7 +689,7 @@ detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
   if (llvm::Error error = copyDirectory(tensorProgramDirectory, stagingRoot))
     return fail(diagnostics, llvm::toString(std::move(error)));
   if (llvm::Error error = copyTargetModules(targetArtifacts, stagingRoot,
-                                            diagnostics, failAfterLogicalRank))
+                                            diagnostics, failAfterLaunchSlot))
     return std::move(error);
 
   llvm::Expected<runtime::PackageManifest> manifest =
@@ -602,7 +714,8 @@ detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
       executableBundle.getExecutionConfig();
   const VerifiedTargetModule &targetReadback =
       targetArtifacts.getModules().front();
-  if (readbackManifest.rankCount != executionConfig.getRankCount() ||
+  if (readbackManifest.cardCount != 1 ||
+      readbackManifest.tileCount != executionConfig.getPhysicalTileCount() ||
       readbackManifest.targetIdentity != targetReadback.getTargetIdentityId() ||
       readbackManifest.runtimeABI != targetReadback.getKernelRuntimeABIId() ||
       readbackManifest.launch != targetArtifacts.getRuntimeLaunchContract() ||
@@ -620,17 +733,6 @@ detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
   return PackageBundleBuilder::make(outputDirectory,
                                     executableBundle.getExecutionConfig(),
                                     std::move(*readback));
-}
-
-llvm::Expected<PackageBundle>
-assemblePackageBundle(llvm::StringRef tensorProgramDirectory,
-                      const ExecutableBundle &executableBundle,
-                      const TargetArtifactBundle &targetArtifacts,
-                      llvm::StringRef outputDirectory,
-                      llvm::raw_ostream &diagnostics) {
-  return detail::assemblePackageBundleImpl(
-      tensorProgramDirectory, executableBundle, targetArtifacts,
-      outputDirectory, diagnostics, std::nullopt);
 }
 
 } // namespace wafer::compiler

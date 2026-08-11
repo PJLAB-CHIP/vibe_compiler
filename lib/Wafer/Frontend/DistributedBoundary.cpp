@@ -15,24 +15,24 @@ namespace wafer::frontend::program_detail {
 
 namespace {
 
-wafer::frontend::ProgramRankSlice
-getVerifiedRankSlice(const DistributedBoundaryRank &rank) {
-  return {rank.rank,  rank.replicaId, rank.offsets,
-          rank.sizes, rank.strides,   {}};
+wafer::frontend::ProgramPartitionSlice
+getVerifiedPartitionSlice(const DistributedBoundaryPartition &partition) {
+  return {partition.partitionId, partition.replicaId, partition.offsets,
+          partition.sizes,       partition.strides,   {}};
 }
 
 bool verifyDistributedBoundaryCoverage(
-    llvm::ArrayRef<DistributedBoundaryRank> ranks,
+    llvm::ArrayRef<DistributedBoundaryPartition> partitions,
     llvm::ArrayRef<int64_t> globalShape, llvm::StringRef distribution,
     llvm::raw_ostream &diagnostics) {
   if (distribution == "replicated") {
-    for (const DistributedBoundaryRank &rank : ranks) {
-      if (!llvm::all_of(rank.offsets,
+    for (const DistributedBoundaryPartition &partition : partitions) {
+      if (!llvm::all_of(partition.offsets,
                         [](int64_t offset) { return offset == 0; }) ||
-          !llvm::equal(rank.sizes, globalShape))
+          !llvm::equal(partition.sizes, globalShape))
         return rejectProgramDirectory(
-            "replicated distributed boundary rank must cover the full global "
-            "tensor",
+            "replicated distributed boundary partition must cover the full "
+            "global tensor",
             diagnostics);
     }
     return false;
@@ -54,26 +54,29 @@ bool verifyDistributedBoundaryCoverage(
   }
 
   uint64_t coveredElements = 0;
-  for (const DistributedBoundaryRank &rank : ranks) {
-    uint64_t rankElements = 1;
-    for (int64_t size : rank.sizes) {
+  for (const DistributedBoundaryPartition &partition : partitions) {
+    uint64_t partitionElements = 1;
+    for (int64_t size : partition.sizes) {
       uint64_t next = 0;
-      if (!checkedMulUint64(rankElements, static_cast<uint64_t>(size), next))
+      if (!checkedMulUint64(partitionElements, static_cast<uint64_t>(size),
+                            next))
         return rejectProgramDirectory(
-            "distributed boundary rank coverage size overflows uint64",
+            "distributed boundary partition coverage size overflows uint64",
             diagnostics);
-      rankElements = next;
+      partitionElements = next;
     }
-    if (rankElements > std::numeric_limits<uint64_t>::max() - coveredElements)
+    if (partitionElements >
+        std::numeric_limits<uint64_t>::max() - coveredElements)
       return rejectProgramDirectory(
           "distributed boundary coverage size overflows uint64", diagnostics);
-    coveredElements += rankElements;
+    coveredElements += partitionElements;
   }
 
-  for (size_t lhsIndex = 0; lhsIndex < ranks.size(); ++lhsIndex) {
-    for (size_t rhsIndex = lhsIndex + 1; rhsIndex < ranks.size(); ++rhsIndex) {
-      const DistributedBoundaryRank &lhs = ranks[lhsIndex];
-      const DistributedBoundaryRank &rhs = ranks[rhsIndex];
+  for (size_t lhsIndex = 0; lhsIndex < partitions.size(); ++lhsIndex) {
+    for (size_t rhsIndex = lhsIndex + 1; rhsIndex < partitions.size();
+         ++rhsIndex) {
+      const DistributedBoundaryPartition &lhs = partitions[lhsIndex];
+      const DistributedBoundaryPartition &rhs = partitions[rhsIndex];
       bool overlaps = true;
       for (size_t dim = 0; dim < globalShape.size(); ++dim) {
         int64_t lhsEnd = lhs.offsets[dim] + lhs.sizes[dim];
@@ -85,12 +88,12 @@ bool verifyDistributedBoundaryCoverage(
       }
       if (overlaps)
         return rejectProgramDirectory(
-            "distributed boundary rank slices overlap", diagnostics);
+            "distributed boundary partition slices overlap", diagnostics);
     }
   }
   if (coveredElements != globalElements)
     return rejectProgramDirectory(
-        "distributed boundary rank slices do not cover the global tensor",
+        "distributed boundary partition slices do not cover the global tensor",
         diagnostics);
   return false;
 }
@@ -98,7 +101,7 @@ bool verifyDistributedBoundaryCoverage(
 bool verifyDistributedBoundaryBinding(const DistributedBoundaryBinding &binding,
                                       RankedTensorType tensorType,
                                       const ProgramSignature &signature,
-                                      int64_t logicalRankCount,
+                                      int64_t numPartitions,
                                       llvm::raw_ostream &diagnostics) {
   if (!tensorType.hasStaticShape())
     return rejectProgramDirectory(
@@ -127,48 +130,51 @@ bool verifyDistributedBoundaryBinding(const DistributedBoundaryBinding &binding,
         "distributed boundary distribution must be 'replicated' or "
         "'partitioned'",
         diagnostics);
-  if (binding.ranks.size() != static_cast<size_t>(logicalRankCount))
+  if (binding.partitions.size() != static_cast<size_t>(numPartitions))
     return rejectProgramDirectory(
-        "distributed boundary rank count does not match logical_rank_count",
+        "distributed boundary partition count does not match num_partitions",
         diagnostics);
 
-  std::vector<bool> seenRanks(logicalRankCount, false);
-  std::vector<bool> seenReplicaIds(logicalRankCount, false);
+  std::vector<bool> seenPartitions(numPartitions, false);
+  std::vector<bool> seenReplicaIds(numPartitions, false);
   std::vector<int64_t> maximumSizes(binding.globalShape.size(), 0);
-  for (const DistributedBoundaryRank &rank : binding.ranks) {
-    if (rank.rank < 0 || rank.rank >= logicalRankCount)
-      return rejectProgramDirectory("distributed boundary rank is out of range",
-                                    diagnostics);
-    if (seenRanks[rank.rank])
-      return rejectProgramDirectory("duplicate distributed boundary rank",
-                                    diagnostics);
-    seenRanks[rank.rank] = true;
+  for (const DistributedBoundaryPartition &partition : binding.partitions) {
+    if (partition.partitionId < 0 ||
+        partition.partitionId >= numPartitions)
+      return rejectProgramDirectory(
+          "distributed boundary partition_id is out of range", diagnostics);
+    if (seenPartitions[partition.partitionId])
+      return rejectProgramDirectory(
+          "duplicate distributed boundary partition_id", diagnostics);
+    seenPartitions[partition.partitionId] = true;
 
     if (binding.distribution == "partitioned") {
-      if (rank.replicaId != 0)
+      if (partition.replicaId != 0)
         return rejectProgramDirectory(
             "partitioned distributed boundary replica_id must be 0",
             diagnostics);
     } else {
-      if (rank.replicaId < 0 || rank.replicaId >= logicalRankCount)
+      if (partition.replicaId < 0 ||
+          partition.replicaId >= numPartitions)
         return rejectProgramDirectory(
             "replicated distributed boundary replica_id is out of range",
             diagnostics);
-      if (seenReplicaIds[rank.replicaId])
+      if (seenReplicaIds[partition.replicaId])
         return rejectProgramDirectory(
             "duplicate replicated distributed boundary replica_id",
             diagnostics);
-      seenReplicaIds[rank.replicaId] = true;
+      seenReplicaIds[partition.replicaId] = true;
     }
 
     size_t tensorRank = binding.globalShape.size();
-    if (rank.offsets.size() != tensorRank || rank.sizes.size() != tensorRank ||
-        rank.strides.size() != tensorRank)
+    if (partition.offsets.size() != tensorRank ||
+        partition.sizes.size() != tensorRank ||
+        partition.strides.size() != tensorRank)
       return rejectProgramDirectory(
           "distributed boundary slice rank does not match tensor rank",
           diagnostics);
-    for (auto [dim, offset] : llvm::enumerate(rank.offsets)) {
-      int64_t size = rank.sizes[dim];
+    for (auto [dim, offset] : llvm::enumerate(partition.offsets)) {
+      int64_t size = partition.sizes[dim];
       if (offset > binding.globalShape[dim] ||
           size > binding.globalShape[dim] - offset)
         return rejectProgramDirectory(
@@ -176,16 +182,16 @@ bool verifyDistributedBoundaryBinding(const DistributedBoundaryBinding &binding,
       if (size > binding.localShape[dim])
         return rejectProgramDirectory(
             "distributed boundary slice exceeds local_shape", diagnostics);
-      if (rank.strides[dim] != 1)
+      if (partition.strides[dim] != 1)
         return rejectProgramDirectory("distributed boundary stride must be 1",
                                       diagnostics);
       maximumSizes[dim] = std::max(maximumSizes[dim], size);
     }
   }
 
-  if (llvm::any_of(seenRanks, [](bool seen) { return !seen; }))
+  if (llvm::any_of(seenPartitions, [](bool seen) { return !seen; }))
     return rejectProgramDirectory(
-        "distributed boundary logical rank domain is incomplete", diagnostics);
+        "distributed boundary partition domain is incomplete", diagnostics);
   if (binding.distribution == "replicated") {
     if (binding.globalShape != binding.localShape)
       return rejectProgramDirectory(
@@ -201,8 +207,9 @@ bool verifyDistributedBoundaryBinding(const DistributedBoundaryBinding &binding,
         "partitioned distributed boundary slices do not explain local_shape",
         diagnostics);
   }
-  return verifyDistributedBoundaryCoverage(binding.ranks, binding.globalShape,
-                                           binding.distribution, diagnostics);
+  return verifyDistributedBoundaryCoverage(
+      binding.partitions, binding.globalShape, binding.distribution,
+      diagnostics);
 }
 
 } // namespace
@@ -223,21 +230,21 @@ bool verifyDistributedBoundary(
         diagnostics);
 
   const DistributedBoundary &boundary = *meta.distributedBoundary;
-  if (boundary.version != 1)
+  if (boundary.version != 2)
     return rejectProgramDirectory("unsupported distributed_boundary version",
                                   diagnostics);
-  if (boundary.logicalRankCount != 1 && boundary.logicalRankCount != 16)
+  if (boundary.numPartitions <= 0)
     return rejectProgramDirectory(
-        "distributed_boundary logical_rank_count must be 1 or 16", diagnostics);
+        "distributed_boundary num_partitions must be positive", diagnostics);
 
-  FailureOr<int64_t> meshRankCount =
-      getSingleExecutionMeshRankCount(module, diagnostics);
-  if (failed(meshRankCount))
+  FailureOr<int64_t> meshPartitionCount =
+      getSingleExecutionMeshPartitionCount(module, diagnostics);
+  if (failed(meshPartitionCount))
     return true;
-  if (*meshRankCount != boundary.logicalRankCount)
+  if (*meshPartitionCount != boundary.numPartitions)
     return rejectProgramDirectory(
-        "distributed_boundary logical_rank_count does not match execution "
-        "mesh rank count",
+        "distributed_boundary num_partitions does not match execution mesh "
+        "partition count",
         diagnostics);
 
   FunctionType functionType = func.getFunctionType();
@@ -274,7 +281,7 @@ bool verifyDistributedBoundary(
     if (!tensorType ||
         verifyDistributedBoundaryBinding(
             binding, tensorType, meta.inputSignatures[binding.index],
-            boundary.logicalRankCount, diagnostics))
+            boundary.numPartitions, diagnostics))
       return true;
   }
   for (auto [index, location] : llvm::enumerate(meta.inputLocations)) {
@@ -298,7 +305,7 @@ bool verifyDistributedBoundary(
     if (!tensorType ||
         verifyDistributedBoundaryBinding(
             binding, tensorType, meta.outputSignatures[binding.index],
-            boundary.logicalRankCount, diagnostics))
+            boundary.numPartitions, diagnostics))
       return true;
   }
   if (llvm::any_of(seenOutputs, [](bool seen) { return !seen; }))
@@ -306,7 +313,7 @@ bool verifyDistributedBoundary(
         "function result is missing distributed boundary metadata",
         diagnostics);
   if (result) {
-    result->logicalRankCount = boundary.logicalRankCount;
+    result->numPartitions = boundary.numPartitions;
     auto copyBindings =
         [&](llvm::ArrayRef<DistributedBoundaryBinding> source,
             std::vector<wafer::frontend::ProgramBoundaryBinding> &destination,
@@ -323,9 +330,11 @@ bool verifyDistributedBoundary(
             typed.globalShape = binding.globalShape;
             typed.localShape = binding.localShape;
             typed.dtype = normalizeProgramDtype(binding.dtype);
-            typed.rankSlices.reserve(binding.ranks.size());
-            for (const DistributedBoundaryRank &rank : binding.ranks)
-              typed.rankSlices.push_back(getVerifiedRankSlice(rank));
+            typed.partitionSlices.reserve(binding.partitions.size());
+            for (const DistributedBoundaryPartition &partition :
+                 binding.partitions)
+              typed.partitionSlices.push_back(
+                  getVerifiedPartitionSlice(partition));
             destination.push_back(std::move(typed));
           }
         };

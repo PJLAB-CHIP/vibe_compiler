@@ -45,17 +45,6 @@ private:
   runtime::VerifiedPackageManifest manifest;
 };
 
-/// Copies the verified source tensor-program checkpoint and target modules
-/// into a private transaction, constructs and reads back the canonical typed
-/// manifest, and publishes the complete package only after all members pass
-/// verification.
-llvm::Expected<PackageBundle>
-assemblePackageBundle(llvm::StringRef tensorProgramDirectory,
-                      const ExecutableBundle &executableBundle,
-                      const TargetArtifactBundle &targetArtifacts,
-                      llvm::StringRef outputDirectory,
-                      llvm::raw_ostream &diagnostics);
-
 } // namespace wafer::compiler
 
 #endif // WAFER_COMPILER_PACKAGE_H

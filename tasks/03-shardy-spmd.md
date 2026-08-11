@@ -97,8 +97,8 @@ index，显式携带distribution、global/local shape、dtype和`partitions[]`�
 tensor；replicated records各自覆盖完整tensor。不得用mark strategy名、helper内部opaque `HloSharding`字符串或
 测试case名替代这些关系。
 
-旧`logical_rank_count`、`ranks[]`和`rank_*.npy`只属于待删除的whole-rank schema，不是新的production合同。
-若helper内部暂时仍产生旧命名，adapter必须在单一边界完成结构化迁移并立刻验证，任何下游都不得通过文件名恢复
+旧`logical_rank_count`、`ranks[]`和`rank_*.npy`已从current schema与helper输出删除；production只接受上述
+card-partition records。helper内部使用XLA的partition/replica术语不改变artifact合同，任何下游都不得通过文件名恢复
 partition或把它解释成Tile。
 
 frontend program-directory verifier成功时返回C++ typed result：distributed input/output binding、每partition

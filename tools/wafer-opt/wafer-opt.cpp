@@ -3,7 +3,6 @@
 #include "Wafer/InitAll.h"
 #include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Transforms/Passes.h"
-#include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/ValueBoundsOpInterfaceImpl.h"
@@ -67,7 +66,6 @@ void registerWaferOptDialects(mlir::DialectRegistry &registry) {
   mlir::scf::registerValueBoundsOpInterfaceExternalModels(registry);
   mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tensor::registerTilingInterfaceExternalModels(registry);
-  wafer::registerTargetImplementationExternalModels(registry);
   mlir::func::registerInlinerExtension(registry);
   mlir::LLVM::registerInlinerInterface(registry);
 }

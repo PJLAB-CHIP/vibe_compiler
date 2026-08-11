@@ -62,6 +62,8 @@ public:
   operator=(const PreparedTargetModelInvocation &) = delete;
 
   compiler::TargetCallExecutable &getExecutable() { return executable; }
+  /// Unique card-owned input allocations. Repeated Tile ABI views do not
+  /// duplicate the binding or its physical bytes.
   llvm::ArrayRef<TargetModelInputBinding> getInputBindings() const {
     return inputBindings;
   }
@@ -70,7 +72,7 @@ private:
   friend llvm::Expected<PreparedTargetModelInvocation>
   prepareTargetModelInvocation(const compiler::ExecutableBundle &,
                                const compiler::TargetLLVMModuleBundle &,
-                               llvm::ArrayRef<compiler::ProgramRankInvocation>);
+                               llvm::ArrayRef<compiler::ProgramTileInvocation>);
 
   PreparedTargetModelInvocation(
       compiler::TargetCallExecutable executable,
@@ -92,13 +94,13 @@ llvm::Expected<compiler::ProgramTensor>
 decodeTargetModelProgramTensor(const compiler::KernelABISlot &slot,
                                llvm::ArrayRef<uint8_t> physicalBytes);
 
-/// Exact all-rank binding from the accepted source invocation to the target
+/// Exact whole-card binding from the accepted source invocation to the target
 /// LLVM fixed ABI. Every non-output program resource and every Kernel ABI slot
 /// is consumed exactly once before host JIT materialization is returned.
 llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
     const compiler::ExecutableBundle &executableBundle,
     const compiler::TargetLLVMModuleBundle &targetLLVMModuleBundle,
-    llvm::ArrayRef<compiler::ProgramRankInvocation> programInvocations);
+    llvm::ArrayRef<compiler::ProgramTileInvocation> programInvocations);
 
 } // namespace wafer::model
 

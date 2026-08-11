@@ -143,7 +143,7 @@ module {
       : () -> memref<4xf16, #wafer.memory<spm, tensor>>
   // expected-error @below {{DTE byte count exceeds buffer physical byte size}}
   %token = wafer.instr.dte_send %buf {peer = 1 : i64, bytes = 16 : i64,
-      message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+      message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
       : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
 }
 
@@ -436,7 +436,7 @@ module {
   // expected-error @below {{DTE peer must fit uint32_t}}
   %token = wafer.instr.dte_send %buffer
       {peer = 4294967296 : i64, bytes = 2 : i64,
-       message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+       message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
       : memref<1xf16, #wafer.memory<spm, tensor>> -> !async.token
 }
 
@@ -448,7 +448,7 @@ module {
   // expected-error @below {{DTE slot must fit uint32_t}}
   %token = wafer.instr.dte_recv %buffer
       {peer = 1 : i64, bytes = 2 : i64, slot = 4294967296 : i64,
-       message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+       message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
       : memref<1xf16, #wafer.memory<spm, tensor>> -> !async.token
 }
 

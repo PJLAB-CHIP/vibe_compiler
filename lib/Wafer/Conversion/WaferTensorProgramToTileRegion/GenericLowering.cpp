@@ -202,8 +202,14 @@ TileRegionBodyEmitter::createElementwiseOpExprValue(
 mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
     mlir::linalg::GenericOp generic, mlir::Operation *op,
     llvm::DenseMap<mlir::Value, ElementwiseExprValue> &values,
-    mlir::RankedTensorType resultTensorType, bool useReciprocalInstruction,
-    mlir::OpBuilder &builder) {
+    mlir::RankedTensorType resultTensorType, mlir::OpBuilder &builder) {
+  // Scalar operations are nested implementation details of one structured
+  // generic.  Preserve both locations on every Tile operation emitted for
+  // that scalar expression: the scalar location remains useful diagnostics,
+  // while the generic location is the stable structured-DAG lineage needed
+  // to prove actual producer/consumer dataflow after bufferization.
+  mlir::Location loc = mlir::FusedLoc::get(generic.getContext(),
+                                           {generic.getLoc(), op->getLoc()});
   auto lookup = [&](mlir::Value value) {
     auto it = values.find(value);
     if (it != values.end())
@@ -214,8 +220,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
       if (mlir::failed(scalar))
         return mlir::FailureOr<ElementwiseExprValue>(mlir::failure());
       mlir::FailureOr<ElementwiseExprValue> splat =
-          createElementwiseFillExprValue(value.getLoc(), *scalar,
-                                         resultTensorType, builder);
+          createElementwiseFillExprValue(loc, *scalar, resultTensorType,
+                                         builder);
       if (mlir::failed(splat))
         return splat;
       values[value] = *splat;
@@ -231,7 +237,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
     if (mlir::failed(operand))
       return mlir::failure();
     mlir::FailureOr<ElementwiseExprValue> result = createElementwiseOpExprValue(
-        op->getLoc(), kind, {*operand}, resultTensorType, builder);
+        loc, kind, {*operand}, resultTensorType, builder);
     if (mlir::failed(result))
       return mlir::failure();
     values[op->getResult(0)] = *result;
@@ -244,7 +250,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
     if (mlir::failed(lhsValue) || mlir::failed(rhsValue))
       return mlir::failure();
     mlir::FailureOr<ElementwiseExprValue> result = createElementwiseOpExprValue(
-        op->getLoc(), kind, {*lhsValue, *rhsValue}, resultTensorType, builder);
+        loc, kind, {*lhsValue, *rhsValue}, resultTensorType, builder);
     if (mlir::failed(result))
       return mlir::failure();
     values[op->getResult(0)] = *result;
@@ -260,8 +266,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
         mlir::failed(thirdValue))
       return mlir::failure();
     mlir::FailureOr<ElementwiseExprValue> result = createElementwiseOpExprValue(
-        op->getLoc(), kind, {*firstValue, *secondValue, *thirdValue},
-        resultTensorType, builder);
+        loc, kind, {*firstValue, *secondValue, *thirdValue}, resultTensorType,
+        builder);
     if (mlir::failed(result))
       return mlir::failure();
     values[op->getResult(0)] = *result;
@@ -278,12 +284,12 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
     auto convertedTensorType = mlir::RankedTensorType::get(
         resultTensorType.getShape(), op->getResult(0).getType());
     mlir::FailureOr<mlir::Value> materialized =
-        materializeElementwiseExprOperand(*operand, convertedTensorType,
-                                          op->getLoc(), builder);
+        materializeElementwiseExprOperand(*operand, convertedTensorType, loc,
+                                          builder);
     if (mlir::failed(materialized))
       return mlir::failure();
     auto convert = builder.create<ComputeConvertOp>(
-        op->getLoc(), makeSPMMemRefType(convertedTensorType, MemLayout::Tensor),
+        loc, makeSPMMemRefType(convertedTensorType, MemLayout::Tensor),
         *materialized);
     values[op->getResult(0)] = ElementwiseExprValue{
         convert.getResult(), getIdentityMap(convertedTensorType)};
@@ -294,8 +300,9 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
     if (constant->getNumResults() != 1 || !isScalarType(constant.getType()))
       return fail("unsupported linalg.generic constant expression");
     mlir::Operation *cloned = builder.clone(*constant.getOperation());
+    cloned->setLoc(loc);
     mlir::FailureOr<ElementwiseExprValue> value =
-        createElementwiseFillExprValue(constant.getLoc(), cloned->getResult(0),
+        createElementwiseFillExprValue(loc, cloned->getResult(0),
                                        resultTensorType, builder);
     if (mlir::failed(value))
       return mlir::failure();
@@ -344,9 +351,6 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
     return createBinary(muli.getLhs(), muli.getRhs(),
                         ComputeElementwiseKind::Mul);
   if (auto divf = mlir::dyn_cast<mlir::arith::DivFOp>(op)) {
-    if (useReciprocalInstruction &&
-        isScalarLikeConstant(generic, divf.getLhs(), 1.0))
-      return createUnary(divf.getRhs(), ComputeElementwiseKind::Recip);
     return createBinary(divf.getLhs(), divf.getRhs(),
                         ComputeElementwiseKind::Div);
   }
@@ -427,8 +431,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
 }
 
 mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseGenericExpression(
-    mlir::linalg::GenericOp generic, bool useReciprocalInstruction,
-    mlir::OpBuilder &builder) {
+    mlir::linalg::GenericOp generic, mlir::OpBuilder &builder) {
   auto resultTensorType =
       mlir::dyn_cast<mlir::RankedTensorType>(generic->getResult(0).getType());
   if (!resultTensorType)
@@ -448,7 +451,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseGenericExpression(
   unsigned bodyArgIndex = 0;
   for (mlir::Value input : generic.getDpsInputs()) {
     mlir::FailureOr<mlir::Value> buffer =
-        getOrMaterialize(input, MemLayout::Tensor, builder);
+        getOrMaterializeStructuredInput(input, MemLayout::Tensor, builder);
     if (mlir::failed(buffer))
       return mlir::failure();
     values[body.getArgument(bodyArgIndex)] =
@@ -470,9 +473,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseGenericExpression(
   }
 
   for (mlir::Operation &op : body.without_terminator()) {
-    if (mlir::failed(
-            convertElementwiseScalarOp(generic, &op, values, resultTensorType,
-                                       useReciprocalInstruction, builder)))
+    if (mlir::failed(convertElementwiseScalarOp(generic, &op, values,
+                                                resultTensorType, builder)))
       return mlir::failure();
   }
 
@@ -513,7 +515,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertPassthroughGeneric(
     return fail("passthrough generic operands/results must be ranked tensors");
 
   mlir::FailureOr<mlir::Value> source =
-      getOrMaterialize(inputValue, MemLayout::Tensor, builder);
+      getOrMaterializeStructuredInput(inputValue, MemLayout::Tensor, builder);
   if (mlir::failed(source))
     return mlir::failure();
 
@@ -744,10 +746,10 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTwoWayConcatGeneric(
   if (concatInputs.size() != 2)
     return fail("concat generic requires two inputs");
 
-  mlir::FailureOr<mlir::Value> first =
-      getOrMaterialize(concatInputs[0], MemLayout::Tensor, builder);
-  mlir::FailureOr<mlir::Value> second =
-      getOrMaterialize(concatInputs[1], MemLayout::Tensor, builder);
+  mlir::FailureOr<mlir::Value> first = getOrMaterializeStructuredInput(
+      concatInputs[0], MemLayout::Tensor, builder);
+  mlir::FailureOr<mlir::Value> second = getOrMaterializeStructuredInput(
+      concatInputs[1], MemLayout::Tensor, builder);
   if (mlir::failed(first) || mlir::failed(second))
     return mlir::failure();
 
@@ -969,12 +971,14 @@ mlir::FailureOr<bool> TileRegionBodyEmitter::tryConvertTiledTwoWayConcatGeneric(
   for (auto [dim, index] : llvm::enumerate(globalIndices)) {
     mlir::FailureOr<mlir::Value> converted = getScalarValue(index);
     if (mlir::failed(converted)) {
-      std::string owner = "unknown";
+      std::string owner = "entry-block-argument";
       if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(index)) {
         if (mlir::Operation *parent = argument.getOwner()->getParentOp())
           owner = parent->getName().getStringRef().str();
       } else if (mlir::Operation *definition = index.getDefiningOp()) {
         owner = definition->getName().getStringRef().str();
+      } else {
+        owner = "value-without-defining-operation";
       }
       setFailureReason(failureReason,
                        "tiled concat global offset dim " + std::to_string(dim) +
@@ -1053,7 +1057,6 @@ mlir::FailureOr<bool> TileRegionBodyEmitter::tryConvertTiledTwoWayConcatGeneric(
 
 mlir::LogicalResult
 TileRegionBodyEmitter::convertGeneric(mlir::linalg::GenericOp generic,
-                                      bool useReciprocalInstruction,
                                       mlir::OpBuilder &builder) {
   if (generic.getNumDpsInits() != 1 || generic->getNumResults() != 1)
     return fail("unsupported linalg.generic arity");
@@ -1074,8 +1077,7 @@ TileRegionBodyEmitter::convertGeneric(mlir::linalg::GenericOp generic,
     return mlir::failure();
   if (*tiledConcat)
     return mlir::success();
-  return convertElementwiseGenericExpression(generic, useReciprocalInstruction,
-                                             builder);
+  return convertElementwiseGenericExpression(generic, builder);
 }
 
 } // namespace wafer::tensor_program_to_tile_region

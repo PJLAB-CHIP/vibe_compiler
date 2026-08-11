@@ -3,6 +3,7 @@
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Target/PhysicalIds.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -11,6 +12,7 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -27,46 +29,31 @@
 #include <string>
 #include <utility>
 
+namespace wafer {
+struct SpatialEdgeFragment;
+}
+
 namespace wafer::tensor_program_to_tile_region {
 
-struct CandidateTraversalConnection {
-  mlir::OpResult producerResult;
-  mlir::OpOperand *consumerOperand = nullptr;
-
-  mlir::Operation *getProducer() const {
-    return producerResult ? producerResult.getOwner() : nullptr;
-  }
-  mlir::Operation *getConsumer() const {
-    return consumerOperand ? consumerOperand->getOwner() : nullptr;
-  }
-  bool isValid() const { return producerResult && consumerOperand; }
+/// Structural capability of one output-defining structured operation. This is
+/// derived from the current interfaces and never persisted in IR.
+enum class StructuredRootCapability {
+  Tiled,
+  FullTraversalOnly,
+  Unsupported,
 };
 
-class CandidateConnectionFusionPolicy {
-public:
-  CandidateConnectionFusionPolicy(
-      llvm::ArrayRef<CandidateTraversalConnection> connections,
-      llvm::ArrayRef<CandidateTraversalConnectionChoice> choices)
-      : connections(connections), choices(choices) {}
+StructuredRootCapability classifyStructuredRoot(mlir::Operation *operation);
 
-  bool isValid() const { return connections.size() == choices.size(); }
-  bool shouldFuse(mlir::OpResult producerResult,
-                  mlir::OpOperand &consumerOperand) const;
-
-private:
-  llvm::ArrayRef<CandidateTraversalConnection> connections;
-  llvm::ArrayRef<CandidateTraversalConnectionChoice> choices;
-};
-
-/// A verified standalone tensor-program scheduling scope. Its entry arguments
-/// are inputs followed by output destinations; func.return yields one root per
-/// output destination.
+/// A verified private tensor-program scheduling scope. Its entry arguments are
+/// the unchanged source inputs followed by compiler-created scheduling
+/// destinations; func.return yields one root per destination. The appended
+/// destinations never cross the CardProgram conversion boundary.
 class TensorProgramScope {
 public:
-  explicit TensorProgramScope(
-      mlir::func::FuncOp function,
-      const CandidateConnectionFusionPolicy *connectionPolicy = nullptr)
-      : function(function), connectionPolicy(connectionPolicy) {}
+  TensorProgramScope(mlir::func::FuncOp function,
+                     unsigned functionalArgumentCount)
+      : function(function), functionalArgumentCount(functionalArgumentCount) {}
 
   mlir::func::FuncOp getFunction() { return function; }
   mlir::Block &getBody() { return function.getBody().front(); }
@@ -74,9 +61,7 @@ public:
     return mlir::cast<mlir::func::ReturnOp>(getBody().getTerminator());
   }
   unsigned getOutputCount() { return function.getNumResults(); }
-  unsigned getInputCount() {
-    return function.getNumArguments() - getOutputCount();
-  }
+  unsigned getInputCount() { return functionalArgumentCount; }
   mlir::ValueRange getInputs() {
     return mlir::ValueRange(function.getArguments())
         .take_front(getInputCount());
@@ -88,20 +73,11 @@ public:
   mlir::TypeRange getResultTypes() { return function.getResultTypes(); }
   mlir::Location getLoc() { return function.getLoc(); }
   mlir::MLIRContext *getContext() { return function.getContext(); }
-  bool shouldFuseCandidateConnection(mlir::OpResult producerResult,
-                                     mlir::OpOperand &consumerOperand) const {
-    return !connectionPolicy ||
-           connectionPolicy->shouldFuse(producerResult, consumerOperand);
-  }
 
 private:
   mlir::func::FuncOp function;
-  const CandidateConnectionFusionPolicy *connectionPolicy = nullptr;
+  unsigned functionalArgumentCount;
 };
-
-mlir::FailureOr<llvm::SmallVector<CandidateTraversalConnection, 16>>
-collectCandidateTraversalConnections(mlir::func::FuncOp function,
-                                     std::string *failureReason);
 
 struct BufferVersions {
   mlir::Value tensor;
@@ -123,6 +99,24 @@ struct BatchedGemmAttrs {
   int64_t resultNDim = -1;
 };
 
+/// Canonical ordinary 2-D convolution geometry recovered solely from the
+/// current Linalg op's iterator kinds and affine indexing maps. Permutations
+/// are result-dimension-to-source-dimension mappings accepted by
+/// wafer.tile.transpose.
+struct OrdinaryConv2DGeometry {
+  llvm::SmallVector<int64_t, 4> inputToNHWC;
+  llvm::SmallVector<int64_t, 4> weightToXYOI;
+  llvm::SmallVector<int64_t, 4> outputToNHWC;
+  llvm::SmallVector<int64_t, 4> outputFromNHWC;
+  llvm::SmallVector<int64_t, 4> pads;
+  llvm::SmallVector<int64_t, 4> unpads;
+  llvm::SmallVector<int64_t, 2> stridesHW;
+  llvm::SmallVector<int64_t, 2> dilationsHW;
+};
+
+mlir::FailureOr<OrdinaryConv2DGeometry>
+inferOrdinaryConv2DGeometry(mlir::linalg::LinalgOp op);
+
 struct ElementwiseExprValue {
   mlir::Value buffer;
   mlir::AffineMap indexingMap;
@@ -133,18 +127,44 @@ struct StateSnapshot {
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
   llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
   llvm::DenseMap<mlir::Value, mlir::Attribute> tensorAttrs;
-  llvm::DenseMap<mlir::Value, mlir::Value> compilerOwnedDDRBuffers;
+  llvm::DenseMap<mlir::Value, mlir::Value> compilerOwnedBuffers;
   llvm::DenseMap<mlir::Value, mlir::Value> externalBuffers;
   llvm::DenseSet<mlir::Value> writableExternalBuffers;
+  llvm::DenseSet<mlir::Value> selectedDDRStageExternalBuffers;
   llvm::DenseMap<mlir::Value, unsigned> externalOutputIndices;
   llvm::DenseMap<mlir::Value, mlir::Value> directYieldBuffers;
   llvm::DenseMap<mlir::Value, mlir::Value> fillInitScalars;
   llvm::DenseMap<mlir::Value, mlir::Attribute> fillInitAttrs;
 };
 
-struct SelectedCollectiveRankGroup {
-  llvm::SmallVector<int64_t, 8> ranks;
-  int64_t localRank = -1;
+enum class CandidatePeerEndpointKind : uint8_t { Send, Receive };
+
+/// Query-local endpoint attached to one tensor value in a private candidate
+/// clone.  TileRegionBodyEmitter consumes it into explicit peer IR and never
+/// serializes this record.
+struct CandidatePeerEndpoint {
+  mlir::Value value;
+  CandidatePeerEndpointKind kind = CandidatePeerEndpointKind::Send;
+  PhysicalTileId peer{0};
+  uint64_t bytes = 0;
+  int64_t communicationId = 0;
+  int64_t payloadSlice = 0;
+  /// Position of the selected edge's consumer in the pristine tensor-program
+  /// body, plus its operand number.  These fields impose one query-local
+  /// receiver-safe order across every physical Tile; they are deliberately
+  /// separate from the logical Direct-DTE message identity.
+  uint64_t consumerScheduleOrdinal = 0;
+  unsigned consumerOperand = 0;
+  /// Identity of the selected exact fragment while the private tensor clone
+  /// is being tiled.  It is used only to rebind a receive endpoint to the
+  /// surviving cloned tensor.empty and is stripped before TileRegion IR is
+  /// produced.
+  const SpatialEdgeFragment *selectedFragment = nullptr;
+};
+
+struct SelectedCollectivePartitionGroup {
+  llvm::SmallVector<int64_t, 8> partitionIds;
+  int64_t localParticipantIndex = -1;
 };
 
 struct CandidateLoopTile {
@@ -154,43 +174,10 @@ struct CandidateLoopTile {
   llvm::SmallVector<mlir::OpFoldResult, 4> sizeBounds;
 };
 
-struct ReductionChunk {
-  llvm::SmallVector<int64_t, 2> offsets;
-  llvm::SmallVector<int64_t, 2> sizes;
-};
-
 mlir::func::FuncOp findSingleStandaloneTensorProgram(mlir::ModuleOp module);
 
-/// An isolated complete-rank structured candidate after the functional
-/// result boundary has been normalized to explicit DPS output arguments.
-/// The original functional signature is retained only so the final Tile
-/// artifact can restore the user-visible boundary after ordinary lowering.
-struct PreparedCompleteRankTensorProgram {
-  mlir::OwningOpRef<mlir::ModuleOp> module;
-  mlir::FunctionType functionalType;
-  unsigned inputCount = 0;
-  unsigned outputCount = 0;
-};
-
-/// Clones the current structured program and normalizes its functional result
-/// destinations. No traversal or Tile operation is materialized in this
-/// stage, so an opaque implementation provider can re-prove and rewrite the
-/// current SSA of the isolated prepared artifact.
-mlir::LogicalResult
-prepareCompleteRankTensorProgram(mlir::ModuleOp sourceModule,
-                                 PreparedCompleteRankTensorProgram &candidate,
-                                 std::string *failureReason);
-
-/// Consumes a prepared structured artifact through the ordinary conservative
-/// complete-rank traversal and TensorProgram-to-Tile conversion, then restores
-/// its original functional boundary.
-mlir::LogicalResult lowerPreparedCompleteRankTensorProgramToTileRegion(
-    PreparedCompleteRankTensorProgram &&candidate,
-    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank,
-    llvm::ArrayRef<mlir::Operation *> coveredTopLevelOperations = {});
-
 mlir::LogicalResult verifyTensorProgramScope(mlir::func::FuncOp function,
+                                             unsigned functionalArgumentCount,
                                              std::string *failureReason);
 
 bool isTensorProgramOutputBoundary(TensorProgramScope scope, mlir::Value value,
@@ -203,30 +190,25 @@ mlir::LogicalResult validateCandidateTile(mlir::RankedTensorType resultType,
 
 llvm::SmallVector<unsigned, 2> getReductionLoopDims(mlir::linalg::LinalgOp op);
 
-mlir::LogicalResult
-buildCandidateLoopTile(mlir::OpBuilder &builder, mlir::Location loc,
-                       mlir::linalg::LinalgOp op, mlir::AffineMap outputMap,
-                       llvm::ArrayRef<mlir::OpFoldResult> candidateOffsets,
-                       llvm::ArrayRef<int64_t> candidateSizes,
-                       llvm::ArrayRef<int64_t> candidateReductionOffsets,
-                       llvm::ArrayRef<int64_t> candidateReductionSizes,
-                       CandidateLoopTile &tile, std::string *failureReason);
-
-mlir::FailureOr<uint64_t> getCandidateReductionChunkCount(
-    mlir::linalg::LinalgOp root,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+mlir::LogicalResult buildCandidateLoopTile(
+    mlir::OpBuilder &builder, mlir::Location loc, mlir::linalg::LinalgOp op,
+    mlir::AffineMap outputMap,
+    llvm::ArrayRef<mlir::OpFoldResult> candidateOffsets,
+    llvm::ArrayRef<int64_t> candidateSizes,
+    llvm::ArrayRef<mlir::OpFoldResult> candidateReductionOffsets,
+    llvm::ArrayRef<int64_t> candidateReductionSizes, CandidateLoopTile &tile,
     std::string *failureReason);
 
-mlir::FailureOr<llvm::SmallVector<ReductionChunk, 8>>
-buildReductionChunks(mlir::linalg::LinalgOp root,
-                     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-                     std::string *failureReason);
+mlir::LogicalResult
+verifyReductionSplitNumericLegality(mlir::linalg::LinalgOp root,
+                                    bool preservesSequentialReductionOrder,
+                                    std::string *failureReason);
 
 mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     TensorProgramScope scope, mlir::Operation *root, unsigned outputIndex,
     llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     std::string *failureReason);
 
 mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
@@ -234,8 +216,8 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     unsigned outputIndex,
     llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     std::string *failureReason);
 
 mlir::FailureOr<mlir::Value> materializeCandidateOperandConsumerTileValue(
@@ -246,60 +228,14 @@ mlir::FailureOr<mlir::Value> materializeCandidateOperandConsumerTileValue(
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     std::string *failureReason);
 
-/// Resolves the source reduction whose PartialReductionOpInterface is allowed
-/// to create local work. A direct Linalg root resolves to itself. A wrapper is
-/// accepted only when it is an existing typed all-reduce with one exact,
-/// single-use, same-block Linalg producer; this helper never invents
-/// cross-rank semantics for an ordinary local reduction.
-mlir::FailureOr<mlir::linalg::LinalgOp>
-getCandidatePartialReductionComputeRoot(mlir::Operation *root,
-                                        std::string *failureReason);
-
-mlir::FailureOr<mlir::Value> materializeCandidatePartialReductionRootTileValue(
-    mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
-    llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
-    llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
-    std::string *failureReason);
-
-/// Private implementation family selected by a typed graph-alternative
-/// provider. It is deliberately absent from the public ordinary traversal
-/// seed and never survives materialization in IR.
-enum class AttentionImplementationKind : uint8_t {
-  Online,
-  SplitKV,
-};
-
-/// Materializes one output tile of a structurally proven attention
-/// alternative. The accepted graph carries explicit (has_value, m, l, o)
-/// state and uses only SCF plus ordinary Linalg operations; later Tile
-/// lowering therefore remains the sole owner of target compute semantics.
-mlir::FailureOr<mlir::Value> materializeCandidateFlashRootTileValue(
-    mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
-    llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
-    llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    AttentionImplementationKind implementation,
-    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
-    std::string *failureReason);
-
-/// Owns the complete output traversal for one selected Flash strategy. This
-/// is the transformation entry used by the distinct FA2 and FlashDecoding
-/// passes; generic complete-rank traversal has no attention-specific branch.
-mlir::LogicalResult materializeCompleteFlashTraversal(
-    TensorProgramScope scope, llvm::ArrayRef<int64_t> outputTileSizes,
-    llvm::ArrayRef<int64_t> reductionTileSizes,
-    AttentionImplementationKind implementation, std::string *failureReason);
-
 /// Recursively tiles current-SSA producers of slices created for one actual
-/// candidate tile.  This is shared by ordinary, partial-reduction and online
-/// materialization; it never recovers correspondence from names.
+/// candidate tile. It never recovers correspondence from names.
 mlir::LogicalResult fuseCandidateProducerSlices(
     mlir::Operation *tiledConsumer, mlir::Operation *sourceConsumer,
     TensorProgramScope scope,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
-    std::string *failureReason);
+    llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    mlir::OpBuilder::Listener *insertionListener, std::string *failureReason);
 
 mlir::FailureOr<mlir::Value>
 getCandidateOutputBoundary(TensorProgramScope scope, unsigned outputIndex,
@@ -317,57 +253,33 @@ insertCandidateRootTile(mlir::OpBuilder &builder, mlir::Location loc,
                         llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
                         llvm::ArrayRef<int64_t> candidateTileSizes);
 
+/// Materializes one selected structured result domain through its configured
+/// temporal waves and writes every wave directly into an existing full-domain
+/// tensor destination.  The returned SSA value is the updated destination;
+/// no compact full-spatial-shard assembly is introduced in SPM.
+mlir::FailureOr<mlir::Value> materializeCandidateRootTileIntoDestination(
+    TensorProgramScope scope, mlir::Operation *root,
+    llvm::ArrayRef<int64_t> candidateTileOffsets,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    mlir::Value destination, std::string *failureReason);
+
 mlir::FailureOr<llvm::SmallVector<mlir::Operation *, 4>>
 collectCandidateRoots(TensorProgramScope scope, bool rejectProducerChains,
                       std::string *failureReason);
 
-mlir::LogicalResult materializeCandidateTileSlices(
-    TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileOffsets,
-    llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    std::string *failureReason);
+mlir::LogicalResult materializeCandidateOutputTileSlices(
+    TensorProgramScope scope, llvm::ArrayRef<SpatialOutputShard> outputShards,
+    llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    std::string *failureReason,
+    llvm::ArrayRef<mlir::Operation *> preservedOperations = {});
 
 /// Erases only the dead pure tensor producer/view closure left after candidate
-/// tiling. The direct single-tile and complete traversal APIs share this
-/// cleanup so an untiled source producer cannot become a hidden SPM demand.
-void eraseDeadCandidateSupportClosure(TensorProgramScope scope);
-
-mlir::LogicalResult materializeCompleteCandidateTraversal(
-    TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    CandidateTileTraversalKind traversalKind, std::string *failureReason);
-
-mlir::LogicalResult materializeJointCompleteRankTraversals(
-    TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<CandidateTraversalConnection> connections,
-    llvm::ArrayRef<CandidateTraversalConnectionChoice> choices,
-    std::string *failureReason);
-
-/// Materializes one deterministic, complete traversal for every distinct
-/// static result shape in a complete-rank program.  Roots with the same shape
-/// share a traversal; different shapes remain separate traversals inside the
-/// same later tile.region.  The unit tile is deliberately conservative: this
-/// bring-up path establishes a bounded SPM working set without selecting a
-/// local winner or creating a per-root artifact.
-mlir::LogicalResult
-materializeConservativeCompleteRankTraversals(TensorProgramScope scope,
-                                              std::string *failureReason);
-
-/// Completes structured roots left outside a specialized or joint traversal.
-/// An already complete program is accepted; any remaining supported root uses
-/// the same conservative per-root traversal as the mandatory baseline.
-mlir::LogicalResult materializeRemainingConservativeCompleteRankTraversals(
+/// tiling. Spatial shard materialization uses this cleanup so an untiled source
+/// producer cannot become a hidden SPM demand.
+void eraseDeadCandidateSupportClosure(
     TensorProgramScope scope,
-    llvm::ArrayRef<mlir::Operation *> coveredTopLevelOperations,
-    std::string *failureReason);
-
-/// Materializes every supported root as an independent traversal using the
-/// same explicit tile vector. This is the separated counterpart to
-/// materializeCompleteCandidateTraversal; intermediate tensor destinations
-/// remain explicit storage and no traversal is fused implicitly.
-mlir::LogicalResult materializeSeparatedCompleteRankTraversals(
-    TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileSizes,
-    std::string *failureReason);
+    llvm::ArrayRef<mlir::Operation *> preservedOperations = {});
 
 void setFailureReason(std::string *failureReason, llvm::StringRef reason);
 
@@ -376,34 +288,44 @@ matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
                         unsigned redPos, mlir::Value expectedReducedValue,
                         llvm::StringRef subject, std::string *failureReason);
 
-class TileRegionBodyEmitter : public WaferTargetImplementationMaterializer {
+class TileRegionBodyEmitter {
 public:
-  explicit TileRegionBodyEmitter(std::string *failureReason,
-                                 int64_t currentLogicalRank,
-                                 std::optional<TargetImplementationKind>
-                                     selectedAlternative = std::nullopt,
-                                 bool useDirectMappedBoundaryTransfer = false);
+  explicit TileRegionBodyEmitter(
+      std::string *failureReason, int64_t currentLogicalPartition,
+      llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints = {},
+      llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage = {},
+      llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage = {});
 
   mlir::FailureOr<TileRegionOp> emit(TensorProgramScope scope,
                                      mlir::RewriterBase &rewriter);
 
 private:
   std::string *failureReason;
-  int64_t currentLogicalRank = -1;
-  std::optional<TargetImplementationKind> selectedAlternative;
-  bool useDirectMappedBoundaryTransfer = false;
-  bool selectedAlternativeMaterialized = false;
+  int64_t currentLogicalPartition = -1;
+  llvm::SmallVector<CandidatePeerEndpoint, 8> peerEndpoints;
+  llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage;
+  llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage;
   llvm::DenseMap<mlir::Value, BufferVersions> buffers;
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
   llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
   llvm::DenseMap<mlir::Value, mlir::Attribute> tensorAttrs;
-  llvm::DenseMap<mlir::Value, mlir::Value> compilerOwnedDDRBuffers;
+  llvm::DenseMap<mlir::Value, mlir::Value> compilerOwnedBuffers;
   llvm::DenseMap<mlir::Value, mlir::Value> externalBuffers;
   llvm::DenseSet<mlir::Value> writableExternalBuffers;
+  llvm::DenseSet<mlir::Value> selectedDDRStageExternalBuffers;
   llvm::DenseMap<mlir::Value, unsigned> externalOutputIndices;
   llvm::DenseMap<mlir::Value, mlir::Value> directYieldBuffers;
   llvm::DenseMap<mlir::Value, mlir::Value> fillInitScalars;
   llvm::DenseMap<mlir::Value, mlir::Attribute> fillInitAttrs;
+  /// Location of the structured operation whose current operand request is
+  /// causing a value to enter SPM. It is transient conversion context, not a
+  /// schedule side channel, and is fused into allocation locations solely so
+  /// an actual packing failure can identify the responsible coordinate.
+  mlir::LocationAttr currentMaterializationConsumerLoc;
+  /// Demand marker available while lowering one structured operation. It is
+  /// activated only by the explicit data-input helper, never for DPS init or
+  /// result storage.
+  mlir::LocationAttr availableStructuredOperandDemandLoc;
 
   mlir::LogicalResult fail(llvm::StringRef reason);
 
@@ -411,13 +333,15 @@ private:
 
   mlir::FailureOr<mlir::Value> failValue(llvm::StringRef reason);
 
+  mlir::Location getMaterializationLocation(mlir::Value original) const;
+
   mlir::FailureOr<ElementwiseExprValue>
   failElementwiseExprValue(llvm::StringRef reason);
 
   mlir::FailureOr<int64_t> failI64(llvm::StringRef reason);
 
-  mlir::FailureOr<SelectedCollectiveRankGroup>
-  failSelectedCollectiveRankGroup(llvm::StringRef reason);
+  mlir::FailureOr<SelectedCollectivePartitionGroup>
+  failSelectedCollectivePartitionGroup(llvm::StringRef reason);
 
   mlir::FailureOr<unsigned> failUnsigned(llvm::StringRef reason);
 
@@ -470,18 +394,13 @@ private:
                                                 MemLayout targetLayout,
                                                 mlir::OpBuilder &builder);
 
-  mlir::FailureOr<int64_t> getCompactByteSize(mlir::Value buffer,
-                                              llvm::StringRef subject);
+  mlir::FailureOr<mlir::Value>
+  getOrMaterializeStructuredInput(mlir::Value original, MemLayout targetLayout,
+                                  mlir::OpBuilder &builder);
 
-  mlir::FailureOr<int64_t> getCommunicationId(mlir::IntegerAttr channelId,
-                                              llvm::StringRef subject);
-
-  mlir::FailureOr<SelectedCollectiveRankGroup>
-  getCollectiveRankGroup(mlir::DenseI64ArrayAttr rankGroup,
-                         mlir::DenseIntElementsAttr rankGroups);
-
-  std::optional<ComputeReduceKind>
-  inferCollectiveReduceKind(mlir::Region &combiner);
+  mlir::FailureOr<SelectedCollectivePartitionGroup>
+  getCollectivePartitionGroup(mlir::DenseI64ArrayAttr partitionGroup,
+                              mlir::DenseIntElementsAttr partitionGroups);
 
   mlir::LogicalResult requireSingleTensorCollective(mlir::Operation *op);
 
@@ -515,13 +434,11 @@ private:
 
   mlir::LogicalResult convertOp(mlir::Operation *op, mlir::OpBuilder &builder);
 
-  mlir::LogicalResult
-  materializeSourceImplementation(mlir::Operation *operation,
-                                  mlir::OpBuilder &builder);
+  mlir::LogicalResult emitPeerEndpoint(const CandidatePeerEndpoint &endpoint,
+                                       mlir::OpBuilder &builder);
 
-  mlir::LogicalResult materializeTargetImplementation(
-      mlir::Operation *source, const TargetImplementationCandidate &candidate,
-      mlir::OpBuilder &builder) override;
+  mlir::LogicalResult convertStructuredOp(mlir::Operation *operation,
+                                          mlir::OpBuilder &builder);
 
   mlir::LogicalResult convertSupportOp(mlir::Operation *op,
                                        mlir::OpBuilder &builder);
@@ -546,6 +463,9 @@ private:
   mlir::LogicalResult convertTensorExtract(mlir::tensor::ExtractOp extract,
                                            mlir::OpBuilder &builder);
 
+  mlir::LogicalResult convertTensorPad(mlir::tensor::PadOp pad,
+                                       mlir::OpBuilder &builder);
+
   bool allStatic(llvm::ArrayRef<int64_t> values) const;
 
   mlir::FailureOr<mlir::Value> materializeMemRefSubview(
@@ -556,6 +476,10 @@ private:
 
   bool hasNoObservableDestUseExceptInsert(
       mlir::tensor::InsertSliceOp insertSlice) const;
+
+  bool
+  onlyFeedsTensorInsertDestinations(mlir::Value value,
+                                    llvm::DenseSet<mlir::Value> &visited) const;
 
   mlir::LogicalResult
   convertTensorExtractSlice(mlir::tensor::ExtractSliceOp extractSlice,
@@ -591,19 +515,18 @@ private:
   mlir::LogicalResult verifyExactGemmPayload(mlir::linalg::LinalgOp op,
                                              llvm::StringRef subject);
 
+  bool hasExactGemmPayload(mlir::linalg::LinalgOp op) const;
+
   mlir::LogicalResult convertFill(mlir::linalg::FillOp fill,
                                   mlir::OpBuilder &builder);
 
-  mlir::LogicalResult requireZeroFilledGemmInit(mlir::linalg::LinalgOp op,
-                                                llvm::StringRef subject);
-
-  bool hasOrderedGemmChunkInit(mlir::linalg::LinalgOp op) const;
+  bool hasPositiveZeroFilledComputeInit(mlir::linalg::LinalgOp op) const;
 
   mlir::FailureOr<mlir::Value>
-  createOrderedChunkCombine(mlir::Location loc, ComputeReduceKind kind,
-                            mlir::Value accumulator, mlir::Value partial,
-                            mlir::RankedTensorType resultTensorType,
-                            mlir::OpBuilder &builder);
+  createAccumulatorCombine(mlir::Location loc, ComputeReduceKind kind,
+                           mlir::Value accumulator, mlir::Value partial,
+                           mlir::RankedTensorType resultTensorType,
+                           mlir::OpBuilder &builder);
 
   mlir::LogicalResult convertMatmul(mlir::linalg::LinalgOp op,
                                     mlir::OpBuilder &builder);
@@ -623,6 +546,9 @@ private:
   mlir::LogicalResult convertBatchMatmul(mlir::linalg::LinalgOp op,
                                          mlir::OpBuilder &builder);
 
+  mlir::LogicalResult convertConvolution(mlir::linalg::LinalgOp op,
+                                         mlir::OpBuilder &builder);
+
   std::optional<ComputeElementwiseKind>
   inferCompareKind(mlir::arith::CmpFPredicate predicate);
 
@@ -631,10 +557,6 @@ private:
 
   std::optional<ComputeReduceKind>
   inferReduceKind(mlir::linalg::GenericOp generic);
-
-  mlir::FailureOr<bool>
-  hasOrderedReduceChunkInit(mlir::linalg::GenericOp generic,
-                            ComputeReduceKind kind);
 
   mlir::FailureOr<mlir::TypedAttr> getNeutralReduceInit(mlir::Type elementType,
                                                         ComputeReduceKind kind);
@@ -690,12 +612,10 @@ private:
   mlir::LogicalResult convertElementwiseScalarOp(
       mlir::linalg::GenericOp generic, mlir::Operation *op,
       llvm::DenseMap<mlir::Value, ElementwiseExprValue> &values,
-      mlir::RankedTensorType resultTensorType, bool useReciprocalInstruction,
-      mlir::OpBuilder &builder);
+      mlir::RankedTensorType resultTensorType, mlir::OpBuilder &builder);
 
   mlir::LogicalResult
   convertElementwiseGenericExpression(mlir::linalg::GenericOp generic,
-                                      bool useReciprocalInstruction,
                                       mlir::OpBuilder &builder);
 
   mlir::LogicalResult convertPassthroughGeneric(mlir::linalg::GenericOp generic,
@@ -718,7 +638,6 @@ private:
                                      mlir::OpBuilder &builder);
 
   mlir::LogicalResult convertGeneric(mlir::linalg::GenericOp generic,
-                                     bool useReciprocalInstruction,
                                      mlir::OpBuilder &builder);
 
   mlir::LogicalResult finishRegion(TensorProgramScope scope,
@@ -728,10 +647,11 @@ private:
 
 mlir::LogicalResult convertTensorProgramToTileRegionModuleInPlace(
     mlir::ModuleOp module, mlir::MLIRContext *context,
-    int64_t currentLogicalRank, std::string *failureReason,
-    bool suppressDiagnostics = true, bool verifyResult = true,
-    bool populateFallbackFailureReason = true,
-    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
-    bool useDirectMappedBoundaryTransfer = false);
+    unsigned functionalArgumentCount, int64_t currentLogicalPartition,
+    std::string *failureReason, bool suppressDiagnostics = true,
+    bool verifyResult = true, bool populateFallbackFailureReason = true,
+    llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints = {},
+    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage = {},
+    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage = {});
 
 } // namespace wafer::tensor_program_to_tile_region

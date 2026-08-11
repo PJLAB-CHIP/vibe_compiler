@@ -23,7 +23,7 @@ module {
     return %0 : tensor<4xf32>
   }
 
-  func.func @partitioned_all_reduce_rank_groups(%input: tensor<4xf32>) -> tensor<4xf32> {
+  func.func @partitioned_all_reduce_partition_groups(%input: tensor<4xf32>) -> tensor<4xf32> {
     %0 = "stablehlo.all_reduce"(%input) ({
     ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
       %sum = stablehlo.add %lhs, %rhs : tensor<f32>
@@ -99,7 +99,7 @@ module {
 // IR: wafer.linalg_ext.collective.all_gather
 // IR-SAME: axis = 0 : i64
 // IR-SAME: channel_id = 1 : i64
-// IR-SAME: rank_group = array<i64: 0, 1>
+// IR-SAME: partition_group = array<i64: 0, 1>
 // IR-NOT: stablehlo.all_gather
 // IR-NOT: wafer.instr.dte_send
 
@@ -110,14 +110,14 @@ module {
 // IR: arith.addf
 // IR: wafer.linalg_ext.collective.yield
 // IR: channel_id = 2 : i64
-// IR-SAME: rank_group = array<i64: 0, 1>
+// IR-SAME: partition_group = array<i64: 0, 1>
 // IR-NOT: stablehlo.all_reduce
 // IR-NOT: wafer.instr.dte_send
 
-// IR-LABEL: func.func @partitioned_all_reduce_rank_groups
+// IR-LABEL: func.func @partitioned_all_reduce_partition_groups
 // IR: wafer.linalg_ext.collective.all_reduce
 // IR: channel_id = 6 : i64
-// IR-SAME: rank_groups = dense<{{\[\[}}0, 1], [2, 3]]> : tensor<2x2xi64>
+// IR-SAME: partition_groups = dense<{{\[\[}}0, 1], [2, 3]]> : tensor<2x2xi64>
 // IR-SAME: use_global_device_ids = true
 // IR-NOT: stablehlo.all_reduce
 
@@ -135,7 +135,7 @@ module {
 // IR: tensor.empty() : tensor<4x4xf32>
 // IR: wafer.linalg_ext.collective.reduce_scatter
 // IR: channel_id = 3 : i64
-// IR-SAME: rank_group = array<i64: 0, 1>
+// IR-SAME: partition_group = array<i64: 0, 1>
 // IR-NOT: stablehlo.reduce_scatter
 // IR-NOT: wafer.instr.dte_send
 

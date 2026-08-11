@@ -1,10 +1,6 @@
 #include "wafer_tx81_crt.h"
 
-#if defined(WAFER_TX81_PROFILE_TRACE_CRT) && !defined(WAFER_TX81_PROFILE_CRT)
-#define WAFER_TX81_PROFILE_CRT 1
-#endif
-
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
 #include "wafer_tx81_profiler.h"
 #endif
 
@@ -80,7 +76,7 @@ static WaferDirectDTESenderState wafer_direct_dte_sender;
 static WaferDirectDTEReceiverState
     wafer_direct_dte_receivers[WAFER_DIRECT_DTE_MAX_RECEIVERS];
 
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
 static void wafer_profile_direct_dte_begin(uint64_t direct_event,
                                            uint8_t aggregate_kind);
 static void wafer_profile_direct_dte_end(void);
@@ -139,14 +135,15 @@ static void wafer_direct_dte_reset_state(uint64_t status_addr) {
   wafer_direct_dte_publish_status(WAFER_TX81_DIRECT_DTE_STATUS_PENDING);
 }
 
-void wafer_tx81_direct_dte_begin(uint64_t status_addr, uint32_t rank_count) {
+void wafer_tx81_direct_dte_begin(uint64_t status_addr,
+                                 uint32_t participant_count) {
   wafer_direct_dte_reset_state(status_addr);
-  direct_sync_init((int)rank_count);
+  direct_sync_init((int)participant_count);
 }
 
 void wafer_tx81_direct_dte_begin_after_prepare(uint64_t status_addr,
-                                               uint32_t rank_count) {
-  (void)rank_count;
+                                               uint32_t participant_count) {
+  (void)participant_count;
   wafer_direct_dte_reset_state(status_addr);
 }
 
@@ -192,19 +189,19 @@ static bool wafer_direct_dte_issue_sender(uint64_t event) {
 
   WaferDirectDTESendInfo *info = &wafer_direct_dte_sender.info;
   {
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
     uint32_t phase_event = wafer_profile_direct_dte_phase_begin(
         WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT);
 #endif
     direct_sync_wait(info->tile_this, info->dst_tile);
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
     wafer_profile_direct_dte_phase_end(phase_event);
 #endif
   }
 
   int setup_result = -1;
   {
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
     uint32_t phase_event = wafer_profile_direct_dte_phase_begin(
         WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE);
 #endif
@@ -212,7 +209,7 @@ static bool wafer_direct_dte_issue_sender(uint64_t event) {
         direct_dte_attach(wafer_direct_dte_sender.is_high_performance);
     if (info->dte_node)
       setup_result = direct_dte_send_async(info);
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
     wafer_profile_direct_dte_phase_end(phase_event);
 #endif
   }
@@ -233,12 +230,12 @@ static bool wafer_direct_dte_issue_sender(uint64_t event) {
 }
 
 void wafer_tx81_direct_dte_send_issue_v3(uint64_t event) {
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
   wafer_profile_direct_dte_begin(event,
                                  WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE);
 #endif
   (void)wafer_direct_dte_issue_sender(event);
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
   wafer_profile_direct_dte_end();
 #endif
 }
@@ -273,7 +270,7 @@ uint64_t wafer_tx81_direct_dte_recv_prepare(uint64_t dst, uint32_t byte_count,
 }
 
 void wafer_tx81_direct_dte_wait(uint64_t event) {
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
   wafer_profile_direct_dte_begin(event,
                                  WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT);
 #endif
@@ -285,24 +282,24 @@ void wafer_tx81_direct_dte_wait(uint64_t event) {
     WaferDirectDTESendInfo *info = &wafer_direct_dte_sender.info;
     int completion_result = -1;
     {
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
       uint32_t phase_event = wafer_profile_direct_dte_phase_begin(
           WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_COMPLETION_WAIT);
 #endif
       completion_result = direct_dte_wait_done(info);
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
       wafer_profile_direct_dte_phase_end(phase_event);
 #endif
     }
     if (completion_result != 0)
       wafer_direct_dte_set_error();
     if (info->dte_node) {
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
       uint32_t phase_event = wafer_profile_direct_dte_phase_begin(
           WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_CLEANUP);
 #endif
       int cleanup_result = direct_dte_release(info->dte_node);
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
       wafer_profile_direct_dte_phase_end(phase_event);
 #endif
       if (cleanup_result != 0)
@@ -323,22 +320,22 @@ void wafer_tx81_direct_dte_wait(uint64_t event) {
       goto done;
     }
     {
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
       uint32_t phase_event = wafer_profile_direct_dte_phase_begin(
           WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_COMPLETION_WAIT);
 #endif
       direct_fsm_monitor_receive(receiver->local_tile, receiver->remote_tile,
                                  receiver->handle);
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
       wafer_profile_direct_dte_phase_end(phase_event);
 #endif
     }
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
     uint32_t phase_event = wafer_profile_direct_dte_phase_begin(
         WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_CLEANUP);
 #endif
     int cleanup_result = direct_fsm_monitor_deinit(receiver->handle);
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
     wafer_profile_direct_dte_phase_end(phase_event);
 #endif
     if (cleanup_result != 0)
@@ -350,7 +347,7 @@ void wafer_tx81_direct_dte_wait(uint64_t event) {
 
 done:
   (void)0;
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
   wafer_profile_direct_dte_end();
 #endif
 }
@@ -467,7 +464,7 @@ static int32_t wafer_bilinear_scale(uint32_t src, uint32_t dst) {
   return (int32_t)(((uint64_t)src << 16) / dst);
 }
 
-#ifdef WAFER_TX81_PROFILE_CRT
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
 #include "wafer_tx81_profiler_impl.inc"
 #endif
 

@@ -2,33 +2,33 @@
 
 # RUN: rm -rf %t.input.program %t.outputs
 # RUN: mkdir -p %t.outputs
-# RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy column --size 32 --output-program-dir %t.input.program
+# RUN: env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-program --size 32 --output-program-dir %t.input.program
 # RUN: printf 'bytecode sentinel from exporter program\n' > %t.input.program/functions/forward.bytecode
 # RUN: printf 'auxiliary data sentinel from exporter program\n' > %t.input.program/data/aux.payload
-# RUN: wafer-compile --input-program-dir %t.input.program --output-program-dir %t.outputs/package --execution-ranks=16 --launch-kind=kernel | FileCheck %s --check-prefix=PIPELINE
+# RUN: wafer-compile --input-program-dir %t.input.program --output-program-dir %t.outputs/package --num-partitions=1 --launch-kind=kernel | FileCheck %s --check-prefix=PIPELINE
 # RUN: FileCheck %s --input-file=%t.outputs/package/functions/forward.mlir --check-prefix=MLIR
 # RUN: FileCheck %s --input-file=%t.outputs/package/functions/forward.mlir --check-prefix=NO-BOUNDARY-IR
 # RUN: FileCheck %s --input-file=%t.outputs/package/functions/forward.mlir --check-prefix=NO-UNLOWERED-IR
 # RUN: FileCheck %s --input-file=%t.outputs/package/functions/forward.parameter_shards.json --check-prefix=SHARDS
-# RUN: test -f %t.outputs/package/parameter_shards/weight/rank_00000.npy
-# RUN: test -f %t.outputs/package/parameter_shards/bias/rank_00000.npy
+# RUN: test -f %t.outputs/package/parameter_shards/weight/partition_00000.npy
+# RUN: test -f %t.outputs/package/parameter_shards/bias/partition_00000.npy
 # RUN: cmp %t.input.program/functions/forward.bytecode %t.outputs/package/functions/forward.bytecode
 # RUN: cmp %t.input.program/data/aux.payload %t.outputs/package/data/aux.payload
-# RUN: %python -c 'import numpy as np; from pathlib import Path; p = Path("%t.outputs/package/parameter_shards/weight/rank_00000.npy"); assert p.read_bytes().startswith(b"\x93NUMPY"); a = np.load(p, allow_pickle=True); assert a.shape == (32, 2) and a.dtype == np.float32'
+# RUN: %python -c 'import numpy as np; from pathlib import Path; p = Path("%t.outputs/package/parameter_shards/weight/partition_00000.npy"); assert p.read_bytes().startswith(b"\x93NUMPY"); a = np.load(p, allow_pickle=True); assert a.shape == (32, 32) and a.dtype == np.float32'
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 # RUN: %python -c 'from pathlib import Path; modules=sorted(Path("%t.outputs/package/modules").glob("module_*.so")); assert [p.name for p in modules]==["module_00000.so"]; assert modules[0].read_bytes().startswith(b"\x7fELF")'
-# RUN: %python -c 'import json, pathlib; p=pathlib.Path("%t.outputs/package"); m=json.loads((p/"manifest.json").read_text()); assert m["schema_version"]==7 and m["target"]["identity"]=="wafer-tx81-single-card" and m["rank_count"]==16; module_ids={x["id"] for x in m["modules"]}; assert module_ids and [x["rank"] for x in m["entries"]]==list(range(16)) and {x["module"] for x in m["entries"]}<=module_ids; assert [x["rank"] for x in m["completions"]]==list(range(16)); assert "instructions" not in m and all((p/x["path"]).read_bytes().startswith(b"\x7fELF") for x in m["modules"])'
-# RUN: %python -c 'import json, pathlib; b=json.loads((pathlib.Path("%t.outputs/package/functions/forward.meta")).read_text())["distributed_boundary"]; i=b["inputs"][0]; o=b["outputs"][0]; assert b["version"]==1 and b["logical_rank_count"]==16; assert i["argument_index"]==2 and i["distribution"]=="replicated" and i["global_shape"]==[32,32] and i["local_shape"]==[32,32]; assert o["result_index"]==0 and o["distribution"]=="partitioned" and o["global_shape"]==[32,32] and o["local_shape"]==[32,2]; assert {r["replica_id"] for r in i["ranks"]}==set(range(16))'
-# PIPELINE: wafer-compile: published verified package with execution-ranks=16:
+# RUN: %python -c 'import json, pathlib; p=pathlib.Path("%t.outputs/package"); m=json.loads((p/"manifest.json").read_text()); assert m["schema_version"]==8 and m["target"]["identity"]=="wafer-tx81-single-card" and m["card_count"]==1 and m["tile_count"]==16; module_ids={x["id"] for x in m["modules"]}; assert module_ids and {x["card_id"] for x in m["entries"]}=={0} and {x["tile_id"] for x in m["entries"]}==set(range(16)) and {x["launch_slot"] for x in m["entries"]}==set(range(16)) and {x["module"] for x in m["entries"]}<=module_ids and {x["completion"] for x in m["entries"]}=={"return_after_local_drain"}; assert "completions" not in m and "instructions" not in m and all((p/x["path"]).read_bytes().startswith(b"\x7fELF") for x in m["modules"])'
+# RUN: %python -c 'import json, pathlib; b=json.loads((pathlib.Path("%t.outputs/package/functions/forward.meta")).read_text())["distributed_boundary"]; i=b["inputs"][0]; o=b["outputs"][0]; assert b["version"]==2 and b["num_partitions"]==1; assert i["argument_index"]==2 and i["distribution"]=="replicated" and i["global_shape"]==[32,32] and i["local_shape"]==[32,32] and [p["partition_id"] for p in i["partitions"]]==[0]; assert o["result_index"]==0 and o["distribution"]=="replicated" and o["global_shape"]==[32,32] and o["local_shape"]==[32,32] and [p["partition_id"] for p in o["partitions"]]==[0]'
+# PIPELINE: wafer-compile: published verified package with num-partitions=1 physical-tiles=16:
 
 # MLIR: mhlo.spmd_parameters_shardings
 # MLIR: wafer.target.topology @default
 # MLIR: wafer.execution.mesh @default_mesh
-# MLIR-SAME: policy = "all_available"
-# MLIR-SAME: shape = array<i64: 16>
+# MLIR-SAME: axes = ["card_partition"]
+# MLIR-SAME: shape = array<i64: 1>
 # MLIR: func.func @main
-# MLIR-SAME: tensor<2xf32>
-# MLIR-SAME: tensor<32x2xf32>
+# MLIR-SAME: tensor<32xf32>
+# MLIR-SAME: tensor<32x32xf32>
 # MLIR-NOT: stablehlo.all_gather
 # MLIR-NOT: wafer.tile.
 # MLIR-NOT: stablehlo.
@@ -45,8 +45,9 @@
 # NO-UNLOWERED-IR-NOT: stablehlo.
 # NO-UNLOWERED-IR-NOT: wafer.tile.
 
-# SHARDS: "logical_rank_count": 16
-# SHARDS: "parameter_shards_version": 3
+# SHARDS: "num_partitions": 1
+# SHARDS: "parameter_shards_version": 4
+# SHARDS: "partition_id": 0
 # SHARDS: "distribution":
 # SHARDS: "name": "bias"
 # SHARDS: "name": "weight"

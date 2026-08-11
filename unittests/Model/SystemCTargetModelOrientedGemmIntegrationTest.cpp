@@ -6,6 +6,7 @@
 #include "Wafer/InitAll.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
+#include "Wafer/Compiler/CompilationInternal.h"
 #include "Wafer/Compiler/ExecutableBundleInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -17,11 +18,13 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -30,6 +33,7 @@
 
 #include "gtest/gtest.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
@@ -57,101 +61,90 @@ frontend::ProgramBoundaryBinding boundary(int64_t index) {
   binding.index = index;
   binding.programIndex = index;
   binding.distribution = frontend::ProgramDistributionKind::Replicated;
-  binding.globalShape = {2, 2};
-  binding.localShape = {2, 2};
+  binding.globalShape = {16, 2, 2};
+  binding.localShape = {16, 2, 2};
   binding.dtype = "f16";
-  frontend::ProgramRankSlice slice;
-  slice.logicalRank = 0;
+  frontend::ProgramPartitionSlice slice;
+  slice.partitionId = 0;
   slice.replicaId = 0;
-  slice.offsets = {0, 0};
-  slice.sizes = {2, 2};
-  slice.strides = {1, 1};
-  binding.rankSlices.push_back(std::move(slice));
+  slice.offsets = {0, 0, 0};
+  slice.sizes = {16, 2, 2};
+  slice.strides = {1, 1, 1};
+  binding.partitionSlices.push_back(std::move(slice));
   return binding;
 }
 
 std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
   mlir::DialectRegistry registry;
-  registry.insert<mlir::arith::ArithDialect,
-                  mlir::bufferization::BufferizationDialect,
-                  mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
-                  mlir::LLVM::LLVMDialect, mlir::linalg::LinalgDialect,
-                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
-                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
-  registerAllDialects(registry);
-  mlir::registerBuiltinDialectTranslation(registry);
-  mlir::registerLLVMDialectTranslation(registry);
-  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
-      registry);
-  mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
+  compiler::detail::registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
   return context;
 }
 
 llvm::Error rewriteGemmAsOrientationChain(TargetLLVMModuleBundle &bundle) {
-  if (bundle.getModules().size() != 1)
-    return llvm::createStringError("expected one target module");
-  TargetLLVMModule &targetModule =
-      const_cast<TargetLLVMModule &>(bundle.getModules().front());
-  llvm::Module &module = const_cast<llvm::Module &>(targetModule.getModule());
-  llvm::Function *entry = module.getFunction(targetModule.getEntrySymbol());
-  if (!entry)
-    return llvm::createStringError("missing target entry");
+  if (bundle.getModules().size() != 16)
+    return llvm::createStringError("expected complete physical Tile domain");
+  for (const TargetLLVMModule &immutableTargetModule : bundle.getModules()) {
+    TargetLLVMModule &targetModule =
+        const_cast<TargetLLVMModule &>(immutableTargetModule);
+    llvm::Module &module = const_cast<llvm::Module &>(targetModule.getModule());
+    llvm::Function *entry = module.getFunction(targetModule.getEntrySymbol());
+    if (!entry)
+      return llvm::createStringError("missing target entry");
 
-  llvm::CallInst *gemm = nullptr;
-  bool hasWdma = false;
-  for (llvm::Instruction &instruction : llvm::instructions(entry)) {
-    auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
-    if (!call || !call->getCalledFunction())
-      continue;
-    llvm::StringRef name = call->getCalledFunction()->getName();
-    if (name == "wafer_tx81_gemm_v3") {
-      if (gemm)
-        return llvm::createStringError("expected one GEMM call");
-      gemm = call;
-    } else if (name == "wafer_tx81_wdma_v3") {
-      hasWdma = true;
+    llvm::CallInst *gemm = nullptr;
+    bool hasWdma = false;
+    for (llvm::Instruction &instruction : llvm::instructions(entry)) {
+      auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
+      if (!call || !call->getCalledFunction())
+        continue;
+      llvm::StringRef name = call->getCalledFunction()->getName();
+      if (name == "wafer_tx81_gemm_v3") {
+        if (gemm)
+          return llvm::createStringError("expected one GEMM call per Tile");
+        gemm = call;
+      } else if (name == "wafer_tx81_wdma_v3") {
+        hasWdma = true;
+      }
     }
+    if (!gemm || !hasWdma)
+      return llvm::createStringError("missing Tile-local GEMM or WDMA call");
+
+    llvm::Value *lhs = gemm->getArgOperand(0);
+    llvm::Value *rhs = gemm->getArgOperand(1);
+    llvm::Value *destination = gemm->getArgOperand(2);
+
+    llvm::IRBuilder<> builder(gemm);
+    llvm::Type *i64 = builder.getInt64Ty();
+    llvm::Type *i32 = builder.getInt32Ty();
+    llvm::FunctionType *functionType = llvm::FunctionType::get(
+        builder.getVoidTy(),
+        {i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32}, false);
+    llvm::FunctionCallee oriented =
+        module.getOrInsertFunction("wafer_tx81_gemm_oriented_v3", functionType);
+    auto emit = [&](llvm::Value *callLhs, llvm::Value *callRhs,
+                    llvm::Value *callDestination,
+                    GemmOrientation lhsOrientation,
+                    GemmOrientation rhsOrientation) {
+      builder.CreateCall(
+          oriented, {callLhs, callRhs, callDestination, gemm->getArgOperand(3),
+                     gemm->getArgOperand(4), gemm->getArgOperand(5),
+                     gemm->getArgOperand(6), gemm->getArgOperand(7),
+                     builder.getInt32(static_cast<uint32_t>(lhsOrientation)),
+                     builder.getInt32(static_cast<uint32_t>(rhsOrientation)),
+                     gemm->getArgOperand(8)});
+    };
+    emit(lhs, rhs, destination, GemmOrientation::Normal,
+         GemmOrientation::Normal);
+    emit(lhs, rhs, destination, GemmOrientation::Normal,
+         GemmOrientation::Transpose);
+    emit(lhs, rhs, destination, GemmOrientation::Transpose,
+         GemmOrientation::Normal);
+    emit(lhs, rhs, destination, GemmOrientation::Transpose,
+         GemmOrientation::Transpose);
+    gemm->eraseFromParent();
   }
-  if (!gemm || !hasWdma)
-    return llvm::createStringError("missing GEMM or WDMA call");
-
-  llvm::Value *lhs = gemm->getArgOperand(0);
-  llvm::Value *rhs = gemm->getArgOperand(1);
-  llvm::Value *destination = gemm->getArgOperand(2);
-
-  llvm::IRBuilder<> builder(gemm);
-  llvm::Type *i64 = builder.getInt64Ty();
-  llvm::Type *i32 = builder.getInt32Ty();
-  llvm::FunctionType *functionType = llvm::FunctionType::get(
-      builder.getVoidTy(),
-      {i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32},
-      false);
-  llvm::FunctionCallee oriented =
-      module.getOrInsertFunction("wafer_tx81_gemm_oriented_v3", functionType);
-  auto emit = [&](llvm::Value *callLhs, llvm::Value *callRhs,
-                  llvm::Value *callDestination, GemmOrientation lhsOrientation,
-                  GemmOrientation rhsOrientation) {
-    builder.CreateCall(
-        oriented, {callLhs, callRhs, callDestination, gemm->getArgOperand(3),
-                   gemm->getArgOperand(4), gemm->getArgOperand(5),
-                   gemm->getArgOperand(6), gemm->getArgOperand(7),
-                   builder.getInt32(static_cast<uint32_t>(lhsOrientation)),
-                   builder.getInt32(static_cast<uint32_t>(rhsOrientation)),
-                   gemm->getArgOperand(8)});
-  };
-  emit(lhs, rhs, destination, GemmOrientation::Normal, GemmOrientation::Normal);
-  emit(lhs, rhs, destination, GemmOrientation::Normal,
-       GemmOrientation::Transpose);
-  emit(lhs, rhs, destination, GemmOrientation::Transpose,
-       GemmOrientation::Normal);
-  emit(lhs, rhs, destination, GemmOrientation::Transpose,
-       GemmOrientation::Transpose);
-  gemm->eraseFromParent();
   return llvm::Error::success();
 }
 
@@ -162,16 +155,17 @@ buildOrientedGemmTargetBundle(std::string &diagnosticText) {
       R"mlir(
 module {
   wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>, policy = "explicit", shape = array<i64: 1>, topology = @default}
-  func.func @main(%lhs: tensor<2x2xf16>, %rhs: tensor<2x2xf16>) -> tensor<2x2xf16> {
-    %empty = tensor.empty() : tensor<2x2xf16>
+  wafer.execution.mesh @default_mesh {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%lhs: tensor<16x2x2xf16>, %rhs: tensor<16x2x2xf16>)
+      -> tensor<16x2x2xf16> {
     %zero = arith.constant 0.0 : f16
+    %out = tensor.empty() : tensor<16x2x2xf16>
     %init = linalg.fill ins(%zero : f16)
-        outs(%empty : tensor<2x2xf16>) -> tensor<2x2xf16>
-    %product = linalg.matmul
-        ins(%lhs, %rhs : tensor<2x2xf16>, tensor<2x2xf16>)
-        outs(%init : tensor<2x2xf16>) -> tensor<2x2xf16>
-    return %product : tensor<2x2xf16>
+        outs(%out : tensor<16x2x2xf16>) -> tensor<16x2x2xf16>
+    %product = linalg.batch_matmul
+        ins(%lhs, %rhs : tensor<16x2x2xf16>, tensor<16x2x2xf16>)
+        outs(%init : tensor<16x2x2xf16>) -> tensor<16x2x2xf16>
+    return %product : tensor<16x2x2xf16>
   }
 }
 )mlir",
@@ -180,19 +174,19 @@ module {
     return llvm::createStringError("failed to parse oriented GEMM module");
 
   frontend::FrontendProgramVerificationResult program;
-  program.logicalRankCount = 1;
+  program.numPartitions = 1;
   program.programUserInputCount = 2;
   program.distributedInputs = {boundary(0), boundary(1)};
   program.distributedOutputs = {boundary(0)};
-  llvm::Expected<ExecutionConfig> config = ExecutionConfig::createForSingleCard(
-      1, RuntimeLaunchKind::Kernel);
+  llvm::Expected<ExecutionConfig> config =
+      ExecutionConfig::createForSingleCard(1, RuntimeLaunchKind::Kernel);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
   llvm::Expected<ExecutableBundle> executable =
-      compiler::detail::buildExecutableBundle(context, *tensorProgram,
-                                              std::move(program), *config,
-                                              diagnostics, std::nullopt);
+      compiler::detail::buildExecutableBundle(
+          context, *tensorProgram, std::move(program), *config,
+          OptimizationConfig::none(), diagnostics, std::nullopt);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
@@ -215,7 +209,10 @@ public:
     transactions.push_back(transaction);
     return nextEvent++;
   }
-  llvm::Error terminal(int64_t) override { return llvm::Error::success(); }
+  llvm::Error completeTile(PhysicalCardId, PhysicalTileId,
+                           LaunchSlotId) override {
+    return llvm::Error::success();
+  }
   llvm::Error prepareCommit() override { return llvm::Error::success(); }
   void commit() override {}
   void abort(llvm::StringRef) override {}
@@ -231,53 +228,99 @@ TEST(SystemCTargetModelOrientedGemmIntegrationTest,
       buildOrientedGemmTargetBundle(diagnostics);
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
-  const TargetLLVMModule &module = bundle->getModules().front();
+  ASSERT_EQ(bundle->getModules().size(), 16u);
 
-  NumericTensorKey tensorKey = llvm::cantFail(
-      NumericTensorKey::create(LogicalFormat::F16, MemLayout::Tensor, {2, 2}));
-  const std::array<std::vector<RawLogicalValue>, 2> logicalInputs{
-      {{{LogicalFormat::F16, UINT64_C(0x3c00)},
-        {LogicalFormat::F16, UINT64_C(0x4000)},
-        {LogicalFormat::F16, UINT64_C(0x4200)},
-        {LogicalFormat::F16, UINT64_C(0x4400)}},
-       {{LogicalFormat::F16, UINT64_C(0x3c00)},
-        {LogicalFormat::F16, UINT64_C(0x4000)},
-        {LogicalFormat::F16, UINT64_C(0)},
-        {LogicalFormat::F16, UINT64_C(0x3c00)}}}};
-  TargetCallRankArguments rankArguments{0, {}};
-  std::vector<TargetModelInputBinding> inputs;
-  size_t inputIndex = 0;
-  for (const KernelABISlot &slot : module.getKernelABISlots()) {
-    rankArguments.slots.push_back(UINT64_C(0x100000) +
-                                  static_cast<uint64_t>(slot.ordinal) *
-                                      UINT64_C(0x10000));
-    if (slot.role != KernelABISlotRole::UserInput)
-      continue;
-    ASSERT_LT(inputIndex, logicalInputs.size());
-    std::vector<uint8_t> bytes = llvm::cantFail(packPhysicalTensorLogicalValues(
-        tensorKey, logicalInputs[inputIndex++], UINT8_C(0)));
-    ASSERT_EQ(bytes.size(), static_cast<uint64_t>(slot.byteSize));
-    inputs.push_back({0, slot.ordinal, std::move(bytes)});
+  NumericTensorKey tensorKey = llvm::cantFail(NumericTensorKey::create(
+      LogicalFormat::F16, MemLayout::Tensor, {16, 2, 2}));
+  const std::array<RawLogicalValue, 4> lhsMatrix{
+      {{LogicalFormat::F16, UINT64_C(0x3c00)},
+       {LogicalFormat::F16, UINT64_C(0x4000)},
+       {LogicalFormat::F16, UINT64_C(0x4200)},
+       {LogicalFormat::F16, UINT64_C(0x4400)}}};
+  const std::array<RawLogicalValue, 4> rhsMatrix{
+      {{LogicalFormat::F16, UINT64_C(0x3c00)},
+       {LogicalFormat::F16, UINT64_C(0x4000)},
+       {LogicalFormat::F16, UINT64_C(0)},
+       {LogicalFormat::F16, UINT64_C(0x3c00)}}};
+  std::array<std::vector<RawLogicalValue>, 2> logicalInputs;
+  for (size_t batch = 0; batch < 16; ++batch) {
+    logicalInputs[0].insert(logicalInputs[0].end(), lhsMatrix.begin(),
+                            lhsMatrix.end());
+    logicalInputs[1].insert(logicalInputs[1].end(), rhsMatrix.begin(),
+                            rhsMatrix.end());
   }
-  ASSERT_EQ(inputIndex, logicalInputs.size());
-  std::vector<TargetCallRankArguments> arguments{rankArguments};
+  std::vector<TargetCallTileArguments> arguments;
+  std::vector<TargetModelInputBinding> inputs;
+  for (const TargetLLVMModule &module : bundle->getModules()) {
+    const int64_t launchSlot = module.getLaunchSlotId().getValue();
+    arguments.push_back({module.getPhysicalCardId(),
+                         module.getPhysicalTileId(),
+                         module.getLaunchSlotId(),
+                         {}});
+    size_t inputCount = 0;
+    size_t outputCount = 0;
+    for (const KernelABISlot &slot : module.getKernelABISlots()) {
+      const bool tileOwned = slot.role == KernelABISlotRole::Workspace ||
+                             slot.role == KernelABISlotRole::TransportStatus;
+      arguments.back().slots.push_back(
+          tileOwned
+              ? UINT64_C(0x10000000) +
+                    static_cast<uint64_t>(launchSlot) * UINT64_C(0x100000) +
+                    static_cast<uint64_t>(slot.ordinal) * UINT64_C(0x10000)
+              : (slot.role == KernelABISlotRole::Output
+                     ? UINT64_C(0x400000)
+                     : UINT64_C(0x100000) +
+                           static_cast<uint64_t>(slot.resourceIndex) *
+                               UINT64_C(0x100000)));
+      if (slot.role == KernelABISlotRole::Output) {
+        EXPECT_EQ(slot.shape, (std::vector<int64_t>{16, 2, 2}));
+        ++outputCount;
+        continue;
+      }
+      if (slot.role != KernelABISlotRole::UserInput)
+        continue;
+      ASSERT_LT(slot.resourceIndex, 2);
+      EXPECT_EQ(slot.shape, (std::vector<int64_t>{16, 2, 2}));
+      std::vector<uint8_t> bytes =
+          llvm::cantFail(packPhysicalTensorLogicalValues(
+              tensorKey, logicalInputs[static_cast<size_t>(slot.resourceIndex)],
+              UINT8_C(0)));
+      ASSERT_EQ(bytes.size(), static_cast<uint64_t>(slot.byteSize));
+      if (launchSlot == 0)
+        inputs.push_back(
+            {getTargetModelResourceId(module.getPhysicalCardId(),
+                                      module.getPhysicalTileId(), slot.role,
+                                      slot.resourceIndex),
+             std::move(bytes)});
+      ++inputCount;
+    }
+    EXPECT_EQ(inputCount, 2u);
+    EXPECT_EQ(outputCount, 1u);
+  }
 
   RecordingTargetSink recording;
   llvm::Expected<TargetCallExecutionResult> decoded =
       executeTargetCallFrontend(*bundle, arguments, recording);
   ASSERT_TRUE(static_cast<bool>(decoded))
       << llvm::toString(decoded.takeError());
-  std::vector<std::pair<GemmOrientation, GemmOrientation>> orientations;
+  std::array<std::vector<std::pair<GemmOrientation, GemmOrientation>>, 16>
+      orientationsByLaunchSlot;
   for (const TargetTransaction &transaction : recording.transactions)
     if (const auto *gemm =
-            std::get_if<TargetGemmTransaction>(&transaction.payload))
-      orientations.emplace_back(gemm->lhsOrientation, gemm->rhsOrientation);
-  EXPECT_EQ(orientations,
-            (std::vector<std::pair<GemmOrientation, GemmOrientation>>{
-                {GemmOrientation::Normal, GemmOrientation::Normal},
-                {GemmOrientation::Normal, GemmOrientation::Transpose},
-                {GemmOrientation::Transpose, GemmOrientation::Normal},
-                {GemmOrientation::Transpose, GemmOrientation::Transpose}}));
+            std::get_if<TargetGemmTransaction>(&transaction.payload)) {
+      const int64_t launchSlot = transaction.launchSlotId.getValue();
+      ASSERT_GE(launchSlot, 0);
+      ASSERT_LT(launchSlot, 16);
+      orientationsByLaunchSlot[static_cast<size_t>(launchSlot)].emplace_back(
+          gemm->lhsOrientation, gemm->rhsOrientation);
+    }
+  const std::vector<std::pair<GemmOrientation, GemmOrientation>> expectedOrder{
+      {GemmOrientation::Normal, GemmOrientation::Normal},
+      {GemmOrientation::Normal, GemmOrientation::Transpose},
+      {GemmOrientation::Transpose, GemmOrientation::Normal},
+      {GemmOrientation::Transpose, GemmOrientation::Transpose}};
+  for (const auto &orientations : orientationsByLaunchSlot)
+    EXPECT_EQ(orientations, expectedOrder);
 
   llvm::Expected<TargetCallExecutable> frontend =
       prepareTargetCallFrontend(*bundle, arguments);
@@ -288,18 +331,22 @@ TEST(SystemCTargetModelOrientedGemmIntegrationTest,
       TargetModelKernelBudget::create(
           FormalNumericWorkBudget::create(/*maximumScalarEvaluations=*/4096,
                                           /*maximumFusedMultiplyAdds=*/4096),
-          /*maximumMovementBytes=*/4096,
-          /*maximumMovementSegments=*/256));
+          /*maximumMovementBytes=*/UINT64_C(1) << 20,
+          /*maximumMovementSegments=*/4096));
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   ASSERT_EQ(result->outputs.size(), 1u);
-  llvm::Expected<std::vector<RawLogicalValue>> output =
-      unpackPhysicalTensorLogicalValues(tensorKey, result->outputs[0].bytes);
-  ASSERT_TRUE(static_cast<bool>(output)) << llvm::toString(output.takeError());
-  const std::array<uint64_t, 4> expected{UINT64_C(0x4700), UINT64_C(0x4200),
-                                         UINT64_C(0x4900), UINT64_C(0x4400)};
-  ASSERT_EQ(output->size(), expected.size());
-  for (size_t index = 0; index < expected.size(); ++index)
-    EXPECT_EQ((*output)[index].bits, expected[index]);
+  const std::array<uint64_t, 4> expectedMatrix{
+      UINT64_C(0x4700), UINT64_C(0x4200), UINT64_C(0x4900), UINT64_C(0x4400)};
+  for (const TargetModelOutput &modelOutput : result->outputs) {
+    llvm::Expected<std::vector<RawLogicalValue>> output =
+        unpackPhysicalTensorLogicalValues(tensorKey, modelOutput.bytes);
+    ASSERT_TRUE(static_cast<bool>(output))
+        << llvm::toString(output.takeError());
+    ASSERT_EQ(output->size(), 16u * 4u);
+    for (size_t index = 0; index < output->size(); ++index) {
+      EXPECT_EQ((*output)[index].bits, expectedMatrix[index % 4]);
+    }
+  }
 }
 
 } // namespace

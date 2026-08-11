@@ -63,6 +63,36 @@ def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
       "$lhs `,` $rhs attr-dict `:` functional-type(operands, results)";
 }
 
+def Wafer_ComputeConvOp : Wafer_Op<"tile.conv", [
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
+  ]> {
+  let summary = "target-abstract ordinary 2-D tile convolution";
+  let description = [{
+    `wafer.tile.conv` is the canonical tile-local ordinary 2-D convolution
+    contract. Input and result storage use logical `[N, H, W, C]` order and
+    weight storage uses logical `[X, Y, O, I]` order. `strides` and
+    `dilations` use logical `[H, W]` order; `pads` and `unpads` use
+    `[H-before, H-after, W-before, W-after]` order. The operation remains
+    target-abstract: instruction field packing and register bounds belong to
+    instruction lowering.
+  }];
+
+  let arguments = (ins
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$input,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$weight,
+    DenseI64ArrayAttr:$pads,
+    DenseI64ArrayAttr:$unpads,
+    DenseI64ArrayAttr:$strides,
+    DenseI64ArrayAttr:$dilations
+  );
+  let results = (outs Wafer_AnySPMMemRef:$result);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$input `,` $weight attr-dict `:` functional-type(operands, results)";
+}
+
 def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,

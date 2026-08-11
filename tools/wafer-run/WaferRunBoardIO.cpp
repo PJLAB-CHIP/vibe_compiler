@@ -93,15 +93,21 @@ struct StagedRawFile {
   llvm::SmallString<256> temporary;
 };
 
-using SemanticResourceKey = std::tuple<int64_t, PackageResourceRole, int64_t>;
+using SemanticResourceKey =
+    std::tuple<int, int64_t, int64_t, PackageResourceRole, int64_t>;
 
 SemanticResourceKey semanticKey(const PackageResourceRecord &resource) {
-  return {resource.logicalRank, resource.role, resource.roleIndex};
+  if (const auto *card = std::get_if<CardResourceScope>(&resource.scope))
+    return {0, card->cardId.getValue(), -1, resource.role,
+            resource.roleIndex};
+  const auto &tile = std::get<TileResourceScope>(resource.scope);
+  return {1, tile.cardId.getValue(), tile.tileId.getValue(), resource.role,
+          resource.roleIndex};
 }
 
 bool hasExactUserContract(const PackageResourceRecord &lhs,
                           const PackageResourceRecord &rhs) {
-  return lhs.logicalRank == rhs.logicalRank && lhs.role == rhs.role &&
+  return semanticKey(lhs) == semanticKey(rhs) &&
          lhs.roleIndex == rhs.roleIndex && lhs.type.dtype == rhs.type.dtype &&
          lhs.type.shape == rhs.type.shape && lhs.bytes == rhs.bytes &&
          lhs.alignment == rhs.alignment && lhs.access == rhs.access &&

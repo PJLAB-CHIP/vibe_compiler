@@ -47,7 +47,7 @@ struct KernelABISlot {
 /// One fully translated target LLVM module and the context that owns all of
 /// its uniqued IR state. The module is immutable after construction: target
 /// publication and host-side consumers must share this verified translation
-/// instead of independently lowering the accepted rank again.
+/// instead of independently lowering the accepted physical Tile again.
 class TargetLLVMModule {
 public:
   ~TargetLLVMModule();
@@ -56,7 +56,9 @@ public:
   TargetLLVMModule(const TargetLLVMModule &) = delete;
   TargetLLVMModule &operator=(const TargetLLVMModule &) = delete;
 
-  int64_t getLogicalRank() const { return logicalRank; }
+  PhysicalCardId getPhysicalCardId() const { return physicalCardId; }
+  PhysicalTileId getPhysicalTileId() const { return physicalTileId; }
+  LaunchSlotId getLaunchSlotId() const { return launchSlotId; }
   llvm::StringRef getEntrySymbol() const { return entrySymbol; }
   TargetIdentityId getTargetIdentityId() const { return targetIdentity; }
   KernelRuntimeABIId getKernelRuntimeABIId() const { return kernelRuntimeABI; }
@@ -71,7 +73,9 @@ public:
 private:
   friend struct TargetLLVMModuleBundleBuilder;
 
-  TargetLLVMModule(int64_t logicalRank, llvm::StringRef entrySymbol,
+  TargetLLVMModule(PhysicalCardId physicalCardId,
+                   PhysicalTileId physicalTileId, LaunchSlotId launchSlotId,
+                   llvm::StringRef entrySymbol,
                    TargetIdentityId targetIdentity,
                    KernelRuntimeABIId kernelRuntimeABI,
                    llvm::StringRef moduleFormat,
@@ -79,7 +83,9 @@ private:
                    std::unique_ptr<llvm::LLVMContext> context,
                    std::unique_ptr<llvm::Module> module);
 
-  int64_t logicalRank;
+  PhysicalCardId physicalCardId;
+  PhysicalTileId physicalTileId;
+  LaunchSlotId launchSlotId;
   std::string entrySymbol;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId kernelRuntimeABI;
@@ -91,7 +97,7 @@ private:
   std::unique_ptr<llvm::Module> module;
 };
 
-/// Atomic owner of the complete target LLVM rank domain. This is an
+/// Atomic owner of the complete target LLVM physical-Tile domain. This is an
 /// invocation-local boundary and deliberately has no serialization form.
 class TargetLLVMModuleBundle {
 public:
@@ -147,45 +153,8 @@ private:
 
 class TargetCompilationProduct;
 
-namespace testing {
-enum class CollectiveCharacterizationAlgorithm;
-
-mlir::FailureOr<TargetCompilationProduct>
-compileProgramWithReservedBaselineTargetCompilation(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper,
-    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
-mlir::FailureOr<TargetCompilationProduct>
-compileProgramForStaticFixedSlotTargetQualification(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper,
-    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
-mlir::FailureOr<TargetCompilationProduct>
-compileProgramForDirectDTEComputeOverlapTargetQualification(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper,
-    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
-mlir::FailureOr<TargetCompilationProduct>
-compileProgramForWorkerPlacementTargetQualification(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper,
-    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
-mlir::FailureOr<TargetCompilationProduct>
-compileProgramForNoCResidentFixedSlotWorkerTargetQualification(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper,
-    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
-mlir::FailureOr<TargetCompilationProduct>
-compileProgramForCollectiveCharacterizationTargetCompilation(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper,
-    const TargetToolchain &targetToolchain,
-    CollectiveCharacterizationAlgorithm algorithm, llvm::StringRef reportPath,
-    llvm::raw_ostream &diagnostics);
-} // namespace testing
-
 /// Owner-backed result retained by downstream consumers that need the same
-/// accepted rank domain and the exact target LLVM modules already consumed by
+/// accepted physical-Tile domain and the exact target LLVM modules consumed by
 /// target artifact publication. Neither member is reconstructed from the
 /// published package or serialized as a side channel.
 class TargetCompilationProduct {
@@ -209,46 +178,8 @@ private:
                                      llvm::StringRef outputProgramDirectory,
                                      llvm::StringRef xlaSpmdPartitionerHelper,
                                      const TargetToolchain &targetToolchain,
-                                     llvm::raw_ostream &diagnostics);
-  friend mlir::FailureOr<TargetCompilationProduct>
-  compileProgramWithTargetLLVMBundle(CompilationRequest request,
-                                     llvm::StringRef outputProgramDirectory,
-                                     llvm::StringRef xlaSpmdPartitionerHelper,
-                                     const TargetToolchain &targetToolchain,
                                      CompilationOptions options,
                                      llvm::raw_ostream &diagnostics);
-  friend mlir::FailureOr<TargetCompilationProduct>
-  testing::compileProgramWithReservedBaselineTargetCompilation(
-      CompilationRequest request, llvm::StringRef outputProgramDirectory,
-      llvm::StringRef xlaSpmdPartitionerHelper,
-      const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
-  friend mlir::FailureOr<TargetCompilationProduct>
-  testing::compileProgramForStaticFixedSlotTargetQualification(
-      CompilationRequest request, llvm::StringRef outputProgramDirectory,
-      llvm::StringRef xlaSpmdPartitionerHelper,
-      const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
-  friend mlir::FailureOr<TargetCompilationProduct>
-  testing::compileProgramForDirectDTEComputeOverlapTargetQualification(
-      CompilationRequest request, llvm::StringRef outputProgramDirectory,
-      llvm::StringRef xlaSpmdPartitionerHelper,
-      const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
-  friend mlir::FailureOr<TargetCompilationProduct>
-  testing::compileProgramForWorkerPlacementTargetQualification(
-      CompilationRequest request, llvm::StringRef outputProgramDirectory,
-      llvm::StringRef xlaSpmdPartitionerHelper,
-      const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
-  friend mlir::FailureOr<TargetCompilationProduct>
-  testing::compileProgramForNoCResidentFixedSlotWorkerTargetQualification(
-      CompilationRequest request, llvm::StringRef outputProgramDirectory,
-      llvm::StringRef xlaSpmdPartitionerHelper,
-      const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
-  friend mlir::FailureOr<TargetCompilationProduct>
-  testing::compileProgramForCollectiveCharacterizationTargetCompilation(
-      CompilationRequest request, llvm::StringRef outputProgramDirectory,
-      llvm::StringRef xlaSpmdPartitionerHelper,
-      const TargetToolchain &targetToolchain,
-      testing::CollectiveCharacterizationAlgorithm algorithm,
-      llvm::StringRef reportPath, llvm::raw_ostream &diagnostics);
 
   TargetCompilationProduct(ExecutableBundle executableBundle,
                            TargetLLVMModuleBundle targetLLVMModuleBundle)
@@ -266,24 +197,19 @@ private:
 mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
-    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
-
-mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, CompilationOptions options,
     llvm::raw_ostream &diagnostics);
 
 /// Prepares the fixed Kernel Runtime ABI, lowers, translates, and verifies
-/// every accepted rank before atomically returning an owner-backed LLVM
+/// every accepted physical Tile before atomically returning an owner-backed LLVM
 /// module bundle. No file or package artifact is produced by this boundary.
 llvm::Expected<TargetLLVMModuleBundle>
 compileExecutableBundleToTargetLLVMModules(
     const ExecutableBundle &executableBundle, llvm::raw_ostream &diagnostics);
 
-/// Bundle-local identity for one unique published target payload. Rank to
-/// payload coverage is represented only by VerifiedTargetRankInterface; this
-/// identifier carries no implicit logical-rank or scope semantics.
+/// Bundle-local identity for one unique published target payload. Physical
+/// Tile to payload coverage is represented only by VerifiedTargetTileInterface;
+/// this identifier carries no implicit topology or launch-slot semantics.
 class TargetArtifactModuleId {
 public:
   TargetArtifactModuleId() = delete;
@@ -363,9 +289,11 @@ private:
   std::vector<VerifiedTargetExport> exports;
 };
 
-class VerifiedTargetRankInterface {
+class VerifiedTargetTileInterface {
 public:
-  int64_t getLogicalRank() const { return logicalRank; }
+  PhysicalCardId getPhysicalCardId() const { return physicalCardId; }
+  PhysicalTileId getPhysicalTileId() const { return physicalTileId; }
+  LaunchSlotId getLaunchSlotId() const { return launchSlotId; }
   TargetArtifactModuleId getModuleId() const { return moduleId; }
   const std::vector<KernelABISlot> &getKernelABISlots() const {
     return kernelABISlots;
@@ -374,13 +302,18 @@ public:
 private:
   friend struct TargetArtifactBundleBuilder;
 
-  VerifiedTargetRankInterface(int64_t logicalRank,
+  VerifiedTargetTileInterface(PhysicalCardId physicalCardId,
+                              PhysicalTileId physicalTileId,
+                              LaunchSlotId launchSlotId,
                               TargetArtifactModuleId moduleId,
                               std::vector<KernelABISlot> kernelABISlots)
-      : logicalRank(logicalRank), moduleId(moduleId),
+      : physicalCardId(physicalCardId), physicalTileId(physicalTileId),
+        launchSlotId(launchSlotId), moduleId(moduleId),
         kernelABISlots(std::move(kernelABISlots)) {}
 
-  int64_t logicalRank;
+  PhysicalCardId physicalCardId;
+  PhysicalTileId physicalTileId;
+  LaunchSlotId launchSlotId;
   TargetArtifactModuleId moduleId;
   std::vector<KernelABISlot> kernelABISlots;
 };
@@ -400,8 +333,8 @@ public:
   const std::vector<VerifiedTargetModule> &getModules() const {
     return modules;
   }
-  const std::vector<VerifiedTargetRankInterface> &getRankInterfaces() const {
-    return rankInterfaces;
+  const std::vector<VerifiedTargetTileInterface> &getTileInterfaces() const {
+    return tileInterfaces;
   }
 
 private:
@@ -411,34 +344,27 @@ private:
                        ExecutionConfig executionConfig,
                        RuntimeLaunchContract runtimeLaunchContract,
                        std::vector<VerifiedTargetModule> modules,
-                       std::vector<VerifiedTargetRankInterface> rankInterfaces)
+                       std::vector<VerifiedTargetTileInterface> tileInterfaces)
       : rootDirectory(rootDirectory.str()), executionConfig(executionConfig),
         runtimeLaunchContract(std::move(runtimeLaunchContract)),
-        modules(std::move(modules)), rankInterfaces(std::move(rankInterfaces)) {
+        modules(std::move(modules)), tileInterfaces(std::move(tileInterfaces)) {
   }
 
   std::string rootDirectory;
   ExecutionConfig executionConfig;
   RuntimeLaunchContract runtimeLaunchContract;
   std::vector<VerifiedTargetModule> modules;
-  std::vector<VerifiedTargetRankInterface> rankInterfaces;
+  std::vector<VerifiedTargetTileInterface> tileInterfaces;
 };
 
 /// Materializes the runtime-launch module topology from the exact verified
-/// LLVM rank domain and publishes it atomically. This consumer never re-runs
+/// LLVM physical-Tile domain and publishes it atomically. This consumer never re-runs
 /// ABI preparation, target lowering, or LLVM translation.
 llvm::Expected<TargetArtifactBundle>
 compileTargetLLVMModuleBundleToTargetArtifacts(
     const TargetLLVMModuleBundle &targetLLVMModules,
     llvm::StringRef outputDirectory, const TargetToolchain &toolchain,
     llvm::raw_ostream &diagnostics);
-
-/// Compiles the complete executable-rank domain into a private transaction,
-/// verifies the resulting all-and-only rank interfaces, unique modules,
-/// typed exports, ABI, and digests, and publishes only after all checks pass.
-llvm::Expected<TargetArtifactBundle> compileExecutableBundleToTargetArtifacts(
-    const ExecutableBundle &executableBundle, llvm::StringRef outputDirectory,
-    const TargetToolchain &toolchain, llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler
 

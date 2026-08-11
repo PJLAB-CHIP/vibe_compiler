@@ -1,661 +1,678 @@
-//===- NoCProfitabilityAnalysis.cpp - Whole-card NoC tradeoff -----------===//
+//===- TheoreticalScheduleCostAnalysis.cpp - Numeric theoretical cost -===//
 
-#include "Wafer/Analysis/NoCProfitabilityAnalysis.h"
+#include "Wafer/Analysis/TheoreticalScheduleCostAnalysis.h"
 
-#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
-#include <initializer_list>
+#include <array>
+#include <cassert>
 #include <limits>
-#include <optional>
 
 namespace wafer::analysis {
 namespace {
 
 constexpr uint64_t kPicosecondsPerSecond = 1'000'000'000'000ULL;
 
-static StaticDurationAssumptionMask
-assumptions(std::initializer_list<StaticDurationAssumption> values) {
-  StaticDurationAssumptionMask result = 0;
-  for (StaticDurationAssumption value : values)
-    result |= staticDurationAssumptionMask(value);
-  return result;
+static bool enabled(StaticDurationTermMask terms, StaticDurationTerm term) {
+  return (terms & staticDurationTermMask(term)) != 0;
 }
 
-static ScheduleCostMetric unknown(ScheduleCostReason reason) {
-  return {0, ScheduleCostKnowledge::Unknown, reason};
+static void disable(StaticDurationTermMask &terms, StaticDurationTerm term) {
+  terms &= ~staticDurationTermMask(term);
 }
 
-static ScheduleCostMetric overflow() {
-  return {0, ScheduleCostKnowledge::Overflow,
-          ScheduleCostReason::ArithmeticOverflow};
+static uint64_t saturatingAdd(uint64_t lhs, uint64_t rhs) {
+  if (rhs > std::numeric_limits<uint64_t>::max() - lhs)
+    return std::numeric_limits<uint64_t>::max();
+  return lhs + rhs;
 }
 
-static unsigned knowledgeSeverity(ScheduleCostKnowledge knowledge) {
-  switch (knowledge) {
-  case ScheduleCostKnowledge::Known:
-    return 0;
-  case ScheduleCostKnowledge::Unknown:
-    return 1;
-  case ScheduleCostKnowledge::Unsupported:
-    return 2;
-  case ScheduleCostKnowledge::Overflow:
-    return 3;
-  }
-  llvm_unreachable("unhandled schedule cost knowledge");
-}
-
-static ScheduleCostMetric mergeNonKnown(ScheduleCostMetric lhs,
-                                        ScheduleCostMetric rhs) {
-  if (lhs.isKnown())
-    return rhs;
-  if (rhs.isKnown())
-    return lhs;
-  if (knowledgeSeverity(rhs.knowledge) > knowledgeSeverity(lhs.knowledge))
-    return rhs;
-  return lhs;
-}
-
-static ScheduleCostMetric addMetric(ScheduleCostMetric lhs,
-                                    ScheduleCostMetric rhs) {
-  if (!lhs.isKnown() || !rhs.isKnown())
-    return mergeNonKnown(lhs, rhs);
-  if (rhs.value > std::numeric_limits<uint64_t>::max() - lhs.value)
-    return overflow();
-  lhs.value += rhs.value;
-  return lhs;
-}
-
-static ScheduleCostMetric maxMetric(ScheduleCostMetric lhs,
-                                    ScheduleCostMetric rhs) {
-  if (!lhs.isKnown() || !rhs.isKnown())
-    return mergeNonKnown(lhs, rhs);
-  lhs.value = std::max(lhs.value, rhs.value);
-  return lhs;
-}
-
-static ScheduleCostMetric
-sumMetrics(llvm::ArrayRef<ScheduleCostMetric> metrics) {
-  ScheduleCostMetric result;
-  for (ScheduleCostMetric metric : metrics)
-    result = addMetric(result, metric);
-  return result;
-}
-
-static ScheduleCostMetric
-maxMetrics(llvm::ArrayRef<ScheduleCostMetric> metrics) {
-  ScheduleCostMetric result;
-  for (ScheduleCostMetric metric : metrics)
-    result = maxMetric(result, metric);
-  return result;
-}
-
-static ScheduleCostMetric scaleMetric(ScheduleCostMetric metric,
-                                      uint64_t multiplier) {
-  if (!metric.isKnown())
-    return metric;
-  unsigned __int128 product =
-      static_cast<unsigned __int128>(metric.value) * multiplier;
+static uint64_t saturatingMultiply(uint64_t lhs, uint64_t rhs) {
+  const unsigned __int128 product = static_cast<unsigned __int128>(lhs) * rhs;
   if (product > std::numeric_limits<uint64_t>::max())
-    return overflow();
-  metric.value = static_cast<uint64_t>(product);
-  return metric;
+    return std::numeric_limits<uint64_t>::max();
+  return static_cast<uint64_t>(product);
 }
 
-static ScheduleCostMetric timeForWork(ScheduleCostMetric work,
-                                      uint64_t unitsPerSecond) {
-  if (!work.isKnown())
-    return work;
-  if (work.value == 0)
-    return {};
-  if (unitsPerSecond == 0)
-    return unknown(ScheduleCostReason::MissingPerformanceCalibration);
-  unsigned __int128 numerator =
-      static_cast<unsigned __int128>(work.value) * kPicosecondsPerSecond;
-  unsigned __int128 duration =
+static uint64_t timeForWork(uint64_t work, uint64_t unitsPerSecond) {
+  if (work == 0 || unitsPerSecond == 0)
+    return 0;
+  const unsigned __int128 numerator =
+      static_cast<unsigned __int128>(work) * kPicosecondsPerSecond;
+  const unsigned __int128 duration =
       (numerator + unitsPerSecond - 1) / unitsPerSecond;
   if (duration > std::numeric_limits<uint64_t>::max())
-    return overflow();
-  return {static_cast<uint64_t>(duration)};
+    return std::numeric_limits<uint64_t>::max();
+  return static_cast<uint64_t>(duration);
 }
 
-static ScheduleCostMetric timeForWork(ScheduleCostMetric work,
-                                      std::optional<uint64_t> unitsPerSecond) {
-  if (!work.isKnown())
-    return work;
-  if (work.value == 0)
-    return {};
-  if (!unitsPerSecond)
-    return unknown(ScheduleCostReason::MissingPerformanceCalibration);
-  return timeForWork(work, *unitsPerSecond);
+static bool
+allKnown(llvm::ArrayRef<const ScheduleCostMetric *> requiredMetrics) {
+  return llvm::all_of(requiredMetrics, [](const ScheduleCostMetric *metric) {
+    return metric && metric->isKnown();
+  });
 }
 
-static std::optional<uint64_t> validatedSustainedRate(
-    std::optional<uint64_t> rate,
-    std::optional<uint64_t> documentedMaximum = std::nullopt) {
-  if (!rate || *rate == 0 || (documentedMaximum && *rate > *documentedMaximum))
-    return std::nullopt;
-  return rate;
+template <typename MetricAccessor>
+static bool allTileMetricsKnown(const WholeCardInstructionProgramCost &cost,
+                                MetricAccessor accessor,
+                                const ScheduleCostMetric &aggregateFallback) {
+  if (cost.tileCosts.empty())
+    return aggregateFallback.isKnown();
+  return llvm::all_of(cost.tileCosts, [&](const InstructionProgramCost &tile) {
+    return accessor(tile).isKnown();
+  });
 }
 
-static ScheduleCostMetric
-timeForOccurrences(ScheduleCostMetric occurrences,
-                   std::optional<uint64_t> picosecondsPerOccurrence) {
-  if (!occurrences.isKnown())
-    return occurrences;
-  if (occurrences.value == 0)
-    return {};
-  if (!picosecondsPerOccurrence)
-    return unknown(ScheduleCostReason::MissingPerformanceCalibration);
-  return scaleMetric(occurrences, *picosecondsPerOccurrence);
+static bool isKnownNoCFree(const WholeCardInstructionProgramCost &cost) {
+  return cost.aggregateNoC.staticIssueSiteCount.isKnown() &&
+         cost.aggregateNoC.staticIssueSiteCount.value == 0;
 }
 
-static ScheduleCostMetric requireSupportedZero(ScheduleCostMetric metric) {
-  if (!metric.isKnown())
-    return metric;
-  if (metric.value != 0)
-    return unknown(ScheduleCostReason::MissingPerformanceCalibration);
-  return {};
-}
-
-static StaticDurationInterval
-estimateDDR(const WholeCardInstructionProgramCost &cost,
-            const TargetScheduleCostPolicy &policy) {
-  ScheduleCostMetric bytes =
-      addMetric(cost.aggregateDDRReadBytes, cost.aggregateDDRWriteBytes);
-  return {
-      timeForWork(bytes, policy.cardDDRBytesPerSecond),
-      timeForWork(bytes, policy.cardDDRNominalBytesPerSecond),
-      timeForWork(bytes, validatedSustainedRate(
-                             policy.cardDDRSustainedBytesPerSecondLowerBound,
-                             policy.cardDDRBytesPerSecond)),
-      assumptions({StaticDurationAssumption::DDROperatingPoint}),
+static StaticDurationTermMask
+getParameterEnabledTerms(const TargetScheduleCostPolicy &policy) {
+  StaticDurationTermMask terms = 0;
+  auto addWhen = [&](bool condition, StaticDurationTerm term) {
+    if (condition)
+      terms |= staticDurationTermMask(term);
   };
+  addWhen(policy.cardDDRNominalBytesPerSecond != 0, StaticDurationTerm::DDR);
+  addWhen(policy.f16Bf16NPULogicalOpsPerSecondPerTile != 0,
+          StaticDurationTerm::NPUF16Bf16);
+  addWhen(policy.f16Bf16VectorLogicalOpsPerSecondPerTile != 0,
+          StaticDurationTerm::VectorF16Bf16);
+  addWhen(policy.f32VectorLogicalOpsPerSecondPerTile != 0,
+          StaticDurationTerm::VectorF32);
+  addWhen(policy.directionalNoCBytesPerSecond != 0,
+          StaticDurationTerm::NoCLink);
+  addWhen(policy.dteEndpointBytesPerSecondEstimate != 0,
+          StaticDurationTerm::NoCTransmitEndpoint);
+  addWhen(policy.dteEndpointBytesPerSecondEstimate != 0,
+          StaticDurationTerm::NoCReceiveEndpoint);
+  addWhen(policy.dteMessageStartupPicosecondsEstimate != 0,
+          StaticDurationTerm::NoCMessageStartup);
+  addWhen(policy.noCHopPicosecondsEstimate != 0, StaticDurationTerm::NoCHop);
+  addWhen(policy.spmExplicitMovementBytesPerSecondPerTileEstimate != 0,
+          StaticDurationTerm::SPMMovement);
+  addWhen(policy.instructionFixedPicosecondsEstimate != 0,
+          StaticDurationTerm::InstructionControl);
+  addWhen(policy.dteWaitedEventPicosecondsEstimate != 0,
+          StaticDurationTerm::DTEWaitControl);
+  addWhen(policy.nccParticipantWaitPicosecondsEstimate != 0,
+          StaticDurationTerm::NCCWaitControl);
+  return terms;
 }
 
-static ScheduleCostMetric
-estimateRankCompute(const InstructionProgramCost &rank,
-                    const TargetScheduleCostPolicy &policy,
-                    bool conservativeUpperBound) {
-  ScheduleCostMetric unsupported =
-      maxMetric(requireSupportedZero(rank.compute.npuOtherLogicalOps),
-                requireSupportedZero(rank.compute.vectorOtherLogicalOps));
-  if (!unsupported.isKnown())
-    return unsupported;
-
-  ScheduleCostMetric npu =
-      conservativeUpperBound
-          ? timeForWork(
-                rank.compute.npuF16Bf16LogicalOps,
-                validatedSustainedRate(
-                    policy.f16Bf16NPULogicalOpsPerSecondPerTileLowerBound,
-                    policy.f16Bf16NPULogicalOpsPerSecondPerTile))
-          : timeForWork(rank.compute.npuF16Bf16LogicalOps,
-                        policy.f16Bf16NPULogicalOpsPerSecondPerTile);
-  ScheduleCostMetric vectorF16 =
-      conservativeUpperBound
-          ? timeForWork(
-                rank.compute.vectorF16Bf16LogicalOps,
-                validatedSustainedRate(
-                    policy.f16Bf16VectorLogicalOpsPerSecondPerTileLowerBound,
-                    policy.f16Bf16VectorLogicalOpsPerSecondPerTile))
-          : timeForWork(rank.compute.vectorF16Bf16LogicalOps,
-                        policy.f16Bf16VectorLogicalOpsPerSecondPerTile);
-  ScheduleCostMetric vectorF32 =
-      conservativeUpperBound
-          ? timeForWork(
-                rank.compute.vectorF32LogicalOps,
-                validatedSustainedRate(
-                    policy.f32VectorLogicalOpsPerSecondPerTileLowerBound,
-                    policy.f32VectorLogicalOpsPerSecondPerTile))
-          : timeForWork(rank.compute.vectorF32LogicalOps,
-                        policy.f32VectorLogicalOpsPerSecondPerTile);
-
-  // A lower bound allows independent engines to overlap. A conservative upper
-  // bound serializes their work because no exact group duration is established.
-  if (conservativeUpperBound)
-    return sumMetrics({npu, vectorF16, vectorF32});
-  return maxMetrics({npu, vectorF16, vectorF32});
+static bool hasScheduleResource(StaticScheduleResourceMask resources,
+                                StaticScheduleResource resource) {
+  return (resources & staticScheduleResourceMask(resource)) != 0;
 }
 
-static StaticDurationInterval
-estimateCompute(const WholeCardInstructionProgramCost &cost,
-                const TargetScheduleCostPolicy &policy) {
-  if (cost.rankCosts.empty()) {
-    InstructionProgramCost aggregateAsOneRank;
-    aggregateAsOneRank.compute = cost.aggregateCompute;
-    ScheduleCostMetric nominal = sumMetrics(
-        {timeForWork(aggregateAsOneRank.compute.npuF16Bf16LogicalOps,
-                     policy.f16Bf16NPULogicalOpsPerSecondPerTile),
-         timeForWork(aggregateAsOneRank.compute.vectorF16Bf16LogicalOps,
-                     policy.f16Bf16VectorLogicalOpsPerSecondPerTile),
-         timeForWork(aggregateAsOneRank.compute.vectorF32LogicalOps,
-                     policy.f32VectorLogicalOpsPerSecondPerTile),
-         requireSupportedZero(aggregateAsOneRank.compute.npuOtherLogicalOps),
-         requireSupportedZero(
-             aggregateAsOneRank.compute.vectorOtherLogicalOps)});
-    ScheduleCostMetric upper = estimateRankCompute(
-        aggregateAsOneRank, policy, /*conservativeUpperBound=*/true);
-    // An aggregate-only synthetic caller has no rank distribution, so zero is
-    // the only generally valid compute lower bound. Treating all aggregate
-    // work as one rank is an explicit conservative point/upper fallback.
-    return {{},
-            nominal,
-            upper,
-            assumptions({StaticDurationAssumption::ComputePeakReference})};
+static void
+disableUnavailableResourceTerms(StaticDurationTermMask &terms,
+                                const WholeCardInstructionProgramCost &cost,
+                                StaticScheduleResourceMask resources) {
+  if (hasScheduleResource(resources, StaticScheduleResource::DDR) &&
+      !allKnown({&cost.aggregateDDRReadBytes, &cost.aggregateDDRWriteBytes}))
+    disable(terms, StaticDurationTerm::DDR);
+
+  if (hasScheduleResource(resources, StaticScheduleResource::Compute)) {
+    if (!allTileMetricsKnown(
+            cost,
+            [](const InstructionProgramCost &tile)
+                -> const ScheduleCostMetric & {
+              return tile.compute.npuF16Bf16LogicalOps;
+            },
+            cost.aggregateCompute.npuF16Bf16LogicalOps))
+      disable(terms, StaticDurationTerm::NPUF16Bf16);
+    if (!allTileMetricsKnown(
+            cost,
+            [](const InstructionProgramCost &tile)
+                -> const ScheduleCostMetric & {
+              return tile.compute.vectorF16Bf16LogicalOps;
+            },
+            cost.aggregateCompute.vectorF16Bf16LogicalOps))
+      disable(terms, StaticDurationTerm::VectorF16Bf16);
+    if (!allTileMetricsKnown(
+            cost,
+            [](const InstructionProgramCost &tile)
+                -> const ScheduleCostMetric & {
+              return tile.compute.vectorF32LogicalOps;
+            },
+            cost.aggregateCompute.vectorF32LogicalOps))
+      disable(terms, StaticDurationTerm::VectorF32);
   }
-  ScheduleCostMetric lower;
-  ScheduleCostMetric nominal;
-  ScheduleCostMetric upper;
-  for (const InstructionProgramCost &rank : cost.rankCosts) {
-    ScheduleCostMetric rankLower =
-        estimateRankCompute(rank, policy, /*conservativeUpperBound=*/false);
-    ScheduleCostMetric rankNominal =
-        sumMetrics({timeForWork(rank.compute.npuF16Bf16LogicalOps,
-                                policy.f16Bf16NPULogicalOpsPerSecondPerTile),
-                    timeForWork(rank.compute.vectorF16Bf16LogicalOps,
-                                policy.f16Bf16VectorLogicalOpsPerSecondPerTile),
-                    timeForWork(rank.compute.vectorF32LogicalOps,
-                                policy.f32VectorLogicalOpsPerSecondPerTile),
-                    requireSupportedZero(rank.compute.npuOtherLogicalOps),
-                    requireSupportedZero(rank.compute.vectorOtherLogicalOps)});
-    ScheduleCostMetric rankUpper =
-        estimateRankCompute(rank, policy, /*conservativeUpperBound=*/true);
-    lower = maxMetric(lower, rankLower);
-    nominal = maxMetric(nominal, rankNominal);
-    // A proof-oriented whole-card upper bound cannot assume that rank-local
-    // compute phases overlap: NoC/data dependencies may serialize them.
-    upper = addMetric(upper, rankUpper);
+
+  if (hasScheduleResource(resources, StaticScheduleResource::NoC) &&
+      !isKnownNoCFree(cost)) {
+    if (!cost.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown())
+      disable(terms, StaticDurationTerm::NoCLink);
+    if (!cost.maximumTileNoCTransmitBytes.isKnown())
+      disable(terms, StaticDurationTerm::NoCTransmitEndpoint);
+    if (!cost.maximumTileNoCReceiveBytes.isKnown())
+      disable(terms, StaticDurationTerm::NoCReceiveEndpoint);
+    if (!allKnown({&cost.maximumTileNoCTransmitMessageCount,
+                   &cost.maximumTileNoCReceiveMessageCount}))
+      disable(terms, StaticDurationTerm::NoCMessageStartup);
+    if (!cost.maximumNoCHopCount.isKnown())
+      disable(terms, StaticDurationTerm::NoCHop);
   }
-  return {lower, nominal, upper,
-          assumptions({StaticDurationAssumption::ComputePeakReference})};
+
+  if (hasScheduleResource(resources, StaticScheduleResource::SPMMovement)) {
+    const ScheduleCostMetric &spm = cost.tileCosts.empty()
+                                        ? cost.aggregateSPMMovementBytes
+                                        : cost.maximumTileSPMMovementBytes;
+    if (!spm.isKnown())
+      disable(terms, StaticDurationTerm::SPMMovement);
+  }
 }
 
-static StaticDurationInterval
-estimateNoC(const WholeCardInstructionProgramCost &cost,
-            const TargetScheduleCostPolicy &policy) {
-  const ScheduleCostMetric workFacts[] = {
-      cost.aggregateNoC.staticIssueSiteCount,
-      cost.aggregateNoC.aggregateTransmitBytes,
-      cost.aggregateNoC.aggregateReceiveBytes,
-      cost.aggregateNoC.transmitMessageCount,
-      cost.aggregateNoC.receiveMessageCount,
-      cost.aggregateNoC.waitOperationCount,
-      cost.aggregateNoC.waitedEventCount,
-      cost.minimumHopLinkByteDemand,
-      cost.minimumHopMessageDemand,
-      cost.idealizedMinimumPeakLinkByteDemand,
-      cost.modeledNoCRoute.peakDirectedLinkByteDemand,
-      cost.maximumNoCHopCount,
-      cost.maximumRankNoCTransmitBytes,
-      cost.maximumRankNoCReceiveBytes,
-      cost.maximumRankNoCTransmitMessageCount,
-      cost.maximumRankNoCReceiveMessageCount,
+static void
+disableUnavailableControlTerms(StaticDurationTermMask &terms,
+                               const WholeCardInstructionProgramCost &cost) {
+  if (!allTileMetricsKnown(
+          cost,
+          [](const InstructionProgramCost &tile) -> const ScheduleCostMetric & {
+            return tile.instructionCount;
+          },
+          cost.aggregateInstructionCount))
+    disable(terms, StaticDurationTerm::InstructionControl);
+  if (!allTileMetricsKnown(
+          cost,
+          [](const InstructionProgramCost &tile) -> const ScheduleCostMetric & {
+            return tile.noc.waitedEventCount;
+          },
+          cost.aggregateNoC.waitedEventCount))
+    disable(terms, StaticDurationTerm::DTEWaitControl);
+  if (!allTileMetricsKnown(
+          cost,
+          [](const InstructionProgramCost &tile) -> const ScheduleCostMetric & {
+            return tile.nccParticipantWaitCount;
+          },
+          cost.aggregateNCCParticipantWaitCount))
+    disable(terms, StaticDurationTerm::NCCWaitControl);
+}
+
+static uint64_t estimateCompute(const WholeCardInstructionProgramCost &cost,
+                                const TargetScheduleCostPolicy &policy,
+                                StaticDurationTermMask terms) {
+  auto estimateTile = [&](const ScheduleComputeCost &compute) {
+    uint64_t duration = 0;
+    if (enabled(terms, StaticDurationTerm::NPUF16Bf16))
+      duration = saturatingAdd(
+          duration, timeForWork(compute.npuF16Bf16LogicalOps.value,
+                                policy.f16Bf16NPULogicalOpsPerSecondPerTile));
+    if (enabled(terms, StaticDurationTerm::VectorF16Bf16))
+      duration = saturatingAdd(
+          duration,
+          timeForWork(compute.vectorF16Bf16LogicalOps.value,
+                      policy.f16Bf16VectorLogicalOpsPerSecondPerTile));
+    if (enabled(terms, StaticDurationTerm::VectorF32))
+      duration = saturatingAdd(
+          duration, timeForWork(compute.vectorF32LogicalOps.value,
+                                policy.f32VectorLogicalOpsPerSecondPerTile));
+    return duration;
   };
-  bool allKnown = true;
-  bool allZero = true;
-  ScheduleCostMetric mostSevereNonKnown;
-  for (ScheduleCostMetric fact : workFacts) {
-    if (!fact.isKnown())
-      mostSevereNonKnown = mergeNonKnown(mostSevereNonKnown, fact);
-    allKnown &= fact.isKnown();
-    allZero &= fact.isKnown() && fact.value == 0;
+
+  if (cost.tileCosts.empty())
+    return estimateTile(cost.aggregateCompute);
+  uint64_t maximum = 0;
+  for (const InstructionProgramCost &tile : cost.tileCosts)
+    maximum = std::max(maximum, estimateTile(tile.compute));
+  return maximum;
+}
+
+static uint64_t estimateControl(const WholeCardInstructionProgramCost &cost,
+                                const TargetScheduleCostPolicy &policy,
+                                StaticDurationTermMask terms) {
+  auto estimateTile = [&](const ScheduleCostMetric &instructions,
+                          const ScheduleCostMetric &dteWaits,
+                          const ScheduleCostMetric &nccWaits) {
+    uint64_t duration = 0;
+    if (enabled(terms, StaticDurationTerm::InstructionControl))
+      duration = saturatingAdd(
+          duration,
+          saturatingMultiply(instructions.value,
+                             policy.instructionFixedPicosecondsEstimate));
+    if (enabled(terms, StaticDurationTerm::DTEWaitControl))
+      duration = saturatingAdd(
+          duration,
+          saturatingMultiply(dteWaits.value,
+                             policy.dteWaitedEventPicosecondsEstimate));
+    if (enabled(terms, StaticDurationTerm::NCCWaitControl))
+      duration = saturatingAdd(
+          duration,
+          saturatingMultiply(nccWaits.value,
+                             policy.nccParticipantWaitPicosecondsEstimate));
+    return duration;
+  };
+
+  if (cost.tileCosts.empty())
+    return estimateTile(cost.aggregateInstructionCount,
+                        cost.aggregateNoC.waitedEventCount,
+                        cost.aggregateNCCParticipantWaitCount);
+  uint64_t maximum = 0;
+  for (const InstructionProgramCost &tile : cost.tileCosts)
+    maximum = std::max(maximum, estimateTile(tile.instructionCount,
+                                             tile.noc.waitedEventCount,
+                                             tile.nccParticipantWaitCount));
+  return maximum;
+}
+
+static const StaticDurationEstimate &
+getResourceEstimate(const WholeCardResourceDurationEstimate &estimate,
+                    StaticScheduleResource resource) {
+  switch (resource) {
+  case StaticScheduleResource::DDR:
+    return estimate.ddr;
+  case StaticScheduleResource::Compute:
+    return estimate.compute;
+  case StaticScheduleResource::NoC:
+    return estimate.noc;
+  case StaticScheduleResource::SPMMovement:
+    return estimate.spm;
   }
-  if (allKnown && allZero)
-    return {};
-  if (!allKnown)
-    return {{}, mostSevereNonKnown, mostSevereNonKnown};
-
-  // The route-independent ideal balancing floor remains a true lower bound at
-  // the documented maximum link rate. The nominal model is deliberately more
-  // concrete: a deterministic shortest path derived from typed topology
-  // exposes hot directed links, while each endpoint serializes its own
-  // message startup and payload stream. The physical route and startup value
-  // are point-model assumptions, so this result is Estimated rather than a
-  // proof.
-  ScheduleCostMetric lower =
-      timeForWork(cost.idealizedMinimumPeakLinkByteDemand,
-                  policy.directionalNoCBytesPerSecond);
-  ScheduleCostMetric link =
-      timeForWork(cost.modeledNoCRoute.peakDirectedLinkByteDemand,
-                  policy.directionalNoCBytesPerSecond);
-  ScheduleCostMetric transmitEndpoint = addMetric(
-      timeForWork(cost.maximumRankNoCTransmitBytes,
-                  policy.dteEndpointBytesPerSecondEstimate),
-      timeForOccurrences(cost.maximumRankNoCTransmitMessageCount,
-                         policy.dteMessageStartupPicosecondsEstimate));
-  ScheduleCostMetric receiveEndpoint = addMetric(
-      timeForWork(cost.maximumRankNoCReceiveBytes,
-                  policy.dteEndpointBytesPerSecondEstimate),
-      timeForOccurrences(cost.maximumRankNoCReceiveMessageCount,
-                         policy.dteMessageStartupPicosecondsEstimate));
-  ScheduleCostMetric routeFill = timeForOccurrences(
-      cost.maximumNoCHopCount, policy.noCHopPicosecondsEstimate);
-  ScheduleCostMetric nominal = addMetric(
-      maxMetrics({link, transmitEndpoint, receiveEndpoint}), routeFill);
-
-  std::optional<uint64_t> directionalRate = validatedSustainedRate(
-      policy.directionalNoCSustainedBytesPerSecondLowerBound,
-      policy.directionalNoCBytesPerSecond);
-  std::optional<uint64_t> endpointRate =
-      validatedSustainedRate(policy.dteEndpointBytesPerSecondLowerBound);
-  if (!directionalRate || !endpointRate ||
-      !policy.dteMessageStartupPicosecondsUpperBound ||
-      !policy.noCHopPicosecondsUpperBound ||
-      !policy.noCRouteDilationUpperBound ||
-      *policy.noCRouteDilationUpperBound == 0)
-    return {lower, nominal,
-            unknown(ScheduleCostReason::MissingPerformanceCalibration),
-            assumptions({StaticDurationAssumption::ModeledShortestPathRoute,
-                         StaticDurationAssumption::DTEEndpointRatePrior,
-                         StaticDurationAssumption::DTEMessageStartupPrior,
-                         StaticDurationAssumption::NoCHopPrior})};
-
-  ScheduleCostMetric routedBytes = scaleMetric(
-      cost.minimumHopLinkByteDemand, *policy.noCRouteDilationUpperBound);
-  ScheduleCostMetric routed = timeForWork(routedBytes, directionalRate);
-  // The nominal reference uses endpoint maxima to expose normal parallel
-  // pressure. The upper bound deliberately serializes every endpoint byte and
-  // message because cross-rank forwarding dependencies may prevent that
-  // parallelism.
-  ScheduleCostMetric endpointTransmit =
-      timeForWork(cost.aggregateNoC.aggregateTransmitBytes, endpointRate);
-  ScheduleCostMetric endpointReceive =
-      timeForWork(cost.aggregateNoC.aggregateReceiveBytes, endpointRate);
-  ScheduleCostMetric endpointMessages =
-      addMetric(cost.aggregateNoC.transmitMessageCount,
-                cost.aggregateNoC.receiveMessageCount);
-  ScheduleCostMetric startup = scaleMetric(
-      endpointMessages, *policy.dteMessageStartupPicosecondsUpperBound);
-  ScheduleCostMetric dilatedMessageHops = scaleMetric(
-      cost.minimumHopMessageDemand, *policy.noCRouteDilationUpperBound);
-  ScheduleCostMetric conservativeRouteFill = timeForOccurrences(
-      dilatedMessageHops, policy.noCHopPicosecondsUpperBound);
-  ScheduleCostMetric upper =
-      sumMetrics({routed, endpointTransmit, endpointReceive, startup,
-                  conservativeRouteFill});
-  return {lower, nominal, upper,
-          assumptions({StaticDurationAssumption::ModeledShortestPathRoute,
-                       StaticDurationAssumption::DTEEndpointRatePrior,
-                       StaticDurationAssumption::DTEMessageStartupPrior,
-                       StaticDurationAssumption::NoCHopPrior})};
+  llvm_unreachable("unhandled static schedule resource");
 }
 
-static StaticDurationInterval
-estimateSPM(const WholeCardInstructionProgramCost &cost,
-            const TargetScheduleCostPolicy &policy) {
-  ScheduleCostMetric maximumRankMovement = cost.maximumRankSPMMovementBytes;
-  if (cost.rankCosts.empty() && maximumRankMovement.isKnown() &&
-      maximumRankMovement.value == 0)
-    maximumRankMovement = cost.aggregateSPMMovementBytes;
-  return {{},
-          timeForWork(
-              maximumRankMovement,
-              policy.spmExplicitMovementBytesPerSecondPerTileEstimate),
-          timeForWork(cost.aggregateSPMMovementBytes,
-                      validatedSustainedRate(
-                          policy.spmBytesPerSecondPerTileLowerBound)),
-          assumptions({StaticDurationAssumption::SPMServiceRatePrior})};
+static StaticDurationEstimate &
+getResourceEstimate(WholeCardResourceDurationEstimate &estimate,
+                    StaticScheduleResource resource) {
+  return const_cast<StaticDurationEstimate &>(getResourceEstimate(
+      static_cast<const WholeCardResourceDurationEstimate &>(estimate),
+      resource));
 }
 
-static StaticDurationInterval
-estimateControl(const WholeCardInstructionProgramCost &cost,
-                const TargetScheduleCostPolicy &policy) {
-  ScheduleCostMetric nominal;
-  for (const InstructionProgramCost &rank : cost.rankCosts) {
-    ScheduleCostMetric rankNominal = sumMetrics(
-        {timeForOccurrences(rank.instructionCount,
-                            policy.instructionFixedPicosecondsEstimate),
-         timeForOccurrences(rank.noc.waitedEventCount,
-                            policy.dteWaitedEventPicosecondsEstimate),
-         timeForOccurrences(rank.nccParticipantWaitCount,
-                            policy.nccParticipantWaitPicosecondsEstimate)});
-    nominal = maxMetric(nominal, rankNominal);
+static constexpr std::array<StaticScheduleResource, 4> kScheduleResources = {
+    StaticScheduleResource::DDR, StaticScheduleResource::Compute,
+    StaticScheduleResource::NoC, StaticScheduleResource::SPMMovement};
+
+using ResourceEstimateMap =
+    llvm::DenseMap<const WholeCardInstructionProgramCost *,
+                   WholeCardResourceDurationEstimate>;
+
+static uint64_t estimateSequentialWork(const StaticScheduleWork &work,
+                                       const ResourceEstimateMap &estimates) {
+  const auto estimateIt = estimates.find(work.cost);
+  assert(estimateIt != estimates.end() && "validated work must be estimated");
+  uint64_t duration = 0;
+  for (StaticScheduleResource resource : kScheduleResources) {
+    if (hasScheduleResource(work.resources, resource))
+      duration = saturatingAdd(
+          duration,
+          getResourceEstimate(estimateIt->second, resource).picoseconds);
   }
-  if (cost.rankCosts.empty())
-    nominal = sumMetrics(
-        {timeForOccurrences(cost.aggregateInstructionCount,
-                            policy.instructionFixedPicosecondsEstimate),
-         timeForOccurrences(cost.aggregateNoC.waitedEventCount,
-                            policy.dteWaitedEventPicosecondsEstimate),
-         timeForOccurrences(cost.aggregateNCCParticipantWaitCount,
-                            policy.nccParticipantWaitPicosecondsEstimate)});
-
-  ScheduleCostMetric instructionUpper =
-      timeForOccurrences(cost.aggregateInstructionCount,
-                         policy.instructionFixedPicosecondsUpperBound);
-  ScheduleCostMetric dteWaitUpper =
-      timeForOccurrences(cost.aggregateNoC.waitedEventCount,
-                         policy.dteWaitedEventPicosecondsUpperBound);
-  ScheduleCostMetric nccWaitUpper =
-      timeForOccurrences(cost.aggregateNCCParticipantWaitCount,
-                         policy.nccParticipantWaitPicosecondsUpperBound);
-  return {{},
-          nominal,
-          sumMetrics({instructionUpper, dteWaitUpper, nccWaitUpper}),
-          assumptions({StaticDurationAssumption::ControlIssuePrior})};
+  return duration;
 }
 
-static bool knownStrictlyLower(ScheduleCostMetric candidate,
-                               ScheduleCostMetric baseline) {
-  return candidate.isKnown() && baseline.isKnown() &&
-         candidate.value < baseline.value;
+static uint64_t estimateSequentialBranch(const StaticScheduleBranch &branch,
+                                         const ResourceEstimateMap &estimates) {
+  uint64_t duration = 0;
+  for (const StaticScheduleWork &work : branch.dependentWork)
+    duration = saturatingAdd(duration, estimateSequentialWork(work, estimates));
+  return duration;
 }
 
-static bool marginClears(uint64_t candidateUpper, uint64_t baselineLower,
-                         uint32_t marginPermille) {
-  unsigned __int128 lhs = static_cast<unsigned __int128>(candidateUpper) *
-                          (1000ULL + marginPermille);
-  unsigned __int128 rhs =
-      static_cast<unsigned __int128>(baselineLower) * 1000ULL;
-  return lhs < rhs;
+static uint64_t estimateIndependentStage(const ResourceEstimateMap &estimates,
+                                         const StaticScheduleStage &stage) {
+  uint64_t duration = 0;
+  for (const StaticScheduleBranch &branch : stage.independentBranches)
+    duration = std::max(duration, estimateSequentialBranch(branch, estimates));
+  return duration;
+}
+
+static uint64_t
+estimateDependentStages(const ResourceEstimateMap &estimates,
+                        llvm::ArrayRef<StaticScheduleStage> stages) {
+  uint64_t duration = 0;
+  for (const StaticScheduleStage &stage : stages)
+    duration =
+        saturatingAdd(duration, estimateIndependentStage(estimates, stage));
+  return duration;
+}
+
+static uint64_t estimateSchedulePlan(const ResourceEstimateMap &estimates,
+                                     const StaticSchedulePlan &plan) {
+  uint64_t duration = 0;
+  for (const StaticScheduleStep &step : plan.getSteps()) {
+    switch (step.kind) {
+    case StaticScheduleStep::Kind::Stage:
+      duration = saturatingAdd(duration,
+                               estimateIndependentStage(estimates, step.stage));
+      break;
+    case StaticScheduleStep::Kind::BufferedPipeline: {
+      const uint64_t prologue =
+          estimateDependentStages(estimates, step.pipeline.prologue);
+      const uint64_t initiationInterval =
+          estimateIndependentStage(estimates, step.pipeline.steady);
+      const uint64_t steady =
+          saturatingMultiply(initiationInterval, step.pipeline.steadyWaveCount);
+      const uint64_t epilogue =
+          estimateDependentStages(estimates, step.pipeline.epilogue);
+      duration = saturatingAdd(
+          duration, saturatingAdd(prologue, saturatingAdd(steady, epilogue)));
+      break;
+    }
+    }
+  }
+  return duration;
+}
+
+static bool hasBufferedPipeline(const StaticSchedulePlan &plan) {
+  return llvm::any_of(plan.getSteps(), [](const StaticScheduleStep &step) {
+    return step.kind == StaticScheduleStep::Kind::BufferedPipeline;
+  });
+}
+
+static WholeCardResourceDurationEstimate
+estimateResourceDurations(const WholeCardInstructionProgramCost &cost,
+                          const TargetScheduleCostPolicy &policy,
+                          StaticDurationTermMask terms) {
+  WholeCardResourceDurationEstimate result;
+  result.enabledTerms = terms;
+
+  if (enabled(terms, StaticDurationTerm::DDR)) {
+    const uint64_t bytes = saturatingAdd(cost.aggregateDDRReadBytes.value,
+                                         cost.aggregateDDRWriteBytes.value);
+    result.ddr.picoseconds =
+        timeForWork(bytes, policy.cardDDRNominalBytesPerSecond);
+    result.ddr.assumptions = staticDurationAssumptionMask(
+        StaticDurationAssumption::DDROperatingPoint);
+  }
+
+  result.compute.picoseconds = estimateCompute(cost, policy, terms);
+  if (enabled(terms, StaticDurationTerm::NPUF16Bf16) ||
+      enabled(terms, StaticDurationTerm::VectorF16Bf16) ||
+      enabled(terms, StaticDurationTerm::VectorF32))
+    result.compute.assumptions = staticDurationAssumptionMask(
+        StaticDurationAssumption::ComputePeakReference);
+
+  if (!isKnownNoCFree(cost)) {
+    const uint64_t link =
+        enabled(terms, StaticDurationTerm::NoCLink)
+            ? timeForWork(cost.modeledNoCRoute.peakDirectedLinkByteDemand.value,
+                          policy.directionalNoCBytesPerSecond)
+            : 0;
+    uint64_t transmitEndpoint =
+        enabled(terms, StaticDurationTerm::NoCTransmitEndpoint)
+            ? timeForWork(cost.maximumTileNoCTransmitBytes.value,
+                          policy.dteEndpointBytesPerSecondEstimate)
+            : 0;
+    uint64_t receiveEndpoint =
+        enabled(terms, StaticDurationTerm::NoCReceiveEndpoint)
+            ? timeForWork(cost.maximumTileNoCReceiveBytes.value,
+                          policy.dteEndpointBytesPerSecondEstimate)
+            : 0;
+    if (enabled(terms, StaticDurationTerm::NoCMessageStartup)) {
+      transmitEndpoint = saturatingAdd(
+          transmitEndpoint,
+          saturatingMultiply(cost.maximumTileNoCTransmitMessageCount.value,
+                             policy.dteMessageStartupPicosecondsEstimate));
+      receiveEndpoint = saturatingAdd(
+          receiveEndpoint,
+          saturatingMultiply(cost.maximumTileNoCReceiveMessageCount.value,
+                             policy.dteMessageStartupPicosecondsEstimate));
+    }
+    const uint64_t routeFill =
+        enabled(terms, StaticDurationTerm::NoCHop)
+            ? saturatingMultiply(cost.maximumNoCHopCount.value,
+                                 policy.noCHopPicosecondsEstimate)
+            : 0;
+    result.noc.picoseconds = saturatingAdd(
+        std::max({link, transmitEndpoint, receiveEndpoint}), routeFill);
+  }
+  if (enabled(terms, StaticDurationTerm::NoCLink))
+    result.noc.assumptions |= staticDurationAssumptionMask(
+        StaticDurationAssumption::ModeledShortestPathRoute);
+  if (enabled(terms, StaticDurationTerm::NoCTransmitEndpoint) ||
+      enabled(terms, StaticDurationTerm::NoCReceiveEndpoint))
+    result.noc.assumptions |= staticDurationAssumptionMask(
+        StaticDurationAssumption::DTEEndpointRatePrior);
+  if (enabled(terms, StaticDurationTerm::NoCMessageStartup))
+    result.noc.assumptions |= staticDurationAssumptionMask(
+        StaticDurationAssumption::DTEMessageStartupPrior);
+  if (enabled(terms, StaticDurationTerm::NoCHop))
+    result.noc.assumptions |=
+        staticDurationAssumptionMask(StaticDurationAssumption::NoCHopPrior);
+
+  if (enabled(terms, StaticDurationTerm::SPMMovement)) {
+    const ScheduleCostMetric &movement = cost.tileCosts.empty()
+                                             ? cost.aggregateSPMMovementBytes
+                                             : cost.maximumTileSPMMovementBytes;
+    result.spm.picoseconds =
+        timeForWork(movement.value,
+                    policy.spmExplicitMovementBytesPerSecondPerTileEstimate);
+    result.spm.assumptions = staticDurationAssumptionMask(
+        StaticDurationAssumption::SPMServiceRatePrior);
+  }
+
+  result.control.picoseconds = estimateControl(cost, policy, terms);
+  if (enabled(terms, StaticDurationTerm::InstructionControl) ||
+      enabled(terms, StaticDurationTerm::DTEWaitControl) ||
+      enabled(terms, StaticDurationTerm::NCCWaitControl))
+    result.control.assumptions = staticDurationAssumptionMask(
+        StaticDurationAssumption::ControlIssuePrior);
+
+  return result;
+}
+
+static void accumulateWorkResourceDurations(
+    WholeCardResourceDurationEstimate &result, const StaticScheduleWork &work,
+    const ResourceEstimateMap &estimates, uint64_t repetition = 1) {
+  const auto estimateIt = estimates.find(work.cost);
+  assert(estimateIt != estimates.end() && "validated work must be estimated");
+  for (StaticScheduleResource resource : kScheduleResources) {
+    if (!hasScheduleResource(work.resources, resource))
+      continue;
+    StaticDurationEstimate &target = getResourceEstimate(result, resource);
+    const StaticDurationEstimate &source =
+        getResourceEstimate(estimateIt->second, resource);
+    target.picoseconds = saturatingAdd(
+        target.picoseconds, saturatingMultiply(source.picoseconds, repetition));
+    target.assumptions |= source.assumptions;
+  }
+}
+
+static void accumulateStageResourceDurations(
+    WholeCardResourceDurationEstimate &result, const StaticScheduleStage &stage,
+    const ResourceEstimateMap &estimates, uint64_t repetition = 1) {
+  for (const StaticScheduleBranch &branch : stage.independentBranches)
+    for (const StaticScheduleWork &work : branch.dependentWork)
+      accumulateWorkResourceDurations(result, work, estimates, repetition);
+}
+
+static WholeCardResourceDurationEstimate
+estimatePlan(const StaticSchedulePlan &plan, StaticDurationTermMask terms,
+             const ResourceEstimateMap &estimates) {
+  WholeCardResourceDurationEstimate result;
+  result.enabledTerms = terms;
+  for (const StaticScheduleStep &step : plan.getSteps()) {
+    switch (step.kind) {
+    case StaticScheduleStep::Kind::Stage:
+      accumulateStageResourceDurations(result, step.stage, estimates);
+      break;
+    case StaticScheduleStep::Kind::BufferedPipeline:
+      for (const StaticScheduleStage &stage : step.pipeline.prologue)
+        accumulateStageResourceDurations(result, stage, estimates);
+      accumulateStageResourceDurations(result, step.pipeline.steady, estimates,
+                                       step.pipeline.steadyWaveCount);
+      for (const StaticScheduleStage &stage : step.pipeline.epilogue)
+        accumulateStageResourceDurations(result, stage, estimates);
+      break;
+    }
+  }
+
+  const auto controlIt = estimates.find(&plan.getControlCost());
+  assert(controlIt != estimates.end() &&
+         "validated control cost must be estimated");
+  result.control = controlIt->second.control;
+  result.makespan.picoseconds = saturatingAdd(
+      estimateSchedulePlan(estimates, plan), result.control.picoseconds);
+  result.makespan.assumptions =
+      result.ddr.assumptions | result.compute.assumptions |
+      result.noc.assumptions | result.spm.assumptions |
+      result.control.assumptions |
+      staticDurationAssumptionMask(
+          StaticDurationAssumption::ExplicitSchedulePlan);
+  if (hasBufferedPipeline(plan))
+    result.makespan.assumptions |= staticDurationAssumptionMask(
+        StaticDurationAssumption::BufferedPipelinePlan);
+  return result;
+}
+
+static bool validateWork(const StaticScheduleWork &work,
+                         StaticScheduleResourceMask &referencedResources) {
+  if (!work.cost || work.resources == 0 ||
+      (work.resources & ~allStaticScheduleResources()) != 0)
+    return false;
+  referencedResources |= work.resources;
+  return true;
+}
+
+static bool validateStage(const StaticScheduleStage &stage,
+                          StaticScheduleResourceMask &referencedResources) {
+  if (stage.independentBranches.empty())
+    return false;
+  for (const StaticScheduleBranch &branch : stage.independentBranches) {
+    if (branch.dependentWork.empty() ||
+        !llvm::all_of(branch.dependentWork,
+                      [&](const StaticScheduleWork &work) {
+                        return validateWork(work, referencedResources);
+                      }))
+      return false;
+  }
+  return true;
+}
+
+static bool validateStages(llvm::ArrayRef<StaticScheduleStage> stages,
+                           StaticScheduleResourceMask &referencedResources) {
+  return llvm::all_of(stages, [&](const StaticScheduleStage &stage) {
+    return validateStage(stage, referencedResources);
+  });
+}
+
+template <typename Callback>
+static void forEachStageWork(const StaticScheduleStage &stage,
+                             Callback callback) {
+  for (const StaticScheduleBranch &branch : stage.independentBranches)
+    for (const StaticScheduleWork &work : branch.dependentWork)
+      callback(work);
+}
+
+template <typename Callback>
+static void forEachPlanWork(const StaticSchedulePlan &plan, Callback callback) {
+  for (const StaticScheduleStep &step : plan.getSteps()) {
+    switch (step.kind) {
+    case StaticScheduleStep::Kind::Stage:
+      forEachStageWork(step.stage, callback);
+      break;
+    case StaticScheduleStep::Kind::BufferedPipeline:
+      for (const StaticScheduleStage &stage : step.pipeline.prologue)
+        forEachStageWork(stage, callback);
+      forEachStageWork(step.pipeline.steady, callback);
+      for (const StaticScheduleStage &stage : step.pipeline.epilogue)
+        forEachStageWork(stage, callback);
+      break;
+    }
+  }
 }
 
 } // namespace
 
-WholeCardResourceDurationEstimate
-estimateWholeCardResourceDuration(const WholeCardInstructionProgramCost &cost,
-                                  const TargetScheduleCostPolicy &policy,
-                                  StaticCrossResourceSchedule schedule) {
-  WholeCardResourceDurationEstimate result;
-  result.ddr = estimateDDR(cost, policy);
-  result.compute = estimateCompute(cost, policy);
-  result.noc = estimateNoC(cost, policy);
-  result.spm = estimateSPM(cost, policy);
-  result.control = estimateControl(cost, policy);
-  result.makespan.lowerBoundPicoseconds = maxMetrics(
-      {result.ddr.lowerBoundPicoseconds, result.compute.lowerBoundPicoseconds,
-       result.noc.lowerBoundPicoseconds, result.control.lowerBoundPicoseconds});
-  ScheduleCostMetric service;
-  switch (schedule) {
-  case StaticCrossResourceSchedule::SequentialPhases:
-    // DDR, inter-tile communication and compute are charged in dependency
-    // order when current IR has no qualified recurring overlap schedule.
-    service = sumMetrics({result.ddr.nominalPicoseconds,
-                          result.compute.nominalPicoseconds,
-                          result.noc.nominalPicoseconds});
-    break;
-  case StaticCrossResourceSchedule::PipelinedSteadyState:
-    // Explicit multi-buffer/fixed-slot evidence permits the standard
-    // steady-state resource-envelope model used by tile pipelines.
-    service = maxMetrics({result.ddr.nominalPicoseconds,
-                          result.compute.nominalPicoseconds,
-                          result.noc.nominalPicoseconds});
-    break;
-  }
-  // RDMA/WDMA movement is visible in both the external DDR service and the
-  // local SPM port demand. Treat SPM as a simultaneous service envelope so
-  // those bytes constrain the estimate without being charged twice.
-  result.makespan.nominalPicoseconds = addMetric(
-      maxMetric(service, result.spm.nominalPicoseconds),
-      result.control.nominalPicoseconds);
-  result.makespan.nominalAssumptions =
-      result.ddr.nominalAssumptions | result.compute.nominalAssumptions |
-      result.noc.nominalAssumptions | result.spm.nominalAssumptions |
-      result.control.nominalAssumptions |
-      staticDurationAssumptionMask(
-          schedule == StaticCrossResourceSchedule::SequentialPhases
-              ? StaticDurationAssumption::SequentialPhaseModel
-              : StaticDurationAssumption::QualifiedPipelineModel);
-  ScheduleCostMetric externalUpper = sumMetrics(
-      {result.ddr.upperBoundPicoseconds, result.compute.upperBoundPicoseconds,
-       result.noc.upperBoundPicoseconds});
-  result.makespan.upperBoundPicoseconds = addMetric(
-      maxMetric(externalUpper, result.spm.upperBoundPicoseconds),
-      result.control.upperBoundPicoseconds);
-  return result;
+StaticScheduleStep StaticScheduleStep::forStage(StaticScheduleStage stage) {
+  StaticScheduleStep step;
+  step.kind = Kind::Stage;
+  step.stage = std::move(stage);
+  return step;
 }
 
-NoCTradeoffProfitability analyzeNoCTradeoffProfitability(
-    const WholeCardInstructionProgramCost &candidate,
-    const WholeCardInstructionProgramCost &baseline,
-    const TargetScheduleCostPolicy &policy,
-    NoCTradeoffScheduleContext schedule) {
-  NoCTradeoffProfitability result;
-  result.baseline =
-      estimateWholeCardResourceDuration(baseline, policy, schedule.baseline);
-  result.candidate =
-      estimateWholeCardResourceDuration(candidate, policy, schedule.candidate);
+StaticScheduleStep
+StaticScheduleStep::forBufferedPipeline(StaticBufferedPipeline pipeline) {
+  StaticScheduleStep step;
+  step.kind = Kind::BufferedPipeline;
+  step.pipeline = std::move(pipeline);
+  return step;
+}
 
-  ScheduleCostMetric candidateDDR = addMetric(candidate.aggregateDDRReadBytes,
-                                              candidate.aggregateDDRWriteBytes);
-  ScheduleCostMetric baselineDDR = addMetric(baseline.aggregateDDRReadBytes,
-                                             baseline.aggregateDDRWriteBytes);
+std::optional<StaticSchedulePlan>
+StaticSchedulePlan::create(const WholeCardInstructionProgramCost &controlCost,
+                           llvm::ArrayRef<StaticScheduleStep> steps) {
+  if (steps.empty())
+    return std::nullopt;
 
-  const ScheduleCostMetric candidateNoCFacts[] = {
-      candidate.aggregateNoC.staticIssueSiteCount,
-      candidate.aggregateNoC.aggregateTransmitBytes,
-      candidate.aggregateNoC.aggregateReceiveBytes,
-      candidate.aggregateNoC.transmitMessageCount,
-      candidate.aggregateNoC.receiveMessageCount,
-      candidate.aggregateNoC.waitOperationCount,
-      candidate.aggregateNoC.waitedEventCount,
-      candidate.minimumHopLinkByteDemand,
-      candidate.minimumHopMessageDemand,
-      candidate.idealizedMinimumPeakLinkByteDemand,
-      candidate.modeledNoCRoute.peakDirectedLinkByteDemand,
-      candidate.maximumNoCHopCount,
-      candidate.maximumRankNoCTransmitBytes,
-      candidate.maximumRankNoCReceiveBytes,
-      candidate.maximumRankNoCTransmitMessageCount,
-      candidate.maximumRankNoCReceiveMessageCount,
+  StaticScheduleResourceMask referencedResources = 0;
+  for (const StaticScheduleStep &step : steps) {
+    switch (step.kind) {
+    case StaticScheduleStep::Kind::Stage:
+      if (!validateStage(step.stage, referencedResources))
+        return std::nullopt;
+      break;
+    case StaticScheduleStep::Kind::BufferedPipeline:
+      if (step.pipeline.steadyWaveCount == 0 ||
+          !validateStage(step.pipeline.steady, referencedResources) ||
+          !validateStages(step.pipeline.prologue, referencedResources) ||
+          !validateStages(step.pipeline.epilogue, referencedResources))
+        return std::nullopt;
+      break;
+    }
+  }
+  if (referencedResources != allStaticScheduleResources())
+    return std::nullopt;
+
+  return StaticSchedulePlan(
+      controlCost,
+      llvm::SmallVector<StaticScheduleStep, 8>(steps.begin(), steps.end()));
+}
+
+StaticSchedulePlan StaticSchedulePlan::getConservative(
+    const WholeCardInstructionProgramCost &cost) {
+  llvm::SmallVector<StaticScheduleStep, 8> steps;
+  for (StaticScheduleResource resource : kScheduleResources) {
+    StaticScheduleBranch branch;
+    branch.dependentWork.push_back(
+        {&cost, staticScheduleResourceMask(resource)});
+    StaticScheduleStage stage;
+    stage.independentBranches.push_back(std::move(branch));
+    steps.push_back(StaticScheduleStep::forStage(std::move(stage)));
+  }
+  return StaticSchedulePlan(cost, std::move(steps));
+}
+
+llvm::SmallVector<WholeCardResourceDurationEstimate, 16>
+estimateStaticSchedulePlanDurations(
+    llvm::ArrayRef<const StaticSchedulePlan *> plans,
+    const TargetScheduleCostPolicy &policy) {
+  StaticDurationTermMask terms = getParameterEnabledTerms(policy);
+  for (const StaticSchedulePlan *plan : plans) {
+    if (!plan)
+      return {};
+    disableUnavailableControlTerms(terms, plan->getControlCost());
+    forEachPlanWork(*plan, [&](const StaticScheduleWork &work) {
+      disableUnavailableResourceTerms(terms, *work.cost, work.resources);
+    });
+  }
+
+  ResourceEstimateMap resourceEstimates;
+  auto addEstimate = [&](const WholeCardInstructionProgramCost &cost) {
+    if (resourceEstimates.count(&cost) == 0)
+      resourceEstimates.try_emplace(
+          &cost, estimateResourceDurations(cost, policy, terms));
   };
-  const ScheduleCostMetric baselineNoCFacts[] = {
-      baseline.aggregateNoC.staticIssueSiteCount,
-      baseline.aggregateNoC.aggregateTransmitBytes,
-      baseline.aggregateNoC.aggregateReceiveBytes,
-      baseline.aggregateNoC.transmitMessageCount,
-      baseline.aggregateNoC.receiveMessageCount,
-      baseline.aggregateNoC.waitOperationCount,
-      baseline.aggregateNoC.waitedEventCount,
-      baseline.minimumHopLinkByteDemand,
-      baseline.minimumHopMessageDemand,
-      baseline.idealizedMinimumPeakLinkByteDemand,
-      baseline.modeledNoCRoute.peakDirectedLinkByteDemand,
-      baseline.maximumNoCHopCount,
-      baseline.maximumRankNoCTransmitBytes,
-      baseline.maximumRankNoCReceiveBytes,
-      baseline.maximumRankNoCTransmitMessageCount,
-      baseline.maximumRankNoCReceiveMessageCount,
-  };
-  const bool noCFactsKnown =
-      llvm::all_of(
-          candidateNoCFacts,
-          [](ScheduleCostMetric metric) { return metric.isKnown(); }) &&
-      llvm::all_of(baselineNoCFacts,
-                   [](ScheduleCostMetric metric) { return metric.isKnown(); });
-  // A known NoC-free candidate stays under the ordinary selector even if an
-  // unrelated DDR dimension is Unknown. A candidate that retains an existing
-  // collective is still NoC-dependent: equality against a NoC-bearing
-  // baseline must not bypass the makespan gate.
-  if (candidate.aggregateNoC.staticIssueSiteCount.isKnown() &&
-      candidate.aggregateNoC.staticIssueSiteCount.value == 0)
-    return result;
-  if (!candidateDDR.isKnown() || !baselineDDR.isKnown()) {
-    result.decision = NoCTradeoffDecision::Indeterminate;
-    result.reason = NoCTradeoffReason::UnknownCostFact;
-    return result;
-  }
-  if (!knownStrictlyLower(candidateDDR, baselineDDR))
-    return result;
-  if (!noCFactsKnown) {
-    result.decision = NoCTradeoffDecision::Indeterminate;
-    result.reason = NoCTradeoffReason::UnknownCostFact;
-    return result;
+  for (const StaticSchedulePlan *plan : plans) {
+    addEstimate(plan->getControlCost());
+    forEachPlanWork(*plan, [&](const StaticScheduleWork &work) {
+      addEstimate(*work.cost);
+    });
   }
 
-  const ScheduleCostMetric candidateNominal =
-      result.candidate.makespan.nominalPicoseconds;
-  const ScheduleCostMetric baselineNominal =
-      result.baseline.makespan.nominalPicoseconds;
-  if (!candidateNominal.isKnown() || !baselineNominal.isKnown()) {
-    result.decision = NoCTradeoffDecision::Indeterminate;
-    result.reason = NoCTradeoffReason::UnknownCostFact;
-    return result;
-  }
-  if (candidateNominal.value >= baselineNominal.value) {
-    result.decision = NoCTradeoffDecision::Reject;
-    result.reason = NoCTradeoffReason::NominalMakespanNotImproved;
-    return result;
-  }
-  if (!marginClears(candidateNominal.value, baselineNominal.value,
-                    policy.productionBenefitMarginPermille)) {
-    result.decision = NoCTradeoffDecision::Reject;
-    result.reason = NoCTradeoffReason::InsufficientBenefitMargin;
-    return result;
-  }
-
-  const ScheduleCostMetric candidateUpper =
-      result.candidate.makespan.upperBoundPicoseconds;
-  const ScheduleCostMetric baselineLower =
-      result.baseline.makespan.lowerBoundPicoseconds;
-  if (candidateUpper.isKnown() && baselineLower.isKnown() &&
-      marginClears(candidateUpper.value, baselineLower.value,
-                   policy.productionBenefitMarginPermille)) {
-    result.decision = NoCTradeoffDecision::ProvenBenefit;
-    result.reason = NoCTradeoffReason::ConservativeBoundsProveBenefit;
-    return result;
-  }
-
-  result.decision = NoCTradeoffDecision::EstimatedBenefit;
-  result.reason = NoCTradeoffReason::EstimatedModelClearsMargin;
-  return result;
-}
-
-llvm::StringRef stringifyNoCTradeoffDecision(NoCTradeoffDecision decision) {
-  switch (decision) {
-  case NoCTradeoffDecision::NotApplicable:
-    return "not-applicable";
-  case NoCTradeoffDecision::Reject:
-    return "reject";
-  case NoCTradeoffDecision::Indeterminate:
-    return "indeterminate";
-  case NoCTradeoffDecision::EstimatedBenefit:
-    return "estimated-benefit";
-  case NoCTradeoffDecision::ProvenBenefit:
-    return "proven-benefit";
-  }
-  llvm_unreachable("unhandled NoC tradeoff decision");
-}
-
-llvm::StringRef stringifyNoCTradeoffReason(NoCTradeoffReason reason) {
-  switch (reason) {
-  case NoCTradeoffReason::NoCrossResourceTradeoff:
-    return "no-cross-resource-tradeoff";
-  case NoCTradeoffReason::UnknownCostFact:
-    return "unknown-cost-fact";
-  case NoCTradeoffReason::NominalMakespanNotImproved:
-    return "nominal-makespan-not-improved";
-  case NoCTradeoffReason::InsufficientBenefitMargin:
-    return "insufficient-benefit-margin";
-  case NoCTradeoffReason::EstimatedModelClearsMargin:
-    return "estimated-model-clears-margin";
-  case NoCTradeoffReason::ConservativeBoundsProveBenefit:
-    return "conservative-bounds-prove-benefit";
-  }
-  llvm_unreachable("unhandled NoC tradeoff reason");
+  llvm::SmallVector<WholeCardResourceDurationEstimate, 16> results;
+  results.reserve(plans.size());
+  for (const StaticSchedulePlan *plan : plans)
+    results.push_back(estimatePlan(*plan, terms, resourceEstimates));
+  return results;
 }
 
 } // namespace wafer::analysis

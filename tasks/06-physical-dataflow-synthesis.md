@@ -1,6 +1,6 @@
 # Wafer Whole-DAG Multi-Tile 时空综合
 
-状态：2026-08-08 重置为当前 physical-dataflow synthesis 的唯一设计 owner。旧 whole-rank 实现已经证明
+状态：2026-08-11 作为Q49–Q53 current whole-card synthesis主线的唯一设计 owner。旧 whole-rank 实现已经证明
 relation、actual clone、SPM/DDR packing、NoC lowering、completion 和 package mechanics 可以工作，但它在
 GSPMD 后把 logical rank 直接绑定到单卡 16 个物理 Tile，因而丢失了 Tile 级 spatial mapping、不同 op 并行和
 spatial/temporal/fusion 的联合搜索空间。本设计替换该决策合同；实现状态只看 `tasks/progress.md`，施工顺序只看
@@ -58,7 +58,7 @@ Pipeline position:
   Tile到Instr conversion、fresh completion reconstruction、fixed-capacity SPM/DDR planning、transport/resource/ABI
   verification、target conversion、package publication和runtime launch。
 - User-level driver / named pipeline:
-  wafer-compile production pipeline；public optimization policy仍只有production与none，不新增逐机制开关。
+  wafer-compile source-to-package pipeline；public optimization policy仍只有`search`与`none`，不新增逐机制开关。
 - Explicit non-goals:
   不重做跨card GSPMD；不建设cycle-exact simulator；不从名字、shape、workload或文件恢复语义；
   不让allocator、completion、communication或cost analysis生成repair；不发布search plan或sidecar。
@@ -182,7 +182,8 @@ producer location 和 4×4 topology 共同派生。固定 `{2,4,8,16}` 可以由
 
 placement 与 tile/fusion 同时决定：
 
-- 相同 Tile、相同 domain 直接 local SPM reuse；
+- 相同 Tile 且 producer/consumer shard 通过structured indexing map落在同一iterator/domain时，直接local SPM reuse；
+  仅Tile集合相同、`shardDimension`数字相同不构成local证明，transpose等轴置换必须形成exact redistribution；
 - Tile 集合部分重叠时，重叠部分本地消费，只传缺失 domain；
 - mapping 改变时显式形成 scatter、gather、broadcast、reduction 或一般 redistribution；
 - fanout 可比较共置一个分支、multicast、分别发送和 recompute；
@@ -227,10 +228,40 @@ partial-overlap 的 LiveSPM 只计实际 local intersection，不能把未物化
 直接省略，不能用完整iteration-domain体积、`Unknown`状态或猜测系数代替。无`reassoc`的浮点reduction只允许沿保持源
 lexicographic顺序的adjacent breakpoint推进：后一个reduction轴必须等前轴unit-tiled后才可split。
 
-禁止 capacity failure 后反复 `tile_size / 2`。小 tile 只有在换来更长 residency、更多 spatial/pipeline parallelism、
-更少外部 movement 或更短 makespan 时才可能保留；若仅减少 footprint 却增加 wave、message 和 instruction，则被支配。
+禁止late allocator在已选actual candidate上反复`tile_size / 2`并把修补结果冒充原winner；但capacity refinement本身属于
+whole-DAG搜索。对其它轴固定的一个candidate branch，搜索从当前spatial mapping产生的完整per-Tile local extent开始；
+若已证明的working-set lower bound或一次受管actual packing失败，则在同一frontier中生成二分子候选，直到形成
+infeasible/feasible区间。随后补入该区间内会改变tail/divisibility、native issued work、layout padding、transaction、
+buffer-count feasibility或wave数的非二次幂breakpoint。每个子候选消耗统一ledger、重新参与dominance和exact gate，
+不得由lowering或allocator私下修复。小 tile 只有在换来更长residency、更多spatial/pipeline parallelism、更少外部
+movement或更短makespan时才可能保留；若仅减少footprint却增加wave、message和instruction，则被支配。
 
-### 5.3 Fusion and residency actions
+### 5.3 Attention/decode 算法资格与物化边界
+
+Attention算法资格必须在physical search前从current structured SSA的typed语义证明，不得从op名、tensor名、单一shape、
+`Q length == 1`或外部prefill/decode mode恢复。普通Attention语义可以产生online softmax recurrence候选；只有进一步证明
+functional K/V cache append/update、更新结果被当前Attention消费且append/query/cache domain一致时，才允许产生
+split-K/V decoding候选。符合decode语义的图仍可同时产生online候选；前端图决定候选算法集合，不提前替性能搜索选winner。
+
+每个算法点必须先在isolated candidate中通过等价于`MaterializeFlashAttention`或`MaterializeFlashDecoding`的actual
+transformation改写成显式recurrence/partition/merge DAG，随后whole-DAG scheduler才在该真实DAG上联合搜索spatial
+mapping、进一步temporal tiling、fusion/residency、layout、buffering和resource overlap。算法名、provider key或参数向量
+不得作为未物化旁路直接进入physical legality或cost。
+
+`keyValueTileSize`表示每次online recurrence处理的K/V reduction window，`splitCount`表示split-K/V并行partition数；
+二者都不是KV cache总长度、SPM容量或已完成的物理分配。完整reduction domain、divisor/tail、native geometry、transaction与
+capacity breakpoint及actual失败反馈共同产生候选。`{128,64,32,...}`等target-generic seed最多调整枚举顺序，不得成为
+搜索空间边界、固定默认值或SPM合法性依据；例如`KV=128`只有作为一个尚待验证的候选才有意义。cheap live-byte estimate
+同样只能排序或做已证明的下界剪枝，最终合法性必须由materialized actual IR的lifetime、buffer、layout和fixed-capacity
+SPM packing决定。
+
+Attention的K/V refinement必须直接接入上述统一candidate transition。每个spatial factor/Tile placement先从其完整local
+KV extent尝试，而不是从global KV长度或固定`128`开始；容量不足产生local KV二分子状态，容量允许时完整KV与较小KV仍可
+并存，以比较single-buffer full traversal、较小tile的multi-buffer overlap、更大Q tile、跨算子fusion和split-K/V并行。
+只有在其它候选轴固定且footprint对K/V tile单调时，二分结果才可用于区间剪枝；改变layout、buffer count、Q tile、fusion
+或placement后必须按新状态重新判断，不能跨状态复用“最大可放下KV”作为全局事实。
+
+### 5.4 Fusion and residency actions
 
 每条 producer/consumer edge 至少有以下通用 action：
 
@@ -252,7 +283,7 @@ traversal 内融合）。whole-DAG scheduler 仍通过同一 DAG 边做 wave rea
 与 card spatial mapping 不为它生成 action；card-program materialization verifier 同样只要求 direct
 structured data-input 边有 selected treatment。
 
-### 5.4 Physical representation、buffering 与 resource timeline
+### 5.5 Physical representation、buffering 与 resource timeline
 
 layout 分配不是 lowering 的默认决定或 materialization 后的 repair。对每个 scheduled value，候选状态显式选择
 consumer/implementation 可接受的 `MemLayout` 与 physical encoding；producer 和 consumer 表示不一致时，同一 edge
@@ -348,16 +379,37 @@ symbolic prologue/steady/tail。只有actual IR进一步给出buffer/resource独
 ## 8. Search Algorithm 与 Bounded Materialization
 
 - linear/tree 子图可以用 boundary-compatible DP 压缩，但结果必须回到同一个 whole-DAG scheduler；
-- 一般 DAG 使用 event-driven best-first 与 bounded Pareto beam；
+- 一般 DAG 先使用complete lazy generation、event-driven best-first与Pareto ordering；bounded beam、候选cap或随机
+  启发式不是预设合同，只能在Q52对实际负载完成热点、质量和最优性损失分析后作为显式trade-off启用；
+- bounded小图保留不裁剪完整枚举oracle，`search`策略必须持续与其比较winner与stable digest；
 - topology symmetry、exact coverage、SPM lower bound 和 enabled raw-work dominance 在 clone 前剪枝；
 - stable global work ledger 管理 expanded states、actual materializations 与 exact gates；
 - host worker 只并行独立 state evaluation，frontier insertion 与 tie-break 按 stable key；
 - 只有 shortlist materialize whole-card MPMD actual clone；任意时刻最多一个 live actual candidate；
 - exact failure 消耗明确 work unit 后销毁 clone并继续 frontier，不建立 repair selector；
-- work budget 按 deterministic units，不按 wall-clock timeout；wall/RSS只作回归证据。
+- exact/correctness模式的work budget按deterministic units记录，不用wall-clock timeout悄悄删除合法状态；`search`
+  trade-off的时间或work budget只能由Q52基于实际profiling配置，并必须保留合法baseline与质量诊断；wall/RSS同时作为
+  scalability回归证据。
 
 winner 必须通过同一 Tile→Instr、fresh completion、SPM、DDR、communication/resource、ABI 和 final recost gates。
-`none` baseline 也走相同下游，不调用 legacy compatibility path。
+`none` baseline 也走相同下游，不调用 legacy compatibility path；“相同下游”不包含search的candidate frontier、
+allocation-feedback分支或edge-action transition。
+
+### 8.1 Deterministic baseline controller
+
+`none`在whole-DAG search controller之外执行一个单状态legality recurrence：每个Linalg op确定性切分到完整可用
+16-Tile参与集合，op间值统一经compiler-owned DDR发布和重新读取，所有op独立执行且不融合，buffer count固定为1。
+本地producer/consumer shard以DDR RegionCut隔离；确定性spatial shard集合不一致时按typed indexing relation物化唯一
+required peer fragments，并在consumer端DDR assembly后进入独立op stage。这是correctness communication，不是baseline
+搜索坐标；可选edge action、route和通信优化仍属于后续统一搜索。每个Tile上的每个op从其spatial shard的完整iterator
+box开始；actual SPM allocator失败时，controller只缩小冲突lineage对应op的temporal iterator shape，并要求DDR
+load/store随当前temporal window流动。
+
+同一allocator conflict set中多个不同op可以在一个确定性轮次各缩一个或多个有限breakpoint；这是单一program state的
+legality推进，不创建子candidate，也不按cost选择winner。baseline controller不得改变spatial assignment、edge action、
+fusion、layout、NoC、buffering、worker或overlap。最小temporal endpoint仍不能通过actual allocator时，baseline明确失败。
+accepted baseline与`search` winner从CardProgram materialization开始共享完全相同的projection、Instr、completion、
+SPM/DDR、admission和package链路。
 
 ## 9. Existing Mechanics 的处置
 
@@ -370,8 +422,14 @@ winner 必须通过同一 Tile→Instr、fresh completion、SPM、DDR、communic
 - typed completion、worker、loop-carried slot和instruction-order表达能力；旧独立candidate API不保留；
 - global ledger、delayed clone、deterministic parallel evaluation、wall/RSS/work counters；
 - current package/runtime 对不同 physical endpoint program 的发布能力。
+- typed Attention/functional decode SSA语义证明、online recurrence与split-K/V actual materialization及其正负测试；其接口和
+  owner可以改造，但不能退化为shape/name shortcut，也不能只留下算法枚举而删除真实图改写。
 
-这些能力允许改接口、owner 和代码组织；“保留能力”不等于保留当前实现。
+这些能力允许改接口、owner 和代码组织；默认处置是把已有算法、actual transformation、typed verifier和有效测试改造到
+current whole-DAG owner，而不是随旧接口一起删除。“保留能力”不要求永久保留旧search selector，但在current
+候选transition、selected actual IR和替代测试逐项证明等价前，旧实现与覆盖必须保留或恢复。特别是layout solver、
+ready-order、fixed-slot software pipeline、NCC worker placement、peer/collective lowering和可泛化的专项tiling/reduction
+实现，不能退化成固定默认值、只保留字段，或仅凭新主线能编译就宣称已迁移。
 
 ### 9.2 必须重写或删除
 
@@ -379,11 +437,12 @@ winner 必须通过同一 Tile→Instr、fresh completion、SPM、DDR、communic
 - logical rank 到 physical Tile 的直接映射、rank0 clone N 和 rank-local winner；
 - common function-result tile vector、linear connection DP 与 fixed partition count 完整域；
 - 不含 ready/running op-wave 和 per-Tile LiveSPM 的旧 frontier，以及只由 unit test 手工增减、未接入
-  production event transition 的 residency API；
+  search-policy event transition 的 residency API；
 - late NoC profitability selector 与全程序 sequential/pipelined 二态 overlap；
 - performance `Unknown`/`Indeterminate` comparison；
-- Attention、decode、mask、shape 或参数名 shortcut；
-- 为上述旧合同服务的 tests、docs、diagnostics 和 compatibility branches。
+- 未经typed SSA语义证明的Attention、decode、mask、shape或参数名shortcut；
+- 只为上述旧合同服务、且其承载能力已经在current pipeline由等价或更强gate接替的tests、docs、diagnostics和
+  compatibility branches。旧owner过时本身不是删除算法实现、verifier或测试的充分条件。
 
 ## 10. Failure、Determinism 与 Diagnostics
 
@@ -396,6 +455,10 @@ winner 必须通过同一 Tile→Instr、fresh completion、SPM、DDR、communic
 - 不把 search state、历史失败、accepted offset 或 board sample 写入 selected IR。
 
 ## 11. Completion Gate
+
+本设计按五个独立队列项交付：Q49闭合current同路径baseline，Q50闭合能力保全迁移，Q51闭合统一搜索正确性与
+search-policy cutover，Q52只基于实际负载优化scalability，Q53形成fresh package/no-card与board证据。任一前项的阶段性
+编译或测试通过都不能代替后项完成；具体依赖、状态与提交门禁由`tasks/progress.md`和唯一实施计划管理。
 
 ### IR / verifier
 

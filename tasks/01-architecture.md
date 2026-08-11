@@ -1,8 +1,10 @@
 # Wafer Compiler Stack Architecture
 
-状态：2026-08-08已同步card-level GSPMD、whole-card MPMD和whole-DAG multi-Tile时空综合边界；2026-07-27已同步当前single-card
-production baseline、topology-aware collective、board RuntimeProvider和
-profile-scoped硬件能力边界。本文是compiler、target artifact、package/runtime与target-model分支的主架构入口，
+状态：2026-08-09已同步card-level GSPMD、whole-card MPMD和whole-DAG multi-Tile时空综合终态边界。
+Q49正在收口current同路径baseline；Q50–Q53依次负责能力迁移、完整event-driven joint search、实际负载scalability和
+production board readiness。当前保守output-domain spatial mapping与whole-card exact admission已经进入主线，但dependent-op
+remap及由mapping差异生成的NoC redistribution尚未闭合。本文是compiler、
+target artifact、package/runtime与target-model分支的主架构入口，
 只拥有稳定pipeline spine、artifact DAG、跨层不变量和owner索引。动态状态、blocked-by与完成记录只看
 `tasks/progress.md`；专题IR、ABI、算法和验证细节由对应编号文档拥有。
 
@@ -33,7 +35,7 @@ profile-scoped硬件能力边界。本文是compiler、target artifact、package
    verifier、lowering和downstream consumer。
 9. **rewrite采用必须有实效。** linked、registered或debug可调用不等于production采用；每种候选rewrite必须由named
    pipeline真实调用、在通用source的隔离clone上改写actual IR并被下游typed IR直接消费，通过等价性、exact gate和
-   数值验证，进入统一frontier且至少有一个production winner，最后由默认`wafer-compile`原子提交。只存在局部pass、
+   数值验证，进入统一frontier且至少有一个`search` winner，最后由默认`wafer-compile`原子提交。只存在局部pass、
    testing seam、隐藏flag或passing但从未胜出的candidate都不算production采用。实现复用MLIR interface、
    PatternRewriter和DialectConversion，不建立独立机制审批或registry。
 10. **先复用MLIR语义。** DPS、tiling、view/subset、effect、type inference、rewrite和conversion由标准interface/
@@ -127,16 +129,16 @@ manifest的move-only lifetime/container artifact，不是另一份program或pack
 
 | Boundary | 稳定表示 | 责任 | 明确不负责 |
 | --- | --- | --- | --- |
-| Verified program | StableHLO、function boundary metadata、NPY payload/shards | model语义、static shape/dtype、resource role与payload admission | rank placement、tile、physical layout、runtime handle |
+| Verified program | StableHLO、function boundary metadata、NPY payload/shards | model语义、static shape/dtype、resource role与payload admission | physical Tile placement、temporal tile、physical layout、runtime handle |
 | Execution configuration | factory-only `ExecutionConfig` | card-level `num_partitions`与current target identity | physical Tile work assignment、planner policy |
 | Topology/SPMD | `wafer.target.topology`、card-level logical partition mesh、post-SPMD StableHLO | global-to-card-local tensor partition | Tile mapping、SPM/DDR、physical transport |
-| Structured tensor program | Linalg/Tensor/SCF/Arith/Math与typed logical collective | card-local数学DAG、iterator/indexing relation、effect/control及numeric semantics | target implementation、physical Tile、offset |
+| Structured tensor program | Linalg/Tensor/SCF/Arith/Math与typed logical collective | card-local数学DAG、iterator/indexing relation、effect/control及numeric semantics | target compute/movement lowering、physical Tile、offset |
 | Candidate analysis | query-local op-wave DAG、ready/running/completed、per-Tile LiveSPM、IndexRelation与enabled numeric cost | whole-DAG spatial/temporal/fusion/residency/communication选择及bounded shortlist | accepted事实、package字段、shadow schedule、长期side table |
 | Selected tile/dataflow IR（stage-internal） | `wafer.card.program`、per-`tile_id` `wafer.tile.program`、non-nested `wafer.tile.region`、SCF/SSA、typed movement/event | selected MPMD、work coverage、local residency、cross-Tile NoC和实际执行依赖 | rejected candidates、search score、runtime launch |
 | Instruction/memory program | `wafer.instr.*`、accepted SPM/DDR offsets、completion/Direct DTE | target-abstract invocation、physical geometry、range/lifetime/effect | raw host handle、package schedule |
 | Executable bundle | move-only physical-Tile executable records / `ExecutableBundle` | all-and-only Tile modules、entry、program bindings、completion、transport、atomic acceptance | target object、runtime session、rejected choice |
 | Target LLVM bundle | move-only `TargetLLVMModule[]`/`TargetLLVMModuleBundle` | 一次target conversion后的owner-backed LLVM modules、typed ABI slots与profile identity | device-linked file、package、model state |
-| Target artifacts | `VerifiedTargetModule[]`/`TargetArtifactBundle` | device link、module path/content digest、entry/ABI readback、all-rank publication | compiler planning、CModel重新lowering |
+| Target artifacts | `VerifiedTargetModule[]`/`TargetArtifactBundle` | device link、module path/content digest、entry/ABI readback、whole-card publication | compiler planning、CModel重新lowering |
 | Package/runtime | typed `PackageManifest`、`VerifiedPackageManifest`、move-only `PackageBundle`、canonical JSON/published directory、`RuntimeSessionPlan` | bundle/module/resource/slot双射、verified root lifetime、delivery与side-effect-free preflight | instruction schedule、provider执行、重新规划 |
 | Target-model result | invocation-local transaction/event/memory/result | supported profile内的untimed functional-numeric执行与完整output | compiler artifact、board/timing/packet claim |
 
@@ -166,7 +168,7 @@ physical-dataflow synthesis直接通过Linalg/DPS/Tiling/MemoryEffect、Wafer Op
 SPM bound、raw-work dominance和bounded Pareto beam控制复杂度。优化work budget耗尽时保留同pipeline conservative baseline；
 driver/process cancellation终止整个transaction且不发布partial artifact。
 
-详细算法由06拥有；selected MPMD与local residency、physical realization和target implementation分别由07、08和10拥有。
+详细算法由06拥有；selected MPMD与local residency、physical realization和direct target-abstract lowering分别由07、08和10拥有。
 
 ## 6. Selected Execution、Memory、Communication 与 Completion
 
@@ -174,7 +176,7 @@ driver/process cancellation终止整个transaction且不发布partial artifact�
 - physical encoding拥有logical-to-physical bit map、footprint、valid/padding domain和view compatibility；selected transfer route
   必须有exact descriptor/address coverage，不能在lowering失败时静默换route。
 - SPM planner从每个physical Tile final IR重算roots、lifetime/coexistence/conflict、alignment、range和accepted offset；DDR
-  planner另从whole-card variant的explicit arenas/placement domains重算对应facts。fixed-capacity result决定legality。
+  planner另从whole-card candidate的explicit arenas/placement domains重算对应facts。fixed-capacity result决定legality。
   SPM actual high-water只报告capacity/headroom，不参与candidate Pareto或winner偏好；
   allocator用受管MiniMalloc和独立validator all-and-only覆盖派生的fixed problems，problem/query数量不是region/entry语义，
   也不产生、排序或修改partition/traversal/tile/residency choice。
@@ -190,14 +192,14 @@ driver/process cancellation终止整个transaction且不发布partial artifact�
 
 ## 7. Target Conversion 与原子发布
 
-target conversion只消费已经accepted、memory-planned的完整rank instruction program。它必须：
+target conversion只消费已经accepted、memory-planned的physical-Tile instruction programs。它必须：
 
 - 在原SCF/CF/function控制流位置lower instruction leaf；
 - 在module clone上执行正式dialect conversion，失败保持source byte-identical；
 - 从compiler-fixed current target identity、Kernel Runtime ABI、format和唯一call registry解析exact signature；
 - 在target字段写入前闭合physical geometry、address、alignment和integer narrowing；
-- 每rank只翻译一次，并让host CModel与device link共享同一`TargetLLVMModuleBundle`；
-- device link、symbol/entry/format/digest/all-rank readback全部成功后才形成`TargetArtifactBundle`。
+- 每个physical Tile module只翻译一次，并让host CModel与device link共享同一`TargetLLVMModuleBundle`；
+- device link、symbol/entry/format/digest/whole-card readback全部成功后才形成`TargetArtifactBundle`。
 
 target层不恢复candidate、layout、SPM/DDR或transport planning。mapped movement、GEMM orientation和其它新能力只有在Instr、
 TargetCall、CRT、model与capability predicates纵向闭合后才可由对应target capability row发射；底层flag或symbol存在不等于compiler支持。
@@ -205,7 +207,8 @@ TargetCall、CRT、model与capability predicates纵向闭合后才可由对应ta
 ## 8. Package、Runtime 与 Target Consumer 分支
 
 package只有一份typed C++ semantic model；canonical JSON只是delivery projection。package连接`ExecutableBundle`与
-`TargetArtifactBundle`，拥有rank/module/entry/resource/ordered ABI slot/completion双射，不包含instruction、candidate或
+`TargetArtifactBundle`，拥有`(card_id, tile_id, launch_slot)`/module/entry/resource/ordered ABI slot/completion双射，
+不包含instruction、candidate或
 per-command schedule。
 
 consumer分为四条互不冒充的路径：
@@ -215,7 +218,7 @@ consumer分为四条互不冒充的路径：
 2. **repo-owned TargetCall/SystemC model**：消费`TargetCompilationProduct`中的同次lowering artifacts，执行typed calls、
    address spaces、engine/event和numeric semantics；不执行repo CRT、RISC-V ELF或vendor packet。
 3. **board RuntimeProvider**：消费verified package并实际完成allocation/import/H2D/load/submit/wait/status/D2H/cleanup；
-   current kernel/model、16-rank Direct DTE和production workload vertical按environment/profile独立资格化。
+   current kernel/model、16-Tile Direct DTE和production workload vertical按environment/profile独立资格化。
 4. **exact-package model**：只有ISS/vendor simulator同时闭合loader ABI、MMIO/custom instruction、Direct DTE和provider lifecycle时，
    才能原样执行package内all-and-only RISC-V modules。
 
@@ -226,14 +229,14 @@ packet/MMIO provenance和timing calibration是额外证据分支，不是functio
 证据按实际consumer分层：
 
 - parser/printer/verifier与negative legality；
-- complete rank/variant resource、descriptor、completion、transport和ABI gate；
+- whole-card physical-Tile resource、descriptor、completion、transport和ABI gate；
 - atomic bundle/module/package publication与readback；
 - 独立source CPU expected到TargetCall/SystemC完整output differential；
 - configured board execution与board-output numeric correlation；
 - profile-scoped compiler-hardware behavior的`supported`/`board-observed`/`unknown`/`excluded`边界；
 - optional exact-package、packet/MMIO和timing evidence。
 
-任一层失败只证明该层未闭合，不能由更便宜的fixture冒充。late-rank、link、manifest或model failure不发布partial result；
+任一层失败只证明该层未闭合，不能由更便宜的fixture冒充。late physical-Tile、link、manifest或model failure不发布partial result；
 target-model mismatch不回滚已经验证并发布的package。板端不可用不阻塞compiler/model-only correctness，但也不能被写成已校准。
 
 7B block、GEMM/MLP、convolution、attention和branched workload只是通用算法与scale evidence；模型名、shape、parameter位置和
@@ -244,13 +247,13 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | 维度 | 稳定终态合同 | 当前未闭合 / 后续 |
 | --- | --- | --- |
 | source boundary | static-ranked StableHLO program directory；card-level num_partitions显式 | dynamic shape、cross-card transport |
-| decision owner | whole-DAG event-driven scheduler联合评估physical placement、不同op/branch/wave并行、temporal tile、region/fusion/residency、representation、movement和buffering；shortlist才actual-clone | Q49按新合同施工并删除旧rank==Tile/connection search |
+| decision owner | whole-DAG event-driven scheduler联合评估physical placement、不同op/branch/wave并行、temporal tile、region/fusion/residency、representation、movement和buffering；shortlist才actual-clone | Q51负责补齐dependent-op remap、NoC redistribution与完整event state；不得把Q49 baseline写成终态已完成 |
 | numeric transformation | supported integer exact/modular变换，以及f16/bf16/f32 reassociation、tree、distribution/factorization、reduction/GEMM split与floating collective；统一typed comparator验收 | 任意fast-math、未证明FMA contraction、用容差掩盖special value/index/layout/guard错误 |
-| physical realization | `card.program`、per-`tile_id` `tile.program`、typed Tensor/Cx/NCx movement、local SPM regions、liveness-derived fixed-capacity packing | Q49完成IR/pipeline cutover；bank phase不改变hard feasible set或反向产生spill/region/join |
-| communication | card-local topology-derived peer/collective、显式p2p/local work/completion和whole-card Direct DTE acceptance | cross-card transport |
+| physical realization | `card.program`、per-`tile_id` `tile.program`、typed Tensor/Cx/NCx movement、local SPM regions、liveness-derived fixed-capacity packing | Q50/Q51迁移并接入dependent mapping的physical realization；bank phase不改变hard feasible set或反向产生spill/region/join |
+| communication | card-local topology-derived physical-Tile peer/collective、显式p2p/local work/completion和whole-card Direct DTE acceptance | mapping-changing NoC joint generation、cross-card transport |
 | artifact/runtime | all-and-only physical Tile `ExecutableBundle`、same-lowering Target LLVM、verified package、no-card、TargetCall/SystemC和configured RuntimeProvider | exact-package ISS/vendor simulator |
 | hardware evidence | hard legality/capacity与性能estimate分离；性能term有actual值则用actual，其次理论值，完全未知则整批删除 | 通用model/board numeric correlation、packet/MMIO provenance、cycle-accurate timing |
-| performance evidence | compiler用enabled理论term估计whole-DAG makespan并保留raw work；板端样本只更新通用参数 | Q49删除performance Unknown、proof/promotion gate和全程序二态overlap |
+| performance evidence | compiler用cohort-wide enabled数值term估计makespan并保留raw work；板端样本只更新通用参数 | Q51由完整op-wave/event state提供branch、pipeline与movement overlap phase plan，Q52再按实际负载优化搜索开销 |
 
 本表固定长期边界，不记录施工顺序。当前实现状态、启动前置和外部板端门禁只读`tasks/progress.md`。
 
@@ -270,7 +273,7 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | source implementation OpInterface/external model与selected compute/movement IR | 10 |
 | complete instruction IR、geometry与narrowing legality | 11 |
 | DDR demand、lifetime与accepted offsets | 12 |
-| logical collective lowering、Direct DTE与all-rank transport | 13 |
+| card-partition collective handoff、physical-Tile communication lowering与whole-card Direct DTE admission | 13 |
 | target conversion、CRT ABI、TargetLLVM/module publication与capability registry | 14 |
 | typed manifest、package、RuntimeSession与provider boundary | 15 |
 | 跨stage verification contract与evidence口径 | 16 |
@@ -288,7 +291,7 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 
 - 当前IR为何不能从SSA/type/shape/effect/region重算所需事实；
 - 新对象由谁创建、验证、canonicalize、lower和消费；
-- 是否引入第二事实源、名字matcher、shadow plan或compatibility pipeline；
+- 是否引入第二事实源、名字matcher、shadow plan或parallel fallback pipeline；
 - 单卡static接口如何自然扩展且不破坏现有artifact；
 - completion gate是否来自真实program和相应runtime/model/board environment。
 

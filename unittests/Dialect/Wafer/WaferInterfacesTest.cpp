@@ -32,6 +32,50 @@ TEST(WaferInterfacesTest, InterfaceClassesAreGenerated) {
   SUCCEED() << "Wafer interface headers compile";
 }
 
+TEST(WaferInterfacesTest,
+     VerifiesLongDDRRegionChainWithoutRepeatedProvenanceTraversal) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
+  wafer::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  mlir::OpBuilder builder(&context);
+  mlir::Location loc = builder.getUnknownLoc();
+  auto ddrType = mlir::MemRefType::get(
+      {4}, builder.getF16Type(), mlir::MemRefLayoutAttrInterface{},
+      wafer::MemoryAttr::get(&context, wafer::MemorySpace::DDR,
+                             wafer::MemLayout::Tensor));
+  auto module = mlir::ModuleOp::create(loc);
+  auto function = mlir::func::FuncOp::create(
+      loc, "ddr_region_chain",
+      builder.getFunctionType(mlir::TypeRange{ddrType},
+                              mlir::TypeRange{ddrType}));
+  module.getBody()->push_back(function);
+  mlir::Block *entry = function.addEntryBlock();
+  builder.setInsertionPointToEnd(entry);
+
+  // Explicit DDR stage splitting produces this topology: every later region
+  // receives the original function boundary plus all prior spill results.
+  // Provenance is a DAG, so verification must reuse each already-derived
+  // value instead of recursively rewalking every path through the chain.
+  llvm::SmallVector<mlir::Value, 32> priorDDRValues{entry->getArgument(0)};
+  for (unsigned index = 0; index < 32; ++index) {
+    auto region = builder.create<wafer::TileRegionOp>(
+        loc, mlir::TypeRange{ddrType}, priorDDRValues);
+    region.getBody().push_back(new mlir::Block());
+    mlir::Block &body = region.getBody().front();
+    for (mlir::Value input : region.getInputs())
+      body.addArgument(input.getType(), loc);
+    mlir::OpBuilder bodyBuilder = mlir::OpBuilder::atBlockEnd(&body);
+    bodyBuilder.create<wafer::TileYieldOp>(loc, body.getArguments().back());
+    priorDDRValues.push_back(region.getResult(0));
+  }
+  builder.create<mlir::func::ReturnOp>(loc, priorDDRValues.back());
+
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(module)));
+}
+
 template <typename OpT> OpT findSingleOp(mlir::ModuleOp module) {
   OpT found;
   module.walk([&](OpT op) {
@@ -211,6 +255,9 @@ TEST(WaferInterfacesTest, LayoutResourceAndMemoryEffectsAreQueryable) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
+  wafer.target.topology @default {card_grid = array<i64: 1, 1>,
+      card_interconnect = "mesh", tile_grid = array<i64: 4, 4>,
+      unavailable_tiles = array<i64>}
   %arg = "builtin.unrealized_conversion_cast"()
       : () -> memref<4x4xf32, #wafer.memory<ddr, tensor>>
   %tile = memref.alloc() : memref<4x4xf32, #wafer.memory<spm, tensor>>
@@ -225,7 +272,7 @@ module {
          memref<4x4xf32, #wafer.memory<spm, cx>>)
      -> memref<4x4xf32, #wafer.memory<spm, cx>>
   %send = wafer.instr.dte_send %tile {peer = 0 : i64, bytes = 64 : i64,
-      message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+      message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
       : memref<4x4xf32, #wafer.memory<spm, tensor>> -> !async.token
   wafer.instr.dte_wait %send : !async.token
 }
@@ -424,11 +471,11 @@ module {
   EXPECT_TRUE((
       hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferMovementResource>(
           effects)));
-  EXPECT_FALSE((
-      hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferComputeResource>(
+  EXPECT_FALSE(
+      (hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferComputeResource>(
           effects)));
-  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Write>(
-      effects, fill.getDest()));
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Write>(effects,
+                                                               fill.getDest()));
 
   auto maskMove = findSingleOp<wafer::InstrMaskMoveOp>(*module);
   ASSERT_TRUE(maskMove);
@@ -445,8 +492,8 @@ module {
   effects.clear();
   mlir::cast<mlir::MemoryEffectOpInterface>(maskMove.getOperation())
       .getEffects(effects);
-  EXPECT_TRUE((
-      hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferComputeResource>(
+  EXPECT_TRUE(
+      (hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferComputeResource>(
           effects)));
   EXPECT_FALSE((
       hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferMovementResource>(
@@ -601,14 +648,14 @@ module {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
       wafer.linalg_ext.collective.yield %sum : f32
-      } {channel_id = 7 : i64, rank_group = array<i64: 0, 1>}
+      } {channel_id = 7 : i64, partition_group = array<i64: 0, 1>}
       -> tensor<4xf32>
 
   %gathered_out = "builtin.unrealized_conversion_cast"() : () -> tensor<8xf32>
   %gathered = wafer.linalg_ext.collective.all_gather
       ins(%input : tensor<4xf32>)
       outs(%gathered_out : tensor<8xf32>)
-      {axis = 0 : i64, channel_id = 9 : i64, rank_group = array<i64: 0, 1>}
+      {axis = 0 : i64, channel_id = 9 : i64, partition_group = array<i64: 0, 1>}
       -> tensor<8xf32>
 
   %wide = "builtin.unrealized_conversion_cast"() : () -> tensor<8xf32>
@@ -620,7 +667,7 @@ module {
       %sum = arith.addf %lhs, %rhs : f32
       wafer.linalg_ext.collective.yield %sum : f32
       } {axis = 0 : i64, channel_id = 10 : i64,
-         rank_group = array<i64: 0, 1>}
+         partition_group = array<i64: 0, 1>}
       -> tensor<4xf32>
 
   %matrix = "builtin.unrealized_conversion_cast"() : () -> tensor<4x2xf32>
@@ -630,7 +677,7 @@ module {
       outs(%matrix_out : tensor<2x4xf32>)
       {split_axis = 0 : i64, concat_axis = 1 : i64,
        split_count = 2 : i64, channel_id = 11 : i64,
-       rank_group = array<i64: 0, 1>}
+       partition_group = array<i64: 0, 1>}
       -> tensor<2x4xf32>
 
   %permuted = wafer.linalg_ext.collective.collective_permute
@@ -652,7 +699,7 @@ module {
   EXPECT_EQ(collective.getCollectiveKind(),
             wafer::WaferLinalgExtCollectiveKind::AllReduce);
   EXPECT_EQ(allReduce.getChannelId(), 7);
-  EXPECT_TRUE(llvm::equal(allReduce.getRankGroupAttr().asArrayRef(),
+  EXPECT_TRUE(llvm::equal(allReduce.getPartitionGroupAttr().asArrayRef(),
                           llvm::ArrayRef<int64_t>({0, 1})));
   EXPECT_FALSE(allReduce.getCombiner().empty());
 
@@ -686,7 +733,7 @@ module {
             wafer::WaferLinalgExtCollectiveKind::AllGather);
   EXPECT_EQ(allGather.getAxis(), 0);
   EXPECT_EQ(allGather.getChannelId(), 9);
-  EXPECT_TRUE(llvm::equal(allGather.getRankGroupAttr().asArrayRef(),
+  EXPECT_TRUE(llvm::equal(allGather.getPartitionGroupAttr().asArrayRef(),
                           llvm::ArrayRef<int64_t>({0, 1})));
   expectTiledImplementation(
       allGather, context, llvm::SmallVector<int64_t>{0},
@@ -719,7 +766,7 @@ module {
             wafer::WaferLinalgExtCollectiveKind::ReduceScatter);
   EXPECT_EQ(reduceScatter.getAxis(), 0);
   EXPECT_EQ(reduceScatter.getChannelId(), 10);
-  EXPECT_TRUE(llvm::equal(reduceScatter.getRankGroupAttr().asArrayRef(),
+  EXPECT_TRUE(llvm::equal(reduceScatter.getPartitionGroupAttr().asArrayRef(),
                           llvm::ArrayRef<int64_t>({0, 1})));
   EXPECT_FALSE(reduceScatter.getCombiner().empty());
   EXPECT_TRUE(mlir::isa<mlir::TilingInterface>(reduceScatter.getOperation()));
@@ -746,7 +793,7 @@ module {
   EXPECT_EQ(allToAll.getConcatAxis(), 1);
   EXPECT_EQ(allToAll.getSplitCount(), 2);
   EXPECT_EQ(allToAll.getChannelId(), 11);
-  EXPECT_TRUE(llvm::equal(allToAll.getRankGroupAttr().asArrayRef(),
+  EXPECT_TRUE(llvm::equal(allToAll.getPartitionGroupAttr().asArrayRef(),
                           llvm::ArrayRef<int64_t>({0, 1})));
   EXPECT_TRUE(mlir::isa<mlir::TilingInterface>(allToAll.getOperation()));
   expectTiledImplementation(
@@ -802,7 +849,7 @@ module {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
       wafer.linalg_ext.collective.yield %sum : f32
-      } {channel_id = 17 : i64, rank_group = array<i64: 0, 1, 2, 3, 4, 5, 6, 7>}
+      } {channel_id = 17 : i64, partition_group = array<i64: 0, 1, 2, 3, 4, 5, 6, 7>}
       -> tensor<1024x4096xf32>
 
   %ag_input = "builtin.unrealized_conversion_cast"() : () -> tensor<64x512xf32>
@@ -811,7 +858,7 @@ module {
       ins(%ag_input : tensor<64x512xf32>)
       outs(%ag_out : tensor<64x4096xf32>)
       {axis = 1 : i64, channel_id = 18 : i64,
-       rank_group = array<i64: 0, 1, 2, 3, 4, 5, 6, 7>}
+       partition_group = array<i64: 0, 1, 2, 3, 4, 5, 6, 7>}
       -> tensor<64x4096xf32>
 
   %rs_input = "builtin.unrealized_conversion_cast"() : () -> tensor<256x4096xf32>
@@ -824,7 +871,7 @@ module {
       %sum = arith.addf %lhs, %rhs : f32
       wafer.linalg_ext.collective.yield %sum : f32
       } {axis = 1 : i64, channel_id = 19 : i64,
-         rank_group = array<i64: 0, 1, 2, 3>}
+         partition_group = array<i64: 0, 1, 2, 3>}
       -> tensor<256x1024xf32>
 
   %a2a_input = "builtin.unrealized_conversion_cast"() : () -> tensor<512x128x64xf32>
@@ -834,7 +881,7 @@ module {
       outs(%a2a_out : tensor<128x512x64xf32>)
       {split_axis = 0 : i64, concat_axis = 1 : i64,
        split_count = 4 : i64, channel_id = 20 : i64,
-       rank_group = array<i64: 0, 1, 2, 3>}
+       partition_group = array<i64: 0, 1, 2, 3>}
       -> tensor<128x512x64xf32>
 
   %cp_input = "builtin.unrealized_conversion_cast"() : () -> tensor<4x1024x4096xf32>
@@ -945,7 +992,7 @@ module {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
       wafer.linalg_ext.collective.yield %sum : f32
-      } {channel_id = 22 : i64, rank_group = array<i64: 0, 1, 2, 3>}
+      } {channel_id = 22 : i64, partition_group = array<i64: 0, 1, 2, 3>}
       -> tensor<?x4096xf32>
 
   %ag_input = "builtin.unrealized_conversion_cast"() : () -> tensor<?x512xf32>
@@ -954,7 +1001,7 @@ module {
       ins(%ag_input : tensor<?x512xf32>)
       outs(%ag_out : tensor<?x2048xf32>)
       {axis = 1 : i64, channel_id = 23 : i64,
-       rank_group = array<i64: 0, 1, 2, 3>}
+       partition_group = array<i64: 0, 1, 2, 3>}
       -> tensor<?x2048xf32>
 }
 )mlir",
@@ -1026,7 +1073,7 @@ module {
             wafer::WaferLinalgExtCollectiveKind::AllGather);
   EXPECT_EQ(allGather.getAxis(), 1);
   EXPECT_EQ(allGather.getChannelId(), 41);
-  EXPECT_TRUE(llvm::equal(allGather.getRankGroupAttr().asArrayRef(),
+  EXPECT_TRUE(llvm::equal(allGather.getPartitionGroupAttr().asArrayRef(),
                           llvm::ArrayRef<int64_t>({0, 1, 2, 3, 4, 5, 6, 7})));
   expectTiledImplementation(
       allGather, context, llvm::SmallVector<int64_t>{16, 0},

@@ -8,16 +8,13 @@ module {
        unavailable_tiles = array<i64>}
 
   wafer.execution.mesh @default_mesh
-      {topology = @default,
-       axes = ["rank"],
-       shape = array<i64: 2>,
-       policy = "all_available",
-       endpoints = array<i64>}
+      {axes = ["card"],
+       shape = array<i64: 2>}
 
   func.func @invalid_source_target_pairs_out_of_mesh(
-      %input: tensor<2x4xf32>,
-      %out: tensor<2x4xf32>) -> tensor<2x4xf32> {
-    // CHECK: source_target_pairs logical ranks must be within execution mesh rank count
+      %input: tensor<2x4xf32>) -> tensor<2x4xf32> {
+    %out = tensor.empty() : tensor<2x4xf32>
+    // CHECK: source_target_pairs partition IDs must be within execution mesh partition count
     %0 = wafer.linalg_ext.collective.collective_permute
         ins(%input : tensor<2x4xf32>)
         outs(%out : tensor<2x4xf32>)

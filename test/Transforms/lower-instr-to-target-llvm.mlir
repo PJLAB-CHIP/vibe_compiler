@@ -9,11 +9,8 @@ module {
        unavailable_tiles = array<i64>}
 
   wafer.execution.mesh @default_mesh
-       {topology = @default,
-       axes = ["rank"],
-       shape = array<i64: 16>,
-       policy = "all_available",
-       endpoints = array<i64>}
+       {axes = ["card_partition"],
+       shape = array<i64: 1>}
 
   func.func @target_instr_kernel(
       %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>,

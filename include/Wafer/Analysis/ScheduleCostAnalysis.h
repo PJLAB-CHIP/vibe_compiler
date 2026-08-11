@@ -4,6 +4,7 @@
 #define WAFER_ANALYSIS_SCHEDULECOSTANALYSIS_H
 
 #include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/PhysicalIds.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -11,7 +12,6 @@
 
 #include <array>
 #include <cstdint>
-#include <optional>
 
 namespace mlir {
 class Operation;
@@ -24,7 +24,7 @@ namespace wafer::analysis {
 /// has not yet been selected.
 enum class ScheduleCostKnowledge {
   Known,
-  Unknown,
+  Unavailable,
   Unsupported,
   Overflow,
 };
@@ -35,8 +35,8 @@ enum class ScheduleCostReason {
   InvalidLoopStep,
   ConditionalControlFlow,
   UnsupportedControlFlow,
-  UnknownPhysicalGeometry,
-  UnknownResourceBytes,
+  UnavailablePhysicalGeometry,
+  UnavailableResourceBytes,
   MissingAcceptedSPMOffset,
   InvalidAcceptedSPMOffset,
   MissingAcceptedDDROffset,
@@ -46,7 +46,6 @@ enum class ScheduleCostReason {
   InvalidExecutionTopology,
   UnsupportedInstructionSemantics,
   UnsupportedComputeType,
-  MissingPerformanceCalibration,
   ArithmeticOverflow,
 };
 
@@ -60,27 +59,10 @@ struct ScheduleCostMetric {
 
 enum class NoCDirection : uint8_t { North, South, East, West };
 
-enum class NoCCollectiveKind : uint8_t {
-  CollectivePermute,
-  AllToAll,
-  AllGather,
-  ReduceScatter,
-  AllReduce,
-};
-
 /// Hardware facts used to interpret the logical cost dimensions. Peak,
 /// nominal, and conservative-bound fields are deliberately distinct:
 /// reporting references must not silently become production bounds.
 struct TargetScheduleCostPolicy {
-  /// Exact same-worker NCC engine group with compiler-shipped overlap
-  /// qualification. A zero mask means the current target has no qualified
-  /// group. Bits use the closed InstrFamily enum values; this is an ordinal
-  /// profitability fact, not a latency estimate.
-  uint32_t qualifiedOverlapFamilyMask = 0;
-  uint32_t qualifiedOverlapWorker = 0;
-  /// Direct-DTE plus compute families known to use independent target
-  /// resources when typed issue and wait delimit an overlap window.
-  uint32_t qualifiedDirectDTEOverlapFamilyMask = 0;
   /// Whole-card peak/reference bandwidth. This remains the profiler's
   /// theoretical traffic-floor rate.
   uint64_t cardDDRBytesPerSecond = 200'000'000'000ULL;
@@ -91,10 +73,8 @@ struct TargetScheduleCostPolicy {
   /// Single-direction payload serialization reference. It is not a fabric
   /// aggregate, endpoint sustained rate, route estimate, or latency.
   uint64_t directionalNoCBytesPerSecond = 128'000'000'000ULL;
-  /// Point estimates used by the versioned analytical selector. These are
-  /// compiler policy priors, not measured lower/upper bounds. Keeping them
-  /// separate from the conservative fields below lets normal production make
-  /// an Estimated decision without misreporting it as a proof.
+  /// Point estimates used by the numeric whole-card schedule model. These are
+  /// compiler policy priors, not measured lower/upper bounds.
   ///
   /// The endpoint prior starts from one documented directional link. The
   /// startup prior is deliberately conservative for the current uncalibrated
@@ -120,40 +100,6 @@ struct TargetScheduleCostPolicy {
   uint64_t spmExplicitMovementBytesPerSecondPerTileEstimate =
       256'000'000'000ULL;
 
-  /// Optional conservative bounds used only by production profitability.
-  /// The current profile intentionally leaves these absent: existing board
-  /// evidence establishes the references above but not sustained lower rates,
-  /// Direct-DTE startup/hop upper bounds, or route dilation.
-  std::optional<uint64_t> cardDDRSustainedBytesPerSecondLowerBound;
-  std::optional<uint64_t> directionalNoCSustainedBytesPerSecondLowerBound;
-  std::optional<uint64_t> dteEndpointBytesPerSecondLowerBound;
-  std::optional<uint64_t> dteMessageStartupPicosecondsUpperBound;
-  /// Conservative per-hop route-fill time used with the dilated aggregate
-  /// minimum-hop message demand.
-  std::optional<uint64_t> noCHopPicosecondsUpperBound;
-  std::optional<uint32_t> noCRouteDilationUpperBound;
-  std::optional<uint64_t> f16Bf16NPULogicalOpsPerSecondPerTileLowerBound;
-  std::optional<uint64_t> f16Bf16VectorLogicalOpsPerSecondPerTileLowerBound;
-  std::optional<uint64_t> f32VectorLogicalOpsPerSecondPerTileLowerBound;
-  /// Future matched-board calibration may establish a sustained explicit-SPM
-  /// movement service lower bound. It is intentionally absent from the
-  /// current conservative model; the nominal point above is not a substitute.
-  std::optional<uint64_t> spmBytesPerSecondPerTileLowerBound;
-  /// Maximum fixed non-service time per statically executed instruction.
-  /// Resource service time is modeled separately; this bound covers issue,
-  /// control and nonblocking completion bookkeeping.
-  std::optional<uint64_t> instructionFixedPicosecondsUpperBound;
-  /// Additional blocking-poll/release overhead after the corresponding
-  /// resource service has completed.
-  std::optional<uint64_t> dteWaitedEventPicosecondsUpperBound;
-  std::optional<uint64_t> nccParticipantWaitPicosecondsUpperBound;
-
-  /// Compiler safety margin, not a measured hardware rate. Estimated
-  /// cross-resource winners must retain at least a 20% whole-model advantage.
-  /// A same-sequential-schedule candidate whose Known primitive resource work
-  /// never regresses may instead apply this margin to changed work traded
-  /// within one modeled resource; that remains Estimated, never Proven.
-  uint32_t productionBenefitMarginPermille = 200;
   uint64_t spmAddressBase = static_cast<uint64_t>(TargetMemoryPolicy{}.spmBase);
   uint64_t spmAddressLimit =
       static_cast<uint64_t>(TargetMemoryPolicy{}.spmLimit);
@@ -172,7 +118,7 @@ struct ScheduleComputeCost {
 struct ScheduleNoCCost {
   /// Exact executable send/receive operation sites, independent of dynamic
   /// loop multiplicity. This distinguishes a NoC-free program from one whose
-  /// traffic multiplicity is Unknown.
+  /// traffic multiplicity is unavailable.
   ScheduleCostMetric staticIssueSiteCount;
   /// Bytes injected by send instructions, counted once per logical payload.
   ScheduleCostMetric aggregateTransmitBytes;
@@ -188,10 +134,8 @@ struct ScheduleNoCCost {
   ScheduleCostMetric waitOperationCount;
   ScheduleCostMetric waitedEventCount;
   std::array<ScheduleCostMetric, 4> directionalTransmitBytes;
-  std::array<ScheduleCostMetric, 5> collectiveTransmitBytes;
 
   const ScheduleCostMetric &directional(NoCDirection direction) const;
-  const ScheduleCostMetric &collective(NoCCollectiveKind kind) const;
 };
 
 /// One kind of final instruction-program work under structured control flow.
@@ -212,7 +156,7 @@ struct InstructionExecutionCount {
 /// distinctions needed to audit movement, transport, and completion. A gather
 /// or scatter therefore contributes to both `tdmaIssues` and
 /// `gatherScatterOperations`, while a Direct-DTE send/receive contributes to
-/// both `dteOperations` and exactly one protocol-class counter.
+/// both `dteOperations` and its concrete send/receive counter.
 struct InstructionProgramWork {
   InstructionExecutionCount instructions;
   InstructionExecutionCount asynchronousEvents;
@@ -226,8 +170,6 @@ struct InstructionProgramWork {
   InstructionExecutionCount dteSendOperations;
   InstructionExecutionCount dteReceiveOperations;
   InstructionExecutionCount dteWaitOperations;
-  InstructionExecutionCount collectiveDTEIssues;
-  InstructionExecutionCount peerDTEIssues;
   InstructionExecutionCount nccJoins;
   InstructionExecutionCount steadyStateNCCJoins;
   InstructionExecutionCount nonTerminalNCCJoins;
@@ -287,32 +229,6 @@ struct InstructionProgramCost {
   /// as the current synchronous ArgMax/ArgMin host writeback path.
   ScheduleCostMetric intrinsicNCCDrainCount;
 
-  /// Longest value/data-effect dependency chain in the accepted instruction
-  /// IR. This is a structural count, not a cycle, latency, or overlap model.
-  /// Unsupported control flow leaves it unknown without degrading the exact
-  /// resource dimensions above.
-  ScheduleCostMetric dataDependencyDepth;
-
-  /// Count of target-static ready-priority inversions in fence-bounded final
-  /// instruction order. This describes an actual order, not latency or
-  /// overlap, and is used only after exact resources and dependency depth are
-  /// equivalent.
-  ScheduleCostMetric readyOrderPriorityInversions;
-
-  /// Number of static rotating-buffer loops whose direct instruction window
-  /// exactly matches a compiler-shipped target overlap capability. Higher is
-  /// preferred before capacity high-water; it is an ordinal IR fact, not a
-  /// cycle or time estimate.
-  ScheduleCostMetric qualifiedOverlapWindowCount;
-
-  /// Count of accepted same-block windows with one explicit bound Direct-DTE
-  /// issue, an independent FP16/BF16 CT/NE instruction, and the matching exact
-  /// wait. Fixed-slot qualification proves the originating rotating SPM
-  /// realization separately because endpoint specialization may replace the
-  /// recurrence with exact roots. This is a structural V3 witness; it does not
-  /// assert temporal overlap or profitability on hardware.
-  ScheduleCostMetric directDTEComputeOverlapWindowCount;
-
   /// Maximum accepted SPM address end relative to the target SPM base. This is
   /// address-space high-water, not liveness-aware peak allocation.
   ScheduleCostMetric spmHighWaterBytes;
@@ -335,38 +251,38 @@ struct ModeledNoCRouteCost {
   ScheduleCostMetric peakDirectedLinkByteDemand;
 };
 
-/// Exact all-rank aggregation of independently lowered instruction programs.
+/// Exact whole-card aggregation of independently lowered physical-Tile
+/// instruction programs.
 /// Work and traffic dimensions are summed over the complete variant. SPM
-/// remains private to a tile, so both the maximum per-rank high-water and the
-/// sum of rank-local high-waters are retained. No bandwidth-to-time conversion
-/// is performed here: the current target does not establish issue
-/// timing or cross-resource overlap.
+/// remains private to a Tile, so both the maximum per-Tile high-water and the
+/// sum of Tile-local high-waters are retained. No bandwidth-to-time conversion
+/// is performed here.
 struct WholeCardInstructionProgramCost {
-  llvm::SmallVector<InstructionProgramCost, 16> rankCosts;
+  llvm::SmallVector<InstructionProgramCost, 16> tileCosts;
 
-  /// Sum and per-dimension rank maximum of the same rank-local work facts.
-  /// Maxima expose rank-local pressure without pretending that every maximum
-  /// came from one fictitious critical rank.
+  /// Sum and per-dimension Tile maximum of the same Tile-local work facts.
+  /// Maxima expose Tile-local pressure without pretending that every maximum
+  /// came from one fictitious critical Tile.
   InstructionProgramWork aggregateWork;
-  InstructionProgramWork maximumRankWork;
+  InstructionProgramWork maximumTileWork;
   ScheduleComputeCost aggregateCompute;
-  ScheduleComputeCost maximumRankCompute;
+  ScheduleComputeCost maximumTileCompute;
   ScheduleCostMetric aggregateDDRReadBytes;
   ScheduleCostMetric aggregateDDRWriteBytes;
   ScheduleCostMetric aggregateSPMMovementBytes;
   ScheduleCostMetric aggregateGatherScatterBytes;
-  /// Tile-local movement pressure is compared by rank maximum. Aggregates
+  /// Tile-local movement pressure is compared by Tile maximum. Aggregates
   /// remain available as whole-program work audit and are not substituted for
   /// this maximum.
-  ScheduleCostMetric maximumRankSPMMovementBytes;
-  ScheduleCostMetric maximumRankGatherScatterBytes;
+  ScheduleCostMetric maximumTileSPMMovementBytes;
+  ScheduleCostMetric maximumTileGatherScatterBytes;
   ScheduleNoCCost aggregateNoC;
-  /// Endpoint pressure derived from the actual per-rank instruction programs.
+  /// Endpoint pressure derived from the actual per-Tile instruction programs.
   /// These are maxima, not sums, because endpoints are tile-local resources.
-  ScheduleCostMetric maximumRankNoCTransmitBytes;
-  ScheduleCostMetric maximumRankNoCReceiveBytes;
-  ScheduleCostMetric maximumRankNoCTransmitMessageCount;
-  ScheduleCostMetric maximumRankNoCReceiveMessageCount;
+  ScheduleCostMetric maximumTileNoCTransmitBytes;
+  ScheduleCostMetric maximumTileNoCReceiveBytes;
+  ScheduleCostMetric maximumTileNoCTransmitMessageCount;
+  ScheduleCostMetric maximumTileNoCReceiveMessageCount;
   /// Sum over final send instructions of
   /// payload bytes * static execution multiplicity * minimum topology hops.
   /// This is a whole-domain link-byte demand lower bound, not an actual route,
@@ -404,30 +320,14 @@ struct WholeCardInstructionProgramCost {
   ScheduleCostMetric aggregateNonTerminalNCCParticipantWaitCount;
   ScheduleCostMetric aggregateIntrinsicNCCDrainCount;
 
-  /// Maximum rank-local structural data-dependency depth. It is retained for
-  /// exact-resource-equivalent static policy tie-breaking, not summed as
-  /// consumed work and not converted to time.
-  ScheduleCostMetric maximumRankDataDependencyDepth;
-
-  /// Sum of rank-local ready-priority inversions for exact-resource and
-  /// dependency-depth-equivalent static policy tie-breaking.
-  ScheduleCostMetric aggregateReadyOrderPriorityInversions;
-
-  /// Sum of target-qualified rotating-buffer overlap windows across ranks.
-  ScheduleCostMetric aggregateQualifiedOverlapWindowCount;
-
-  /// Sum of explicit Direct-DTE issue/compute/exact-wait windows across ranks.
-  /// A Known value is an accepted-IR structural fact, not a timing estimate.
-  ScheduleCostMetric aggregateDirectDTEComputeOverlapWindowCount;
-
-  ScheduleCostMetric maximumRankSPMHighWaterBytes;
-  ScheduleCostMetric summedRankSPMHighWaterBytes;
-  ScheduleCostMetric maximumRankDDRHighWaterBytes;
-  ScheduleCostMetric summedRankDDRHighWaterBytes;
+  ScheduleCostMetric maximumTileSPMHighWaterBytes;
+  ScheduleCostMetric summedTileSPMHighWaterBytes;
+  ScheduleCostMetric maximumTileDDRHighWaterBytes;
+  ScheduleCostMetric summedTileDDRHighWaterBytes;
   ScheduleCostMetric aggregateCompilerOwnedSPMBufferCount;
   ScheduleCostMetric aggregateCompilerOwnedDDRBufferCount;
-  ScheduleCostMetric maximumRankCompilerOwnedSPMBufferCount;
-  ScheduleCostMetric maximumRankCompilerOwnedDDRBufferCount;
+  ScheduleCostMetric maximumTileCompilerOwnedSPMBufferCount;
+  ScheduleCostMetric maximumTileCompilerOwnedDDRBufferCount;
 };
 
 /// Analyze a lowered instruction program without mutating it. Static scf.for
@@ -438,11 +338,42 @@ InstructionProgramCost
 analyzeInstructionProgramCost(mlir::Operation *root,
                               const TargetScheduleCostPolicy &policy);
 
-/// Recompute every rank cost in canonical caller order and aggregate the
-/// complete card variant. Unknown, unsupported and overflow states propagate
-/// independently for each metric instead of being replaced with estimates.
+/// One explicitly identified physical-Tile instruction program.  Identity is
+/// supplied by the artifact owner and is never recovered from vector order,
+/// module/function names, or logical partition metadata.
+struct PhysicalTileInstructionProgram {
+  PhysicalTileId tileId{0};
+  mlir::Operation *root = nullptr;
+};
+
+/// One query-local partition of an accepted physical-Tile instruction
+/// program. `includedOperations` identifies actual operations under `root`;
+/// the analyzer still walks the complete structured control flow so selected
+/// instructions retain their real loop/path multiplicity. Slices are an
+/// analysis input only and are never serialized into compiler IR or a target
+/// artifact.
+struct PhysicalTileInstructionProgramSlice {
+  PhysicalTileId tileId{0};
+  mlir::Operation *root = nullptr;
+  llvm::ArrayRef<mlir::Operation *> includedOperations;
+};
+
+/// Recompute every explicitly identified physical-Tile cost and aggregate the
+/// complete card variant. Unavailable, unsupported and overflow states
+/// propagate independently for each raw metric instead of being replaced with
+/// estimates.
 WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
-    llvm::ArrayRef<mlir::Operation *> rankRoots,
+    llvm::ArrayRef<PhysicalTileInstructionProgram> tilePrograms,
+    const TargetScheduleCostPolicy &policy);
+
+/// Recompute one exact operation partition of the complete physical-Tile
+/// domain. Operations not listed in a Tile slice contribute no work, but the
+/// enclosing accepted control flow and explicit physical identity remain the
+/// source of multiplicity and NoC topology. Callers must prove that a cohort
+/// of slices is disjoint and conserves the unsliced raw costs before using it
+/// to claim schedule overlap.
+WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCostSlice(
+    llvm::ArrayRef<PhysicalTileInstructionProgramSlice> tilePrograms,
     const TargetScheduleCostPolicy &policy);
 
 llvm::StringRef stringifyScheduleCostKnowledge(ScheduleCostKnowledge knowledge);

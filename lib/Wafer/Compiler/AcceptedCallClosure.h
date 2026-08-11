@@ -15,9 +15,8 @@
 namespace wafer::compiler::detail {
 
 /// The all-and-only statically resolvable function closure of one accepted
-/// rank. Functions retain deterministic module order; `entry` is the unique
-/// externally visible function, or the sole private function accepted for
-/// compatibility with an otherwise single-function module.
+/// physical-Tile executable. Functions retain deterministic module order;
+/// `entry` is the unique externally visible function.
 struct AcceptedCallClosure {
   mlir::func::FuncOp entry;
   llvm::SmallVector<mlir::func::FuncOp> functions;

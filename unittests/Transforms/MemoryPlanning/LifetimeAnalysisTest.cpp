@@ -18,10 +18,29 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <string>
 
 namespace {
 
 using namespace wafer::memory_planning::detail;
+
+static std::string withDTEPhysicalTopology(llvm::StringRef source) {
+  std::string text = source.str();
+  if (!source.contains("wafer.instr.dte_") ||
+      source.contains("wafer.target.topology"))
+    return text;
+  size_t module = text.find("module");
+  size_t body = module == std::string::npos ? std::string::npos
+                                             : text.find('{', module);
+  if (body == std::string::npos)
+    return text;
+  text.insert(body + 1, R"mlir(
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+)mlir");
+  return text;
+}
 
 class LifetimeAnalysisTest : public ::testing::Test {
 protected:
@@ -36,14 +55,17 @@ protected:
   }
 
   mlir::OwningOpRef<mlir::ModuleOp> parse(llvm::StringRef source) {
+    std::string sourceWithTopology = withDTEPhysicalTopology(source);
     return mlir::parseSourceString<mlir::ModuleOp>(
-        source, mlir::ParserConfig(&context));
+        sourceWithTopology, mlir::ParserConfig(&context));
   }
 
   mlir::OwningOpRef<mlir::ModuleOp>
   parseWithoutVerification(llvm::StringRef source) {
+    std::string sourceWithTopology = withDTEPhysicalTopology(source);
     return mlir::parseSourceString<mlir::ModuleOp>(
-        source, mlir::ParserConfig(&context, /*verifyAfterParse=*/false));
+        sourceWithTopology,
+        mlir::ParserConfig(&context, /*verifyAfterParse=*/false));
   }
 
   static mlir::func::FuncOp getOnlyFunction(mlir::ModuleOp module) {
@@ -1709,7 +1731,7 @@ module {
     scf.for %index = %c0 to %c2 step %c1 {
       %token = wafer.instr.dte_send %spm
           {peer = 1 : i64, bytes = 256 : i64,
-           message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+           message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
           : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
       wafer.instr.dte_wait %token : !async.token
       wafer.instr.fill %spm, %zero
@@ -1770,7 +1792,7 @@ module {
         wafer.instr.ncc_join [0]
         %token = wafer.instr.dte_send %input
           {peer = 1 : i64, bytes = 256 : i64,
-           message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+           message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
           : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
         wafer.instr.dte_wait %token : !async.token
         wafer.instr.gather_scatter %input to %output
@@ -1968,7 +1990,7 @@ module {
          %value: f16):
       %token = wafer.instr.dte_send %buffer
           {peer = 1 : i64, bytes = 256 : i64,
-           message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+           message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
           : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
       wafer.instr.dte_wait %token : !async.token
       wafer.instr.ncc_join [0]

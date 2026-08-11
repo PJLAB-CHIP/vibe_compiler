@@ -9,11 +9,8 @@ module {
        unavailable_tiles = array<i64>}
 
   wafer.execution.mesh @default_mesh
-      {topology = @default,
-       axes = ["rank"],
-       shape = array<i64: 16>,
-       policy = "all_available",
-       endpoints = array<i64>}
+      {axes = ["card"],
+       shape = array<i64: 1>}
 
   func.func @main(%lhs: tensor<32x16xf32>, %rhs: tensor<16x8xf32>) -> tensor<32x8xf32> {
     %0 = "stablehlo.dot_general"(%lhs, %rhs) {
@@ -26,7 +23,7 @@ module {
   }
 }
 
-// DEFAULT: sdy.mesh @wafer_default_tile_mesh = <["rank"=16]>
-// DEFAULT: %{{[^:]+}}: tensor<32x16xf32> {sdy.sharding = #sdy.sharding<@wafer_default_tile_mesh, [{"rank"}, {}]>}
-// DEFAULT-SAME: %{{[^:]+}}: tensor<16x8xf32> {sdy.sharding = #sdy.sharding<@wafer_default_tile_mesh, [{"rank"}, {}]>}
+// DEFAULT: sdy.mesh @wafer_default_card_mesh = <["card"=1]>
+// DEFAULT: %{{[^:]+}}: tensor<32x16xf32> {sdy.sharding = #sdy.sharding<@wafer_default_card_mesh, [{}, {}], replicated={"card"}>}
+// DEFAULT-SAME: %{{[^:]+}}: tensor<16x8xf32> {sdy.sharding = #sdy.sharding<@wafer_default_card_mesh, [{}, {}], replicated={"card"}>}
 // DEFAULT: stablehlo.dot_general

@@ -94,6 +94,31 @@ PackingResult solveWithMiniMalloc(const StaticPackingProblem &problem,
     return result;
   }
 
+  const uint64_t arenaCapacity =
+      static_cast<uint64_t>(problem.arena.end - problem.arena.begin);
+  for (unsigned original : originalForCanonical) {
+    if (static_cast<uint64_t>(problem.demands[original].sizeBytes) <=
+        arenaCapacity)
+      continue;
+    result.individuallyOversizedDemandIndices.push_back(original);
+  }
+  if (!result.individuallyOversizedDemandIndices.empty()) {
+    llvm::sort(result.individuallyOversizedDemandIndices,
+               [&](unsigned lhs, unsigned rhs) {
+                 const StaticPackingDemand &lhsDemand = problem.demands[lhs];
+                 const StaticPackingDemand &rhsDemand = problem.demands[rhs];
+                 if (lhsDemand.sizeBytes != rhsDemand.sizeBytes)
+                   return lhsDemand.sizeBytes > rhsDemand.sizeBytes;
+                 return lhsDemand.stableOrdinal < rhsDemand.stableOrdinal;
+               });
+    result.status = PackingStatus::ProvenInfeasible;
+    result.demandIndex = result.individuallyOversizedDemandIndices.front();
+    // Any single member is also a size-one over-capacity clique certificate.
+    result.capacityConflictDemandIndices.push_back(*result.demandIndex);
+    result.placements.clear();
+    return result;
+  }
+
   // Canonicalize positive-size demands independently of input vector order.
   // The source demand index is restored after solving, so owner diagnostics
   // and commits still address the original LifetimeDemand.
@@ -159,6 +184,46 @@ PackingResult solveWithMiniMalloc(const StaticPackingProblem &problem,
   std::vector<ActivityComponent> components;
   std::vector<unsigned> componentForCanonical(originalForCanonical.size(),
                                               kNotCanonical);
+
+  // A clique whose raw byte sum exceeds the usable arena is already a
+  // complete fixed-problem infeasibility proof.  Keep a deterministic,
+  // size-descending minimal prefix as a causal certificate for the upstream
+  // joint search.  This is derived from the exact final lifetime conflict
+  // graph; it neither estimates residency nor changes which packing problems
+  // are legal.
+  auto recordOverCapacityClique =
+      [&](llvm::ArrayRef<unsigned> canonicalClique) {
+        llvm::SmallVector<unsigned, 8> originals;
+        originals.reserve(canonicalClique.size());
+        for (unsigned canonical : canonicalClique)
+          originals.push_back(originalForCanonical[canonical]);
+        llvm::sort(originals, [&](unsigned lhs, unsigned rhs) {
+          const StaticPackingDemand &lhsDemand = problem.demands[lhs];
+          const StaticPackingDemand &rhsDemand = problem.demands[rhs];
+          if (lhsDemand.sizeBytes != rhsDemand.sizeBytes)
+            return lhsDemand.sizeBytes > rhsDemand.sizeBytes;
+          return lhsDemand.stableOrdinal < rhsDemand.stableOrdinal;
+        });
+
+        uint64_t totalBytes = 0;
+        llvm::SmallVector<unsigned, 8> certificate;
+        for (unsigned original : originals) {
+          const uint64_t bytes =
+              static_cast<uint64_t>(problem.demands[original].sizeBytes);
+          totalBytes = totalBytes > std::numeric_limits<uint64_t>::max() - bytes
+                           ? std::numeric_limits<uint64_t>::max()
+                           : totalBytes + bytes;
+          certificate.push_back(original);
+          if (totalBytes <= arenaCapacity)
+            continue;
+          result.status = PackingStatus::ProvenInfeasible;
+          result.demandIndex = certificate.front();
+          result.capacityConflictDemandIndices = std::move(certificate);
+          result.placements.clear();
+          return true;
+        }
+        return false;
+      };
   for (unsigned root = 0; root < originalForCanonical.size(); ++root) {
     if (componentForCanonical[root] != kNotCanonical)
       continue;
@@ -211,6 +276,8 @@ PackingResult solveWithMiniMalloc(const StaticPackingProblem &problem,
         for (size_t rhs = lhs + 1; rhs < clique.size(); ++rhs)
           if (!adjacency[clique[lhs]].test(clique[rhs]))
             return makeFailure(PackingStatus::InvalidSolverResult);
+      if (recordOverCapacityClique(clique))
+        return result;
       for (unsigned member : clique)
         activeSlots[member].push_back(nextSlot);
       for (size_t lhs = 0; lhs < clique.size(); ++lhs) {

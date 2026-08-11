@@ -31,19 +31,19 @@ static SPMRootResolution resolveSPMRoots(mlir::Value initialValue) {
   llvm::DenseSet<mlir::Value> seenValues;
   llvm::DenseSet<mlir::Operation *> seenAllocations;
 
-  auto enqueueLoopCarriedOrigins =
-      [&](mlir::scf::ForOp loop, unsigned iterArgNumber) {
-        auto initArgs = loop.getInitArgs();
-        auto yield =
-            mlir::dyn_cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
-        if (iterArgNumber >= initArgs.size() || !yield ||
-            iterArgNumber >= yield.getResults().size()) {
-          resolution.complete = false;
-          return;
-        }
-        worklist.push_back(initArgs[iterArgNumber]);
-        worklist.push_back(yield.getResults()[iterArgNumber]);
-      };
+  auto enqueueLoopCarriedOrigins = [&](mlir::scf::ForOp loop,
+                                       unsigned iterArgNumber) {
+    auto initArgs = loop.getInitArgs();
+    auto yield =
+        mlir::dyn_cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+    if (iterArgNumber >= initArgs.size() || !yield ||
+        iterArgNumber >= yield.getResults().size()) {
+      resolution.complete = false;
+      return;
+    }
+    worklist.push_back(initArgs[iterArgNumber]);
+    worklist.push_back(yield.getResults()[iterArgNumber]);
+  };
 
   while (!worklist.empty()) {
     mlir::Value value = worklist.pop_back_val();
@@ -58,14 +58,12 @@ static SPMRootResolution resolveSPMRoots(mlir::Value initialValue) {
       if (tileRegion && !tileRegion.getBody().empty() &&
           owner == &tileRegion.getBody().front() &&
           blockArg.getArgNumber() < tileRegion.getInputs().size()) {
-        worklist.push_back(
-            tileRegion.getInputs()[blockArg.getArgNumber()]);
+        worklist.push_back(tileRegion.getInputs()[blockArg.getArgNumber()]);
         continue;
       }
 
       auto loop =
-          owner ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(
-                      owner->getParentOp())
+          owner ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(owner->getParentOp())
                 : mlir::scf::ForOp{};
       if (loop && owner == loop.getBody() && blockArg.getArgNumber() > 0) {
         enqueueLoopCarriedOrigins(loop, blockArg.getArgNumber() - 1);
@@ -154,10 +152,12 @@ static SPMRootResolution resolveSPMRoots(mlir::Value initialValue) {
 
 class SPMHighWaterAnalysis {
 public:
-  SPMHighWaterAnalysis(InstructionProgramCost &cost,
-                       const TargetScheduleCostPolicy &policy)
+  SPMHighWaterAnalysis(
+      InstructionProgramCost &cost, const TargetScheduleCostPolicy &policy,
+      llvm::function_ref<bool(mlir::Operation *)> includeOperation)
       : metric(cost.spmHighWaterBytes),
-        bufferCount(cost.compilerOwnedSPMBufferCount), policy(policy) {}
+        bufferCount(cost.compilerOwnedSPMBufferCount), policy(policy),
+        includeOperation(includeOperation) {}
 
   void run(mlir::Operation *root) {
     llvm::SmallVector<mlir::Operation *, 8> scopes;
@@ -174,7 +174,8 @@ public:
       if (!seenScopes.insert(scope).second)
         continue;
       scope->walk([&](mlir::memref::AllocOp alloc) {
-        if (isWaferSPMMemRefType(alloc.getType()))
+        if (isWaferSPMMemRefType(alloc.getType()) &&
+            includeOperation(alloc.getOperation()))
           accountAllocation(alloc);
       });
       scope->walk([&](mlir::Operation *op) {
@@ -185,7 +186,8 @@ public:
           if (callee && !callee.isDeclaration())
             scopes.push_back(callee.getOperation());
         }
-        if (!mlir::isa<WaferInstructionOpInterface, SyncNCCJoinOp>(op))
+        if (!includeOperation(op) ||
+            !mlir::isa<WaferInstructionOpInterface, SyncNCCJoinOp>(op))
           return;
         for (mlir::Value value : op->getOperands())
           accountSPMValue(value);
@@ -201,7 +203,7 @@ private:
       return;
     SPMRootResolution roots = resolveSPMRoots(value);
     if (!roots.complete) {
-      degrade(metric, ScheduleCostKnowledge::Unknown,
+      degrade(metric, ScheduleCostKnowledge::Unavailable,
               ScheduleCostReason::UnsupportedSPMRoot);
       return;
     }
@@ -210,12 +212,14 @@ private:
   }
 
   void accountAllocation(mlir::memref::AllocOp alloc) {
+    if (!includeOperation(alloc.getOperation()))
+      return;
     if (!seenAllocs.insert(alloc.getOperation()).second)
       return;
     add(bufferCount, Quantity{1});
     auto offset = alloc->getAttrOfType<SPMOffsetAttr>(kWaferSPMOffsetAttrName);
     if (!offset) {
-      degrade(metric, ScheduleCostKnowledge::Unknown,
+      degrade(metric, ScheduleCostKnowledge::Unavailable,
               ScheduleCostReason::MissingAcceptedSPMOffset);
       return;
     }
@@ -228,8 +232,8 @@ private:
     std::optional<WaferPhysicalTensorInfo> physical =
         computeWaferPhysicalTensorInfo(alloc.getType());
     if (!physical || physical->physicalBytes < 0) {
-      degrade(metric, ScheduleCostKnowledge::Unknown,
-              ScheduleCostReason::UnknownPhysicalGeometry);
+      degrade(metric, ScheduleCostKnowledge::Unavailable,
+              ScheduleCostReason::UnavailablePhysicalGeometry);
       return;
     }
     uint64_t end = 0;
@@ -246,6 +250,7 @@ private:
   ScheduleCostMetric &metric;
   ScheduleCostMetric &bufferCount;
   const TargetScheduleCostPolicy &policy;
+  llvm::function_ref<bool(mlir::Operation *)> includeOperation;
   llvm::DenseSet<mlir::Operation *> seenAllocs;
 };
 
@@ -253,7 +258,15 @@ private:
 
 void collectSPMHighWater(mlir::Operation *root, InstructionProgramCost &cost,
                          const TargetScheduleCostPolicy &policy) {
-  SPMHighWaterAnalysis(cost, policy).run(root);
+  collectSPMHighWater(root, cost, policy,
+                      [](mlir::Operation *) { return true; });
+}
+
+void collectSPMHighWater(
+    mlir::Operation *root, InstructionProgramCost &cost,
+    const TargetScheduleCostPolicy &policy,
+    llvm::function_ref<bool(mlir::Operation *)> includeOperation) {
+  SPMHighWaterAnalysis(cost, policy, includeOperation).run(root);
 }
 
 } // namespace wafer::analysis::detail

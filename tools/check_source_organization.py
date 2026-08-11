@@ -18,10 +18,10 @@ INSTRUCTION_FAMILY_SOURCES = (
     "SyncOps.cpp",
 )
 TILE_REGION_TO_INSTR_SOURCES = (
-    "CollectiveLowering.cpp",
     "ComputeLowering.cpp",
     "MovementLowering.cpp",
     "MovementSupport.cpp",
+    "PeerLowering.cpp",
     "WaferTileRegionToInstr.cpp",
 )
 NUMERIC_SEMANTICS_SOURCES = (
@@ -32,15 +32,12 @@ NUMERIC_SEMANTICS_SOURCES = (
 )
 TENSOR_PROGRAM_TO_TILE_REGION_SOURCES = (
     "BidirectionalTiling.cpp",
-    "AttentionSemantics.cpp",
     "BodyEmitter.cpp",
     "CandidateMaterialization.cpp",
     "CandidateSupport.cpp",
     "CollectiveLowering.cpp",
-    "CompleteTraversal.cpp",
+    "DependentDataflow.cpp",
     "GenericLowering.cpp",
-    "MaterializeFlashAttention.cpp",
-    "MaterializeFlashDecoding.cpp",
     "NamedComputeLowering.cpp",
     "TensorControlFlowLowering.cpp",
     "TileMaterialization.cpp",
@@ -189,7 +186,7 @@ TARGET_ARTIFACT_SOURCES = (
     "TargetDeviceLink.cpp",
     "TargetLLVMTranslation.cpp",
     "TargetModuleReadback.cpp",
-    "TargetRankPreflight.cpp",
+    "PhysicalTilePreflight.cpp",
 )
 PACKAGE_MANIFEST_SOURCES = (
     "PackageManifest.cpp",
@@ -210,6 +207,22 @@ WAFER_RUN_SOURCES = (
     "WaferProfileCampaign.cpp",
     "WaferRunBoardIO.cpp",
     "wafer-run.cpp",
+)
+RETIRED_TILE_COLLECTIVE_PATHS = (
+    "include/Wafer/Analysis/CollectiveTopologyAnalysis.h",
+    "lib/Wafer/Analysis/CollectiveTopologyAnalysis.cpp",
+    "lib/Wafer/Conversion/WaferTileRegionToInstr/CollectiveLowering.cpp",
+)
+RETIRED_PROFILE_SCHEMA_MARKERS = (
+    "kProfileCompanionVariantsFileName",
+    "ProfileVariantPackage",
+    "ProfileVariantRole",
+    "ProfileVariantSiteMap",
+    "getProductionManifestDigest",
+    '"variants.json"',
+    '"variant_metadata"',
+    '"execution_packages"',
+    '"variant_id"',
 )
 STABLEHLO_NORMALIZATION_SOURCES = (
     "ConstantTensorFolding.cpp",
@@ -776,6 +789,30 @@ def check_tile_region_to_instr_owners(root: Path, errors: list[str]) -> None:
             errors,
             f"{facade_path} must orchestrate conversion, not define concrete patterns",
         )
+
+
+def check_retired_communication_and_profile_surfaces_removed(
+    root: Path, errors: list[str]
+) -> None:
+    for relative in RETIRED_TILE_COLLECTIVE_PATHS:
+        path = root / relative
+        if path.exists():
+            fail(errors, f"retired Tile collective source must not exist: {path}")
+
+    retired_markers = ("DTEProtocolPhase", *RETIRED_PROFILE_SCHEMA_MARKERS)
+    production_paths = (
+        root / "include/Wafer/IR/WaferAttrs.td",
+        root / "include/Wafer/Runtime/ProfileCompanion.h",
+        root / "lib/Wafer/Runtime/ProfileCompanion.cpp",
+        root / "lib/Wafer/Compiler/TargetPackagePublication.cpp",
+        root / "tools/wafer-run/WaferProfileCampaign.cpp",
+        root / "tools/wafer-run/wafer-run.cpp",
+    )
+    for path in production_paths:
+        text = read_required(path, errors)
+        for marker in retired_markers:
+            if marker in text:
+                fail(errors, f"{path} contains retired contract marker {marker}")
 
 
 def check_numeric_semantics_owners(root: Path, errors: list[str]) -> None:
@@ -1874,6 +1911,7 @@ def main() -> int:
     check_legacy_group_surfaces_retired(root, errors)
     check_instruction_owners(root, errors)
     check_tile_region_to_instr_owners(root, errors)
+    check_retired_communication_and_profile_surfaces_removed(root, errors)
     check_numeric_semantics_owners(root, errors)
     check_tensor_program_to_tile_region_owners(root, errors)
     check_legacy_task_local_selection_removed(root, errors)

@@ -16,8 +16,8 @@
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  version-matched hardware/runtime qualification identity、完整rank instruction program、typed buffer/view/range/effect、
-  worker/engine、async token、wait/fence、target module和runtime package。
+  version-matched hardware/runtime qualification identity、完整whole-card physical-Tile instruction programs、typed
+  buffer/view/range/effect、worker/engine、async token、wait/fence、target module和runtime package。
 - Current stage responsibility:
   用静态接口事实和fresh板端实验恢复会改变compiler legality、planning、lowering、completion或cost的
   硬件行为，并明确每条结论的证据范围。
@@ -25,9 +25,8 @@ Pipeline position:
   profile-scoped supported/observed/unknown/excluded能力边界及compiler消费规则；不产生新的program IR，
   不把case名、raw packet、历史输出或测量side table塞入production artifact。
 - Downstream consumer:
-  physical-dataflow candidate selection、layout/transfer realization、SPM/DDR planning、
-  instruction lowering、communication completion、runtime publication、verification、
-  Q38 multi-engine software pipelining和后续Q9 cost ranking。
+  whole-DAG spatial/temporal/fusion candidate selection、layout/transfer realization、SPM/DDR planning、
+  instruction lowering、communication completion、runtime publication和verification。
 - User-level driver / named pipeline:
   production使用现有source-to-bundle named pipeline；板端实验通过正常compile/package/run链路取证。
 - Explicit non-goals:
@@ -35,7 +34,7 @@ Pipeline position:
   不回放历史板端输出，不用管理面idle或单次counter代替execution/completion证据。
 - Completion gate:
   每个compiler-sensitive问题都有fresh板端结论，或有明确unknown/excluded边界及保守处理；
-  Q38不依赖未执行的Q37 case。
+  current whole-card scheduler不依赖未执行的Q37 case，也不恢复已删除的独立mechanism selector。
 ```
 
 ## 证据解释
@@ -57,7 +56,7 @@ compiler/CRT identity、worker/tile和PMU scope。PCI BDF、build目录和安装
 曾出现失败的实验在对应表格行中保留“初始症状 → fixture/oracle/ABI根因 → 修正后fresh结果”链路；
 只写最终通过会掩盖测试本身曾经测错了什么，只写旧失败又会把host错误误当成硬件行为。
 
-### Q39 bandwidth evidence levels
+### Bandwidth evidence levels
 
 NoC-resident profitability把final-IR work knowledge、静态point estimate和保守bound分成三层，不能因
 physical timing未校准就把可精确计数的工作量降成Unknown：
@@ -76,8 +75,8 @@ physical timing未校准就把可精确计数的工作量降成Unknown：
 - Direct-DTE每message `α = 10 us`、maximum modeled route每hop的route-fill prior `1 ns`以及
   instruction/event/wait control `1 ns`均为versioned compiler policy prior，不是板端测量或保守bound。
   历史Q39曾把SPM0/RAM_ACC的1024-bit接口与1 GHz相乘得到每tile `128 GB/s` point estimate；该数不是
-  SPM1 aggregate bandwidth。现存cost实现仍有该legacy term，Q49必须删除；终态不得用它给SPM驻留或
-  allocator候选计时。当前`α`有意惩罚小message；未来由同profile、
+  SPM1 aggregate bandwidth，当前cost实现已删除该term，不用于SPM驻留、allocator或候选计时。当前`α`有意
+  惩罚小message；未来由同profile、
   同participant、重复matched board measurement替换，而不是由论文或单次counter移植绝对常数。
 
 SPM1的静态硬件事实另行处理：每tile 3 MiB，由8个独立2048-bit bank和LSB-interleaved交换网络组成。
@@ -92,28 +91,31 @@ solve自然遇到、且hard outcome、actual high-water与search work完全相�
 不得另做query、扩展search node或post-solve relocation。当前校准没有给出可消费的
 port/stride conflict penalty，因此phase不得影响legality、resident/spill、`tile.region`或join。
 
-Q49终态hardware-cost selection同时消费fresh final IR的all-rank aggregate DDR、max-rank tile-local GS、max-rank
+Q49终态hardware-cost selection同时消费fresh final IR的whole-card aggregate DDR、max-Tile local GS、max-Tile
 steady/nonterminal/total participant completion及critical-path位置，并保留compute/recompute、NoC、Instr、descriptor/resource等
 exact work和当前校准的point/bound parameters；不含legacy SPM0/RAM_ACC flat duration。SPM1 exact movement按上述
-单bank nominal prior形成max-rank service envelope，并与DDR/NoC/compute service取资源最大值以避免对同一DMA重复计时；
-GS是SPM movement的可审计子集，不另加一遍duration。若其它在candidate间变化的主要维度没有qualified comparison parameter，
-该tradeoff保持不可比/`Unknown`，不得把Unknown当零。
+单bank nominal prior形成max-Tile service envelope，并与DDR/NoC/compute service取资源最大值以避免对同一DMA重复计时；
+GS是SPM movement的可审计子集，不另加一遍duration。若某个performance term没有qualified comparison
+parameter，在cohort开始时对全部candidate一致删除该term，不在单个candidate上保留`Unknown`或当零。
 没有current-IR+target capability共同qualified的multi-buffer时，已具备qualified duration的DDR、NoC和compute phases按
-dependency order串行计费；只有fixed-slot/multi-buffer recurrence、exact wait/reuse cut和capability均闭合时，steady state才取
-可并行resource maximum。GS和completion始终按上述max-rank作用域进入统一selection tuple，不会因其duration
-未校准而当作0。candidate nominal乘`1.20`
-仍小于baseline nominal时签发`EstimatedBenefit`并可进入normal selection；只有candidate conservative upper
-乘`1.20`小于baseline lower时才是`ProvenBenefit`。缺少sustained lower rate、route dilation、startup upper
-或hop-fill upper，只让对应upper保持Unknown，不再让point estimate或exact work变成Unknown；必要work仍为
-dynamic/unsupported或算术溢出时才`Indeterminate`。
+dependency order串行计费；只有selected whole-DAG candidate的actual multi-buffer recurrence、exact wait/reuse cut和
+capability均闭合时，steady state才取可并行resource maximum。GS和completion始终按上述max-Tile作用域
+进入统一selection tuple，不会因其duration未校准而当作0。所有exact-admitted candidate在同一个cohort中启用完全
+相同的数值term，直接按estimated makespan和稳定tie-break选优；不存在固定百分比margin、benefit等级、promotion
+分支或candidate-local fallback。缺少sustained lower rate、route dilation、startup upper或hop-fill upper时不构造
+该term；必要的hard resource、typed transport或算术可表示性失败仍只淘汰对应candidate。
 
 论文只提供模型结构：Stream-K支持work-centric decomposition并要求把seam/fixup计入总work；TileLink说明
 tile、resource binding和dependency signal共同决定compute/communication overlap；collective-capable NoC
 给出`α + nβ`、congestion/dilation及double-buffer steady-state resource maximum。论文平台的绝对cycle、
-bandwidth和startup数字均不进入TX81 profile。Q39仍需configured-board matched calibration/promotion与
-promotion winner的fresh correctness；静态`EstimatedBenefit`不代签这两个外部门禁。
+bandwidth和startup数字均不进入TX81 profile。current whole-card winner仍需fresh correctness；configured-board matched
+A/B是Q49完成所需的外部性能证据，不反向建立第二个compiler promotion接口。
 
 ## 硬件实验、行为结论与compiler价值
+
+下表保留的`rank`、`all-rank`、`16-rank`和旧status/schema名称都是实验发生时的board fixture与wire术语，
+仅用于解释原始证据；current compiler identity是`card_id`/`tile_id`/`launch_slot`，唯一package wire由
+`tasks/15`定义。表中任何历史名称都不是兼容reader、public API或spatial mapping合同。
 
 | 硬件问题 | 具体实验、参数与oracle | 实际板端观察 | 硬件行为总结 | 对compiler的价值 | 不能外推什么 |
 | --- | --- | --- | --- | --- | --- |
@@ -123,7 +125,7 @@ promotion winner的fresh correctness；静态`EstimatedBenefit`不代签这两�
 | Packet routing与inclusive range | 五类engine分别检查`inter_type`、worker编码、begin/end、byte/element单位和packet/register echo；host统一用半开range，在ABI边界转换inclusive end。NE同时比较prepared packet与issue后实际register range。 | CT/NE/RDMA/WDMA/TDMA已列routing/range均得到对应queue count和完整结果；worker1/2 CT映射与TDMA Memset范围另有独立正向。NE prepared packet的end可为0，execute路径会按shape重新物化end并写入实际register。 | Routing、worker和range是packet ABI字段，inclusive end只存在于目标边界；NE end是execute-time派生值，不是constructor完成时就固定的source fact。 | Instr lowering从typed worker/effect/range生成packet，host verifier用checked半开区间防off-by-one；需要验证NE range时读取issue后register而非prepared packet。 | 不从buffer名恢复角色，不把inclusive end传播到上层IR，不把prepared `end=0`误判成空range，也不外推未列kind的单位。 |
 | Documented queue depth | CT、NE、RDMA、WDMA按header pending depth `D=6`，TDMA按`D=4`分别执行单engine exact case。packet预先构造后立即释放builder，相邻`TsmExecute`间不插MMIO；window后才做matching wait、instruction count、完整结果、双侧guard和前后Add资格检查。 | 五类engine在documented `D`上均完整通过：count分别为6/6/6/6/4，result和guard零错误，terminal/cleanup正常。CT六次`execute_rc=1`、instruction delta=6、CT/full execution delta均为473 cycles，逐issue后control均为`0x100`；NE/RDMA/WDMA/TDMA的对应instruction delta为6/6/6/4，engine/full execution delta依次为492/2101/1578/292 cycles，blocking均为0。短请求在唯一control观察前已经排空。 | Static depth确实对应queue/register形状，但实验只证明总共提交D条能够完成；`control=0x100`和execution cycle只是完成后记录，没有观察到D条同时resident。 | Depth可以作为静态resource信息和安全校准点，不能直接成为pipeline window；这些cycle只用于证明counter scope与issue count相符。 | 不把`D`解释成最大outstanding、active occupancy或backpressure阈值，不把单次cycle写成latency cost。 |
 | Tight `D+1` | 经显式安全授权，对CT/NE/RDMA/WDMA连续提交7条、TDMA提交5条；保持单engine、独立地址/pattern、无逐issue MMIO、一次matching completion和全量oracle。 | 五个`D+1`向量均通过submission、count、result、guard和completion，blocking delta均为0，未污染会话。 | Documented depth不是一次完整submission/completion lifetime的总提交上限；硬件或runtime可在请求退休过程中接受超过静态pending storage的总提交量。 | Compiler不能用header depth截断整个program中的总指令数；应把window与完整lifetime区分。 | `D+1`完成不证明D+1同时resident，也不授权更深提交。 |
-| Queue saturation response | 对五类engine执行30个`D-1/D/D+1 × short/sustained` case；每个queue entry使用独立地址和pattern，检查count、每段结果、guard、deadline、terminal和cleanup。 | 30/30通过。Short和sustained均没有给出可复核的full/backpressure状态；最终control只反映完成后的queue状态。 | 当前record能证明有界总提交和bounded progress，不能观测瞬时resident数量或full响应。 | Q38从实际buffer lifetime、engine resource和dependency构造window，并对每个actual clone重新验证。 | 不继续通过加深packet数量“试出”full；缺的是观测面，不是case数量。 |
+| Queue saturation response | 对五类engine执行30个`D-1/D/D+1 × short/sustained` case；每个queue entry使用独立地址和pattern，检查count、每段结果、guard、deadline、terminal和cleanup。 | 30/30通过。Short和sustained均没有给出可复核的full/backpressure状态；最终control只反映完成后的queue状态。 | 当前record能证明有界总提交和bounded progress，不能观测瞬时resident数量或full响应。 | Whole-card scheduler从实际buffer lifetime、engine resource和dependency构造window，并对每个actual candidate重新验证。 | 不继续通过加深packet数量“试出”full；缺的是观测面，不是case数量。 |
 | Builder生命周期与issue间隔 | 旧CT边界probe曾保留全部`TsmNew` builder并在每次issue后读取多组MMIO；修正实验改为packet构造后立即`TsmDelete`，control读取紧邻`TsmExecute`。 | 旧5/6边界与timeout无法复现为稳定queue规则；修正后的D和D+1均正常。 | Host builder lifetime和观察间隔会改变连续提交路径，不能把受污染的timeout归因为硬件queue depth。 | Queue实验必须使用与production接近的packet lifetime和issue序列；host探针不能插入改变被测行为的观察。 | 不从旧issue6 timeout写静态queue限制，也不保存其cycle为cost。 |
 | Wrapper与prebuilt issue overhead | 同一RDMA+CT packet序列分别走one-shot wrapper和prebuilt路径，对backlog 2/4做serial/window paired sample；检查相同payload、count、result和guard。 | 旧样本曾显示prebuilt正excess，但current qualification中canonical CT→RDMA r4 excess为`[78,0,0]`、median 0，未稳定复现。 | Host构包/heap间隔可以影响短window是否在issue期间自然排空；旧差异不是稳定硬件能力。 | 不为“prepared issue”引入新IR语义；production capability只看current matched FU-union证据。 | 不把历史prebuilt收益写入cost，也不由wrapper差异推断queue或engine并行。 |
 | Contiguous address dependency | RAW/WAR/WAW/RAR分别覆盖exact、half-partial、adjacent，serial/window共24 case、72 sample；每个operand使用独立pattern，按逐段composition检查重叠区、未选operand、count和guard。 | 24 case全部通过。RAW/WAR/WAW在相邻issue间不插wait时按issue order得到正确composition；RAR也完成。 | Same-worker busytable能落实已经存在的有界地址依赖顺序；RAR没有数据冲突，其顺序可能只来自issue/resource。 | 从SSA use-def、MemoryEffects和半开range建立RAW/WAR/WAW edge并保持issue order；链内不逐edge wait。 | Hardware正确完成不允许删除IR edge，也不证明RAR可任意重排或产生overlap。 |
@@ -136,9 +138,9 @@ promotion winner的fresh correctness；静态`EstimatedBenefit`不代签这两�
 | Worker placement与bounded progress | Fixed-total placement 14 case、NE/RDMA progress 18 case、CT/RDMA × worker × low-2/high-6 outstanding 12 case，共44 case组成14个matched group；sentinel/concurrent固定同一physical slot，检查tail canary、join RC、idle和deadline。 | 14/14 matched group通过routing、结果、guard和bounded progress。 | Current worker placement可正确承载已测总工作量与backlog；record没有absolute per-worker timestamp或physical arbiter。 | Scheduler可使用worker作为typed placement维度，但不按编号写固定优先级或cost。 | 不声称worker公平、同时启动、固定仲裁或跨shape性能顺序。 |
 | Short cross-engine pairs | 五类engine的10个无序pair按r2/r4、A→B/B→A执行serial/window各3样本；含TDMA只做r2。每个样本检查per-engine count、result、guard、FU和blocking。 | Current短workload中多数pair的`Ea+Eb-FU` median为0；CT→RDMA与RDMA→CT canonical r4也为0。 | 短请求会在issue间隔内自然排空；零excess只说明该workload没有形成可观测窗口。 | Short pair只保留correctness和size control，不形成全局“硬件不能并行”结论。 | 不由零excess否定large/sustained overlap，也不把blocking=0解释为并行。 |
 | Expanded sustained overlap | 34个expanded pair先做strict correctness，再用四轮双buffer、same/cross-worker、A→B/B→A和三次重复比较serial/window global FU union。Same-worker覆盖五类engine的10个无序pair：含CT/NE的七组用16KiB，纯movement三组用64KiB；另加一个16KiB cross-worker CT+RDMA placement variant。每个lane都检查独立result、双侧guard、worker instruction count和final control。 | 34项全部正确。三次`Ea+Eb-FU`为：16KiB same-worker CT+NE `[382,534,537]`、CT+RDMA `[533,532,527]`、CT+WDMA `[540,536,544]`、CT+TDMA `[59,61,45]`、NE+RDMA `[1296,1529,1495]`、NE+WDMA `[1321,1246,1300]`、NE+TDMA `[603,605,605]`；16KiB cross-worker CT+RDMA `[534,531,537]`；64KiB RDMA+WDMA `[7740,7471,6981]`、RDMA+TDMA `[2782,2812,2799]`、WDMA+TDMA `[2669,2679,2680]`。这10个same-worker pair cell加1个cross-worker placement cell三次都为正且window plan更低。 | Cross-engine overlap是profile、pair、worker关系、transfer class、shape、address relation和issue order共同决定的窄能力。旧文中的“10个”只统计same-worker无序pair；把cross-worker variant也称为typed cell时总数应为11，二者不能混写。 | 这10个same-worker key和1个cross-worker placement key分别形成profitability-qualified evidence；candidate仍从typed instruction、range、dependency、completion及generic activation correctness判断legality，并保留真实双buffer。 | 不由“engine不同”自动重排，不外推未列shape/pair/relation，不把pair资格推成三路/五路group收益，也不把correctness、单次正值或cross-worker结果代签另一placement。 |
-| Generic single/pair engine activation | Raw single-engine组包含CT/NE/RDMA/WDMA/TDMA small/steady/movement cell及真实NE `m65/k129/n129` tail；pair侧10个engine pair按A-bound/balanced/B-bound、A→B/B→A、same/cross-worker和iteration组成360个board cell、60个完整activation group。每组按sample-major正/反/半程轮转并要求三次重复、per-engine/global-union PMU、full result/guard/count和唯一terminal。初版seed把`Fmt_INT8`错写为枚举值8，但version-matched ABI中INT8为0、8是UINT8，RDMA起始因此报`SEED_FAILED`；随后统一改为FP16 workload。 | 修正枚举事实源后，fresh single activation 1/1、pair activation 60/60 group通过；case key的`i2/i4/i8`是iteration而非dtype，payload为FP16。部分cell只有correctness/completion，没有稳定device方向。 | 旧seed失败是host enum错误，不是engine rate证据。Activation group证明已测调度和FP16 payload能够完成，并为后续同组比较建立一致scope；通过组数本身不是throughput或overlap。 | Q9只对方向稳定且measurement basis齐全的cell建rate/cost；Q38可复用其correctness合同；格式枚举只引用version-matched单一事实源。 | 不把60/60写成60组都有收益，不由group通过外推其它dtype、ratio或shape，更不能把错误I8/UINT8 seed当硬件结论。 |
+| Generic single/pair engine activation | Raw single-engine组包含CT/NE/RDMA/WDMA/TDMA small/steady/movement cell及真实NE `m65/k129/n129` tail；pair侧10个engine pair按A-bound/balanced/B-bound、A→B/B→A、same/cross-worker和iteration组成360个board cell、60个完整activation group。每组按sample-major正/反/半程轮转并要求三次重复、per-engine/global-union PMU、full result/guard/count和唯一terminal。初版seed把`Fmt_INT8`错写为枚举值8，但version-matched ABI中INT8为0、8是UINT8，RDMA起始因此报`SEED_FAILED`；随后统一改为FP16 workload。 | 修正枚举事实源后，fresh single activation 1/1、pair activation 60/60 group通过；case key的`i2/i4/i8`是iteration而非dtype，payload为FP16。部分cell只有correctness/completion，没有稳定device方向。 | 旧seed失败是host enum错误，不是engine rate证据。Activation group证明已测调度和FP16 payload能够完成，并为后续同组比较建立一致scope；通过组数本身不是throughput或overlap。 | Current cost只消费方向稳定且measurement basis齐全的cell；whole-card candidate可复用其correctness合同；格式枚举只引用version-matched单一事实源。 | 不把60/60写成60组都有收益，不由group通过外推其它dtype、ratio或shape，更不能把错误I8/UINT8 seed当硬件结论。 |
 | 4KiB RDMA+WDMA window | Far-disjoint、exact、half-partial分别按A→B/B→A执行六组serial/window，每组三次重复并检查composition、count和guard。 | 六组FU excess均为0，但window plan降低约490--890 cycles。 | 该size下没有engine execution重叠证据，但减少中间issue/wait仍可降低host/plan开销。 | 允许形成无中间wait的有界window，并独立签发drain-elision收益；cost中的engine-overlap贡献必须为0。即使group overlap为Unknown，严格减少合法blocking drain也可单独参与selection。 | 不把plan降低写成DMA并行，不外推更大payload或其它relation。 |
-| Double-slot reuse | SPM lifetime case覆盖single iteration、双slot偶数4轮、双slot奇数5轮；另有手写16KiB movement/compute/writeback双slot观察，检查每轮pattern、最后tail、guard和completion。 | 已测slot轮转、奇偶iteration和final result正确。 | Buffer reuse的正确性来自真实allocation/view、SSA lifetime、RAW/WAR/WAW edge和domain completion，不来自slot名字。 | Q38必须物化真实multi-buffer和prologue/steady/epilogue；单/奇/偶iteration均需actual-clone验证。 | 手写双slot不代签production three-stage producer，也不证明任意slot数或stage balance。 |
+| Double-slot reuse | SPM lifetime case覆盖single iteration、双slot偶数4轮、双slot奇数5轮；另有手写16KiB movement/compute/writeback双slot观察，检查每轮pattern、最后tail、guard和completion。 | 已测slot轮转、奇偶iteration和final result正确。 | Buffer reuse的正确性来自真实allocation/view、SSA lifetime、RAW/WAR/WAW edge和domain completion，不来自slot名字。 | Whole-card candidate若选择multi-buffer，必须直接物化prologue/steady/epilogue；单/奇/偶iteration均需actual-clone验证。 | 手写双slot不代签production three-stage producer，也不证明任意slot数或stage balance。 |
 | Queue active/full边界 | 对D、D+1、sustained和worker backlog记录control、count、blocking和deadline；较长D+1对五类engine各重复3次，在最后一次issue后立即读control，再做matching completion和全量result/guard。 | 15个较长D+1样本在紧邻issue的观察点都尚未task-done，随后全部正确完成且blocking=0，说明观察点至少仍有active request；短向量则常在观察前排空。Current record没有head/tail、resident count、full或backpressure字段。 | Active work可以被区分，但同时resident数量和full响应属于当前观测面无法回答的unknown，不是尚未多跑几个case。 | 保守window由resource/lifetime约束；不在IR或cost中伪造occupancy。 | 不创建更深危险case，不把task完成、control值、总提交数或blocking=0代签resident。 |
 | SPM capacity/reservation | 从current 3MiB SPM及普通allocation区间`[0x10000, 0x2F0000)`推导最高合法256B block、allocation边界、跨界1 block和保留区相邻block；正向做RDMA→SPM→WDMA round-trip，负向只走planner/verifier。 | 4个boundary/held-out正向通过result、count和guard；6个越界/保留区输入被static-negative拒绝。 | Allocatable SPM边界可以由profile静态表达并在边界正向验证；危险范围不需要发板。 | Static packing使用profile容量和reservation，host以半开range做checked legality。 | 不探测未知保留区，不由current profile区间外推其它SKU。 |
 | SPM evidence inventory | Typed SPM catalog共146个row：24个本地board、10个static-negative、112个delegated。Delegated中5个由DataMove physical-layout case提供，107个由current memory-descriptor矩阵提供；本地部分覆盖capacity、11个offset、64KiB transfer、single/双slot奇偶lifetime和五个nonpreferred geometry。 | 24个本地row、5个DataMove-backed row和107个memory-backed row均有对应板端证据；10个negative只处理真实reservation/range非法、缺dependency/completion、悬空view和capacity不足。 | SPM能力由多个真实consumer共同闭合，delegation必须指向具体case和同一range/layout合同，不能只写“邻近测试覆盖”。 | Compiler消费具体owner的allocation、layout、effect和completion证据，不维护第二套SPM语义。 | 146是证据inventory，不是任意SPM访问白名单，也不产生bank或cost结论。 |
@@ -187,23 +189,23 @@ promotion winner的fresh correctness；静态`EstimatedBenefit`不代签这两�
 | Direct DTE ordered lifecycle | 16-rank receiver-first覆盖NCC producer→local drain→DTE、DTE receive→event wait→NCC consumer、local-first/DTE-first、event后source/destination复用；每rank检查SPM source/receive/compute、DDR output、guard、participant、status和terminal。 | 修复后的64-element production baseline exact；modes1--6和有序交互均完成payload、status和cleanup。 | DTE是独立completion domain；source可读、destination可见、NCC drain、DTE terminal和host publication不是同一事件。 | 用显式event/token/wait表达producer、transport、consumer和reuse。 | 不以send返回、NCC wait、barrier或host返回代替DTE terminal。 |
 | DTE同步错误与恢复 | Modes7/12分别提前复用source/destination，mode8 invalid FSM，mode9 wait未知event；每个错误要求shadow TRANSPORT_ERROR、正常runtime terminal和cleanup。Receiver未prepare的mode13只做一次危险边界观察。 | Modes7/8/9/12得到预期错误并clean success；mode13 host timeout并污染context。 | 部分协议错误有owner-backed status和可恢复cleanup；receiver缺失可能永久阻塞，不能当普通negative发板。 | 可恢复错误按typed runtime status拒绝；receiver未prepare在submission前fail closed。 | 不重复mode13，不把timeout后的idle管理面当恢复。 |
 | DTE raw async window | Modes10--11的serial/window各3 samples × 16 ranks，在send/wait间发独立CT；检查DTE/CT结果、返回码、guard和cleanup。 | 全部correctness通过，返回码为0；没有可信共同device time base。 | 独立CT可合法放在send/wait之间，但correctness只证明调用顺序和buffer独立，不证明时间重叠。 | Scheduler可保留显式async region和event依赖；cost收益保持unknown。 | 不从host elapsed或返回码宣称DTE/CT overlap。 |
-| DTE payload counter sweep | Modes1--6分别用16/32/64/256/4096B active payload，固定4KiB slot其余保持poison，共30个full-card case；逐rank保存channel0/1 transfer/execution和SPM T2/T3 split counter。 | 30/30通过expected、guard、status和cleanup。Channel0 transfer median在每个mode内严格随payload增长，modes1--4 scale1、5--6 scale2；execution raw非单调，SPM PMU未enable。 | DTE transfer counter可作当前profile内相对传输量代理；execution不能作latency，未启用的SPM样本inconclusive。 | Q9可使用同mode相对payload趋势，但必须保留scope/enable和correctness gate。 | 不命名绝对单位，不比较不同mode为带宽，不用execution raw写cost。 |
+| DTE payload counter sweep | Modes1--6分别用16/32/64/256/4096B active payload，固定4KiB slot其余保持poison，共30个full-card case；逐rank保存channel0/1 transfer/execution和SPM T2/T3 split counter。 | 30/30通过expected、guard、status和cleanup。Channel0 transfer median在每个mode内严格随payload增长，modes1--4 scale1、5--6 scale2；execution raw非单调，SPM PMU未enable。 | DTE transfer counter可作当前profile内相对传输量代理；execution不能作latency，未启用的SPM样本inconclusive。 | Current cost可使用同mode相对payload趋势，但必须保留scope/enable和correctness gate。 | 不命名绝对单位，不比较不同mode为带宽，不用execution raw写cost。 |
 | DTE broadcast | Fanout 2/4/8/15分别测adjacent和interleaved destination order，共8项；`dest_num=fanout-1`表示zero-based final active slot，每个destination独立pattern和guard。 | 8/8通过payload、nonparticipant、status、terminal和cleanup。 | Current raw broadcast支持已列multi-destination fanout与两种destination ordering。 | Transport lowering按typed destination list计算`dest_num`和participant。 | 不外推其它fanout、跨卡、route或时间收益。 |
 | DTE scatter | 与broadcast相同fanout/order矩阵，设置`sg_flag=1`，每个destination取得不同source segment并检查未参与rank。 | 8/8通过mapping、guard、status和cleanup。 | Scatter是multi-destination分段分发，不是broadcast的同payload别名。 | Lowering显式表示segment→destination mapping和source span。 | 不外推ragged segment、same-buffer alias或未列order。 |
 | DTE source-gather（raw shuffle） | 固定单目的`dest_num=0`、element 128B、source stride 256B、sections 2/4/8/15、target1/8，共8项；检查每个source section和target拼接。 | 8/8通过payload、guard、nonparticipant、status和cleanup。 | 名为shuffle的raw功能实际是多个source section到一个target的1D strided gather，不是multi-destination shuffle或AllToAll。 | 单目标source gather单独建typed capability；AllToAll使用collective traffic schedule。 | 不外推multi-destination、permutation、route、8/15源fanin或跨卡。 |
 | DTE fan-in | Current receiver protocol下执行四个source到一个target，source使用独立rank/lane sentinel，检查target composition和其它rank canary。 | 四源fan-in通过完整payload、guard和lifecycle。 | Current protocol可承载四源fanin；source数是已验证边界的一部分。 | 只对四源typed fanin准入。 | 8/15源fanin、device phase、physical route和跨卡transport保持fail closed。 |
-| Full-card barrier | 16 rank复用同一`hrt_barrier`两个epoch，epoch1按rank递增错峰、epoch2反向；每rank写rank-specific marker并检查crosstalk、terminal。静态审计实现固定观察16个slot。 | 两轮16/16 marker正确、0 mismatch/crosstalk，wait方向随错峰反转。 | Current primitive是16-rank full-card barrier，不是任意participant mask barrier。 | 只开放16-rank full-card participant集合，structured backedge保留完整join。 | 1/2/4/8/15 subgroup在compile/submission前拒绝，不发缺participant packet。 |
+| Full-card barrier | 16 rank复用同一`hrt_barrier`两个epoch，epoch1按rank递增错峰、epoch2反向；每rank写rank-specific marker并检查crosstalk、terminal。静态审计实现固定观察16个slot。 | 两轮16/16 marker正确、0 mismatch/crosstalk，wait方向随错峰反转。 | Current qualified hardware primitive是16-participant full-card barrier；`16-rank`只是fixture术语，不是compiler rank domain。 | 只开放完整physical-Tile participant集合，structured backedge保留完整join。 | 1/2/4/8/15 subgroup在compile/submission前拒绝，不发缺participant packet。 |
 | AllGather Direct/Ring | 固定16 rank、FP16、同placement/ABI，payload 256B/4KiB/64KiB共3 case。Direct逐rank验证15-peer cyclic round；Ring验证前后继、P-1轮、round→forwarded-slice和单一16-rank cycle；sentinel编码source rank、slice和lane。 | 3/3通过accepted Instr完整message tuple、每rankconcat、status-v2、terminal和cleanup。 | Current Direct和Ring AllGather schedule在三种payload上correctness成立。 | Compiler可生成已验证结构，并用send/recv tuple一一抵消的verifier约束。 | 不产生算法winner、latency或带宽，不外推rank数、dtype、ragged payload。 |
 | ReduceScatter Direct/Ring | 16 rank、FP16、256B/4KiB/64KiB。Direct验证source-round/destination-slice owner exchange；Ring验证P-1 chunk round和slice递推。每个source contribution不同，mutation gate逐一删除/替换应改变destination。旧256B case错误使用I8通信workload；旧Direct还让多个send共享只保留一个live sender root。 | I8结果从通信算子覆盖中撤销；改为FP16后3/3通过每rank destination slice、全部source贡献、message tuple和lifecycle。Direct root lifetime改成逐send matching wait后由fresh输出通过；整个FP16 collective algorithm矩阵为9/9。 | Current FP16 Direct/Ring ReduceScatter结构和归约数据流正确；sender root lifetime需要matching completion。I8 fixture和one-live-sender失败都不能归因为I8通信能力或transport本身。 | Lowering保留逐send/root-isolation合同和typed contribution mapping；训练通信qualification以FP16/BF16为主。 | 不由旧I8 case代签，不产生cost，不外推归约顺序敏感值、其它dtype或alias。 |
-| AllReduce Ring/ordered Tree | 16 rank、FP16、256B/4KiB/64KiB。Ring验证2(P-1)两阶段round/slice递推；Tree验证15条reduce边、reverse broadcast、child/depth、单root、无环、二叉及rank-group inorder。64KiB loop按constant multiplicity计算executed bytes。 | 3/3通过16份replicated exact output、完整message tuple、status和cleanup。初版mod-256 sentinel因归约退化成32B周期被mutation audit拒绝，改hash后fresh 9/9总矩阵闭合。 | Current Ring和ordered Tree schedule均具备correctness资格；sidecar必须描述实际executed multiplicity。 | Compiler可选择两种已验证结构，但winner需Q9 cost；verifier检查tree/ring topology与message matching。 | 不由correctness排序算法，不外推其它rank/dtype/shape或未计loop multiplicity。 |
+| AllReduce Ring/ordered Tree | 16 rank、FP16、256B/4KiB/64KiB。Ring验证2(P-1)两阶段round/slice递推；Tree验证15条reduce边、reverse broadcast、child/depth、单root、无环、二叉及rank-group inorder。64KiB loop按constant multiplicity计算executed bytes。 | 3/3通过16份replicated exact output、完整message tuple、status和cleanup。初版mod-256 sentinel因归约退化成32B周期被mutation audit拒绝，改hash后fresh 9/9总矩阵闭合。 | Ring和ordered Tree结构在该历史fixture内具备correctness资格；当时的record描述实际executed multiplicity，不是current sidecar合同。 | Whole-card candidate可选择经当前IR表达和验证的结构，winner由统一cost决定；verifier检查tree/ring topology与message matching。 | 不由correctness排序算法，不外推其它participant count、dtype、shape或未计loop multiplicity。 |
 | AllToAll/Permute traffic | 11个FP16 structured case覆盖3个AllToAll payload、3个Permute forward-cycle，以及reverse、opposite-pairs、disjoint-pairs、sparse roles和two-epoch chain；检查source graph、zero-fill、status和cleanup。 | 11/11通过全rank mapping。 | Current Direct-DTE schedule能承载已列traffic semantics；这不是新的raw primitive或算法A/B。 | 使用typed collective/traffic IR表达source→destination和participant。 | 不外推ragged AllToAll、same-physical-buffer alias、跨卡或cost。 |
-| Collective runtime status gap | 该历史board evidence使用schema-v6 manifest，要求16个rank各有唯一64B aligned `transport_status`、`wafer-direct-dte-status-v2`和16个matching entry_return；current唯一package wire已由tasks/15升级为schema-v7并保留同一status约束。BoardRuntime在发布output前D2H并要求全部Success。 | Runtime强制all-rank success，但`wafer-run` stdout尚不导出逐rankraw `(resource,status ABI,value)`。 | Enforced success和host独立观察是不同证据强度；schema-v6只标记当时证据，不是current wire。 | Current schema-v7 manifest/package verifier保留status storage、watchdog和terminal合同；文档不伪称观察到16条raw Success。 | 若promotion要求逐rankraw status，必须扩runtime output surface，不能从总成功外推。 |
-| Host launch/runtime lifecycle | Kernel/model以及16-rank path使用同package schema，按ordered launch→completion→D2H→cleanup执行；success要求完整output、terminal schema、transport status enforcement和资源回到基线。Failure由外层bounded timeout停止。 | 已有kernel/model和16-rank路径按各自owner证据board-observed/supported；错误或不完整readback会失败并quarantine。 | Device execution、runtime publication和resource cleanup共同构成一次可消费launch，不能只看device packet。 | BoardRuntime保持typed launch kind、terminal、D2H和cleanup gate；compiler package携带唯一entry/phase/status合同。 | 不把host process退出、管理面idle或部分stdout当成功，不由kernel path外推model/collective ABI。 |
-| NCC PMU basis | 单engine校验instruction count、engine execution、global FU union、worker scope和high-low-high稳定读取；pair同时保存serial/window、repeat ordinal、issue order和profile identity。 | Count能确认实际发射；只有部分expanded cell的FU union形成稳定正excess。Single execution与blocking不稳定。 | Counter各自回答有限问题：count是发射数，FU union可区分功能单元窗口；它们不是统一cycle模型。 | PMU先用于资格和归因，只有matched、重复、correctness通过的样本进入Q9。 | 不用单次execution、blocking=0或host elapsed写固定latency。 |
+| Collective runtime status gap | 该历史board evidence使用schema-v6 manifest，要求16个rank各有唯一64B aligned `transport_status`、`wafer-direct-dte-status-v2`和16个matching entry_return；这些是当时的vendor/runtime证据，不是current wire。tasks/15定义的唯一current schema-v8改以显式card/tile identity和Tile-scoped status表达同一类status约束。BoardRuntime在发布output前D2H并要求全部required status为Success。 | Runtime强制全部required Tile status成功，但`wafer-run` stdout尚不导出逐 Tile raw `(resource,status ABI,value)`。 | Enforced success和host独立观察是不同证据强度；schema-v6只标记当时证据，不是current wire。 | Current schema-v8 manifest/package verifier保留status storage、watchdog和`return_after_local_drain` completion合同；文档不伪称观察到16条raw Success。 | 若promotion要求逐 Tile raw status，必须扩runtime output surface，不能从总成功外推。 |
+| Host launch/runtime lifecycle | 历史kernel/model与16-participant fixture按各自当时的package schema执行ordered launch→completion→D2H→cleanup；success要求完整output、completion/status和资源回到基线。Failure由外层bounded timeout停止。 | 对应历史路径按各自owner证据board-observed/supported；错误或不完整readback会失败并quarantine。 | Device execution、runtime publication和resource cleanup共同构成一次可消费launch，不能只看device packet。 | Current BoardRuntime只消费schema-v8 typed launch、completion、D2H和cleanup合同；历史package schema不提供兼容入口。 | 不把host process退出、管理面idle或部分stdout当成功，不由历史kernel path外推current model/collective ABI。 |
+| NCC PMU basis | 单engine校验instruction count、engine execution、global FU union、worker scope和high-low-high稳定读取；pair同时保存serial/window、repeat ordinal、issue order和profile identity。 | Count能确认实际发射；只有部分expanded cell的FU union形成稳定正excess。Single execution与blocking不稳定。 | Counter各自回答有限问题：count是发射数，FU union可区分功能单元窗口；它们不是统一cycle模型。 | PMU先用于资格和归因，只有matched、重复、correctness通过的样本才可进入current whole-card cost。 | 不用单次execution、blocking=0或host elapsed写固定latency。 |
 | SPM PMU与TMNOC | SPM sustained读取owner-backed port0/6 T2/T3并检查enable/scope、counter稳定和matched WDMA readback。TMNOC仅有base address，无decoded只读offset。 | SPM counter可读且随已测workload活动；没有把counter归因到某个physical bank/port，也没有校准phase conflict penalty。TMNOC未上板读取。 | 官方设计已给出SPM1的8-bank/16-port/LSB-interleaving结构，但可读取aggregate counter不等于恢复精确arbiter、stride压力或DIDT条件。 | Q49 allocator只可在单次solve自然遇到、且hard outcome/high-water/search work完全相同的placement中用coarse phase作末级tie-break；SPM PMU只作为未来actual-address penalty measurement basis，TMNOC保持static-negative。 | 不把counter命名成具体bank/port，不读未解码寄存器，不把aggregate counter或raw envelope直接写成固定cost/hard legality。 |
 | SCALAR/CSR ordinary issue | 审计current ABI是否存在可由`TsmExecute`承载的SCALAR/CSR普通queue type；没有typed constructor、packet field或owner-backed执行合同。 | Current ABI没有安全正向入口，未发送猜测packet。 | Header/寄存器名字不足以构造普通issue能力；缺typed surface时应静态拒绝。 | SCALAR/CSR ordinary issue保持`excluded`，不进入scheduler或board inventory。 | 不从邻近engine编码、反汇编片段或未知packet试探能力。 |
-| Production three-stage producer | Catalog列出90个RDMA→CT/NE→WDMA正向three-stage cell和19个capacity/alias/provenance负例；compiler-owned qualification sibling从final accepted Instr绑定真实fixed-slot rotation、typed worker、completion和package manifest，手写16KiB双slot只作负对照。 | Production fixed-slot multi-buffer producer、typed worker、host exact、package、target model和no-card gate已经闭合；90个正向cell等待configured-board fresh qualification，19个结构负例由host exact gate拥有，当前没有board correctness结论。 | Raw adapter、手写packet或untimed model不能代签software-pipeline IR、prologue/steady/epilogue、actual-clone资源合同或真实板端winner correctness。 | 保留compiler-owned candidate和manifest-bound qualification；下一门禁只在configured board上对同源baseline/winner做fresh、bounded correctness。 | 不把catalog存在、手写双slot、host/model结果或既有overlap白名单当作board通过。 |
-| Production optimizer paired qualification | 同一source/profile发布reserved baseline与production winner，要求最终ELF结构不同、两包完整CPU expected、guard、terminal和A/B平衡顺序；覆盖common-factor、reciprocal、resident share/recompute、ready-order、GEMM和tree AllReduce等8 pair，另复用Direct-DTE vertical。 | 8/8 paired和Direct-DTE vertical通过统一FP16合同与完整package/board lifecycle。 | Microcase结论只有进入真实source→IR→package→board链路，才能证明compiler选择没有破坏语义；qualification不反向改变legality。 | Q38每个actual clone都重过SPM/DDR、Instr、Target、package和fresh board correctness gate。 | 不外推全部optimization、shape、dtype或cost，未产生production IR的能力不靠raw case代签。 |
+| 历史three-stage producer证据 | 已退役catalog曾列出90个RDMA→CT/NE→WDMA正向three-stage cell和19个capacity/alias/provenance负例，并以旧fixed-slot、worker和ready-order独立候选验证host/package/model mechanics。 | 这批资产未形成configured-board correctness结论；对应public headers、sources、CMake entries、tests和catalogs已随旧owner删除。 | 证据只说明multi-buffer、worker、completion和package mechanics曾可表达，不代表current compiler仍有这些selector或production candidate。 | 如whole-card search选择这些mechanics，必须由同一whole-DAG candidate直接物化actual IR，再重过完整下游gate。 | 不恢复旧catalog、独立selector、compatibility wrapper或only-for-it tests；不把旧host/model结果当作当前board通过。 |
+| 历史optimizer paired qualification | 旧production pipeline从同一source/profile发布baseline与winner，要求最终ELF结构不同、两包完整CPU expected、guard、completion和A/B平衡顺序；当时覆盖8 pair和Direct-DTE vertical。 | 当时8/8 paired和Direct-DTE vertical通过统一FP16合同与完整package/board lifecycle。 | 证据仅证明当时已materialize的IR未破坏语义，不为已删除的ready-order/fixed-slot/worker独立owner提供current资格。 | current whole-DAG shortlist中的每个actual candidate都必须从其fresh IR重过SPM/DDR、Instr、Target、package和新的board correctness gate。 | 不回放历史输出，不由这批证据宣称当前whole-card search的全部optimization、shape、dtype或cost已闭合。 |
 | Timeout与execution context | Native TDMA BOOL、错误native Concat `dims=HW`、合同外VuVLoop和无owned range的64KiB WDMA诊断分别出现不可靠completion；timeout后观察管理面并尝试known-good路径，独立clean session再测合法packet。 | 管理面可能显示idle、0%和无进程，但同session后续Add仍可能timeout/数值错误；clean session合法unit64和Add正常。 | Inventory/accounting健康不等于execution context健康；错误packet可污染会话，不能当普通case失败重试。 | 首个timeout立即停批，不自动retry/reset/power；新session只用一次ordinary Add资格。危险packet从测试和production删除。 | 不用结尾heartbeat恢复旧证据，不把timeout case保留为“隔离测试”，不从邻近enum猜能力。 |
 
 ## 从实验中提炼出的硬件模型
@@ -226,21 +228,21 @@ promotion winner的fresh correctness；静态`EstimatedBenefit`不代签这两�
 7. 当前unknown主要来自观测面，而不是没跑。Queue resident/full、wait排他scope、SPM bank/port penalty、
    physical route、absolute worker timestamp和DTE device phase都缺owner-backed字段；Q37已用保守compiler处理闭合。
 
-## 对Q38和后续工作的约束
+## 对current whole-card scheduling的约束
 
-- Q38从完整rank instruction program的真实dependency DAG出发，物化真实multi-buffer、
-  prologue/steady/epilogue和resource lifetime，不建立影子schedule。
+- Whole-card scheduler从完整physical-Tile instruction DAG的真实dependency出发；若选择multi-buffer，
+  prologue/steady/epilogue和resource lifetime必须直接物化在同一actual candidate中，不建立影子schedule。
 - Same-worker依赖保持issue order且不逐edge wait；包括跨迭代slot reuse在内的ordinary NCC chain不物化
-  `TsmWaitfinish`。Q38 normal form要求zero-avoidable/zero-steady-state waitfinish；只有Kcore、Direct DTE
-  source、cross-worker hazard、host-observed writeback或terminal等IR可证明的真实domain exit才在
-  minimum-strength、latest-unavoidable位置显式join真实participant，并尽量跨slot/batch摊销。
+  `TsmWaitfinish`。只有Kcore、Direct DTE source、cross-worker hazard、host-observed writeback或completion
+  boundary等IR可证明的真实domain exit才在minimum-strength、latest-unavoidable位置显式join真实participant，
+  并尽量跨slot/batch摊销。
 - Pipeline window由buffer、SPM、engine和dependency共同约束，不使用header queue depth。cross-engine
   correctness由typed instruction、range、dependency、completion和generic activation合同决定；表中10个same-worker
-  pair与1个cross-worker placement key只签发窄profitability，收益Unknown的合法candidate仍可进入bounded
-  qualification，但不能凭伪造收益成为production winner。
+  pair与1个cross-worker placement key只证明对应行为边界，不建立独立profitability接口。未校准的performance term
+  对整个cohort删除；candidate可因legality进入bounded shortlist，但不能凭伪造收益成为production winner。
 - Raw Direct-DTE async correctness不能代签current production sender overlap：现行TargetCall send只prepare，
-  真实`send_async`发生在wait路径。Q38只有在typed DTE issue与exact wait/release、CRT及model issue point同批
-  闭合后，才能生成DTE+NCC overlap candidate。
+  真实`send_async`发生在wait路径。只有typed DTE issue与exact wait/release、CRT及model issue point同批
+  闭合后，whole-card scheduler才能生成DTE+NCC overlap candidate。
 - Planner不做DDR coloring或hard SPM bank coloring，不写伪latency，不扩大default wait scope；Q49 SPM allocator
   只可在单次fixed-capacity solve自然遇到、且hard outcome、actual high-water与search work均相同的
   placements之间使用offset-derived bank phase最后tie-break，不新增query/search/relocation，且不得

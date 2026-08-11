@@ -25,10 +25,41 @@ uint64_t readU64(const std::vector<uint8_t> &bytes, size_t offset) {
   return value;
 }
 
-wafer::runtime::Tx81ModelTensorDescriptor tensor(
-    wafer::runtime::Tx81ModelTensorClass tensorClass, int64_t rank,
-    uint64_t slot, uint64_t address) {
-  return {tensorClass, rank, slot, address, 64, "f32", {16}};
+wafer::runtime::Tx81ModelTensorDescriptor
+tensor(wafer::runtime::Tx81ModelTensorClass tensorClass, int64_t tile,
+       uint64_t slot, uint64_t address, int64_t launchSlot = -1) {
+  if (launchSlot < 0)
+    launchSlot = tile;
+  return {tensorClass,
+          wafer::PhysicalCardId(0),
+          wafer::PhysicalTileId(tile),
+          wafer::LaunchSlotId(launchSlot),
+          slot,
+          address,
+          64,
+          "f32",
+          {16}};
+}
+
+TEST(Tx81ModelABITest, AcceptsExplicitNonIdentityPhysicalTileBinding) {
+  using namespace wafer::runtime;
+  llvm::Expected<Tx81ModelBootParamImage> image = buildTx81ModelBootParam(
+      {tensor(Tx81ModelTensorClass::Input, /*tile=*/1, /*slot=*/0,
+              /*address=*/0x1000, /*launchSlot=*/0),
+       tensor(Tx81ModelTensorClass::Output, /*tile=*/1, /*slot=*/1,
+              /*address=*/0x2000, /*launchSlot=*/0)},
+      0x3000);
+  ASSERT_TRUE(static_cast<bool>(image)) << llvm::toString(image.takeError());
+
+  llvm::Expected<Tx81ModelBootParamImage> conflicting = buildTx81ModelBootParam(
+      {tensor(Tx81ModelTensorClass::Input, /*tile=*/1, /*slot=*/0,
+              /*address=*/0x1000, /*launchSlot=*/0),
+       tensor(Tx81ModelTensorClass::Output, /*tile=*/0, /*slot=*/1,
+              /*address=*/0x2000, /*launchSlot=*/0)},
+      0x3000);
+  ASSERT_FALSE(static_cast<bool>(conflicting));
+  EXPECT_NE(llvm::toString(conflicting.takeError()).find("not one-to-one"),
+            std::string::npos);
 }
 
 TEST(Tx81ModelABITest, BuildsCanonicalParameterFreeBootParam) {
@@ -64,10 +95,8 @@ TEST(Tx81ModelABITest, BuildsCanonicalParameterFreeBootParam) {
 
 TEST(Tx81ModelABITest, RejectsUnqualifiedTensorContracts) {
   using namespace wafer::runtime;
-  auto parameter =
-      tensor(Tx81ModelTensorClass::Parameter, 0, 0, 0x1000);
-  auto qualifiedInput =
-      tensor(Tx81ModelTensorClass::Input, 0, 1, 0x1800);
+  auto parameter = tensor(Tx81ModelTensorClass::Parameter, 0, 0, 0x1000);
+  auto qualifiedInput = tensor(Tx81ModelTensorClass::Input, 0, 1, 0x1800);
   auto output = tensor(Tx81ModelTensorClass::Output, 0, 1, 0x2000);
   llvm::Expected<Tx81ModelBootParamImage> rejected =
       buildTx81ModelBootParam({parameter, qualifiedInput, output}, 0x3000);

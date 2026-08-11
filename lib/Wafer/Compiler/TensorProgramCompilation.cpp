@@ -18,7 +18,7 @@ namespace wafer::compiler::detail {
 template <typename ProductT, typename BuilderT>
 static llvm::Expected<ProductT> compileTensorProgram(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
-    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLogicalRank,
+    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
     BuilderT &&builder) {
   auto fail = [&](llvm::StringRef message) -> llvm::Error {
     reject(diagnostics, message);
@@ -62,34 +62,33 @@ static llvm::Expected<ProductT> compileTensorProgram(
   if (mlir::failed(verifyProgramDirectoryMetadata(
           *tensorModule, tensorProgramDirectory, diagnostics, &program)))
     return fail("tensor program metadata verification failed");
-  if (program.logicalRankCount != executionConfig.getRankCount())
-    return fail("typed program rank domain does not match ExecutionConfig");
+  if (program.numPartitions != executionConfig.getNumPartitions())
+    return fail(
+        "typed program card-partition domain does not match ExecutionConfig");
   if (program.parameters.size() != program.programParameterCount ||
       program.constants.size() != program.programConstantCount)
     return fail("typed program resources do not cover all parameters and "
                 "constants");
 
   return builder(context, *tensorModule, std::move(program), executionConfig,
-                 diagnostics, failAfterLogicalRank);
+                 diagnostics, failAfterLaunchSlot);
 }
 
 llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank,
-    WholeVariantSelectionMode selectionMode) {
+    std::optional<int64_t> failAfterLaunchSlot) {
   return compileTensorProgram<ExecutableBundle>(
       tensorProgramDirectory, executionConfig, diagnostics,
-      failAfterLogicalRank,
-      [selectionMode,
-       optimizations](std::shared_ptr<mlir::MLIRContext> &context,
+      failAfterLaunchSlot,
+      [optimizations](std::shared_ptr<mlir::MLIRContext> &context,
                       mlir::ModuleOp tensorModule,
                       frontend::FrontendProgramVerificationResult program,
                       ExecutionConfig config, llvm::raw_ostream &output,
-                      std::optional<int64_t> failRank) {
+                      std::optional<int64_t> failAfterLaunchSlot) {
         return buildExecutableBundle(context, tensorModule, std::move(program),
-                                     config, optimizations, output, failRank,
-                                     selectionMode);
+                                     config, optimizations, output,
+                                     failAfterLaunchSlot);
       });
 }
 

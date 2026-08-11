@@ -66,8 +66,6 @@ set(WAFER_TX_RUNTIME_ROOT "" CACHE PATH
   "Optional tx_runtime SDK root containing provider headers/libs")
 set(WAFER_KMD_UAPI_ROOT "" CACHE PATH
   "Optional KMD/UAPI headers root for future runtime adapter work")
-set(WAFER_LEGACY_TSM_RUNTIME_ROOT "" CACHE PATH
-  "Optional legacy Tsm/VS runtime SDK root for fallback adapter work")
 set(WAFER_ENABLE_PYTORCH_XLA_IMPORTER OFF CACHE BOOL
   "Pinned source-built PyTorch/XLA importer runtime is importable" FORCE)
 
@@ -118,8 +116,7 @@ endif()
 if(WAFER_ENABLE_RUNTIME_DEPS)
   foreach(_wafer_runtime_root
           WAFER_TX_RUNTIME_ROOT
-          WAFER_KMD_UAPI_ROOT
-          WAFER_LEGACY_TSM_RUNTIME_ROOT)
+          WAFER_KMD_UAPI_ROOT)
     if(NOT EXISTS "${${_wafer_runtime_root}}")
       message(FATAL_ERROR
         "${_wafer_runtime_root} must point at an existing SDK root when "

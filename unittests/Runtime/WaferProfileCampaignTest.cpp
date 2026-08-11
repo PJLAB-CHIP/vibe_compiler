@@ -23,6 +23,7 @@
 namespace {
 
 using wafer::runtime::BoardRuntimeOutput;
+using wafer::runtime::CardResourceScope;
 using wafer::runtime::PackageAccessMode;
 using wafer::runtime::PackageManifest;
 using wafer::runtime::PackageResourceRecord;
@@ -72,11 +73,10 @@ protected:
 
   void TearDown() override { llvm::sys::fs::remove_directories(root); }
 
-  PackageResourceRecord outputResource(uint64_t id, int64_t logicalRank,
-                                       int64_t roleIndex,
+  PackageResourceRecord outputResource(uint64_t id, int64_t roleIndex,
                                        llvm::StringRef name) const {
     return {ResourceId(id),
-            logicalRank,
+            CardResourceScope{wafer::PhysicalCardId(0)},
             PackageResourceRole::Output,
             roleIndex,
             name.str(),
@@ -92,25 +92,26 @@ protected:
     PackageManifest package(
         wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
         llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
-            wafer::KernelLaunchForm::PerRank,
-            wafer::KernelEntryABI::RankLocalPointerBlock,
+            wafer::KernelLaunchForm::Grid,
+            wafer::KernelEntryABI::TileMajorPointerTable,
             {wafer::RuntimeLaunchPhaseRole::Main})),
         wafer::kCurrentTargetModuleFormat);
-    package.rankCount = 2;
+    package.cardCount = 1;
+    package.tileCount = 16;
     // Deliberately non-canonical manifest order.
     package.resources = {
-        outputResource(firstId, /*logicalRank=*/1, /*roleIndex=*/7,
-                       (namePrefix + "-rank1").str()),
-        outputResource(secondId, /*logicalRank=*/0, /*roleIndex=*/3,
-                       (namePrefix + "-rank0").str()),
+        outputResource(firstId, /*roleIndex=*/7,
+                       (namePrefix + "-output7").str()),
+        outputResource(secondId, /*roleIndex=*/3,
+                       (namePrefix + "-output3").str()),
     };
     return package;
   }
 
   std::vector<uint8_t> bytesFor(const PackageResourceRecord &resource) const {
-    return {static_cast<uint8_t>(resource.logicalRank + 1),
+    return {static_cast<uint8_t>(resource.roleIndex + 1),
             static_cast<uint8_t>(resource.roleIndex),
-            static_cast<uint8_t>(resource.logicalRank + resource.roleIndex),
+            static_cast<uint8_t>(resource.roleIndex * 2),
             UINT8_C(0x5a)};
   }
 
@@ -412,9 +413,13 @@ TEST_F(WaferProfileOutputValidationTest,
   EXPECT_EQ(validation.getMode(),
             BoardProfileOutputValidationMode::ExternalExpected);
   ASSERT_EQ(validation.getResources().size(), 2u);
-  EXPECT_EQ(validation.getResources()[0].logicalRank, 0);
+  EXPECT_EQ(std::get<CardResourceScope>(validation.getResources()[0].scope)
+                .cardId,
+            wafer::PhysicalCardId(0));
   EXPECT_EQ(validation.getResources()[0].roleIndex, 3);
-  EXPECT_EQ(validation.getResources()[1].logicalRank, 1);
+  EXPECT_EQ(std::get<CardResourceScope>(validation.getResources()[1].scope)
+                .cardId,
+            wafer::PhysicalCardId(0));
   EXPECT_EQ(validation.getResources()[1].roleIndex, 7);
   ASSERT_TRUE(
       validation.getResources()[0].externalExpectedComparison.has_value());

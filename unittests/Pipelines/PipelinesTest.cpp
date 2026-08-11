@@ -26,8 +26,8 @@ template <typename OpT> unsigned countOps(mlir::ModuleOp module) {
 wafer::frontend::ProgramBoundaryBinding
 replicatedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape,
                    llvm::StringRef dtype) {
-  wafer::frontend::ProgramRankSlice slice;
-  slice.logicalRank = 0;
+  wafer::frontend::ProgramPartitionSlice slice;
+  slice.partitionId = 0;
   slice.replicaId = 0;
   slice.offsets.assign(shape.size(), 0);
   slice.sizes.assign(shape.begin(), shape.end());
@@ -40,30 +40,28 @@ replicatedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape,
   binding.globalShape.assign(shape.begin(), shape.end());
   binding.localShape.assign(shape.begin(), shape.end());
   binding.dtype = dtype.str();
-  binding.rankSlices.push_back(std::move(slice));
+  binding.partitionSlices.push_back(std::move(slice));
   return binding;
 }
 
-TEST(PipelinesTest, ScheduledRankFinalizationDoesNotSelectAnotherCandidate) {
+TEST(PipelinesTest, PhysicalTilePreparationDoesNotAssignMemory) {
   mlir::MLIRContext context;
   mlir::PassManager manager(&context);
-  wafer::buildFinalizeScheduledTensorProgramPipeline(manager);
+  wafer::buildPreparePhysicalTileCandidatePipeline(manager);
 
   std::string pipeline;
   llvm::raw_string_ostream os(pipeline);
   manager.printAsTextualPipeline(os);
   os.flush();
 
-  EXPECT_EQ(pipeline.find("wafer-schedule-tensor-program"), std::string::npos)
-      << pipeline;
   EXPECT_NE(pipeline.find("one-shot-bufferize"), std::string::npos) << pipeline;
-  EXPECT_NE(pipeline.find("wafer-plan-spm-memory"), std::string::npos)
+  EXPECT_EQ(pipeline.find("wafer-plan-spm-memory"), std::string::npos)
       << pipeline;
-  EXPECT_NE(pipeline.find("wafer-plan-ddr-memory"), std::string::npos)
+  EXPECT_EQ(pipeline.find("wafer-plan-ddr-memory"), std::string::npos)
       << pipeline;
 }
 
-TEST(PipelinesTest, StructuredProgramLowersCompleteRankRegionToTarget) {
+TEST(PipelinesTest, StructuredProgramLowersWholePhysicalTileDomainToTarget) {
   mlir::DialectRegistry registry;
   wafer::compiler::detail::registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
@@ -73,46 +71,20 @@ TEST(PipelinesTest, StructuredProgramLowersCompleteRankRegionToTarget) {
       mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>, policy = "explicit", shape = array<i64: 1>, topology = @default}
-  func.func @convert_with_mixed_shape_consumers(%input: tensor<2x4xf16>)
-      -> (tensor<2x4xf32>, tensor<2xf32>) {
-    %converted_empty = tensor.empty() : tensor<2x4xf32>
+  wafer.execution.mesh @default_mesh {axes = ["card"], shape = array<i64: 1>}
+  func.func @convert(%input: tensor<16x4xf16>) -> tensor<16x4xf32> {
+    %output = tensor.empty() : tensor<16x4xf32>
     %converted = linalg.generic {
         indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
                          affine_map<(d0, d1) -> (d0, d1)>],
         iterator_types = ["parallel", "parallel"]
-      } ins(%input : tensor<2x4xf16>)
-        outs(%converted_empty : tensor<2x4xf32>) {
+      } ins(%input : tensor<16x4xf16>)
+        outs(%output : tensor<16x4xf32>) {
     ^bb0(%value: f16, %old: f32):
       %extended = arith.extf %value : f16 to f32
       linalg.yield %extended : f32
-    } -> tensor<2x4xf32>
-    %zero = arith.constant 0.0 : f32
-    %reduced_empty = tensor.empty() : tensor<2xf32>
-    %reduced_init = linalg.fill ins(%zero : f32)
-        outs(%reduced_empty : tensor<2xf32>) -> tensor<2xf32>
-    %reduced = linalg.generic {
-        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
-                         affine_map<(d0, d1) -> (d0)>],
-        iterator_types = ["parallel", "reduction"]
-      } ins(%converted : tensor<2x4xf32>)
-        outs(%reduced_init : tensor<2xf32>) {
-    ^bb0(%value: f32, %accumulator: f32):
-      %sum = arith.addf %accumulator, %value : f32
-      linalg.yield %sum : f32
-    } -> tensor<2xf32>
-    %squared_empty = tensor.empty() : tensor<2x4xf32>
-    %squared = linalg.generic {
-        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
-                         affine_map<(d0, d1) -> (d0, d1)>],
-        iterator_types = ["parallel", "parallel"]
-      } ins(%converted : tensor<2x4xf32>)
-        outs(%squared_empty : tensor<2x4xf32>) {
-    ^bb0(%value: f32, %old: f32):
-      %square = arith.mulf %value, %value : f32
-      linalg.yield %square : f32
-    } -> tensor<2x4xf32>
-    return %squared, %reduced : tensor<2x4xf32>, tensor<2xf32>
+    } -> tensor<16x4xf32>
+    return %converted : tensor<16x4xf32>
   }
 }
 )mlir",
@@ -120,100 +92,58 @@ module {
   ASSERT_TRUE(module);
 
   wafer::frontend::FrontendProgramVerificationResult program;
-  program.logicalRankCount = 1;
+  program.numPartitions = 1;
   program.programUserInputCount = 1;
-  program.distributedInputs = {replicatedBoundary(/*index=*/0, {2, 4}, "f16")};
-  program.distributedOutputs = {replicatedBoundary(/*index=*/0, {2, 4}, "f32"),
-                                replicatedBoundary(/*index=*/1, {2}, "f32")};
+  program.distributedInputs = {replicatedBoundary(/*index=*/0, {16, 4}, "f16")};
+  program.distributedOutputs = {
+      replicatedBoundary(/*index=*/0, {16, 4}, "f32")};
   llvm::Expected<wafer::compiler::ExecutionConfig> executionConfig =
       wafer::compiler::ExecutionConfig::createForSingleCard(
-          /*executionRankCount=*/1, wafer::RuntimeLaunchKind::Kernel);
+          /*numPartitions=*/1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(executionConfig));
 
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   llvm::Expected<wafer::compiler::ExecutableBundle> executable =
       wafer::compiler::detail::buildExecutableBundle(
-          context, *module, std::move(program), *executionConfig, diagnostics,
-          std::nullopt);
+          context, *module, std::move(program), *executionConfig,
+          wafer::OptimizationConfig::search(), diagnostics, std::nullopt);
   ASSERT_TRUE(static_cast<bool>(executable))
       << diagnosticsText
       << (executable ? "" : llvm::toString(executable.takeError()));
-  EXPECT_NE(
-      diagnosticsText.find("compile-stats stage=coordinated-tile-frontier"),
-      std::string::npos);
   EXPECT_NE(diagnosticsText.find(
-                "compile-stats stage=coordinated-executable-finalization"),
+                "compile-stats stage=whole-card-executable-synthesis"),
             std::string::npos);
-  EXPECT_NE(diagnosticsText.find("finalization_reserved=0"), std::string::npos);
-  EXPECT_EQ(diagnosticsText.find("per_rank_candidate_limit="),
+  EXPECT_NE(diagnosticsText.find("whole-card-search policy=search"),
             std::string::npos);
+  EXPECT_NE(diagnosticsText.find("physical_tile_count=16"), std::string::npos);
   // The executable bundle becomes the MLIRContext owner on success. Destroy
   // the source module before that owner so its uniqued state stays live.
   module = nullptr;
-  ASSERT_EQ(executable->getRankExecutables().size(), 1u);
-  llvm::StringRef selectedTileIR =
-      executable->getRankExecutables().front().getSelectedTileIR();
-  EXPECT_TRUE(selectedTileIR.contains("wafer.tile.region"));
-  EXPECT_FALSE(selectedTileIR.contains("wafer.instr."));
-  mlir::ModuleOp scheduled =
-      executable->getRankExecutables().front().getModule();
-
-  llvm::SmallVector<wafer::TileRegionOp, 2> regions;
-  scheduled.walk(
-      [&](wafer::TileRegionOp region) { regions.push_back(region); });
-  std::string scheduledText;
-  llvm::raw_string_ostream scheduledStream(scheduledText);
-  scheduled.print(scheduledStream);
-  scheduledStream.flush();
-  ASSERT_FALSE(regions.empty()) << scheduledText;
-  bool hasSPMResult = false;
-  bool hasSPMOperand = false;
-  for (wafer::TileRegionOp region : regions) {
-    EXPECT_FALSE(region->getParentOfType<wafer::TileRegionOp>())
-        << scheduledText;
-    for (mlir::Value result : region.getResults())
-      hasSPMResult |= wafer::isWaferSPMMemRefType(result.getType());
-    for (mlir::Value operand : region.getOperands())
-      hasSPMOperand |= wafer::isWaferSPMMemRefType(operand.getType());
+  const auto &tiles = executable->getPhysicalTileExecutables();
+  ASSERT_EQ(tiles.size(), 16u);
+  for (size_t index = 0; index < tiles.size(); ++index) {
+    const wafer::compiler::PhysicalTileExecutable &tile = tiles[index];
+    EXPECT_EQ(tile.getPhysicalCardId(), wafer::PhysicalCardId(0));
+    EXPECT_EQ(tile.getPhysicalTileId(),
+              wafer::PhysicalTileId(static_cast<int64_t>(index)));
+    EXPECT_FALSE(tile.getSelectedTileIR().empty());
+    mlir::ModuleOp instrModule = tile.getModule();
+    // TileRegion remains the explicit Tile-local execution container; all
+    // dataflow operations inside it have crossed to Instr IR.
+    EXPECT_EQ(countOps<wafer::TileRegionOp>(instrModule), 1u);
+    EXPECT_EQ(countOps<wafer::InstrConvertOp>(instrModule), 1u);
+    EXPECT_EQ(countOps<wafer::InstrRDMAOp>(instrModule), 1u);
+    EXPECT_EQ(countOps<wafer::InstrWDMAOp>(instrModule), 1u);
+    EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(instrModule), 1u);
   }
-  // Each selected region is one SPM residency domain. Production may retain
-  // one domain or split the rank graph at an explicit DDR boundary, but SPM
-  // SSA never crosses or nests those boundaries.
-  EXPECT_FALSE(hasSPMResult);
-  EXPECT_FALSE(hasSPMOperand);
-  // The selected connection-aware realization keeps the only user input in
-  // SPM across both differently shaped consumers. The pure conversion is
-  // recomputed in each consumer traversal, so the old intermediate DDR
-  // store plus two reloads are absent and only user-visible outputs are
-  // published.
-  llvm::SmallVector<wafer::InstrRDMAOp, 2> loads;
-  llvm::SmallVector<wafer::InstrWDMAOp, 2> stores;
-  llvm::SmallVector<wafer::InstrConvertOp, 2> converts;
-  scheduled.walk([&](wafer::InstrRDMAOp load) { loads.push_back(load); });
-  scheduled.walk([&](wafer::InstrWDMAOp store) { stores.push_back(store); });
-  scheduled.walk(
-      [&](wafer::InstrConvertOp convert) { converts.push_back(convert); });
-  ASSERT_EQ(loads.size(), 1u) << scheduledText;
-  ASSERT_EQ(stores.size(), 2u) << scheduledText;
-  ASSERT_EQ(converts.size(), 2u) << scheduledText;
-  EXPECT_EQ(loads.front().getByteCountAttr().getInt(), 16);
-  EXPECT_EQ(converts[0].getSource(), loads.front().getDest());
-  EXPECT_EQ(converts[1].getSource(), loads.front().getDest());
-  EXPECT_TRUE(llvm::any_of(stores, [](wafer::InstrWDMAOp store) {
-    return store.getByteCountAttr().getInt() == 8;
-  }));
-  EXPECT_TRUE(llvm::any_of(stores, [](wafer::InstrWDMAOp store) {
-    return store.getByteCountAttr().getInt() == 32;
-  }));
-  EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(scheduled), 1u);
 
   llvm::Expected<wafer::compiler::TargetLLVMModuleBundle> target =
       wafer::compiler::compileExecutableBundleToTargetLLVMModules(*executable,
                                                                   diagnostics);
   ASSERT_TRUE(static_cast<bool>(target))
       << diagnosticsText << (target ? "" : llvm::toString(target.takeError()));
-  EXPECT_EQ(target->getModules().size(), 1u);
+  EXPECT_EQ(target->getModules().size(), 16u);
 }
 
 } // namespace

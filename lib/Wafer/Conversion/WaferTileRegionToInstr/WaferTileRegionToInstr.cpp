@@ -54,10 +54,10 @@ template <typename... SourceOps> struct TileDataflowOperationSet {
 
 using TileRegionToInstrSourceOperations = TileDataflowOperationSet<
     StorageLoadOp, StorageStoreOp, LayoutMaterializeOp, ComputeFillOp,
-    ComputeConvertOp, ComputeGemmOp, ComputeElementwiseOp, ComputeReduceOp,
-    MoveCopyOp, MoveExtractSliceOp, MoveInsertSliceOp, MoveTransposeOp,
-    MoveBroadcastOp, ViewReshapeOp, CommPeerSendOp, CommPeerRecvOp,
-    CommAllGatherOp, CommReduceScatterOp, CommAllReduceOp>;
+    ComputeConvertOp, ComputeGemmOp, ComputeConvOp, ComputeElementwiseOp,
+    ComputeReduceOp, MoveCopyOp, MoveCopyIntoOp, MoveExtractSliceOp,
+    MoveInsertSliceOp, MoveTransposeOp, MoveBroadcastOp, ViewReshapeOp,
+    CommPeerSendOp, CommPeerRecvOp>;
 
 static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.addLegalDialect<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
@@ -66,8 +66,8 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.addLegalOp<mlir::ModuleOp, TileRegionOp, TileYieldOp, SyncNCCJoinOp,
                     InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp, InstrFillOp,
                     InstrElementwiseOp, InstrBit2FpOp, InstrMaskMoveOp,
-                    InstrReduceOp, InstrConvertOp, InstrGemmOp, InstrDTESendOp,
-                    InstrDTERecvOp, InstrDTEWaitOp>();
+                    InstrReduceOp, InstrConvertOp, InstrGemmOp, InstrConvOp,
+                    InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>();
   target.addDynamicallyLegalOp<InstrTDMADataMoveOp>([](InstrTDMADataMoveOp op) {
     return !requiresGatherScatterMaterialization(op.getKindAttr().getValue());
   });
@@ -83,16 +83,13 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });
 }
 
-static void
-populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
-                                  const TileRegionToInstrOptions &options,
-                                  std::string *failureReason) {
+static void populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
+                                              std::string *failureReason) {
   populateMovementLoweringPatterns(patterns, failureReason);
-  populateComputeLoweringPatterns(patterns, options, failureReason);
+  populateComputeLoweringPatterns(patterns, failureReason);
   populateViewReshapeLoweringPattern(patterns, failureReason);
   populateFillLoweringPattern(patterns);
   populatePeerLoweringPatterns(patterns, failureReason);
-  populateCollectiveLoweringPatterns(patterns, options, failureReason);
 }
 
 /// Remove a private fill whose destination has no reader.  Constant folding
@@ -161,8 +158,12 @@ static void mergePendingState(PendingNCCState &destination,
     uint32_t mask = uint32_t{1} << worker;
     bool destinationHasWorker = (destinationWorkers & mask) != 0;
     bool sourceHasWorker = (source.workers & mask) != 0;
-    if (!destinationHasWorker && sourceHasWorker) {
-      destination.latestIssues[worker] = source.latestIssues[worker];
+    if (destinationHasWorker != sourceHasWorker) {
+      // This is an alternative-path frontier: one path can reach the merge
+      // without the issue.  Retaining the other path's operation pointer
+      // would falsely make that issue an unconditional same-worker successor
+      // on a surrounding loop backedge.
+      destination.latestIssues[worker] = nullptr;
       continue;
     }
     if (destinationHasWorker && sourceHasWorker &&
@@ -213,7 +214,7 @@ static void collectAccessRoots(mlir::Value value,
     }
     // Keep same-iteration SCF state variables distinct here. Expanding each
     // one independently through init/yield loses the relational fact that a
-    // fixed-slot recurrence is a permutation of disjoint allocations.
+    // rotating-buffer recurrence is a permutation of disjoint allocations.
     // `areKnownDistinctRoots` proves such pairs by induction below.
     roots.push_back(value);
     return;
@@ -756,6 +757,20 @@ private:
         return forOp.emitError()
                << "instruction_completion_failure: NCC loop backedge "
                   "frontier did not reach a finite fixed point";
+      // A pending worker with no unique latest issue came from alternative
+      // paths where an NCC issue is optional or differs by branch.  The next
+      // iteration therefore cannot prove a same-worker successor on every
+      // path.  Complete only those ambiguous workers at the current
+      // backedge; unconditional homogeneous streams remain join-free.
+      uint32_t ambiguousBackedgeWorkers = 0;
+      for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
+        const uint32_t mask = uint32_t{1} << worker;
+        if ((bodyState.workers & mask) != 0 &&
+            bodyState.latestIssues[worker] == nullptr)
+          ambiguousBackedgeWorkers |= mask;
+      }
+      insertNCCJoinBefore(forOp.getBody()->getTerminator(),
+                          ambiguousBackedgeWorkers, bodyState);
       state = std::move(bodyState);
       return mlir::success();
     }
@@ -944,15 +959,8 @@ wafer::detail::countStaticExecutableOperations(mlir::Operation *root,
 mlir::LogicalResult
 wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
                                       std::string *failureReason) {
-  return wafer::tile_region_to_instr::convertTileRegionToInstrModule(
-      module, TileRegionToInstrOptions{}, failureReason);
-}
-
-mlir::LogicalResult wafer::tile_region_to_instr::convertTileRegionToInstrModule(
-    mlir::ModuleOp module, const TileRegionToInstrOptions &options,
-    std::string *failureReason) {
   wafer::support::recordCompileWork(
-      wafer::support::CompileWorkKind::FinalizationInstructionLowering);
+      wafer::support::CompileWorkKind::TileToInstructionLowering);
   wafer::support::ScopedCompileTimingSpan conversionTiming(
       "conversion", "tile-region-to-instr", "module-conversion");
   if (failureReason)
@@ -1001,7 +1009,7 @@ mlir::LogicalResult wafer::tile_region_to_instr::convertTileRegionToInstrModule(
   {
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering-phase", "tile-region-to-instr", "pattern-population");
-    populateTileRegionToInstrPatterns(patterns, options, failureReason);
+    populateTileRegionToInstrPatterns(patterns, failureReason);
   }
 
   bool conversionSucceeded = false;

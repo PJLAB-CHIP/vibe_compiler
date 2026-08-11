@@ -12,13 +12,12 @@
 
 namespace {
 
-static void analyzeNCCWorkerBlock(
-    mlir::Block &block, uint32_t &pendingWorkers,
-    wafer::NCCWorkerWindowSummary &summary);
+static void analyzeNCCWorkerBlock(mlir::Block &block, uint32_t &pendingWorkers,
+                                  wafer::NCCWorkerWindowSummary &summary);
 
-static void analyzeNCCWorkerOperation(
-    mlir::Operation *operation, uint32_t &pendingWorkers,
-    wafer::NCCWorkerWindowSummary &summary) {
+static void analyzeNCCWorkerOperation(mlir::Operation *operation,
+                                      uint32_t &pendingWorkers,
+                                      wafer::NCCWorkerWindowSummary &summary) {
   if (auto tileRegion = mlir::dyn_cast<wafer::TileRegionOp>(operation)) {
     if (!tileRegion.getBody().empty())
       analyzeNCCWorkerBlock(tileRegion.getBody().front(), pendingWorkers,
@@ -52,17 +51,14 @@ static void analyzeNCCWorkerOperation(
       summary.hasCrossWorkerWindow |= llvm::popcount(pendingWorkers) >= 2;
     }
   }
-  if (contract.behavior ==
-          wafer::LocalInstructionCompletion::ParticipantJoin ||
+  if (contract.behavior == wafer::LocalInstructionCompletion::ParticipantJoin ||
       contract.behavior ==
           wafer::LocalInstructionCompletion::SynchronousWriteback)
-    pendingWorkers &= ~(contract.participantMask &
-                        wafer::kAllNCCWorkersMask);
+    pendingWorkers &= ~(contract.participantMask & wafer::kAllNCCWorkersMask);
 }
 
-static void analyzeNCCWorkerBlock(
-    mlir::Block &block, uint32_t &pendingWorkers,
-    wafer::NCCWorkerWindowSummary &summary) {
+static void analyzeNCCWorkerBlock(mlir::Block &block, uint32_t &pendingWorkers,
+                                  wafer::NCCWorkerWindowSummary &summary) {
   for (mlir::Operation &operation : block)
     analyzeNCCWorkerOperation(&operation, pendingWorkers, summary);
 }
@@ -139,21 +135,4 @@ mlir::LogicalResult wafer::setNCCIssueWorker(mlir::Operation *operation,
   operation->setAttr(kWaferNCCWorkerAttrName,
                      NCCWorkerAttr::get(operation->getContext(), worker));
   return mlir::success();
-}
-
-llvm::StringRef
-wafer::stringifyTargetImplementationKind(TargetImplementationKind kind) {
-  switch (kind) {
-  case TargetImplementationKind::Fill:
-    return "fill";
-  case TargetImplementationKind::Gemm:
-    return "gemm";
-  case TargetImplementationKind::BatchGemm:
-    return "batch-gemm";
-  case TargetImplementationKind::Generic:
-    return "generic";
-  case TargetImplementationKind::GenericReciprocal:
-    return "generic-reciprocal";
-  }
-  llvm_unreachable("unknown target implementation kind");
 }

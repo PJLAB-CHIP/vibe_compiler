@@ -78,53 +78,10 @@ classifyLocalInstructionCompletion(mlir::Operation *operation);
 std::optional<NCCWorker> getNCCIssueWorker(mlir::Operation *operation);
 
 /// Update the explicit worker domain of one typed NCC issue. This is the
-/// shared mutation boundary for compiler-owned worker-placement
-/// transformations; it rejects non-issue operations and out-of-domain values.
+/// shared mutation boundary for a whole-DAG candidate that explicitly selects
+/// a worker; it rejects non-issue operations and out-of-domain values.
 mlir::LogicalResult setNCCIssueWorker(mlir::Operation *operation,
                                       NCCWorker worker);
-
-/// Closed target capabilities consumed while enumerating source
-/// implementations.  These values are compiler inputs, not source-IR attrs or
-/// serialized candidate state.
-struct WaferTargetCapabilities {
-  bool supportsElementwiseReciprocal = true;
-  bool supportsElementwiseDivision = true;
-};
-
-/// A target implementation form that the current tile/instruction pipeline
-/// can materialize and verify.  The first candidate returned by a source
-/// interface is its production baseline.
-enum class TargetImplementationKind : uint32_t {
-  Fill,
-  Gemm,
-  BatchGemm,
-  Generic,
-  GenericReciprocal,
-};
-
-llvm::StringRef
-stringifyTargetImplementationKind(TargetImplementationKind kind);
-
-struct TargetImplementationCandidate {
-  TargetImplementationKind kind;
-
-  friend bool operator==(const TargetImplementationCandidate &lhs,
-                         const TargetImplementationCandidate &rhs) {
-    return lhs.kind == rhs.kind;
-  }
-};
-
-/// Conversion-owned materialization context.  The source OpInterface owns
-/// candidate enumeration and the selected hook; the context owns physical
-/// operands/results and creates typed wafer.tile IR in the isolated clone.
-class WaferTargetImplementationMaterializer {
-public:
-  virtual ~WaferTargetImplementationMaterializer() = default;
-
-  virtual mlir::LogicalResult materializeTargetImplementation(
-      mlir::Operation *source, const TargetImplementationCandidate &candidate,
-      mlir::OpBuilder &builder) = 0;
-};
 
 enum class WaferLinalgExtCollectiveKind {
   AllGather,

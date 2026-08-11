@@ -4,6 +4,7 @@
 #define WAFER_RUNTIME_PACKAGEMANIFEST_H
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
+#include "Wafer/Target/PhysicalIds.h"
 #include "Wafer/Target/RuntimeLaunchContract.h"
 #include "Wafer/Target/TargetIdentity.h"
 
@@ -20,7 +21,7 @@
 
 namespace wafer::runtime {
 
-inline constexpr uint32_t kPackageManifestSchemaVersion = 7;
+inline constexpr uint32_t kPackageManifestSchemaVersion = 8;
 inline constexpr llvm::StringLiteral kPackageManifestFileName = "manifest.json";
 inline constexpr llvm::StringLiteral kDirectDTEStatusABI =
     WAFER_TX81_DIRECT_DTE_STATUS_ABI;
@@ -67,12 +68,12 @@ struct ProgramIdTag;
 struct ResourceIdTag;
 struct ModuleIdTag;
 struct EntryIdTag;
-struct CompletionIdTag;
+struct LaunchSlotIdTag;
 using ProgramId = StrongId<ProgramIdTag>;
 using ResourceId = StrongId<ResourceIdTag>;
 using ModuleId = StrongId<ModuleIdTag>;
 using EntryId = StrongId<EntryIdTag>;
-using CompletionId = StrongId<CompletionIdTag>;
+using LaunchSlotId = StrongId<LaunchSlotIdTag>;
 
 enum class PackageResourceRole {
   UserInput,
@@ -90,9 +91,25 @@ struct PackageTensorType {
   std::vector<int64_t> shape;
 };
 
+struct CardResourceScope {
+  PhysicalCardId cardId{0};
+};
+
+struct TileResourceScope {
+  PhysicalCardId cardId{0};
+  PhysicalTileId tileId{0};
+};
+
+using PackageResourceScope =
+    std::variant<CardResourceScope, TileResourceScope>;
+
 struct PackageResourceRecord {
+  /// ResourceId is physical allocation identity. A card-program boundary
+  /// resource may be referenced by every Tile entry; such repeated slot
+  /// references intentionally carry the same device address. Compiler-managed
+  /// workspace and transport resources remain owned by exactly one entry.
   ResourceId id;
-  int64_t logicalRank = -1;
+  PackageResourceScope scope;
   PackageResourceRole role = PackageResourceRole::UserInput;
   int64_t roleIndex = -1;
   std::string name;
@@ -105,6 +122,9 @@ struct PackageResourceRecord {
 
 struct PackageABISlotBinding {
   uint64_t ordinal = std::numeric_limits<uint64_t>::max();
+  /// Referencing the same ResourceId from multiple entries is the sole
+  /// package-level expression of shared card-local storage; runtime consumers
+  /// must not infer sharing from role, name, type, or shape.
   ResourceId resource;
   PackageAccessMode access = PackageAccessMode::ReadOnly;
 };
@@ -135,19 +155,18 @@ struct DirectDTETransportRequirements {
 using TransportRequirements =
     std::variant<NoTransportRequirements, DirectDTETransportRequirements>;
 
+enum class PackageEntryCompletionKind { ReturnAfterLocalDrain };
+
 struct PackageEntrypointRecord {
   EntryId id;
-  int64_t logicalRank = -1;
+  PhysicalCardId cardId{0};
+  PhysicalTileId tileId{0};
+  LaunchSlotId launchSlot;
   ModuleId module;
   std::vector<PackageABISlotBinding> slots;
-  CompletionId terminalCompletion;
+  PackageEntryCompletionKind completion =
+      PackageEntryCompletionKind::ReturnAfterLocalDrain;
   TransportRequirements transport;
-};
-
-struct PackageCompletionRecord {
-  CompletionId id;
-  int64_t logicalRank = -1;
-  std::string kind;
 };
 
 struct PackageManifest {
@@ -164,11 +183,11 @@ struct PackageManifest {
   KernelRuntimeABIId runtimeABI;
   RuntimeLaunchContract launch;
   std::string moduleFormat;
-  int64_t rankCount = 0;
+  int64_t cardCount = 0;
+  int64_t tileCount = 0;
   std::vector<PackageResourceRecord> resources;
   std::vector<PackageModuleRecord> modules;
   std::vector<PackageEntrypointRecord> entries;
-  std::vector<PackageCompletionRecord> completions;
 };
 
 struct PackageParseLimits {
@@ -202,6 +221,8 @@ private:
 llvm::StringRef stringifyPackageResourceRole(PackageResourceRole role);
 llvm::StringRef stringifyPackageAccessMode(PackageAccessMode access);
 llvm::StringRef stringifyPackageModuleExportRole(PackageModuleExportRole role);
+llvm::StringRef
+stringifyPackageEntryCompletionKind(PackageEntryCompletionKind kind);
 
 llvm::Expected<VerifiedPackageManifest>
 verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
@@ -263,27 +284,25 @@ struct PlannedRuntimeLaunchPhase {
 
 struct RuntimeSessionPlan {
   EntryId entry;
-  int64_t logicalRank = -1;
+  PhysicalCardId cardId{0};
+  PhysicalTileId tileId{0};
+  LaunchSlotId launchSlot;
   ModuleId module;
   std::string modulePath;
   std::vector<PlannedRuntimeLaunchPhase> phases;
-  CompletionId terminalCompletion;
+  PackageEntryCompletionKind completion =
+      PackageEntryCompletionKind::ReturnAfterLocalDrain;
   std::vector<PlannedRuntimeResource> resources;
   std::vector<ResourceId> launchOrder;
-  bool executesBoard = false;
   TransportRequirements transport;
 };
 
 struct RuntimeInvocationPlan {
-  int64_t rankCount = 0;
-  /// One record for every package rank, in canonical logical-rank order.
-  std::vector<RuntimeSessionPlan> ranks;
+  int64_t cardCount = 0;
+  int64_t tileCount = 0;
+  /// One record for every package Tile, in canonical launch-slot order.
+  std::vector<RuntimeSessionPlan> tiles;
 };
-
-llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
-    const VerifiedPackageManifest &package, EntryId entry,
-    llvm::ArrayRef<RuntimeInvocationBinding> invocationBindings,
-    const RuntimeEnvironment &environment);
 
 llvm::Expected<RuntimeInvocationPlan> preflightNoCardRuntimeInvocation(
     const VerifiedPackageManifest &package,

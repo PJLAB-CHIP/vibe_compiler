@@ -1,124 +1,55 @@
-//===- WaferTensorProgramToTileRegion.h - Tensor program lowering -*- C++
+//===- WaferTensorProgramToTileRegion.h - Structured shard lowering -*- C++
 //-*-===//
 
 #ifndef WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_H
 #define WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_H
 
-#include "Wafer/IR/WaferInterfaces.h"
-
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
-#include <optional>
 #include <string>
+
+namespace mlir {
+class OpBuilder;
+class Operation;
+class Value;
+} // namespace mlir
 
 namespace wafer {
 
-/// Describes how a source operation may terminate a candidate traversal.
-/// This is a structural materialization capability, not a profitability or
-/// target-legality result.
-enum class CandidateTraversalRootCapability {
-  Tiled,
-  FullTraversalOnly,
-  Unsupported,
+/// Typed query-local provenance for one direct structured source operation.
+/// CardProgram materialization attaches an OpaqueLoc referencing this record
+/// only to the corresponding operation in its private scheduling clone.
+/// Generated Tile/Instr operations may inherit that location so the caller can
+/// partition exact accepted cost by source DAG node. The record must outlive
+/// materialization and any accepted-cost query; it is never serialized and
+/// must be stripped before publishing the winning executable.
+struct CardProgramSourceOperationLineage {
+  mlir::Operation *sourceOperation = nullptr;
+  uint32_t structuredNodeId = 0;
 };
 
-CandidateTraversalRootCapability
-classifyCandidateTraversalRoot(mlir::Operation *operation);
-
-/// Selects the tile seed used while materializing one discardable complete
-/// candidate clone. This is transient transformation input: it is never
-/// persisted in IR, rank-frontier metadata, or an artifact.
-enum class CandidateTileTraversalKind : uint8_t {
-  ResultDriven,
-  OperandDriven,
+/// Query-local provenance for one observable output traversal.  Candidate
+/// materialization may attach an OpaqueLoc referencing this record to the
+/// private output anchor so an actual downstream allocation failure can
+/// advance that exact output coordinate.  It is never serialized and must
+/// outlive candidate materialization.
+struct SpatialOutputLineage {
+  unsigned outputIndex = 0;
 };
 
-/// Selects how one complete-rank candidate composes structured traversals.
-/// This is invocation-local transformation input and is not persisted in IR.
-enum class CompleteRankTraversalComposition : uint8_t {
-  Coupled,
-  Separated,
+/// Query-local provenance for SPM materialization caused by one structured
+/// operation's operand demand.  This is deliberately distinct from source-op
+/// result lineage: an input allocation must refine the requesting operation,
+/// while an assembled result may need refinement through a downstream fused
+/// relation.  The record is never serialized.
+struct StructuredOperandDemandLineage {
+  mlir::Operation *sourceOperation = nullptr;
+  uint32_t structuredNodeId = 0;
 };
-
-/// One atomic realization of a producer-result to consumer-op connection.
-/// The vector of choices passed to complete-rank materialization is ordered by
-/// current SSA/block traversal and is destroyed with that invocation.  The
-/// selected realization is represented only by the resulting Tile IR.
-enum class CandidateTraversalConnectionAction : uint8_t {
-  CoupledResident,
-  SeparatedResident,
-  SeparatedDDR,
-  CrossRegion,
-  SelectiveSpill,
-};
-
-/// Complete transient parameters for one current-SSA connection.  The
-/// producer vector is in the identified producer-result domain; the consumer
-/// vector is in the consumer result traversal domain.  An empty vector selects
-/// that side's full static result shape.  Coupled realization is driven only
-/// by the consumer traversal: its producer vector must be empty and the exact
-/// demand for the identified consumer operand is derived by TilingInterface
-/// and the intervening typed SSA view relation.  Separated realizations may
-/// select the two traversal vectors independently.  Nothing in this object is
-/// persisted after the actual Tile clone is materialized.
-struct CandidateTraversalConnectionChoice {
-  CandidateTraversalConnectionAction action =
-      CandidateTraversalConnectionAction::CoupledResident;
-  llvm::SmallVector<int64_t, 4> producerTileSizes;
-  llvm::SmallVector<int64_t, 4> consumerTileSizes;
-};
-
-/// Query-local identity and static domains for one exact
-/// producer-result-to-consumer-operand SSA connection.  Operation ordinals are
-/// positions in the queried standalone function block; together with the
-/// result/operand numbers they provide a deterministic identity without using
-/// symbols or operation names.  They are invalidated by IR mutation and are
-/// never persisted as candidate metadata.
-struct CandidateTraversalConnectionDomain {
-  unsigned producerOperationOrdinal = 0;
-  unsigned producerResultNumber = 0;
-  unsigned consumerOperationOrdinal = 0;
-  unsigned consumerOperandNumber = 0;
-  /// Conservative byte-addressable storage width derived from each exact SSA
-  /// type. Sub-byte integer widths occupy one storage byte for this structural
-  /// estimate; unsupported element types make the topology query fail closed.
-  uint64_t producerResultElementBytes = 0;
-  uint64_t consumerOperandElementBytes = 0;
-  uint64_t consumerResultElementBytes = 0;
-  llvm::SmallVector<int64_t, 4> producerResultShape;
-  llvm::SmallVector<int64_t, 4> consumerOperandShape;
-  llvm::SmallVector<int64_t, 4> consumerResultShape;
-};
-
-struct CandidateTraversalConnectionTopology {
-  unsigned connectionCount = 0;
-  /// True when one producer result reaches more than one structured consumer
-  /// operand; such a fanout can reconverge (including at two operands of the
-  /// same operation) and therefore requires the general-DAG beam instead of
-  /// the chain/tree DP table.
-  bool requiresGeneralDAGBeam = false;
-  /// Current-IR result domains in the same stable order as connection
-  /// choices.  These are query-local analysis facts, not candidate metadata.
-  llvm::SmallVector<CandidateTraversalConnectionDomain, 16> domains;
-};
-
-mlir::FailureOr<CandidateTraversalConnectionTopology>
-getCompleteRankCandidateConnectionTopology(
-    mlir::ModuleOp sourceModule, std::string *failureReason = nullptr);
-
-/// Counts the finite structured producer-result to consumer-op connections in
-/// one standalone complete-rank tensor program.  View chains are followed by
-/// typed SSA; symbol names and operation spelling are not correspondence keys.
-mlir::FailureOr<unsigned>
-getCompleteRankCandidateConnectionCount(mlir::ModuleOp sourceModule,
-                                        std::string *failureReason = nullptr);
 
 /// The iteration-domain tile corresponding to one operand tile. This is a
 /// transient analysis result derived from the current TilingInterface; callers
@@ -165,11 +96,36 @@ struct PartialReductionTileMaterialization {
   llvm::SmallVector<mlir::Value, 2> mergedValues;
 };
 
+/// One output-domain shard selected for a physical Tile.  Output indices are
+/// function-result indices.  A result omitted from a Tile's shard list is an
+/// explicit no-work result on that Tile; its destination is yielded without a
+/// store.  This query-local value is consumed atomically and never persisted.
+struct SpatialOutputShard {
+  unsigned outputIndex = 0;
+  llvm::SmallVector<int64_t, 4> offsets;
+  llvm::SmallVector<int64_t, 4> sizes;
+  /// Static temporal tile shape for this spatial shard.  It has the same rank
+  /// as `sizes`, is positive and no larger than the shard in any dimension.
+  /// The lowering materializes steady scf.for traversal and finite static tail
+  /// classes instead of expanding one operation per temporal wave.
+  llvm::SmallVector<int64_t, 4> temporalTileSizes;
+  const SpatialOutputLineage *lineage = nullptr;
+};
+
+/// Query-local temporal tile selected for one current structured operation.
+/// `iteratorTileSizes` is indexed by the operation's TilingInterface iterator
+/// domain and therefore covers parallel and reduction iterators without
+/// recovering semantic roles from operand positions.  The selected sizes are
+/// consumed into actual loop/accumulator IR and are never persisted as a
+/// schedule side channel.
+struct StructuredOpTemporalTile {
+  mlir::Operation *operation = nullptr;
+  llvm::SmallVector<int64_t, 4> iteratorTileSizes;
+};
+
 /// Materializes a partial reduction for one iteration-domain tile and merges
 /// it to the corresponding result tile. Numeric regrouping legality is checked
 /// before any IR is created and fails closed when it cannot be established.
-/// Transformation callers should invoke this on a discardable candidate clone
-/// so a later interface failure remains atomic at candidate granularity.
 mlir::FailureOr<PartialReductionTileMaterialization>
 materializePartialReductionTile(
     mlir::Operation *reduction, mlir::OpBuilder &builder,
@@ -187,108 +143,30 @@ materializePartialReductionTile(
     llvm::ArrayRef<mlir::OpFoldResult> iterationSizes,
     mlir::ValueRange resultTileDestinations, std::string *failureReason);
 
-namespace detail {
-
-enum class CheckedStaticTileProductStatus { Success, InvalidInput, Overflow };
-
-/// Computes product_i ceil(ranges[i] / tileSizes[i]) without signed or unsigned
-/// overflow. Positive ranges and in-bounds positive tile sizes are required.
-CheckedStaticTileProductStatus
-checkedStaticTileProduct(llvm::ArrayRef<int64_t> ranges,
-                         llvm::ArrayRef<int64_t> tileSizes, uint64_t &product);
-
-/// Clones a standalone structured scheduling function into an owning module.
-/// The function contract is: one entry block; entry arguments are read-only
-/// inputs followed by output destinations; the number of output destinations
-/// equals the function result count; func.return yields those result roots.
-mlir::OwningOpRef<mlir::ModuleOp>
-cloneTensorProgramToStandaloneModule(mlir::func::FuncOp function);
-
-} // namespace detail
-
-mlir::LogicalResult lowerTensorProgramToTileRegionModule(
-    mlir::func::FuncOp function, mlir::OwningOpRef<mlir::ModuleOp> &module,
-    std::string *failureReason, int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
-    bool useDirectMappedBoundaryTransfer = false);
-
-/// Clones a module containing one complete rank function and lowers that
-/// function to one outer Tile residency region while preserving module-level
-/// target facts and referenced globals. This is the conservative complete-rank
-/// decision boundary; source scheduling scopes are not lowering units.
-mlir::LogicalResult lowerCompleteRankTensorProgramToTileRegionModule(
-    mlir::ModuleOp sourceModule, mlir::OwningOpRef<mlir::ModuleOp> &module,
-    std::string *failureReason, int64_t currentLogicalRank);
-
-/// Clones a complete-rank module, materializes the requested actual structured
-/// traversal using explicit tile sizes, and lowers the whole clone to one
-/// unplaced Tile program. The composition request is consumed during this
-/// call; no candidate descriptor or schedule side data survives in the IR.
-mlir::LogicalResult lowerCompleteRankCandidateTensorProgramToTileRegionModule(
-    mlir::ModuleOp sourceModule, llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    CandidateTileTraversalKind traversalKind,
-    CompleteRankTraversalComposition composition,
+/// Clones a module-preserving structured tensor program, materializes the
+/// selected nonempty per-output shards and temporal traversal through
+/// TilingInterface, and lowers their actual producer closures to TileRegion
+/// IR. Outputs omitted from
+/// `outputShards` perform no store on this physical Tile.  Direct target facts,
+/// the card-partition execution mesh, and shared symbol declarations remain in
+/// the private result module.  The source module and `module` output are
+/// unchanged on failure.
+///
+/// `functionalArgumentCount` is the exact argument count before the owning
+/// CardProgram conversion appended one private destination per result. This
+/// helper verifies that relation instead of recovering it from argument
+/// positions or types.
+///
+/// `currentLogicalPartition` identifies a card partition. A physical Tile ID
+/// must never be passed through this parameter.
+mlir::LogicalResult lowerSpatialOutputShardsToTileRegionModule(
+    mlir::ModuleOp sourceModule, unsigned functionalArgumentCount,
+    llvm::ArrayRef<SpatialOutputShard> outputShards,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
-    bool useDirectMappedBoundaryTransfer = false);
-
-/// As above, but materializes one current-SSA-derived action for every
-/// structured connection. Coupled edges are fused into the consumer traversal;
-/// separated edges materialize a shared physical version in SPM or DDR. A
-/// cross-region choice first materializes a DDR-clean boundary; region
-/// partition itself remains a Tile-IR transformation after this conversion.
-/// An empty tile vector selects each connected traversal's own full static
-/// result shape; this is the independent-retile form for mixed-shape graphs.
-mlir::LogicalResult lowerCompleteRankConnectionTensorProgramToTileRegionModule(
-    mlir::ModuleOp sourceModule, llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<CandidateTraversalConnectionAction> connectionActions,
-    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
-    bool useDirectMappedBoundaryTransfer = false);
-
-/// Materializes explicit per-side tile parameters for every current-SSA
-/// connection.  This is the joint-search entry point; choices are consumed
-/// atomically and only their realized Tile IR survives.
-mlir::LogicalResult
-lowerCompleteRankConnectionChoicesTensorProgramToTileRegionModule(
-    mlir::ModuleOp sourceModule,
-    llvm::ArrayRef<CandidateTraversalConnectionChoice> connectionChoices,
-    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
-    bool useDirectMappedBoundaryTransfer = false);
-
-/// Verifies that replacing one structured reduction by more than one ordered
-/// chunk, including neutral-initialized partials and chunk-result combines, is
-/// permitted by the source IR's numeric semantics. This is a transformation
-/// legality gate, not a target capability or profitability query.
-mlir::LogicalResult
-verifyCandidateReductionSplitNumericLegality(mlir::linalg::LinalgOp root,
-                                             std::string *failureReason);
-
-mlir::LogicalResult lowerCandidateTensorProgramToTileRegionModule(
-    mlir::func::FuncOp function, llvm::ArrayRef<int64_t> candidateTileOffsets,
-    llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
-    bool useDirectMappedBoundaryTransfer = false);
-
-/// Materializes a compact structured traversal of a standalone tensor
-/// program and lowers it to tile-region IR.
-mlir::LogicalResult lowerCompleteCandidateTensorProgramToTileRegionModule(
-    mlir::func::FuncOp function, llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
-    bool useDirectMappedBoundaryTransfer = false,
-    CandidateTileTraversalKind traversalKind =
-        CandidateTileTraversalKind::ResultDriven);
+    int64_t currentLogicalPartition,
+    llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles = {},
+    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage = {},
+    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage = {});
 
 } // namespace wafer
 

@@ -1,44 +1,36 @@
 # RUN: rm -rf %t.package %t.bad-package
 # RUN: mkdir -p %t.package/modules
-# RUN: touch %t.package/modules/rank_00000.so
+# RUN: touch %t.package/modules/tile_00000.so
 # RUN: cp %S/Inputs/typed-package-manifest.json %t.package/manifest.json
-# RUN: wafer-run --package-dir %t.package --entry-id 0 --no-card | FileCheck %s --check-prefix=PLAN
-# RUN: wafer-run --package-dir %t.package --all-ranks --no-card | FileCheck %s --check-prefix=ALL-RANKS
-# RUN: not wafer-run --package-dir %t.package --entry-id 0 --all-ranks --no-card 2>&1 | FileCheck %s --check-prefix=SELECTION
-# RUN: not wafer-run --package-dir %t.package --entry-id 0 2>&1 | FileCheck %s --check-prefix=NO-MODE
-# RUN: not wafer-run --package-dir %t.package --entry-id 0 --board 2>&1 | FileCheck %s --check-prefix=BOARD-QUALIFICATION
-# RUN: not wafer-run --package-dir %t.package --entry-id 0 --board --max-resource-bytes 32 2>&1 | FileCheck %s --check-prefix=BOARD-OPTIONS
-# RUN: not wafer-run --package-dir %t.package --entry-id 0 --no-card --max-resource-bytes 32 2>&1 | FileCheck %s --check-prefix=CAPACITY
-# RUN: not wafer-run --package-dir %t.package --entry-id 0 --no-card --device-id 0 2>&1 | FileCheck %s --check-prefix=NO-CARD-BOARD-OPTION
-# RUN: not wafer-run --package-dir %t.package --entry-id 0 --no-card --output 1=%t.raw 2>&1 | FileCheck %s --check-prefix=NO-CARD-BOARD-OPTION
+# RUN: wafer-run --package-dir %t.package --no-card | FileCheck %s --check-prefix=PLAN
+# RUN: not wafer-run --package-dir %t.package 2>&1 | FileCheck %s --check-prefix=NO-MODE
+# RUN: not wafer-run --package-dir %t.package --board 2>&1 | FileCheck %s --check-prefix=BOARD-QUALIFICATION
+# RUN: not wafer-run --package-dir %t.package --board --max-resource-bytes 32 2>&1 | FileCheck %s --check-prefix=BOARD-OPTIONS
+# RUN: not wafer-run --package-dir %t.package --no-card --max-resource-bytes 32 2>&1 | FileCheck %s --check-prefix=CAPACITY
+# RUN: not wafer-run --package-dir %t.package --no-card --device-id 0 2>&1 | FileCheck %s --check-prefix=NO-CARD-BOARD-OPTION
+# RUN: not wafer-run --package-dir %t.package --no-card --output 1=%t.raw 2>&1 | FileCheck %s --check-prefix=NO-CARD-BOARD-OPTION
 # RUN: cp -R %t.package %t.bad-package
 # RUN: printf extra > %t.bad-package/modules/extra.so
-# RUN: not wafer-run --package-dir %t.bad-package --entry-id 0 --no-card 2>&1 | FileCheck %s --check-prefix=EXTRA
+# RUN: not wafer-run --package-dir %t.bad-package --no-card 2>&1 | FileCheck %s --check-prefix=EXTRA
 # RUN: rm -rf %t.bad-package
 # RUN: cp -R %t.package %t.bad-package
-# RUN: printf corrupt > %t.bad-package/modules/rank_00000.so
-# RUN: not wafer-run --package-dir %t.bad-package --entry-id 0 --no-card 2>&1 | FileCheck %s --check-prefix=DIGEST
-# RUN: not wafer-run --package-dir %S/../Tools --entry-id 0 --no-card 2>&1 | FileCheck %s --check-prefix=LEGACY
+# RUN: printf corrupt > %t.bad-package/modules/tile_00000.so
+# RUN: not wafer-run --package-dir %t.bad-package --no-card 2>&1 | FileCheck %s --check-prefix=DIGEST
+# RUN: not wafer-run --package-dir %S/../Tools --no-card 2>&1 | FileCheck %s --check-prefix=MISSING-MANIFEST
 
-# PLAN: package: id=0 schema=7 ranks=1
+# PLAN: package: id=0 schema=8 cards=1 tiles=16
 # PLAN: target_identity: wafer-tx81-single-card
 # PLAN: target: wafer-tx81-single-card runtime_abi=wafer-tx81-kernel-v3 module_format=elf-riscv64
-# PLAN: launch: kind=kernel form=per-rank entry_abi=rank-local-pointer-block phases=main
-# PLAN: entry: 0 rank=0
-# PLAN: module: 0 path=modules/rank_00000.so
+# PLAN: launch: kind=kernel form=grid entry_abi=tile-major-pointer-table phases=main
+# PLAN: entry: 0 card_id=0 tile_id=1 launch_slot=0
+# PLAN: module: 0 path=modules/tile_00000.so
 # PLAN: launch_phase: role=main symbol=main
 # PLAN: launch_slot: 0 resource=0 role=user_input bytes=64 alignment=256 access=read_only externally_bound=true
 # PLAN: launch_slot: 1 resource=1 role=output bytes=64 alignment=256 access=write_only externally_bound=true
 # PLAN: launch_slot: 2 resource=2 role=workspace bytes=512 alignment=256 access=read_write externally_bound=false
-# PLAN: terminal_completion: 0 kind=entry_return
+# PLAN: completion: return_after_local_drain
+# PLAN: invocation_tiles: 16
 # PLAN: board_execution: false
-
-# ALL-RANKS: package: id=0 schema=7 ranks=1
-# ALL-RANKS: entry: 0 rank=0
-# ALL-RANKS: invocation_ranks: 1
-# ALL-RANKS: board_execution: false
-
-# SELECTION: exactly one of --entry-id or --all-ranks is required
 
 # NO-MODE: wafer-run requires explicit --no-card
 # BOARD-QUALIFICATION: --board requires complete explicit TX qualification options
@@ -47,4 +39,4 @@
 # NO-CARD-BOARD-OPTION: board binding and qualification options require --board
 # EXTRA: package modules contain an unreferenced payload
 # DIGEST: package module digest mismatch
-# LEGACY: failed to read package manifest
+# MISSING-MANIFEST: failed to read package manifest

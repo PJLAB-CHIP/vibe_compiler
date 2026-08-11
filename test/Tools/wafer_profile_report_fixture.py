@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic v7 final-artifact evidence for the offline analyzer."""
+"""Deterministic v10 production-artifact evidence for the offline analyzer."""
 
 from __future__ import annotations
 
@@ -25,29 +25,21 @@ def _cost_metric(
 
 
 def _static_cost_model() -> dict[str, Any]:
-    rank_rows = []
-    for logical_rank in range(16):
+    tile_rows = []
+    for tile_id in range(16):
         directional = {
             direction: _cost_metric(
                 None,
-                knowledge="unknown",
+                knowledge="unavailable",
                 reason="unresolved-noc-route",
             )
             for direction in ("north", "east", "south", "west")
         }
-        collectives = {
-            collective: _cost_metric(0)
-            for collective in (
-                "collective_permute",
-                "all_to_all",
-                "all_gather",
-                "reduce_scatter",
-                "all_reduce",
-            )
-        }
-        rank_rows.append(
+        tile_rows.append(
             {
-                "logical_rank": logical_rank,
+                "card_id": 0,
+                "tile_id": tile_id,
+                "launch_slot": tile_id,
                 "work": {
                     "npu_f16_bf16_logical_ops": _cost_metric(820_000),
                     "npu_other_logical_ops": _cost_metric(0),
@@ -60,13 +52,12 @@ def _static_cost_model() -> dict[str, Any]:
                     "noc_transmit_bytes": _cost_metric(1_280),
                     "noc_receive_bytes": _cost_metric(1_280),
                     "directional_noc_transmit_bytes": directional,
-                    "collective_noc_transmit_bytes": collectives,
                 },
             }
         )
     return {
         "model": "tx81-static-peak-lower-bound-v1",
-        "scope": "complete-final-instruction-program-per-rank",
+        "scope": "complete-final-instruction-program-per-physical-tile",
         "rates": {
             "card_ddr_bytes_per_second": 200_000_000_000,
             "directional_noc_bytes_per_second": 128_000_000_000,
@@ -77,7 +68,7 @@ def _static_cost_model() -> dict[str, Any]:
             "f32_vector_logical_ops_per_second_per_tile": 32_000_000_000,
             "spm_movement_bytes_per_second": None,
         },
-        "ranks": rank_rows,
+        "tiles": tile_rows,
     }
 
 
@@ -85,7 +76,7 @@ def _kernel_launch() -> dict[str, Any]:
     return {
         "kind": "kernel",
         "form": "grid",
-        "entry_abi": "rank-major-pointer-table",
+        "entry_abi": "tile-major-pointer-table",
         "phases": ["main"],
     }
 
@@ -105,7 +96,9 @@ def _counter(delta: int) -> dict[str, int | bool]:
 def _pmu_tile(tile: int) -> dict[str, Any]:
     execution_base = 84 + tile
     return {
-        "tile": tile,
+        "card_id": 0,
+        "tile_id": tile,
+        "launch_slot": tile,
         "aggregates": {
             "statistics_window": _counter(820 + tile),
             "fu": _counter(390 + tile),
@@ -379,7 +372,9 @@ def _trace_tile(tile: int) -> dict[str, Any]:
     append_site(9, entry_begin + 450, entry_begin + 460)
     entry_end = entry_begin + 500
     return {
-        "tile": tile,
+        "card_id": 0,
+        "tile_id": tile,
+        "launch_slot": tile,
         "entry_begin_cycle": entry_begin,
         "entry_end_cycle": entry_end,
         "capacity": len(events) + 2,
@@ -444,7 +439,9 @@ def _sites() -> list[dict[str, Any]]:
     )
     return [
         {
-            "tile": tile,
+            "card_id": 0,
+            "tile_id": tile,
+            "launch_slot": tile,
             "site_id": site_id,
             "site_kind": site_kind,
             "correlation_key": correlation,
@@ -460,8 +457,8 @@ def _sites() -> list[dict[str, Any]]:
     ]
 
 
-def make_evidence() -> dict[str, Any]:
-    """Build one complete, final-artifact-only profile evidence object."""
+def make_evidence(*, permute_bindings: bool = False) -> dict[str, Any]:
+    """Build one complete, production-artifact profile evidence object."""
 
     target_identity = "wafer-tx81-single-card"
     experiment = {
@@ -469,11 +466,14 @@ def make_evidence() -> dict[str, Any]:
             "digest": FINAL_DIGEST,
             "target_identity": target_identity,
             "launch": _kernel_launch(),
-            "execution_ranks": 16,
+            "card_count": 1,
+            "tile_count": 16,
         },
         "clock": [
             {
-                "tile": tile,
+                "card_id": 0,
+                "tile_id": tile,
+                "launch_slot": tile,
                 "slope": 1.0,
                 "offset": -tile * 101.0,
                 "uncertainty": 2.0 + tile * 0.05,
@@ -489,23 +489,30 @@ def make_evidence() -> dict[str, Any]:
         },
         "pmu": {"tiles": [_pmu_tile(tile) for tile in range(16)]},
     }
-    return {
+    evidence = {
         "schema": "wafer.profile.evidence",
-        "schema_version": 9,
-        "run_id": "fixture-final-artifact",
+        "schema_version": 10,
+        "run_id": "fixture-production-artifact",
         "identity": {
             "production_manifest_sha256": FINAL_DIGEST,
-            "profile_companion_schema_version": 7,
+            "profile_companion_schema_version": 9,
             "record_abi": RECORD_ABI,
             "target_identity": target_identity,
             "launch": _kernel_launch(),
-            "execution_ranks": 16,
+            "card_count": 1,
+            "tile_count": 16,
             "site_correlation_basis": (
                 "typed-target-call-ordinal-ssa-identity-occurrence-v2"
             ),
         },
         "topology": [
-            {"tile": tile, "x": tile % 4, "y": tile // 4}
+            {
+                "card_id": 0,
+                "tile_id": tile,
+                "launch_slot": tile,
+                "x": tile % 4,
+                "y": tile // 4,
+            }
             for tile in range(16)
         ],
         "measurement": {
@@ -525,7 +532,7 @@ def make_evidence() -> dict[str, Any]:
             "mode": "external-expected",
             "resources": [
                 {
-                    "logical_rank": tile,
+                    "scope": {"kind": "tile", "card_id": 0, "tile_id": tile},
                     "role": "output",
                     "role_index": 0,
                     "bytes": 4096,
@@ -546,3 +553,20 @@ def make_evidence() -> dict[str, Any]:
         "static_cost_model": _static_cost_model(),
         "experiment": experiment,
     }
+    if permute_bindings:
+        def launch_slot(tile_id: int) -> int:
+            return 1 - tile_id if tile_id < 2 else tile_id
+
+        tile_arrays = (
+            evidence["topology"],
+            evidence["static_cost_model"]["tiles"],
+            evidence["experiment"]["clock"],
+            evidence["experiment"]["trace"]["tiles"],
+            evidence["experiment"]["pmu"]["tiles"],
+        )
+        for rows in tile_arrays:
+            for row in rows:
+                row["launch_slot"] = launch_slot(int(row["tile_id"]))
+        for site in evidence["sites"]:
+            site["launch_slot"] = launch_slot(int(site["tile_id"]))
+    return evidence

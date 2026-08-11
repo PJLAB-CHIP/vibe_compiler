@@ -6,6 +6,232 @@ using namespace wafer;
 
 namespace wafer::tensor_program_to_tile_region {
 
+namespace {
+
+static std::optional<unsigned> findMapResult(mlir::AffineMap map,
+                                             mlir::AffineExpr expected) {
+  expected =
+      mlir::simplifyAffineExpr(expected, map.getNumDims(), map.getNumSymbols());
+  std::optional<unsigned> found;
+  for (auto [index, rawExpression] : llvm::enumerate(map.getResults())) {
+    mlir::AffineExpr expression = mlir::simplifyAffineExpr(
+        rawExpression, map.getNumDims(), map.getNumSymbols());
+    if (expression != expected)
+      continue;
+    if (found)
+      return std::nullopt;
+    found = static_cast<unsigned>(index);
+  }
+  return found;
+}
+
+static bool isPermutation(llvm::ArrayRef<int64_t> permutation, unsigned rank) {
+  if (permutation.size() != rank)
+    return false;
+  llvm::SmallVector<bool, 4> seen(rank, false);
+  for (int64_t dim : permutation) {
+    if (dim < 0 || static_cast<unsigned>(dim) >= rank || seen[dim])
+      return false;
+    seen[dim] = true;
+  }
+  return true;
+}
+
+static bool isIdentityPermutation(llvm::ArrayRef<int64_t> permutation) {
+  return llvm::all_of(llvm::enumerate(permutation), [](auto indexed) {
+    return static_cast<int64_t>(indexed.index()) == indexed.value();
+  });
+}
+
+static mlir::RankedTensorType
+permuteTensorType(mlir::RankedTensorType source,
+                  llvm::ArrayRef<int64_t> resultToSource) {
+  llvm::SmallVector<int64_t, 4> shape;
+  shape.reserve(resultToSource.size());
+  for (int64_t sourceDim : resultToSource)
+    shape.push_back(source.getDimSize(sourceDim));
+  return mlir::RankedTensorType::get(shape, source.getElementType());
+}
+
+} // namespace
+
+mlir::FailureOr<OrdinaryConv2DGeometry>
+inferOrdinaryConv2DGeometry(mlir::linalg::LinalgOp op) {
+  if (op.getNumDpsInputs() != 2 || op.getNumDpsInits() != 1 ||
+      op->getNumResults() != 1)
+    return mlir::failure();
+  auto inputType =
+      mlir::dyn_cast<mlir::RankedTensorType>(op.getDpsInputs()[0].getType());
+  auto weightType =
+      mlir::dyn_cast<mlir::RankedTensorType>(op.getDpsInputs()[1].getType());
+  auto outputType =
+      mlir::dyn_cast<mlir::RankedTensorType>(op->getResult(0).getType());
+  if (!inputType || !weightType || !outputType || inputType.getRank() != 4 ||
+      weightType.getRank() != 4 || outputType.getRank() != 4 ||
+      !inputType.hasStaticShape() || !weightType.hasStaticShape() ||
+      !outputType.hasStaticShape() ||
+      llvm::any_of(inputType.getShape(),
+                   [](int64_t value) { return value <= 0; }) ||
+      llvm::any_of(weightType.getShape(),
+                   [](int64_t value) { return value <= 0; }) ||
+      llvm::any_of(outputType.getShape(),
+                   [](int64_t value) { return value <= 0; }))
+    return mlir::failure();
+
+  mlir::FailureOr<mlir::linalg::ConvolutionDimensions> inferred =
+      mlir::linalg::inferConvolutionDims(op);
+  if (mlir::failed(inferred) || inferred->batch.size() != 1 ||
+      inferred->outputImage.size() != 2 ||
+      inferred->outputChannel.size() != 1 || inferred->filterLoop.size() != 2 ||
+      inferred->inputChannel.size() != 1 || !inferred->depth.empty() ||
+      inferred->strides.size() != 2 || inferred->dilations.size() != 2 ||
+      llvm::any_of(inferred->strides,
+                   [](int64_t value) { return value <= 0; }) ||
+      llvm::any_of(inferred->dilations,
+                   [](int64_t value) { return value <= 0; }))
+    return mlir::failure();
+
+  llvm::SmallVector<mlir::utils::IteratorType, 8> iteratorTypes =
+      op.getIteratorTypesArray();
+  llvm::SmallVector<bool, 8> classified(iteratorTypes.size(), false);
+  auto classify = [&](llvm::ArrayRef<unsigned> loops,
+                      mlir::utils::IteratorType expected) {
+    for (unsigned loop : loops) {
+      if (loop >= iteratorTypes.size() || classified[loop] ||
+          iteratorTypes[loop] != expected)
+        return false;
+      classified[loop] = true;
+    }
+    return true;
+  };
+  if (!classify(inferred->batch, mlir::utils::IteratorType::parallel) ||
+      !classify(inferred->outputImage, mlir::utils::IteratorType::parallel) ||
+      !classify(inferred->outputChannel, mlir::utils::IteratorType::parallel) ||
+      !classify(inferred->filterLoop, mlir::utils::IteratorType::reduction) ||
+      !classify(inferred->inputChannel, mlir::utils::IteratorType::reduction) ||
+      llvm::any_of(classified, [](bool value) { return !value; }))
+    return mlir::failure();
+
+  llvm::SmallVector<mlir::AffineMap, 3> maps = op.getIndexingMapsArray();
+  if (maps.size() != 3 || llvm::any_of(maps, [](mlir::AffineMap map) {
+        return map.getNumSymbols() != 0;
+      }))
+    return mlir::failure();
+  mlir::AffineMap inputMap = maps[0];
+  mlir::AffineMap weightMap = maps[1];
+  mlir::AffineMap outputMap = maps[2];
+  if (inputMap.getNumResults() != 4 || weightMap.getNumResults() != 4 ||
+      outputMap.getNumResults() != 4)
+    return mlir::failure();
+
+  mlir::MLIRContext *context = op.getContext();
+  auto loopExpr = [&](unsigned loop) {
+    return mlir::getAffineDimExpr(loop, context);
+  };
+  auto findLoop = [&](mlir::AffineMap map,
+                      unsigned loop) -> std::optional<unsigned> {
+    return findMapResult(map, loopExpr(loop));
+  };
+  std::optional<unsigned> inputBatch =
+      findLoop(inputMap, inferred->batch.front());
+  std::optional<unsigned> inputChannel =
+      findLoop(inputMap, inferred->inputChannel.front());
+  std::optional<unsigned> weightOutputChannel =
+      findLoop(weightMap, inferred->outputChannel.front());
+  std::optional<unsigned> weightInputChannel =
+      findLoop(weightMap, inferred->inputChannel.front());
+  std::optional<unsigned> outputBatch =
+      findLoop(outputMap, inferred->batch.front());
+  std::optional<unsigned> outputChannel =
+      findLoop(outputMap, inferred->outputChannel.front());
+  if (!inputBatch || !inputChannel || !weightOutputChannel ||
+      !weightInputChannel || !outputBatch || !outputChannel)
+    return mlir::failure();
+
+  llvm::SmallVector<unsigned, 2> inputSpatial;
+  llvm::SmallVector<unsigned, 2> weightSpatial;
+  llvm::SmallVector<unsigned, 2> outputSpatial;
+  for (unsigned index = 0; index < 2; ++index) {
+    mlir::AffineExpr inputWindow =
+        loopExpr(inferred->outputImage[index]) * inferred->strides[index] +
+        loopExpr(inferred->filterLoop[index]) * inferred->dilations[index];
+    std::optional<unsigned> inputDim = findMapResult(inputMap, inputWindow);
+    std::optional<unsigned> weightDim =
+        findLoop(weightMap, inferred->filterLoop[index]);
+    std::optional<unsigned> outputDim =
+        findLoop(outputMap, inferred->outputImage[index]);
+    if (!inputDim || !weightDim || !outputDim)
+      return mlir::failure();
+    inputSpatial.push_back(*inputDim);
+    weightSpatial.push_back(*weightDim);
+    outputSpatial.push_back(*outputDim);
+  }
+
+  OrdinaryConv2DGeometry geometry;
+  geometry.inputToNHWC = {static_cast<int64_t>(*inputBatch),
+                          static_cast<int64_t>(inputSpatial[0]),
+                          static_cast<int64_t>(inputSpatial[1]),
+                          static_cast<int64_t>(*inputChannel)};
+  // The target-abstract canonical weight order follows the hardware-neutral
+  // logical X/Y convention used by instruction packing: X (width), Y
+  // (height), output channel, input channel.
+  geometry.weightToXYOI = {static_cast<int64_t>(weightSpatial[1]),
+                           static_cast<int64_t>(weightSpatial[0]),
+                           static_cast<int64_t>(*weightOutputChannel),
+                           static_cast<int64_t>(*weightInputChannel)};
+  geometry.outputToNHWC = {static_cast<int64_t>(*outputBatch),
+                           static_cast<int64_t>(outputSpatial[0]),
+                           static_cast<int64_t>(outputSpatial[1]),
+                           static_cast<int64_t>(*outputChannel)};
+  if (!isPermutation(geometry.inputToNHWC, 4) ||
+      !isPermutation(geometry.weightToXYOI, 4) ||
+      !isPermutation(geometry.outputToNHWC, 4))
+    return mlir::failure();
+  geometry.outputFromNHWC.assign(4, -1);
+  for (auto [canonicalDim, sourceDim] : llvm::enumerate(geometry.outputToNHWC))
+    geometry.outputFromNHWC[sourceDim] = canonicalDim;
+  geometry.stridesHW = inferred->strides;
+  geometry.dilationsHW = inferred->dilations;
+  // Affine window maps carry stride and dilation, but cannot encode padding
+  // boundary values or how total padding is split before/after. Accept the
+  // map-only form only when the current operand/result geometry proves that
+  // no implicit padding or unpadding is required. An explicit upstream pad is
+  // already part of the input tensor and therefore also satisfies this exact
+  // zero-padding relation. We never infer ambiguous padding from shapes.
+  auto inferValidOutput = [](int64_t input, int64_t kernel, int64_t stride,
+                             int64_t dilation) -> std::optional<int64_t> {
+    if (input <= 0 || kernel <= 0 || stride <= 0 || dilation <= 0 ||
+        kernel - 1 > (std::numeric_limits<int64_t>::max() - 1) / dilation)
+      return std::nullopt;
+    int64_t effectiveKernel = (kernel - 1) * dilation + 1;
+    if (input < effectiveKernel)
+      return std::nullopt;
+    return (input - effectiveKernel) / stride + 1;
+  };
+  mlir::RankedTensorType canonicalInput =
+      permuteTensorType(inputType, geometry.inputToNHWC);
+  mlir::RankedTensorType canonicalWeight =
+      permuteTensorType(weightType, geometry.weightToXYOI);
+  mlir::RankedTensorType canonicalOutput =
+      permuteTensorType(outputType, geometry.outputToNHWC);
+  std::optional<int64_t> expectedH = inferValidOutput(
+      canonicalInput.getDimSize(1), canonicalWeight.getDimSize(1),
+      geometry.stridesHW[0], geometry.dilationsHW[0]);
+  std::optional<int64_t> expectedW = inferValidOutput(
+      canonicalInput.getDimSize(2), canonicalWeight.getDimSize(0),
+      geometry.stridesHW[1], geometry.dilationsHW[1]);
+  if (!expectedH || !expectedW ||
+      canonicalOutput.getDimSize(0) != canonicalInput.getDimSize(0) ||
+      canonicalInput.getDimSize(3) != canonicalWeight.getDimSize(3) ||
+      canonicalOutput.getDimSize(3) != canonicalWeight.getDimSize(2) ||
+      canonicalOutput.getDimSize(1) != *expectedH ||
+      canonicalOutput.getDimSize(2) != *expectedW)
+    return mlir::failure();
+  geometry.pads.assign(4, 0);
+  geometry.unpads.assign(4, 0);
+  return geometry;
+}
+
 mlir::LogicalResult
 TileRegionBodyEmitter::verifyNamedLinalgPayloads(TensorProgramScope scope) {
   mlir::WalkResult result = scope.getFunction().walk([&](mlir::Operation *op) {
@@ -50,11 +276,18 @@ TileRegionBodyEmitter::verifyExactFillPayload(mlir::linalg::FillOp fill) {
 mlir::LogicalResult
 TileRegionBodyEmitter::verifyExactGemmPayload(mlir::linalg::LinalgOp op,
                                               llvm::StringRef subject) {
+  if (!hasExactGemmPayload(op))
+    return fail(
+        (subject + " requires an exact multiply-accumulate payload").str());
+  return mlir::success();
+}
+
+bool TileRegionBodyEmitter::hasExactGemmPayload(
+    mlir::linalg::LinalgOp op) const {
   if (op->getNumRegions() != 1 || op->getRegion(0).empty() ||
       op.getRegionInputArgs().size() != 2 ||
       op.getRegionOutputArgs().size() != 1)
-    return fail(
-        (subject + " requires an exact multiply-accumulate payload").str());
+    return false;
 
   mlir::Block &body = op->getRegion(0).front();
   auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(body.getTerminator());
@@ -62,8 +295,7 @@ TileRegionBodyEmitter::verifyExactGemmPayload(mlir::linalg::LinalgOp op,
   for (mlir::Operation &payloadOp : body.without_terminator())
     payloadOps.push_back(&payloadOp);
   if (!yield || yield.getValues().size() != 1 || payloadOps.size() != 2)
-    return fail(
-        (subject + " requires an exact multiply-accumulate payload").str());
+    return false;
 
   mlir::Value lhs = op.getRegionInputArgs()[0];
   mlir::Value rhs = op.getRegionInputArgs()[1];
@@ -79,8 +311,7 @@ TileRegionBodyEmitter::verifyExactGemmPayload(mlir::linalg::LinalgOp op,
     auto add = mlir::dyn_cast<mlir::arith::AddFOp>(payloadOps[1]);
     if (!add || !matchesPair(mul.getLhs(), mul.getRhs(), lhs, rhs) ||
         !matchesPair(add.getLhs(), add.getRhs(), mul.getResult(), accumulator))
-      return fail(
-          (subject + " requires an exact multiply-accumulate payload").str());
+      return false;
     sum = add.getResult();
   } else if (auto mul = mlir::dyn_cast<mlir::arith::MulIOp>(payloadOps[0])) {
     auto add = mlir::dyn_cast<mlir::arith::AddIOp>(payloadOps[1]);
@@ -89,17 +320,12 @@ TileRegionBodyEmitter::verifyExactGemmPayload(mlir::linalg::LinalgOp op,
         add.getOverflowFlags() != mlir::arith::IntegerOverflowFlags::none ||
         !matchesPair(mul.getLhs(), mul.getRhs(), lhs, rhs) ||
         !matchesPair(add.getLhs(), add.getRhs(), mul.getResult(), accumulator))
-      return fail(
-          (subject + " requires an exact multiply-accumulate payload").str());
+      return false;
     sum = add.getResult();
   } else {
-    return fail(
-        (subject + " requires an exact multiply-accumulate payload").str());
+    return false;
   }
-  if (yield.getValues().front() != sum)
-    return fail(
-        (subject + " requires an exact multiply-accumulate payload").str());
-  return mlir::success();
+  return yield.getValues().front() == sum;
 }
 
 mlir::LogicalResult
@@ -131,17 +357,20 @@ TileRegionBodyEmitter::convertFill(mlir::linalg::FillOp fill,
     // produced tile directly. This is buffer identity propagation; the fill
     // scalar remains attached to each target compute tile below.
     mlir::Value init = op.getDpsInits().front();
-    if (auto external = externalBuffers.find(init);
-        external != externalBuffers.end()) {
-      externalBuffers[fill.getResult(0)] = external->second;
+    mlir::Value externalBuffer = externalBuffers.lookup(init);
+    if (externalBuffer) {
+      externalBuffers[fill.getResult(0)] = externalBuffer;
       if (writableExternalBuffers.contains(init))
         writableExternalBuffers.insert(fill.getResult(0));
-      if (auto outputIndex = externalOutputIndices.find(init);
-          outputIndex != externalOutputIndices.end())
-        externalOutputIndices[fill.getResult(0)] = outputIndex->second;
-      if (auto base = directYieldBuffers.find(init);
-          base != directYieldBuffers.end())
-        directYieldBuffers[fill.getResult(0)] = base->second;
+      std::optional<unsigned> outputIndex;
+      if (auto outputIndexIt = externalOutputIndices.find(init);
+          outputIndexIt != externalOutputIndices.end())
+        outputIndex = outputIndexIt->second;
+      if (outputIndex)
+        externalOutputIndices[fill.getResult(0)] = *outputIndex;
+      mlir::Value baseBuffer = directYieldBuffers.lookup(init);
+      if (baseBuffer)
+        directYieldBuffers[fill.getResult(0)] = baseBuffer;
     }
     return mlir::success();
   }
@@ -158,11 +387,10 @@ TileRegionBodyEmitter::convertFill(mlir::linalg::FillOp fill,
   return mlir::success();
 }
 
-mlir::LogicalResult
-TileRegionBodyEmitter::requireZeroFilledGemmInit(mlir::linalg::LinalgOp op,
-                                                 llvm::StringRef subject) {
+bool TileRegionBodyEmitter::hasPositiveZeroFilledComputeInit(
+    mlir::linalg::LinalgOp op) const {
   if (op.getNumDpsInits() != 1)
-    return fail((subject + " requires exactly one DPS init").str());
+    return false;
 
   auto isPositiveZero = [](mlir::Attribute attr) {
     if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr)) {
@@ -185,27 +413,7 @@ TileRegionBodyEmitter::requireZeroFilledGemmInit(mlir::linalg::LinalgOp op,
   };
 
   auto attrIt = fillInitAttrs.find(op.getDpsInits().front());
-  if (attrIt == fillInitAttrs.end() || !isPositiveZero(attrIt->second)) {
-    return fail((subject + " requires a provable zero-filled DPS init because "
-                           "wafer.tile.gemm has overwrite semantics")
-                    .str());
-  }
-  return mlir::success();
-}
-
-bool TileRegionBodyEmitter::hasOrderedGemmChunkInit(
-    mlir::linalg::LinalgOp op) const {
-  if (op.getNumDpsInits() != 1 || op->getNumResults() != 1)
-    return false;
-
-  mlir::Value init = op.getDpsInits().front();
-  mlir::Operation *producer = init.getDefiningOp();
-  if (!producer || producer->getNumResults() != 1 ||
-      producer->getResult(0) != init ||
-      init.getType() != op->getResult(0).getType())
-    return false;
-
-  return producer->getName() == op->getName();
+  return attrIt != fillInitAttrs.end() && isPositiveZero(attrIt->second);
 }
 
 mlir::FailureOr<std::pair<GemmOrientation, GemmOrientation>>
@@ -243,7 +451,7 @@ TileRegionBodyEmitter::inferRank2GemmOrientations(mlir::linalg::LinalgOp op) {
   return std::pair{*lhs, *rhs};
 }
 
-mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::createOrderedChunkCombine(
+mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::createAccumulatorCombine(
     mlir::Location loc, ComputeReduceKind kind, mlir::Value accumulator,
     mlir::Value partial, mlir::RankedTensorType resultTensorType,
     mlir::OpBuilder &builder) {
@@ -259,7 +467,7 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::createOrderedChunkCombine(
     elementwiseKind = ComputeElementwiseKind::Min;
     break;
   case ComputeReduceKind::Avg:
-    return failValue("ordered reduction chunks do not support average");
+    return failValue("explicit accumulator combine does not support average");
   }
 
   mlir::FailureOr<mlir::Value> previous =
@@ -277,7 +485,7 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::createOrderedChunkCombine(
             .getResult();
   }
   if ((*previous).getType() != tensorBufferType)
-    return failValue("ordered reduction chunk accumulator type mismatch");
+    return failValue("explicit accumulator type mismatch");
 
   auto kindAttr =
       ComputeElementwiseKindAttr::get(builder.getContext(), elementwiseKind);
@@ -299,14 +507,12 @@ TileRegionBodyEmitter::convertMatmul(mlir::linalg::LinalgOp op,
       inferRank2GemmOrientations(op);
   if (mlir::failed(orientations))
     return fail("unsupported rank-2 matmul indexing maps");
-  bool orderedChunk = hasOrderedGemmChunkInit(op);
-  if (!orderedChunk && mlir::failed(requireZeroFilledGemmInit(op, "matmul")))
-    return mlir::failure();
+  bool overwriteInit = hasPositiveZeroFilledComputeInit(op);
 
-  mlir::FailureOr<mlir::Value> lhs =
-      getOrMaterialize(op.getDpsInputs()[0], MemLayout::Cx, builder);
-  mlir::FailureOr<mlir::Value> rhs =
-      getOrMaterialize(op.getDpsInputs()[1], MemLayout::Cx, builder);
+  mlir::FailureOr<mlir::Value> lhs = getOrMaterializeStructuredInput(
+      op.getDpsInputs()[0], MemLayout::Cx, builder);
+  mlir::FailureOr<mlir::Value> rhs = getOrMaterializeStructuredInput(
+      op.getDpsInputs()[1], MemLayout::Cx, builder);
   if (mlir::failed(lhs) || mlir::failed(rhs))
     return mlir::failure();
 
@@ -327,8 +533,8 @@ TileRegionBodyEmitter::convertMatmul(mlir::linalg::LinalgOp op,
   auto gemm = builder.create<ComputeGemmOp>(
       op->getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Cx), *lhs,
       *rhs, lhsOrientation, rhsOrientation);
-  if (orderedChunk) {
-    mlir::FailureOr<mlir::Value> combined = createOrderedChunkCombine(
+  if (!overwriteInit) {
+    mlir::FailureOr<mlir::Value> combined = createAccumulatorCombine(
         op->getLoc(), ComputeReduceKind::Sum, op.getDpsInits().front(),
         gemm.getResult(), resultTensorType, builder);
     if (mlir::failed(combined))
@@ -469,15 +675,12 @@ TileRegionBodyEmitter::convertBatchMatmul(mlir::linalg::LinalgOp op,
     return fail("unsupported batch matmul arity");
   if (mlir::failed(verifyExactGemmPayload(op, "batch matmul")))
     return mlir::failure();
-  bool orderedChunk = hasOrderedGemmChunkInit(op);
-  if (!orderedChunk &&
-      mlir::failed(requireZeroFilledGemmInit(op, "batch matmul")))
-    return mlir::failure();
+  bool overwriteInit = hasPositiveZeroFilledComputeInit(op);
 
-  mlir::FailureOr<mlir::Value> lhs =
-      getOrMaterialize(op.getDpsInputs()[0], MemLayout::NCx, builder);
-  mlir::FailureOr<mlir::Value> rhs =
-      getOrMaterialize(op.getDpsInputs()[1], MemLayout::NCx, builder);
+  mlir::FailureOr<mlir::Value> lhs = getOrMaterializeStructuredInput(
+      op.getDpsInputs()[0], MemLayout::NCx, builder);
+  mlir::FailureOr<mlir::Value> rhs = getOrMaterializeStructuredInput(
+      op.getDpsInputs()[1], MemLayout::NCx, builder);
   if (mlir::failed(lhs) || mlir::failed(rhs))
     return mlir::failure();
 
@@ -528,8 +731,8 @@ TileRegionBodyEmitter::convertBatchMatmul(mlir::linalg::LinalgOp op,
                 builder.getDenseI64ArrayAttr(attrs->resultBatchDims));
   gemm->setAttr("result_m_dim", builder.getI64IntegerAttr(attrs->resultMDim));
   gemm->setAttr("result_n_dim", builder.getI64IntegerAttr(attrs->resultNDim));
-  if (orderedChunk) {
-    mlir::FailureOr<mlir::Value> combined = createOrderedChunkCombine(
+  if (!overwriteInit) {
+    mlir::FailureOr<mlir::Value> combined = createAccumulatorCombine(
         op->getLoc(), ComputeReduceKind::Sum, op.getDpsInits().front(),
         gemm.getResult(), resultTensorType, builder);
     if (mlir::failed(combined))
@@ -538,6 +741,83 @@ TileRegionBodyEmitter::convertBatchMatmul(mlir::linalg::LinalgOp op,
     return mlir::success();
   }
   record(op->getResult(0), MemLayout::NCx, gemm.getResult());
+  return mlir::success();
+}
+
+mlir::LogicalResult
+TileRegionBodyEmitter::convertConvolution(mlir::linalg::LinalgOp op,
+                                          mlir::OpBuilder &builder) {
+  if (mlir::failed(verifyExactGemmPayload(op, "ordinary 2-D convolution")))
+    return mlir::failure();
+  mlir::FailureOr<OrdinaryConv2DGeometry> geometry =
+      inferOrdinaryConv2DGeometry(op);
+  if (mlir::failed(geometry))
+    return fail("convolution indexing maps do not describe one ordinary "
+                "static 2-D convolution");
+
+  bool overwriteInit = hasPositiveZeroFilledComputeInit(op);
+
+  auto inputTensor =
+      mlir::cast<mlir::RankedTensorType>(op.getDpsInputs()[0].getType());
+  auto weightTensor =
+      mlir::cast<mlir::RankedTensorType>(op.getDpsInputs()[1].getType());
+  auto resultTensor =
+      mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType());
+  mlir::FailureOr<mlir::Value> input = getOrMaterializeStructuredInput(
+      op.getDpsInputs()[0], MemLayout::NCx, builder);
+  mlir::FailureOr<mlir::Value> weight = getOrMaterializeStructuredInput(
+      op.getDpsInputs()[1], MemLayout::NCx, builder);
+  if (mlir::failed(input) || mlir::failed(weight))
+    return mlir::failure();
+
+  auto transpose =
+      [&](mlir::Value source, mlir::RankedTensorType sourceType,
+          llvm::ArrayRef<int64_t> permutation) -> mlir::FailureOr<mlir::Value> {
+    if (!isPermutation(permutation, sourceType.getRank()))
+      return failValue("convolution canonicalization produced an invalid "
+                       "permutation");
+    mlir::RankedTensorType targetTensor =
+        permuteTensorType(sourceType, permutation);
+    mlir::Type targetType = makeSPMMemRefType(targetTensor, MemLayout::NCx);
+    if (isIdentityPermutation(permutation) && source.getType() == targetType)
+      return source;
+    return builder
+        .create<MoveTransposeOp>(op->getLoc(), targetType, source,
+                                 builder.getDenseI64ArrayAttr(permutation))
+        .getResult();
+  };
+
+  mlir::FailureOr<mlir::Value> canonicalInput =
+      transpose(*input, inputTensor, geometry->inputToNHWC);
+  mlir::FailureOr<mlir::Value> canonicalWeight =
+      transpose(*weight, weightTensor, geometry->weightToXYOI);
+  if (mlir::failed(canonicalInput) || mlir::failed(canonicalWeight))
+    return mlir::failure();
+
+  mlir::RankedTensorType canonicalResultTensor =
+      permuteTensorType(resultTensor, geometry->outputToNHWC);
+  auto convolution = builder.create<ComputeConvOp>(
+      op->getLoc(), makeSPMMemRefType(canonicalResultTensor, MemLayout::NCx),
+      *canonicalInput, *canonicalWeight,
+      builder.getDenseI64ArrayAttr(geometry->pads),
+      builder.getDenseI64ArrayAttr(geometry->unpads),
+      builder.getDenseI64ArrayAttr(geometry->stridesHW),
+      builder.getDenseI64ArrayAttr(geometry->dilationsHW));
+
+  mlir::FailureOr<mlir::Value> sourceOrderedResult = transpose(
+      convolution.getResult(), canonicalResultTensor, geometry->outputFromNHWC);
+  if (mlir::failed(sourceOrderedResult))
+    return mlir::failure();
+  if (!overwriteInit) {
+    mlir::FailureOr<mlir::Value> combined = createAccumulatorCombine(
+        op->getLoc(), ComputeReduceKind::Sum, op.getDpsInits().front(),
+        *sourceOrderedResult, resultTensor, builder);
+    if (mlir::failed(combined))
+      return mlir::failure();
+    record(op->getResult(0), MemLayout::Tensor, *combined);
+    return mlir::success();
+  }
+  record(op->getResult(0), MemLayout::NCx, *sourceOrderedResult);
   return mlir::success();
 }
 
@@ -612,41 +892,6 @@ TileRegionBodyEmitter::inferReduceKind(mlir::linalg::GenericOp generic) {
                                  "linalg.generic reduction", failureReason);
 }
 
-mlir::FailureOr<bool> TileRegionBodyEmitter::hasOrderedReduceChunkInit(
-    mlir::linalg::GenericOp generic, ComputeReduceKind kind) {
-  mlir::Value init = generic.getDpsInits().front();
-  auto producer = init.getDefiningOp<mlir::linalg::GenericOp>();
-  if (!producer || !hasReductionIterator(producer))
-    return false;
-  if (producer.getNumDpsInputs() != 1 || producer.getNumDpsInits() != 1 ||
-      producer->getNumResults() != 1 || producer->getResult(0) != init ||
-      init.getType() != generic->getResult(0).getType()) {
-    (void)fail("ordered reduction chunk init must be the direct prior "
-               "single-result reduction");
-    return mlir::failure();
-  }
-
-  llvm::SmallVector<int64_t, 2> currentDims;
-  llvm::SmallVector<int64_t, 2> producerDims;
-  if (mlir::failed(getReductionInputDims(generic, currentDims)) ||
-      mlir::failed(getReductionInputDims(producer, producerDims)))
-    return mlir::failure();
-  if (currentDims.size() != 1 || producerDims.size() != 1) {
-    (void)fail("ordered reduction chunk chain requires exactly one "
-               "reduction axis");
-    return mlir::failure();
-  }
-
-  std::optional<ComputeReduceKind> producerKind = inferReduceKind(producer);
-  if (!producerKind)
-    return mlir::failure();
-  if (*producerKind != kind) {
-    (void)fail("ordered reduction chunks require the same exact combiner");
-    return mlir::failure();
-  }
-  return true;
-}
-
 mlir::FailureOr<mlir::TypedAttr>
 TileRegionBodyEmitter::getNeutralReduceInit(mlir::Type elementType,
                                             ComputeReduceKind kind) {
@@ -684,8 +929,7 @@ TileRegionBodyEmitter::getNeutralReduceInit(mlir::Type elementType,
     }
   }
 
-  (void)fail(
-      "ordered reduction chunks require float or integer accumulator type");
+  (void)fail("reduction accumulator requires a float or integer element type");
   return mlir::failure();
 }
 
@@ -773,14 +1017,10 @@ TileRegionBodyEmitter::convertReduceGeneric(mlir::linalg::GenericOp generic,
   if (mlir::failed(getReductionInputDims(generic, reduceDims)))
     return mlir::failure();
 
-  mlir::FailureOr<bool> orderedChunk =
-      hasOrderedReduceChunkInit(generic, *kind);
-  if (mlir::failed(orderedChunk))
-    return mlir::failure();
-
   mlir::Value initTensor = generic.getDpsInits()[0];
   mlir::Value initScalar;
   mlir::Attribute initAttr;
+  bool explicitAccumulatorCombine = false;
 
   auto inputTensorType = mlir::dyn_cast<mlir::RankedTensorType>(
       generic.getDpsInputs()[0].getType());
@@ -789,37 +1029,36 @@ TileRegionBodyEmitter::convertReduceGeneric(mlir::linalg::GenericOp generic,
   if (!inputTensorType || !resultTensorType)
     return fail("reduction generic operands/results must be ranked tensors");
 
-  if (*orderedChunk) {
+  if (auto attrIt = fillInitAttrs.find(initTensor);
+      attrIt != fillInitAttrs.end()) {
+    initAttr = attrIt->second;
+  } else if (auto scalarIt = fillInitScalars.find(initTensor);
+             scalarIt != fillInitScalars.end()) {
+    initScalar = scalarIt->second;
+    auto constant = initScalar.getDefiningOp<mlir::arith::ConstantOp>();
+    auto typedValue = constant
+                          ? mlir::dyn_cast<mlir::TypedAttr>(constant.getValue())
+                          : mlir::TypedAttr{};
+    if (!constant || !typedValue)
+      return fail(
+          "reduction fill init must be an arith.constant or typed init_value");
+  } else {
+    // An arbitrary DPS init (including an scf iter_arg) is ordinary Linalg
+    // semantics.  Compute the reduction from its neutral element, then
+    // combine that partial with the materialized init using the exact body
+    // combiner.  This avoids recovering accumulator roles from op names or
+    // defining-operation shapes.
     mlir::FailureOr<mlir::TypedAttr> neutral =
         getNeutralReduceInit(resultTensorType.getElementType(), *kind);
     if (mlir::failed(neutral))
       return mlir::failure();
     initAttr = *neutral;
-  } else {
-    if (auto attrIt = fillInitAttrs.find(initTensor);
-        attrIt != fillInitAttrs.end())
-      initAttr = attrIt->second;
-    if (auto scalarIt = fillInitScalars.find(initTensor);
-        scalarIt != fillInitScalars.end())
-      initScalar = scalarIt->second;
-    if (initAttr)
-      initScalar = {};
-    if (!initAttr && !initScalar)
-      return fail("missing reduction init scalar");
-    if (!initAttr) {
-      auto constant = initScalar.getDefiningOp<mlir::arith::ConstantOp>();
-      auto typedValue =
-          constant ? mlir::dyn_cast<mlir::TypedAttr>(constant.getValue())
-                   : mlir::TypedAttr{};
-      if (!constant || !typedValue)
-        return fail(
-            "reduction init must be an arith.constant or typed init_value");
-    }
+    explicitAccumulatorCombine = true;
   }
 
-  mlir::FailureOr<mlir::Value> input =
-      getOrMaterialize(generic.getDpsInputs()[0],
-                       alignedLayoutForTensor(inputTensorType), builder);
+  mlir::FailureOr<mlir::Value> input = getOrMaterializeStructuredInput(
+      generic.getDpsInputs()[0], alignedLayoutForTensor(inputTensorType),
+      builder);
   if (mlir::failed(input))
     return mlir::failure();
 
@@ -832,10 +1071,10 @@ TileRegionBodyEmitter::convertReduceGeneric(mlir::linalg::GenericOp generic,
                                   builder, reduceResult)))
     return mlir::failure();
 
-  if (*orderedChunk) {
+  if (explicitAccumulatorCombine) {
     mlir::FailureOr<mlir::Value> combined =
-        createOrderedChunkCombine(generic.getLoc(), *kind, initTensor,
-                                  reduceResult, resultTensorType, builder);
+        createAccumulatorCombine(generic.getLoc(), *kind, initTensor,
+                                 reduceResult, resultTensorType, builder);
     if (mlir::failed(combined))
       return mlir::failure();
     record(generic->getResult(0), MemLayout::Tensor, *combined);

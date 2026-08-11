@@ -1,6 +1,6 @@
 /*
  * This file is included only when wafer_tx81_crt.c is compiled with
- * WAFER_TX81_PROFILE_CRT.  Keeping the implementation behind a translation
+ * WAFER_TX81_PROFILE_TRACE_CRT. Keeping the implementation behind a translation
  * time guard makes the production CRT contain no profiler branch or state.
  */
 
@@ -443,17 +443,18 @@ void wafer_tx81_profile_entry_begin(uint64_t buffer_address,
     wafer_profile_header->flags |= WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED;
   if ((flags & WAFER_TX81_PROFILER_ENTRY_COUNT_ONLY) != 0U)
     wafer_profile_header->flags |= WAFER_TX81_PROFILER_RECORD_COUNT_ONLY;
+  uint32_t capture_mode =
+      flags & (WAFER_TX81_PROFILER_ENTRY_TRACE_ENABLED |
+               WAFER_TX81_PROFILER_ENTRY_COUNT_ONLY);
   if ((flags & ~(WAFER_TX81_PROFILER_ENTRY_TRACE_ENABLED |
                  WAFER_TX81_PROFILER_ENTRY_COUNT_ONLY)) != 0U ||
-      (flags & (WAFER_TX81_PROFILER_ENTRY_TRACE_ENABLED |
-                WAFER_TX81_PROFILER_ENTRY_COUNT_ONLY)) ==
-          (WAFER_TX81_PROFILER_ENTRY_TRACE_ENABLED |
-           WAFER_TX81_PROFILER_ENTRY_COUNT_ONLY))
+      (capture_mode != WAFER_TX81_PROFILER_ENTRY_TRACE_ENABLED &&
+       capture_mode != WAFER_TX81_PROFILER_ENTRY_COUNT_ONLY))
     wafer_profile_mark_protocol_error();
 
   /*
-   * Summary and count are observational captures and must not change DTE PMU
-   * or NCC PMU state. Trace alone owns both temporary enable mutations and
+   * Count is observational and must not change DTE PMU or NCC PMU state.
+   * Trace alone owns both temporary enable mutations and
    * restores the exact prior values at entry_end. Counters are never cleared:
    * before/after subtraction remains valid whether the original enable was
    * zero or nonzero.

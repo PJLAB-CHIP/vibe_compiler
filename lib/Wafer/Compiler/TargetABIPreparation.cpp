@@ -1,4 +1,4 @@
-//===- TargetABIPreparation.cpp - Per-rank Kernel ABI preparation -------===//
+//===- TargetABIPreparation.cpp - Physical-Tile ABI preparation --------===//
 
 #include "TargetArtifactInternal.h"
 
@@ -24,8 +24,9 @@
 
 namespace wafer::compiler::detail {
 
-PreparedTargetRank::PreparedTargetRank(const ExecutionConfig &executionConfig,
-                                       bool transportPreparedBeforeEntry)
+PreparedPhysicalTile::PreparedPhysicalTile(
+    const ExecutionConfig &executionConfig,
+    bool transportPreparedBeforeEntry)
     : targetIdentity(executionConfig.getTargetIdentityId()),
       transportPreparedBeforeEntry(transportPreparedBeforeEntry),
       kernelRuntimeABI(KernelRuntimeABIId::waferTx81Kernel()),
@@ -125,20 +126,34 @@ mlir::Value resolveOutputAllocation(mlir::Value value) {
 
 } // namespace
 
-mlir::FailureOr<PreparedTargetRank>
-prepareTargetABI(const RankExecutable &rankExecutable,
+mlir::FailureOr<PreparedPhysicalTile>
+prepareTargetABI(const PhysicalTileExecutable &tileExecutable,
                  const ExecutionConfig &executionConfig,
                  bool transportPreparedBeforeEntry,
                  ProfileCaptureKind profileCapture) {
-  PreparedTargetRank prepared(executionConfig, transportPreparedBeforeEntry);
-  prepared.module = rankExecutable.getModule().clone();
-  prepared.logicalRank = rankExecutable.getLogicalRank();
+  PreparedPhysicalTile prepared(executionConfig, transportPreparedBeforeEntry);
+  prepared.module = tileExecutable.getModule().clone();
+  if (tileExecutable.getPhysicalCardId() != PhysicalCardId(0) ||
+      tileExecutable.getPhysicalTileId().getValue() < 0 ||
+      tileExecutable.getPhysicalTileId().getValue() >=
+          executionConfig.getPhysicalTileCount() ||
+      tileExecutable.getLaunchSlotId().getValue() < 0 ||
+      tileExecutable.getLaunchSlotId().getValue() >=
+          executionConfig.getPhysicalTileCount()) {
+    prepared.module->emitError(
+        "target_abi_mismatch: physical Tile identity is outside the "
+        "single-card execution domain");
+    return mlir::failure();
+  }
+  prepared.physicalCardId = tileExecutable.getPhysicalCardId();
+  prepared.physicalTileId = tileExecutable.getPhysicalTileId();
+  prepared.launchSlotId = tileExecutable.getLaunchSlotId();
   prepared.profileCapture = profileCapture;
   const int64_t defaultDDRAlignment =
       getDefaultWaferTargetPolicy().memory.ddrAlignmentBytes;
 
   llvm::Expected<AcceptedCallClosure> closure = analyzeAcceptedCallClosure(
-      *prepared.module, rankExecutable.getEntrySymbol());
+      *prepared.module, tileExecutable.getEntrySymbol());
   if (!closure) {
     prepared.module->emitError()
         << "target_abi_mismatch: " << llvm::toString(closure.takeError());
@@ -148,12 +163,13 @@ prepareTargetABI(const RankExecutable &rankExecutable,
 
   unsigned originalArgumentCount = function.getNumArguments();
   unsigned resultCount = function.getFunctionType().getNumResults();
-  std::vector<const RankProgramBinding *> argumentBindings(
+  std::vector<const ProgramResourceBinding *> argumentBindings(
       originalArgumentCount, nullptr);
-  std::vector<const RankProgramBinding *> outputBindings(resultCount, nullptr);
-  for (const RankProgramBinding &binding :
-       rankExecutable.getProgramBindings()) {
-    std::vector<const RankProgramBinding *> &domain =
+  std::vector<const ProgramResourceBinding *> outputBindings(resultCount,
+                                                              nullptr);
+  for (const ProgramResourceBinding &binding :
+       tileExecutable.getProgramBindings()) {
+    std::vector<const ProgramResourceBinding *> &domain =
         binding.role == ProgramResourceRole::Output ? outputBindings
                                                     : argumentBindings;
     if (binding.index < 0 ||
@@ -175,7 +191,7 @@ prepareTargetABI(const RankExecutable &rankExecutable,
   }
 
   prepared.slots.reserve(originalArgumentCount + resultCount + 1);
-  auto appendSlot = [&](const RankProgramBinding &binding, mlir::Type type,
+  auto appendSlot = [&](const ProgramResourceBinding &binding, mlir::Type type,
                         KernelABISlotRole role) -> mlir::LogicalResult {
     mlir::FailureOr<WaferPhysicalTensorInfo> physical =
         getPhysicalInfo(type, function);
@@ -292,29 +308,29 @@ prepareTargetABI(const RankExecutable &rankExecutable,
                               arenaAlignment});
   }
 
-  if (rankExecutable.getTransportContract() == TransportContract::DirectDTE) {
+  if (tileExecutable.getTransportContract() == TransportContract::DirectDTE) {
     prepared.transportStatusArgumentIndex = function.getNumArguments();
     function.insertArgument(prepared.transportStatusArgumentIndex,
                             mlir::IntegerType::get(function.getContext(), 64),
                             mlir::DictionaryAttr{}, function.getLoc());
-    prepared.slots.push_back(
-        {static_cast<int64_t>(prepared.slots.size()),
-         KernelABISlotRole::TransportStatus,
-         0,
-         "direct_dte_status",
-         "u32",
-         MemLayout::Tensor,
-         {1},
-         WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES,
-         WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT});
+    prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()),
+                              KernelABISlotRole::TransportStatus,
+                              0,
+                              "direct_dte_status",
+                              "u32",
+                              MemLayout::Tensor,
+                              {1},
+                              WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES,
+                              WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT});
   }
 
   if (profileCapture != ProfileCaptureKind::None) {
-    if (executionConfig.getRankCount() != WAFER_TX81_PROFILER_TILE_COUNT ||
+    if (executionConfig.getPhysicalTileCount() !=
+            WAFER_TX81_PROFILER_TILE_COUNT ||
         executionConfig.getRuntimeLaunchKind() == RuntimeLaunchKind::Model) {
       function.emitError()
           << "target_abi_mismatch: profiler capture requires the complete "
-             "16-rank pointer-table launch domain";
+             "16-Tile pointer-table launch domain";
       return mlir::failure();
     }
     const uint64_t recordBytes = getProfileCaptureRecordBytes(profileCapture);

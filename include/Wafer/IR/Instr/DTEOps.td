@@ -9,12 +9,10 @@ class Wafer_InstrDTEP2POp<string mnemonic, list<Trait> resourceEffects,
                           list<SideEffect> bufferEffects>
     : Wafer_InstrOp<mnemonic, resourceEffects> {
   let description = [{
-    Fixed-size unicast Direct DTE instruction. `peer` is a logical
-    execution-rank id in the current `wafer.execution.mesh`, not an encoded
-    physical tile id. The physical endpoint is derived from
-    `wafer.execution.mesh` and `wafer.target.topology` at the DTE instruction
-    lowering boundary. `message` is the stable logical match identity emitted
-    by protocol materialization; it is not a physical channel or packet id.
+    Fixed-size unicast Direct DTE instruction. `peer` is an available physical
+    `tile_id` on the selected card. `message` is the stable match identity
+    emitted by protocol materialization; it is not a physical channel or
+    packet id.
   }];
   let arguments = (ins
     Arg<Wafer_AnySPMMemRef, "", bufferEffects>:$buffer,

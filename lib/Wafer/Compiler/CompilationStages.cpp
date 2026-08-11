@@ -8,7 +8,6 @@
 #include "Wafer/InitAll.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Passes.h"
-#include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/ValueBoundsOpInterfaceImpl.h"
@@ -44,6 +43,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include <limits>
 
 namespace wafer::compiler::detail {
 
@@ -275,25 +276,24 @@ bool hasExactSingleCardTopology(wafer::TargetTopologyOp topology) {
          topology.getUnavailableTilesAttr().empty();
 }
 
-bool hasExactExecutionMesh(wafer::ExecutionMeshOp mesh,
-                           const ExecutionConfig &config) {
-  if (mesh.getSymName() != "default_mesh" ||
-      mesh.getTopologyAttr().getValue() != "default")
+bool hasExactLogicalExecutionMesh(wafer::ExecutionMeshOp mesh,
+                                  const ExecutionConfig &config) {
+  if (mesh.getSymName() != "default_mesh")
     return false;
 
   mlir::ArrayAttr axes = mesh.getAxesAttr();
   llvm::ArrayRef<int64_t> shape = mesh.getShapeAttr().asArrayRef();
-  if (axes.size() != 1 ||
-      mlir::cast<mlir::StringAttr>(axes[0]).getValue() != "rank" ||
-      shape.size() != 1 || shape[0] != config.getRankCount())
+  if (axes.empty() || axes.size() != shape.size())
     return false;
 
-  llvm::StringRef policy = mesh.getPolicyAttr().getValue();
-  llvm::ArrayRef<int64_t> endpoints = mesh.getEndpointsAttr().asArrayRef();
-  if (config.getRankCount() == 16)
-    return policy == "all_available" && endpoints.empty();
-  return policy == "explicit" && endpoints.size() == 4 && endpoints[0] == 0 &&
-         endpoints[1] == 0 && endpoints[2] == 0 && endpoints[3] == 0;
+  int64_t partitionCount = 1;
+  for (int64_t dimension : shape) {
+    if (dimension <= 0 ||
+        partitionCount > std::numeric_limits<int64_t>::max() / dimension)
+      return false;
+    partitionCount *= dimension;
+  }
+  return partitionCount == config.getNumPartitions();
 }
 
 mlir::LogicalResult collectExecutionFacts(
@@ -344,9 +344,9 @@ verifyExactExecutionConfigInternal(mlir::ModuleOp module,
     return module.emitOpError(
         "target topology does not match the single-card 1x1-card/4x4-tile "
         "ExecutionConfig");
-  if (!hasExactExecutionMesh(meshes.front(), config))
+  if (!hasExactLogicalExecutionMesh(meshes.front(), config))
     return module.emitOpError(
-        "execution mesh does not exactly match the requested execution-ranks");
+        "execution mesh does not exactly match the requested num-partitions");
   return mlir::success();
 }
 
@@ -364,10 +364,6 @@ materializeOrVerifyExactExecutionConfig(mlir::ModuleOp module,
   if (meshes.size() > 1)
     return module.emitOpError(
         "typed compilation requires exactly one execution mesh");
-  if (topologies.empty() && !meshes.empty())
-    return module.emitOpError(
-        "execution mesh cannot precede its target topology");
-
   if (topologies.empty()) {
     mlir::PassManager manager(module.getContext());
     wafer::support::attachCompileTiming(manager, "execution-config");
@@ -378,12 +374,7 @@ materializeOrVerifyExactExecutionConfig(mlir::ModuleOp module,
 
   if (meshes.empty()) {
     wafer::MaterializeExecutionMeshPassOptions options;
-    options.topologyName = "default";
-    if (config.getRankCount() == 1) {
-      options.policy = "explicit";
-      options.shape = "1";
-      options.endpoints = "0,0,0,0";
-    }
+    options.shape = std::to_string(config.getNumPartitions());
     mlir::PassManager manager(module.getContext());
     wafer::support::attachCompileTiming(manager, "execution-config");
     manager.addPass(wafer::createMaterializeExecutionMeshPass(options));
@@ -426,7 +417,6 @@ void registerCompilationDialects(mlir::DialectRegistry &registry) {
   mlir::scf::registerValueBoundsOpInterfaceExternalModels(registry);
   mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tensor::registerTilingInterfaceExternalModels(registry);
-  wafer::registerTargetImplementationExternalModels(registry);
   mlir::func::registerInlinerExtension(registry);
   mlir::LLVM::registerInlinerInterface(registry);
 }

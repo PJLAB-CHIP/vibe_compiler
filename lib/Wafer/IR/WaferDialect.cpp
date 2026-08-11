@@ -938,9 +938,8 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementBitOffset(
 
 mlir::LogicalResult
 DTEMessageAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-                       int64_t communicationId, DTEProtocolPhase phase,
-                       int64_t round, int64_t payloadSlice) {
-  (void)phase;
+                       int64_t communicationId, int64_t round,
+                       int64_t payloadSlice) {
   if (communicationId < 0)
     return emitError() << "dte_message communication id must be non-negative";
   if (round < 0)

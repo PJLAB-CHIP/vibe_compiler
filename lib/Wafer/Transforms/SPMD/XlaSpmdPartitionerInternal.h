@@ -26,7 +26,7 @@ struct Options {
   fs::path inputProgramDir;
   fs::path outputProgramDir;
   std::string entryFunction = "forward";
-  int64_t logicalRankCount = 0;
+  int64_t numPartitions = 0;
 };
 
 struct InputLocation {
@@ -48,7 +48,7 @@ struct ProgramMetadata {
 };
 
 struct ParameterShard {
-  int64_t rank = 0;
+  int64_t partitionId = 0;
   int64_t replicaId = 0;
   std::string file;
   std::vector<int64_t> offsets;
@@ -66,8 +66,8 @@ struct ParameterBinding {
   std::vector<ParameterShard> shards;
 };
 
-struct DistributedRank {
-  int64_t rank = 0;
+struct DistributedPartition {
+  int64_t partitionId = 0;
   int64_t replicaId = 0;
   std::vector<int64_t> offsets;
   std::vector<int64_t> sizes;
@@ -80,11 +80,11 @@ struct DistributedBoundaryBinding {
   std::string distribution;
   std::vector<int64_t> globalShape;
   std::vector<int64_t> localShape;
-  std::vector<DistributedRank> ranks;
+  std::vector<DistributedPartition> partitions;
 };
 
 struct DistributedBoundary {
-  int64_t logicalRankCount = 0;
+  int64_t numPartitions = 0;
   std::vector<DistributedBoundaryBinding> inputs;
   std::vector<DistributedBoundaryBinding> outputs;
 };
@@ -110,7 +110,7 @@ inputSignaturesFromFunc(mlir::func::FuncOp func, const ProgramMetadata &meta);
 absl::StatusOr<std::vector<TensorSignature>>
 outputSignaturesFromFunc(mlir::func::FuncOp func, const ProgramMetadata &meta);
 std::string bindingsToJson(const std::string &functionName,
-                           int64_t logicalRankCount,
+                           int64_t numPartitions,
                            const std::vector<ParameterBinding> &bindings);
 
 std::vector<int64_t> shapeDims(const xla::Shape &shape);
@@ -118,7 +118,7 @@ std::vector<int64_t> zeros(size_t size);
 std::vector<int64_t> ones(size_t size);
 absl::StatusOr<DistributedBoundary> buildDistributedBoundary(
     const ProgramMetadata &meta, const xla::HloModule &distributedModule,
-    const xla::HloModule &partitionedModule, int64_t logicalRankCount);
+    const xla::HloModule &partitionedModule, int64_t numPartitions);
 absl::Status
 materializeParameterShards(const Options &options, const ProgramMetadata &meta,
                            const xla::HloModule &prePartitionModule,
@@ -127,10 +127,10 @@ materializeParameterShards(const Options &options, const ProgramMetadata &meta,
 
 void canonicalizeFrontendShardingAttrs(mlir::ModuleOp module);
 absl::StatusOr<std::unique_ptr<xla::HloModule>>
-stablehloToHloModule(mlir::ModuleOp module, int64_t logicalRankCount);
+stablehloToHloModule(mlir::ModuleOp module, int64_t numPartitions);
 absl::Status prepareSpmdPartitioning(xla::HloModule *module);
 absl::Status runSpmdPartitioner(xla::HloModule *module,
-                                int64_t logicalRankCount);
+                                int64_t numPartitions);
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>>
 hloModuleToStablehlo(mlir::MLIRContext &context, xla::HloModule *module,
                      const std::vector<std::string> &parameterShardings);

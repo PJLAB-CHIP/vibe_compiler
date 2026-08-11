@@ -19,8 +19,8 @@ getControlAction(const compiler::TargetTransactionPayload &payload) {
     return TargetModelControlAction::DirectDTEBegin;
   if (std::holds_alternative<compiler::TargetDirectDTESendTransaction>(payload))
     return TargetModelControlAction::DirectDTESendPrepare;
-  if (std::holds_alternative<
-          compiler::TargetDirectDTESendIssueTransaction>(payload))
+  if (std::holds_alternative<compiler::TargetDirectDTESendIssueTransaction>(
+          payload))
     return TargetModelControlAction::DirectDTESendIssue;
   if (std::holds_alternative<compiler::TargetDirectDTEReceiveTransaction>(
           payload))
@@ -39,14 +39,15 @@ validateControlAddresses(const compiler::TargetTransaction &transaction,
   if (const auto *begin =
           std::get_if<compiler::TargetDirectDTEBeginTransaction>(
               &transaction.payload)) {
-    if (begin->rankCount != plan.getLogicalRanks().size())
-      return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
-                         "Direct DTE rank_count differs from invocation");
-    llvm::Expected<TargetModelResolvedRange> status =
-        plan.resolve(transaction.logicalRank, TargetModelAddressSpace::CardDDR,
-                     TargetModelAccess::ReadWrite, begin->statusAddress,
-                     WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES,
-                     WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES);
+    if (begin->participantCount != plan.getLaunchSlots().size())
+      return kernelError(
+          TargetModelKernelErrorCode::InvalidTransactionField,
+          "Direct DTE participant count differs from invocation");
+    llvm::Expected<TargetModelResolvedRange> status = plan.resolve(
+        transaction.launchSlotId.getValue(), TargetModelAddressSpace::CardDDR,
+        TargetModelAccess::ReadWrite, begin->statusAddress,
+        WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES,
+        WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES);
     if (!status)
       return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
                          llvm::toString(status.takeError()));
@@ -64,11 +65,11 @@ validateControlAddresses(const compiler::TargetTransaction &transaction,
           TargetModelKernelErrorCode::UnsupportedTransaction,
           "Direct DTE high-performance allocation is outside the accepted "
           "normal sender profile");
-    llvm::Expected<TargetModelResolvedRange> source =
-        plan.resolve(transaction.logicalRank, TargetModelAddressSpace::RankSPM,
-                     TargetModelAccess::Read, send->source, send->byteCount, 1);
+    llvm::Expected<TargetModelResolvedRange> source = plan.resolve(
+        transaction.launchSlotId.getValue(), TargetModelAddressSpace::TileSPM,
+        TargetModelAccess::Read, send->source, send->byteCount, 1);
     llvm::Expected<TargetModelResolvedRange> destination = plan.resolve(
-        transaction.logicalRank, TargetModelAddressSpace::RankSPM,
+        transaction.launchSlotId.getValue(), TargetModelAddressSpace::TileSPM,
         TargetModelAccess::Write, send->remoteDestination, send->byteCount, 1);
     if (!source || !destination) {
       llvm::Error errors = llvm::Error::success();
@@ -90,7 +91,7 @@ validateControlAddresses(const compiler::TargetTransaction &transaction,
           "Direct DTE receive tile or receiver FSM is outside the accepted "
           "target ABI domain");
     llvm::Expected<TargetModelResolvedRange> destination = plan.resolve(
-        transaction.logicalRank, TargetModelAddressSpace::RankSPM,
+        transaction.launchSlotId.getValue(), TargetModelAddressSpace::TileSPM,
         TargetModelAccess::Write, receive->destination, receive->byteCount, 1);
     if (!destination)
       return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,

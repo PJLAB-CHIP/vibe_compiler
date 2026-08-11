@@ -1,37 +1,31 @@
 wafer_require_gtest()
 
 add_executable(WaferUnitTests
-  Analysis/ExecutionTopologyAnalysisTest.cpp
-  Analysis/NoCProfitabilityAnalysisTest.cpp
+  Analysis/TheoreticalScheduleCostAnalysisTest.cpp
   Analysis/PhysicalDataflow/IndexRelationTest.cpp
   Analysis/ScheduleCostAnalysisTest.cpp
   Analysis/StaticBufferRangeTest.cpp
   Compiler/CompilationPublicationTest.cpp
   Compiler/CompilationTest.cpp
-  Compiler/CoordinatedDataflowSearchTest.cpp
-  Compiler/CoordinatedExecutableAdmissionTest.cpp
-  Compiler/CoordinatedExecutableFinalizationTest.cpp
-  Compiler/CoordinatedVariantSelectionTest.cpp
+  Compiler/WholeCardExecutableAdmissionTest.cpp
   Compiler/DirectDTETransportTest.cpp
-  Compiler/GlobalTileRelationTest.cpp
-  Compiler/NoCCommunicationActionTest.cpp
-  Compiler/NoCIntermediateDataflowTest.cpp
-  Compiler/NoCPartialDataflowTest.cpp
   Compiler/ProgramTensorComparisonTest.cpp
-  Compiler/ScheduledRankFinalizationTest.cpp
-  Compiler/StructuredImplementationAlternativeTest.cpp
+  Compiler/PhysicalTileFinalizationTest.cpp
   Compiler/TargetABIPreparationTest.cpp
   Compiler/TargetArtifactTest.cpp
   Compiler/TargetCallFrontendTest.cpp
   Compiler/TargetIdentityTest.cpp
-  Compiler/WholeVariantResourceAcceptanceTest.cpp
-  Conversion/CollectiveCompletionTest.cpp
-  Conversion/CollectiveTopologyTest.cpp
+  Compiler/WholeDAGScheduleTest.cpp
+  Compiler/WholeDAGEdgeStrategyPlanTest.cpp
+  Compiler/WholeDAGPlacementFrontierTest.cpp
+  Compiler/WholeCardResourceAcceptanceTest.cpp
+  Compiler/WholeCardExecutableSynthesisTest.cpp
   Conversion/BidirectionalTilingTest.cpp
-  Conversion/WaferTensorProgramToTileRegionTest.cpp
-  Conversion/CommunicationAlternativesTest.cpp
+  Conversion/WaferCardProgramToTileModulesTest.cpp
+  Conversion/WaferTensorProgramToCardProgramTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
+  Dialect/Wafer/PhysicalTopologyTest.cpp
   Frontend/NpyPayloadTest.cpp
   Model/TargetModelMemoryTest.cpp
   Pipelines/PipelinesTest.cpp
@@ -47,17 +41,10 @@ add_executable(WaferUnitTests
   Target/NumericSemanticsTest.cpp
   Target/PhysicalTensorCodecTest.cpp
   Target/TargetFormatTest.cpp
-  Target/TargetSchedulingCapabilityTest.cpp
   Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp
   Transforms/MemoryPlanning/MiniMallocPackingTest.cpp
   Transforms/MemoryPlanning/StaticMemoryPackingTest.cpp
-  Transforms/PhysicalDataflow/CandidateRewritesTest.cpp
-  Transforms/PhysicalDataflow/CompleteRankMaterializationTest.cpp
-  Transforms/PhysicalDataflow/ReadyOrderTest.cpp
-  Transforms/Scheduling/FixedSlotPipelineTest.cpp
-  Transforms/Scheduling/RankTileMaterializationTest.cpp
   Transforms/Scheduling/RedundantTransferEliminationTest.cpp
-  Transforms/Scheduling/WorkerPlacementTest.cpp
   Transforms/Target/LowerInstrToTargetLLVMTest.cpp
 )
 llvm_update_compile_flags(WaferUnitTests)
@@ -82,6 +69,8 @@ target_link_libraries(WaferUnitTests
   WaferRuntime
   WaferPipelines
   WaferTensorProgramToTileRegion
+  WaferCardProgramToTileModules
+  WaferTensorProgramToCardProgram
   WaferTransforms
   MLIRAsyncDialect
   MLIRArithDialect
@@ -101,15 +90,8 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
   target_link_libraries(WaferUnitTests PRIVATE StablehloRegister)
 endif()
 
-set(WAFER_DEFAULT_UNIT_TEST_FILTER
-  "--gtest_filter=-NoCIntermediateDataflowTest.*:NoCPartialDataflowTest.*"
-)
-set(WAFER_COMPILER_INTEGRATION_TEST_FILTER
-  "--gtest_filter=NoCIntermediateDataflowTest.*:NoCPartialDataflowTest.*"
-)
-
 add_test(NAME WaferUnitTests
-  COMMAND WaferUnitTests ${WAFER_DEFAULT_UNIT_TEST_FILTER}
+  COMMAND WaferUnitTests
 )
 
 add_executable(WaferRunBoardIOUnitTests
@@ -133,16 +115,9 @@ target_link_libraries(WaferRunBoardIOUnitTests
 add_test(NAME WaferRunBoardIOUnitTests COMMAND WaferRunBoardIOUnitTests)
 
 add_custom_target(check-wafer-unit
-  COMMAND $<TARGET_FILE:WaferUnitTests> ${WAFER_DEFAULT_UNIT_TEST_FILTER}
+  COMMAND $<TARGET_FILE:WaferUnitTests>
   COMMAND $<TARGET_FILE:WaferRunBoardIOUnitTests>
   DEPENDS WaferUnitTests WaferRunBoardIOUnitTests
-  USES_TERMINAL
-)
-
-add_custom_target(check-wafer-compiler-integration
-  COMMAND $<TARGET_FILE:WaferUnitTests>
-    ${WAFER_COMPILER_INTEGRATION_TEST_FILTER}
-  DEPENDS WaferUnitTests
   USES_TERMINAL
 )
 
@@ -270,29 +245,6 @@ if(WAFER_ENABLE_BULK_MODEL_DEPS)
 endif()
 
 if(WAFER_ENABLE_SYSTEMC_MODEL)
-  add_library(WaferSystemCModelTestSupport STATIC
-    Model/SystemCTargetModelTestSupport.cpp
-  )
-  llvm_update_compile_flags(WaferSystemCModelTestSupport)
-  target_include_directories(WaferSystemCModelTestSupport PRIVATE
-    ${CMAKE_SOURCE_DIR}/lib
-  )
-  target_link_libraries(WaferSystemCModelTestSupport
-    PUBLIC
-    WaferCompiler
-    WaferIR
-    MLIRArithDialect
-    MLIRBufferizationDialect
-    MLIRControlFlowDialect
-    MLIRFuncDialect
-    MLIRLinalgDialect
-    MLIRLLVMDialect
-    MLIRMathDialect
-    MLIRMemRefDialect
-    MLIRSCFDialect
-    MLIRTensorDialect
-  )
-
   add_executable(WaferSystemCModelIntegrationTest
     Model/SystemCTargetModelIntegrationTest.cpp
   )
@@ -320,34 +272,6 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   )
   add_test(NAME WaferSystemCModelIntegrationTest
     COMMAND WaferSystemCModelIntegrationTest)
-
-  add_executable(WaferSystemCModelFixedSlotIntegrationTest
-    Model/SystemCTargetModelFixedSlotIntegrationTest.cpp
-  )
-  llvm_update_compile_flags(WaferSystemCModelFixedSlotIntegrationTest)
-  target_include_directories(WaferSystemCModelFixedSlotIntegrationTest PRIVATE
-    ${CMAKE_SOURCE_DIR}/lib
-  )
-  target_link_libraries(WaferSystemCModelFixedSlotIntegrationTest
-    PRIVATE
-    WaferSystemCModel
-    WaferCompiler
-    WaferIR
-    MLIRArithDialect
-    MLIRBufferizationDialect
-    MLIRControlFlowDialect
-    MLIRFuncDialect
-    MLIRLinalgDialect
-    MLIRLLVMDialect
-    MLIRMathDialect
-    MLIRMemRefDialect
-    MLIRSCFDialect
-    MLIRTensorDialect
-    SystemC::systemc
-    GTest::gtest
-  )
-  add_test(NAME WaferSystemCModelFixedSlotIntegrationTest
-    COMMAND WaferSystemCModelFixedSlotIntegrationTest)
 
   add_executable(WaferSystemCModelBatchedGemmIntegrationTest
     Model/SystemCTargetModelBatchedGemmIntegrationTest.cpp
@@ -405,170 +329,10 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   add_test(NAME WaferSystemCModelOrientedGemmIntegrationTest
     COMMAND WaferSystemCModelOrientedGemmIntegrationTest)
 
-  add_executable(WaferSystemCModelDTEIntegrationTest
-    Model/SystemCTargetModelDTEIntegrationTest.cpp
-  )
-  llvm_update_compile_flags(WaferSystemCModelDTEIntegrationTest)
-  target_link_libraries(WaferSystemCModelDTEIntegrationTest
-    PRIVATE
-    WaferSystemCModel
-    WaferSystemCModelTestSupport
-    SystemC::systemc
-    GTest::gtest
-  )
-  add_test(NAME WaferSystemCModelDTEIntegrationTest
-    COMMAND WaferSystemCModelDTEIntegrationTest)
-
-  add_executable(WaferSystemCModelDTEPreIssueTest
-    Model/SystemCTargetModelDTEPreIssueTest.cpp
-  )
-  llvm_update_compile_flags(WaferSystemCModelDTEPreIssueTest)
-  target_link_libraries(WaferSystemCModelDTEPreIssueTest
-    PRIVATE
-    WaferSystemCModel
-    WaferSystemCModelTestSupport
-    SystemC::systemc
-    GTest::gtest
-  )
-  add_test(NAME WaferSystemCModelDTEPreIssueTest
-    COMMAND WaferSystemCModelDTEPreIssueTest)
-
-  add_executable(WaferSystemCModelDTEReadinessTest
-    Model/SystemCTargetModelDTEReadinessTest.cpp
-  )
-  llvm_update_compile_flags(WaferSystemCModelDTEReadinessTest)
-  target_link_libraries(WaferSystemCModelDTEReadinessTest
-    PRIVATE
-    WaferSystemCModel
-    WaferSystemCModelTestSupport
-    SystemC::systemc
-    GTest::gtest
-  )
-  add_test(NAME WaferSystemCModelDTEReadinessTest
-    COMMAND WaferSystemCModelDTEReadinessTest)
-
-  function(add_wafer_systemc_dte_compute_access_test target mode)
-    add_executable(${target}
-      Model/SystemCTargetModelDTEComputeAccessTest.cpp
-    )
-    llvm_update_compile_flags(${target})
-    target_compile_definitions(${target}
-      PRIVATE WAFER_TEST_DTE_COMPUTE_ACCESS_MODE=${mode})
-    target_link_libraries(${target}
-      PRIVATE
-      WaferSystemCModel
-      WaferSystemCModelTestSupport
-      SystemC::systemc
-      GTest::gtest
-    )
-    add_test(NAME ${target} COMMAND ${target})
-  endfunction()
-
-  add_wafer_systemc_dte_compute_access_test(
-    WaferSystemCModelDTEDisjointComputeAccessTest 0)
-  add_wafer_systemc_dte_compute_access_test(
-    WaferSystemCModelDTEOverlappingComputeAccessTest 1)
-  add_wafer_systemc_dte_compute_access_test(
-    WaferSystemCModelDTEJoinedComputeAccessTest 2)
-
-  function(add_wafer_systemc_dte_late_join_test target mode)
-    add_executable(${target}
-      Model/SystemCTargetModelDTELateJoinTest.cpp
-    )
-    llvm_update_compile_flags(${target})
-    target_compile_definitions(${target}
-      PRIVATE WAFER_TEST_DTE_LATE_JOIN_ACCESS_MODE=${mode})
-    target_link_libraries(${target}
-      PRIVATE
-      WaferSystemCModel
-      WaferSystemCModelTestSupport
-      SystemC::systemc
-      GTest::gtest
-    )
-    add_test(NAME ${target} COMMAND ${target})
-  endfunction()
-
-  add_wafer_systemc_dte_late_join_test(
-    WaferSystemCModelDTELateJoinSourceWriteTest 0)
-  add_wafer_systemc_dte_late_join_test(
-    WaferSystemCModelDTELateJoinDestinationReadTest 1)
-  add_wafer_systemc_dte_late_join_test(
-    WaferSystemCModelDTELateJoinDestinationWriteTest 2)
-
-  add_executable(WaferSystemCModelNCCVisibilityTest
-    Model/SystemCTargetModelNCCVisibilityTest.cpp
-  )
-  llvm_update_compile_flags(WaferSystemCModelNCCVisibilityTest)
-  target_link_libraries(WaferSystemCModelNCCVisibilityTest
-    PRIVATE
-    WaferSystemCModel
-    WaferSystemCModelTestSupport
-    SystemC::systemc
-    GTest::gtest
-  )
-  add_test(NAME WaferSystemCModelNCCVisibilityTest
-    COMMAND WaferSystemCModelNCCVisibilityTest)
-
-  add_executable(WaferSystemCModelDTEMismatchTest
-    Model/SystemCTargetModelDTEMismatchTest.cpp
-  )
-  llvm_update_compile_flags(WaferSystemCModelDTEMismatchTest)
-  target_link_libraries(WaferSystemCModelDTEMismatchTest
-    PRIVATE
-    WaferSystemCModel
-    WaferSystemCModelTestSupport
-    SystemC::systemc
-    GTest::gtest
-  )
-  add_test(NAME WaferSystemCModelDTEMismatchTest
-    COMMAND WaferSystemCModelDTEMismatchTest)
-
-  add_executable(WaferSystemCModelNoProgressTest
-    Model/SystemCTargetModelNoProgressTest.cpp
-  )
-  llvm_update_compile_flags(WaferSystemCModelNoProgressTest)
-  target_link_libraries(WaferSystemCModelNoProgressTest
-    PRIVATE
-    WaferSystemCModel
-    WaferSystemCModelTestSupport
-    SystemC::systemc
-    GTest::gtest
-  )
-  add_test(NAME WaferSystemCModelNoProgressTest
-    COMMAND WaferSystemCModelNoProgressTest)
-
-  add_executable(WaferSystemCModelEventFailureTest
-    Model/SystemCTargetModelEventFailureTest.cpp
-  )
-  llvm_update_compile_flags(WaferSystemCModelEventFailureTest)
-  target_link_libraries(WaferSystemCModelEventFailureTest
-    PRIVATE
-    WaferSystemCModel
-    WaferSystemCModelTestSupport
-    SystemC::systemc
-    GTest::gtest
-  )
-  add_test(NAME WaferSystemCModelEventFailureTest
-    COMMAND WaferSystemCModelEventFailureTest)
-
   set_tests_properties(
     WaferSystemCModelIntegrationTest
-    WaferSystemCModelFixedSlotIntegrationTest
     WaferSystemCModelBatchedGemmIntegrationTest
     WaferSystemCModelOrientedGemmIntegrationTest
-    WaferSystemCModelDTEIntegrationTest
-    WaferSystemCModelDTEPreIssueTest
-    WaferSystemCModelDTEReadinessTest
-    WaferSystemCModelDTEDisjointComputeAccessTest
-    WaferSystemCModelDTEOverlappingComputeAccessTest
-    WaferSystemCModelDTEJoinedComputeAccessTest
-    WaferSystemCModelDTELateJoinSourceWriteTest
-    WaferSystemCModelDTELateJoinDestinationReadTest
-    WaferSystemCModelDTELateJoinDestinationWriteTest
-    WaferSystemCModelNCCVisibilityTest
-    WaferSystemCModelDTEMismatchTest
-    WaferSystemCModelNoProgressTest
-    WaferSystemCModelEventFailureTest
     PROPERTIES
     LABELS "systemc-model;managed-dependencies;component"
     ENVIRONMENT
@@ -580,70 +344,14 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
       $<TARGET_FILE:WaferSystemCModelIntegrationTest>
     COMMAND ${CMAKE_COMMAND} -E env
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelFixedSlotIntegrationTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
       $<TARGET_FILE:WaferSystemCModelBatchedGemmIntegrationTest>
     COMMAND ${CMAKE_COMMAND} -E env
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
       $<TARGET_FILE:WaferSystemCModelOrientedGemmIntegrationTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelDTEIntegrationTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelDTEPreIssueTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelDTEReadinessTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelDTEDisjointComputeAccessTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelDTEOverlappingComputeAccessTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelDTEJoinedComputeAccessTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelDTELateJoinSourceWriteTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelDTELateJoinDestinationReadTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelDTELateJoinDestinationWriteTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelNCCVisibilityTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelDTEMismatchTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelNoProgressTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelEventFailureTest>
     DEPENDS
       WaferSystemCModelIntegrationTest
-      WaferSystemCModelFixedSlotIntegrationTest
       WaferSystemCModelBatchedGemmIntegrationTest
       WaferSystemCModelOrientedGemmIntegrationTest
-      WaferSystemCModelDTEIntegrationTest
-      WaferSystemCModelDTEPreIssueTest
-      WaferSystemCModelDTEReadinessTest
-      WaferSystemCModelDTEDisjointComputeAccessTest
-      WaferSystemCModelDTEOverlappingComputeAccessTest
-      WaferSystemCModelDTEJoinedComputeAccessTest
-      WaferSystemCModelDTELateJoinSourceWriteTest
-      WaferSystemCModelDTELateJoinDestinationReadTest
-      WaferSystemCModelDTELateJoinDestinationWriteTest
-      WaferSystemCModelNCCVisibilityTest
-      WaferSystemCModelDTEMismatchTest
-      WaferSystemCModelNoProgressTest
-      WaferSystemCModelEventFailureTest
     USES_TERMINAL
   )
 endif()

@@ -3,6 +3,10 @@
 // RUN: wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66048' %s | FileCheck --check-prefix=LOOP-CARRY %s
 // RUN: wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66048' %s | FileCheck --check-prefix=ASYNC %s
 
+wafer.target.topology @default
+    {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+     tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+
 func.func @if_branch_results_reuse(%output: memref<128xf16, #wafer.memory<ddr, tensor>>,
                                    %cond: i1) {
   %region = wafer.tile.region(%output, %cond
@@ -100,7 +104,7 @@ func.func @async_token_extends_source_until_wait(%boundary: memref<128xf16, #waf
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
     wafer.instr.ncc_join [0]
     %token = wafer.instr.dte_send %source {peer = 1 : i64, bytes = 256 : i64,
-        message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+        message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
     %before_wait = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %before_wait, %zero

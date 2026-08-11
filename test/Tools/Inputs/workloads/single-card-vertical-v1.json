@@ -202,7 +202,7 @@
     {
       "id": "tiny-llama-decoder-f32",
       "kind": "tiny_llama_decoder_block",
-      "source_revision": "sha256:386849e6d4e31954f8e8e9ed5c9b265100e136458af5b9d2f3af413c579df944",
+      "source_revision": "sha256:e2ddbe49fa38f8c0703a3608ae54d7301d26c0768c36fa06fc1f3fed10ca1a85",
       "seed": 20260712,
       "dtype": "float32",
       "config": {
@@ -211,19 +211,19 @@
         "sequence_length": 4,
         "causal_attention": true,
         "execution_mesh_shape": [
-          16
+          1
         ],
         "execution_mesh_axis_names": [
-          "tensor"
+          "card_partition"
         ]
       },
       "digests": {
-        "source_config": "sha256:386849e6d4e31954f8e8e9ed5c9b265100e136458af5b9d2f3af413c579df944",
+        "source_config": "sha256:e2ddbe49fa38f8c0703a3608ae54d7301d26c0768c36fa06fc1f3fed10ca1a85",
         "input": "sha256:daa46fe9f0572572d143cd1bf378d554ae79eef7c037a65dd7cd2528df6cead1",
         "parameters": "sha256:e933bda2600971a96a3fc99cc47c0923a76feab3eacbd250dbdbff6336035a4d",
         "reference_output": "sha256:592f22d431a60152bf0551a408e86190a33113b80a4e45b04ca405ae371afc77",
         "reference_output_quantized": "sha256:57efccb598f00c76ddb1230f3596f1e64561602f61683f8355075f8a66cbb1cb",
-        "exported_program": "sha256:ac61beec77477e9b5f7184b340254537bcdb4eaa1b2c4480ca5cedbdf645491c"
+        "exported_program": "sha256:51efa9d95cbf82c615690cea22fa80fb340b2220b9dcaddb66809962daecbd9c"
       },
       "reference": {
         "implementation": "independent NumPy RMSNorm/RoPE/attention/SiLU/MLP/residual",

@@ -33,16 +33,16 @@ struct SystemCEvent {
 };
 
 struct SystemCRunner final : public sc_core::sc_module {
-  SystemCRunner(sc_core::sc_module_name name, uint64_t rankCount,
-                SystemCRankEntry rankEntry, void *owner)
-      : sc_core::sc_module(name), rankEntry(rankEntry), owner(owner) {
-    processes.reserve(static_cast<size_t>(rankCount + 1));
-    for (uint64_t rank = 0; rank < rankCount; ++rank) {
+  SystemCRunner(sc_core::sc_module_name name, uint64_t tileCount,
+                SystemCTileEntry tileEntry, void *owner)
+      : sc_core::sc_module(name), tileEntry(tileEntry), owner(owner) {
+    processes.reserve(static_cast<size_t>(tileCount + 1));
+    for (uint64_t launchSlot = 0; launchSlot < tileCount; ++launchSlot) {
       sc_core::sc_spawn_options options;
       processes.push_back(sc_core::sc_spawn(
-          sc_core::sc_bind(&SystemCRunner::runRank, this,
-                           static_cast<int64_t>(rank)),
-          sc_core::sc_gen_unique_name("wafer_rank_thread"), &options));
+          sc_core::sc_bind(&SystemCRunner::runTile, this,
+                           static_cast<int64_t>(launchSlot)),
+          sc_core::sc_gen_unique_name("wafer_tile_thread"), &options));
     }
     sc_core::sc_spawn_options options;
     processes.push_back(sc_core::sc_spawn(
@@ -50,14 +50,14 @@ struct SystemCRunner final : public sc_core::sc_module {
         sc_core::sc_gen_unique_name("wafer_control_thread"), &options));
   }
 
-  void runRank(int64_t logicalRank) {
+  void runTile(int64_t launchSlot) {
     ++threadProcessCount;
     if (sc_core::sc_get_current_process_handle().proc_kind() !=
         sc_core::SC_THREAD_PROC_) {
-      bridgeDiagnostic = "rank process is not a SystemC thread";
+      bridgeDiagnostic = "Tile process is not a SystemC thread";
       return;
     }
-    rankEntry(owner, logicalRank);
+    tileEntry(owner, launchSlot);
   }
 
   void controlThread() {
@@ -70,7 +70,7 @@ struct SystemCRunner final : public sc_core::sc_module {
     sc_core::wait(controlEvent);
   }
 
-  SystemCRankEntry rankEntry;
+  SystemCTileEntry tileEntry;
   void *owner;
   std::vector<sc_core::sc_process_handle> processes;
   sc_core::sc_event controlEvent;
@@ -83,16 +83,16 @@ bool isSystemCInitialElaboration() {
 
 const char *getSystemCBridgeDiagnostic() { return bridgeDiagnostic.c_str(); }
 
-SystemCRunner *createSystemCRunner(uint64_t rankCount,
-                                   SystemCRankEntry rankEntry, void *owner) {
+SystemCRunner *createSystemCRunner(uint64_t tileCount,
+                                   SystemCTileEntry tileEntry, void *owner) {
   bridgeDiagnostic.clear();
-  if (rankCount == 0 || !rankEntry || !owner) {
-    bridgeDiagnostic = "SystemC runner requires ranks, callback, and owner";
+  if (tileCount == 0 || !tileEntry || !owner) {
+    bridgeDiagnostic = "SystemC runner requires Tiles, callback, and owner";
     return nullptr;
   }
   try {
     return new SystemCRunner(sc_core::sc_gen_unique_name("wafer_target_model"),
-                             rankCount, rankEntry, owner);
+                             tileCount, tileEntry, owner);
   } catch (...) {
     recordException("SystemC runner construction failed");
     return nullptr;

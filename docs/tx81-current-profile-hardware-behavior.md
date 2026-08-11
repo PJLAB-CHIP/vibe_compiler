@@ -113,8 +113,7 @@ reduce probe 中，逻辑结果是 128 B，而硬件可观察到的物理写回�
 %token = wafer.instr.dte_send %buffer
     {peer = 1 : i64, bytes = 16 : i64,
      message = #wafer.dte_message<
-       communication = 9, phase = collective_permute,
-       round = 2, slice = 0>}
+       communication = 9,        round = 2, slice = 0>}
     : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
 wafer.instr.dte_wait %token : !async.token
 ```
@@ -195,9 +194,11 @@ ABI 能接受 option、packet 能完成，都不足以让 compiler 删除独立 
 编译器结论：如果语义域不能保证，就应在 verifier/legality 或候选选择时拒绝，而不是依赖运行时偶然
 输入。只有上游 IR 能证明落在已支持域，才可以采用这条 lowering。
 
-## 12. Case J：Microbench 最终必须回到 production candidate
+## 12. Case J：历史 production candidate 证据的当前边界
 
-硬件校准只有被 production compiler 消费才真正闭环。NoC-resident K-sharded GEMM 是一个代表性例子：
+下列 NoC-resident K-sharded GEMM 是旧 whole-rank compiler 已完成的板端证据，保留它是为了记录
+当时 source→IR→package→board 的闭环，不是将 rank-oriented mapping、候选接口或 package wire 保留为
+current compiler 合同：
 
 ![16-rank NoC-resident K-sharded GEMM](images/noc-resident-k-sharded-gemm-pipeline.png)
 
@@ -207,8 +208,10 @@ ABI 能接受 option、packet 能完成，都不足以让 compiler 删除独立 
 - winner 必须真实改变 accepted Instr、Target LLVM、ELF/package，并与同源 baseline 使用相同 expected、
   guard、completion 和 cleanup。
 
-这组结果只覆盖当前 FP16、16-rank、已生成的 candidate 和当前 profile。它不把一个 microbench 的
-队列、overlap 或地址观察提升为其它 shape、dtype、route 的通用性能结论。
+这组历史结果只覆盖当时的 FP16、16-rank fixture、已生成 candidate 和对应 profile。它不把一个
+microbench 的队列、overlap 或地址观察提升为其它 shape、dtype、route 的通用性能结论；也不代签
+current whole-card spatial/temporal/fusion search。current 路径必须重新产生whole-card actual IR、schema-v8 package
+和fresh no-card/board证据。
 
 ## 13. 编译器实现检查表
 

@@ -1,5 +1,5 @@
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "program": {
     "id": 0
   },
@@ -8,19 +8,23 @@
     "runtime_abi": "wafer-tx81-kernel-v3",
     "launch": {
       "kind": "kernel",
-      "form": "per-rank",
-      "entry_abi": "rank-local-pointer-block",
+      "form": "grid",
+      "entry_abi": "tile-major-pointer-table",
       "phases": [
         "main"
       ]
     },
     "module_format": "elf-riscv64"
   },
-  "rank_count": 1,
+  "card_count": 1,
+  "tile_count": 16,
   "resources": [
     {
       "id": 0,
-      "rank": 0,
+      "scope": {
+        "kind": "card",
+        "card_id": 0
+      },
       "role": "user_input",
       "role_index": 0,
       "name": "input",
@@ -37,7 +41,10 @@
     },
     {
       "id": 1,
-      "rank": 0,
+      "scope": {
+        "kind": "card",
+        "card_id": 0
+      },
       "role": "output",
       "role_index": 0,
       "name": "output",
@@ -54,10 +61,329 @@
     },
     {
       "id": 2,
-      "rank": 0,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 1
+      },
       "role": "workspace",
       "role_index": 0,
-      "name": "default_ddr_arena",
+      "name": "default_ddr_arena_tile_1",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 3,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 0
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_0",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 4,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 2
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_2",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 5,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 3
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_3",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 6,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 4
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_4",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 7,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 5
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_5",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 8,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 6
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_6",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 9,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 7
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_7",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 10,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 8
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_8",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 11,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 9
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_9",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 12,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 10
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_10",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 13,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 11
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_11",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 14,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 12
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_12",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 15,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 13
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_13",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 16,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 14
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_14",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    },
+    {
+      "id": 17,
+      "scope": {
+        "kind": "tile",
+        "card_id": 0,
+        "tile_id": 15
+      },
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena_tile_15",
       "type": {
         "dtype": "u8",
         "shape": [
@@ -73,7 +399,7 @@
   "modules": [
     {
       "id": 0,
-      "path": "modules/rank_00000.so",
+      "path": "modules/tile_00000.so",
       "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "format": "elf-riscv64",
       "exports": [
@@ -87,7 +413,9 @@
   "entries": [
     {
       "id": 0,
-      "rank": 0,
+      "card_id": 0,
+      "tile_id": 1,
+      "launch_slot": 0,
       "module": 0,
       "slots": [
         {
@@ -106,17 +434,430 @@
           "access": "read_write"
         }
       ],
-      "terminal_completion": 0,
+      "completion": "return_after_local_drain",
       "transport": {
         "kind": "none"
       }
-    }
-  ],
-  "completions": [
+    },
     {
-      "id": 0,
-      "rank": 0,
-      "kind": "entry_return"
+      "id": 1,
+      "card_id": 0,
+      "tile_id": 0,
+      "launch_slot": 1,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 3,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 2,
+      "card_id": 0,
+      "tile_id": 2,
+      "launch_slot": 2,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 4,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 3,
+      "card_id": 0,
+      "tile_id": 3,
+      "launch_slot": 3,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 5,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 4,
+      "card_id": 0,
+      "tile_id": 4,
+      "launch_slot": 4,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 6,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 5,
+      "card_id": 0,
+      "tile_id": 5,
+      "launch_slot": 5,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 7,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 6,
+      "card_id": 0,
+      "tile_id": 6,
+      "launch_slot": 6,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 8,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 7,
+      "card_id": 0,
+      "tile_id": 7,
+      "launch_slot": 7,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 9,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 8,
+      "card_id": 0,
+      "tile_id": 8,
+      "launch_slot": 8,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 10,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 9,
+      "card_id": 0,
+      "tile_id": 9,
+      "launch_slot": 9,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 11,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 10,
+      "card_id": 0,
+      "tile_id": 10,
+      "launch_slot": 10,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 12,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 11,
+      "card_id": 0,
+      "tile_id": 11,
+      "launch_slot": 11,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 13,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 12,
+      "card_id": 0,
+      "tile_id": 12,
+      "launch_slot": 12,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 14,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 13,
+      "card_id": 0,
+      "tile_id": 13,
+      "launch_slot": 13,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 15,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 14,
+      "card_id": 0,
+      "tile_id": 14,
+      "launch_slot": 14,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 16,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
+    },
+    {
+      "id": 15,
+      "card_id": 0,
+      "tile_id": 15,
+      "launch_slot": 15,
+      "module": 0,
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 17,
+          "access": "read_write"
+        }
+      ],
+      "completion": "return_after_local_drain",
+      "transport": {
+        "kind": "none"
+      }
     }
   ]
 }

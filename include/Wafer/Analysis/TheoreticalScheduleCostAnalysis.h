@@ -1,19 +1,21 @@
-//===- NoCProfitabilityAnalysis.h - Whole-card NoC tradeoff ----*- C++ -*-===//
+//===- TheoreticalScheduleCostAnalysis.h - Numeric cost -------*- C++ -*-===//
 
-#ifndef WAFER_ANALYSIS_NOCPROFITABILITYANALYSIS_H
-#define WAFER_ANALYSIS_NOCPROFITABILITYANALYSIS_H
+#ifndef WAFER_ANALYSIS_THEORETICALSCHEDULECOSTANALYSIS_H
+#define WAFER_ANALYSIS_THEORETICALSCHEDULECOSTANALYSIS_H
 
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 
-#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
+#include <optional>
+#include <utility>
 
 namespace wafer::analysis {
 
-/// Assumptions used only to produce a point estimate. They are deliberately
-/// separate from ScheduleCostKnowledge: an exact byte/message count may be
-/// Known while the route or service rate used to time it is Estimated.
+/// Versioned point-model inputs used by the theoretical duration estimate.
+/// These flags are diagnostic only; they never establish a performance proof.
 enum class StaticDurationAssumption : uint32_t {
   None = 0,
   DDROperatingPoint = 1u << 0,
@@ -23,8 +25,8 @@ enum class StaticDurationAssumption : uint32_t {
   DTEMessageStartupPrior = 1u << 4,
   NoCHopPrior = 1u << 5,
   ControlIssuePrior = 1u << 6,
-  SequentialPhaseModel = 1u << 7,
-  QualifiedPipelineModel = 1u << 8,
+  ExplicitSchedulePlan = 1u << 7,
+  BufferedPipelinePlan = 1u << 8,
   SPMServiceRatePrior = 1u << 9,
 };
 
@@ -35,109 +37,168 @@ staticDurationAssumptionMask(StaticDurationAssumption assumption) {
   return static_cast<StaticDurationAssumptionMask>(assumption);
 }
 
-/// A duration interval derived from one complete-rank final instruction
-/// program. Picoseconds keep small payloads distinguishable without implying
-/// cycle accuracy.
-struct StaticDurationInterval {
-  ScheduleCostMetric lowerBoundPicoseconds;
-  ScheduleCostMetric nominalPicoseconds;
-  ScheduleCostMetric upperBoundPicoseconds;
-  StaticDurationAssumptionMask nominalAssumptions = 0;
+/// Independently enabled model terms. A term is enabled once for a complete
+/// comparison cohort only when its parameter and required work collector are
+/// available for every candidate. Disabled terms contribute nothing to every
+/// candidate in that cohort; they are never converted into a guessed value.
+enum class StaticDurationTerm : uint32_t {
+  DDR = 1u << 0,
+  NPUF16Bf16 = 1u << 1,
+  VectorF16Bf16 = 1u << 2,
+  VectorF32 = 1u << 3,
+  NoCLink = 1u << 4,
+  NoCTransmitEndpoint = 1u << 5,
+  NoCReceiveEndpoint = 1u << 6,
+  NoCMessageStartup = 1u << 7,
+  NoCHop = 1u << 8,
+  SPMMovement = 1u << 9,
+  InstructionControl = 1u << 10,
+  DTEWaitControl = 1u << 11,
+  NCCWaitControl = 1u << 12,
 };
 
-/// Resource-constrained duration facts for one whole-card variant. Nominal
-/// values are analytical point estimates. Lower/upper fields remain genuine
-/// hardware/calibrated bounds and alone may establish a proof.
+using StaticDurationTermMask = uint32_t;
+
+constexpr StaticDurationTermMask
+staticDurationTermMask(StaticDurationTerm term) {
+  return static_cast<StaticDurationTermMask>(term);
+}
+
+struct StaticDurationEstimate {
+  uint64_t picoseconds = 0;
+  StaticDurationAssumptionMask assumptions = 0;
+};
+
+/// Numeric theoretical resource cost for one whole-card executable. All
+/// fields are always numeric. `enabledTerms` is cohort-wide and therefore
+/// identical for every estimate produced by one plural estimation call.
 struct WholeCardResourceDurationEstimate {
-  StaticDurationInterval ddr;
-  StaticDurationInterval compute;
-  StaticDurationInterval noc;
-  StaticDurationInterval spm;
-  StaticDurationInterval control;
-  /// The lower bound is the maximum calibrated resource floor, the nominal
-  /// reference follows the supplied current-IR schedule context, and the
-  /// conservative upper bound serializes calibrated external-resource
-  /// envelopes. Explicit SPM movement is a simultaneous local-port envelope:
-  /// its nominal point is assumption-marked, and its optional conservative
-  /// bound participates without adding DDR-visible movement a second time.
-  StaticDurationInterval makespan;
+  StaticDurationEstimate ddr;
+  StaticDurationEstimate compute;
+  StaticDurationEstimate noc;
+  StaticDurationEstimate spm;
+  StaticDurationEstimate control;
+  StaticDurationEstimate makespan;
+  StaticDurationTermMask enabledTerms = 0;
 };
 
-/// How the current final instruction schedule permits independent engines to
-/// overlap. This is supplied from current-IR scheduling/capability evidence;
-/// it is not inferred from a workload or operation name.
-enum class StaticCrossResourceSchedule : uint8_t {
-  /// No steady-state overlap contract: DDR, NoC and compute service phases are
-  /// charged in dependency order. SPM remains a simultaneous port constraint.
-  SequentialPhases,
-  /// Explicit multi-buffer/fixed-slot scheduling plus target capability
-  /// evidence permits a steady-state resource-envelope estimate.
-  PipelinedSteadyState,
+/// Resource classes whose already-estimated service durations are placed on
+/// an explicit finite schedule. Control overhead is deliberately outside this
+/// set: it is charged once after the resource plan and cannot be hidden by a
+/// data-movement/compute overlap claim.
+enum class StaticScheduleResource : uint8_t {
+  DDR = 1u << 0,
+  Compute = 1u << 1,
+  NoC = 1u << 2,
+  SPMMovement = 1u << 3,
 };
 
-struct NoCTradeoffScheduleContext {
-  StaticCrossResourceSchedule baseline =
-      StaticCrossResourceSchedule::SequentialPhases;
-  StaticCrossResourceSchedule candidate =
-      StaticCrossResourceSchedule::SequentialPhases;
+using StaticScheduleResourceMask = uint8_t;
+
+constexpr StaticScheduleResourceMask
+staticScheduleResourceMask(StaticScheduleResource resource) {
+  return static_cast<StaticScheduleResourceMask>(resource);
+}
+
+constexpr StaticScheduleResourceMask allStaticScheduleResources() {
+  return staticScheduleResourceMask(StaticScheduleResource::DDR) |
+         staticScheduleResourceMask(StaticScheduleResource::Compute) |
+         staticScheduleResourceMask(StaticScheduleResource::NoC) |
+         staticScheduleResourceMask(StaticScheduleResource::SPMMovement);
+}
+
+/// One finite resource-work item. The pointer refers to either a whole final
+/// program cost used by the conservative baseline or a scheduler-owned
+/// phase/wave cost slice. The pointee must outlive the plan and its estimation
+/// call.
+struct StaticScheduleWork {
+  const WholeCardInstructionProgramCost *cost = nullptr;
+  StaticScheduleResourceMask resources = 0;
 };
 
-enum class NoCTradeoffDecision : uint8_t {
-  /// The candidate does not exchange lower whole-card DDR traffic for higher
-  /// or retained NoC-dependent execution, so the ordinary exact/static
-  /// selector remains responsible.
-  NotApplicable,
-  /// The nominal reference does not show an opportunity or does not clear the
-  /// required production margin.
-  Reject,
-  /// A nominal decision cannot be formed because at least one required exact
-  /// work fact or point-model input is structurally unavailable. Missing
-  /// conservative proof calibration by itself does not cause this state.
-  Indeterminate,
-  /// Exact final-IR work plus versioned target point parameters clear the
-  /// production margin. This is usable by normal production but is not
-  /// reported as a calibrated proof.
-  EstimatedBenefit,
-  /// The candidate upper bound plus margin is below the baseline lower bound.
-  ProvenBenefit,
+/// Work in one branch has data/effect order and therefore sums. Different
+/// branches in one stage are independent and therefore the stage duration is
+/// their maximum. Distinct work pointers let a whole-DAG scheduler represent
+/// concurrent branches with different service demands.
+struct StaticScheduleBranch {
+  llvm::SmallVector<StaticScheduleWork, 4> dependentWork;
 };
 
-enum class NoCTradeoffReason : uint8_t {
-  NoCrossResourceTradeoff,
-  UnknownCostFact,
-  NominalMakespanNotImproved,
-  InsufficientBenefitMargin,
-  EstimatedModelClearsMargin,
-  ConservativeBoundsProveBenefit,
+struct StaticScheduleStage {
+  llvm::SmallVector<StaticScheduleBranch, 4> independentBranches;
 };
 
-struct NoCTradeoffProfitability {
-  NoCTradeoffDecision decision = NoCTradeoffDecision::NotApplicable;
-  NoCTradeoffReason reason = NoCTradeoffReason::NoCrossResourceTradeoff;
-  WholeCardResourceDurationEstimate baseline;
-  WholeCardResourceDurationEstimate candidate;
+/// One explicit buffered pipeline. Prologue and epilogue are finite dependent
+/// stage sequences. The steady-state initiation interval is the maximum
+/// branch service duration in `steady`, repeated `steadyWaveCount` times. Each
+/// branch is one explicitly independent resource/physical lane; dependent work
+/// sharing that lane stays in the same branch and sums before the maximum.
+/// The wave count is the number of steady intervals, so a caller implementing
+/// `prologue + (waves - 1) * II + epilogue` passes `waves - 1` here.
+struct StaticBufferedPipeline {
+  llvm::SmallVector<StaticScheduleStage, 2> prologue;
+  StaticScheduleStage steady;
+  uint64_t steadyWaveCount = 0;
+  llvm::SmallVector<StaticScheduleStage, 2> epilogue;
 };
 
-/// Build duration intervals from exact final-IR work and versioned target
-/// parameters. Missing calibration remains Unknown and is never replaced by
-/// zero.
-WholeCardResourceDurationEstimate estimateWholeCardResourceDuration(
-    const WholeCardInstructionProgramCost &cost,
-    const TargetScheduleCostPolicy &policy,
-    StaticCrossResourceSchedule schedule =
-        StaticCrossResourceSchedule::SequentialPhases);
+struct StaticScheduleStep {
+  enum class Kind : uint8_t { Stage, BufferedPipeline };
 
-/// Compare a candidate against its already accepted reserved baseline. This
-/// analysis is pure and invocation-local; it neither mutates nor annotates IR.
-NoCTradeoffProfitability analyzeNoCTradeoffProfitability(
-    const WholeCardInstructionProgramCost &candidate,
-    const WholeCardInstructionProgramCost &baseline,
-    const TargetScheduleCostPolicy &policy,
-    NoCTradeoffScheduleContext schedule = {});
+  static StaticScheduleStep forStage(StaticScheduleStage stage);
+  static StaticScheduleStep
+  forBufferedPipeline(StaticBufferedPipeline pipeline);
 
-llvm::StringRef stringifyNoCTradeoffDecision(NoCTradeoffDecision decision);
-llvm::StringRef stringifyNoCTradeoffReason(NoCTradeoffReason reason);
+  Kind kind = Kind::Stage;
+  StaticScheduleStage stage;
+  StaticBufferedPipeline pipeline;
+};
+
+/// Validated finite schedule plan. Every resource class must occur in the
+/// plan, even if its cohort-wide enabled terms produce zero service time. This
+/// prevents a malformed plan from silently dropping known work. Repetition is
+/// allowed only when stated explicitly by the plan (for example a steady wave
+/// count); all timeline arithmetic is saturating.
+class StaticSchedulePlan {
+public:
+  StaticSchedulePlan(const StaticSchedulePlan &) = default;
+  StaticSchedulePlan(StaticSchedulePlan &&) = default;
+  StaticSchedulePlan &operator=(const StaticSchedulePlan &) = default;
+  StaticSchedulePlan &operator=(StaticSchedulePlan &&) = default;
+
+  static std::optional<StaticSchedulePlan>
+  create(const WholeCardInstructionProgramCost &controlCost,
+         llvm::ArrayRef<StaticScheduleStep> steps);
+
+  /// Conservative baseline plan: DDR, compute, NoC, and explicit SPM movement
+  /// are four dependent stages. It is a concrete plan construction, not a
+  /// binary global scheduling policy.
+  static StaticSchedulePlan
+  getConservative(const WholeCardInstructionProgramCost &cost);
+
+  llvm::ArrayRef<StaticScheduleStep> getSteps() const { return steps; }
+  const WholeCardInstructionProgramCost &getControlCost() const {
+    return *controlCost;
+  }
+
+private:
+  explicit StaticSchedulePlan(
+      const WholeCardInstructionProgramCost &controlCost,
+      llvm::SmallVector<StaticScheduleStep, 8> steps)
+      : controlCost(&controlCost), steps(std::move(steps)) {}
+
+  const WholeCardInstructionProgramCost *controlCost;
+  llvm::SmallVector<StaticScheduleStep, 8> steps;
+};
+
+/// Estimate explicit plans under one uniform enabled-term set. Pointer form
+/// lets independently-owned whole-DAG candidates retain their finite plans and
+/// phase costs without copies. A null plan returns an empty result.
+llvm::SmallVector<WholeCardResourceDurationEstimate, 16>
+estimateStaticSchedulePlanDurations(
+    llvm::ArrayRef<const StaticSchedulePlan *> plans,
+    const TargetScheduleCostPolicy &policy);
 
 } // namespace wafer::analysis
 
-#endif // WAFER_ANALYSIS_NOCPROFITABILITYANALYSIS_H
+#endif // WAFER_ANALYSIS_THEORETICALSCHEDULECOSTANALYSIS_H

@@ -543,7 +543,7 @@ private:
     if (!includeBackedge)
       return combined;
 
-    // Fixed-slot pipelines rotate a finite family of loop-external buffers
+    // Rotating-buffer pipelines carry a finite family of loop-external buffers
     // through scf.for iter_args.  Follow that address-preserving permutation
     // as a finite index graph and union its init ranges instead of treating
     // the graph cycle as an unbounded address recurrence.  Any subview or

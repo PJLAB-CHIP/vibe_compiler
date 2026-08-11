@@ -30,13 +30,8 @@ DEFAULT_WORKLOAD_CORPUS_SPEC = (
     / "workloads"
     / "single-card-vertical-v1.json"
 )
-HF_MEGATRON_TP_MESH_SHAPE = (16,)
-HF_MEGATRON_TP_AXIS_NAMES = ("tensor",)
-HF_MEGATRON_INPUT_SPEC = (None, None, None)
-HF_MEGATRON_REPLICATED_VECTOR_SPEC = (None,)
-HF_MEGATRON_ACTIVATION_TP_SPEC = (None, None, "tensor")
-HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC = ("tensor", None)
-HF_MEGATRON_ROW_PARALLEL_WEIGHT_SPEC = (None, "tensor")
+HF_CARD_PARTITION_MESH_SHAPE = (1,)
+HF_CARD_PARTITION_AXIS_NAMES = ("card_partition",)
 LLAMA_SCALE_PAYLOAD_ALGORITHM = (
     "wafer-exact-f16-splitmix64-counter-byte-scaled-v3"
 )
@@ -756,43 +751,31 @@ def apply_strategy_marks(
         spmd_module.mark_sharding(bias, mesh, strategy.bias_spec)
 
 
-def create_hf_megatron_mesh(spmd_module: Any) -> Any:
+def create_hf_card_partition_mesh(spmd_module: Any) -> Any:
     return spmd_module.Mesh(
-        list(range(HF_MEGATRON_TP_MESH_SHAPE[0])),
-        HF_MEGATRON_TP_MESH_SHAPE,
-        HF_MEGATRON_TP_AXIS_NAMES,
+        [0],
+        HF_CARD_PARTITION_MESH_SHAPE,
+        HF_CARD_PARTITION_AXIS_NAMES,
     )
 
 
-def apply_hf_megatron_sharding_marks(
+def apply_hf_card_partition_marks(
     *,
     spmd_module: Any,
     mesh: Any,
     input_tensor: Any,
     reference_module: Any,
 ) -> None:
-    spmd_module.mark_sharding(input_tensor, mesh, HF_MEGATRON_INPUT_SPEC)
-    get_specs = getattr(
-        reference_module, "wafer_parameter_sharding_specs", None
+    # The source boundary has one logical card partition. Replicated marks
+    # keep parameters explicit for the program-directory ABI without encoding
+    # any physical-Tile placement or operator-specific partitioning.
+    spmd_module.mark_sharding(
+        input_tensor, mesh, tuple(None for _ in input_tensor.shape)
     )
-    if not callable(get_specs):
-        raise RuntimeError(
-            "HF Megatron transformer module must explicitly declare "
-            "parameter sharding specs"
+    for parameter in reference_module.parameters():
+        spmd_module.mark_sharding(
+            parameter, mesh, tuple(None for _ in parameter.shape)
         )
-    parameter_specs = tuple(get_specs())
-    parameters = tuple(reference_module.parameters())
-    if (
-        len(parameter_specs) != len(parameters)
-        or {id(parameter) for parameter, _ in parameter_specs}
-        != {id(parameter) for parameter in parameters}
-    ):
-        raise RuntimeError(
-            "HF Megatron parameter sharding specs must cover every parameter "
-            "exactly once"
-        )
-    for parameter, spec in parameter_specs:
-        spmd_module.mark_sharding(parameter, mesh, spec)
 
 
 def _verify_program_dir_layout(program_dir: pathlib.Path) -> None:
@@ -963,7 +946,7 @@ def load_hf_transformer_config(config_path: pathlib.Path) -> dict[str, Any]:
         )
     if int(config.get("num_key_value_heads", num_attention_heads)) != num_attention_heads:
         raise RuntimeError(
-            "grouped-query attention is not part of this Megatron TP compiler gate"
+            "grouped-query attention is not part of this card-local compiler gate"
         )
 
     return config
@@ -979,8 +962,8 @@ def _make_hf_llama_decoder_block_module(
 
     Hugging Face owns every mathematical operation in the block.  This
     adapter only freezes the official RoPE/mask outputs for the fixture's
-    static sequence and attaches the tensor-parallel sharding contract used by
-    the PyTorch/XLA exporter.
+    static sequence. Card-local spatial and temporal scheduling remain wholly
+    compiler-owned after export.
     """
 
     if sequence_length <= 0:
@@ -1061,8 +1044,6 @@ def _make_hf_llama_decoder_block_module(
             self.decoder_layer = LlamaDecoderLayer(
                 hf_config, **decoder_init_kwargs
             ).to(dtype=storage_dtype)
-            self._wafer_spmd_module = None
-            self._wafer_spmd_mesh = None
 
             positions = torch_module.arange(
                 sequence_length, dtype=torch_module.long
@@ -1096,48 +1077,6 @@ def _make_hf_llama_decoder_block_module(
                 "causal_mask", causal_mask, persistent=False
             )
 
-            # Hooks annotate tensor-parallel boundaries only.  The invoked
-            # projection, attention, normalization and activation operators
-            # remain the official Hugging Face module implementations.
-            self.decoder_layer.self_attn.o_proj.register_forward_pre_hook(
-                self._mark_projection_input
-            )
-            self.decoder_layer.mlp.gate_proj.register_forward_hook(
-                self._mark_projection_output
-            )
-            self.decoder_layer.mlp.up_proj.register_forward_hook(
-                self._mark_projection_output
-            )
-            self.decoder_layer.mlp.down_proj.register_forward_pre_hook(
-                self._mark_projection_input
-            )
-
-        def set_activation_sharding(self, spmd_module, mesh) -> None:
-            self._wafer_spmd_module = spmd_module
-            self._wafer_spmd_mesh = mesh
-
-        def _mark_activation_tp(self, tensor):
-            if self._wafer_spmd_module is not None:
-                self._wafer_spmd_module.mark_sharding(
-                    tensor,
-                    self._wafer_spmd_mesh,
-                    HF_MEGATRON_ACTIVATION_TP_SPEC,
-                )
-            return tensor
-
-        def _mark_projection_input(self, _module, arguments):
-            if not arguments:
-                raise RuntimeError(
-                    "official HF projection received no activation"
-                )
-            return (
-                self._mark_activation_tp(arguments[0]),
-                *arguments[1:],
-            )
-
-        def _mark_projection_output(self, _module, _arguments, output):
-            return self._mark_activation_tp(output)
-
         def wafer_named_parameters(self):
             layer = self.decoder_layer
             return (
@@ -1153,47 +1092,6 @@ def _make_hf_llama_decoder_block_module(
                 ("gate_proj.weight", layer.mlp.gate_proj.weight),
                 ("up_proj.weight", layer.mlp.up_proj.weight),
                 ("down_proj.weight", layer.mlp.down_proj.weight),
-            )
-
-        def wafer_parameter_sharding_specs(self):
-            named = dict(self.wafer_named_parameters())
-            return (
-                (
-                    named["input_layernorm.weight"],
-                    HF_MEGATRON_REPLICATED_VECTOR_SPEC,
-                ),
-                (
-                    named["post_attention_layernorm.weight"],
-                    HF_MEGATRON_REPLICATED_VECTOR_SPEC,
-                ),
-                (
-                    named["q_proj.weight"],
-                    HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
-                ),
-                (
-                    named["k_proj.weight"],
-                    HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
-                ),
-                (
-                    named["v_proj.weight"],
-                    HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
-                ),
-                (
-                    named["o_proj.weight"],
-                    HF_MEGATRON_ROW_PARALLEL_WEIGHT_SPEC,
-                ),
-                (
-                    named["gate_proj.weight"],
-                    HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
-                ),
-                (
-                    named["up_proj.weight"],
-                    HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC,
-                ),
-                (
-                    named["down_proj.weight"],
-                    HF_MEGATRON_ROW_PARALLEL_WEIGHT_SPEC,
-                ),
             )
 
         def forward(self, hidden_states):
@@ -1785,6 +1683,14 @@ def _tensor_signature(stablehlo_module: Any, tensor: Any) -> Any:
 
 
 def _named_parameters(reference_module: Any) -> list[tuple[str, Any]]:
+    explicit_parameters = getattr(
+        reference_module, "wafer_named_parameters", None
+    )
+    if callable(explicit_parameters):
+        parameters = list(explicit_parameters())
+        if parameters:
+            return parameters
+
     named_parameters = getattr(reference_module, "named_parameters", None)
     if callable(named_parameters):
         parameters = [(name, parameter) for name, parameter in named_parameters()]
@@ -2213,7 +2119,7 @@ def _emit_workload_program(
         ) = modules
         config_value = case["config"]["hf_config"]
         config_path = (spec_path.parent / config_value).resolve()
-        emit_hf_megatron_transformer_block_program(
+        emit_hf_llama_block_program(
             program_dir,
             config_path=config_path,
             batch_size=int(case["config"]["batch_size"]),
@@ -2252,10 +2158,9 @@ def emit_workload_corpus(
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
     runtime_modules: dict[str, Any] = {}
-    # Initialize the exporter in SPMD mode before any XLA value exists.  This
-    # keeps the linear case identical whether it is admitted alone or next to
-    # the 16-rank Llama case instead of letting process-global XLA state choose
-    # whether replicated sharding annotations appear.
+    # Initialize the exporter in one-partition SPMD mode before any XLA value
+    # exists. This keeps every corpus case on the same card-local frontend
+    # boundary without introducing a physical-Tile mesh in source IR.
     spmd_modules = _import_spmd_runtime_modules()
     spmd_modules[2].use_spmd()
     torch_xla_module = sys.modules.get("torch_xla")
@@ -2601,7 +2506,7 @@ def emit_sharded_stablehlo_program(
     report_timing("artifact-save", save_start_ns)
 
 
-def emit_hf_megatron_transformer_block_program(
+def emit_hf_llama_block_program(
     program_dir: pathlib.Path,
     config_path: pathlib.Path,
     batch_size: int = DEFAULT_HF_TRANSFORMER_BATCH_SIZE,
@@ -2642,25 +2547,22 @@ def emit_hf_megatron_transformer_block_program(
     if not runtime_module.is_spmd():
         runtime_module.use_spmd()
     device_count = runtime_module.global_runtime_device_count()
-    required_device_count = functools.reduce(
-        operator.mul, HF_MEGATRON_TP_MESH_SHAPE, 1
-    )
-    if device_count != required_device_count:
+    if device_count != 1:
         raise RuntimeError(
-            "HF Megatron transformer block requires "
-            f"{required_device_count} XLA devices, got {device_count}; "
-            "for CPU program directory tests set CPU_NUM_DEVICES=16 before importing "
+            "card-local HF Llama block export requires one logical XLA "
+            f"device, got {device_count}; for CPU program directory tests "
+            "set CPU_NUM_DEVICES=1 before importing "
             "torch_xla"
         )
 
     if reference_module_factory is not None and parameter_arrays is not None:
         raise RuntimeError(
-            "HF Megatron exporter accepts either a Torch module factory or "
+            "HF Llama exporter accepts either a Torch module factory or "
             "transport parameter arrays, not both"
         )
     if example_input_tensor is not None and input_array is not None:
         raise RuntimeError(
-            "HF Megatron exporter accepts either a Torch example input or a "
+            "HF Llama exporter accepts either a Torch example input or a "
             "transport input array, not both"
         )
     if reference_module_factory is None:
@@ -2708,7 +2610,7 @@ def emit_hf_megatron_transformer_block_program(
             or example_input_tensor.dtype != input_dtype
         ):
             raise RuntimeError(
-                "HF Megatron example input must match the module: "
+                "HF Llama example input must match the module: "
                 f"input={tuple(example_input_tensor.shape)}/"
                 f"{example_input_tensor.dtype} module={input_shape}/{input_dtype}"
             )
@@ -2722,9 +2624,8 @@ def emit_hf_megatron_transformer_block_program(
         input_tensor = torch_module.from_numpy(input_array.copy())
     input_tensor = _move_to_device(input_tensor, device)
 
-    mesh = create_hf_megatron_mesh(spmd_module)
-    reference_module.set_activation_sharding(spmd_module, mesh)
-    apply_hf_megatron_sharding_marks(
+    mesh = create_hf_card_partition_mesh(spmd_module)
+    apply_hf_card_partition_marks(
         spmd_module=spmd_module,
         mesh=mesh,
         input_tensor=input_tensor,
@@ -2734,7 +2635,7 @@ def emit_hf_megatron_transformer_block_program(
     options = stablehlo_module.StableHLOExportOptions()
     options.export_weights = True
     options.save_weights = True
-    options.inline_all_constant = True
+    options.inline_all_constant = False
     options.include_human_readable_text = True
 
     with torch_module.no_grad():
@@ -2772,9 +2673,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="emit the 4096x4096 sharded StableHLO program directory",
     )
     parser.add_argument(
-        "--emit-hf-megatron-transformer-block",
+        "--emit-hf-llama-block",
         action="store_true",
-        help="emit a HuggingFace Llama decoder block StableHLO program with Megatron tensor-parallel mark_sharding on a 16-rank mesh",
+        help="emit a card-local HuggingFace Llama decoder block StableHLO program",
     )
     parser.add_argument(
         "--emit-workload-corpus",
@@ -2805,19 +2706,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--hf-config-json",
         type=pathlib.Path,
-        help="HuggingFace transformer config JSON used by --emit-hf-megatron-transformer-block",
+        help="HuggingFace transformer config JSON used by --emit-hf-llama-block",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
         default=DEFAULT_HF_TRANSFORMER_BATCH_SIZE,
-        help="batch size for --emit-hf-megatron-transformer-block",
+        help="batch size for --emit-hf-llama-block",
     )
     parser.add_argument(
         "--sequence-length",
         type=int,
         default=DEFAULT_HF_TRANSFORMER_SEQUENCE_LENGTH,
-        help="sequence length for --emit-hf-megatron-transformer-block",
+        help="sequence length for --emit-hf-llama-block",
     )
     parser.add_argument(
         "--workload-corpus-spec",
@@ -2854,7 +2755,7 @@ def main(argv: list[str]) -> int:
         for action in (
             args.emit_reference_program,
             args.emit_sharded_program,
-            args.emit_hf_megatron_transformer_block,
+            args.emit_hf_llama_block,
             args.emit_workload_corpus,
             args.emit_cpu_reference,
             args.emit_workload_variant,
@@ -2923,13 +2824,13 @@ def main(argv: list[str]) -> int:
         )
         return 0
 
-    if args.emit_hf_megatron_transformer_block:
+    if args.emit_hf_llama_block:
         if args.output_program_dir is None:
             raise RuntimeError("missing --output-program-dir")
         if args.hf_config_json is None:
             raise RuntimeError("missing --hf-config-json")
 
-        emit_hf_megatron_transformer_block_program(
+        emit_hf_llama_block_program(
             args.output_program_dir,
             config_path=args.hf_config_json,
             batch_size=args.batch_size,
@@ -2939,7 +2840,7 @@ def main(argv: list[str]) -> int:
 
     raise RuntimeError(
         "missing --emit-reference-program, --emit-sharded-program, or "
-        "--emit-hf-megatron-transformer-block"
+        "--emit-hf-llama-block"
     )
 
 

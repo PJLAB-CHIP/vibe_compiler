@@ -7,19 +7,19 @@
 
 namespace wafer {
 
-/// Invocation-local public optimization policy. Production exposes the full
+/// Invocation-local public optimization policy. Search exposes the full
 /// compiler-owned candidate domain; none selects the mandatory fully-gated
 /// baseline. Individual internal mechanisms are not user-configurable axes.
 class OptimizationConfig {
 public:
-  static constexpr OptimizationConfig production() {
-    return OptimizationConfig(Policy::Production);
+  static constexpr OptimizationConfig search() {
+    return OptimizationConfig(Policy::Search);
   }
   static constexpr OptimizationConfig none() {
     return OptimizationConfig(Policy::None);
   }
 
-  constexpr bool isProduction() const { return policy == Policy::Production; }
+  constexpr bool isSearch() const { return policy == Policy::Search; }
   constexpr bool isNone() const { return policy == Policy::None; }
 
   friend constexpr bool operator==(OptimizationConfig lhs,
@@ -32,7 +32,7 @@ public:
   }
 
 private:
-  enum class Policy : uint8_t { Production, None };
+  enum class Policy : uint8_t { Search, None };
 
   explicit constexpr OptimizationConfig(Policy policy) : policy(policy) {}
 

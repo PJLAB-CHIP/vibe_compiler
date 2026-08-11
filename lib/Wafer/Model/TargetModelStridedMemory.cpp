@@ -155,46 +155,44 @@ struct ResolvedWriteSegment {
 };
 
 struct ResolvedWriteInterval {
-  int64_t logicalRank = -1;
-  TargetModelAddressSpace addressSpace = TargetModelAddressSpace::RankSPM;
-  std::optional<int64_t> slotOrdinal;
+  int64_t launchSlot = -1;
+  TargetModelAddressSpace addressSpace = TargetModelAddressSpace::TileSPM;
+  std::optional<TargetModelResourceId> resource;
   uint64_t regionOffset = 0;
   uint64_t byteCount = 0;
 };
 
 ResolvedWriteInterval makeInterval(const TargetModelResolvedRange &range,
                                    uint64_t regionOffset, uint64_t byteCount) {
-  return {range.logicalRank, range.addressSpace, range.slotOrdinal,
-          regionOffset, byteCount};
+  return {range.launchSlot, range.addressSpace, range.resource, regionOffset,
+          byteCount};
 }
 
 bool sameResource(const ResolvedWriteInterval &lhs,
                   const ResolvedWriteInterval &rhs) {
-  return lhs.logicalRank == rhs.logicalRank &&
-         lhs.addressSpace == rhs.addressSpace &&
-         lhs.slotOrdinal == rhs.slotOrdinal;
+  if (lhs.addressSpace != rhs.addressSpace)
+    return false;
+  if (lhs.addressSpace == TargetModelAddressSpace::TileSPM)
+    return lhs.launchSlot == rhs.launchSlot;
+  return lhs.resource == rhs.resource;
 }
 
 llvm::Error
 rejectOverlappingIntervals(std::vector<ResolvedWriteInterval> intervals) {
-  llvm::sort(intervals, [](const ResolvedWriteInterval &lhs,
-                           const ResolvedWriteInterval &rhs) {
-    return std::tie(lhs.logicalRank, lhs.addressSpace, lhs.slotOrdinal,
-                    lhs.regionOffset, lhs.byteCount) <
-           std::tie(rhs.logicalRank, rhs.addressSpace, rhs.slotOrdinal,
-                    rhs.regionOffset, rhs.byteCount);
-  });
-  for (size_t index = 1; index < intervals.size(); ++index) {
-    const ResolvedWriteInterval &previous = intervals[index - 1];
-    const ResolvedWriteInterval &current = intervals[index];
-    if (!sameResource(previous, current))
-      continue;
-    uint64_t previousEnd = 0;
-    (void)checkedAdd(previous.regionOffset, previous.byteCount, previousEnd);
-    if (current.regionOffset < previousEnd)
-      return memoryError(TargetModelMemoryErrorCode::InvalidEffect,
-                         "pending writes overlap one private resource");
-  }
+  for (size_t left = 0; left < intervals.size(); ++left)
+    for (size_t right = left + 1; right < intervals.size(); ++right) {
+      const ResolvedWriteInterval &lhs = intervals[left];
+      const ResolvedWriteInterval &rhs = intervals[right];
+      if (!sameResource(lhs, rhs))
+        continue;
+      uint64_t lhsEnd = 0;
+      uint64_t rhsEnd = 0;
+      (void)checkedAdd(lhs.regionOffset, lhs.byteCount, lhsEnd);
+      (void)checkedAdd(rhs.regionOffset, rhs.byteCount, rhsEnd);
+      if (lhs.regionOffset < rhsEnd && rhs.regionOffset < lhsEnd)
+        return memoryError(TargetModelMemoryErrorCode::InvalidEffect,
+                           "pending writes overlap one private resource");
+    }
   return llvm::Error::success();
 }
 
@@ -202,7 +200,7 @@ rejectOverlappingIntervals(std::vector<ResolvedWriteInterval> intervals) {
 
 llvm::Expected<std::vector<uint8_t>>
 InvocationMemoryRegistry::readStridedSnapshot(
-    int64_t logicalRank, TargetModelAddressSpace addressSpace, uint64_t address,
+    int64_t launchSlot, TargetModelAddressSpace addressSpace, uint64_t address,
     const TargetModelStridedByteLayout &layout,
     uint64_t requiredAlignment) const {
   llvm::Expected<StridedLayoutInfo> info = inspectStridedLayout(layout);
@@ -222,14 +220,13 @@ InvocationMemoryRegistry::readStridedSnapshot(
 
   auto getBacking = [&](const TargetModelResolvedRange &resolved)
       -> const std::vector<uint8_t> * {
-    if (resolved.addressSpace == TargetModelAddressSpace::RankSPM) {
-      const RankSPMStorage *storage = findSPM(resolved.logicalRank);
+    if (resolved.addressSpace == TargetModelAddressSpace::TileSPM) {
+      const TileSPMStorage *storage = findSPM(resolved.launchSlot);
       return storage ? &storage->bytes : nullptr;
     }
-    if (!resolved.slotOrdinal)
+    if (!resolved.resource)
       return nullptr;
-    const SlotStorage *storage =
-        findSlot(resolved.logicalRank, *resolved.slotOrdinal);
+    const ResourceStorage *storage = findResource(*resolved.resource);
     return storage ? &storage->bytes : nullptr;
   };
   auto validateBacking =
@@ -254,8 +251,8 @@ InvocationMemoryRegistry::readStridedSnapshot(
   const std::vector<uint8_t> *fastBacking = nullptr;
   if (layoutPreservesAlignment(layout, requiredAlignment)) {
     llvm::Expected<TargetModelResolvedRange> bounding =
-        plan.resolve(logicalRank, addressSpace, TargetModelAccess::Read,
-                     address, info->boundingSpan, requiredAlignment);
+        plan.resolve(launchSlot, addressSpace, TargetModelAccess::Read, address,
+                     info->boundingSpan, requiredAlignment);
     if (bounding) {
       fastBacking = getBacking(*bounding);
       if (llvm::Error error = validateBacking(*bounding, fastBacking))
@@ -309,14 +306,14 @@ InvocationMemoryRegistry::readStridedSnapshot(
               return memoryError(TargetModelMemoryErrorCode::AddressOverflow,
                                  "strided snapshot address overflows");
             llvm::Expected<TargetModelResolvedRange> resolved = plan.resolve(
-                logicalRank, addressSpace, TargetModelAccess::Read,
+                launchSlot, addressSpace, TargetModelAccess::Read,
                 segmentAddress, layout.innerBytes, requiredAlignment);
             if (!resolved)
               return resolved.takeError();
             if (!cachedResource ||
-                cachedResource->logicalRank != resolved->logicalRank ||
+                cachedResource->launchSlot != resolved->launchSlot ||
                 cachedResource->addressSpace != resolved->addressSpace ||
-                cachedResource->slotOrdinal != resolved->slotOrdinal) {
+                cachedResource->resource != resolved->resource) {
               cachedBacking = getBacking(*resolved);
               if (llvm::Error validation =
                       validateBacking(*resolved, cachedBacking))
@@ -349,7 +346,7 @@ llvm::Error InvocationMemoryRegistry::applyAtomically(
     validated.write = &write;
     if (!write.stridedLayout) {
       llvm::Expected<TargetModelResolvedRange> resolved = plan.resolve(
-          write.logicalRank, write.addressSpace, TargetModelAccess::Write,
+          write.launchSlot, write.addressSpace, TargetModelAccess::Write,
           write.address, write.bytes.size(), write.requiredAlignment);
       if (!resolved)
         return resolved.takeError();
@@ -374,7 +371,7 @@ llvm::Error InvocationMemoryRegistry::applyAtomically(
         layoutPreservesAlignment(*write.stridedLayout,
                                  write.requiredAlignment)) {
       llvm::Expected<TargetModelResolvedRange> bounding = plan.resolve(
-          write.logicalRank, write.addressSpace, TargetModelAccess::Write,
+          write.launchSlot, write.addressSpace, TargetModelAccess::Write,
           write.address, info->boundingSpan, write.requiredAlignment);
       if (bounding)
         validated.contiguousOrBounding = *bounding;
@@ -399,7 +396,7 @@ llvm::Error InvocationMemoryRegistry::applyAtomically(
                       TargetModelMemoryErrorCode::AddressOverflow,
                       "strided pending write address overflows");
                 llvm::Expected<TargetModelResolvedRange> resolved =
-                    plan.resolve(write.logicalRank, write.addressSpace,
+                    plan.resolve(write.launchSlot, write.addressSpace,
                                  TargetModelAccess::Write, segmentAddress,
                                  write.stridedLayout->innerBytes,
                                  write.requiredAlignment);
@@ -459,14 +456,13 @@ llvm::Error InvocationMemoryRegistry::applyAtomically(
 
   auto getBacking =
       [&](const TargetModelResolvedRange &resolved) -> std::vector<uint8_t> * {
-    if (resolved.addressSpace == TargetModelAddressSpace::RankSPM) {
-      RankSPMStorage *storage = findSPM(resolved.logicalRank);
+    if (resolved.addressSpace == TargetModelAddressSpace::TileSPM) {
+      TileSPMStorage *storage = findSPM(resolved.launchSlot);
       return storage ? &storage->bytes : nullptr;
     }
-    if (!resolved.slotOrdinal)
+    if (!resolved.resource)
       return nullptr;
-    SlotStorage *storage =
-        findSlot(resolved.logicalRank, *resolved.slotOrdinal);
+    ResourceStorage *storage = findResource(*resolved.resource);
     return storage ? &storage->bytes : nullptr;
   };
   auto validateBacking = [&](const TargetModelResolvedRange &resolved,

@@ -7,8 +7,6 @@
 #include "Wafer/Compiler/TargetArtifact.h"
 #include "Wafer/Frontend/Program.h"
 
-#include "WholeVariantSelection.h"
-
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Pass/PassManager.h"
 
@@ -50,9 +48,9 @@ bool publishDirectoryNoReplace(llvm::StringRef source,
                                llvm::StringRef destination,
                                llvm::raw_ostream &diagnostics);
 
-using DirectoryPublicationFunction = bool (*)(
-    llvm::StringRef source, llvm::StringRef destination,
-    llvm::raw_ostream &diagnostics);
+using DirectoryPublicationFunction = bool (*)(llvm::StringRef source,
+                                              llvm::StringRef destination,
+                                              llvm::raw_ostream &diagnostics);
 
 /// Publish a package and its independently named companion as one recoverable
 /// transaction. If companion publication fails after the package rename, the
@@ -95,28 +93,25 @@ bool runSpmdHelper(llvm::StringRef helper,
 llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank,
-    WholeVariantSelectionMode selectionMode);
+    std::optional<int64_t> failAfterLaunchSlot);
 
 mlir::LogicalResult stageTargetPackage(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
-    WholeVariantSelectionMode selectionMode,
-    std::optional<int64_t> failAfterLogicalRank,
-    std::optional<int64_t> failAfterTargetLogicalRank,
-    std::optional<int64_t> failAfterPackageLogicalRank,
+    std::optional<int64_t> failAfterLaunchSlot,
+    std::optional<int64_t> failAfterTargetLaunchSlot,
+    std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<ExecutableBundle> &executableBundle,
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle);
 
 mlir::LogicalResult stageProfileTargetPackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
-    llvm::StringRef publishedPackageName,
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank,
-    std::optional<int64_t> failAfterTargetLogicalRank,
-    std::optional<int64_t> failAfterPackageLogicalRank,
+    std::optional<int64_t> failAfterLaunchSlot,
+    std::optional<int64_t> failAfterTargetLaunchSlot,
+    std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<ExecutableBundle> &executableBundle,
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle);
 
@@ -124,10 +119,9 @@ mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
-    WholeVariantSelectionMode selectionMode, CompilationOptions options,
-    std::optional<int64_t> failAfterLogicalRank,
-    std::optional<int64_t> failAfterTargetLogicalRank,
-    std::optional<int64_t> failAfterPackageLogicalRank,
+    CompilationOptions options, std::optional<int64_t> failAfterLaunchSlot,
+    std::optional<int64_t> failAfterTargetLaunchSlot,
+    std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<ExecutableBundle> *retainedExecutableBundle,
     std::optional<TargetLLVMModuleBundle> *retainedTargetLLVMModuleBundle);
 

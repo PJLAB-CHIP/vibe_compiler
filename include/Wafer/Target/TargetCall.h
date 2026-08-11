@@ -210,7 +210,7 @@ struct TargetNCCJoinTransaction {
 };
 struct TargetDirectDTEBeginTransaction {
   uint64_t statusAddress;
-  uint32_t rankCount;
+  uint32_t participantCount;
 };
 struct TargetDirectDTESendTransaction {
   uint64_t source;
@@ -319,7 +319,7 @@ struct TargetCallDescriptor {
 };
 
 struct TargetCallDecodeContext {
-  int64_t rankCount;
+  int64_t physicalTileCount;
 };
 
 /// Returns the one closed target-call ABI surface consumed by compiler,

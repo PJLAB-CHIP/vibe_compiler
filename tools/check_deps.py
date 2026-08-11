@@ -233,7 +233,6 @@ def check_cmake_target_visibility() -> None:
         "WAFER_ENABLE_RUNTIME_DEPS",
         "WAFER_TX_RUNTIME_ROOT",
         "WAFER_KMD_UAPI_ROOT",
-        "WAFER_LEGACY_TSM_RUNTIME_ROOT",
         "WAFER_ENABLE_NUMERIC_MODEL_DEPS",
         "WAFER_NUMERIC_MODEL_DEPS_ROOT",
         "WAFER_NUMERIC_MODEL_DEPS_RECORD",

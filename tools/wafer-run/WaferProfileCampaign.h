@@ -19,7 +19,7 @@
 
 namespace wafer::runtime::cli {
 
-inline constexpr uint32_t kBoardProfileEvidenceSchemaVersion = 9;
+inline constexpr uint32_t kBoardProfileEvidenceSchemaVersion = 10;
 
 enum class BoardProfileProtocolLaunch {
   Primary,
@@ -71,7 +71,7 @@ enum class BoardProfileOutputValidationMode {
 };
 
 struct BoardProfileOutputValidationResource {
-  int64_t logicalRank = -1;
+  PackageResourceScope scope;
   PackageResourceRole role = PackageResourceRole::Output;
   int64_t roleIndex = -1;
   uint64_t bytes = 0;
@@ -90,7 +90,7 @@ llvm::StringRef stringifyBoardProfileOutputValidationMode(
 /// then staged as the same-session byte reference. Count and trace results are
 /// first checked against their own external expected tensors, then compared
 /// with the staged primary reference by stable
-/// `(logical_rank, role, role_index)` and exact typed resource contract.
+/// `(scope, role, role_index)` and exact typed resource contract.
 ///
 /// Reference files are private to the already-created report staging
 /// directory. They are not keyed by ResourceId, resource name, or user path,

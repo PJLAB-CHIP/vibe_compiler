@@ -105,7 +105,7 @@ SPMD、transport或runtime已经实现。
 - logical execution identity被映射成包含Tile坐标的四元组；
 - 第一个logical execution实例绑定Tile `(0,0)`，或16个实例按行主序绑定16个Tile；
 - logical program数量被要求等于physical launch数量；
-- collective `rank_group`直接作为NoC peer/route。
+- card-partition collective group直接作为片内NoC peer/route。
 
 logical `partition_id`、physical `card_id`和local physical `tile_id`即使某个single-card case里数值偶然相同，也不能
 跨domain比较、复制或通过文件/vector位置恢复。
@@ -122,7 +122,7 @@ logical `partition_id`、physical `card_id`和local physical `tile_id`即使某�
 这些结果可失效、可重算且不写入IR。minimum hop只表示typed graph上不可避免的link traversal；在IR没有route
 policy时，不从它伪造实际N/S/E/W route、per-link congestion、cycle或时间。collective topology、redistribution、
 multicast、gather/reduction的候选与选择属于communication/physical-dataflow owner；本层只提供合法physical graph
-query，不保存ring、tree、rank order或selected path。
+query，不保存ring、tree、physical Tile participant order或selected path。
 
 logical mesh的analysis只提供partition coordinate与linear `partition_id`。它不查询Tile graph。只有下游已形成
 `wafer.card.program`及其selected `wafer.tile.program(tile_id=...)`后，communication analysis才用physical Tile set

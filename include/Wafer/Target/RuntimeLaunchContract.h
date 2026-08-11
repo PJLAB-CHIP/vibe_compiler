@@ -28,12 +28,11 @@ inline constexpr uint64_t kTx81ClusterKernelArgumentBytesMax = 0x7d0;
 /// than additional launch kinds.
 enum class RuntimeLaunchKind : uint8_t { Kernel, Model };
 
-enum class KernelLaunchForm : uint8_t { PerRank, Grid, Cluster };
+enum class KernelLaunchForm : uint8_t { Grid, Cluster };
 
 enum class KernelEntryABI : uint8_t {
-  RankLocalPointerBlock,
-  RankMajorPointerTable,
-  RankRowPointerTable,
+  TileMajorPointerTable,
+  TileRowPointerTable,
 };
 
 enum class ModelEntryABI : uint8_t { Tx81ModelBootParam };

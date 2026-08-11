@@ -3,6 +3,8 @@
 #ifndef WAFER_RUNTIME_TX81MODELABI_H
 #define WAFER_RUNTIME_TX81MODELABI_H
 
+#include "Wafer/Target/PhysicalIds.h"
+
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -22,12 +24,15 @@ inline constexpr llvm::StringLiteral kTx81ModelBootParam =
 enum class Tx81ModelTensorClass { Input, Output, Parameter };
 
 /// One launch-visible tensor before canonical BootParam ordering. The builder
-/// orders tensors by class (input, output, parameter), then logical rank and
-/// ABI slot ordinal. Address is the device address returned by the qualified
-/// TX allocation provider.
+/// orders tensors by class (input, output, parameter), then launch slot and ABI
+/// slot ordinal. Physical card/Tile identity remains explicit and is verified
+/// against the qualified single-card topology; launch slot alone determines
+/// the fixed TX81 BootParam wire-table position.
 struct Tx81ModelTensorDescriptor {
   Tx81ModelTensorClass tensorClass = Tx81ModelTensorClass::Input;
-  int64_t logicalRank = -1;
+  PhysicalCardId cardId{0};
+  PhysicalTileId tileId{0};
+  LaunchSlotId launchSlot;
   uint64_t slotOrdinal = 0;
   uint64_t deviceAddress = 0;
   uint64_t bytes = 0;

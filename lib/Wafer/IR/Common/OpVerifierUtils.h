@@ -32,14 +32,19 @@ getCompactTensorByteSize(mlir::RankedTensorType tensorType);
 std::optional<int64_t> getCompactByteSize(mlir::Type type);
 int64_t getCompactByteSizeOrUnknown(mlir::Type type);
 mlir::FailureOr<std::optional<int64_t>>
-getOptionalExecutionMeshRankCount(mlir::Operation *op);
+getOptionalExecutionMeshPartitionCount(mlir::Operation *op);
 mlir::LogicalResult
-verifyLogicalRankWithinExecutionMesh(mlir::Operation *op, int64_t rank,
+verifyPartitionIdWithinExecutionMesh(mlir::Operation *op, int64_t partitionId,
                                      llvm::StringRef subject);
 mlir::LogicalResult
-verifyLogicalRanksWithinExecutionMesh(mlir::Operation *op,
-                                      llvm::ArrayRef<int64_t> ranks,
+verifyPartitionIdsWithinExecutionMesh(mlir::Operation *op,
+                                      llvm::ArrayRef<int64_t> partitionIds,
                                       llvm::StringRef subject);
+mlir::LogicalResult verifyPhysicalTileIdWithinTopology(
+    mlir::Operation *op, int64_t physicalTileId, llvm::StringRef subject);
+mlir::LogicalResult verifyPhysicalTileIdsWithinTopology(
+    mlir::Operation *op, llvm::ArrayRef<int64_t> physicalTileIds,
+    llvm::StringRef subject);
 
 mlir::LogicalResult verifyDTEP2P(mlir::Operation *op, mlir::Value buffer,
                                  mlir::IntegerAttr peer,
@@ -72,6 +77,12 @@ verifyElementwiseTileContract(mlir::Operation *op,
 mlir::LogicalResult verifyReduceTileContract(mlir::Operation *op,
                                              mlir::Value input,
                                              mlir::Type resultType);
+mlir::LogicalResult verifyCanonicalConv2DGeometry(
+    mlir::Operation *op, mlir::RankedTensorType input,
+    mlir::RankedTensorType weight, mlir::RankedTensorType output,
+    llvm::ArrayRef<int64_t> pads, llvm::ArrayRef<int64_t> unpads,
+    llvm::ArrayRef<int64_t> strides, llvm::ArrayRef<int64_t> dilations,
+    llvm::StringRef diagnosticPrefix = {});
 
 } // namespace wafer::detail
 

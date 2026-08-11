@@ -17,13 +17,14 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace wafer::runtime {
 namespace {
 
-using detail::findCompletion;
 using detail::findModule;
 using detail::findResource;
 using detail::invalid;
@@ -125,21 +126,37 @@ bool expectedHostVisible(PackageResourceRole role) {
          role != PackageResourceRole::TransportStatus;
 }
 
+bool isProgramBoundaryResource(PackageResourceRole role) {
+  return role == PackageResourceRole::UserInput ||
+         role == PackageResourceRole::Parameter ||
+         role == PackageResourceRole::Constant ||
+         role == PackageResourceRole::Output;
+}
+
+bool isEntryLocalResource(PackageResourceRole role) {
+  return role == PackageResourceRole::Workspace ||
+         role == PackageResourceRole::TransportStatus;
+}
+
+bool isSamePhysicalTile(const TileResourceScope &scope,
+                        const PackageEntrypointRecord &entry) {
+  return scope.cardId == entry.cardId && scope.tileId == entry.tileId;
+}
+
 llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
   const KernelRuntimeLaunchContract *kernel = manifest.launch.getKernel();
   const ModelRuntimeLaunchContract *model = manifest.launch.getModel();
-  const bool perRank = kernel && kernel->form == KernelLaunchForm::PerRank;
   const bool kernelGrid = kernel && kernel->form == KernelLaunchForm::Grid;
   const bool cluster = kernel && kernel->form == KernelLaunchForm::Cluster;
-  if (!perRank && (manifest.rankCount != 16 || manifest.entries.size() != 16))
+  if (manifest.tileCount != 16 || manifest.entries.size() != 16)
     return invalid(
-        "grid, cluster and model launches require a complete 16-rank domain");
+        "grid, cluster and model launches require a complete 16-Tile domain");
 
-  std::vector<const PackageEntrypointRecord *> entriesByRank(manifest.rankCount,
-                                                             nullptr);
+  std::vector<const PackageEntrypointRecord *> entriesByLaunchSlot(
+      manifest.tileCount, nullptr);
   for (const PackageEntrypointRecord &entry : manifest.entries)
-    entriesByRank[entry.logicalRank] = &entry;
-  const PackageEntrypointRecord &first = *entriesByRank.front();
+    entriesByLaunchSlot[entry.launchSlot.getValue()] = &entry;
+  const PackageEntrypointRecord &first = *entriesByLaunchSlot.front();
   const PackageModuleRecord *firstModule =
       findModule(manifest.modules, first.module);
   if (!firstModule)
@@ -148,22 +165,22 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
   llvm::DenseMap<uint64_t, uint64_t> moduleReferenceCount;
   for (const PackageEntrypointRecord &entry : manifest.entries)
     ++moduleReferenceCount[entry.module.getValue()];
-  if (perRank || model) {
-    if (manifest.modules.size() != static_cast<size_t>(manifest.rankCount))
+  if (model) {
+    if (manifest.modules.size() != static_cast<size_t>(manifest.tileCount))
       return invalid(
-          "per-rank/model launch requires one module per logical rank");
+          "model launch requires one module per physical Tile");
     if (llvm::any_of(manifest.modules, [&](const auto &module) {
           return moduleReferenceCount.lookup(module.id.getValue()) != 1;
         }))
       return invalid(
-          "per-rank/model entry-to-module mapping is not one-to-one");
+          "model entry-to-module mapping is not one-to-one");
   } else {
     if (manifest.modules.size() != 1 ||
         llvm::any_of(manifest.entries, [&](const auto &entry) {
           return entry.module != first.module;
         }))
       return invalid(
-          "grid/cluster launch requires one module referenced by all ranks");
+          "grid/cluster launch requires one module referenced by all Tiles");
   }
 
   auto exportRoleForPhase = [](RuntimeLaunchPhaseRole phase) {
@@ -182,30 +199,21 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
             "phases");
   }
 
-  if (perRank) {
-    for (const PackageEntrypointRecord &entry : manifest.entries) {
-      if (entry.slots.size() > kTx81KernelArgumentBytesMax / sizeof(uint64_t))
-        return invalid(
-            "per-rank kernel argument block exceeds the qualified V5.6 "
-            "packet limit");
-    }
-  }
-
   if (kernelGrid || cluster) {
     if (first.slots.empty())
       return invalid("shared launch requires at least one typed ABI slot");
     const uint64_t argumentBytesMax = cluster
                                           ? kTx81ClusterKernelArgumentBytesMax
                                           : kTx81KernelArgumentBytesMax;
-    if (kernel->entryABI == KernelEntryABI::RankMajorPointerTable) {
+    if (kernel->entryABI == KernelEntryABI::TileMajorPointerTable) {
       if (first.slots.size() > argumentBytesMax / sizeof(uint64_t) / 16)
         return invalid(
-            "shared rank-major argument table exceeds the qualified V5.6 "
+            "shared Tile-major argument table exceeds the qualified V5.6 "
             "packet limit");
-    } else if (kernel->entryABI == KernelEntryABI::RankRowPointerTable) {
+    } else if (kernel->entryABI == KernelEntryABI::TileRowPointerTable) {
       if (16 > argumentBytesMax / sizeof(uint64_t))
         return invalid(
-            "shared rank-row pointer table exceeds the qualified V5.6 "
+            "shared Tile-row pointer table exceeds the qualified V5.6 "
             "packet limit");
     } else {
       return invalid("shared kernel launch has an incompatible entry ABI");
@@ -219,8 +227,9 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
 
   std::vector<Tx81ModelTensorDescriptor> modelTensors;
   const size_t firstTransportKind = first.transport.index();
-  for (int64_t rank = 0; rank < manifest.rankCount; ++rank) {
-    const PackageEntrypointRecord &entry = *entriesByRank[rank];
+  for (int64_t launchSlot = 0; launchSlot < manifest.tileCount; ++launchSlot) {
+    const PackageEntrypointRecord &entry =
+        *entriesByLaunchSlot[launchSlot];
     const PackageModuleRecord *module =
         findModule(manifest.modules, entry.module);
     const PackageModuleExportRecord *main =
@@ -230,7 +239,7 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
     if (!module || !main)
       return invalid("runtime launch entry has no typed main export");
     if (entry.transport.index() != firstTransportKind)
-      return invalid("runtime launch ranks have mixed transport contracts");
+      return invalid("runtime launch Tiles have mixed transport contracts");
     if ((kernelGrid || cluster || model) &&
         entry.slots.size() != first.slots.size())
       return invalid("multi-tile launch entries have different slot counts");
@@ -245,7 +254,7 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
           requirements->hostWatchdogRequired !=
               firstRequirements->hostWatchdogRequired)
         return invalid(
-            "Direct DTE ranks have inconsistent transport contracts");
+            "Direct DTE Tiles have inconsistent transport contracts");
     }
     for (size_t slotIndex = 0; slotIndex < entry.slots.size(); ++slotIndex) {
       const PackageResourceRecord *resource =
@@ -262,7 +271,7 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
            resource->bytes != reference->bytes ||
            resource->alignment != reference->alignment ||
            resource->access != reference->access))
-        return invalid("multi-tile launch rank slot schemas are inconsistent");
+        return invalid("multi-Tile launch slot schemas are inconsistent");
       if (model && (resource->role != PackageResourceRole::UserInput &&
                     resource->role != PackageResourceRole::Output))
         return invalid(
@@ -280,7 +289,8 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
             resource->role == PackageResourceRole::UserInput
                 ? Tx81ModelTensorClass::Input
                 : Tx81ModelTensorClass::Output;
-        modelTensors.push_back({tensorClass, rank, slotIndex,
+        modelTensors.push_back({tensorClass, entry.cardId, entry.tileId,
+                                entry.launchSlot, slotIndex,
                                 /*deviceAddress=*/8, resource->bytes,
                                 resource->type.dtype, resource->type.shape});
       }
@@ -351,15 +361,12 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
       manifest.runtimeABI != KernelRuntimeABIId::waferTx81Kernel() ||
       manifest.moduleFormat != kCurrentTargetModuleFormat)
     return invalid("package target identity or runtime ABI is unsupported");
-  if (manifest.rankCount != 1 && manifest.rankCount != 16)
-    return invalid("package rank_count must be exactly 1 or 16");
-  const KernelRuntimeLaunchContract *kernel = manifest.launch.getKernel();
-  if ((!kernel || kernel->form != KernelLaunchForm::PerRank) &&
-      manifest.rankCount != 16)
-    return invalid(
-        "grid, cluster and model package launches require rank_count=16");
+  if (manifest.cardCount != 1)
+    return invalid("package card_count must be exactly 1");
+  if (manifest.tileCount != 16)
+    return invalid("package tile_count must be exactly 16");
   uint64_t totalRecords = manifest.resources.size() + manifest.modules.size() +
-                          manifest.entries.size() + manifest.completions.size();
+                          manifest.entries.size();
   if (totalRecords > limits.maxRecords)
     return invalid("package manifest exceeds record limit");
   for (const PackageEntrypointRecord &entry : manifest.entries) {
@@ -373,16 +380,13 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
     totalRecords += module.exports.size();
   }
   if (manifest.modules.empty() ||
-      manifest.entries.size() != static_cast<uint64_t>(manifest.rankCount) ||
-      manifest.completions.size() != static_cast<uint64_t>(manifest.rankCount))
-    return invalid("package module/entry/completion domain is incomplete");
+      manifest.entries.size() != static_cast<uint64_t>(manifest.tileCount))
+    return invalid("package module/entry physical Tile domain is incomplete");
   if (!hasDenseIds(manifest.resources,
                    [](const auto &record) { return record.id; }) ||
       !hasDenseIds(manifest.modules,
                    [](const auto &record) { return record.id; }) ||
       !hasDenseIds(manifest.entries,
-                   [](const auto &record) { return record.id; }) ||
-      !hasDenseIds(manifest.completions,
                    [](const auto &record) { return record.id; }))
     return invalid("package IDs must be unique dense zero-based domains");
 
@@ -392,14 +396,11 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
              [](const auto &lhs, const auto &rhs) { return lhs.id < rhs.id; });
   llvm::sort(manifest.entries,
              [](const auto &lhs, const auto &rhs) { return lhs.id < rhs.id; });
-  llvm::sort(manifest.completions,
-             [](const auto &lhs, const auto &rhs) { return lhs.id < rhs.id; });
 
-  llvm::DenseSet<std::pair<int64_t, int64_t>> roleIndices;
+  std::set<std::tuple<bool, int64_t, int64_t, int64_t>> roleIndices;
   for (const PackageResourceRecord &resource : manifest.resources) {
     if (!isValidRole(resource.role) || !isValidAccess(resource.access) ||
-        resource.logicalRank < 0 ||
-        resource.logicalRank >= manifest.rankCount || resource.roleIndex < 0 ||
+        resource.roleIndex < 0 ||
         resource.roleIndex > std::numeric_limits<uint32_t>::max() ||
         resource.name.size() > limits.maxStringBytes ||
         resource.type.dtype.empty() ||
@@ -413,14 +414,29 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
         resource.alignment >
             static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
         !isPowerOfTwo(resource.alignment))
-      return invalid("package resource has invalid rank/type/size/alignment");
+      return invalid("package resource has invalid scope/type/size/alignment");
     if (resource.access != expectedAccess(resource.role) ||
         resource.hostVisible != expectedHostVisible(resource.role))
       return invalid("package resource role/access/visibility mismatch");
+    const auto *cardScope = std::get_if<CardResourceScope>(&resource.scope);
+    const auto *tileScope = std::get_if<TileResourceScope>(&resource.scope);
+    if ((cardScope && (!isProgramBoundaryResource(resource.role) ||
+                       cardScope->cardId != PhysicalCardId(0))) ||
+        (tileScope &&
+         (!isEntryLocalResource(resource.role) ||
+          tileScope->cardId != PhysicalCardId(0) ||
+          tileScope->tileId.getValue() < 0 ||
+          tileScope->tileId.getValue() >= 16)))
+      return invalid("package resource role and typed physical scope disagree");
     int64_t roleKey = static_cast<int64_t>(resource.role) << 32 |
                       static_cast<uint32_t>(resource.roleIndex);
-    if (!roleIndices.insert({resource.logicalRank, roleKey}).second)
-      return invalid("package resource role/index is duplicated within rank");
+    const bool isTile = tileScope != nullptr;
+    const int64_t cardId =
+        isTile ? tileScope->cardId.getValue() : cardScope->cardId.getValue();
+    const int64_t tileId = isTile ? tileScope->tileId.getValue() : -1;
+    if (!roleIndices.insert({isTile, cardId, tileId, roleKey}).second)
+      return invalid(
+          "package resource role/index is duplicated within physical scope");
   }
 
   llvm::StringSet<> modulePaths;
@@ -458,45 +474,63 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
     }
   }
 
-  std::vector<bool> seenEntryRank(manifest.rankCount, false);
-  std::vector<bool> referencedResources(manifest.resources.size(), false);
+  std::vector<uint64_t> resourceReferenceCounts(manifest.resources.size(), 0);
+  for (const PackageEntrypointRecord &entry : manifest.entries)
+    for (const PackageABISlotBinding &slot : entry.slots) {
+      if (!slot.resource.isValid() ||
+          slot.resource.getValue() >= resourceReferenceCounts.size())
+        return invalid("package ABI slot references a missing resource");
+      ++resourceReferenceCounts[slot.resource.getValue()];
+    }
+
+  std::vector<bool> seenLaunchSlots(manifest.tileCount, false);
+  llvm::DenseSet<int64_t> seenPhysicalTiles;
   llvm::DenseMap<uint64_t, uint64_t> referencedModules;
   for (PackageEntrypointRecord &entry : manifest.entries) {
-    if (entry.logicalRank < 0 || entry.logicalRank >= manifest.rankCount ||
-        seenEntryRank[entry.logicalRank])
-      return invalid("package entry rank domain is invalid");
-    seenEntryRank[entry.logicalRank] = true;
+    if (entry.cardId != PhysicalCardId(0) || entry.tileId.getValue() < 0 ||
+        entry.tileId.getValue() >= 16 || !entry.launchSlot.isValid() ||
+        entry.launchSlot.getValue() >=
+            static_cast<uint64_t>(manifest.tileCount) ||
+        seenLaunchSlots[entry.launchSlot.getValue()] ||
+        !seenPhysicalTiles.insert(entry.tileId.getValue()).second ||
+        entry.completion !=
+            PackageEntryCompletionKind::ReturnAfterLocalDrain)
+      return invalid("package entry physical Tile domain is invalid");
+    seenLaunchSlots[entry.launchSlot.getValue()] = true;
     const PackageModuleRecord *module =
         findModule(manifest.modules, entry.module);
-    const PackageCompletionRecord *completion =
-        findCompletion(manifest.completions, entry.terminalCompletion);
-    if (!module || !completion || completion->logicalRank != entry.logicalRank)
-      return invalid("package entry module/completion relation is invalid");
+    if (!module)
+      return invalid("package entry module relation is invalid");
     ++referencedModules[entry.module.getValue()];
     llvm::sort(entry.slots, [](const auto &lhs, const auto &rhs) {
       return lhs.ordinal < rhs.ordinal;
     });
+    llvm::DenseSet<uint64_t> entryResources;
     for (auto [ordinal, slot] : llvm::enumerate(entry.slots)) {
       if (!isValidAccess(slot.access) || slot.ordinal != ordinal)
         return invalid("package ABI slots must be dense and zero-based");
       const PackageResourceRecord *resource =
           findResource(manifest.resources, slot.resource);
-      if (!resource || resource->logicalRank != entry.logicalRank ||
-          slot.access != resource->access ||
-          referencedResources[resource->id.getValue()])
+      if (!resource || slot.access != resource->access ||
+          !entryResources.insert(resource->id.getValue()).second)
         return invalid("package ABI slot/resource relation is invalid");
-      referencedResources[resource->id.getValue()] = true;
+      const auto *cardScope = std::get_if<CardResourceScope>(&resource->scope);
+      const auto *tileScope = std::get_if<TileResourceScope>(&resource->scope);
+      const uint64_t referenceCount =
+          resourceReferenceCounts[resource->id.getValue()];
+      if ((cardScope &&
+           (cardScope->cardId != entry.cardId ||
+            referenceCount != static_cast<uint64_t>(manifest.tileCount))) ||
+          (tileScope &&
+           (!isSamePhysicalTile(*tileScope, entry) || referenceCount != 1)))
+        return invalid(
+            "package resource references disagree with typed physical scope");
     }
-    uint64_t rankResourceCount =
-        llvm::count_if(manifest.resources, [&](const auto &resource) {
-          return resource.logicalRank == entry.logicalRank;
-        });
-    if (entry.slots.size() != rankResourceCount)
-      return invalid("package entry omits or adds rank resources");
 
     llvm::SmallVector<const PackageResourceRecord *, 1> statusResources;
     for (const PackageResourceRecord &resource : manifest.resources)
-      if (resource.logicalRank == entry.logicalRank &&
+      if (const auto *scope = std::get_if<TileResourceScope>(&resource.scope);
+          scope && isSamePhysicalTile(*scope, entry) &&
           resource.role == PackageResourceRole::TransportStatus)
         statusResources.push_back(&resource);
     if (std::holds_alternative<NoTransportRequirements>(entry.transport)) {
@@ -510,8 +544,7 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
           findResource(manifest.resources, requirements.statusResource);
       if (statusResources.size() != 1 || !status ||
           status != statusResources.front() ||
-          status->logicalRank != entry.logicalRank || status->roleIndex != 0 ||
-          status->type.dtype != "u32" ||
+          status->roleIndex != 0 || status->type.dtype != "u32" ||
           status->type.shape != std::vector<int64_t>{1} ||
           status->bytes != kDirectDTEStatusStorageBytes ||
           status->alignment != kDirectDTEStatusStorageAlignment ||
@@ -522,7 +555,8 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
         return invalid("package Direct DTE transport requirement is invalid");
     }
   }
-  if (!llvm::all_of(referencedResources, [](bool value) { return value; }))
+  if (llvm::any_of(resourceReferenceCounts,
+                   [](uint64_t count) { return count == 0; }))
     return invalid(
         "package resources are not covered all-and-only by ABI slots");
   if (llvm::any_of(manifest.modules, [&](const auto &module) {
@@ -531,16 +565,6 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
     return invalid("package contains an unreferenced module");
   if (llvm::Error error = verifyRuntimeLaunchContract(manifest))
     return std::move(error);
-
-  std::vector<bool> seenCompletionRank(manifest.rankCount, false);
-  for (const PackageCompletionRecord &completion : manifest.completions) {
-    if (completion.logicalRank < 0 ||
-        completion.logicalRank >= manifest.rankCount ||
-        seenCompletionRank[completion.logicalRank] ||
-        completion.kind != "entry_return")
-      return invalid("package terminal completion domain is invalid");
-    seenCompletionRank[completion.logicalRank] = true;
-  }
 
   if (packageRoot.empty())
     return invalid("package root must not be empty");

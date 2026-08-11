@@ -10,13 +10,13 @@ namespace wafer::model::detail {
 struct SystemCRunner;
 struct SystemCEvent;
 
-using SystemCRankEntry = void (*)(void *owner, int64_t logicalRank);
+using SystemCTileEntry = void (*)(void *owner, int64_t launchSlot);
 
 bool isSystemCInitialElaboration();
 const char *getSystemCBridgeDiagnostic();
 
-SystemCRunner *createSystemCRunner(uint64_t rankCount,
-                                   SystemCRankEntry rankEntry, void *owner);
+SystemCRunner *createSystemCRunner(uint64_t tileCount,
+                                   SystemCTileEntry tileEntry, void *owner);
 void destroySystemCRunner(SystemCRunner *runner);
 void startSystemCSimulation();
 uint64_t getSystemCDeltaCount();

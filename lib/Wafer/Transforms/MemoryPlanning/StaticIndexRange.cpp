@@ -239,6 +239,12 @@ private:
       return evaluateMultiply(multiply);
     if (auto divide = value.getDefiningOp<mlir::arith::DivUIOp>())
       return evaluateUnsignedDivide(divide);
+    if (auto maximum = value.getDefiningOp<mlir::arith::MaxSIOp>())
+      return evaluateSignedExtremum(maximum.getLhs(), maximum.getRhs(),
+                                    /*takeMaximum=*/true);
+    if (auto minimum = value.getDefiningOp<mlir::arith::MinSIOp>())
+      return evaluateSignedExtremum(minimum.getLhs(), minimum.getRhs(),
+                                    /*takeMaximum=*/false);
     // Keep the hand-written arithmetic cases above for precise failure
     // classification, then accept any other current-IR index expression whose
     // registered ValueBounds model proves a finite closed interval. This
@@ -385,6 +391,23 @@ private:
         static_cast<int64_t>(static_cast<uint64_t>(operands->first.min) /
                              static_cast<uint64_t>(operands->second.min));
     return Result{StaticIndexRange{quotient, quotient, /*empty=*/false}};
+  }
+
+  Result evaluateSignedExtremum(mlir::Value lhsValue, mlir::Value rhsValue,
+                                bool takeMaximum) {
+    Failure failure = Failure::None;
+    auto operands = evaluateOperands(lhsValue, rhsValue, failure);
+    if (!operands)
+      return failed(failure);
+    if (operands->first.empty || operands->second.empty)
+      return Result{StaticIndexRange{/*min=*/0, /*max=*/0, /*empty=*/true}};
+    auto combine = [takeMaximum](int64_t lhs, int64_t rhs) {
+      return takeMaximum ? std::max(lhs, rhs) : std::min(lhs, rhs);
+    };
+    return Result{StaticIndexRange{
+        combine(operands->first.min, operands->second.min),
+        combine(operands->first.max, operands->second.max),
+        /*empty=*/false}};
   }
 
   llvm::DenseMap<mlir::Value, Result> cache;

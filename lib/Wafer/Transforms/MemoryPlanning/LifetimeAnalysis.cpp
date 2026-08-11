@@ -2451,7 +2451,7 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
   // busytable across every dynamic backedge. Dependency-related accesses must
   // stay on the issue's worker; typed streams on provably disjoint allocation
   // roots may use another worker without a completion edge. Canonical
-  // fixed-slot rotation intentionally changes the SSA identity and may produce
+  // rotating-buffer recurrence changes the SSA identity and may produce
   // a finite union of external allocation origins; actual overlapping issued
   // ranges order, while disjoint slots require no dependency. Statically
   // non-empty nested scf.for bodies are part of that same stream. Any observer,

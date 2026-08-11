@@ -39,10 +39,10 @@
 
 namespace {
 
-wafer::frontend::ProgramRankSlice
-singleRankSlice(llvm::ArrayRef<int64_t> shape) {
-  wafer::frontend::ProgramRankSlice slice;
-  slice.logicalRank = 0;
+wafer::frontend::ProgramPartitionSlice
+singleCardPartitionSlice(llvm::ArrayRef<int64_t> shape) {
+  wafer::frontend::ProgramPartitionSlice slice;
+  slice.partitionId = 0;
   slice.replicaId = 0;
   slice.offsets.assign(shape.size(), 0);
   slice.sizes.assign(shape.begin(), shape.end());
@@ -59,7 +59,7 @@ shapedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape) {
   binding.globalShape.assign(shape.begin(), shape.end());
   binding.localShape.assign(shape.begin(), shape.end());
   binding.dtype = "f32";
-  binding.rankSlices.push_back(singleRankSlice(shape));
+  binding.partitionSlices.push_back(singleCardPartitionSlice(shape));
   return binding;
 }
 
@@ -74,7 +74,7 @@ TEST(TargetABIPreparationTest,
       R"mlir(
 module {
   wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>, policy = "explicit", shape = array<i64: 1>, topology = @default}
+  wafer.execution.mesh @default_mesh {axes = ["card_partition"], shape = array<i64: 1>}
   func.func @main(%lhs: tensor<4xf32>, %rhs: tensor<4xf32>,
                   %bias: tensor<4xf32>) -> tensor<4xf32> {
     %tmp = tensor.empty() : tensor<4xf32>
@@ -110,7 +110,7 @@ module {
   ASSERT_TRUE(tensorProgram);
 
   wafer::frontend::FrontendProgramVerificationResult program;
-  program.logicalRankCount = 1;
+  program.numPartitions = 1;
   program.programUserInputCount = 3;
   program.distributedInputs = {shapedBoundary(0, {4}), shapedBoundary(1, {4}),
                                shapedBoundary(2, {4})};
@@ -121,17 +121,22 @@ module {
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   auto bundle = wafer::compiler::detail::buildExecutableBundle(
-      context, *tensorProgram, std::move(program), *config, diagnostics,
-      std::nullopt);
+      context, *tensorProgram, std::move(program), *config,
+      wafer::OptimizationConfig::search(), diagnostics, std::nullopt);
   if (!bundle)
     FAIL() << diagnosticsText << llvm::toString(bundle.takeError());
   tensorProgram = nullptr;
-  ASSERT_EQ(bundle->getRankExecutables().size(), 1u);
+  ASSERT_EQ(bundle->getPhysicalTileExecutables().size(), 16u);
+  for (size_t tileIndex = 0;
+       tileIndex < bundle->getPhysicalTileExecutables().size(); ++tileIndex)
+    EXPECT_EQ(
+        bundle->getPhysicalTileExecutables()[tileIndex].getPhysicalTileId(),
+        wafer::PhysicalTileId(static_cast<int64_t>(tileIndex)));
 
-  const wafer::compiler::RankExecutable &rank =
-      bundle->getRankExecutables().front();
+  const wafer::compiler::PhysicalTileExecutable &tile =
+      bundle->getPhysicalTileExecutables().front();
   mlir::func::FuncOp entry =
-      rank.getModule().lookupSymbol<mlir::func::FuncOp>(rank.getEntrySymbol());
+      tile.getModule().lookupSymbol<mlir::func::FuncOp>(tile.getEntrySymbol());
   ASSERT_TRUE(entry);
   mlir::Builder builder(entry.getContext());
   llvm::SmallVector<mlir::memref::AllocOp, 2> plannedDDRAllocations;
@@ -153,9 +158,9 @@ module {
       opBuilder.clone(*plannedDDRAllocations.front()));
   plannedDDRAllocations.push_back(workspace);
 
-  mlir::FailureOr<wafer::compiler::detail::PreparedTargetRank> prepared =
+  mlir::FailureOr<wafer::compiler::detail::PreparedPhysicalTile> prepared =
       wafer::compiler::detail::prepareTargetABI(
-          rank, *config, /*transportPreparedBeforeEntry=*/false);
+          tile, *config, /*transportPreparedBeforeEntry=*/false);
   ASSERT_TRUE(mlir::succeeded(prepared));
   unsigned workspaceSlots = 0;
   for (const wafer::compiler::KernelABISlot &slot : prepared->slots) {
@@ -176,9 +181,9 @@ module {
         diagnostic.print(stream);
         return mlir::success();
       });
-  mlir::FailureOr<wafer::compiler::detail::PreparedTargetRank> overflow =
+  mlir::FailureOr<wafer::compiler::detail::PreparedPhysicalTile> overflow =
       wafer::compiler::detail::prepareTargetABI(
-          rank, *config, /*transportPreparedBeforeEntry=*/false);
+          tile, *config, /*transportPreparedBeforeEntry=*/false);
   EXPECT_TRUE(mlir::failed(overflow));
   EXPECT_NE(overflowDiagnostics.find(
                 "combined default DDR arena alignment is invalid or exceeds "

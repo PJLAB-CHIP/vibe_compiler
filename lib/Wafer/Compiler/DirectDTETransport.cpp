@@ -3,9 +3,9 @@
 #include "DirectDTETransport.h"
 
 #include "AcceptedCallClosure.h"
-#include "Wafer/Transforms/MemoryPlanning/StaticIndexRange.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Transforms/MemoryPlanning/StaticIndexRange.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -23,6 +23,7 @@
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -49,8 +50,7 @@ struct StructuredLoopSite {
   }
 };
 
-using MessageBaseKey =
-    std::tuple<int64_t, int64_t, int64_t, DTEProtocolPhase, int64_t, int64_t>;
+using MessageBaseKey = std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t>;
 
 struct PhysicalRange {
   int64_t start = -1;
@@ -66,7 +66,7 @@ struct IssueRecord {
   mlir::Operation *operation = nullptr;
   mlir::Operation *wait = nullptr;
   mlir::Block *block = nullptr;
-  int64_t rank = -1;
+  int64_t physicalTileIndex = -1;
   MessageBaseKey message;
   AcceptedRangePattern rangePattern;
   int64_t bytes = -1;
@@ -113,7 +113,7 @@ struct StructuredExecutionFrame {
 
 struct TransportAction {
   mlir::Operation *operation = nullptr;
-  int64_t rank = -1;
+  int64_t physicalTileIndex = -1;
   TransportActionKind kind = TransportActionKind::Wait;
   IssueRecord *issue = nullptr;
   llvm::SmallVector<unsigned, 4> waitedIssueActions;
@@ -436,26 +436,26 @@ static mlir::LogicalResult verifyIssueBufferIsolation(mlir::Operation *issue,
     if (!operation)
       llvm_unreachable("same-block ordered wait must be reachable from issue");
 
-    bool hasRootOperand =
-        llvm::any_of(operation->getOperands(), [&](mlir::Value operand) {
-          return getRootViewSource(operand) == root;
-        });
-    if (operation->getNumRegions() != 0 && !mlir::isMemoryEffectFree(operation))
+    bool hasRootOperand = false;
+    operation->walk([&](mlir::Operation *nested) {
+      hasRootOperand |=
+          llvm::any_of(nested->getOperands(), [&](mlir::Value operand) {
+            return getRootViewSource(operand) == root;
+          });
+    });
+    // Region control such as scf.for has recursive memory effects.  Inspect
+    // the complete value-specific summary so an explicitly prepared receive
+    // may overlap unrelated compute while every nested access to its exact
+    // root remains forbidden. Any nested operation without an effect contract
+    // makes getEffectsRecursively fail, preserving fail-closed behavior.
+    std::optional<llvm::SmallVector<mlir::MemoryEffects::EffectInstance>>
+        recursiveEffects = mlir::getEffectsRecursively(operation);
+    if (!recursiveEffects)
       return operation->emitError(
-          "direct_dte_acceptance: effectful nested control is unsupported "
-          "between a DTE issue and its matching wait");
-
-    auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
-    if (!effects) {
-      if (!mlir::isMemoryEffectFree(operation))
-        return operation->emitError(
-            "direct_dte_acceptance: issue buffer has an unknown access before "
-            "its matching wait");
-      continue;
-    }
-
-    llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> instances;
-    effects.getEffects(instances);
+          "direct_dte_acceptance: issue buffer has an unknown access before "
+          "its matching wait");
+    llvm::ArrayRef<mlir::MemoryEffects::EffectInstance> instances =
+        *recursiveEffects;
     const bool hasRootValueEffect =
         llvm::any_of(instances, [&](const auto &effect) {
           mlir::Value value = effect.getValue();
@@ -466,7 +466,7 @@ static mlir::LogicalResult verifyIssueBufferIsolation(mlir::Operation *issue,
           "direct_dte_acceptance: issue buffer has no value-specific memory "
           "effect before its matching wait");
 
-    llvm::StringRef conflictingEffect = "unknown";
+    llvm::StringRef conflictingEffect;
     bool conflicts = llvm::any_of(instances, [&](const auto &effect) {
       mlir::Value value = effect.getValue();
       // Rootless resource effects summarize an execution engine (for example
@@ -481,17 +481,30 @@ static mlir::LogicalResult verifyIssueBufferIsolation(mlir::Operation *issue,
       const bool read =
           llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
       const bool conflict = issueWritesBuffer || !read;
-      if (conflict)
-        conflictingEffect = read ? "read" : "write";
+      if (conflict) {
+        if (read)
+          conflictingEffect = "read";
+        else if (llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect()))
+          conflictingEffect = "write";
+        else if (llvm::isa<mlir::MemoryEffects::Allocate>(effect.getEffect()))
+          conflictingEffect = "allocate";
+        else if (llvm::isa<mlir::MemoryEffects::Free>(effect.getEffect()))
+          conflictingEffect = "free";
+        else
+          conflictingEffect = "mutating-effect";
+      }
       return conflict;
     });
-    if (conflicts)
+    if (conflicts) {
+      assert(!conflictingEffect.empty() &&
+             "a conflicting memory effect must be classified");
       return operation->emitError(
                  "direct_dte_acceptance: issue buffer must remain isolated "
                  "until its matching wait")
              << ": issue=" << issue->getName()
              << " conflict=" << operation->getName()
              << " effect=" << conflictingEffect;
+    }
   }
   return mlir::success();
 }
@@ -561,44 +574,21 @@ getStructuredLoopSite(mlir::Operation *issue) {
   return reversedLoops;
 }
 
-static MessageBaseKey makeMessageBaseKey(int64_t rank, int64_t peer,
-                                         DTEMessageAttr message, bool isSend) {
-  return std::make_tuple(isSend ? rank : peer, isSend ? peer : rank,
-                         message.getCommunicationId(), message.getPhase(),
-                         message.getRound(), message.getPayloadSlice());
-}
-
-static bool requiresExactReductionPayloadType(DTEProtocolPhase phase) {
-  switch (phase) {
-  case DTEProtocolPhase::ReduceScatterDirect:
-  case DTEProtocolPhase::AllReduceRing:
-  case DTEProtocolPhase::AllReduceTreeReduce:
-  case DTEProtocolPhase::AllReduceTreeBroadcast:
-  case DTEProtocolPhase::ReduceScatterRing:
-    return true;
-  case DTEProtocolPhase::CollectivePermute:
-  case DTEProtocolPhase::AllToAll:
-  case DTEProtocolPhase::AllGatherDirect:
-  case DTEProtocolPhase::AllGatherRing:
-  case DTEProtocolPhase::PeerDataflow:
-    return false;
-  }
-  llvm_unreachable("unknown DTE protocol phase");
-}
-
-static mlir::MemRefType getIssueBufferType(const IssueRecord &issue) {
-  if (auto send = mlir::dyn_cast<InstrDTESendOp>(issue.operation))
-    return mlir::dyn_cast<mlir::MemRefType>(send.getBuffer().getType());
-  if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(issue.operation))
-    return mlir::dyn_cast<mlir::MemRefType>(recv.getBuffer().getType());
-  return {};
+static MessageBaseKey makeMessageBaseKey(int64_t physicalTileIndex,
+                                         int64_t peer, DTEMessageAttr message,
+                                         bool isSend) {
+  return std::make_tuple(isSend ? physicalTileIndex : peer,
+                         isSend ? peer : physicalTileIndex,
+                         message.getCommunicationId(), message.getRound(),
+                         message.getPayloadSlice());
 }
 
 static mlir::LogicalResult
-collectIssues(llvm::ArrayRef<mlir::ModuleOp> rankModules,
+collectIssues(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
               llvm::SmallVectorImpl<IssueRecord> &issues) {
-  for (size_t rankIndex = 0; rankIndex < rankModules.size(); ++rankIndex) {
-    mlir::ModuleOp module = rankModules[rankIndex];
+  for (size_t physicalTileIndex = 0;
+       physicalTileIndex < physicalTileModules.size(); ++physicalTileIndex) {
+    mlir::ModuleOp module = physicalTileModules[physicalTileIndex];
     llvm::DenseMap<mlir::Operation *, unsigned> operationIndices;
     module.walk([&](mlir::Block *block) {
       for (auto [index, operation] : llvm::enumerate(*block))
@@ -635,9 +625,11 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> rankModules,
       mlir::Value token = send ? send.getToken() : recv.getToken();
       int64_t peer =
           send ? send.getPeerAttr().getInt() : recv.getPeerAttr().getInt();
-      if (peer < 0 || peer >= static_cast<int64_t>(rankModules.size())) {
+      if (peer < 0 ||
+          peer >= static_cast<int64_t>(physicalTileModules.size())) {
         operation->emitError(
-            "direct_dte_acceptance: peer is outside the complete rank domain");
+            "direct_dte_acceptance: peer is outside the supplied physical "
+            "Tile domain");
         result = mlir::failure();
         return mlir::WalkResult::interrupt();
       }
@@ -646,8 +638,8 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> rankModules,
       DTEMessageAttr message =
           send ? send.getMessageAttr() : recv.getMessageAttr();
       MessageBaseKey messageBase =
-          makeMessageBaseKey(static_cast<int64_t>(rankIndex), peer, message,
-                             static_cast<bool>(send));
+          makeMessageBaseKey(static_cast<int64_t>(physicalTileIndex), peer,
+                             message, static_cast<bool>(send));
       mlir::FailureOr<llvm::SmallVector<StructuredLoopSite, 4>> loopSite =
           getStructuredLoopSite(operation);
       mlir::FailureOr<AcceptedRangePattern> rangePattern =
@@ -665,7 +657,7 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> rankModules,
       }
       issues.push_back(IssueRecord{
           operation, *wait, operation->getBlock(),
-          static_cast<int64_t>(rankIndex), messageBase,
+          static_cast<int64_t>(physicalTileIndex), messageBase,
           std::move(*rangePattern), bytes, operationIndices.lookup(operation),
           operationIndices.lookup(*wait), -1, static_cast<bool>(send)});
       return mlir::WalkResult::advance();
@@ -751,7 +743,7 @@ static mlir::LogicalResult appendDynamicIssues(
 }
 
 static mlir::LogicalResult buildDynamicMessageStreams(
-    llvm::ArrayRef<mlir::ModuleOp> rankModules,
+    llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
     llvm::ArrayRef<IssueRecord> issues,
     std::map<MessageBaseKey, DynamicMessageStream> &streams) {
   llvm::DenseMap<mlir::Operation *, unsigned> issueIndices;
@@ -765,7 +757,7 @@ static mlir::LogicalResult buildDynamicMessageStreams(
 
   llvm::DenseMap<mlir::Operation *, uint64_t> loopIterations;
   llvm::SmallVector<uint64_t, 32> occurrenceCounts(issues.size(), 0);
-  for (mlir::ModuleOp module : rankModules)
+  for (mlir::ModuleOp module : physicalTileModules)
     if (mlir::failed(appendDynamicIssues(
             module.getOperation(), issues, issueIndices, issueAncestors,
             loopIterations, occurrenceCounts, streams)))
@@ -813,7 +805,7 @@ verifySenderResources(llvm::ArrayRef<IssueRecord> issues) {
       if (overlaps)
         return right.operation->emitError(
             "direct_dte_acceptance: normal allocation profile permits at "
-            "most one live sender per rank block");
+            "most one live sender per physical Tile block");
     }
   }
   return mlir::success();
@@ -881,11 +873,12 @@ findTransportFunctions(const AcceptedCallClosure &closure,
 class StructuredTraceBuilder {
 public:
   StructuredTraceBuilder(
-      int64_t rank, mlir::ModuleOp module, const AcceptedCallClosure &closure,
+      int64_t physicalTileIndex, mlir::ModuleOp module,
+      const AcceptedCallClosure &closure,
       const llvm::DenseSet<mlir::Operation *> &transportFunctions,
       const llvm::DenseMap<mlir::Operation *, IssueRecord *> &issueByOperation,
       StructuredTransportTrace &trace)
-      : rank(rank), module(module), closure(closure),
+      : physicalTileIndex(physicalTileIndex), module(module), closure(closure),
         transportFunctions(transportFunctions),
         issueByOperation(issueByOperation), trace(trace) {}
 
@@ -951,7 +944,7 @@ private:
         if (liveRecord->isSend)
           return operation->emitError(
               "direct_dte_acceptance: normal allocation profile permits at "
-              "most one live sender per rank structured occurrence");
+              "most one live sender per physical Tile structured occurrence");
       }
     } else {
       for (const auto &[liveRecord, action] : pending) {
@@ -963,7 +956,7 @@ private:
 
     unsigned action = appendAction(
         TransportAction{operation,
-                        rank,
+                        physicalTileIndex,
                         record->isSend ? TransportActionKind::SendIssue
                                        : TransportActionKind::ReceivePrepare,
                         record,
@@ -990,7 +983,7 @@ private:
       waitedActions.push_back(pendingIt->second);
       pending.erase(pendingIt);
     }
-    appendAction(TransportAction{wait.getOperation(), rank,
+    appendAction(TransportAction{wait.getOperation(), physicalTileIndex,
                                  TransportActionKind::Wait, nullptr,
                                  std::move(waitedActions)});
     return mlir::success();
@@ -1091,7 +1084,7 @@ private:
     llvm_unreachable("structured operation must be in its parent block");
   }
 
-  int64_t rank;
+  int64_t physicalTileIndex;
   mlir::ModuleOp module;
   const AcceptedCallClosure &closure;
   const llvm::DenseSet<mlir::Operation *> &transportFunctions;
@@ -1190,8 +1183,8 @@ static mlir::LogicalResult matchDynamicMessages(
              << std::get<0>(entry.first)
              << ", destination=" << std::get<1>(entry.first)
              << ", communication_id=" << std::get<2>(entry.first)
-             << ", round=" << std::get<4>(entry.first)
-             << ", payload_slice=" << std::get<5>(entry.first)
+             << ", round=" << std::get<3>(entry.first)
+             << ", payload_slice=" << std::get<4>(entry.first)
              << ", sends=" << stream.sends.size()
              << ", receives=" << stream.recvs.size() << ")";
     }
@@ -1204,12 +1197,6 @@ static mlir::LogicalResult matchDynamicMessages(
         return recv.operation->emitError(
             "direct_dte_acceptance: dynamically matched send and receive byte "
             "counts differ");
-      DTEProtocolPhase phase = std::get<3>(send.message);
-      if (requiresExactReductionPayloadType(phase) &&
-          getIssueBufferType(send) != getIssueBufferType(recv))
-        return recv.operation->emitError(
-            "direct_dte_acceptance: collective reduction send and receive "
-            "payloads require the same physical memref type");
       __int128 displacement = static_cast<__int128>(recvInstance.range.start) -
                               static_cast<__int128>(sendInstance.range.start);
       if (displacement <
@@ -1369,18 +1356,30 @@ verifyAcyclicWaitGraph(StructuredTransportTrace &trace) {
           "wait graph contains a cyclic dependency");
       const size_t noteCount = std::min<size_t>(cycle.size(), 16);
       for (size_t index = 0; index < noteCount; ++index) {
-        const TransportAction &member = trace.actions[cycle[index]];
+        const unsigned actionIndex = cycle[index];
+        const TransportAction &member = trace.actions[actionIndex];
+        diagnostic << (index == 0 ? "; cycle=[" : ", ") << actionIndex
+                   << ":tile" << member.physicalTileIndex << ':'
+                   << getActionName(member.kind);
+        if (member.issue) {
+          const auto &[source, destination, communication, round, payload] =
+              member.issue->message;
+          diagnostic << "(" << source << "->" << destination
+                     << ",comm=" << communication << ",round=" << round
+                     << ",slice=" << payload << ')';
+        }
         diagnostic.attachNote(member.operation->getLoc())
-            << "rank " << member.rank << " " << getActionName(member.kind)
-            << " participates in the wait cycle";
+            << "physical Tile index " << member.physicalTileIndex << " "
+            << getActionName(member.kind) << " participates in the wait cycle";
       }
+      diagnostic << ']';
       return mlir::failure();
     }
   return mlir::success();
 }
 
 static mlir::LogicalResult verifyStructuredTransportWaitGraph(
-    llvm::ArrayRef<mlir::ModuleOp> rankModules,
+    llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
     llvm::SmallVectorImpl<IssueRecord> &issues,
     llvm::SmallVectorImpl<MatchedMessage> &messages,
     StructuredTransportTrace &trace) {
@@ -1388,8 +1387,9 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
   for (IssueRecord &issue : issues)
     issueByOperation[issue.operation] = &issue;
 
-  for (size_t rank = 0; rank < rankModules.size(); ++rank) {
-    mlir::ModuleOp module = rankModules[rank];
+  for (size_t physicalTileIndex = 0;
+       physicalTileIndex < physicalTileModules.size(); ++physicalTileIndex) {
+    mlir::ModuleOp module = physicalTileModules[physicalTileIndex];
     llvm::Expected<AcceptedCallClosure> closure =
         analyzeAcceptedCallClosure(module);
     if (!closure) {
@@ -1402,8 +1402,9 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
     }
     llvm::DenseSet<mlir::Operation *> transportFunctions =
         findTransportFunctions(*closure, module);
-    StructuredTraceBuilder builder(static_cast<int64_t>(rank), module, *closure,
-                                   transportFunctions, issueByOperation, trace);
+    StructuredTraceBuilder builder(static_cast<int64_t>(physicalTileIndex),
+                                   module, *closure, transportFunctions,
+                                   issueByOperation, trace);
     if (mlir::failed(builder.build()))
       return mlir::failure();
   }
@@ -1452,7 +1453,8 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
       if (recvPosition == indexedReceives.end())
         return trace.actions[sendIndex].operation->emitError(
             "direct_dte_acceptance: matched message call/region/loop "
-            "occurrence paths are not structurally identical across ranks");
+            "occurrence paths are not structurally identical across physical "
+            "Tiles");
       auto indexedReceive = *recvPosition;
       matchedReceives[indexedReceive.index()] = true;
     }
@@ -1568,17 +1570,17 @@ static mlir::LogicalResult allocateReceiverFSMs(
 }
 
 static mlir::LogicalResult
-analyzeDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> rankModules,
+analyzeDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
                           llvm::SmallVectorImpl<IssueRecord> &issues,
                           llvm::SmallVectorImpl<MatchedMessage> &messages,
                           StructuredTransportTrace &trace) {
-  if (mlir::failed(collectIssues(rankModules, issues)))
+  if (mlir::failed(collectIssues(physicalTileModules, issues)))
     return mlir::failure();
   if (issues.empty())
     return mlir::success();
   if (mlir::failed(verifySenderResources(issues)) ||
-      mlir::failed(verifyStructuredTransportWaitGraph(rankModules, issues,
-                                                      messages, trace)) ||
+      mlir::failed(verifyStructuredTransportWaitGraph(
+          physicalTileModules, issues, messages, trace)) ||
       mlir::failed(allocateReceiverFSMs(issues, trace.receiverConflicts)))
     return mlir::failure();
   return mlir::success();
@@ -1586,28 +1588,30 @@ analyzeDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> rankModules,
 
 } // namespace
 
-mlir::LogicalResult
-verifyDirectDTETransportSchedule(llvm::ArrayRef<mlir::ModuleOp> rankModules) {
+mlir::LogicalResult verifyDirectDTETransportSchedule(
+    llvm::ArrayRef<mlir::ModuleOp> physicalTileModules) {
   llvm::SmallVector<IssueRecord, 32> issues;
   llvm::SmallVector<MatchedMessage, 32> messages;
   StructuredTransportTrace trace;
-  return analyzeDirectDTETransport(rankModules, issues, messages, trace);
+  return analyzeDirectDTETransport(physicalTileModules, issues, messages,
+                                   trace);
 }
 
 mlir::FailureOr<TransportContract>
-acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> rankModules) {
+acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules) {
   llvm::SmallVector<IssueRecord, 32> issues;
   llvm::SmallVector<MatchedMessage, 32> messages;
   StructuredTransportTrace trace;
-  if (mlir::failed(
-          analyzeDirectDTETransport(rankModules, issues, messages, trace)))
+  if (mlir::failed(analyzeDirectDTETransport(physicalTileModules, issues,
+                                             messages, trace)))
     return mlir::failure();
   if (issues.empty())
     return TransportContract::None;
 
   std::map<MessageBaseKey, DynamicMessageStream> streams;
   if (!buildInvariantMessageRepresentatives(issues, streams) &&
-      mlir::failed(buildDynamicMessageStreams(rankModules, issues, streams)))
+      mlir::failed(
+          buildDynamicMessageStreams(physicalTileModules, issues, streams)))
     return mlir::failure();
 
   llvm::SmallVector<std::pair<mlir::Operation *, DirectDTEBindingAttr>, 32>
@@ -1624,8 +1628,8 @@ acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> rankModules) {
 namespace wafer::compiler::testing {
 
 mlir::FailureOr<TransportContract>
-acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> rankModules) {
-  return detail::acceptDirectDTETransport(rankModules);
+acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules) {
+  return detail::acceptDirectDTETransport(physicalTileModules);
 }
 
 } // namespace wafer::compiler::testing

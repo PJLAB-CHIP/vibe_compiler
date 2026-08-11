@@ -34,23 +34,6 @@ private:
   wafer::support::ScopedCompileTimingSpan timing;
 };
 
-enum class AllGatherSchedule { Ring, Direct };
-enum class AllReduceSchedule { Auto, Ring, Tree };
-enum class ReduceScatterSchedule { Direct, Ring };
-
-struct TileRegionToInstrOptions {
-  AllGatherSchedule allGatherSchedule = AllGatherSchedule::Ring;
-  AllReduceSchedule allReduceSchedule = AllReduceSchedule::Auto;
-  ReduceScatterSchedule reduceScatterSchedule = ReduceScatterSchedule::Direct;
-};
-
-/// Compiler-private materialization point used only by actual-clone candidate
-/// generation. The installed conversion API always lowers the baseline form.
-mlir::LogicalResult
-convertTileRegionToInstrModule(mlir::ModuleOp module,
-                               const TileRegionToInstrOptions &options,
-                               std::string *failureReason = nullptr);
-
 struct MovementDescriptor {
   int64_t byteCount = 0;
   int64_t innerBytes = 0;
@@ -178,16 +161,12 @@ void populateMovementLoweringPatterns(mlir::RewritePatternSet &patterns,
 void populateViewReshapeLoweringPattern(mlir::RewritePatternSet &patterns,
                                         std::string *failureReason);
 void populateComputeLoweringPatterns(mlir::RewritePatternSet &patterns,
-                                     const TileRegionToInstrOptions &options,
                                      std::string *failureReason);
 void populateFillLoweringPattern(mlir::RewritePatternSet &patterns);
 void populateConstantPredicateSelectCanonicalizationPattern(
     mlir::RewritePatternSet &patterns);
 void populatePeerLoweringPatterns(mlir::RewritePatternSet &patterns,
                                   std::string *failureReason);
-void populateCollectiveLoweringPatterns(mlir::RewritePatternSet &patterns,
-                                        const TileRegionToInstrOptions &options,
-                                        std::string *failureReason);
 
 } // namespace wafer::tile_region_to_instr
 

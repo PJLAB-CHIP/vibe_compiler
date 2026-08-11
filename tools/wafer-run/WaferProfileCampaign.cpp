@@ -51,7 +51,7 @@ llvm::Error invalid(llvm::Twine message) {
 }
 
 struct CandidateState {
-  const ProfileVariantPackage *variant = nullptr;
+  const ProfileProductionArtifact *artifact = nullptr;
   BoardInvocationFilePlan executionPlan;
   const ProfileCapturePackage *countPackage = nullptr;
   const ProfileCapturePackage *tracePackage = nullptr;
@@ -61,14 +61,19 @@ struct CandidateState {
   std::vector<Tx81ProfilerRecord> trace;
 };
 
-using SemanticOutputKey = std::tuple<int64_t, PackageResourceRole, int64_t>;
+using SemanticOutputKey =
+    std::tuple<int, int64_t, int64_t, PackageResourceRole, int64_t>;
 
 SemanticOutputKey semanticOutputKey(const PackageResourceRecord &resource) {
-  return {resource.logicalRank, resource.role, resource.roleIndex};
+  if (const auto *card = std::get_if<CardResourceScope>(&resource.scope))
+    return {0, card->cardId.getValue(), -1, resource.role, resource.roleIndex};
+  const auto &tile = std::get<TileResourceScope>(resource.scope);
+  return {1, tile.cardId.getValue(), tile.tileId.getValue(), resource.role,
+          resource.roleIndex};
 }
 
 struct ExactOutputContract {
-  int64_t logicalRank = -1;
+  PackageResourceScope scope;
   PackageResourceRole role = PackageResourceRole::Output;
   int64_t roleIndex = -1;
   std::string dtype;
@@ -80,14 +85,20 @@ struct ExactOutputContract {
 };
 
 ExactOutputContract exactOutputContract(const PackageResourceRecord &resource) {
-  return {resource.logicalRank, resource.role,       resource.roleIndex,
-          resource.type.dtype,  resource.type.shape, resource.bytes,
-          resource.alignment,   resource.access,     resource.hostVisible};
+  return {resource.scope,      resource.role,       resource.roleIndex,
+          resource.type.dtype, resource.type.shape, resource.bytes,
+          resource.alignment,  resource.access,     resource.hostVisible};
 }
 
 bool sameExactOutputContract(const ExactOutputContract &lhs,
                              const ExactOutputContract &rhs) {
-  return lhs.logicalRank == rhs.logicalRank && lhs.role == rhs.role &&
+  auto scopeKey = [](const PackageResourceScope &scope) {
+    if (const auto *card = std::get_if<CardResourceScope>(&scope))
+      return std::tuple(0, card->cardId.getValue(), int64_t{-1});
+    const auto &tile = std::get<TileResourceScope>(scope);
+    return std::tuple(1, tile.cardId.getValue(), tile.tileId.getValue());
+  };
+  return scopeKey(lhs.scope) == scopeKey(rhs.scope) && lhs.role == rhs.role &&
          lhs.roleIndex == rhs.roleIndex && lhs.dtype == rhs.dtype &&
          lhs.shape == rhs.shape && lhs.bytes == rhs.bytes &&
          lhs.alignment == rhs.alignment && lhs.access == rhs.access &&
@@ -145,9 +156,13 @@ std::string hashOutputBytes(llvm::ArrayRef<uint8_t> bytes) {
 }
 
 std::string formatSemanticOutputKey(const SemanticOutputKey &key) {
-  auto [rank, role, roleIndex] = key;
-  return (llvm::Twine("logical_rank=") + llvm::Twine(rank) +
-          ",role=" + stringifyPackageResourceRole(role) +
+  auto [scopeKind, cardId, tileId, role, roleIndex] = key;
+  std::string scope =
+      scopeKind == 0 ? (llvm::Twine("card_id=") + llvm::Twine(cardId)).str()
+                     : (llvm::Twine("card_id=") + llvm::Twine(cardId) +
+                        ",tile_id=" + llvm::Twine(tileId))
+                           .str();
+  return (llvm::Twine(scope) + ",role=" + stringifyPackageResourceRole(role) +
           ",role_index=" + llvm::Twine(roleIndex))
       .str();
 }
@@ -218,8 +233,6 @@ bool isProfilerResource(const PackageResourceRecord &resource,
 
 Tx81ProfilerCaptureKind toRuntimeCaptureKind(ProfileCaptureKind capture) {
   switch (capture) {
-  case ProfileCaptureKind::Summary:
-    return Tx81ProfilerCaptureKind::Summary;
   case ProfileCaptureKind::Count:
     return Tx81ProfilerCaptureKind::Count;
   case ProfileCaptureKind::Trace:
@@ -244,13 +257,14 @@ makeCapturePlan(const BoardInvocationFilePlan &productionPlan,
     if (resource.role != PackageResourceRole::Workspace ||
         resource.roleIndex != 1)
       continue;
-    if (!isProfilerResource(resource, capture.getRecordBytes()) ||
-        resource.logicalRank < 0 ||
-        resource.logicalRank >= WAFER_TX81_PROFILER_TILE_COUNT ||
-        profilerResources[resource.logicalRank])
+    const auto *scope = std::get_if<TileResourceScope>(&resource.scope);
+    if (!isProfilerResource(resource, capture.getRecordBytes()) || !scope ||
+        scope->cardId != PhysicalCardId(0) || scope->tileId.getValue() < 0 ||
+        scope->tileId.getValue() >= WAFER_TX81_PROFILER_TILE_COUNT ||
+        profilerResources[scope->tileId.getValue()])
       return invalid("profile capture has an invalid typed profiler resource "
                      "domain");
-    profilerResources[resource.logicalRank] = &resource;
+    profilerResources[scope->tileId.getValue()] = &resource;
   }
   for (uint32_t tile = 0; tile < WAFER_TX81_PROFILER_TILE_COUNT; ++tile) {
     const PackageResourceRecord *resource = profilerResources[tile];
@@ -270,11 +284,15 @@ llvm::Expected<std::vector<Tx81ProfilerRecord>>
 decodeProfilerOutputs(const ProfileCapturePackage &capture,
                       const BoardRuntimeInvocationResult &result) {
   const PackageManifest &manifest = capture.getPackage().getManifest();
-  llvm::DenseMap<uint64_t, int64_t> resourceRanks;
+  llvm::DenseMap<uint64_t, int64_t> resourceTiles;
   for (const PackageResourceRecord &resource : manifest.resources)
-    if (isProfilerResource(resource, capture.getRecordBytes()))
-      resourceRanks[resource.id.getValue()] = resource.logicalRank;
-  if (resourceRanks.size() != WAFER_TX81_PROFILER_TILE_COUNT ||
+    if (isProfilerResource(resource, capture.getRecordBytes())) {
+      const auto *scope = std::get_if<TileResourceScope>(&resource.scope);
+      if (!scope)
+        return invalid("board profiler resource is not Tile-scoped");
+      resourceTiles[resource.id.getValue()] = scope->tileId.getValue();
+    }
+  if (resourceTiles.size() != WAFER_TX81_PROFILER_TILE_COUNT ||
       result.profilerOutputs.size() != WAFER_TX81_PROFILER_TILE_COUNT)
     return invalid("board profiler readback is not all-and-only 16 tiles");
 
@@ -282,8 +300,8 @@ decodeProfilerOutputs(const ProfileCapturePackage &capture,
   std::vector<Tx81ProfilerRecord> records;
   records.reserve(WAFER_TX81_PROFILER_TILE_COUNT);
   for (const BoardRuntimeOutput &output : result.profilerOutputs) {
-    auto rank = resourceRanks.find(output.resource.getValue());
-    if (rank == resourceRanks.end() ||
+    auto tile = resourceTiles.find(output.resource.getValue());
+    if (tile == resourceTiles.end() ||
         !returned.insert(output.resource.getValue()).second ||
         output.bytes.size() != capture.getRecordBytes())
       return invalid("board profiler readback has an unexpected resource "
@@ -292,7 +310,7 @@ decodeProfilerOutputs(const ProfileCapturePackage &capture,
         decodeTx81ProfilerRecord(output.bytes);
     if (!decoded)
       return decoded.takeError();
-    if (decoded->header.tile_id != static_cast<uint32_t>(rank->second))
+    if (decoded->header.tile_id != static_cast<uint32_t>(tile->second))
       return invalid("board profiler resource and record tile disagree");
     records.push_back(std::move(*decoded));
   }
@@ -308,9 +326,7 @@ decodeProfilerOutputs(const ProfileCapturePackage &capture,
         (record.header.flags & WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED) != 0;
     const bool count =
         (record.header.flags & WAFER_TX81_PROFILER_RECORD_COUNT_ONLY) != 0;
-    if ((capture.getCaptureKind() == ProfileCaptureKind::Summary &&
-         (trace || count)) ||
-        (capture.getCaptureKind() == ProfileCaptureKind::Count &&
+    if ((capture.getCaptureKind() == ProfileCaptureKind::Count &&
          (!count || trace)) ||
         (capture.getCaptureKind() == ProfileCaptureKind::Trace &&
          (!trace || count)))
@@ -318,12 +334,6 @@ decodeProfilerOutputs(const ProfileCapturePackage &capture,
                      "verified package");
   }
   return records;
-}
-
-const ProfileVariantSiteMap *
-resolveSiteMap(const VerifiedProfileCompanion &companion,
-               llvm::StringRef variantId) {
-  return companion.findSiteMap(variantId);
 }
 
 llvm::StringRef stringifyEventEngine(uint8_t engine) {
@@ -404,22 +414,28 @@ llvm::Error validateTraceSites(const VerifiedProfileCompanion &companion,
                                const CandidateState &candidate) {
   if (candidate.trace.size() != WAFER_TX81_PROFILER_TILE_COUNT)
     return invalid("profile trace tile domain is incomplete");
-  const ProfileVariantSiteMap *siteMap =
-      resolveSiteMap(companion, candidate.variant->getId());
-  if (!siteMap || siteMap->ranks.size() != WAFER_TX81_PROFILER_TILE_COUNT)
+  llvm::ArrayRef<ProfileTileSiteMap> siteMap = companion.getSiteMap();
+  if (siteMap.size() != WAFER_TX81_PROFILER_TILE_COUNT)
     return invalid("profile trace has no complete typed site map");
-  for (uint32_t tile = 0; tile < WAFER_TX81_PROFILER_TILE_COUNT; ++tile) {
-    const Tx81ProfilerRecord &trace = candidate.trace[tile];
-    const ProfileRankSiteMap &rankMap = siteMap->ranks[tile];
-    if (trace.header.tile_id != tile || rankMap.logicalRank != tile)
+  for (uint32_t launchSlot = 0; launchSlot < WAFER_TX81_PROFILER_TILE_COUNT;
+       ++launchSlot) {
+    const ProfileTileSiteMap &tileMap = siteMap[launchSlot];
+    const int64_t tileId = tileMap.tileId.getValue();
+    if (tileMap.cardId != PhysicalCardId(0) || tileId < 0 ||
+        tileId >= WAFER_TX81_PROFILER_TILE_COUNT ||
+        tileMap.launchSlot != LaunchSlotId(launchSlot))
       return invalid(
-          "profile typed trace/site-map rank domain is not canonical");
+          "profile typed trace/site-map physical-Tile domain is not canonical");
+    const Tx81ProfilerRecord &trace = candidate.trace[tileId];
+    if (trace.header.tile_id != static_cast<uint32_t>(tileId))
+      return invalid(
+          "profile trace record disagrees with its physical-Tile site map");
     for (const WaferTx81ProfilerTSMCallEvent &event : trace.events) {
       if (!isTx81ProfilerSiteValid(event))
-        return invalid("profile trace event has no final-artifact typed site");
-      if (event.site_id >= rankMap.sites.size())
+        return invalid("profile trace event has no typed production site");
+      if (event.site_id >= tileMap.sites.size())
         return invalid("profile trace event references an unknown typed site");
-      const ProfileTargetCallSite &site = rankMap.sites[event.site_id];
+      const ProfileTargetCallSite &site = tileMap.sites[event.site_id];
       if (site.siteId != event.site_id || !eventMatchesSite(site, event))
         return invalid("profile trace event conflicts with its typed site");
     }
@@ -436,8 +452,9 @@ bool sameDevice(const BoardDeviceInfo &lhs, const BoardDeviceInfo &rhs) {
       lhs.tiles.size() != rhs.tiles.size())
     return false;
   return llvm::equal(lhs.tiles, rhs.tiles, [](const auto &a, const auto &b) {
-    return a.logicalIndex == b.logicalIndex && a.available == b.available &&
-           a.physicalX == b.physicalX && a.physicalY == b.physicalY;
+    return a.tileId == b.tileId && a.launchSlot == b.launchSlot &&
+           a.available == b.available && a.physicalX == b.physicalX &&
+           a.physicalY == b.physicalY;
   });
 }
 
@@ -446,12 +463,17 @@ llvm::Error validateTopology(const BoardDeviceInfo &device) {
       device.tiles.size() != WAFER_TX81_PROFILER_TILE_COUNT)
     return invalid("qualified profile device does not expose 16 tiles");
   std::array<bool, WAFER_TX81_PROFILER_TILE_COUNT> seen{};
+  std::array<bool, WAFER_TX81_PROFILER_TILE_COUNT> seenLaunchSlots{};
   std::vector<std::pair<uint32_t, uint32_t>> coordinates;
   for (const BoardDeviceInfo::Tile &tile : device.tiles) {
-    if (tile.logicalIndex >= WAFER_TX81_PROFILER_TILE_COUNT ||
-        seen[tile.logicalIndex] || !tile.available)
+    if (tile.tileId.getValue() < 0 ||
+        tile.tileId.getValue() >= WAFER_TX81_PROFILER_TILE_COUNT ||
+        seen[tile.tileId.getValue()] || !tile.launchSlot.isValid() ||
+        tile.launchSlot.getValue() >= WAFER_TX81_PROFILER_TILE_COUNT ||
+        seenLaunchSlots[tile.launchSlot.getValue()] || !tile.available)
       return invalid("qualified profile device tile domain is invalid");
-    seen[tile.logicalIndex] = true;
+    seen[tile.tileId.getValue()] = true;
+    seenLaunchSlots[tile.launchSlot.getValue()] = true;
     if (llvm::is_contained(coordinates,
                            std::pair(tile.physicalX, tile.physicalY)))
       return invalid("qualified profile device has duplicate physical tile "
@@ -528,20 +550,23 @@ void emitRuntimeLaunch(llvm::json::OStream &json,
 
 void emitCandidateEvidence(llvm::json::OStream &json,
                            const CandidateState &candidate,
+                           llvm::ArrayRef<ProfileTileSiteMap> siteMap,
                            llvm::StringRef targetIdentity,
                            const RuntimeLaunchContract &launch) {
   json.object([&] {
     json.attributeObject("artifact", [&] {
-      json.attribute("digest", candidate.variant->getManifestDigest());
+      json.attribute("digest", candidate.artifact->getManifestDigest());
       json.attribute("target_identity", targetIdentity);
       json.attributeObject("launch", [&] { emitRuntimeLaunch(json, launch); });
-      json.attribute("execution_ranks",
-                     int64_t(WAFER_TX81_PROFILER_TILE_COUNT));
+      json.attribute("card_count", int64_t(1));
+      json.attribute("tile_count", int64_t(WAFER_TX81_PROFILER_TILE_COUNT));
     });
     json.attributeArray("clock", [&] {
-      for (uint32_t tile = 0; tile < WAFER_TX81_PROFILER_TILE_COUNT; ++tile)
+      for (const ProfileTileSiteMap &tile : siteMap)
         json.object([&] {
-          json.attribute("tile", int64_t(tile));
+          json.attribute("card_id", tile.cardId.getValue());
+          json.attribute("tile_id", tile.tileId.getValue());
+          json.attribute("launch_slot", tile.launchSlot.getValue());
           json.attribute("slope", 1.0);
           json.attribute("offset", 0.0);
           json.attribute("uncertainty", 0.0);
@@ -553,9 +578,13 @@ void emitCandidateEvidence(llvm::json::OStream &json,
     json.attributeObject("trace", [&] {
       json.attribute("complete", true);
       json.attributeArray("tiles", [&] {
-        for (const Tx81ProfilerRecord &record : candidate.trace)
+        for (const ProfileTileSiteMap &tile : siteMap) {
+          const Tx81ProfilerRecord &record =
+              candidate.trace[tile.tileId.getValue()];
           json.object([&] {
-            json.attribute("tile", int64_t(record.header.tile_id));
+            json.attribute("card_id", tile.cardId.getValue());
+            json.attribute("tile_id", tile.tileId.getValue());
+            json.attribute("launch_slot", tile.launchSlot.getValue());
             json.attribute("entry_begin_cycle",
                            record.header.entry_begin_cycle);
             json.attribute("entry_end_cycle", record.header.entry_end_cycle);
@@ -670,15 +699,20 @@ void emitCandidateEvidence(llvm::json::OStream &json,
                              cost.entry_teardown_cycles);
             });
           });
+        }
       });
     });
     json.attributeObject("pmu", [&] {
       json.attributeArray("tiles", [&] {
-        for (const Tx81ProfilerRecord &record : candidate.trace) {
+        for (const ProfileTileSiteMap &tile : siteMap) {
+          const Tx81ProfilerRecord &record =
+              candidate.trace[tile.tileId.getValue()];
           const WaferTx81ProfilerRecordHeader &header = record.header;
           const bool enabled = pmuEnabled(header);
           json.object([&] {
-            json.attribute("tile", int64_t(header.tile_id));
+            json.attribute("card_id", tile.cardId.getValue());
+            json.attribute("tile_id", tile.tileId.getValue());
+            json.attribute("launch_slot", tile.launchSlot.getValue());
             json.attributeObject("aggregates", [&] {
               for (uint32_t index = 0;
                    index < WAFER_TX81_PROFILER_PMU64_COUNTERS; ++index) {
@@ -735,7 +769,10 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
   if (samples.size() != 1)
     return invalid("profile evidence inputs are incomplete");
   const PackageManifest &productionManifest =
-      candidate.variant->getPackage().getManifest();
+      candidate.artifact->getPackage().getManifest();
+  llvm::ArrayRef<ProfileTileSiteMap> siteMap = companion.getSiteMap();
+  if (siteMap.size() != WAFER_TX81_PROFILER_TILE_COUNT)
+    return invalid("profile evidence has no complete physical-Tile site map");
   const std::string targetIdentity =
       stringifyTargetIdentityId(productionManifest.targetIdentity).str();
   std::string storage;
@@ -748,20 +785,20 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
     json.attribute("run_id", runId);
     json.attributeObject("identity", [&] {
       json.attribute("production_manifest_sha256",
-                     companion.getProductionManifestDigest());
+                     candidate.artifact->getManifestDigest());
       json.attribute("profile_companion_schema_version",
                      int64_t(companion.getSchemaVersion()));
       json.attribute("target_identity", targetIdentity);
       json.attributeObject("launch", [&] {
         emitRuntimeLaunch(json, productionManifest.launch);
       });
-      json.attribute("execution_ranks",
-                     int64_t(WAFER_TX81_PROFILER_TILE_COUNT));
+      json.attribute("card_count", int64_t(1));
+      json.attribute("tile_count", int64_t(WAFER_TX81_PROFILER_TILE_COUNT));
       json.attribute("site_correlation_basis", kProfileSiteCorrelationBasis);
       json.attribute("record_abi", kProfileRecordABI);
     });
     json.attributeBegin("static_cost_model");
-    writeProfileStaticCostModel(json, candidate.variant->getStaticCostModel());
+    writeProfileStaticCostModel(json, candidate.artifact->getStaticCostModel());
     json.attributeEnd();
     json.attributeObject("output_validation", [&] {
       json.attribute("mode", stringifyBoardProfileOutputValidationMode(
@@ -770,7 +807,18 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
         for (const BoardProfileOutputValidationResource &resource :
              outputValidation.getResources())
           json.object([&] {
-            json.attribute("logical_rank", resource.logicalRank);
+            json.attributeObject("scope", [&] {
+              if (const auto *card =
+                      std::get_if<CardResourceScope>(&resource.scope)) {
+                json.attribute("kind", "card");
+                json.attribute("card_id", card->cardId.getValue());
+              } else {
+                const auto &tile = std::get<TileResourceScope>(resource.scope);
+                json.attribute("kind", "tile");
+                json.attribute("card_id", tile.cardId.getValue());
+                json.attribute("tile_id", tile.tileId.getValue());
+              }
+            });
             json.attribute("role", stringifyPackageResourceRole(resource.role));
             json.attribute("role_index", resource.roleIndex);
             json.attribute("bytes", int64_t(resource.bytes));
@@ -792,13 +840,15 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
       });
     });
     json.attributeArray("topology", [&] {
-      for (uint32_t logical = 0; logical < WAFER_TX81_PROFILER_TILE_COUNT;
-           ++logical) {
+      for (uint32_t launchSlot = 0; launchSlot < WAFER_TX81_PROFILER_TILE_COUNT;
+           ++launchSlot) {
         auto tile = llvm::find_if(device.tiles, [&](const auto &candidate) {
-          return candidate.logicalIndex == logical;
+          return candidate.launchSlot == LaunchSlotId(launchSlot);
         });
         json.object([&] {
-          json.attribute("tile", int64_t(logical));
+          json.attribute("card_id", int64_t(0));
+          json.attribute("tile_id", tile->tileId.getValue());
+          json.attribute("launch_slot", int64_t(launchSlot));
           json.attribute("x", int64_t(tile->physicalX));
           json.attribute("y", int64_t(tile->physicalY));
         });
@@ -822,12 +872,12 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
       });
     });
     json.attributeArray("sites", [&] {
-      const ProfileVariantSiteMap *siteMap =
-          resolveSiteMap(companion, candidate.variant->getId());
-      for (const ProfileRankSiteMap &rank : siteMap->ranks)
-        for (const ProfileTargetCallSite &site : rank.sites)
+      for (const ProfileTileSiteMap &tile : siteMap)
+        for (const ProfileTargetCallSite &site : tile.sites)
           json.object([&] {
-            json.attribute("tile", rank.logicalRank);
+            json.attribute("card_id", tile.cardId.getValue());
+            json.attribute("tile_id", tile.tileId.getValue());
+            json.attribute("launch_slot", tile.launchSlot.getValue());
             json.attribute("site_id", site.siteId);
             json.attribute("site_kind",
                            stringifyProfileTargetSiteKind(site.siteKind));
@@ -849,7 +899,7 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
       json.attribute("measurement_basis", true);
     });
     json.attributeBegin("experiment");
-    emitCandidateEvidence(json, candidate, targetIdentity,
+    emitCandidateEvidence(json, candidate, siteMap, targetIdentity,
                           productionManifest.launch);
     json.attributeEnd();
   });
@@ -1365,7 +1415,7 @@ llvm::Error BoardProfileOutputValidationState::establishProductionReference(
     referenceIndices.emplace(key, index);
     references.push_back({key, exactOutputContract(*output.resource),
                           referencePath.str().str()});
-    resources.push_back({output.resource->logicalRank, output.resource->role,
+    resources.push_back({output.resource->scope, output.resource->role,
                          output.resource->roleIndex, output.resource->bytes,
                          hashOutputBytes(output.output->bytes),
                          output.externalExpectedComparison, true, false});
@@ -1536,25 +1586,23 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
                         const PackageManifest &productionManifest,
                         const BoardInvocationFilePlan &productionPlan,
                         BoardRuntimeDriver &driver) {
-  if (productionManifest.rankCount != WAFER_TX81_PROFILER_TILE_COUNT)
-    return invalid("profile campaign requires the complete 16-rank package");
+  if (productionManifest.cardCount != 1 ||
+      productionManifest.tileCount != WAFER_TX81_PROFILER_TILE_COUNT)
+    return invalid(
+        "profile campaign requires a complete one-card, 16-Tile package");
 
   CandidateState candidate;
-  candidate.variant = companion.findVariant(ProfileVariantRole::FinalArtifact);
-  if (!candidate.variant)
-    return invalid("profile companion has no production artifact");
+  candidate.artifact = &companion.getProductionArtifact();
 
   llvm::Expected<BoardInvocationFilePlan> execution =
       remapBoardInvocationFilePlan(
           productionPlan, productionManifest,
-          candidate.variant->getPackage().getManifest());
+          candidate.artifact->getPackage().getManifest());
   if (!execution)
     return execution.takeError();
   candidate.executionPlan = std::move(*execution);
-  candidate.countPackage = companion.findCapture(candidate.variant->getId(),
-                                                 ProfileCaptureKind::Count);
-  candidate.tracePackage = companion.findCapture(candidate.variant->getId(),
-                                                 ProfileCaptureKind::Trace);
+  candidate.countPackage = companion.findCapture(ProfileCaptureKind::Count);
+  candidate.tracePackage = companion.findCapture(ProfileCaptureKind::Trace);
   if (!candidate.countPackage || !candidate.tracePackage)
     return invalid("profile companion has no complete capture package set");
   llvm::Expected<BoardInvocationFilePlan> count = makeCapturePlan(
@@ -1640,8 +1688,8 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
             switch (step.launch) {
             case BoardProfileProtocolLaunch::Primary: {
               llvm::Expected<BoardRuntimeInvocationResult> result = execute(
-                  candidate.variant->getPackage(),
-                  candidate.variant->getPackageDirectory(),
+                  candidate.artifact->getPackage(),
+                  candidate.artifact->getPackageDirectory(),
                   candidate.executionPlan,
                   /*profilerExpected=*/false,
                   BoardCompletionObservationPolicy::ProfileHighResolution,
@@ -1650,7 +1698,7 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
                 return result.takeError();
               if (llvm::Error error =
                       outputValidation.establishProductionReference(
-                          candidate.variant->getPackage().getManifest(),
+                          candidate.artifact->getPackage().getManifest(),
                           candidate.executionPlan, result->outputs))
                 return std::move(error);
               observation.deviceExecutionNanoseconds =

@@ -22,10 +22,10 @@ namespace wafer::compile_driver {
 struct CommandLineOptions {
   std::optional<std::string> inputProgramDirectory;
   std::optional<std::string> outputProgramDirectory;
-  std::optional<std::string> executionRanks;
+  std::optional<std::string> numPartitions;
   std::optional<std::string> runtimeLaunchKind;
   std::optional<std::string> compilerIRDumpDirectory;
-  std::optional<std::string> optimizationPreset;
+  std::optional<std::string> optimizationPolicy;
   bool compileTiming = false;
   bool profile = false;
   std::vector<std::string> modelInputs;
@@ -68,10 +68,9 @@ parsePositiveCount(const std::optional<std::string> &value,
 
 /// Writes the accepted instruction modules and their exact Target LLVM
 /// translations for compiler inspection. The destination must not exist.
-bool dumpCompilerIR(
-    llvm::StringRef destination,
-    const wafer::compiler::TargetCompilationProduct &product,
-    llvm::raw_ostream &diagnostics);
+bool dumpCompilerIR(llvm::StringRef destination,
+                    const wafer::compiler::TargetCompilationProduct &product,
+                    llvm::raw_ostream &diagnostics);
 
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 bool runTargetModelGate(

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v9.json",
+  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v10.json",
   "title": "Wafer 16-tile profile evidence",
-  "description": "Version 9 final-artifact evidence. Primary same-stream device elapsed, host submit, and host completion remain separate. The compiler publishes exact final-program static work independently from measured timing so the report can form explicitly bounded hardware peak references without guessing workload from names. Record ABI v4 separates Direct-DTE issue from completion-wait aggregates, Kcore site/operation spans from bounded NCC observations, and publishes eight mutually-exclusive trace-only overhead counters.",
+  "description": "Version 10 production-artifact evidence with explicit physical card, Tile, and launch-slot identity. Primary same-stream device elapsed, host submit, and host completion remain separate. The compiler publishes exact final-program static work independently from measured timing so the report can form explicitly bounded hardware peak references without guessing workload from names.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -23,7 +23,7 @@
       "const": "wafer.profile.evidence"
     },
     "schema_version": {
-      "const": 9
+      "const": 10
     },
     "run_id": {
       "$ref": "#/$defs/nonEmptyString"
@@ -38,9 +38,15 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["tile", "x", "y"],
+        "required": ["card_id", "tile_id", "launch_slot", "x", "y"],
         "properties": {
-          "tile": {
+          "card_id": {
+            "const": 0
+          },
+          "tile_id": {
+            "$ref": "#/$defs/tile"
+          },
+          "launch_slot": {
             "$ref": "#/$defs/tile"
           },
           "x": {
@@ -141,7 +147,7 @@
       "required": ["knowledge", "value", "reason"],
       "properties": {
         "knowledge": {
-          "enum": ["known", "unknown", "unsupported", "overflow"]
+          "enum": ["known", "unavailable", "unsupported", "overflow"]
         },
         "value": {
           "oneOf": [
@@ -161,10 +167,12 @@
             "invalid-loop-step",
             "conditional-control-flow",
             "unsupported-control-flow",
-            "unknown-physical-geometry",
-            "unknown-resource-bytes",
+            "unavailable-physical-geometry",
+            "unavailable-resource-bytes",
             "missing-accepted-spm-offset",
             "invalid-accepted-spm-offset",
+            "missing-accepted-ddr-offset",
+            "invalid-accepted-ddr-offset",
             "unsupported-spm-root",
             "unresolved-noc-route",
             "invalid-execution-topology",
@@ -225,8 +233,7 @@
         "spm_movement_bytes",
         "noc_transmit_bytes",
         "noc_receive_bytes",
-        "directional_noc_transmit_bytes",
-        "collective_noc_transmit_bytes"
+        "directional_noc_transmit_bytes"
       ],
       "properties": {
         "npu_f16_bf16_logical_ops": {"$ref": "#/$defs/staticCostMetric"},
@@ -251,48 +258,28 @@
             "south": {"$ref": "#/$defs/staticCostMetric"},
             "west": {"$ref": "#/$defs/staticCostMetric"}
           }
-        },
-        "collective_noc_transmit_bytes": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "collective_permute",
-            "all_to_all",
-            "all_gather",
-            "reduce_scatter",
-            "all_reduce"
-          ],
-          "properties": {
-            "collective_permute": {"$ref": "#/$defs/staticCostMetric"},
-            "all_to_all": {"$ref": "#/$defs/staticCostMetric"},
-            "all_gather": {"$ref": "#/$defs/staticCostMetric"},
-            "reduce_scatter": {"$ref": "#/$defs/staticCostMetric"},
-            "all_reduce": {"$ref": "#/$defs/staticCostMetric"}
-          }
         }
       }
     },
-    "staticCostRank": {
+    "staticCostTile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["logical_rank", "work"],
+      "required": ["card_id", "tile_id", "launch_slot", "work"],
       "properties": {
-        "logical_rank": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 15
-        },
+        "card_id": {"const": 0},
+        "tile_id": {"$ref": "#/$defs/tile"},
+        "launch_slot": {"$ref": "#/$defs/tile"},
         "work": {"$ref": "#/$defs/staticCostWork"}
       }
     },
     "staticCostModel": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["model", "scope", "rates", "ranks"],
+      "required": ["model", "scope", "rates", "tiles"],
       "properties": {
         "model": {"const": "tx81-static-peak-lower-bound-v1"},
         "scope": {
-          "const": "complete-final-instruction-program-per-rank"
+          "const": "complete-final-instruction-program-per-physical-tile"
         },
         "rates": {
           "type": "object",
@@ -336,11 +323,11 @@
             }
           }
         },
-        "ranks": {
+        "tiles": {
           "type": "array",
           "minItems": 16,
           "maxItems": 16,
-          "items": {"$ref": "#/$defs/staticCostRank"}
+          "items": {"$ref": "#/$defs/staticCostTile"}
         }
       }
     },
@@ -352,19 +339,10 @@
           "required": ["kind", "form", "entry_abi", "phases"],
           "properties": {
             "kind": {"const": "kernel"},
-            "form": {"const": "per-rank"},
-            "entry_abi": {"const": "rank-local-pointer-block"},
-            "phases": {"const": ["main"]}
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "form", "entry_abi", "phases"],
-          "properties": {
-            "kind": {"const": "kernel"},
             "form": {"const": "grid"},
-            "entry_abi": {"const": "rank-major-pointer-table"},
+            "entry_abi": {
+              "enum": ["tile-major-pointer-table", "tile-row-pointer-table"]
+            },
             "phases": {"const": ["main"]}
           }
         },
@@ -375,7 +353,9 @@
           "properties": {
             "kind": {"const": "kernel"},
             "form": {"const": "cluster"},
-            "entry_abi": {"const": "rank-major-pointer-table"},
+            "entry_abi": {
+              "enum": ["tile-major-pointer-table", "tile-row-pointer-table"]
+            },
             "phases": {"const": ["prepare", "main"]}
           }
         },
@@ -399,7 +379,8 @@
         "profile_companion_schema_version",
         "target_identity",
         "launch",
-        "execution_ranks",
+        "card_count",
+        "tile_count",
         "site_correlation_basis",
         "record_abi"
       ],
@@ -408,7 +389,7 @@
           "$ref": "#/$defs/sha256"
         },
         "profile_companion_schema_version": {
-          "const": 6
+          "const": 9
         },
         "target_identity": {
           "$ref": "#/$defs/nonEmptyString"
@@ -416,7 +397,10 @@
         "launch": {
           "$ref": "#/$defs/runtimeLaunch"
         },
-        "execution_ranks": {
+        "card_count": {
+          "const": 1
+        },
+        "tile_count": {
           "const": 16
         },
         "site_correlation_basis": {
@@ -452,7 +436,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "logical_rank",
+        "scope",
         "role",
         "role_index",
         "bytes",
@@ -462,9 +446,28 @@
         "diagnostic_captures_match_primary"
       ],
       "properties": {
-        "logical_rank": {
-          "type": "integer",
-          "minimum": -1
+        "scope": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "card_id"],
+              "properties": {
+                "kind": {"const": "card"},
+                "card_id": {"const": 0}
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "card_id", "tile_id"],
+              "properties": {
+                "kind": {"const": "tile"},
+                "card_id": {"const": 0},
+                "tile_id": {"$ref": "#/$defs/tile"}
+              }
+            }
+          ]
         },
         "role": {
           "$ref": "#/$defs/nonEmptyString"
@@ -500,7 +503,8 @@
         "digest",
         "target_identity",
         "launch",
-        "execution_ranks"
+        "card_count",
+        "tile_count"
       ],
       "properties": {
         "digest": {
@@ -512,7 +516,10 @@
         "launch": {
           "$ref": "#/$defs/runtimeLaunch"
         },
-        "execution_ranks": {
+        "card_count": {
+          "const": 1
+        },
+        "tile_count": {
           "const": 16
         }
       }
@@ -521,7 +528,9 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "tile",
+        "card_id",
+        "tile_id",
+        "launch_slot",
         "site_id",
         "site_kind",
         "correlation_key",
@@ -530,7 +539,13 @@
         "target_call_symbol"
       ],
       "properties": {
-        "tile": {
+        "card_id": {
+          "const": 0
+        },
+        "tile_id": {
+          "$ref": "#/$defs/tile"
+        },
+        "launch_slot": {
           "$ref": "#/$defs/tile"
         },
         "site_id": {
@@ -602,7 +617,9 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "tile",
+        "card_id",
+        "tile_id",
+        "launch_slot",
         "slope",
         "offset",
         "uncertainty",
@@ -611,7 +628,11 @@
         "monotonic"
       ],
       "properties": {
-        "tile": {
+        "card_id": {"const": 0},
+        "tile_id": {
+          "$ref": "#/$defs/tile"
+        },
+        "launch_slot": {
           "$ref": "#/$defs/tile"
         },
         "slope": {
@@ -1041,7 +1062,9 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "tile",
+        "card_id",
+        "tile_id",
+        "launch_slot",
         "entry_begin_cycle",
         "entry_end_cycle",
         "capacity",
@@ -1056,7 +1079,11 @@
         "events"
       ],
       "properties": {
-        "tile": {
+        "card_id": {"const": 0},
+        "tile_id": {
+          "$ref": "#/$defs/tile"
+        },
+        "launch_slot": {
           "$ref": "#/$defs/tile"
         },
         "entry_begin_cycle": {
@@ -1230,9 +1257,13 @@
     "pmuTile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tile", "aggregates", "workers"],
+      "required": ["card_id", "tile_id", "launch_slot", "aggregates", "workers"],
       "properties": {
-        "tile": {
+        "card_id": {"const": 0},
+        "tile_id": {
+          "$ref": "#/$defs/tile"
+        },
+        "launch_slot": {
           "$ref": "#/$defs/tile"
         },
         "aggregates": {

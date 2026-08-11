@@ -1,15 +1,38 @@
+add_mlir_conversion_library(WaferCardProgramToTileModules
+  WaferCardProgramToTileModules/WaferCardProgramToTileModules.cpp
+
+  ADDITIONAL_HEADER_DIRS
+  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferCardProgramToTileModules
+
+  LINK_LIBS PUBLIC
+  WaferIR
+  MLIRIR
+  MLIRSupport
+)
+
+add_mlir_conversion_library(WaferTensorProgramToCardProgram
+  WaferTensorProgramToCardProgram/WaferTensorProgramToCardProgram.cpp
+
+  ADDITIONAL_HEADER_DIRS
+  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferTensorProgramToCardProgram
+
+  LINK_LIBS PUBLIC
+  WaferIR
+  WaferTensorProgramToTileRegion
+  MLIRFuncDialect
+  MLIRIR
+  MLIRSupport
+)
+
 add_mlir_conversion_library(WaferTensorProgramToTileRegion
   WaferTensorProgramToTileRegion/BidirectionalTiling.cpp
-  WaferTensorProgramToTileRegion/AttentionSemantics.cpp
   WaferTensorProgramToTileRegion/BodyEmitter.cpp
   WaferTensorProgramToTileRegion/CandidateMaterialization.cpp
   WaferTensorProgramToTileRegion/CandidateSupport.cpp
   WaferTensorProgramToTileRegion/CollectiveLowering.cpp
-  WaferTensorProgramToTileRegion/CompleteTraversal.cpp
+  WaferTensorProgramToTileRegion/DependentDataflow.cpp
   WaferTensorProgramToTileRegion/GenericLowering.cpp
   WaferTensorProgramToTileRegion/NamedComputeLowering.cpp
-  WaferTensorProgramToTileRegion/MaterializeFlashAttention.cpp
-  WaferTensorProgramToTileRegion/MaterializeFlashDecoding.cpp
   WaferTensorProgramToTileRegion/TensorControlFlowLowering.cpp
   WaferTensorProgramToTileRegion/TileMaterialization.cpp
   WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.cpp
@@ -44,10 +67,10 @@ add_mlir_conversion_library(WaferTensorProgramToTileRegion
 )
 
 add_mlir_conversion_library(WaferTileRegionToInstr
-  WaferTileRegionToInstr/CollectiveLowering.cpp
   WaferTileRegionToInstr/ComputeLowering.cpp
   WaferTileRegionToInstr/MovementLowering.cpp
   WaferTileRegionToInstr/MovementSupport.cpp
+  WaferTileRegionToInstr/PeerLowering.cpp
   WaferTileRegionToInstr/WaferTileRegionToInstr.cpp
 
   ADDITIONAL_HEADER_DIRS

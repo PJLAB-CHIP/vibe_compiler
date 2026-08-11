@@ -136,6 +136,33 @@ mlir::LogicalResult ComputeGemmOp::verify() {
   return mlir::success();
 }
 
+mlir::LogicalResult ComputeConvOp::verify() {
+  std::optional<mlir::RankedTensorType> inputTensor =
+      getLogicalTensorType(getInput().getType());
+  std::optional<mlir::RankedTensorType> weightTensor =
+      getLogicalTensorType(getWeight().getType());
+  std::optional<mlir::RankedTensorType> resultTensor =
+      getLogicalTensorType(getResult().getType());
+  if (!inputTensor || !weightTensor || !resultTensor)
+    return emitOpError("expects Wafer buffer operands and result");
+  for (mlir::Type type :
+       {getInput().getType(), getWeight().getType(), getResult().getType()}) {
+    if (!hasWaferMemorySpace(type, MemorySpace::SPM))
+      return emitOpError("convolution storage values must use SPM memory "
+                         "space");
+    if (!hasWaferLayout(type, MemLayout::NCx))
+      return emitOpError("convolution storage values must use ncx layout");
+  }
+  if (inputTensor->getElementType() != weightTensor->getElementType() ||
+      inputTensor->getElementType() != resultTensor->getElementType())
+    return emitOpError(
+        "convolution operand and result element types must match");
+  return verifyCanonicalConv2DGeometry(
+      getOperation(), *inputTensor, *weightTensor, *resultTensor,
+      getPadsAttr().asArrayRef(), getUnpadsAttr().asArrayRef(),
+      getStridesAttr().asArrayRef(), getDilationsAttr().asArrayRef());
+}
+
 mlir::LogicalResult ComputeElementwiseOp::verify() {
   return verifyElementwiseTileContract(getOperation(), getKindAttr().getValue(),
                                        getInputs(), getResult().getType());

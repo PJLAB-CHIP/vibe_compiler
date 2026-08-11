@@ -3,9 +3,35 @@
 #include "Internal.h"
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 
+#include <limits>
+
 using namespace wafer;
 
 namespace wafer::tensor_program_to_tile_region {
+
+static const CardProgramSourceOperationLineage *
+findSourceOperationLineage(mlir::Location location) {
+  if (auto opaque = mlir::dyn_cast<mlir::OpaqueLoc>(location)) {
+    if (const auto *lineage = mlir::OpaqueLoc::getUnderlyingLocationOrNull<
+            const CardProgramSourceOperationLineage *>(opaque))
+      return lineage;
+    return findSourceOperationLineage(opaque.getFallbackLocation());
+  }
+  if (auto fused = mlir::dyn_cast<mlir::FusedLoc>(location))
+    for (mlir::Location nested : fused.getLocations())
+      if (const CardProgramSourceOperationLineage *lineage =
+              findSourceOperationLineage(nested))
+        return lineage;
+  if (auto named = mlir::dyn_cast<mlir::NameLoc>(location))
+    return findSourceOperationLineage(named.getChildLoc());
+  if (auto callSite = mlir::dyn_cast<mlir::CallSiteLoc>(location)) {
+    if (const CardProgramSourceOperationLineage *lineage =
+            findSourceOperationLineage(callSite.getCallee()))
+      return lineage;
+    return findSourceOperationLineage(callSite.getCaller());
+  }
+  return nullptr;
+}
 
 void setFailureReason(std::string *failureReason, llvm::StringRef reason) {
   if (failureReason)
@@ -84,18 +110,21 @@ matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
 }
 
 TileRegionBodyEmitter::TileRegionBodyEmitter(
-    std::string *failureReason, int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative,
-    bool useDirectMappedBoundaryTransfer)
-    : failureReason(failureReason), currentLogicalRank(currentLogicalRank),
-      selectedAlternative(selectedAlternative),
-      useDirectMappedBoundaryTransfer(useDirectMappedBoundaryTransfer) {}
+    std::string *failureReason, int64_t currentLogicalPartition,
+    llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints,
+    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
+    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage)
+    : failureReason(failureReason),
+      currentLogicalPartition(currentLogicalPartition),
+      peerEndpoints(peerEndpoints.begin(), peerEndpoints.end()),
+      sourceLineage(sourceLineage), operandDemandLineage(operandDemandLineage) {
+}
 
 mlir::FailureOr<TileRegionOp>
 TileRegionBodyEmitter::emit(TensorProgramScope scope,
                             mlir::RewriterBase &rewriter) {
-  if (currentLogicalRank < 0)
-    return failAndReturn("logical-rank must be non-negative");
+  if (currentLogicalPartition < 0)
+    return failAndReturn("logical partition must be non-negative");
 
   llvm::DenseSet<mlir::Value> boundaryValues;
   for (mlir::Value input : scope.getInputs()) {
@@ -154,15 +183,97 @@ TileRegionBodyEmitter::emit(TensorProgramScope scope,
   if (mlir::failed(initializeBoundary(scope, tileRegion, rewriter)))
     return mlir::failure();
 
+  // Every physical Tile observes the same consumer-first message order after
+  // omitting messages on which it is not an endpoint.  Message identity is
+  // intentionally not an execution order: its stable numbering is independent
+  // of operation ordinals and may place a later consumer first.  Emitting one
+  // exact endpoint and its completion at a time gives the conservative
+  // baseline one live receiver at most, while this query-local common total
+  // order prevents mutual-send cycles across Tiles.  Only the resulting peer
+  // op/wait order survives in Tile IR.
+  llvm::SmallVector<const CandidatePeerEndpoint *, 8> endpointSchedule;
+  endpointSchedule.reserve(peerEndpoints.size());
+  for (const CandidatePeerEndpoint &endpoint : peerEndpoints)
+    endpointSchedule.push_back(&endpoint);
+  llvm::sort(endpointSchedule, [](const CandidatePeerEndpoint *lhs,
+                                  const CandidatePeerEndpoint *rhs) {
+    return std::tuple(lhs->consumerScheduleOrdinal, lhs->consumerOperand,
+                      lhs->communicationId, lhs->payloadSlice,
+                      static_cast<uint8_t>(lhs->kind), lhs->peer.getValue()) <
+           std::tuple(rhs->consumerScheduleOrdinal, rhs->consumerOperand,
+                      rhs->communicationId, rhs->payloadSlice,
+                      static_cast<uint8_t>(rhs->kind), rhs->peer.getValue());
+  });
+  llvm::DenseSet<std::pair<int64_t, int64_t>> localMessages;
+  for (const CandidatePeerEndpoint *endpoint : endpointSchedule)
+    if (!localMessages
+             .insert({endpoint->communicationId, endpoint->payloadSlice})
+             .second)
+      return failAndReturn(
+          "selected peer schedule contains a duplicate local message");
+  size_t nextEndpoint = 0;
+  llvm::DenseSet<const CandidatePeerEndpoint *> emittedEndpoints;
+  auto emitReadyEndpoints = [&]() -> mlir::LogicalResult {
+    while (nextEndpoint < endpointSchedule.size()) {
+      const CandidatePeerEndpoint *endpoint = endpointSchedule[nextEndpoint];
+      MemLayout availableLayout = MemLayout::Tensor;
+      if (!lookupAny(endpoint->value, availableLayout) &&
+          !externalBuffers.contains(endpoint->value) &&
+          !tensorAttrs.contains(endpoint->value))
+        break;
+      if (mlir::failed(emitPeerEndpoint(*endpoint, rewriter)))
+        return mlir::failure();
+      emittedEndpoints.insert(endpoint);
+      ++nextEndpoint;
+    }
+    return mlir::success();
+  };
+
   for (mlir::Operation *op : sourceOps) {
+    for (mlir::Value operand : op->getOperands()) {
+      auto pendingReceive = llvm::find_if(
+          endpointSchedule, [&](const CandidatePeerEndpoint *endpoint) {
+            return endpoint->kind == CandidatePeerEndpointKind::Receive &&
+                   endpoint->value == operand &&
+                   !emittedEndpoints.contains(endpoint);
+          });
+      if (pendingReceive != endpointSchedule.end()) {
+        const CandidatePeerEndpoint *blocked = endpointSchedule[nextEndpoint];
+        std::string detail;
+        llvm::raw_string_ostream diagnostic(detail);
+        diagnostic << "globally ordered peer receive (communication="
+                   << (*pendingReceive)->communicationId
+                   << ", slice=" << (*pendingReceive)->payloadSlice
+                   << ") was not ready before its first SSA use by "
+                   << op->getName() << "; preceding endpoint (communication="
+                   << blocked->communicationId
+                   << ", slice=" << blocked->payloadSlice << ", kind="
+                   << (blocked->kind == CandidatePeerEndpointKind::Send
+                           ? "send"
+                           : "receive")
+                   << ") has no materialized buffer";
+        if (mlir::Operation *definition = blocked->value.getDefiningOp()) {
+          diagnostic << "; definition=" << definition->getName();
+          if (definition->getBlock() == op->getBlock())
+            diagnostic << ", definition_before_use="
+                       << definition->isBeforeInBlock(op);
+          if (auto slice =
+                  mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(definition))
+            if (mlir::Operation *source = slice.getSource().getDefiningOp())
+              diagnostic << ", source_definition=" << source->getName();
+        }
+        return failAndReturn(detail);
+      }
+    }
     if (mlir::failed(convertOp(op, rewriter)))
+      return mlir::failure();
+    if (mlir::failed(emitReadyEndpoints()))
       return mlir::failure();
   }
 
-  if (selectedAlternative && !selectedAlternativeMaterialized)
+  if (nextEndpoint != endpointSchedule.size())
     return failAndReturn(
-        "selected target implementation alternative did not match any "
-        "source operation in the materialized clone");
+        "selected peer endpoint was not materialized from current SSA");
 
   if (mlir::failed(finishRegion(scope, tileRegion, rewriter)))
     return mlir::failure();
@@ -187,6 +298,17 @@ TileRegionBodyEmitter::failValue(llvm::StringRef reason) {
   return mlir::failure();
 }
 
+mlir::Location
+TileRegionBodyEmitter::getMaterializationLocation(mlir::Value original) const {
+  mlir::Location sourceLoc = original.getLoc();
+  if (!currentMaterializationConsumerLoc)
+    return sourceLoc;
+  mlir::Location consumerLoc(currentMaterializationConsumerLoc);
+  if (consumerLoc == sourceLoc)
+    return sourceLoc;
+  return mlir::FusedLoc::get(original.getContext(), {sourceLoc, consumerLoc});
+}
+
 mlir::FailureOr<ElementwiseExprValue>
 TileRegionBodyEmitter::failElementwiseExprValue(llvm::StringRef reason) {
   setFailureReason(failureReason, reason);
@@ -199,8 +321,9 @@ TileRegionBodyEmitter::failI64(llvm::StringRef reason) {
   return mlir::failure();
 }
 
-mlir::FailureOr<SelectedCollectiveRankGroup>
-TileRegionBodyEmitter::failSelectedCollectiveRankGroup(llvm::StringRef reason) {
+mlir::FailureOr<SelectedCollectivePartitionGroup>
+TileRegionBodyEmitter::failSelectedCollectivePartitionGroup(
+    llvm::StringRef reason) {
   setFailureReason(failureReason, reason);
   return mlir::failure();
 }
@@ -246,9 +369,10 @@ StateSnapshot TileRegionBodyEmitter::snapshotState() const {
           scalarValues,
           scalarAttrs,
           tensorAttrs,
-          compilerOwnedDDRBuffers,
+          compilerOwnedBuffers,
           externalBuffers,
           writableExternalBuffers,
+          selectedDDRStageExternalBuffers,
           externalOutputIndices,
           directYieldBuffers,
           fillInitScalars,
@@ -260,9 +384,10 @@ void TileRegionBodyEmitter::restoreState(const StateSnapshot &snapshot) {
   scalarValues = snapshot.scalarValues;
   scalarAttrs = snapshot.scalarAttrs;
   tensorAttrs = snapshot.tensorAttrs;
-  compilerOwnedDDRBuffers = snapshot.compilerOwnedDDRBuffers;
+  compilerOwnedBuffers = snapshot.compilerOwnedBuffers;
   externalBuffers = snapshot.externalBuffers;
   writableExternalBuffers = snapshot.writableExternalBuffers;
+  selectedDDRStageExternalBuffers = snapshot.selectedDDRStageExternalBuffers;
   externalOutputIndices = snapshot.externalOutputIndices;
   directYieldBuffers = snapshot.directYieldBuffers;
   fillInitScalars = snapshot.fillInitScalars;
@@ -404,11 +529,11 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeTensorConstant(
   if (!scalarAttr)
     return failValue("constant tensor materialization requires splat attr");
 
-  auto scalar =
-      builder.create<mlir::arith::ConstantOp>(original.getLoc(), scalarAttr);
+  mlir::Location loc = getMaterializationLocation(original);
+  auto scalar = builder.create<mlir::arith::ConstantOp>(loc, scalarAttr);
   auto tensorBuffer = builder.create<mlir::memref::AllocOp>(
-      original.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor));
-  builder.create<ComputeFillOp>(original.getLoc(), tensorBuffer.getResult(),
+      loc, makeSPMMemRefType(tensorType, MemLayout::Tensor));
+  builder.create<ComputeFillOp>(loc, tensorBuffer.getResult(),
                                 scalar.getResult(),
                                 /*fill_domain=*/FillDomainAttr{});
   record(original, MemLayout::Tensor, tensorBuffer.getResult());
@@ -416,7 +541,7 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeTensorConstant(
     return tensorBuffer.getResult();
 
   auto materialized = builder.create<LayoutMaterializeOp>(
-      original.getLoc(), makeSPMMemRefType(tensorType, targetLayout),
+      loc, makeSPMMemRefType(tensorType, targetLayout),
       tensorBuffer.getResult());
   record(original, targetLayout, materialized.getResult());
   return materialized.getResult();
@@ -426,6 +551,8 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::getOrMaterialize(
     mlir::Value original, MemLayout targetLayout, mlir::OpBuilder &builder) {
   if (mlir::Value existing = lookup(original, targetLayout))
     return existing;
+
+  mlir::Location materializationLoc = getMaterializationLocation(original);
 
   MemLayout sourceLayout = MemLayout::Tensor;
   mlir::Value source = lookupAny(original, sourceLayout);
@@ -439,8 +566,45 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::getOrMaterialize(
     }
 
     auto externalIt = externalBuffers.find(original);
-    if (externalIt == externalBuffers.end())
-      return failValue("missing buffer for value");
+    if (externalIt == externalBuffers.end()) {
+      std::string detail;
+      llvm::raw_string_ostream diagnostic(detail);
+      diagnostic << "missing buffer for value; type=" << original.getType();
+      if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(original)) {
+        diagnostic << "; definition=block-argument#"
+                   << argument.getArgNumber();
+      } else if (mlir::Operation *definition = original.getDefiningOp()) {
+        diagnostic << "; definition=" << definition->getName();
+        if (auto result = mlir::dyn_cast<mlir::OpResult>(original))
+          diagnostic << '#' << result.getResultNumber();
+        diagnostic << "; operands=[";
+        for (auto [index, operand] : llvm::enumerate(definition->getOperands())) {
+          if (index != 0)
+            diagnostic << ',';
+          if (mlir::Operation *operandDefinition = operand.getDefiningOp())
+            diagnostic << operandDefinition->getName();
+          else if (auto operandArgument =
+                       mlir::dyn_cast<mlir::BlockArgument>(operand))
+            diagnostic << "block-argument#" << operandArgument.getArgNumber();
+          else
+            diagnostic << "unknown";
+        }
+        diagnostic << "]; users=[";
+        for (auto [index, use] : llvm::enumerate(original.getUses())) {
+          if (index != 0)
+            diagnostic << ',';
+          diagnostic << use.getOwner()->getName() << ":operand#"
+                     << use.getOperandNumber();
+        }
+        diagnostic << ']';
+        diagnostic << "; definition_ir=";
+        definition->print(diagnostic,
+                          mlir::OpPrintingFlags().skipRegions());
+      } else {
+        diagnostic << "; definition=unknown";
+      }
+      return failValue(detail);
+    }
 
     auto tensorType =
         mlir::dyn_cast<mlir::RankedTensorType>(original.getType());
@@ -449,25 +613,9 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::getOrMaterialize(
 
     auto externalType =
         mlir::dyn_cast<mlir::MemRefType>(externalIt->second.getType());
-    mlir::MemRefType directDestinationType =
-        makeSPMMemRefType(tensorType, targetLayout);
-    analysis::IndexRelationResult identity =
-        analysis::IndexRelation::identity(tensorType.getShape());
-    if (useDirectMappedBoundaryTransfer && targetLayout != MemLayout::Tensor &&
-        externalType && identity.isExact() &&
-        mlir::succeeded(analysis::TransferRealizability::proveMappedDma(
-            externalType, directDestinationType, *identity.get()))) {
-      auto destination = builder.create<mlir::memref::AllocOp>(
-          original.getLoc(), directDestinationType);
-      builder.create<StorageLoadOp>(original.getLoc(), externalIt->second,
-                                    destination.getResult());
-      record(original, targetLayout, destination.getResult());
-      return destination.getResult();
-    }
-
     auto destination = builder.create<mlir::memref::AllocOp>(
-        original.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor));
-    builder.create<StorageLoadOp>(original.getLoc(), externalIt->second,
+        materializationLoc, makeSPMMemRefType(tensorType, MemLayout::Tensor));
+    builder.create<StorageLoadOp>(materializationLoc, externalIt->second,
                                   destination.getResult());
     stagedBoundarySourceType = externalType;
     record(original, MemLayout::Tensor, destination.getResult());
@@ -493,10 +641,21 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::getOrMaterialize(
             *identity.get(), *identity.get())))
       return failValue("boundary staged movement is not exactly realizable");
   }
-  auto materialize = builder.create<LayoutMaterializeOp>(original.getLoc(),
+  auto materialize = builder.create<LayoutMaterializeOp>(materializationLoc,
                                                          resultType, source);
   record(original, targetLayout, materialize.getResult());
   return materialize.getResult();
+}
+
+mlir::FailureOr<mlir::Value>
+TileRegionBodyEmitter::getOrMaterializeStructuredInput(
+    mlir::Value original, MemLayout targetLayout, mlir::OpBuilder &builder) {
+  mlir::LocationAttr previous = currentMaterializationConsumerLoc;
+  currentMaterializationConsumerLoc = availableStructuredOperandDemandLoc;
+  mlir::FailureOr<mlir::Value> result =
+      getOrMaterialize(original, targetLayout, builder);
+  currentMaterializationConsumerLoc = previous;
+  return result;
 }
 
 mlir::LogicalResult
@@ -555,94 +714,138 @@ TileRegionBodyEmitter::initializeBoundary(TensorProgramScope scope,
 
 mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
                                                      mlir::OpBuilder &builder) {
+  auto convertStructuredWithDemandLineage =
+      [&](llvm::function_ref<mlir::LogicalResult()> convert) {
+        mlir::LocationAttr previous = availableStructuredOperandDemandLoc;
+        const CardProgramSourceOperationLineage *source =
+            findSourceOperationLineage(op->getLoc());
+        const bool knownSource =
+            source && llvm::any_of(sourceLineage, [&](const auto &lineage) {
+              return &lineage == source;
+            });
+        auto lineage =
+            knownSource
+                ? llvm::find_if(operandDemandLineage,
+                                [&](const auto &operandDemand) {
+                                  return operandDemand.structuredNodeId ==
+                                             source->structuredNodeId &&
+                                         operandDemand.sourceOperation ==
+                                             source->sourceOperation;
+                                })
+                : operandDemandLineage.end();
+        if (lineage != operandDemandLineage.end()) {
+          availableStructuredOperandDemandLoc =
+              mlir::OpaqueLoc::get<const StructuredOperandDemandLineage *>(
+                  &*lineage, op->getLoc());
+        } else {
+          availableStructuredOperandDemandLoc = {};
+        }
+        mlir::LogicalResult result = convert();
+        availableStructuredOperandDemandLoc = previous;
+        return result;
+      };
+
   if (mlir::isa<WaferLinalgExtCollectiveOpInterface>(op))
-    return convertLinalgExtCollective(op, builder);
+    return convertStructuredWithDemandLineage(
+        [&] { return convertLinalgExtCollective(op, builder); });
 
   if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(op)) {
-    if (!linalg.hasOnlyProjectedPermutations())
+    // Affine window expressions are the canonical structured representation
+    // of convolution. Admit them only when Linalg itself proves convolution
+    // dimensions; all other non-projected maps remain unsupported rather than
+    // falling through a generic or name-based route.
+    if (!linalg.hasOnlyProjectedPermutations() &&
+        mlir::failed(mlir::linalg::inferConvolutionDims(linalg)))
       return fail("unsupported linalg indexing maps");
-    return materializeSourceImplementation(op, builder);
+    return convertStructuredWithDemandLineage(
+        [&] { return convertStructuredOp(op, builder); });
   }
 
-  if (mlir::isa<mlir::affine::AffineApplyOp, mlir::arith::ConstantOp,
-                mlir::bufferization::MaterializeInDestinationOp,
-                mlir::bufferization::ToMemrefOp,
-                mlir::bufferization::ToTensorOp, mlir::tensor::EmptyOp,
-                mlir::memref::AllocOp, mlir::tensor::ExtractOp,
-                mlir::tensor::ExtractSliceOp, mlir::tensor::InsertSliceOp,
-                mlir::tensor::ExpandShapeOp, mlir::tensor::CollapseShapeOp,
-                mlir::scf::IfOp, mlir::scf::ForOp>(op))
+  if (mlir::isa<
+          mlir::affine::AffineApplyOp, mlir::arith::ConstantOp,
+          mlir::bufferization::MaterializeInDestinationOp,
+          mlir::bufferization::ToMemrefOp, mlir::bufferization::ToTensorOp,
+          mlir::tensor::EmptyOp, mlir::memref::AllocOp, mlir::tensor::ExtractOp,
+          mlir::tensor::PadOp, mlir::tensor::ExtractSliceOp,
+          mlir::tensor::InsertSliceOp, mlir::tensor::ExpandShapeOp,
+          mlir::tensor::CollapseShapeOp, mlir::scf::IfOp, mlir::scf::ForOp>(op))
     return convertSupportOp(op, builder);
 
   return fail("unsupported tensor-program op " +
               op->getName().getStringRef().str());
 }
 
-mlir::LogicalResult TileRegionBodyEmitter::materializeSourceImplementation(
-    mlir::Operation *operation, mlir::OpBuilder &builder) {
-  auto interface =
-      mlir::dyn_cast<WaferTargetImplementationOpInterface>(operation);
-  if (!interface)
-    return fail("source operation has no target implementation interface: " +
-                operation->getName().getStringRef().str());
-
-  llvm::SmallVector<TargetImplementationCandidate, 2> candidates;
-  interface.collectTargetImplementationCandidates(WaferTargetCapabilities{},
-                                                  candidates);
-  if (candidates.empty())
-    return fail("source target implementation is explicitly unsupported: " +
-                operation->getName().getStringRef().str());
-
-  const TargetImplementationCandidate *selected = &candidates.front();
-  if (selectedAlternative) {
-    auto alternative = llvm::find_if(candidates, [&](const auto &candidate) {
-      return candidate.kind == *selectedAlternative;
-    });
-    if (alternative != candidates.end()) {
-      selected = &*alternative;
-      selectedAlternativeMaterialized = true;
-    }
+mlir::LogicalResult
+TileRegionBodyEmitter::emitPeerEndpoint(const CandidatePeerEndpoint &endpoint,
+                                        mlir::OpBuilder &builder) {
+  mlir::FailureOr<mlir::Value> buffer =
+      getOrMaterialize(endpoint.value, MemLayout::Tensor, builder);
+  if (mlir::failed(buffer))
+    return mlir::failure();
+  if (endpoint.bytes == 0 ||
+      endpoint.bytes >
+          static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+      endpoint.communicationId < 0 || endpoint.payloadSlice < 0)
+    return fail("selected peer endpoint fields are not representable");
+  auto message =
+      DTEMessageAttr::get(builder.getContext(), endpoint.communicationId,
+                          /*round=*/0, endpoint.payloadSlice);
+  mlir::Value token;
+  if (endpoint.kind == CandidatePeerEndpointKind::Send) {
+    token = builder
+                .create<CommPeerSendOp>(
+                    endpoint.value.getLoc(),
+                    mlir::async::TokenType::get(builder.getContext()), *buffer,
+                    builder.getI64IntegerAttr(endpoint.peer.getValue()),
+                    builder.getI64IntegerAttr(endpoint.bytes), message)
+                .getToken();
+  } else {
+    auto toTensor =
+        endpoint.value.getDefiningOp<mlir::bufferization::ToTensorOp>();
+    auto allocation =
+        toTensor ? toTensor.getMemref().getDefiningOp<mlir::memref::AllocOp>()
+                 : mlir::memref::AllocOp();
+    if (!toTensor || !allocation || !isWaferSPMMemRefType(allocation.getType()))
+      return fail("selected peer receive requires one direct static SPM "
+                  "allocation-backed tensor");
+    token = builder
+                .create<CommPeerRecvOp>(
+                    endpoint.value.getLoc(),
+                    mlir::async::TokenType::get(builder.getContext()), *buffer,
+                    builder.getI64IntegerAttr(endpoint.peer.getValue()),
+                    builder.getI64IntegerAttr(endpoint.bytes), message)
+                .getToken();
   }
-  if (mlir::failed(interface.materializeSelectedTargetImplementation(
-          *selected, *this, builder))) {
-    if (failureReason && !failureReason->empty())
-      return mlir::failure();
-    return fail("selected target implementation failed to materialize");
-  }
+  builder.create<mlir::async::AwaitOp>(endpoint.value.getLoc(), token);
   return mlir::success();
 }
 
-mlir::LogicalResult TileRegionBodyEmitter::materializeTargetImplementation(
-    mlir::Operation *source, const TargetImplementationCandidate &candidate,
-    mlir::OpBuilder &builder) {
-  switch (candidate.kind) {
-  case TargetImplementationKind::Fill:
-    if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(source))
-      return convertFill(fill, builder);
-    break;
-  case TargetImplementationKind::Gemm:
-    if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
-                  mlir::linalg::MatmulTransposeBOp, mlir::linalg::GenericOp>(
-            source))
-      return convertMatmul(mlir::cast<mlir::linalg::LinalgOp>(source), builder);
-    break;
-  case TargetImplementationKind::BatchGemm:
-    if (mlir::isa<mlir::linalg::BatchMatmulOp,
-                  mlir::linalg::BatchMatmulTransposeAOp,
-                  mlir::linalg::BatchMatmulTransposeBOp>(source))
-      return convertBatchMatmul(mlir::cast<mlir::linalg::LinalgOp>(source),
-                                builder);
-    break;
-  case TargetImplementationKind::Generic:
-  case TargetImplementationKind::GenericReciprocal:
-    if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(source))
-      return convertGeneric(generic,
-                            candidate.kind ==
-                                TargetImplementationKind::GenericReciprocal,
-                            builder);
-    break;
+mlir::LogicalResult
+TileRegionBodyEmitter::convertStructuredOp(mlir::Operation *operation,
+                                           mlir::OpBuilder &builder) {
+  if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(operation))
+    return convertFill(fill, builder);
+  auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operation);
+  if (linalg && mlir::succeeded(mlir::linalg::inferConvolutionDims(linalg)))
+    return convertConvolution(linalg, builder);
+  if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
+                mlir::linalg::MatmulTransposeBOp>(operation))
+    return convertMatmul(mlir::cast<mlir::linalg::LinalgOp>(operation),
+                         builder);
+  if (mlir::isa<mlir::linalg::BatchMatmulOp,
+                mlir::linalg::BatchMatmulTransposeAOp,
+                mlir::linalg::BatchMatmulTransposeBOp>(operation))
+    return convertBatchMatmul(mlir::cast<mlir::linalg::LinalgOp>(operation),
+                              builder);
+  if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(operation)) {
+    mlir::linalg::LinalgOp linalg = generic;
+    if (hasExactGemmPayload(linalg) &&
+        mlir::succeeded(inferRank2GemmOrientations(linalg)))
+      return convertMatmul(linalg, builder);
+    return convertGeneric(generic, builder);
   }
-  return fail("selected target implementation does not match source op");
+  return fail("unsupported structured source operation: " +
+              operation->getName().getStringRef().str());
 }
 
 mlir::LogicalResult
@@ -664,6 +867,15 @@ TileRegionBodyEmitter::finishRegion(TensorProgramScope scope,
       return fail("tensor program result has no output boundary");
     mlir::Value output = outputIt->second;
 
+    // A per-output spatial mapping leaves results not owned by this physical
+    // Tile equal to its private scheduling destination. Preserve the common
+    // full-card result ABI while emitting no load, compute, or store for that
+    // result.
+    if (value == outputArgument) {
+      yieldedValues.push_back(output);
+      continue;
+    }
+
     auto getReshapeBase = [](mlir::Value current) {
       llvm::DenseSet<mlir::Value> visited;
       while (visited.insert(current).second) {
@@ -684,8 +896,9 @@ TileRegionBodyEmitter::finishRegion(TensorProgramScope scope,
     if (auto directIt = directYieldBuffers.find(value);
         directIt != directYieldBuffers.end()) {
       // A functional result may add/remove unit dimensions after the target
-      // compute.  Its restored DPS destination is then an exact memref reshape
-      // view of the public output.  Compare typed SSA bases rather than raw
+      // compute. Its restored scheduling destination is then an exact memref
+      // reshape view of the public output. Compare typed SSA bases rather than
+      // raw
       // value identity; arbitrary subviews or offset-changing aliases remain
       // rejected.
       if (getReshapeBase(directIt->second) != getReshapeBase(output))
@@ -694,29 +907,11 @@ TileRegionBodyEmitter::finishRegion(TensorProgramScope scope,
       continue;
     }
 
-    MemLayout currentLayout = MemLayout::Tensor;
-    mlir::Value current = lookupAny(value, currentLayout);
-    auto outputType = mlir::dyn_cast<mlir::MemRefType>(output.getType());
-    auto currentType = current
-                           ? mlir::dyn_cast<mlir::MemRefType>(current.getType())
-                           : mlir::MemRefType{};
-    auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
-    analysis::IndexRelationResult identity =
-        tensorType ? analysis::IndexRelation::identity(tensorType.getShape())
-                   : analysis::IndexRelationResult{};
-    if (useDirectMappedBoundaryTransfer && current &&
-        currentLayout != MemLayout::Tensor && currentType && outputType &&
-        identity.isExact() &&
-        mlir::succeeded(analysis::TransferRealizability::proveMappedDma(
-            currentType, outputType, *identity.get()))) {
-      builder.create<StorageStoreOp>(value.getLoc(), current, output);
-    } else {
-      mlir::FailureOr<mlir::Value> tensorBuffer =
-          getOrMaterialize(value, MemLayout::Tensor, builder);
-      if (mlir::failed(tensorBuffer))
-        return mlir::failure();
-      builder.create<StorageStoreOp>(value.getLoc(), *tensorBuffer, output);
-    }
+    mlir::FailureOr<mlir::Value> tensorBuffer =
+        getOrMaterialize(value, MemLayout::Tensor, builder);
+    if (mlir::failed(tensorBuffer))
+      return mlir::failure();
+    builder.create<StorageStoreOp>(value.getLoc(), *tensorBuffer, output);
     yieldedValues.push_back(output);
   }
 

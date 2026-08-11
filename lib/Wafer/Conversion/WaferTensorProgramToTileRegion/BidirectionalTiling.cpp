@@ -187,7 +187,9 @@ wafer::materializePartialReductionTile(
     return mlir::failure();
   }
   if (mlir::failed(
-          verifyCandidateReductionSplitNumericLegality(linalg, failureReason)))
+          tensor_program_to_tile_region::verifyReductionSplitNumericLegality(
+              linalg, /*preservesSequentialReductionOrder=*/false,
+              failureReason)))
     return mlir::failure();
 
   mlir::Location loc = reduction->getLoc();
@@ -316,7 +318,7 @@ wafer::materializePartialReductionTile(
   // operations. The existing Wafer structured-to-tile boundary consumes the
   // equivalent generic form, so generalize the actual merge in place and keep
   // its replacement SSA values. The interface result is not discarded.
-  mlir::IRRewriter rewriter(builder.getContext());
+  mlir::IRRewriter rewriter(builder);
   for (mlir::Operation *mergeOperation : merged->mergeOps) {
     auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(mergeOperation);
     if (!linalg) {

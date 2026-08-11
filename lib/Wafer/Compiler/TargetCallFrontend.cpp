@@ -23,6 +23,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -39,16 +40,18 @@ struct InvocationContext {
   std::optional<std::string> failure;
 };
 
-struct RankInvocationContext {
-  int64_t logicalRank;
-  int64_t rankCount;
+struct TileInvocationContext {
+  PhysicalCardId physicalCardId;
+  PhysicalTileId physicalTileId;
+  LaunchSlotId launchSlotId;
+  int64_t physicalTileCount;
   TargetIdentityId targetIdentity;
   InvocationContext *invocation;
   uint64_t nextIssueOrdinal = 0;
   uint64_t issuedTransactionCount = 0;
 };
 
-struct MaterializedRank {
+struct MaterializedTile {
   std::unique_ptr<llvm::orc::LLJIT> jit;
   HostEntryThunk *entry = nullptr;
 };
@@ -60,17 +63,17 @@ enum class ExecutableState : uint8_t {
   Aborted,
 };
 
-enum class RankExecutionState : uint8_t {
+enum class TileExecutionState : uint8_t {
   NotStarted,
   Running,
-  Terminal,
+  Completed,
 };
 
 extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
                                             uint32_t descriptorIndex,
                                             const uint64_t *arguments,
                                             uint32_t argumentCount) {
-  auto *context = reinterpret_cast<RankInvocationContext *>(
+  auto *context = reinterpret_cast<TileInvocationContext *>(
       static_cast<uintptr_t>(contextAddress));
   if (!context || !context->invocation || context->invocation->failure ||
       !context->invocation->sink)
@@ -89,7 +92,7 @@ extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
   }
   llvm::ArrayRef<uint64_t> argumentValues(arguments, argumentCount);
   llvm::Expected<TargetTransactionPayload> payload = decodeTargetCallPayload(
-      descriptor, {context->rankCount}, argumentValues);
+      descriptor, {context->physicalTileCount}, argumentValues);
   if (!payload) {
     context->invocation->failure = llvm::toString(payload.takeError());
     return 0;
@@ -101,7 +104,8 @@ extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
     return 0;
   }
   TargetTransaction transaction{
-      context->logicalRank, context->nextIssueOrdinal++, std::move(*payload)};
+      context->physicalCardId, context->physicalTileId, context->launchSlotId,
+      context->nextIssueOrdinal++, std::move(*payload)};
   if (descriptor.issueDomain && *worker)
     transaction.nccIssueDomain =
         TargetNCCIssueDomain{descriptor.issueDomain->engine, **worker,
@@ -299,7 +303,7 @@ static llvm::Function *declareDispatcher(llvm::Module &module) {
 }
 
 static llvm::Error defineTargetCallBridges(llvm::Module &module,
-                                           RankInvocationContext &context) {
+                                           TileInvocationContext &context) {
   llvm::Function *dispatcher = declareDispatcher(module);
   llvm::Type *i64 = llvm::Type::getInt64Ty(module.getContext());
   llvm::Type *i32 = llvm::Type::getInt32Ty(module.getContext());
@@ -385,9 +389,9 @@ static llvm::Error initializeNativeBackend() {
   return llvm::Error::success();
 }
 
-static llvm::Expected<MaterializedRank>
-materializeRank(const TargetLLVMModule &targetModule,
-                RankInvocationContext &context) {
+static llvm::Expected<MaterializedTile>
+materializeTile(const TargetLLVMModule &targetModule,
+                TileInvocationContext &context) {
   if (llvm::Error error = preflightModule(targetModule))
     return std::move(error);
   llvm::Expected<std::pair<std::unique_ptr<llvm::LLVMContext>,
@@ -433,38 +437,53 @@ materializeRank(const TargetLLVMModule &targetModule,
       (*jit)->lookup(kEntryThunkSymbol);
   if (!entry)
     return entry.takeError();
-  return MaterializedRank{std::move(*jit), entry->toPtr<HostEntryThunk>()};
+  return MaterializedTile{std::move(*jit), entry->toPtr<HostEntryThunk>()};
 }
 
 static llvm::Expected<TargetCallInvocationDescriptor>
 validateInvocation(const TargetLLVMModuleBundle &bundle,
-                   llvm::ArrayRef<TargetCallRankArguments> arguments) {
+                   llvm::ArrayRef<TargetCallTileArguments> arguments) {
   const std::vector<TargetLLVMModule> &modules = bundle.getModules();
   if (modules.empty() || modules.size() != arguments.size() ||
-      modules.size() !=
-          static_cast<size_t>(bundle.getExecutionConfig().getRankCount()))
+      modules.size() != static_cast<size_t>(
+                            bundle.getExecutionConfig().getPhysicalTileCount()))
     return llvm::createStringError(
-        "target-call invocation does not cover the complete rank domain");
+        "target-call invocation does not cover the complete physical Tile "
+        "domain");
   TargetCallInvocationDescriptor descriptor{
       bundle.getExecutionConfig().getTargetIdentityId(), {}};
-  descriptor.ranks.reserve(modules.size());
+  descriptor.tiles.reserve(modules.size());
+  std::set<std::pair<int64_t, int64_t>> physicalTiles;
   for (size_t index = 0; index < modules.size(); ++index) {
     const TargetLLVMModule &module = modules[index];
-    const TargetCallRankArguments &rankArguments = arguments[index];
-    if (module.getLogicalRank() != static_cast<int64_t>(index) ||
-        rankArguments.logicalRank != module.getLogicalRank())
+    const TargetCallTileArguments &tileArguments = arguments[index];
+    const LaunchSlotId expectedLaunchSlot(static_cast<int64_t>(index));
+    const std::pair<int64_t, int64_t> physicalTile = {
+        module.getPhysicalCardId().getValue(),
+        module.getPhysicalTileId().getValue()};
+    if (physicalTile.first < 0 || physicalTile.second < 0 ||
+        !physicalTiles.insert(physicalTile).second)
       return llvm::createStringError(
-          "target-call invocation rank order is not canonical");
-    if (rankArguments.slots.size() != module.getKernelABISlots().size())
+          "target-call invocation contains an invalid or duplicate physical "
+          "Tile identity");
+    if (module.getLaunchSlotId() != expectedLaunchSlot ||
+        tileArguments.launchSlotId != module.getLaunchSlotId() ||
+        tileArguments.physicalCardId != module.getPhysicalCardId() ||
+        tileArguments.physicalTileId != module.getPhysicalTileId())
+      return llvm::createStringError(
+          "target-call invocation physical Tile identity or launch-slot order "
+          "is not canonical");
+    if (tileArguments.slots.size() != module.getKernelABISlots().size())
       return llvm::createStringError(
           "target-call invocation slot count does not match the typed ABI");
     if (module.getTargetIdentityId() != descriptor.targetIdentity)
       return llvm::createStringError(
           "target-call invocation contains inconsistent target identities");
-    descriptor.ranks.push_back({module.getLogicalRank(),
-                                module.getKernelABISlots(), rankArguments.slots,
-                                module.getTargetIdentityId(),
-                                module.getKernelRuntimeABIId()});
+    descriptor.tiles.push_back(
+        {module.getPhysicalCardId(), module.getPhysicalTileId(),
+         module.getLaunchSlotId(), module.getKernelABISlots(),
+         tileArguments.slots, module.getTargetIdentityId(),
+         module.getKernelRuntimeABIId()});
   }
   return descriptor;
 }
@@ -473,17 +492,17 @@ validateInvocation(const TargetLLVMModuleBundle &bundle,
 
 struct TargetCallExecutable::Impl {
   Impl(TargetCallInvocationDescriptor descriptor,
-       llvm::ArrayRef<TargetCallRankArguments> rankArguments)
+       llvm::ArrayRef<TargetCallTileArguments> tileArguments)
       : descriptor(std::move(descriptor)),
-        arguments(rankArguments.begin(), rankArguments.end()),
-        rankStates(arguments.size(), RankExecutionState::NotStarted) {}
+        arguments(tileArguments.begin(), tileArguments.end()),
+        tileStates(arguments.size(), TileExecutionState::NotStarted) {}
 
   TargetCallInvocationDescriptor descriptor;
-  std::vector<TargetCallRankArguments> arguments;
+  std::vector<TargetCallTileArguments> arguments;
   InvocationContext invocation;
-  std::vector<RankInvocationContext> contexts;
-  std::vector<MaterializedRank> materialized;
-  std::vector<RankExecutionState> rankStates;
+  std::vector<TileInvocationContext> contexts;
+  std::vector<MaterializedTile> materialized;
+  std::vector<TileExecutionState> tileStates;
   ExecutableState state = ExecutableState::Prepared;
 };
 
@@ -535,40 +554,43 @@ llvm::Error TargetCallExecutable::begin(TargetTransactionSink &sink) {
   return llvm::Error::success();
 }
 
-llvm::Error TargetCallExecutable::executeRank(int64_t logicalRank) {
+llvm::Error TargetCallExecutable::executeTile(LaunchSlotId launchSlotId) {
   if (!impl || impl->state != ExecutableState::Running)
     return llvm::createStringError(
-        "target-call rank cannot execute outside a running invocation");
-  if (logicalRank < 0 ||
-      logicalRank >= static_cast<int64_t>(impl->materialized.size())) {
+        "target-call Tile cannot execute outside a running invocation");
+  const int64_t launchSlot = launchSlotId.getValue();
+  if (launchSlot < 0 ||
+      launchSlot >= static_cast<int64_t>(impl->materialized.size())) {
     std::string diagnostic =
-        "target-call rank is outside the materialized domain";
+        "target-call launch slot is outside the materialized Tile domain";
     abort(diagnostic);
     return llvm::createStringError("%s", diagnostic.c_str());
   }
-  size_t index = static_cast<size_t>(logicalRank);
-  if (impl->rankStates[index] != RankExecutionState::NotStarted) {
+  size_t index = static_cast<size_t>(launchSlot);
+  if (impl->tileStates[index] != TileExecutionState::NotStarted) {
     std::string diagnostic =
-        impl->rankStates[index] == RankExecutionState::Running
-            ? "target-call rank is already running"
-            : "target-call rank already reached terminal";
+        impl->tileStates[index] == TileExecutionState::Running
+            ? "target-call Tile is already running"
+            : "target-call Tile is already complete";
     abort(diagnostic);
     return llvm::createStringError("%s", diagnostic.c_str());
   }
 
-  impl->rankStates[index] = RankExecutionState::Running;
+  impl->tileStates[index] = TileExecutionState::Running;
   impl->materialized[index].entry(impl->arguments[index].slots.data());
   if (impl->invocation.failure) {
     std::string diagnostic = *impl->invocation.failure;
     abort(diagnostic);
     return llvm::createStringError("%s", diagnostic.c_str());
   }
-  if (llvm::Error error = impl->invocation.sink->terminal(logicalRank)) {
+  const TargetCallTileDescriptor &tile = impl->descriptor.tiles[index];
+  if (llvm::Error error = impl->invocation.sink->completeTile(
+          tile.physicalCardId, tile.physicalTileId, tile.launchSlotId)) {
     std::string diagnostic = llvm::toString(std::move(error));
     abort(diagnostic);
     return llvm::createStringError("%s", diagnostic.c_str());
   }
-  impl->rankStates[index] = RankExecutionState::Terminal;
+  impl->tileStates[index] = TileExecutionState::Completed;
   return llvm::Error::success();
 }
 
@@ -576,11 +598,11 @@ llvm::Expected<TargetCallExecutionResult> TargetCallExecutable::commit() {
   if (!impl || impl->state != ExecutableState::Running)
     return llvm::createStringError(
         "target-call executable cannot commit from its current state");
-  if (!llvm::all_of(impl->rankStates, [](RankExecutionState state) {
-        return state == RankExecutionState::Terminal;
+  if (!llvm::all_of(impl->tileStates, [](TileExecutionState state) {
+        return state == TileExecutionState::Completed;
       })) {
     std::string diagnostic =
-        "target-call executable cannot commit before every rank is terminal";
+        "target-call executable cannot commit before every Tile completes";
     abort(diagnostic);
     return llvm::createStringError("%s", diagnostic.c_str());
   }
@@ -592,7 +614,7 @@ llvm::Expected<TargetCallExecutionResult> TargetCallExecutable::commit() {
   impl->invocation.sink->commit();
   impl->state = ExecutableState::Committed;
   uint64_t issuedTransactionCount = 0;
-  for (const RankInvocationContext &context : impl->contexts)
+  for (const TileInvocationContext &context : impl->contexts)
     issuedTransactionCount += context.issuedTransactionCount;
   return TargetCallExecutionResult{
       static_cast<int64_t>(impl->materialized.size()), issuedTransactionCount};
@@ -600,7 +622,7 @@ llvm::Expected<TargetCallExecutionResult> TargetCallExecutable::commit() {
 
 llvm::Expected<TargetCallExecutable>
 prepareTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
-                          llvm::ArrayRef<TargetCallRankArguments> arguments) {
+                          llvm::ArrayRef<TargetCallTileArguments> arguments) {
   llvm::Expected<TargetCallInvocationDescriptor> invocation =
       validateInvocation(bundle, arguments);
   if (!invocation)
@@ -613,23 +635,25 @@ prepareTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
   executable->contexts.reserve(bundle.getModules().size());
   for (const TargetLLVMModule &module : bundle.getModules())
     executable->contexts.push_back(
-        {module.getLogicalRank(), bundle.getExecutionConfig().getRankCount(),
+        {module.getPhysicalCardId(), module.getPhysicalTileId(),
+         module.getLaunchSlotId(),
+         bundle.getExecutionConfig().getPhysicalTileCount(),
          module.getTargetIdentityId(), &executable->invocation});
 
   executable->materialized.reserve(bundle.getModules().size());
   for (size_t index = 0; index < bundle.getModules().size(); ++index) {
-    llvm::Expected<MaterializedRank> rank = materializeRank(
+    llvm::Expected<MaterializedTile> tile = materializeTile(
         bundle.getModules()[index], executable->contexts[index]);
-    if (!rank)
-      return rank.takeError();
-    executable->materialized.push_back(std::move(*rank));
+    if (!tile)
+      return tile.takeError();
+    executable->materialized.push_back(std::move(*tile));
   }
   return TargetCallExecutable(std::move(executable));
 }
 
 llvm::Expected<TargetCallExecutionResult>
 executeTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
-                          llvm::ArrayRef<TargetCallRankArguments> arguments,
+                          llvm::ArrayRef<TargetCallTileArguments> arguments,
                           TargetTransactionSink &sink) {
   llvm::Expected<TargetCallExecutable> executable =
       prepareTargetCallFrontend(bundle, arguments);
@@ -637,9 +661,9 @@ executeTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
     return executable.takeError();
   if (llvm::Error error = executable->begin(sink))
     return std::move(error);
-  for (const TargetCallRankDescriptor &rank :
-       executable->getInvocationDescriptor().ranks)
-    if (llvm::Error error = executable->executeRank(rank.logicalRank))
+  for (const TargetCallTileDescriptor &tile :
+       executable->getInvocationDescriptor().tiles)
+    if (llvm::Error error = executable->executeTile(tile.launchSlotId))
       return std::move(error);
   return executable->commit();
 }

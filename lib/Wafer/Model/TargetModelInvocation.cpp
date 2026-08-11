@@ -171,6 +171,14 @@ bool checkedAlign(uint64_t value, uint64_t alignment, uint64_t &result) {
   return true;
 }
 
+bool haveSameResourceGeometry(const compiler::KernelABISlot &lhs,
+                              const compiler::KernelABISlot &rhs) {
+  return lhs.role == rhs.role && lhs.resourceIndex == rhs.resourceIndex &&
+         lhs.dtype == rhs.dtype && lhs.layout == rhs.layout &&
+         lhs.shape == rhs.shape && lhs.byteSize == rhs.byteSize &&
+         lhs.alignment == rhs.alignment;
+}
+
 } // namespace
 
 llvm::StringRef
@@ -262,55 +270,97 @@ decodeTargetModelProgramTensor(const compiler::KernelABISlot &slot,
 llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
     const compiler::ExecutableBundle &executableBundle,
     const compiler::TargetLLVMModuleBundle &targetLLVMModuleBundle,
-    llvm::ArrayRef<compiler::ProgramRankInvocation> programInvocations) {
-  const auto &ranks = executableBundle.getRankExecutables();
+    llvm::ArrayRef<compiler::ProgramTileInvocation> programInvocations) {
+  const auto &tiles = executableBundle.getPhysicalTileExecutables();
   const auto &modules = targetLLVMModuleBundle.getModules();
   if (executableBundle.getExecutionConfig() !=
           targetLLVMModuleBundle.getExecutionConfig() ||
-      ranks.size() != modules.size() ||
-      ranks.size() != programInvocations.size() ||
-      ranks.size() != static_cast<size_t>(
-                          executableBundle.getExecutionConfig().getRankCount()))
+      tiles.size() != modules.size() ||
+      tiles.size() != programInvocations.size() ||
+      tiles.size() !=
+          static_cast<size_t>(
+              executableBundle.getExecutionConfig().getPhysicalTileCount()))
     return invocationError(TargetModelInvocationErrorCode::InvalidBundleDomain,
-                           "source, executable, and target LLVM rank domains "
-                           "are not identical");
+                           "source, physical Tile executable, and target LLVM "
+                           "launch domains are not identical");
 
-  std::vector<compiler::TargetCallRankArguments> arguments;
+  std::vector<compiler::TargetCallTileArguments> arguments;
   std::vector<TargetModelInputBinding> inputBindings;
-  arguments.reserve(ranks.size());
+  struct Allocation {
+    TargetModelResourceId resource;
+    compiler::KernelABISlot slot;
+    uint64_t base = 0;
+    std::vector<int64_t> launchSlots;
+  };
+  std::vector<Allocation> allocations;
+  arguments.reserve(tiles.size());
   uint64_t nextAddress = UINT64_C(0x100000000);
-  for (size_t rankIndex = 0; rankIndex < ranks.size(); ++rankIndex) {
-    const compiler::RankExecutable &rank = ranks[rankIndex];
-    const compiler::TargetLLVMModule &module = modules[rankIndex];
-    const compiler::ProgramRankInvocation &invocation =
-        programInvocations[rankIndex];
-    if (rank.getLogicalRank() != static_cast<int64_t>(rankIndex) ||
-        module.getLogicalRank() != static_cast<int64_t>(rankIndex) ||
-        invocation.logicalRank != static_cast<int64_t>(rankIndex))
+  for (size_t tileIndex = 0; tileIndex < tiles.size(); ++tileIndex) {
+    const compiler::PhysicalTileExecutable &tile = tiles[tileIndex];
+    const compiler::TargetLLVMModule &module = modules[tileIndex];
+    const compiler::ProgramTileInvocation &invocation =
+        programInvocations[tileIndex];
+    const LaunchSlotId expectedLaunchSlot(static_cast<int64_t>(tileIndex));
+    if (tile.getLaunchSlotId() != expectedLaunchSlot ||
+        module.getLaunchSlotId() != expectedLaunchSlot ||
+        invocation.launchSlotId != expectedLaunchSlot ||
+        module.getPhysicalCardId() != tile.getPhysicalCardId() ||
+        module.getPhysicalTileId() != tile.getPhysicalTileId() ||
+        invocation.physicalCardId != tile.getPhysicalCardId() ||
+        invocation.physicalTileId != tile.getPhysicalTileId())
       return invocationError(
           TargetModelInvocationErrorCode::InvalidBundleDomain,
-          "source, executable, or target LLVM rank order is not canonical");
+          "physical Tile executable or target LLVM launch order is not "
+          "canonical");
 
-    compiler::TargetCallRankArguments rankArguments;
-    rankArguments.logicalRank = static_cast<int64_t>(rankIndex);
+    compiler::TargetCallTileArguments tileArguments{tile.getPhysicalCardId(),
+                                                    tile.getPhysicalTileId(),
+                                                    tile.getLaunchSlotId(),
+                                                    {}};
     const auto &slots = module.getKernelABISlots();
-    rankArguments.slots.reserve(slots.size());
+    tileArguments.slots.reserve(slots.size());
     std::vector<bool> consumedInputs(invocation.inputs.size(), false);
     for (auto [slotIndex, slot] : llvm::enumerate(slots)) {
       if (slot.ordinal != static_cast<int64_t>(slotIndex) ||
-          slot.byteSize < 0 || slot.alignment <= 0)
+          slot.resourceIndex < 0 || slot.byteSize <= 0 || slot.alignment <= 0)
         return invocationError(
             TargetModelInvocationErrorCode::InvalidKernelABISlot,
-            "Kernel ABI slot order, byte size, or alignment is invalid");
-      uint64_t base = 0;
-      if (!checkedAlign(nextAddress, static_cast<uint64_t>(slot.alignment),
-                        base) ||
-          static_cast<uint64_t>(slot.byteSize) >
-              std::numeric_limits<uint64_t>::max() - base)
-        return invocationError(TargetModelInvocationErrorCode::AddressOverflow,
-                               "Kernel ABI address domain overflows");
-      rankArguments.slots.push_back(base);
-      nextAddress = base + static_cast<uint64_t>(slot.byteSize);
+            "Kernel ABI slot identity, byte size, or alignment is invalid");
+      const TargetModelResourceId resource = getTargetModelResourceId(
+          tile.getPhysicalCardId(), tile.getPhysicalTileId(), slot.role,
+          slot.resourceIndex);
+      Allocation *allocation = nullptr;
+      for (Allocation &candidate : allocations)
+        if (candidate.resource == resource) {
+          allocation = &candidate;
+          break;
+        }
+      if (allocation) {
+        if (llvm::is_contained(allocation->launchSlots,
+                               tile.getLaunchSlotId().getValue()))
+          return invocationError(
+              TargetModelInvocationErrorCode::InvalidKernelABISlot,
+              "one Tile ABI references a physical resource more than once");
+        if (!haveSameResourceGeometry(allocation->slot, slot))
+          return invocationError(
+              TargetModelInvocationErrorCode::InvalidKernelABISlot,
+              "Kernel ABI slots disagree on one physical resource");
+        allocation->launchSlots.push_back(tile.getLaunchSlotId().getValue());
+      } else {
+        uint64_t base = 0;
+        if (!checkedAlign(nextAddress, static_cast<uint64_t>(slot.alignment),
+                          base) ||
+            static_cast<uint64_t>(slot.byteSize) >
+                std::numeric_limits<uint64_t>::max() - base)
+          return invocationError(
+              TargetModelInvocationErrorCode::AddressOverflow,
+              "Kernel ABI address domain overflows");
+        allocations.push_back(
+            {resource, slot, base, {tile.getLaunchSlotId().getValue()}});
+        allocation = &allocations.back();
+        nextAddress = base + static_cast<uint64_t>(slot.byteSize);
+      }
+      tileArguments.slots.push_back(allocation->base);
 
       if (!isReadOnly(slot.role))
         continue;
@@ -341,14 +391,35 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
       if (!bytes)
         return bytes.takeError();
       consumedInputs[inputIndex] = true;
-      inputBindings.push_back(
-          {static_cast<int64_t>(rankIndex), slot.ordinal, std::move(*bytes)});
+      TargetModelInputBinding *existing = nullptr;
+      for (TargetModelInputBinding &binding : inputBindings)
+        if (binding.resource == resource) {
+          existing = &binding;
+          break;
+        }
+      if (existing) {
+        if (existing->bytes != *bytes)
+          return invocationError(
+              TargetModelInvocationErrorCode::InvalidProgramInvocation,
+              "Tile invocations disagree on one card-shared input resource");
+      } else {
+        inputBindings.push_back({resource, std::move(*bytes)});
+      }
     }
     if (!llvm::all_of(consumedInputs, [](bool consumed) { return consumed; }))
       return invocationError(
           TargetModelInvocationErrorCode::InvalidProgramInvocation,
           "program invocation contains an input absent from the Kernel ABI");
-    arguments.push_back(std::move(rankArguments));
+    arguments.push_back(std::move(tileArguments));
+  }
+
+  for (const Allocation &allocation : allocations) {
+    const bool cardOwned = !allocation.resource.physicalTileId.has_value();
+    if ((cardOwned && allocation.launchSlots.size() != tiles.size()) ||
+        (!cardOwned && allocation.launchSlots.size() != 1))
+      return invocationError(
+          TargetModelInvocationErrorCode::InvalidKernelABISlot,
+          "physical resource owner disagrees with its Tile ABI domain");
   }
 
   llvm::Expected<compiler::TargetCallExecutable> executable =

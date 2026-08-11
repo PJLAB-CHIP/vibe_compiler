@@ -19,24 +19,17 @@
 
 namespace {
 
-wafer::RuntimeLaunchContract makePerRankLaunch() {
-  return llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
-      wafer::KernelLaunchForm::PerRank,
-      wafer::KernelEntryABI::RankLocalPointerBlock,
-      {wafer::RuntimeLaunchPhaseRole::Main}));
-}
-
 wafer::RuntimeLaunchContract makeGridLaunch() {
   return llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
       wafer::KernelLaunchForm::Grid,
-      wafer::KernelEntryABI::RankMajorPointerTable,
+      wafer::KernelEntryABI::TileMajorPointerTable,
       {wafer::RuntimeLaunchPhaseRole::Main}));
 }
 
 wafer::RuntimeLaunchContract makeClusterLaunch() {
   return llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
       wafer::KernelLaunchForm::Cluster,
-      wafer::KernelEntryABI::RankMajorPointerTable,
+      wafer::KernelEntryABI::TileMajorPointerTable,
       {wafer::RuntimeLaunchPhaseRole::Prepare,
        wafer::RuntimeLaunchPhaseRole::Main}));
 }
@@ -56,7 +49,7 @@ protected:
     llvm::sys::path::append(modules, "modules");
     ASSERT_FALSE(llvm::sys::fs::create_directories(modules));
     modulePath = modules;
-    llvm::sys::path::append(modulePath, "rank_00000.so");
+    llvm::sys::path::append(modulePath, "tile_00000.so");
     std::error_code error;
     llvm::raw_fd_ostream output(modulePath, error, llvm::sys::fs::OF_None);
     ASSERT_FALSE(error);
@@ -75,13 +68,13 @@ protected:
     return "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
   }
 
-  void createRankModules(int64_t rankCount) const {
-    for (int64_t rank = 1; rank < rankCount; ++rank) {
-      std::string rankText = std::to_string(rank);
+  void createTileModules(int64_t tileCount) const {
+    for (int64_t tile = 1; tile < tileCount; ++tile) {
+      std::string tileText = std::to_string(tile);
       llvm::SmallString<256> path(root);
       llvm::sys::path::append(path, "modules",
-                              "rank_" + std::string(5 - rankText.size(), '0') +
-                                  rankText + ".so");
+                              "tile_" + std::string(5 - tileText.size(), '0') +
+                                  tileText + ".so");
       std::error_code error;
       llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_None);
       ASSERT_FALSE(error);
@@ -92,25 +85,95 @@ protected:
     }
   }
 
-  void removeRankModulesAfterZero(int64_t rankCount) const {
-    for (int64_t rank = 1; rank < rankCount; ++rank) {
-      std::string rankText = std::to_string(rank);
-      llvm::SmallString<256> path(root);
-      llvm::sys::path::append(path, "modules",
-                              "rank_" + std::string(5 - rankText.size(), '0') +
-                                  rankText + ".so");
-      ASSERT_FALSE(llvm::sys::fs::remove(path));
-    }
-  }
-
   wafer::runtime::PackageManifest makeManifest() const {
     using namespace wafer::runtime;
-    PackageManifest manifest(wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI, makePerRankLaunch(),
-                             wafer::kCurrentTargetModuleFormat);
+    PackageManifest manifest(
+        wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
+        makeGridLaunch(), wafer::kCurrentTargetModuleFormat);
     manifest.program = ProgramId(0);
-    manifest.rankCount = 1;
+    manifest.cardCount = 1;
+    manifest.tileCount = 16;
+    manifest.resources = {
+        {ResourceId(0),
+         CardResourceScope{wafer::PhysicalCardId(0)},
+         PackageResourceRole::UserInput,
+         0,
+         "input",
+         {"f32", {16}},
+         64,
+         256,
+         PackageAccessMode::ReadOnly,
+         true},
+        {ResourceId(1),
+         CardResourceScope{wafer::PhysicalCardId(0)},
+         PackageResourceRole::Output,
+         0,
+         "output",
+         {"f32", {16}},
+         64,
+         256,
+         PackageAccessMode::WriteOnly,
+         true},
+    };
+    manifest.modules = {{ModuleId(0),
+                         "modules/tile_00000.so",
+                         moduleDigest(),
+                         wafer::kCurrentTargetModuleFormat.str(),
+                         {{PackageModuleExportRole::Main, "main"}}}};
+    for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
+      const int64_t physicalTile = launchSlot < 2 ? 1 - launchSlot : launchSlot;
+      ResourceId workspace(static_cast<uint64_t>(launchSlot) + 2);
+      manifest.resources.push_back(
+          {workspace,
+           TileResourceScope{wafer::PhysicalCardId(0),
+                             wafer::PhysicalTileId(physicalTile)},
+           PackageResourceRole::Workspace,
+           0,
+           "default_ddr_arena",
+           {"u8", {512}},
+           512,
+           256,
+           PackageAccessMode::ReadWrite,
+           false});
+      manifest.entries.push_back(
+          {EntryId(launchSlot), wafer::PhysicalCardId(0),
+           wafer::PhysicalTileId(physicalTile), LaunchSlotId(launchSlot),
+           ModuleId(0),
+           {{0, ResourceId(0), PackageAccessMode::ReadOnly},
+            {1, ResourceId(1), PackageAccessMode::WriteOnly},
+            {2, workspace, PackageAccessMode::ReadWrite}},
+           PackageEntryCompletionKind::ReturnAfterLocalDrain,
+           NoTransportRequirements{}});
+    }
+    return manifest;
+  }
+
+  wafer::runtime::PackageManifest makeTileManifest(
+      int64_t tileCount, bool permuteIdentities, bool allDirectDTE = false,
+      bool lastTileDirectDTEOnly = false, bool forceClusterLaunch = false,
+      bool forceGridLaunch = false) const {
+    using namespace wafer::runtime;
+    const bool cluster =
+        forceClusterLaunch ||
+        (!forceGridLaunch && (allDirectDTE || lastTileDirectDTEOnly));
+    const bool shared = true;
+    PackageManifest manifest(
+        wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
+        cluster ? makeClusterLaunch() : makeGridLaunch(),
+        wafer::kCurrentTargetModuleFormat);
+    manifest.program = ProgramId(0);
+    manifest.cardCount = 1;
+    manifest.tileCount = tileCount;
+
+    auto permutedId = [&](int64_t tile, int64_t multiplier,
+                          int64_t offset) -> uint64_t {
+      if (!permuteIdentities)
+        return static_cast<uint64_t>(tile);
+      return static_cast<uint64_t>((tile * multiplier + offset) % tileCount);
+    };
+
     manifest.resources = {{ResourceId(0),
-                           0,
+                           CardResourceScope{wafer::PhysicalCardId(0)},
                            PackageResourceRole::UserInput,
                            0,
                            "input",
@@ -120,7 +183,7 @@ protected:
                            PackageAccessMode::ReadOnly,
                            true},
                           {ResourceId(1),
-                           0,
+                           CardResourceScope{wafer::PhysicalCardId(0)},
                            PackageResourceRole::Output,
                            0,
                            "output",
@@ -128,66 +191,15 @@ protected:
                            64,
                            256,
                            PackageAccessMode::WriteOnly,
-                           true},
-                          {ResourceId(2),
-                           0,
-                           PackageResourceRole::Workspace,
-                           0,
-                           "default_ddr_arena",
-                           {"u8", {512}},
-                           512,
-                           256,
-                           PackageAccessMode::ReadWrite,
-                           false}};
-    manifest.modules = {{ModuleId(0),
-                         "modules/rank_00000.so",
-                         moduleDigest(),
-                         wafer::kCurrentTargetModuleFormat.str(),
-                         {{PackageModuleExportRole::Main, "main"}}}};
-    manifest.entries = {{EntryId(0),
-                         0,
-                         ModuleId(0),
-                         {{0, ResourceId(0), PackageAccessMode::ReadOnly},
-                          {1, ResourceId(1), PackageAccessMode::WriteOnly},
-                          {2, ResourceId(2), PackageAccessMode::ReadWrite}},
-                         CompletionId(0)}};
-    manifest.completions = {{CompletionId(0), 0, "entry_return"}};
-    return manifest;
-  }
-
-  wafer::runtime::PackageManifest makeRankManifest(
-      int64_t rankCount, bool permuteIdentities, bool allDirectDTE = false,
-      bool lastRankDirectDTEOnly = false, bool forceClusterLaunch = false,
-      bool forceGridLaunch = false) const {
-    using namespace wafer::runtime;
-    const bool cluster =
-        forceClusterLaunch ||
-        (!forceGridLaunch && (allDirectDTE || lastRankDirectDTEOnly));
-    const bool shared = cluster || forceGridLaunch;
-    PackageManifest manifest(
-        wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
-        cluster ? makeClusterLaunch()
-                : (forceGridLaunch ? makeGridLaunch() : makePerRankLaunch()),
-        wafer::kCurrentTargetModuleFormat);
-    manifest.program = ProgramId(0);
-    manifest.rankCount = rankCount;
-
-    auto permutedId = [&](int64_t rank, int64_t multiplier,
-                          int64_t offset) -> uint64_t {
-      if (!permuteIdentities)
-        return static_cast<uint64_t>(rank);
-      return static_cast<uint64_t>((rank * multiplier + offset) % rankCount);
-    };
-
-    uint64_t nextResource = 0;
-    for (int64_t rank = 0; rank < rankCount; ++rank) {
-      std::string rankText = std::to_string(rank);
+                           true}};
+    uint64_t nextResource = 2;
+    for (int64_t tile = 0; tile < tileCount; ++tile) {
+      std::string tileText = std::to_string(tile);
       std::string moduleName =
-          "rank_" + std::string(5 - rankText.size(), '0') + rankText + ".so";
-      ModuleId module(shared ? 0 : permutedId(rank, 7, 5));
-      EntryId entry(permutedId(rank, 5, 3));
-      CompletionId completion(permutedId(rank, 9, 1));
-      if (!shared || rank == 0)
+          "tile_" + std::string(5 - tileText.size(), '0') + tileText + ".so";
+      ModuleId module(0);
+      EntryId entry(permutedId(tile, 5, 3));
+      if (!shared || tile == 0)
         manifest.modules.push_back(
             {module, "modules/" + moduleName, moduleDigest(),
              wafer::kCurrentTargetModuleFormat.str(),
@@ -200,36 +212,34 @@ protected:
                                                        "main"}}
                      : std::vector<PackageModuleExportRecord>{
                            {PackageModuleExportRole::Main, "main"}}});
-      manifest.completions.push_back({completion, rank, "entry_return"});
-
-      std::vector<PackageABISlotBinding> slots;
+      std::vector<PackageABISlotBinding> slots = {
+          {0, ResourceId(0), PackageAccessMode::ReadOnly},
+          {1, ResourceId(1), PackageAccessMode::WriteOnly}};
       auto addResource =
           [&](PackageResourceRole role, int64_t roleIndex, llvm::StringRef name,
               llvm::StringRef dtype, std::vector<int64_t> shape, uint64_t bytes,
               uint64_t alignment, PackageAccessMode access, bool hostVisible) {
             ResourceId resource(nextResource++);
-            manifest.resources.push_back({resource,
-                                          rank,
-                                          role,
-                                          roleIndex,
-                                          name.str(),
-                                          {dtype.str(), std::move(shape)},
-                                          bytes,
-                                          alignment,
-                                          access,
-                                          hostVisible});
+            manifest.resources.push_back(
+                {resource,
+                 TileResourceScope{wafer::PhysicalCardId(0),
+                                   wafer::PhysicalTileId(tile)},
+                 role,
+                 roleIndex,
+                 name.str(),
+                 {dtype.str(), std::move(shape)},
+                 bytes,
+                 alignment,
+                 access,
+                 hostVisible});
             slots.push_back({slots.size(), resource, access});
             return resource;
           };
-      addResource(PackageResourceRole::UserInput, 0, "input", "f32", {16}, 64,
-                  256, PackageAccessMode::ReadOnly, true);
-      addResource(PackageResourceRole::Output, 0, "output", "f32", {16}, 64,
-                  256, PackageAccessMode::WriteOnly, true);
       addResource(PackageResourceRole::Workspace, 0, "default_ddr_arena", "u8",
                   {512}, 512, 256, PackageAccessMode::ReadWrite, false);
 
       bool directDTE =
-          allDirectDTE || (lastRankDirectDTEOnly && rank == rankCount - 1);
+          allDirectDTE || (lastTileDirectDTEOnly && tile == tileCount - 1);
       TransportRequirements transport = NoTransportRequirements{};
       if (directDTE) {
         ResourceId status = addResource(
@@ -239,64 +249,130 @@ protected:
         transport = DirectDTETransportRequirements{
             status, kDirectDTEStatusABI.str(), true};
       }
-      manifest.entries.push_back({entry, rank, module, std::move(slots),
-                                  completion, std::move(transport)});
+      manifest.entries.push_back(
+          {entry, wafer::PhysicalCardId(0), wafer::PhysicalTileId(tile),
+           LaunchSlotId(tile), module, std::move(slots),
+           PackageEntryCompletionKind::ReturnAfterLocalDrain,
+           std::move(transport)});
     }
 
     if (permuteIdentities) {
       std::reverse(manifest.resources.begin(), manifest.resources.end());
       std::reverse(manifest.modules.begin(), manifest.modules.end());
       std::reverse(manifest.entries.begin(), manifest.entries.end());
-      std::reverse(manifest.completions.begin(), manifest.completions.end());
     }
     return manifest;
   }
 
   wafer::runtime::PackageManifest makeModelManifest() const {
     using namespace wafer::runtime;
-    PackageManifest manifest(wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI, makeModelLaunch(),
+    PackageManifest manifest(wafer::kCurrentTargetIdentity,
+                             wafer::kCurrentKernelRuntimeABI, makeModelLaunch(),
                              wafer::kCurrentTargetModuleFormat);
     manifest.program = ProgramId(0);
-    manifest.rankCount = 16;
-    for (int64_t rank = 0; rank < 16; ++rank) {
-      const ResourceId input(static_cast<uint64_t>(rank) * 2);
-      const ResourceId output(input.getValue() + 1);
-      manifest.resources.push_back({input,
-                                    rank,
-                                    PackageResourceRole::UserInput,
-                                    0,
-                                    "input",
-                                    {"f32", {1}},
-                                    4,
-                                    alignof(float),
-                                    PackageAccessMode::ReadOnly,
-                                    true});
-      manifest.resources.push_back({output,
-                                    rank,
-                                    PackageResourceRole::Output,
-                                    0,
-                                    "output",
-                                    {"f32", {1}},
-                                    4,
-                                    alignof(float),
-                                    PackageAccessMode::WriteOnly,
-                                    true});
-      std::string rankText = std::to_string(rank);
-      manifest.modules.push_back({ModuleId(rank),
-                                  "modules/rank_" +
-                                      std::string(5 - rankText.size(), '0') +
-                                      rankText + ".so",
+    manifest.cardCount = 1;
+    manifest.tileCount = 16;
+    manifest.resources = {{ResourceId(0),
+                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           PackageResourceRole::UserInput,
+                           0,
+                           "input",
+                           {"f32", {1}},
+                           4,
+                           alignof(float),
+                           PackageAccessMode::ReadOnly,
+                           true},
+                          {ResourceId(1),
+                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           PackageResourceRole::Output,
+                           0,
+                           "output",
+                           {"f32", {1}},
+                           4,
+                           alignof(float),
+                           PackageAccessMode::WriteOnly,
+                           true}};
+    for (int64_t tile = 0; tile < 16; ++tile) {
+      std::string tileText = std::to_string(tile);
+      manifest.modules.push_back({ModuleId(tile),
+                                  "modules/tile_" +
+                                      std::string(5 - tileText.size(), '0') +
+                                      tileText + ".so",
                                   moduleDigest(),
                                   wafer::kCurrentTargetModuleFormat.str(),
                                   {{PackageModuleExportRole::Main, "main"}}});
-      manifest.entries.push_back({EntryId(rank),
-                                  rank,
-                                  ModuleId(rank),
-                                  {{0, input, PackageAccessMode::ReadOnly},
-                                   {1, output, PackageAccessMode::WriteOnly}},
-                                  CompletionId(rank)});
-      manifest.completions.push_back(
-          {CompletionId(rank), rank, "entry_return"});
+      manifest.entries.push_back(
+          {EntryId(tile),
+           wafer::PhysicalCardId(0),
+           wafer::PhysicalTileId(tile),
+           LaunchSlotId(tile),
+           ModuleId(tile),
+           {{0, ResourceId(0), PackageAccessMode::ReadOnly},
+            {1, ResourceId(1), PackageAccessMode::WriteOnly}},
+           PackageEntryCompletionKind::ReturnAfterLocalDrain,
+           NoTransportRequirements{}});
+    }
+    return manifest;
+  }
+
+  wafer::runtime::PackageManifest makeCardSharedTile16Manifest() const {
+    using namespace wafer::runtime;
+    PackageManifest manifest(wafer::kCurrentTargetIdentity,
+                             wafer::kCurrentKernelRuntimeABI, makeGridLaunch(),
+                             wafer::kCurrentTargetModuleFormat);
+    manifest.program = ProgramId(0);
+    manifest.cardCount = 1;
+    manifest.tileCount = 16;
+    manifest.resources = {{ResourceId(0),
+                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           PackageResourceRole::UserInput,
+                           0,
+                           "input",
+                           {"f32", {16}},
+                           64,
+                           256,
+                           PackageAccessMode::ReadOnly,
+                           true},
+                          {ResourceId(1),
+                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           PackageResourceRole::Output,
+                           0,
+                           "output",
+                           {"f32", {16}},
+                           64,
+                           256,
+                           PackageAccessMode::WriteOnly,
+                           true}};
+    manifest.modules = {{ModuleId(0),
+                         "modules/tile_00000.so",
+                         moduleDigest(),
+                         wafer::kCurrentTargetModuleFormat.str(),
+                         {{PackageModuleExportRole::Main, "main"}}}};
+    for (int64_t tile = 0; tile < 16; ++tile) {
+      ResourceId workspace(static_cast<uint64_t>(tile) + 2);
+      manifest.resources.push_back(
+          {workspace,
+           TileResourceScope{wafer::PhysicalCardId(0),
+                             wafer::PhysicalTileId(tile)},
+           PackageResourceRole::Workspace,
+           0,
+           "default_ddr_arena",
+           {"u8", {512}},
+           512,
+           256,
+           PackageAccessMode::ReadWrite,
+           false});
+      manifest.entries.push_back(
+          {EntryId(tile),
+           wafer::PhysicalCardId(0),
+           wafer::PhysicalTileId(tile),
+           LaunchSlotId(tile),
+           ModuleId(0),
+           {{0, ResourceId(0), PackageAccessMode::ReadOnly},
+            {1, ResourceId(1), PackageAccessMode::WriteOnly},
+            {2, workspace, PackageAccessMode::ReadWrite}},
+           PackageEntryCompletionKind::ReturnAfterLocalDrain,
+           NoTransportRequirements{}});
     }
     return manifest;
   }
@@ -331,15 +407,19 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
       << llvm::toString(verified.takeError());
   std::string canonical =
       wafer::runtime::serializeCanonicalPackageJson(*verified);
-  EXPECT_NE(canonical.find("\"schema_version\": 7"), std::string::npos);
+  EXPECT_NE(canonical.find("\"schema_version\": 8"), std::string::npos);
+  EXPECT_NE(canonical.find("\"card_count\": 1"), std::string::npos);
+  EXPECT_NE(canonical.find("\"tile_count\": 16"), std::string::npos);
+  EXPECT_NE(canonical.find("\"completion\": \"return_after_local_drain\""),
+            std::string::npos);
   EXPECT_NE(canonical.find("\"identity\": \"wafer-tx81-single-card\""),
             std::string::npos);
   EXPECT_NE(canonical.find("\"runtime_abi\": \"wafer-tx81-kernel-v3\""),
             std::string::npos);
   EXPECT_NE(canonical.find("\"launch\": {"), std::string::npos);
   EXPECT_NE(canonical.find("\"kind\": \"kernel\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"form\": \"per-rank\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"entry_abi\": \"rank-local-pointer-block\""),
+  EXPECT_NE(canonical.find("\"form\": \"grid\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"entry_abi\": \"tile-major-pointer-table\""),
             std::string::npos);
   EXPECT_NE(canonical.find("\"phases\": ["), std::string::npos);
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> parsed =
@@ -355,32 +435,31 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
             wafer::runtime::serializeCanonicalPackageJson(*verified));
 }
 
-TEST_F(PackageManifestTest, RejectsLegacySchemaAndMissingTargetFacts) {
+TEST_F(PackageManifestTest, RejectsUnsupportedSchemaAndMissingTargetFacts) {
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> verified = verify();
   ASSERT_TRUE(static_cast<bool>(verified))
       << llvm::toString(verified.takeError());
   std::string canonical =
       wafer::runtime::serializeCanonicalPackageJson(*verified);
 
-  std::string legacy = canonical;
-  size_t schema = legacy.find("\"schema_version\": 7");
+  std::string unsupported = canonical;
+  size_t schema = unsupported.find("\"schema_version\": 8");
   ASSERT_NE(schema, std::string::npos);
-  legacy.replace(schema, std::string("\"schema_version\": 7").size(),
-                 "\"schema_version\": 6");
+  unsupported.replace(schema, std::string("\"schema_version\": 8").size(),
+                      "\"schema_version\": 999");
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> rejected =
-      wafer::runtime::parseCanonicalPackageJson(legacy, root);
+      wafer::runtime::parseCanonicalPackageJson(unsupported, root);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("schema_version"),
             std::string::npos);
 
   std::string missingIdentity = canonical;
-  size_t identity = missingIdentity.find(
-      "    \"identity\": \"wafer-tx81-single-card\",\n");
+  size_t identity =
+      missingIdentity.find("    \"identity\": \"wafer-tx81-single-card\",\n");
   ASSERT_NE(identity, std::string::npos);
-  missingIdentity.erase(identity,
-                        std::string("    \"identity\": "
-                                    "\"wafer-tx81-single-card\",\n")
-                            .size());
+  missingIdentity.erase(identity, std::string("    \"identity\": "
+                                              "\"wafer-tx81-single-card\",\n")
+                                      .size());
   rejected = wafer::runtime::parseCanonicalPackageJson(missingIdentity, root);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(
@@ -402,29 +481,6 @@ TEST_F(PackageManifestTest, RejectsLegacySchemaAndMissingTargetFacts) {
   EXPECT_NE(llvm::toString(rejected.takeError()).find("missing field 'launch'"),
             std::string::npos);
 
-  std::string legacyLaunchABI = canonical;
-  legacyLaunchABI.replace(
-      launchBegin, launchEnd - launchBegin,
-      "    \"launch_abi\": \"per-rank-pointer-block-v1\",\n");
-  rejected = wafer::runtime::parseCanonicalPackageJson(legacyLaunchABI, root);
-  ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError()).find("unknown field"),
-            std::string::npos);
-
-  for (llvm::StringRef oldSpelling :
-       {"per-rank-pointer-block-v1", "tx81-kernel-grid-pointer-table-v1",
-        "tx81-cluster-direct-dte-prepare-main-v1", "tx81-model-bootparam"}) {
-    std::string oldKind = canonical;
-    size_t kind = oldKind.find("\"kind\": \"kernel\"");
-    ASSERT_NE(kind, std::string::npos);
-    oldKind.replace(kind, std::string("\"kind\": \"kernel\"").size(),
-                    ("\"kind\": \"" + oldSpelling + "\"").str());
-    rejected = wafer::runtime::parseCanonicalPackageJson(oldKind, root);
-    ASSERT_FALSE(static_cast<bool>(rejected)) << oldSpelling.str();
-    EXPECT_NE(llvm::toString(rejected.takeError()).find("runtime launch kind"),
-              std::string::npos)
-        << oldSpelling.str();
-  }
 }
 
 TEST_F(PackageManifestTest, RejectsMalformedTaggedLaunchContract) {
@@ -447,24 +503,25 @@ TEST_F(PackageManifestTest, RejectsMalformedTaggedLaunchContract) {
               std::string::npos);
   };
 
-  rejectMutation("\"form\": \"per-rank\"", "\"form\": \"diagonal\"",
+  rejectMutation("\"form\": \"grid\"", "\"form\": \"diagonal\"",
                  "kernel launch form");
-  rejectMutation("\"entry_abi\": \"rank-local-pointer-block\"",
+  rejectMutation("\"entry_abi\": \"tile-major-pointer-table\"",
                  "\"entry_abi\": \"raw-addresses\"", "kernel entry ABI");
   rejectMutation("\"phases\": [\n        \"main\"\n      ]",
                  "\"phases\": [\n        \"prepare\",\n        \"main\"\n"
                  "      ]",
                  "incompatible");
-  rejectMutation("      \"form\": \"per-rank\",\n", "", "missing field 'form'");
-  rejectMutation("\"kind\": \"kernel\",\n      \"form\": \"per-rank\",\n"
-                 "      \"entry_abi\": \"rank-local-pointer-block\"",
-                 "\"kind\": \"model\",\n      \"form\": \"per-rank\",\n"
+  rejectMutation("      \"form\": \"grid\",\n", "",
+                 "missing field 'form'");
+  rejectMutation("\"kind\": \"kernel\",\n      \"form\": \"grid\",\n"
+                 "      \"entry_abi\": \"tile-major-pointer-table\"",
+                 "\"kind\": \"model\",\n      \"form\": \"grid\",\n"
                  "      \"entry_abi\": \"tx81-model-bootparam\"",
                  "unknown field");
 }
 
 TEST_F(PackageManifestTest, ModelLaunchRoundtripUsesExactConditionalFields) {
-  createRankModules(16);
+  createTileModules(16);
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> verified =
       wafer::runtime::verifyPackageManifest(makeModelManifest(), root);
   ASSERT_TRUE(static_cast<bool>(verified))
@@ -496,11 +553,11 @@ TEST_F(PackageManifestTest, ModelLaunchRoundtripUsesExactConditionalFields) {
       wafer::runtime::preflightNoCardRuntimeInvocation(*parsed, bindings,
                                                        environment);
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
-  ASSERT_EQ(plan->ranks.size(), 16u);
-  ASSERT_EQ(plan->ranks.front().phases.size(), 1u);
-  EXPECT_EQ(plan->ranks.front().phases.front().role,
+  ASSERT_EQ(plan->tiles.size(), 16u);
+  ASSERT_EQ(plan->tiles.front().phases.size(), 1u);
+  EXPECT_EQ(plan->tiles.front().phases.front().role,
             wafer::RuntimeLaunchPhaseRole::Main);
-  EXPECT_EQ(plan->ranks.front().phases.front().symbol, "main");
+  EXPECT_EQ(plan->tiles.front().phases.front().symbol, "main");
 }
 
 TEST_F(PackageManifestTest, RejectsUnknownFieldsAndNonCanonicalJSON) {
@@ -525,7 +582,7 @@ TEST_F(PackageManifestTest, RejectsUnknownFieldsAndNonCanonicalJSON) {
             std::string::npos);
 
   std::string duplicate = canonical;
-  duplicate.insert(duplicate.find("\n"), "\n  \"schema_version\": 1,");
+  duplicate.insert(duplicate.find("\n"), "\n  \"schema_version\": 8,");
   rejected = wafer::runtime::parseCanonicalPackageJson(duplicate, root);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_FALSE(llvm::toString(rejected.takeError()).empty());
@@ -614,8 +671,7 @@ TEST_F(PackageManifestTest, RejectsSlotResourceAndPayloadMismatches) {
 
 TEST_F(PackageManifestTest, RejectsEmptyKernelGridBeforeRuntimeProvider) {
   using namespace wafer::runtime;
-  createRankModules(16);
-  PackageManifest manifest = makeRankManifest(16, /*permuteIdentities=*/false);
+  PackageManifest manifest = makeTileManifest(16, /*permuteIdentities=*/false);
   manifest.launch = makeGridLaunch();
   manifest.modules.resize(1);
   for (PackageEntrypointRecord &entry : manifest.entries)
@@ -635,13 +691,10 @@ TEST_F(PackageManifestTest, RejectsEmptyKernelGridBeforeRuntimeProvider) {
 TEST_F(PackageManifestTest,
        GridDirectDTEAndClusterNoTransportAreIndependentlyRepresentable) {
   using namespace wafer::runtime;
-  createRankModules(16);
-  ASSERT_NO_FATAL_FAILURE(removeRankModulesAfterZero(16));
-
   PackageManifest gridDirectDTE =
-      makeRankManifest(16, /*permuteIdentities=*/false,
+      makeTileManifest(16, /*permuteIdentities=*/false,
                        /*allDirectDTE=*/true,
-                       /*lastRankDirectDTEOnly=*/false,
+                       /*lastTileDirectDTEOnly=*/false,
                        /*forceClusterLaunch=*/false,
                        /*forceGridLaunch=*/true);
   llvm::Expected<VerifiedPackageManifest> verifiedGrid =
@@ -658,9 +711,9 @@ TEST_F(PackageManifestTest,
       }));
 
   PackageManifest clusterNoTransport =
-      makeRankManifest(16, /*permuteIdentities=*/false,
+      makeTileManifest(16, /*permuteIdentities=*/false,
                        /*allDirectDTE=*/false,
-                       /*lastRankDirectDTEOnly=*/false,
+                       /*lastTileDirectDTEOnly=*/false,
                        /*forceClusterLaunch=*/true);
   llvm::Expected<VerifiedPackageManifest> verifiedCluster =
       verifyPackageManifest(std::move(clusterNoTransport), root);
@@ -675,7 +728,8 @@ TEST_F(PackageManifestTest,
       }));
 }
 
-TEST_F(PackageManifestTest, NoCardPreflightIsExactAndSideEffectFree) {
+TEST_F(PackageManifestTest,
+       WholeCardNoCardPreflightIsExactAndSideEffectFree) {
   using namespace wafer::runtime;
   llvm::Expected<VerifiedPackageManifest> verified = verify();
   ASSERT_TRUE(static_cast<bool>(verified))
@@ -683,133 +737,199 @@ TEST_F(PackageManifestTest, NoCardPreflightIsExactAndSideEffectFree) {
   std::vector<RuntimeInvocationBinding> bindings = {
       {ResourceId(0), 64, 256, PackageAccessMode::ReadOnly, true},
       {ResourceId(1), 64, 256, PackageAccessMode::WriteOnly, true}};
-  RuntimeEnvironment environment{wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI, wafer::kCurrentTargetModuleFormat,
-                                 1024};
-  environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::PerRank};
+  RuntimeEnvironment environment{wafer::kCurrentTargetIdentity,
+                                 wafer::kCurrentKernelRuntimeABI,
+                                 wafer::kCurrentTargetModuleFormat, 1024};
+  environment.supportedKernelLaunchForms = {
+      wafer::KernelLaunchForm::Grid};
   environment.supportedKernelEntryABIs = {
-      wafer::KernelEntryABI::RankLocalPointerBlock};
-  llvm::Expected<RuntimeSessionPlan> first = preflightNoCardRuntimeSession(
-      *verified, EntryId(0), bindings, environment);
-  ASSERT_TRUE(static_cast<bool>(first)) << llvm::toString(first.takeError());
-  llvm::Expected<RuntimeSessionPlan> second = preflightNoCardRuntimeSession(
-      *verified, EntryId(0), bindings, environment);
-  ASSERT_TRUE(static_cast<bool>(second)) << llvm::toString(second.takeError());
-  EXPECT_EQ(first->launchOrder, second->launchOrder);
-  EXPECT_FALSE(first->executesBoard);
-  ASSERT_EQ(first->resources.size(), 3u);
-  EXPECT_FALSE(first->resources.back().externallyBound);
-
+      wafer::KernelEntryABI::TileMajorPointerTable};
   llvm::Expected<RuntimeInvocationPlan> invocation =
       preflightNoCardRuntimeInvocation(*verified, bindings, environment);
   ASSERT_TRUE(static_cast<bool>(invocation))
       << llvm::toString(invocation.takeError());
-  EXPECT_EQ(invocation->rankCount, 1);
-  ASSERT_EQ(invocation->ranks.size(), 1u);
-  EXPECT_EQ(invocation->ranks.front().logicalRank, 0);
-  EXPECT_EQ(invocation->ranks.front().launchOrder, first->launchOrder);
-  ASSERT_EQ(first->phases.size(), 1u);
-  EXPECT_EQ(first->phases.front().role, wafer::RuntimeLaunchPhaseRole::Main);
-  EXPECT_EQ(first->phases.front().symbol, "main");
+  llvm::Expected<RuntimeInvocationPlan> repeated =
+      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
+  ASSERT_TRUE(static_cast<bool>(repeated))
+      << llvm::toString(repeated.takeError());
+  EXPECT_EQ(invocation->cardCount, 1);
+  EXPECT_EQ(invocation->tileCount, 16);
+  ASSERT_EQ(invocation->tiles.size(), 16u);
+  ASSERT_EQ(repeated->tiles.size(), 16u);
+  EXPECT_EQ(invocation->tiles.front().cardId, wafer::PhysicalCardId(0));
+  EXPECT_EQ(invocation->tiles.front().tileId, wafer::PhysicalTileId(1));
+  EXPECT_EQ(invocation->tiles.front().launchSlot, LaunchSlotId(0));
+  EXPECT_EQ(invocation->tiles.front().launchOrder,
+            repeated->tiles.front().launchOrder);
+  ASSERT_EQ(invocation->tiles.front().resources.size(), 3u);
+  EXPECT_FALSE(
+      invocation->tiles.front().resources.back().externallyBound);
+  ASSERT_EQ(invocation->tiles.front().phases.size(), 1u);
+  EXPECT_EQ(invocation->tiles.front().phases.front().role,
+            wafer::RuntimeLaunchPhaseRole::Main);
+  EXPECT_EQ(invocation->tiles.front().phases.front().symbol, "main");
 
   environment.moduleFormat = "elf-other";
-  llvm::Expected<RuntimeSessionPlan> incompatible =
-      preflightNoCardRuntimeSession(*verified, EntryId(0), bindings,
-                                    environment);
+  llvm::Expected<RuntimeInvocationPlan> incompatible =
+      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(incompatible));
   EXPECT_NE(llvm::toString(incompatible.takeError()).find("incompatible"),
             std::string::npos);
-  llvm::Expected<RuntimeInvocationPlan> incompatibleInvocation =
-      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
-  ASSERT_FALSE(static_cast<bool>(incompatibleInvocation));
-  EXPECT_NE(
-      llvm::toString(incompatibleInvocation.takeError()).find("incompatible"),
-      std::string::npos);
   environment.moduleFormat = wafer::kCurrentTargetModuleFormat.str();
 
-  environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::Grid};
-  incompatible = preflightNoCardRuntimeSession(*verified, EntryId(0), bindings,
-                                               environment);
+  environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::Cluster};
+  incompatible =
+      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(incompatible));
   EXPECT_NE(llvm::toString(incompatible.takeError()).find("does not support"),
             std::string::npos);
-  environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::PerRank};
+  environment.supportedKernelLaunchForms = {
+      wafer::KernelLaunchForm::Grid};
   environment.supportedKernelEntryABIs.clear();
-  incompatible = preflightNoCardRuntimeSession(*verified, EntryId(0), bindings,
-                                               environment);
+  incompatible =
+      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(incompatible));
   EXPECT_NE(llvm::toString(incompatible.takeError()).find("does not support"),
             std::string::npos);
   environment.supportedKernelEntryABIs = {
-      wafer::KernelEntryABI::RankLocalPointerBlock};
+      wafer::KernelEntryABI::TileMajorPointerTable};
 
   bindings.pop_back();
-  llvm::Expected<RuntimeSessionPlan> rejected = preflightNoCardRuntimeSession(
-      *verified, EntryId(0), bindings, environment);
+  llvm::Expected<RuntimeInvocationPlan> rejected =
+      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError()).find("does not satisfy"),
+  EXPECT_NE(llvm::toString(rejected.takeError()).find("missing"),
             std::string::npos);
 
   bindings.push_back(
       {ResourceId(1), 64, 256, PackageAccessMode::WriteOnly, true});
+  bindings.front().bytes = 32;
+  rejected =
+      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
+  ASSERT_FALSE(static_cast<bool>(rejected));
+  EXPECT_NE(llvm::toString(rejected.takeError()).find("does not satisfy"),
+            std::string::npos);
+
+  bindings.front().bytes = 64;
   environment.maxResourceBytes = 32;
-  rejected = preflightNoCardRuntimeSession(*verified, EntryId(0), bindings,
-                                           environment);
+  rejected =
+      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("capacity"),
             std::string::npos);
 }
 
 TEST_F(PackageManifestTest,
-       AllRankPreflightUsesCanonicalLogicalRankOrderAndExactDomain) {
+       CardSharedProgramResourcesFeedEveryTileLaunchWithoutDuplication) {
   using namespace wafer::runtime;
-  createRankModules(16);
-  PackageManifest manifest = makeRankManifest(16, /*permuteIdentities=*/true);
+  llvm::Expected<VerifiedPackageManifest> verified =
+      verifyPackageManifest(makeCardSharedTile16Manifest(), root);
+  ASSERT_TRUE(static_cast<bool>(verified))
+      << llvm::toString(verified.takeError());
+  const PackageManifest &manifest = verified->getManifest();
+  ASSERT_EQ(manifest.resources.size(), 18u);
+  for (const PackageEntrypointRecord &entry : manifest.entries) {
+    ASSERT_EQ(entry.slots.size(), 3u);
+    EXPECT_EQ(entry.slots[0].resource, ResourceId(0));
+    EXPECT_EQ(entry.slots[1].resource, ResourceId(1));
+    EXPECT_EQ(entry.slots[2].resource,
+              ResourceId(static_cast<uint64_t>(entry.tileId.getValue()) + 2));
+  }
+
+  RuntimeEnvironment environment{wafer::kCurrentTargetIdentity,
+                                 wafer::kCurrentKernelRuntimeABI,
+                                 wafer::kCurrentTargetModuleFormat, 1024};
+  environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::Grid};
+  environment.supportedKernelEntryABIs = {
+      wafer::KernelEntryABI::TileMajorPointerTable};
+  std::vector<RuntimeInvocationBinding> bindings = {
+      {ResourceId(0), 64, 256, PackageAccessMode::ReadOnly, true},
+      {ResourceId(1), 64, 256, PackageAccessMode::WriteOnly, true}};
+  llvm::Expected<RuntimeInvocationPlan> plan =
+      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
+  ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
+  ASSERT_EQ(plan->tiles.size(), 16u);
+  for (auto [tile, session] : llvm::enumerate(plan->tiles)) {
+    ASSERT_EQ(session.launchOrder.size(), 3u);
+    EXPECT_EQ(session.launchOrder[0], ResourceId(0));
+    EXPECT_EQ(session.launchOrder[1], ResourceId(1));
+    EXPECT_EQ(session.launchOrder[2], ResourceId(tile + 2));
+  }
+}
+
+TEST_F(PackageManifestTest, RejectsSharingTileLocalWorkspaceAcrossEntries) {
+  using namespace wafer::runtime;
+  PackageManifest manifest = makeCardSharedTile16Manifest();
+  for (PackageEntrypointRecord &entry : manifest.entries)
+    entry.slots[2].resource = ResourceId(2);
+  llvm::Expected<VerifiedPackageManifest> rejected =
+      verifyPackageManifest(std::move(manifest), root);
+  ASSERT_FALSE(static_cast<bool>(rejected));
+  EXPECT_NE(
+      llvm::toString(rejected.takeError()).find("typed physical scope"),
+      std::string::npos);
+}
+
+TEST_F(PackageManifestTest,
+       AllTilePreflightUsesCanonicalLaunchSlotOrderAndExactDomain) {
+  using namespace wafer::runtime;
+  PackageManifest manifest = makeTileManifest(16, /*permuteIdentities=*/true);
   llvm::Expected<VerifiedPackageManifest> verified =
       verifyPackageManifest(std::move(manifest), root);
   ASSERT_TRUE(static_cast<bool>(verified))
       << llvm::toString(verified.takeError());
-  ASSERT_NE(verified->getManifest().entries.front().logicalRank, 0);
+  ASSERT_NE(verified->getManifest().entries.front().launchSlot,
+            LaunchSlotId(0));
 
   std::vector<RuntimeInvocationBinding> bindings =
       makeHostBindings(verified->getManifest());
-  RuntimeEnvironment environment{wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI, wafer::kCurrentTargetModuleFormat,
-                                 1024};
-  environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::PerRank};
+  RuntimeEnvironment environment{wafer::kCurrentTargetIdentity,
+                                 wafer::kCurrentKernelRuntimeABI,
+                                 wafer::kCurrentTargetModuleFormat, 1024};
+  environment.supportedKernelLaunchForms = {
+      wafer::KernelLaunchForm::Grid};
   environment.supportedKernelEntryABIs = {
-      wafer::KernelEntryABI::RankLocalPointerBlock};
+      wafer::KernelEntryABI::TileMajorPointerTable};
   llvm::Expected<RuntimeInvocationPlan> plan =
       preflightNoCardRuntimeInvocation(*verified, bindings, environment);
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
-  EXPECT_EQ(plan->rankCount, 16);
-  ASSERT_EQ(plan->ranks.size(), 16u);
-  EXPECT_NE(plan->ranks.front().entry, EntryId(0));
-  EXPECT_NE(plan->ranks.front().module, ModuleId(0));
-  for (int64_t rank = 0; rank < 16; ++rank) {
-    const RuntimeSessionPlan &session = plan->ranks[rank];
-    EXPECT_EQ(session.logicalRank, rank);
+  EXPECT_EQ(plan->cardCount, 1);
+  EXPECT_EQ(plan->tileCount, 16);
+  ASSERT_EQ(plan->tiles.size(), 16u);
+  EXPECT_NE(plan->tiles.front().entry, EntryId(0));
+  EXPECT_EQ(plan->tiles.front().module, ModuleId(0));
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    const RuntimeSessionPlan &session = plan->tiles[tile];
+    EXPECT_EQ(session.cardId, wafer::PhysicalCardId(0));
+    EXPECT_EQ(session.tileId, wafer::PhysicalTileId(tile));
+    EXPECT_EQ(session.launchSlot, LaunchSlotId(tile));
     ASSERT_EQ(session.resources.size(), 3u);
     ASSERT_EQ(session.launchOrder.size(), 3u);
-    std::string rankText = std::to_string(rank);
-    EXPECT_EQ(session.modulePath, "modules/rank_" +
-                                      std::string(5 - rankText.size(), '0') +
-                                      rankText + ".so");
+    EXPECT_EQ(session.modulePath, "modules/tile_00000.so");
   }
 
-  auto findRankResource = [&](int64_t rank, PackageResourceRole role) {
+  auto findResource = [&](PackageResourceRole role) {
     auto iterator = llvm::find_if(
         verified->getManifest().resources, [&](const auto &resource) {
-          return resource.logicalRank == rank && resource.role == role;
+          return std::holds_alternative<CardResourceScope>(resource.scope) &&
+                 resource.role == role;
         });
     EXPECT_NE(iterator, verified->getManifest().resources.end());
     return iterator->id;
   };
-  ResourceId rank15Input = findRankResource(15, PackageResourceRole::UserInput);
-  ResourceId rank15Workspace =
-      findRankResource(15, PackageResourceRole::Workspace);
+  ResourceId sharedInput = findResource(PackageResourceRole::UserInput);
+  auto workspace = llvm::find_if(
+      verified->getManifest().resources, [&](const auto &resource) {
+        const auto *scope = std::get_if<TileResourceScope>(&resource.scope);
+        return scope && scope->tileId == wafer::PhysicalTileId(15) &&
+               resource.role == PackageResourceRole::Workspace;
+      });
+  ASSERT_NE(workspace, verified->getManifest().resources.end());
+  ResourceId tile15Workspace = workspace->id;
 
   std::vector<RuntimeInvocationBinding> missing = bindings;
   missing.erase(llvm::find_if(missing, [&](const auto &binding) {
-    return binding.resource == rank15Input;
+    return binding.resource == sharedInput;
   }));
   llvm::Expected<RuntimeInvocationPlan> rejected =
       preflightNoCardRuntimeInvocation(*verified, missing, environment);
@@ -819,7 +939,7 @@ TEST_F(PackageManifestTest,
 
   std::vector<RuntimeInvocationBinding> extra = bindings;
   extra.push_back(
-      {rank15Workspace, 512, 256, PackageAccessMode::ReadWrite, true});
+      {tile15Workspace, 512, 256, PackageAccessMode::ReadWrite, true});
   rejected = preflightNoCardRuntimeInvocation(*verified, extra, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("extra"),
@@ -827,7 +947,7 @@ TEST_F(PackageManifestTest,
 
   std::vector<RuntimeInvocationBinding> duplicate = bindings;
   duplicate.push_back(*llvm::find_if(duplicate, [&](const auto &binding) {
-    return binding.resource == rank15Input;
+    return binding.resource == sharedInput;
   }));
   rejected =
       preflightNoCardRuntimeInvocation(*verified, duplicate, environment);
@@ -837,40 +957,77 @@ TEST_F(PackageManifestTest,
 }
 
 TEST_F(PackageManifestTest,
-       AllRankPreflightRejectsMixedTransportAndMissingCapabilities) {
+       PreflightPreservesNonIdentityPhysicalTileLaunchBinding) {
   using namespace wafer::runtime;
-  createRankModules(16);
-  RuntimeEnvironment environment{wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI, wafer::kCurrentTargetModuleFormat,
-                                 1024};
-  environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::PerRank,
+  PackageManifest manifest = makeTileManifest(16, /*permuteIdentities=*/false);
+  auto swapTile = [](wafer::PhysicalTileId tileId) {
+    if (tileId == wafer::PhysicalTileId(0))
+      return wafer::PhysicalTileId(1);
+    if (tileId == wafer::PhysicalTileId(1))
+      return wafer::PhysicalTileId(0);
+    return tileId;
+  };
+  for (PackageEntrypointRecord &entry : manifest.entries)
+    entry.tileId = swapTile(entry.tileId);
+  for (PackageResourceRecord &resource : manifest.resources)
+    if (auto *scope = std::get_if<TileResourceScope>(&resource.scope))
+      scope->tileId = swapTile(scope->tileId);
+
+  llvm::Expected<VerifiedPackageManifest> verified =
+      verifyPackageManifest(std::move(manifest), root);
+  ASSERT_TRUE(static_cast<bool>(verified))
+      << llvm::toString(verified.takeError());
+  RuntimeEnvironment environment{wafer::kCurrentTargetIdentity,
+                                 wafer::kCurrentKernelRuntimeABI,
+                                 wafer::kCurrentTargetModuleFormat, 1024};
+  environment.supportedKernelLaunchForms = {
+      wafer::KernelLaunchForm::Grid};
+  environment.supportedKernelEntryABIs = {
+      wafer::KernelEntryABI::TileMajorPointerTable};
+  llvm::Expected<RuntimeInvocationPlan> plan = preflightNoCardRuntimeInvocation(
+      *verified, makeHostBindings(verified->getManifest()), environment);
+  ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
+  ASSERT_EQ(plan->tiles.size(), 16u);
+  EXPECT_EQ(plan->tiles[0].launchSlot, LaunchSlotId(0));
+  EXPECT_EQ(plan->tiles[0].tileId, wafer::PhysicalTileId(1));
+  EXPECT_EQ(plan->tiles[1].launchSlot, LaunchSlotId(1));
+  EXPECT_EQ(plan->tiles[1].tileId, wafer::PhysicalTileId(0));
+}
+
+TEST_F(PackageManifestTest,
+       AllTilePreflightRejectsMixedTransportAndMissingCapabilities) {
+  using namespace wafer::runtime;
+  RuntimeEnvironment environment{wafer::kCurrentTargetIdentity,
+                                 wafer::kCurrentKernelRuntimeABI,
+                                 wafer::kCurrentTargetModuleFormat, 1024};
+  environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::Grid,
                                             wafer::KernelLaunchForm::Cluster};
   environment.supportedKernelEntryABIs = {
-      wafer::KernelEntryABI::RankLocalPointerBlock,
-      wafer::KernelEntryABI::RankMajorPointerTable};
+      wafer::KernelEntryABI::TileMajorPointerTable};
 
-  PackageManifest mixed = makeRankManifest(16, /*permuteIdentities=*/true,
+  PackageManifest mixed = makeTileManifest(16, /*permuteIdentities=*/true,
                                            /*allDirectDTE=*/false,
-                                           /*lastRankDirectDTEOnly=*/true);
+                                           /*lastTileDirectDTEOnly=*/true);
   llvm::Expected<VerifiedPackageManifest> verifiedMixed =
       verifyPackageManifest(std::move(mixed), root);
   ASSERT_FALSE(static_cast<bool>(verifiedMixed));
   EXPECT_NE(llvm::toString(verifiedMixed.takeError()).find("transport"),
             std::string::npos);
 
-  PackageManifest legacy = makeRankManifest(16, /*permuteIdentities=*/true,
-                                            /*allDirectDTE=*/true);
-  for (PackageEntrypointRecord &entry : legacy.entries)
+  PackageManifest unsupportedStatus =
+      makeTileManifest(16, /*permuteIdentities=*/true,
+                       /*allDirectDTE=*/true);
+  for (PackageEntrypointRecord &entry : unsupportedStatus.entries)
     std::get<DirectDTETransportRequirements>(entry.transport).statusABI =
         "unsupported-status-abi";
-  llvm::Expected<VerifiedPackageManifest> verifiedLegacy =
-      verifyPackageManifest(std::move(legacy), root);
-  ASSERT_FALSE(static_cast<bool>(verifiedLegacy));
-  EXPECT_NE(llvm::toString(verifiedLegacy.takeError()).find("Direct DTE"),
+  llvm::Expected<VerifiedPackageManifest> verifiedUnsupportedStatus =
+      verifyPackageManifest(std::move(unsupportedStatus), root);
+  ASSERT_FALSE(static_cast<bool>(verifiedUnsupportedStatus));
+  EXPECT_NE(llvm::toString(verifiedUnsupportedStatus.takeError())
+                .find("Direct DTE"),
             std::string::npos);
 
-  ASSERT_NO_FATAL_FAILURE(removeRankModulesAfterZero(16));
-
-  PackageManifest direct = makeRankManifest(16, /*permuteIdentities=*/true,
+  PackageManifest direct = makeTileManifest(16, /*permuteIdentities=*/true,
                                             /*allDirectDTE=*/true);
   llvm::Expected<VerifiedPackageManifest> verifiedDirect =
       verifyPackageManifest(std::move(direct), root);
@@ -896,44 +1053,35 @@ TEST_F(PackageManifestTest,
   llvm::Expected<RuntimeInvocationPlan> plan =
       preflightNoCardRuntimeInvocation(*verifiedDirect, bindings, environment);
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
-  EXPECT_EQ(plan->rankCount, 16);
-  ASSERT_EQ(plan->ranks.size(), 16u);
-  ASSERT_EQ(plan->ranks.front().phases.size(), 2u);
-  EXPECT_EQ(plan->ranks.front().phases[0].role,
+  EXPECT_EQ(plan->tileCount, 16);
+  ASSERT_EQ(plan->tiles.size(), 16u);
+  ASSERT_EQ(plan->tiles.front().phases.size(), 2u);
+  EXPECT_EQ(plan->tiles.front().phases[0].role,
             wafer::RuntimeLaunchPhaseRole::Prepare);
-  EXPECT_EQ(plan->ranks.front().phases[0].symbol, "prepare");
-  EXPECT_EQ(plan->ranks.front().phases[1].role,
+  EXPECT_EQ(plan->tiles.front().phases[0].symbol, "prepare");
+  EXPECT_EQ(plan->tiles.front().phases[1].role,
             wafer::RuntimeLaunchPhaseRole::Main);
-  EXPECT_EQ(plan->ranks.front().phases[1].symbol, "main");
+  EXPECT_EQ(plan->tiles.front().phases[1].symbol, "main");
   EXPECT_TRUE(std::holds_alternative<DirectDTETransportRequirements>(
-      plan->ranks.back().transport));
+      plan->tiles.back().transport));
 }
 
 TEST_F(PackageManifestTest,
        DirectDTETransportDoesNotSelectTheRuntimeLaunchContract) {
   using namespace wafer::runtime;
-  PackageManifest manifest = makeManifest();
-  manifest.resources.push_back({ResourceId(3),
-                                0,
-                                PackageResourceRole::TransportStatus,
-                                0,
-                                "direct_dte_status",
-                                {"u32", {1}},
-                                kDirectDTEStatusStorageBytes,
-                                kDirectDTEStatusStorageAlignment,
-                                PackageAccessMode::ReadWrite,
-                                false});
-  manifest.entries.front().slots.push_back(
-      {3, ResourceId(3), PackageAccessMode::ReadWrite});
-  manifest.entries.front().transport = DirectDTETransportRequirements{
-      ResourceId(3), kDirectDTEStatusABI.str(), true};
+  PackageManifest manifest =
+      makeTileManifest(16, /*permuteIdentities=*/false,
+                       /*allDirectDTE=*/true,
+                       /*lastTileDirectDTEOnly=*/false,
+                       /*forceClusterLaunch=*/false,
+                       /*forceGridLaunch=*/true);
   llvm::Expected<VerifiedPackageManifest> verified =
       verifyPackageManifest(std::move(manifest), root);
   ASSERT_TRUE(static_cast<bool>(verified))
       << llvm::toString(verified.takeError());
   const auto *kernel = verified->getManifest().launch.getKernel();
   ASSERT_NE(kernel, nullptr);
-  EXPECT_EQ(kernel->form, wafer::KernelLaunchForm::PerRank);
+  EXPECT_EQ(kernel->form, wafer::KernelLaunchForm::Grid);
   EXPECT_TRUE(std::holds_alternative<DirectDTETransportRequirements>(
       verified->getManifest().entries.front().transport));
 }

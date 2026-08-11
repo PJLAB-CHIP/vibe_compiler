@@ -17,9 +17,9 @@ def Wafer_CardProgramOp : Wafer_Op<"card.program", [
     available `wafer.tile.program` operations for that card.
 
     This operation is a module-like container. Card-owned symbols represent
-    shared DDR resources; downstream projection forms the per-Tile function
-    boundaries. The operation does not carry search state, a shadow schedule,
-    routes, scores, or target launch slots.
+    shared DDR resources; downstream projection forms standalone per-Tile
+    module boundaries. The operation does not carry search state, a shadow
+    schedule, routes, scores, or target launch slots.
   }];
 
   let arguments = (ins I64Attr:$card_id);
@@ -35,14 +35,17 @@ def Wafer_TileProgramOp : Wafer_Op<"tile.program", [
     HasParent<"CardProgramOp">,
     IsolatedFromAbove,
     NoRegionArguments,
-    RecursiveMemoryEffects
+    RecursiveMemoryEffects,
+    SymbolTable
   ] # GraphRegionNoTerminator.traits> {
   let summary = "one physical Tile program in a whole-card MPMD program";
   let description = [{
     `wafer.tile.program` owns the selected execution for one physical Tile.
     `tile_id` is row-major within the parent card's Tile grid. Different Tile
-    programs may contain different loops, operation sets, temporal tile shapes,
-    and execution lengths.
+    programs may contain different executable symbols, loops, operation sets,
+    temporal tile shapes, and execution lengths. Each Tile program is its own
+    symbol table so the same entry symbol can have a distinct implementation
+    on every physical Tile.
 
     The isolated graph region makes Tile-local SSA ownership explicit: SSA
     values, including SPM roots and aliases, cannot cross a Tile-program

@@ -10,7 +10,9 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -25,7 +27,6 @@
 namespace {
 
 using wafer::analysis::InstructionProgramCost;
-using wafer::analysis::NoCCollectiveKind;
 using wafer::analysis::NoCDirection;
 using wafer::analysis::ScheduleCostKnowledge;
 using wafer::analysis::ScheduleCostReason;
@@ -46,25 +47,41 @@ protected:
         source, mlir::ParserConfig(context.get()));
   }
 
+  mlir::OwningOpRef<mlir::ModuleOp>
+  parseWithoutVerification(llvm::StringRef source) {
+    return mlir::parseSourceString<mlir::ModuleOp>(
+        source, mlir::ParserConfig(context.get(), /*verifyAfterParse=*/false));
+  }
+
   InstructionProgramCost analyze(mlir::ModuleOp module) {
     return wafer::analysis::analyzeInstructionProgramCost(
         module, wafer::analysis::getTargetScheduleCostPolicy());
   }
 
-  mlir::OwningOpRef<mlir::ModuleOp> makeDTERankModule(
-      int64_t rankCount, int64_t tileColumns, llvm::StringRef functionArguments,
-      llvm::StringRef instructionBody, bool includeTopology = true) {
+  wafer::analysis::WholeCardInstructionProgramCost
+  analyzeWholeCard(llvm::ArrayRef<mlir::Operation *> roots,
+                   const wafer::analysis::TargetScheduleCostPolicy &policy) {
+    llvm::SmallVector<wafer::analysis::PhysicalTileInstructionProgram, 16>
+        programs;
+    programs.reserve(roots.size());
+    for (auto [tile, root] : llvm::enumerate(roots))
+      programs.push_back(
+          {wafer::PhysicalTileId(static_cast<int64_t>(tile)), root});
+    return wafer::analysis::analyzeWholeCardInstructionProgramCost(programs,
+                                                                   policy);
+  }
+
+  mlir::OwningOpRef<mlir::ModuleOp>
+  makeDTETileModule(llvm::StringRef functionArguments,
+                    llvm::StringRef instructionBody,
+                    bool includeTopology = true) {
     std::string source;
     llvm::raw_string_ostream os(source);
     os << "module {\n";
     if (includeTopology) {
       os << "  wafer.target.topology @topology {card_grid = array<i64: 1, 1>, "
-            "card_interconnect = \"mesh\", tile_grid = array<i64: 1, "
-         << tileColumns << ">, unavailable_tiles = array<i64>}\n"
-         << "  wafer.execution.mesh @mesh {topology = @topology, axes = "
-            "[\"rank\"], shape = array<i64: "
-         << rankCount
-         << ">, policy = \"all_available\", endpoints = array<i64>}\n";
+            "card_interconnect = \"mesh\", tile_grid = array<i64: 4, 4>, "
+            "unavailable_tiles = array<i64>}\n";
     }
     os << "  func.func @main(" << functionArguments << ") {\n"
        << "    %buffer = memref.alloc() "
@@ -74,7 +91,8 @@ protected:
        << "    return\n"
        << "  }\n"
        << "}\n";
-    return parse(os.str());
+    return includeTopology ? parse(os.str())
+                           : parseWithoutVerification(os.str());
   }
 
   mlir::DialectRegistry registry;
@@ -89,17 +107,100 @@ TEST_F(ScheduleCostAnalysisTest, ExposesOnlyEstablishedTargetRates) {
   EXPECT_EQ(policy.f16Bf16NPULogicalOpsPerSecondPerTile, 8'000'000'000'000ULL);
   EXPECT_EQ(policy.f16Bf16VectorLogicalOpsPerSecondPerTile, 64'000'000'000ULL);
   EXPECT_EQ(policy.f32VectorLogicalOpsPerSecondPerTile, 32'000'000'000ULL);
-  EXPECT_FALSE(policy.cardDDRSustainedBytesPerSecondLowerBound);
-  EXPECT_FALSE(policy.directionalNoCSustainedBytesPerSecondLowerBound);
-  EXPECT_FALSE(policy.dteEndpointBytesPerSecondLowerBound);
-  EXPECT_FALSE(policy.dteMessageStartupPicosecondsUpperBound);
-  EXPECT_FALSE(policy.noCHopPicosecondsUpperBound);
-  EXPECT_FALSE(policy.noCRouteDilationUpperBound);
-  EXPECT_FALSE(policy.instructionFixedPicosecondsUpperBound);
-  EXPECT_FALSE(policy.dteWaitedEventPicosecondsUpperBound);
-  EXPECT_FALSE(policy.nccParticipantWaitPicosecondsUpperBound);
   EXPECT_EQ(policy.spmAddressBase, 65536u);
   EXPECT_EQ(policy.spmAddressLimit, 3080192u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       OperationSlicesRetainControlMultiplicityAndConserveRawWork) {
+  auto module = parse(R"mlir(
+module {
+  wafer.target.topology @topology
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  func.func @main(
+      %input: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    %source = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %i = %c0 to %c3 step %c1 {
+      wafer.instr.rdma %input to %source
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>}
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+         to memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.elementwise #wafer.instr_elementwise_kind<add>
+          %source, %source into %dest
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  llvm::SmallVector<mlir::Operation *, 2> movementOperations;
+  llvm::SmallVector<mlir::Operation *, 2> computeOperations;
+  module->walk([&](mlir::Operation *operation) {
+    if (auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(operation)) {
+      if (allocation.getType().getShape() == llvm::ArrayRef<int64_t>{4}) {
+        if (movementOperations.empty())
+          movementOperations.push_back(operation);
+        else
+          computeOperations.push_back(operation);
+      }
+    } else if (mlir::isa<wafer::InstrRDMAOp>(operation)) {
+      movementOperations.push_back(operation);
+    } else if (mlir::isa<wafer::InstrElementwiseOp>(operation)) {
+      computeOperations.push_back(operation);
+    }
+  });
+  ASSERT_EQ(movementOperations.size(), 2u);
+  ASSERT_EQ(computeOperations.size(), 2u);
+
+  llvm::SmallVector<wafer::analysis::PhysicalTileInstructionProgram, 16>
+      programs;
+  llvm::SmallVector<wafer::analysis::PhysicalTileInstructionProgramSlice, 16>
+      movementSlices;
+  llvm::SmallVector<wafer::analysis::PhysicalTileInstructionProgramSlice, 16>
+      computeSlices;
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    programs.push_back({wafer::PhysicalTileId(tile), module->getOperation()});
+    movementSlices.push_back({wafer::PhysicalTileId(tile),
+                              module->getOperation(), movementOperations});
+    computeSlices.push_back({wafer::PhysicalTileId(tile),
+                             module->getOperation(), computeOperations});
+  }
+  const auto policy = wafer::analysis::getTargetScheduleCostPolicy();
+  auto whole =
+      wafer::analysis::analyzeWholeCardInstructionProgramCost(programs, policy);
+  auto movement = wafer::analysis::analyzeWholeCardInstructionProgramCostSlice(
+      movementSlices, policy);
+  auto compute = wafer::analysis::analyzeWholeCardInstructionProgramCostSlice(
+      computeSlices, policy);
+
+  ASSERT_TRUE(movement.aggregateDDRReadBytes.isKnown());
+  EXPECT_EQ(movement.aggregateDDRReadBytes.value, 16u * 3u * 8u);
+  EXPECT_EQ(compute.aggregateDDRReadBytes.value, 0u);
+  ASSERT_TRUE(compute.aggregateCompute.vectorF16Bf16LogicalOps.isKnown());
+  EXPECT_EQ(compute.aggregateCompute.vectorF16Bf16LogicalOps.value,
+            16u * 3u * 4u);
+  EXPECT_EQ(movement.aggregateInstructionCount.value +
+                compute.aggregateInstructionCount.value,
+            whole.aggregateInstructionCount.value);
+  EXPECT_EQ(movement.aggregateCompilerOwnedSPMBufferCount.value +
+                compute.aggregateCompilerOwnedSPMBufferCount.value,
+            whole.aggregateCompilerOwnedSPMBufferCount.value);
+  EXPECT_EQ(std::max(movement.maximumTileSPMHighWaterBytes.value,
+                     compute.maximumTileSPMHighWaterBytes.value),
+            whole.maximumTileSPMHighWaterBytes.value);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
@@ -182,8 +283,6 @@ module {
   EXPECT_EQ(cost.nonTerminalNCCParticipantWaitCount.value, 6u);
   ASSERT_TRUE(cost.intrinsicNCCDrainCount.isKnown());
   EXPECT_EQ(cost.intrinsicNCCDrainCount.value, 0u);
-  ASSERT_TRUE(cost.qualifiedOverlapWindowCount.isKnown());
-  EXPECT_EQ(cost.qualifiedOverlapWindowCount.value, 0u);
   ASSERT_TRUE(cost.spmHighWaterBytes.isKnown());
   EXPECT_EQ(cost.spmHighWaterBytes.value, 264u);
   EXPECT_EQ(cost.compilerOwnedSPMBufferCount.value, 2u);
@@ -502,316 +601,11 @@ module {
   EXPECT_EQ(cost.spmHighWaterBytes.value, 264u);
 }
 
-TEST_F(ScheduleCostAnalysisTest,
-       RecognizesQualifiedF16RotatingRDMACTWDMAWindow) {
+TEST_F(ScheduleCostAnalysisTest, RejectsRotatingSCFSlotWithAnUnresolvedOrigin) {
   auto module = parse(R"mlir(
 module {
   func.func @main(
-      %lhs: memref<4xf16, #wafer.memory<ddr, tensor>>,
-      %rhs: memref<4xf16, #wafer.memory<ddr, tensor>>,
-      %output: memref<4xf16, #wafer.memory<ddr, tensor>>) {
-    %lhs0 = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %lhs1 = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %rhs0 = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66048>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %rhs1 = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66304>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %out0 = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66560>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %out1 = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66816>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %c8 = arith.constant 8 : index
-    %result:6 = scf.for %index = %c0 to %c8 step %c1
-        iter_args(%lhs_current = %lhs0, %lhs_next = %lhs1,
-                  %rhs_current = %rhs0, %rhs_next = %rhs1,
-                  %out_current = %out0, %out_next = %out1)
-        -> (memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>) {
-      wafer.instr.rdma %lhs to %lhs_current
-          {byte_count = 8 : i64, inner_bytes = 8 : i64,
-           src_strides = array<i64: 0, 0, 0>,
-           src_iterations = array<i64: 1, 1, 1>}
-          : memref<4xf16, #wafer.memory<ddr, tensor>>
-         to memref<4xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.rdma %rhs to %rhs_current
-          {byte_count = 8 : i64, inner_bytes = 8 : i64,
-           src_strides = array<i64: 0, 0, 0>,
-           src_iterations = array<i64: 1, 1, 1>}
-          : memref<4xf16, #wafer.memory<ddr, tensor>>
-         to memref<4xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.elementwise <add> %lhs_next, %rhs_next into %out_next
-          : memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>
-         into memref<4xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.wdma %out_current to %output
-          {byte_count = 8 : i64, inner_bytes = 8 : i64,
-           dst_strides = array<i64: 0, 0, 0>,
-           dst_iterations = array<i64: 1, 1, 1>}
-          : memref<4xf16, #wafer.memory<spm, tensor>>
-         to memref<4xf16, #wafer.memory<ddr, tensor>>
-      scf.yield %lhs_next, %lhs_current, %rhs_next, %rhs_current,
-                %out_next, %out_current
-          : memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>
-    }
-    return
-  }
-}
-)mlir");
-  ASSERT_TRUE(module);
-
-  InstructionProgramCost cost = analyze(*module);
-  ASSERT_TRUE(cost.qualifiedOverlapWindowCount.isKnown());
-  EXPECT_EQ(cost.qualifiedOverlapWindowCount.value, 1u);
-  ASSERT_TRUE(cost.directDTEComputeOverlapWindowCount.isKnown());
-  EXPECT_EQ(cost.directDTEComputeOverlapWindowCount.value, 0u);
-}
-
-TEST_F(ScheduleCostAnalysisTest,
-       DirectDTEComputeWitnessRequiresIssueBeforeMatchingWait) {
-  auto module = parse(R"mlir(
-module {
-  func.func @main() {
-    %send0 = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %send1 = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %compute0 = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66048>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %compute1 = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66304>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %c5 = arith.constant 5 : index
-    %steady_upper = arith.subi %c5, %c1 : index
-    %result:4 = scf.for %index = %c0 to %steady_upper step %c1
-        iter_args(%send_current = %send0, %send_next = %send1,
-                  %compute_current = %compute0, %compute_next = %compute1)
-        -> (memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>) {
-      %sent = wafer.instr.dte_send %send0
-          {peer = 1 : i64, bytes = 8 : i64,
-           message = #wafer.dte_message<communication = 71, phase = peer_dataflow, round = 0, slice = 0>,
-           binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 0, remote_address_mode = absolute, remote_receiver_address = 65792, route_bindings = [], completion = sender_wait_receiver_fsm>}
-          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
-      wafer.instr.elementwise <add> %compute0, %compute0
-          into %compute0
-          : memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>
-         into memref<4xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.dte_wait %sent : !async.token
-      scf.yield %send_next, %send_current, %compute_next, %compute_current
-          : memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>
-    }
-    return
-  }
-}
-)mlir");
-  ASSERT_TRUE(module);
-
-  InstructionProgramCost cost = analyze(*module);
-  ASSERT_TRUE(cost.directDTEComputeOverlapWindowCount.isKnown());
-  EXPECT_EQ(cost.directDTEComputeOverlapWindowCount.value, 1u);
-  ASSERT_TRUE(cost.qualifiedOverlapWindowCount.isKnown());
-  EXPECT_EQ(cost.qualifiedOverlapWindowCount.value, 1u);
-}
-
-TEST_F(ScheduleCostAnalysisTest,
-       DirectDTEComputeWitnessAcceptsSendReadInStraightLineBlock) {
-  auto module = parse(R"mlir(
-module {
-  func.func @main() {
-    %send = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %dest = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %sent = wafer.instr.dte_send %send
-        {peer = 1 : i64, bytes = 8 : i64,
-         message = #wafer.dte_message<communication = 72, phase = peer_dataflow, round = 0, slice = 0>,
-         binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 0, remote_address_mode = absolute, remote_receiver_address = 65792, route_bindings = [], completion = sender_wait_receiver_fsm>}
-        : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
-    wafer.instr.elementwise <add> %send, %send into %dest
-        : memref<4xf16, #wafer.memory<spm, tensor>>,
-          memref<4xf16, #wafer.memory<spm, tensor>>
-       into memref<4xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.dte_wait %sent : !async.token
-    return
-  }
-}
-)mlir");
-  ASSERT_TRUE(module);
-
-  InstructionProgramCost cost = analyze(*module);
-  ASSERT_TRUE(cost.directDTEComputeOverlapWindowCount.isKnown());
-  EXPECT_EQ(cost.directDTEComputeOverlapWindowCount.value, 1u);
-}
-
-TEST_F(ScheduleCostAnalysisTest,
-       ConstantConditionalOverlapUsesOnlyTheReachableCurrentIRBranch) {
-  auto constant = parse(R"mlir(
-module {
-  func.func @main(%dynamic: i1) {
-    %send = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %dest = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %true = arith.constant true
-    scf.if %true {
-      %sent = wafer.instr.dte_send %send
-          {peer = 1 : i64, bytes = 8 : i64,
-           message = #wafer.dte_message<communication = 75, phase = peer_dataflow, round = 0, slice = 0>,
-           binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 0, remote_address_mode = absolute, remote_receiver_address = 65792, route_bindings = [], completion = sender_wait_receiver_fsm>}
-          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
-      wafer.instr.elementwise <add> %send, %send into %dest
-          : memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>
-         into memref<4xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.dte_wait %sent : !async.token
-    } else {
-      scf.if %dynamic {
-        %unreachable = wafer.instr.dte_send %send
-            {peer = 1 : i64, bytes = 8 : i64,
-             message = #wafer.dte_message<communication = 76, phase = peer_dataflow, round = 0, slice = 0>,
-             binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 1, remote_address_mode = absolute, remote_receiver_address = 65792, route_bindings = [], completion = sender_wait_receiver_fsm>}
-            : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
-        wafer.instr.elementwise <add> %send, %send into %dest
-            : memref<4xf16, #wafer.memory<spm, tensor>>,
-              memref<4xf16, #wafer.memory<spm, tensor>>
-           into memref<4xf16, #wafer.memory<spm, tensor>>
-        wafer.instr.dte_wait %unreachable : !async.token
-      }
-    }
-    return
-  }
-}
-)mlir");
-  ASSERT_TRUE(constant);
-
-  InstructionProgramCost constantCost = analyze(*constant);
-  ASSERT_TRUE(constantCost.directDTEComputeOverlapWindowCount.isKnown());
-  EXPECT_EQ(constantCost.directDTEComputeOverlapWindowCount.value, 1u);
-  ASSERT_TRUE(constantCost.qualifiedOverlapWindowCount.isKnown());
-  EXPECT_EQ(constantCost.qualifiedOverlapWindowCount.value, 0u);
-
-  auto dynamic = parse(R"mlir(
-module {
-  func.func @main(%condition: i1) {
-    %send = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %dest = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    scf.if %condition {
-      %sent = wafer.instr.dte_send %send
-          {peer = 1 : i64, bytes = 8 : i64,
-           message = #wafer.dte_message<communication = 77, phase = peer_dataflow, round = 0, slice = 0>,
-           binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 0, remote_address_mode = absolute, remote_receiver_address = 65792, route_bindings = [], completion = sender_wait_receiver_fsm>}
-          : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
-      wafer.instr.elementwise <add> %send, %send into %dest
-          : memref<4xf16, #wafer.memory<spm, tensor>>,
-            memref<4xf16, #wafer.memory<spm, tensor>>
-         into memref<4xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.dte_wait %sent : !async.token
-    }
-    return
-  }
-}
-)mlir");
-  ASSERT_TRUE(dynamic);
-
-  InstructionProgramCost dynamicCost = analyze(*dynamic);
-  EXPECT_EQ(dynamicCost.directDTEComputeOverlapWindowCount.knowledge,
-            ScheduleCostKnowledge::Unknown);
-  EXPECT_EQ(dynamicCost.directDTEComputeOverlapWindowCount.reason,
-            ScheduleCostReason::UnsupportedControlFlow);
-  EXPECT_EQ(dynamicCost.qualifiedOverlapWindowCount.knowledge,
-            ScheduleCostKnowledge::Unknown);
-  EXPECT_EQ(dynamicCost.qualifiedOverlapWindowCount.reason,
-            ScheduleCostReason::UnsupportedControlFlow);
-}
-
-TEST_F(ScheduleCostAnalysisTest,
-       DirectDTEComputeWitnessRejectsConflictingFootprints) {
-  auto module = parse(R"mlir(
-module {
-  func.func @main() {
-    %send = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %recv = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %other = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66048>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %sent = wafer.instr.dte_send %send
-        {peer = 1 : i64, bytes = 8 : i64,
-         message = #wafer.dte_message<communication = 73, phase = peer_dataflow, round = 0, slice = 0>,
-         binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 0, remote_address_mode = absolute, remote_receiver_address = 65792, route_bindings = [], completion = sender_wait_receiver_fsm>}
-        : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
-    wafer.instr.elementwise <add> %other, %other into %send
-        : memref<4xf16, #wafer.memory<spm, tensor>>,
-          memref<4xf16, #wafer.memory<spm, tensor>>
-       into memref<4xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.dte_wait %sent : !async.token
-    %received = wafer.instr.dte_recv %recv
-        {peer = 1 : i64, bytes = 8 : i64,
-         message = #wafer.dte_message<communication = 74, phase = peer_dataflow, round = 0, slice = 0>,
-         binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 1, remote_address_mode = absolute, remote_receiver_address = 65536, route_bindings = [], completion = sender_wait_receiver_fsm>}
-        : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
-    wafer.instr.elementwise <add> %recv, %recv into %other
-        : memref<4xf16, #wafer.memory<spm, tensor>>,
-          memref<4xf16, #wafer.memory<spm, tensor>>
-       into memref<4xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.dte_wait %received : !async.token
-    return
-  }
-}
-)mlir");
-  ASSERT_TRUE(module);
-
-  InstructionProgramCost cost = analyze(*module);
-  ASSERT_TRUE(cost.directDTEComputeOverlapWindowCount.isKnown());
-  EXPECT_EQ(cost.directDTEComputeOverlapWindowCount.value, 0u);
-}
-
-TEST_F(ScheduleCostAnalysisTest, RejectsRotatingSCFSlotWithAnUnknownOrigin) {
-  auto module = parse(R"mlir(
-module {
-  func.func @main(
-      %unknown: memref<4xf16, #wafer.memory<spm, tensor>>) {
+      %unresolved: memref<4xf16, #wafer.memory<spm, tensor>>) {
     %known = memref.alloc()
         {wafer.spm.offset = #wafer.spm_offset<65536>}
         : memref<4xf16, #wafer.memory<spm, tensor>>
@@ -820,7 +614,7 @@ module {
     %c3 = arith.constant 3 : index
     %zero = arith.constant 0.0 : f16
     %result:2 = scf.for %index = %c0 to %c3 step %c1
-        iter_args(%current = %known, %next = %unknown)
+        iter_args(%current = %known, %next = %unresolved)
         -> (memref<4xf16, #wafer.memory<spm, tensor>>,
             memref<4xf16, #wafer.memory<spm, tensor>>) {
       wafer.instr.fill %current, %zero
@@ -836,7 +630,8 @@ module {
   ASSERT_TRUE(module);
 
   InstructionProgramCost cost = analyze(*module);
-  EXPECT_EQ(cost.spmHighWaterBytes.knowledge, ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.spmHighWaterBytes.knowledge,
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.spmHighWaterBytes.reason,
             ScheduleCostReason::UnsupportedSPMRoot);
 }
@@ -875,12 +670,12 @@ module {
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       StructuredIfSPMResultStillFailsClosedOnUnknownOrigin) {
+       StructuredIfSPMResultStillFailsClosedOnUnresolvedOrigin) {
   auto module = parse(R"mlir(
 module {
   func.func @main(
       %condition: i1,
-      %unknown: memref<4xf16, #wafer.memory<spm, tensor>>) {
+      %unresolved: memref<4xf16, #wafer.memory<spm, tensor>>) {
     %known = memref.alloc()
         {wafer.spm.offset = #wafer.spm_offset<65536>}
         : memref<4xf16, #wafer.memory<spm, tensor>>
@@ -888,7 +683,7 @@ module {
         -> (memref<4xf16, #wafer.memory<spm, tensor>>) {
       scf.yield %known : memref<4xf16, #wafer.memory<spm, tensor>>
     } else {
-      scf.yield %unknown : memref<4xf16, #wafer.memory<spm, tensor>>
+      scf.yield %unresolved : memref<4xf16, #wafer.memory<spm, tensor>>
     }
     %zero = arith.constant 0.0 : f16
     wafer.instr.fill %selected, %zero
@@ -900,7 +695,8 @@ module {
   ASSERT_TRUE(module);
 
   InstructionProgramCost cost = analyze(*module);
-  EXPECT_EQ(cost.spmHighWaterBytes.knowledge, ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.spmHighWaterBytes.knowledge,
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.spmHighWaterBytes.reason,
             ScheduleCostReason::UnsupportedSPMRoot);
 }
@@ -909,16 +705,19 @@ TEST_F(ScheduleCostAnalysisTest,
        KeepsAggregateNoCWhenDirectionalRouteIsUnresolved) {
   auto module = parse(R"mlir(
 module {
+  wafer.target.topology @topology
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   func.func @main() {
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
         : memref<4xf32, #wafer.memory<spm, tensor>>
     %sent = wafer.instr.dte_send %buffer
         {peer = 1 : i64, bytes = 16 : i64,
-         message = #wafer.dte_message<communication = 9, phase = all_reduce_ring, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 9, round = 0, slice = 0>}
         : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
     %received = wafer.instr.dte_recv %buffer
         {peer = 1 : i64, bytes = 16 : i64,
-         message = #wafer.dte_message<communication = 9, phase = all_reduce_ring, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 9, round = 0, slice = 0>}
         : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
     wafer.instr.dte_wait %sent, %received : !async.token, !async.token
     return
@@ -944,21 +743,17 @@ module {
   EXPECT_EQ(cost.work.dteSendOperations.staticSites.value, 1u);
   EXPECT_EQ(cost.work.dteReceiveOperations.staticSites.value, 1u);
   EXPECT_EQ(cost.work.dteWaitOperations.staticSites.value, 1u);
-  EXPECT_EQ(cost.work.collectiveDTEIssues.staticSites.value, 2u);
-  EXPECT_EQ(cost.work.peerDTEIssues.staticSites.value, 0u);
-  ASSERT_TRUE(cost.noc.collective(NoCCollectiveKind::AllReduce).isKnown());
-  EXPECT_EQ(cost.noc.collective(NoCCollectiveKind::AllReduce).value, 16u);
   for (NoCDirection direction : {NoCDirection::North, NoCDirection::South,
                                  NoCDirection::East, NoCDirection::West}) {
     const auto &directional = cost.noc.directional(direction);
-    EXPECT_EQ(directional.knowledge, ScheduleCostKnowledge::Unknown);
+    EXPECT_EQ(directional.knowledge, ScheduleCostKnowledge::Unavailable);
     EXPECT_EQ(directional.reason, ScheduleCostReason::UnresolvedNoCRoute);
   }
   ASSERT_TRUE(cost.eventCount.isKnown());
   EXPECT_EQ(cost.eventCount.value, 2u);
 }
 
-TEST_F(ScheduleCostAnalysisTest, DynamicTripCountIsTypedUnknown) {
+TEST_F(ScheduleCostAnalysisTest, DynamicTripCountIsUnavailable) {
   auto module = parse(R"mlir(
 module {
   func.func @main(
@@ -983,21 +778,22 @@ module {
   ASSERT_TRUE(module);
 
   InstructionProgramCost cost = analyze(*module);
-  EXPECT_EQ(cost.instructionCount.knowledge, ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.instructionCount.knowledge,
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.instructionCount.reason,
             ScheduleCostReason::DynamicLoopTripCount);
   EXPECT_EQ(cost.work.rdmaIssues.staticSites.value, 1u);
   EXPECT_EQ(cost.work.rdmaIssues.exactExecutions.knowledge,
-            ScheduleCostKnowledge::Unknown);
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.work.rdmaIssues.exactExecutions.reason,
             ScheduleCostReason::DynamicLoopTripCount);
   EXPECT_TRUE(cost.work.rdmaIssues.lowerBound.isKnown());
   EXPECT_EQ(cost.work.rdmaIssues.lowerBound.value, 0u);
   EXPECT_EQ(cost.work.rdmaIssues.upperBound.knowledge,
-            ScheduleCostKnowledge::Unknown);
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.work.rdmaIssues.upperBound.reason,
             ScheduleCostReason::DynamicLoopTripCount);
-  EXPECT_EQ(cost.ddrReadBytes.knowledge, ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.ddrReadBytes.knowledge, ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.ddrReadBytes.reason, ScheduleCostReason::DynamicLoopTripCount);
   EXPECT_TRUE(cost.spmHighWaterBytes.isKnown());
   EXPECT_EQ(cost.spmHighWaterBytes.value, 8u);
@@ -1048,18 +844,18 @@ module {
   EXPECT_EQ(cost.work.instructions.upperBound.value, 2u);
   EXPECT_EQ(cost.work.rdmaIssues.staticSites.value, 2u);
   EXPECT_EQ(cost.work.rdmaIssues.exactExecutions.knowledge,
-            ScheduleCostKnowledge::Unknown);
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.work.rdmaIssues.exactExecutions.reason,
             ScheduleCostReason::ConditionalControlFlow);
   EXPECT_EQ(cost.work.rdmaIssues.lowerBound.value, 1u);
   EXPECT_EQ(cost.work.rdmaIssues.upperBound.value, 2u);
   EXPECT_EQ(cost.work.wdmaIssues.staticSites.value, 1u);
   EXPECT_EQ(cost.work.wdmaIssues.exactExecutions.knowledge,
-            ScheduleCostKnowledge::Unknown);
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.work.wdmaIssues.lowerBound.value, 0u);
   EXPECT_EQ(cost.work.wdmaIssues.upperBound.value, 1u);
-  EXPECT_EQ(cost.ddrReadBytes.knowledge, ScheduleCostKnowledge::Unknown);
-  EXPECT_EQ(cost.ddrWriteBytes.knowledge, ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.ddrReadBytes.knowledge, ScheduleCostKnowledge::Unavailable);
+  EXPECT_EQ(cost.ddrWriteBytes.knowledge, ScheduleCostKnowledge::Unavailable);
   ASSERT_TRUE(cost.spmMovementBytes.isKnown());
   EXPECT_EQ(cost.spmMovementBytes.value, 16u);
 }
@@ -1261,7 +1057,7 @@ module {
   EXPECT_EQ(cost.compute.vectorOtherLogicalOps.value, 0u);
 }
 
-TEST_F(ScheduleCostAnalysisTest, MissingAcceptedOffsetIsTypedUnknown) {
+TEST_F(ScheduleCostAnalysisTest, MissingAcceptedOffsetIsUnavailable) {
   auto module = parse(R"mlir(
 module {
   func.func @main() {
@@ -1276,7 +1072,8 @@ module {
   ASSERT_TRUE(module);
 
   InstructionProgramCost cost = analyze(*module);
-  EXPECT_EQ(cost.spmHighWaterBytes.knowledge, ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.spmHighWaterBytes.knowledge,
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.spmHighWaterBytes.reason,
             ScheduleCostReason::MissingAcceptedSPMOffset);
 }
@@ -1343,7 +1140,7 @@ module {
   EXPECT_EQ(cost.compilerOwnedDDRBufferCount.value, 2u);
 }
 
-TEST_F(ScheduleCostAnalysisTest, MissingAcceptedDDROffsetIsTypedUnknown) {
+TEST_F(ScheduleCostAnalysisTest, MissingAcceptedDDROffsetIsUnavailable) {
   auto module = parse(R"mlir(
 module {
   func.func @main() {
@@ -1356,7 +1153,8 @@ module {
   ASSERT_TRUE(module);
 
   InstructionProgramCost cost = analyze(*module);
-  EXPECT_EQ(cost.ddrHighWaterBytes.knowledge, ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.ddrHighWaterBytes.knowledge,
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.ddrHighWaterBytes.reason,
             ScheduleCostReason::MissingAcceptedDDROffset);
 }
@@ -1412,284 +1210,6 @@ module {
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       MeasuresStructuralDataDependencyDepthWithoutTimingAssumptions) {
-  auto chain = parse(R"mlir(
-module {
-  func.func @main() {
-    %a = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %b = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %c = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %d = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66304>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %ab = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66560>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %abc = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66816>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67072>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    wafer.instr.elementwise <add> %a, %b into %ab
-        : memref<4xi8, #wafer.memory<spm, tensor>>,
-          memref<4xi8, #wafer.memory<spm, tensor>>
-       into memref<4xi8, #wafer.memory<spm, tensor>>
-    wafer.instr.elementwise <add> %ab, %c into %abc
-        : memref<4xi8, #wafer.memory<spm, tensor>>,
-          memref<4xi8, #wafer.memory<spm, tensor>>
-       into memref<4xi8, #wafer.memory<spm, tensor>>
-    wafer.instr.elementwise <add> %abc, %d into %out
-        : memref<4xi8, #wafer.memory<spm, tensor>>,
-          memref<4xi8, #wafer.memory<spm, tensor>>
-       into memref<4xi8, #wafer.memory<spm, tensor>>
-    return
-  }
-}
-)mlir");
-  auto balanced = parse(R"mlir(
-module {
-  func.func @main() {
-    %a = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %b = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %c = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %d = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66304>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %ab = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66560>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %cd = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66816>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67072>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    wafer.instr.elementwise <add> %a, %b into %ab
-        : memref<4xi8, #wafer.memory<spm, tensor>>,
-          memref<4xi8, #wafer.memory<spm, tensor>>
-       into memref<4xi8, #wafer.memory<spm, tensor>>
-    wafer.instr.elementwise <add> %c, %d into %cd
-        : memref<4xi8, #wafer.memory<spm, tensor>>,
-          memref<4xi8, #wafer.memory<spm, tensor>>
-       into memref<4xi8, #wafer.memory<spm, tensor>>
-    wafer.instr.elementwise <add> %ab, %cd into %out
-        : memref<4xi8, #wafer.memory<spm, tensor>>,
-          memref<4xi8, #wafer.memory<spm, tensor>>
-       into memref<4xi8, #wafer.memory<spm, tensor>>
-    return
-  }
-}
-)mlir");
-  ASSERT_TRUE(chain);
-  ASSERT_TRUE(balanced);
-  InstructionProgramCost chainCost = analyze(*chain);
-  InstructionProgramCost balancedCost = analyze(*balanced);
-  ASSERT_TRUE(chainCost.dataDependencyDepth.isKnown());
-  ASSERT_TRUE(balancedCost.dataDependencyDepth.isKnown());
-  EXPECT_EQ(chainCost.dataDependencyDepth.value, 3u);
-  EXPECT_EQ(balancedCost.dataDependencyDepth.value, 2u);
-  EXPECT_EQ(chainCost.instructionCount.value,
-            balancedCost.instructionCount.value);
-  EXPECT_EQ(chainCost.compute.vectorOtherLogicalOps.value,
-            balancedCost.compute.vectorOtherLogicalOps.value);
-}
-
-TEST_F(ScheduleCostAnalysisTest,
-       FixedStructuredLoopsHaveKnownStructuralDependencyDepth) {
-  auto module = parse(R"mlir(
-module {
-  func.func @main(
-      %input: memref<4xi8, #wafer.memory<ddr, tensor>>) {
-    %loaded = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %result = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %c0 = arith.constant 0 : index
-    %c4 = arith.constant 4 : index
-    %c1 = arith.constant 1 : index
-    scf.for %i = %c0 to %c4 step %c1 {
-      wafer.instr.rdma %input to %loaded
-          {byte_count = 4 : i64, inner_bytes = 4 : i64,
-           src_iterations = array<i64: 1, 1, 1>,
-           src_strides = array<i64: 0, 0, 0>}
-          : memref<4xi8, #wafer.memory<ddr, tensor>>
-         to memref<4xi8, #wafer.memory<spm, tensor>>
-      wafer.instr.elementwise <neg> %loaded into %result
-          : memref<4xi8, #wafer.memory<spm, tensor>>
-         into memref<4xi8, #wafer.memory<spm, tensor>>
-    }
-    return
-  }
-}
-)mlir");
-  ASSERT_TRUE(module);
-
-  InstructionProgramCost cost = analyze(*module);
-  ASSERT_TRUE(cost.dataDependencyDepth.isKnown());
-  EXPECT_EQ(cost.dataDependencyDepth.value, 2u);
-  ASSERT_TRUE(cost.readyOrderPriorityInversions.isKnown());
-  EXPECT_EQ(cost.readyOrderPriorityInversions.value, 0u);
-  ASSERT_TRUE(cost.instructionCount.isKnown());
-  EXPECT_EQ(cost.instructionCount.value, 8u);
-}
-
-TEST_F(ScheduleCostAnalysisTest, TypedJoinOnlyOrdersItsNCCWorkerParticipants) {
-  auto module = parse(R"mlir(
-module {
-  func.func @main(%zero: f32) {
-    %worker0 = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xf32, #wafer.memory<spm, tensor>>
-    %worker1_before = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xf32, #wafer.memory<spm, tensor>>
-    %worker1_after = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66048>}
-        : memref<4xf32, #wafer.memory<spm, tensor>>
-    wafer.instr.fill %worker0, %zero
-        {worker = #wafer.ncc_worker<worker0>}
-        : memref<4xf32, #wafer.memory<spm, tensor>>, f32
-    wafer.instr.fill %worker1_before, %zero
-        {worker = #wafer.ncc_worker<worker1>}
-        : memref<4xf32, #wafer.memory<spm, tensor>>, f32
-    wafer.instr.ncc_join [0]
-    wafer.instr.fill %worker1_after, %zero
-        {worker = #wafer.ncc_worker<worker1>}
-        : memref<4xf32, #wafer.memory<spm, tensor>>, f32
-    return
-  }
-}
-)mlir");
-  ASSERT_TRUE(module);
-
-  InstructionProgramCost cost = analyze(*module);
-  ASSERT_TRUE(cost.dataDependencyDepth.isKnown());
-  EXPECT_EQ(cost.dataDependencyDepth.value, 2u);
-}
-
-TEST_F(ScheduleCostAnalysisTest,
-       MeasuresReadyPriorityInversionsWithoutAOverlapModel) {
-  auto sourceOrder = parse(R"mlir(
-module {
-  func.func @main() {
-    %compute_source = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %compute_dest = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %dma_dest = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66048>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %ddr = memref.alloc()
-        : memref<4xi8, #wafer.memory<ddr, tensor>>
-    wafer.instr.elementwise <neg> %compute_source into %compute_dest
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-       into memref<4xi8, #wafer.memory<spm, tensor>>
-    wafer.instr.rdma %ddr to %dma_dest
-        {byte_count = 4 : i64, inner_bytes = 4 : i64,
-         src_iterations = array<i64: 1, 1, 1>,
-         src_strides = array<i64: 0, 0, 0>}
-        : memref<4xi8, #wafer.memory<ddr, tensor>>
-       to memref<4xi8, #wafer.memory<spm, tensor>>
-    return
-  }
-}
-)mlir");
-  auto readyOrder = parse(R"mlir(
-module {
-  func.func @main() {
-    %compute_source = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %compute_dest = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %dma_dest = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66048>}
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-    %ddr = memref.alloc()
-        : memref<4xi8, #wafer.memory<ddr, tensor>>
-    wafer.instr.rdma %ddr to %dma_dest
-        {byte_count = 4 : i64, inner_bytes = 4 : i64,
-         src_iterations = array<i64: 1, 1, 1>,
-         src_strides = array<i64: 0, 0, 0>}
-        : memref<4xi8, #wafer.memory<ddr, tensor>>
-       to memref<4xi8, #wafer.memory<spm, tensor>>
-    wafer.instr.elementwise <neg> %compute_source into %compute_dest
-        : memref<4xi8, #wafer.memory<spm, tensor>>
-       into memref<4xi8, #wafer.memory<spm, tensor>>
-    return
-  }
-}
-)mlir");
-  ASSERT_TRUE(sourceOrder);
-  ASSERT_TRUE(readyOrder);
-  InstructionProgramCost sourceCost = analyze(*sourceOrder);
-  InstructionProgramCost readyCost = analyze(*readyOrder);
-  ASSERT_TRUE(sourceCost.readyOrderPriorityInversions.isKnown());
-  ASSERT_TRUE(readyCost.readyOrderPriorityInversions.isKnown());
-  EXPECT_EQ(sourceCost.readyOrderPriorityInversions.value, 1u);
-  EXPECT_EQ(readyCost.readyOrderPriorityInversions.value, 0u);
-  EXPECT_EQ(sourceCost.dataDependencyDepth.value,
-            readyCost.dataDependencyDepth.value);
-  EXPECT_EQ(sourceCost.instructionCount.value,
-            readyCost.instructionCount.value);
-}
-
-TEST_F(ScheduleCostAnalysisTest,
-       ArgWritebackBarrierContributesStructuralDependencyDepth) {
-  auto module = parse(R"mlir(
-module {
-  func.func @main(
-      %ddr: memref<4xf16, #wafer.memory<ddr, tensor>>) {
-    %compute_source = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %compute_dest = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %arg_input = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66048>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    %arg_value = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66304>}
-        : memref<1xf16, #wafer.memory<spm, tensor>>
-    %arg_index = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66560>}
-        : memref<1xi32, #wafer.memory<spm, tensor>>
-    %dma_dest = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66816>}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.elementwise <neg> %compute_source into %compute_dest
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-       into memref<4xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.peripheral #wafer.instr_peripheral_kind<argmax>
-        %arg_input into %arg_value, %arg_index {elem_count = 4 : i64}
-        : memref<4xf16, #wafer.memory<spm, tensor>>
-      into memref<1xf16, #wafer.memory<spm, tensor>>,
-           memref<1xi32, #wafer.memory<spm, tensor>>
-    wafer.instr.rdma %ddr to %dma_dest
-        {byte_count = 8 : i64, inner_bytes = 8 : i64,
-         src_iterations = array<i64: 1, 1, 1>,
-         src_strides = array<i64: 0, 0, 0>}
-        : memref<4xf16, #wafer.memory<ddr, tensor>>
-       to memref<4xf16, #wafer.memory<spm, tensor>>
-    return
-  }
-}
-)mlir");
-  ASSERT_TRUE(module);
-
-  InstructionProgramCost cost = analyze(*module);
-  ASSERT_TRUE(cost.dataDependencyDepth.isKnown());
-  EXPECT_EQ(cost.dataDependencyDepth.value, 3u);
-  ASSERT_TRUE(cost.readyOrderPriorityInversions.isKnown());
-  EXPECT_EQ(cost.readyOrderPriorityInversions.value, 0u);
-}
-
-TEST_F(ScheduleCostAnalysisTest,
        AggregatesWholeCardExecutionAndKeepsPrivateSPMDimensions) {
   auto first = parse(R"mlir(
 module {
@@ -1731,9 +1251,9 @@ module {
 
   llvm::SmallVector<mlir::Operation *, 2> roots{first->getOperation(),
                                                 second->getOperation()};
-  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy());
-  ASSERT_EQ(cost.rankCosts.size(), 2u);
+  auto cost =
+      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
+  ASSERT_EQ(cost.tileCosts.size(), 2u);
   ASSERT_TRUE(cost.aggregateDDRReadBytes.isKnown());
   EXPECT_EQ(cost.aggregateDDRReadBytes.value, 16u);
   ASSERT_TRUE(cost.aggregateSPMMovementBytes.isKnown());
@@ -1742,31 +1262,28 @@ module {
   EXPECT_EQ(cost.aggregateInstructionCount.value, 3u);
   EXPECT_EQ(cost.aggregateWork.instructions.staticSites.value, 3u);
   EXPECT_EQ(cost.aggregateWork.instructions.exactExecutions.value, 3u);
-  EXPECT_EQ(cost.maximumRankWork.instructions.staticSites.value, 2u);
-  EXPECT_EQ(cost.maximumRankWork.instructions.exactExecutions.value, 2u);
+  EXPECT_EQ(cost.maximumTileWork.instructions.staticSites.value, 2u);
+  EXPECT_EQ(cost.maximumTileWork.instructions.exactExecutions.value, 2u);
   EXPECT_EQ(cost.aggregateWork.rdmaIssues.exactExecutions.value, 2u);
-  EXPECT_EQ(cost.maximumRankWork.rdmaIssues.exactExecutions.value, 1u);
-  ASSERT_TRUE(cost.maximumRankDataDependencyDepth.isKnown());
-  EXPECT_EQ(cost.maximumRankDataDependencyDepth.value, 2u);
-  ASSERT_TRUE(cost.aggregateReadyOrderPriorityInversions.isKnown());
+  EXPECT_EQ(cost.maximumTileWork.rdmaIssues.exactExecutions.value, 1u);
   ASSERT_TRUE(cost.aggregateCompute.vectorF16Bf16LogicalOps.isKnown());
   EXPECT_EQ(cost.aggregateCompute.vectorF16Bf16LogicalOps.value, 4u);
-  ASSERT_TRUE(cost.maximumRankSPMHighWaterBytes.isKnown());
-  EXPECT_EQ(cost.maximumRankSPMHighWaterBytes.value, 264u);
-  ASSERT_TRUE(cost.summedRankSPMHighWaterBytes.isKnown());
-  EXPECT_EQ(cost.summedRankSPMHighWaterBytes.value, 272u);
-  ASSERT_TRUE(cost.maximumRankDDRHighWaterBytes.isKnown());
-  EXPECT_EQ(cost.maximumRankDDRHighWaterBytes.value, 0u);
-  ASSERT_TRUE(cost.summedRankDDRHighWaterBytes.isKnown());
-  EXPECT_EQ(cost.summedRankDDRHighWaterBytes.value, 0u);
+  ASSERT_TRUE(cost.maximumTileSPMHighWaterBytes.isKnown());
+  EXPECT_EQ(cost.maximumTileSPMHighWaterBytes.value, 264u);
+  ASSERT_TRUE(cost.summedTileSPMHighWaterBytes.isKnown());
+  EXPECT_EQ(cost.summedTileSPMHighWaterBytes.value, 272u);
+  ASSERT_TRUE(cost.maximumTileDDRHighWaterBytes.isKnown());
+  EXPECT_EQ(cost.maximumTileDDRHighWaterBytes.value, 0u);
+  ASSERT_TRUE(cost.summedTileDDRHighWaterBytes.isKnown());
+  EXPECT_EQ(cost.summedTileDDRHighWaterBytes.value, 0u);
   EXPECT_EQ(cost.aggregateCompilerOwnedSPMBufferCount.value, 2u);
-  EXPECT_EQ(cost.maximumRankCompilerOwnedSPMBufferCount.value, 1u);
+  EXPECT_EQ(cost.maximumTileCompilerOwnedSPMBufferCount.value, 1u);
   EXPECT_EQ(cost.aggregateCompilerOwnedDDRBufferCount.value, 0u);
-  EXPECT_EQ(cost.maximumRankCompilerOwnedDDRBufferCount.value, 0u);
+  EXPECT_EQ(cost.maximumTileCompilerOwnedDDRBufferCount.value, 0u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       WholeCardAggregationPreservesUnknownCostReason) {
+       WholeCardAggregationPreservesUnavailableCostReason) {
   auto dynamic = parse(R"mlir(
 module {
   func.func @main(
@@ -1790,46 +1307,37 @@ module {
 )mlir");
   ASSERT_TRUE(dynamic);
   llvm::SmallVector<mlir::Operation *, 1> roots{dynamic->getOperation()};
-  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy());
+  auto cost =
+      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
   EXPECT_EQ(cost.aggregateDDRReadBytes.knowledge,
-            ScheduleCostKnowledge::Unknown);
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.aggregateDDRReadBytes.reason,
             ScheduleCostReason::DynamicLoopTripCount);
-  EXPECT_TRUE(cost.maximumRankSPMHighWaterBytes.isKnown());
-  EXPECT_EQ(cost.maximumRankDataDependencyDepth.knowledge,
-            ScheduleCostKnowledge::Unknown);
-  EXPECT_EQ(cost.maximumRankDataDependencyDepth.reason,
-            ScheduleCostReason::UnsupportedControlFlow);
-  EXPECT_EQ(cost.aggregateReadyOrderPriorityInversions.knowledge,
-            ScheduleCostKnowledge::Unknown);
-  EXPECT_EQ(cost.aggregateReadyOrderPriorityInversions.reason,
-            ScheduleCostReason::UnsupportedControlFlow);
+  EXPECT_TRUE(cost.maximumTileSPMHighWaterBytes.isKnown());
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       WholeCardMinimumHopDemandDistinguishesEqualPayloadEdges) {
+       WholeCardPhysicalTileDistanceChangesMinimumHopDemand) {
   constexpr llvm::StringLiteral nearSend = R"mlir(
     %sent = wafer.instr.dte_send %buffer
         {peer = 1 : i64, bytes = 16 : i64,
-         message = #wafer.dte_message<communication = 1, phase = collective_permute, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 1, round = 0, slice = 0>}
         : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
 )mlir";
   constexpr llvm::StringLiteral farSend = R"mlir(
     %sent = wafer.instr.dte_send %buffer
-        {peer = 3 : i64, bytes = 16 : i64,
-         message = #wafer.dte_message<communication = 1, phase = collective_permute, round = 0, slice = 0>}
+        {peer = 12 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 1, round = 0, slice = 0>}
         : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
 )mlir";
 
-  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 4> nearOwners;
-  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 4> farOwners;
-  llvm::SmallVector<mlir::Operation *, 4> nearRoots;
-  llvm::SmallVector<mlir::Operation *, 4> farRoots;
-  for (int64_t rank = 0; rank < 4; ++rank) {
-    nearOwners.push_back(
-        makeDTERankModule(4, 4, "", rank == 0 ? nearSend : ""));
-    farOwners.push_back(makeDTERankModule(4, 4, "", rank == 0 ? farSend : ""));
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> nearOwners;
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> farOwners;
+  llvm::SmallVector<mlir::Operation *, 16> nearRoots;
+  llvm::SmallVector<mlir::Operation *, 16> farRoots;
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    nearOwners.push_back(makeDTETileModule("", tile == 0 ? nearSend : ""));
+    farOwners.push_back(makeDTETileModule("", tile == 0 ? farSend : ""));
     ASSERT_TRUE(nearOwners.back());
     ASSERT_TRUE(farOwners.back());
     nearRoots.push_back(nearOwners.back()->getOperation());
@@ -1837,83 +1345,66 @@ TEST_F(ScheduleCostAnalysisTest,
   }
 
   const auto policy = wafer::analysis::getTargetScheduleCostPolicy();
-  auto nearCost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      nearRoots, policy);
-  auto farCost =
-      wafer::analysis::analyzeWholeCardInstructionProgramCost(farRoots, policy);
+  auto nearCost = analyzeWholeCard(nearRoots, policy);
+  auto farCost = analyzeWholeCard(farRoots, policy);
   ASSERT_TRUE(nearCost.aggregateNoC.aggregateTransmitBytes.isKnown());
   ASSERT_TRUE(farCost.aggregateNoC.aggregateTransmitBytes.isKnown());
   EXPECT_EQ(nearCost.aggregateNoC.aggregateTransmitBytes.value, 16u);
   EXPECT_EQ(farCost.aggregateNoC.aggregateTransmitBytes.value, 16u);
+  ASSERT_TRUE(nearCost.aggregateNoC.transmitMessageCount.isKnown());
+  ASSERT_TRUE(farCost.aggregateNoC.transmitMessageCount.isKnown());
+  EXPECT_EQ(nearCost.aggregateNoC.transmitMessageCount.value, 1u);
+  EXPECT_EQ(farCost.aggregateNoC.transmitMessageCount.value, 1u);
+  EXPECT_EQ(nearCost.maximumTileNoCTransmitBytes.value, 16u);
+  EXPECT_EQ(farCost.maximumTileNoCTransmitBytes.value, 16u);
   ASSERT_TRUE(nearCost.minimumHopLinkByteDemand.isKnown());
   ASSERT_TRUE(farCost.minimumHopLinkByteDemand.isKnown());
   EXPECT_EQ(nearCost.minimumHopLinkByteDemand.value, 16u);
   EXPECT_EQ(farCost.minimumHopLinkByteDemand.value, 48u);
-  ASSERT_TRUE(nearCost.minimumHopMessageDemand.isKnown());
-  ASSERT_TRUE(farCost.minimumHopMessageDemand.isKnown());
   EXPECT_EQ(nearCost.minimumHopMessageDemand.value, 1u);
   EXPECT_EQ(farCost.minimumHopMessageDemand.value, 3u);
-  ASSERT_TRUE(nearCost.directedNoCLinkCount.isKnown());
-  ASSERT_TRUE(farCost.directedNoCLinkCount.isKnown());
-  EXPECT_EQ(nearCost.directedNoCLinkCount.value, 6u);
-  EXPECT_EQ(farCost.directedNoCLinkCount.value, 6u);
-  ASSERT_TRUE(nearCost.idealizedMinimumPeakLinkByteDemand.isKnown());
-  ASSERT_TRUE(farCost.idealizedMinimumPeakLinkByteDemand.isKnown());
-  EXPECT_EQ(nearCost.idealizedMinimumPeakLinkByteDemand.value, 3u);
-  EXPECT_EQ(farCost.idealizedMinimumPeakLinkByteDemand.value, 8u);
+  EXPECT_EQ(nearCost.directedNoCLinkCount.value, 48u);
+  EXPECT_EQ(farCost.directedNoCLinkCount.value, 48u);
+  EXPECT_EQ(nearCost.idealizedMinimumPeakLinkByteDemand.value, 1u);
+  EXPECT_EQ(farCost.idealizedMinimumPeakLinkByteDemand.value, 1u);
   ASSERT_TRUE(nearCost.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
   ASSERT_TRUE(farCost.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
   EXPECT_EQ(nearCost.modeledNoCRoute.kind,
             wafer::analysis::ModeledNoCRouteKind::CanonicalShortestPath);
   EXPECT_EQ(nearCost.modeledNoCRoute.peakDirectedLinkByteDemand.value, 16u);
   EXPECT_EQ(farCost.modeledNoCRoute.peakDirectedLinkByteDemand.value, 16u);
-  ASSERT_TRUE(nearCost.maximumNoCHopCount.isKnown());
-  ASSERT_TRUE(farCost.maximumNoCHopCount.isKnown());
   EXPECT_EQ(nearCost.maximumNoCHopCount.value, 1u);
   EXPECT_EQ(farCost.maximumNoCHopCount.value, 3u);
 }
 
-TEST_F(ScheduleCostAnalysisTest,
-       WholeCardNoCFreeProgramKeepsTopologyFactsSeparateFromZeroTraffic) {
-  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 4> owners;
-  llvm::SmallVector<mlir::Operation *, 4> roots;
-  for (int64_t rank = 0; rank < 4; ++rank) {
-    owners.push_back(makeDTERankModule(4, 4, "", ""));
+TEST_F(ScheduleCostAnalysisTest, WholeCardNoCFreeProgramHasExactZeroWork) {
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;
+  llvm::SmallVector<mlir::Operation *, 16> roots;
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    owners.push_back(makeDTETileModule("", ""));
     ASSERT_TRUE(owners.back());
     roots.push_back(owners.back()->getOperation());
   }
   const auto policy = wafer::analysis::getTargetScheduleCostPolicy();
-  auto cost =
-      wafer::analysis::analyzeWholeCardInstructionProgramCost(roots, policy);
-  ASSERT_TRUE(cost.directedNoCLinkCount.isKnown());
-  EXPECT_EQ(cost.directedNoCLinkCount.value, 6u);
-  ASSERT_TRUE(cost.minimumHopLinkByteDemand.isKnown());
+  auto cost = analyzeWholeCard(roots, policy);
+  ASSERT_TRUE(cost.aggregateNoC.aggregateTransmitBytes.isKnown());
+  ASSERT_TRUE(cost.aggregateNoC.aggregateReceiveBytes.isKnown());
+  ASSERT_TRUE(cost.aggregateNoC.transmitMessageCount.isKnown());
+  ASSERT_TRUE(cost.aggregateNoC.receiveMessageCount.isKnown());
+  EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.value, 0u);
+  EXPECT_EQ(cost.aggregateNoC.aggregateReceiveBytes.value, 0u);
+  EXPECT_EQ(cost.aggregateNoC.transmitMessageCount.value, 0u);
+  EXPECT_EQ(cost.aggregateNoC.receiveMessageCount.value, 0u);
   EXPECT_EQ(cost.minimumHopLinkByteDemand.value, 0u);
-  ASSERT_TRUE(cost.minimumHopMessageDemand.isKnown());
   EXPECT_EQ(cost.minimumHopMessageDemand.value, 0u);
-  ASSERT_TRUE(cost.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
+  EXPECT_EQ(cost.directedNoCLinkCount.value, 48u);
+  EXPECT_EQ(cost.idealizedMinimumPeakLinkByteDemand.value, 0u);
   EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.value, 0u);
-
-  auto missing0 = makeDTERankModule(2, 2, "", "", false);
-  auto missing1 = makeDTERankModule(2, 2, "", "", false);
-  ASSERT_TRUE(missing0);
-  ASSERT_TRUE(missing1);
-  llvm::SmallVector<mlir::Operation *, 2> missingRoots{
-      missing0->getOperation(), missing1->getOperation()};
-  auto missingCost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      missingRoots, policy);
-  EXPECT_EQ(missingCost.directedNoCLinkCount.knowledge,
-            ScheduleCostKnowledge::Unknown);
-  EXPECT_EQ(missingCost.directedNoCLinkCount.reason,
-            ScheduleCostReason::InvalidExecutionTopology);
-  ASSERT_TRUE(missingCost.minimumHopLinkByteDemand.isKnown());
-  EXPECT_EQ(missingCost.minimumHopLinkByteDemand.value, 0u);
-  ASSERT_TRUE(missingCost.minimumHopMessageDemand.isKnown());
-  EXPECT_EQ(missingCost.minimumHopMessageDemand.value, 0u);
+  EXPECT_EQ(cost.maximumNoCHopCount.value, 0u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       WholeCardMinimumHopDemandUsesStaticLoopMultiplicity) {
+       WholeCardExactNoCWorkUsesStaticLoopMultiplicity) {
   constexpr llvm::StringLiteral repeatedSend = R"mlir(
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1921,66 +1412,68 @@ TEST_F(ScheduleCostAnalysisTest,
     scf.for %i = %c0 to %c3 step %c1 {
       %sent = wafer.instr.dte_send %buffer
           {peer = 2 : i64, bytes = 4 : i64,
-           message = #wafer.dte_message<communication = 2, phase = collective_permute, round = 0, slice = 0>}
+           message = #wafer.dte_message<communication = 2, round = 0, slice = 0>}
           : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
     }
 )mlir";
-  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 3> owners;
-  llvm::SmallVector<mlir::Operation *, 3> roots;
-  for (int64_t rank = 0; rank < 3; ++rank) {
-    owners.push_back(
-        makeDTERankModule(3, 3, "", rank == 0 ? repeatedSend : ""));
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;
+  llvm::SmallVector<mlir::Operation *, 16> roots;
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    owners.push_back(makeDTETileModule("", tile == 0 ? repeatedSend : ""));
     ASSERT_TRUE(owners.back());
     roots.push_back(owners.back()->getOperation());
   }
-  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy());
-  ASSERT_TRUE(cost.minimumHopLinkByteDemand.isKnown());
+  auto cost =
+      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
+  ASSERT_TRUE(cost.aggregateNoC.aggregateTransmitBytes.isKnown());
+  ASSERT_TRUE(cost.aggregateNoC.transmitMessageCount.isKnown());
+  EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.value, 12u);
+  EXPECT_EQ(cost.aggregateNoC.transmitMessageCount.value, 3u);
+  EXPECT_EQ(cost.aggregateWork.dteSendOperations.exactExecutions.value, 3u);
   EXPECT_EQ(cost.minimumHopLinkByteDemand.value, 24u);
-  ASSERT_TRUE(cost.minimumHopMessageDemand.isKnown());
   EXPECT_EQ(cost.minimumHopMessageDemand.value, 6u);
-  ASSERT_TRUE(cost.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
+  EXPECT_EQ(cost.directedNoCLinkCount.value, 48u);
+  EXPECT_EQ(cost.idealizedMinimumPeakLinkByteDemand.value, 1u);
   EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.value, 12u);
-  ASSERT_TRUE(cost.maximumNoCHopCount.isKnown());
   EXPECT_EQ(cost.maximumNoCHopCount.value, 2u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       EndpointPressureDistinguishesEqualMeshLinkByteDemand) {
+       MaximumTileNoCPressureDistinguishesEqualAggregateWork) {
   constexpr llvm::StringLiteral sendLeft = R"mlir(
     %sent = wafer.instr.dte_send %buffer
         {peer = 0 : i64, bytes = 16 : i64,
-         message = #wafer.dte_message<communication = 1, phase = peer_dataflow, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 1, round = 0, slice = 0>}
         : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
 )mlir";
   constexpr llvm::StringLiteral sendRight = R"mlir(
     %sent = wafer.instr.dte_send %buffer
         {peer = 2 : i64, bytes = 16 : i64,
-         message = #wafer.dte_message<communication = 2, phase = peer_dataflow, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 2, round = 0, slice = 0>}
         : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
 )mlir";
   constexpr llvm::StringLiteral sendBoth = R"mlir(
     %left = wafer.instr.dte_send %buffer
         {peer = 0 : i64, bytes = 16 : i64,
-         message = #wafer.dte_message<communication = 1, phase = peer_dataflow, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 1, round = 0, slice = 0>}
         : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
     %right = wafer.instr.dte_send %buffer
         {peer = 0 : i64, bytes = 16 : i64,
-         message = #wafer.dte_message<communication = 2, phase = peer_dataflow, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 2, round = 0, slice = 0>}
         : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
 )mlir";
 
-  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 4> balancedOwners;
-  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 4> hotspotOwners;
-  llvm::SmallVector<mlir::Operation *, 4> balancedRoots;
-  llvm::SmallVector<mlir::Operation *, 4> hotspotRoots;
-  for (int64_t rank = 0; rank < 4; ++rank) {
-    llvm::StringRef balancedBody = rank == 1   ? sendLeft
-                                   : rank == 3 ? sendRight
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> balancedOwners;
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> hotspotOwners;
+  llvm::SmallVector<mlir::Operation *, 16> balancedRoots;
+  llvm::SmallVector<mlir::Operation *, 16> hotspotRoots;
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    llvm::StringRef balancedBody = tile == 1   ? sendLeft
+                                   : tile == 3 ? sendRight
                                                : "";
-    llvm::StringRef hotspotBody = rank == 1 ? sendBoth : "";
-    balancedOwners.push_back(makeDTERankModule(4, 4, "", balancedBody));
-    hotspotOwners.push_back(makeDTERankModule(4, 4, "", hotspotBody));
+    llvm::StringRef hotspotBody = tile == 1 ? sendBoth : "";
+    balancedOwners.push_back(makeDTETileModule("", balancedBody));
+    hotspotOwners.push_back(makeDTETileModule("", hotspotBody));
     ASSERT_TRUE(balancedOwners.back());
     ASSERT_TRUE(hotspotOwners.back());
     balancedRoots.push_back(balancedOwners.back()->getOperation());
@@ -1988,30 +1481,30 @@ TEST_F(ScheduleCostAnalysisTest,
   }
 
   const auto policy = wafer::analysis::getTargetScheduleCostPolicy();
-  auto balanced = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      balancedRoots, policy);
-  auto hotspot = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      hotspotRoots, policy);
+  auto balanced = analyzeWholeCard(balancedRoots, policy);
+  auto hotspot = analyzeWholeCard(hotspotRoots, policy);
   ASSERT_TRUE(balanced.aggregateNoC.aggregateTransmitBytes.isKnown());
   ASSERT_TRUE(hotspot.aggregateNoC.aggregateTransmitBytes.isKnown());
   EXPECT_EQ(balanced.aggregateNoC.aggregateTransmitBytes.value, 32u);
   EXPECT_EQ(hotspot.aggregateNoC.aggregateTransmitBytes.value, 32u);
-  ASSERT_TRUE(balanced.minimumHopLinkByteDemand.isKnown());
-  ASSERT_TRUE(hotspot.minimumHopLinkByteDemand.isKnown());
+  ASSERT_TRUE(balanced.maximumTileNoCTransmitBytes.isKnown());
+  ASSERT_TRUE(hotspot.maximumTileNoCTransmitBytes.isKnown());
+  EXPECT_EQ(balanced.maximumTileNoCTransmitBytes.value, 16u);
+  EXPECT_EQ(hotspot.maximumTileNoCTransmitBytes.value, 32u);
+  EXPECT_EQ(balanced.aggregateNoC.transmitMessageCount.value, 2u);
+  EXPECT_EQ(hotspot.aggregateNoC.transmitMessageCount.value, 2u);
   EXPECT_EQ(balanced.minimumHopLinkByteDemand.value, 32u);
   EXPECT_EQ(hotspot.minimumHopLinkByteDemand.value, 32u);
-  ASSERT_TRUE(balanced.idealizedMinimumPeakLinkByteDemand.isKnown());
-  ASSERT_TRUE(hotspot.idealizedMinimumPeakLinkByteDemand.isKnown());
-  EXPECT_EQ(balanced.idealizedMinimumPeakLinkByteDemand.value,
-            hotspot.idealizedMinimumPeakLinkByteDemand.value);
-  ASSERT_TRUE(balanced.maximumRankNoCTransmitBytes.isKnown());
-  ASSERT_TRUE(hotspot.maximumRankNoCTransmitBytes.isKnown());
-  EXPECT_EQ(balanced.maximumRankNoCTransmitBytes.value, 16u);
-  EXPECT_EQ(hotspot.maximumRankNoCTransmitBytes.value, 32u);
-  ASSERT_TRUE(balanced.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
-  ASSERT_TRUE(hotspot.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
+  EXPECT_EQ(balanced.minimumHopMessageDemand.value, 2u);
+  EXPECT_EQ(hotspot.minimumHopMessageDemand.value, 2u);
+  EXPECT_EQ(balanced.directedNoCLinkCount.value, 48u);
+  EXPECT_EQ(hotspot.directedNoCLinkCount.value, 48u);
+  EXPECT_EQ(balanced.idealizedMinimumPeakLinkByteDemand.value, 1u);
+  EXPECT_EQ(hotspot.idealizedMinimumPeakLinkByteDemand.value, 1u);
   EXPECT_EQ(balanced.modeledNoCRoute.peakDirectedLinkByteDemand.value, 16u);
   EXPECT_EQ(hotspot.modeledNoCRoute.peakDirectedLinkByteDemand.value, 32u);
+  EXPECT_EQ(balanced.maximumNoCHopCount.value, 1u);
+  EXPECT_EQ(hotspot.maximumNoCHopCount.value, 1u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
@@ -2019,31 +1512,30 @@ TEST_F(ScheduleCostAnalysisTest,
   constexpr llvm::StringLiteral send = R"mlir(
     %sent = wafer.instr.dte_send %buffer
         {peer = 2 : i64, bytes = 8 : i64,
-         message = #wafer.dte_message<communication = 17, phase = peer_dataflow, round = 0, slice = 3>}
+         message = #wafer.dte_message<communication = 17, round = 0, slice = 3>}
         : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
     wafer.instr.dte_wait %sent : !async.token
 )mlir";
   constexpr llvm::StringLiteral recv = R"mlir(
     %received = wafer.instr.dte_recv %buffer
         {peer = 0 : i64, bytes = 8 : i64,
-         message = #wafer.dte_message<communication = 17, phase = peer_dataflow, round = 0, slice = 3>}
+         message = #wafer.dte_message<communication = 17, round = 0, slice = 3>}
         : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
     wafer.instr.dte_wait %received : !async.token
 )mlir";
 
-  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 3> owners;
-  llvm::SmallVector<mlir::Operation *, 3> roots;
-  for (int64_t rank = 0; rank < 3; ++rank) {
-    owners.push_back(makeDTERankModule(3, 3, "",
-                                       rank == 0   ? send
-                                       : rank == 2 ? recv
-                                                   : ""));
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;
+  llvm::SmallVector<mlir::Operation *, 16> roots;
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    owners.push_back(makeDTETileModule("", tile == 0   ? send
+                                           : tile == 2 ? recv
+                                                       : ""));
     ASSERT_TRUE(owners.back());
     roots.push_back(owners.back()->getOperation());
   }
 
-  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy());
+  auto cost =
+      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
   ASSERT_TRUE(cost.aggregateNoC.aggregateTransmitBytes.isKnown());
   EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.value, 8u);
   ASSERT_TRUE(cost.aggregateNoC.aggregateReceiveBytes.isKnown());
@@ -2053,60 +1545,67 @@ TEST_F(ScheduleCostAnalysisTest,
   EXPECT_EQ(cost.aggregateNoC.receiveMessageCount.value, 1u);
   EXPECT_EQ(cost.aggregateNoC.waitOperationCount.value, 2u);
   EXPECT_EQ(cost.aggregateNoC.waitedEventCount.value, 2u);
-  EXPECT_EQ(cost.maximumRankNoCTransmitBytes.value, 8u);
-  EXPECT_EQ(cost.maximumRankNoCReceiveBytes.value, 8u);
-  EXPECT_EQ(cost.maximumRankNoCTransmitMessageCount.value, 1u);
-  EXPECT_EQ(cost.maximumRankNoCReceiveMessageCount.value, 1u);
-  ASSERT_TRUE(cost.minimumHopLinkByteDemand.isKnown());
+  EXPECT_EQ(cost.maximumTileNoCTransmitBytes.value, 8u);
+  EXPECT_EQ(cost.maximumTileNoCReceiveBytes.value, 8u);
+  EXPECT_EQ(cost.maximumTileNoCTransmitMessageCount.value, 1u);
+  EXPECT_EQ(cost.maximumTileNoCReceiveMessageCount.value, 1u);
   EXPECT_EQ(cost.minimumHopLinkByteDemand.value, 16u);
-  ASSERT_TRUE(cost.minimumHopMessageDemand.isKnown());
   EXPECT_EQ(cost.minimumHopMessageDemand.value, 2u);
+  EXPECT_EQ(cost.directedNoCLinkCount.value, 48u);
+  EXPECT_EQ(cost.idealizedMinimumPeakLinkByteDemand.value, 1u);
+  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.value, 8u);
+  EXPECT_EQ(cost.maximumNoCHopCount.value, 2u);
   ASSERT_TRUE(cost.aggregateEventCount.isKnown());
   EXPECT_EQ(cost.aggregateEventCount.value, 2u);
   ASSERT_TRUE(cost.aggregateInstructionCount.isKnown());
   EXPECT_EQ(cost.aggregateInstructionCount.value, 4u);
-  for (const auto &collective : cost.aggregateNoC.collectiveTransmitBytes) {
-    ASSERT_TRUE(collective.isKnown());
-    EXPECT_EQ(collective.value, 0u);
-  }
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       WholeCardMinimumHopDemandPropagatesArithmeticOverflow) {
+       WholeCardExactNoCWorkPropagatesArithmeticOverflow) {
   constexpr llvm::StringLiteral overflowingSend = R"mlir(
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %cmax = arith.constant 9223372036854775807 : index
     scf.for %i = %c0 to %cmax step %c1 {
       %sent = wafer.instr.dte_send %buffer
-          {peer = 2 : i64, bytes = 2 : i64,
-           message = #wafer.dte_message<communication = 3, phase = collective_permute, round = 0, slice = 0>}
+          {peer = 2 : i64, bytes = 3 : i64,
+           message = #wafer.dte_message<communication = 3, round = 0, slice = 0>}
           : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
     }
 )mlir";
-  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 3> owners;
-  llvm::SmallVector<mlir::Operation *, 3> roots;
-  for (int64_t rank = 0; rank < 3; ++rank) {
-    owners.push_back(
-        makeDTERankModule(3, 3, "", rank == 0 ? overflowingSend : ""));
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;
+  llvm::SmallVector<mlir::Operation *, 16> roots;
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    owners.push_back(makeDTETileModule("", tile == 0 ? overflowingSend : ""));
     ASSERT_TRUE(owners.back());
     roots.push_back(owners.back()->getOperation());
   }
-  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy());
+  auto cost =
+      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
+  EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.knowledge,
+            ScheduleCostKnowledge::Overflow);
+  EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.reason,
+            ScheduleCostReason::ArithmeticOverflow);
+  ASSERT_TRUE(cost.aggregateNoC.transmitMessageCount.isKnown());
+  EXPECT_EQ(cost.aggregateNoC.transmitMessageCount.value,
+            9223372036854775807ULL);
   EXPECT_EQ(cost.minimumHopLinkByteDemand.knowledge,
             ScheduleCostKnowledge::Overflow);
   EXPECT_EQ(cost.minimumHopLinkByteDemand.reason,
             ScheduleCostReason::ArithmeticOverflow);
-  ASSERT_TRUE(cost.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown());
-  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.value,
+  EXPECT_EQ(cost.minimumHopMessageDemand.value,
             std::numeric_limits<uint64_t>::max() - 1);
-  ASSERT_TRUE(cost.maximumNoCHopCount.isKnown());
+  EXPECT_EQ(cost.directedNoCLinkCount.value, 48u);
+  EXPECT_EQ(cost.idealizedMinimumPeakLinkByteDemand.knowledge,
+            ScheduleCostKnowledge::Overflow);
+  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.knowledge,
+            ScheduleCostKnowledge::Overflow);
   EXPECT_EQ(cost.maximumNoCHopCount.value, 2u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       WholeCardModeledRoutePropagatesSharedLinkOverflow) {
+       WholeCardExactNoCAggregationPropagatesOverflow) {
   constexpr llvm::StringLiteral overflowingSharedLink = R"mlir(
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2114,95 +1613,104 @@ TEST_F(ScheduleCostAnalysisTest,
     scf.for %i = %c0 to %cmax step %c1 {
       %first = wafer.instr.dte_send %buffer
           {peer = 1 : i64, bytes = 2 : i64,
-           message = #wafer.dte_message<communication = 31, phase = peer_dataflow, round = 0, slice = 0>}
+           message = #wafer.dte_message<communication = 31, round = 0, slice = 0>}
           : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
       %second = wafer.instr.dte_send %buffer
           {peer = 1 : i64, bytes = 2 : i64,
-           message = #wafer.dte_message<communication = 32, phase = peer_dataflow, round = 0, slice = 0>}
+           message = #wafer.dte_message<communication = 32, round = 0, slice = 0>}
           : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
     }
 )mlir";
-  auto rank0 = makeDTERankModule(2, 2, "", overflowingSharedLink);
-  auto rank1 = makeDTERankModule(2, 2, "", "");
-  ASSERT_TRUE(rank0);
-  ASSERT_TRUE(rank1);
-  llvm::SmallVector<mlir::Operation *, 2> roots{rank0->getOperation(),
-                                                rank1->getOperation()};
-  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy());
-  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.knowledge,
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;
+  llvm::SmallVector<mlir::Operation *, 16> roots;
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    owners.push_back(
+        makeDTETileModule("", tile == 0 ? overflowingSharedLink : ""));
+    ASSERT_TRUE(owners.back());
+    roots.push_back(owners.back()->getOperation());
+  }
+  auto cost =
+      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
+  EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.knowledge,
             ScheduleCostKnowledge::Overflow);
-  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.reason,
+  EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.reason,
             ScheduleCostReason::ArithmeticOverflow);
-  ASSERT_TRUE(cost.minimumHopMessageDemand.isKnown());
+  ASSERT_TRUE(cost.aggregateNoC.transmitMessageCount.isKnown());
+  EXPECT_EQ(cost.aggregateNoC.transmitMessageCount.value,
+            std::numeric_limits<uint64_t>::max() - 1);
+  EXPECT_EQ(cost.minimumHopLinkByteDemand.knowledge,
+            ScheduleCostKnowledge::Overflow);
   EXPECT_EQ(cost.minimumHopMessageDemand.value,
             std::numeric_limits<uint64_t>::max() - 1);
-  ASSERT_TRUE(cost.maximumNoCHopCount.isKnown());
+  EXPECT_EQ(cost.directedNoCLinkCount.value, 48u);
+  EXPECT_EQ(cost.idealizedMinimumPeakLinkByteDemand.knowledge,
+            ScheduleCostKnowledge::Overflow);
+  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.knowledge,
+            ScheduleCostKnowledge::Overflow);
   EXPECT_EQ(cost.maximumNoCHopCount.value, 1u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       WholeCardMinimumHopDemandFailsClosedWithoutTypedTopology) {
+       DTEPeerVerifierRejectsMissingPhysicalTopology) {
   constexpr llvm::StringLiteral send = R"mlir(
     %sent = wafer.instr.dte_send %buffer
         {peer = 1 : i64, bytes = 4 : i64,
-         message = #wafer.dte_message<communication = 4, phase = collective_permute, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 4, round = 0, slice = 0>}
         : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
 )mlir";
-  auto rank0 = makeDTERankModule(2, 2, "", send, false);
-  auto rank1 = makeDTERankModule(2, 2, "", "", false);
-  ASSERT_TRUE(rank0);
-  ASSERT_TRUE(rank1);
-  llvm::SmallVector<mlir::Operation *, 2> roots{rank0->getOperation(),
-                                                rank1->getOperation()};
-  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy());
-  EXPECT_EQ(cost.minimumHopLinkByteDemand.knowledge,
-            ScheduleCostKnowledge::Unknown);
-  EXPECT_EQ(cost.minimumHopLinkByteDemand.reason,
-            ScheduleCostReason::InvalidExecutionTopology);
-  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.knowledge,
-            ScheduleCostKnowledge::Unknown);
-  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.reason,
-            ScheduleCostReason::InvalidExecutionTopology);
-  EXPECT_EQ(cost.maximumNoCHopCount.knowledge, ScheduleCostKnowledge::Unknown);
-  EXPECT_EQ(cost.maximumNoCHopCount.reason,
-            ScheduleCostReason::InvalidExecutionTopology);
+  auto tile0 = makeDTETileModule("", send, false);
+  auto tile1 = makeDTETileModule("", "", false);
+  ASSERT_TRUE(tile0);
+  ASSERT_TRUE(tile1);
+  mlir::ScopedDiagnosticHandler suppress(
+      context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
+  EXPECT_TRUE(mlir::failed(mlir::verify(*tile0)));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*tile1)));
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       WholeCardMinimumHopDemandPreservesDynamicMultiplicityUnknown) {
+       WholeCardExactNoCWorkPreservesUnavailableDynamicMultiplicity) {
   constexpr llvm::StringLiteral dynamicSend = R"mlir(
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     scf.for %i = %c0 to %n step %c1 {
       %sent = wafer.instr.dte_send %buffer
           {peer = 1 : i64, bytes = 4 : i64,
-           message = #wafer.dte_message<communication = 5, phase = collective_permute, round = 0, slice = 0>}
+           message = #wafer.dte_message<communication = 5, round = 0, slice = 0>}
           : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
     }
 )mlir";
-  auto rank0 = makeDTERankModule(2, 2, "%n: index", dynamicSend);
-  auto rank1 = makeDTERankModule(2, 2, "", "");
-  ASSERT_TRUE(rank0);
-  ASSERT_TRUE(rank1);
-  llvm::SmallVector<mlir::Operation *, 2> roots{rank0->getOperation(),
-                                                rank1->getOperation()};
-  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
-      roots, wafer::analysis::getTargetScheduleCostPolicy());
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;
+  llvm::SmallVector<mlir::Operation *, 16> roots;
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    owners.push_back(makeDTETileModule(tile == 0 ? "%n: index" : "",
+                                       tile == 0 ? dynamicSend : ""));
+    ASSERT_TRUE(owners.back());
+    roots.push_back(owners.back()->getOperation());
+  }
+  auto cost =
+      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
+  EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.knowledge,
+            ScheduleCostKnowledge::Unavailable);
+  EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.reason,
+            ScheduleCostReason::DynamicLoopTripCount);
+  EXPECT_EQ(cost.aggregateNoC.transmitMessageCount.knowledge,
+            ScheduleCostKnowledge::Unavailable);
+  EXPECT_EQ(cost.aggregateNoC.transmitMessageCount.reason,
+            ScheduleCostReason::DynamicLoopTripCount);
   EXPECT_EQ(cost.minimumHopLinkByteDemand.knowledge,
-            ScheduleCostKnowledge::Unknown);
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.minimumHopLinkByteDemand.reason,
             ScheduleCostReason::DynamicLoopTripCount);
   EXPECT_EQ(cost.minimumHopMessageDemand.knowledge,
-            ScheduleCostKnowledge::Unknown);
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.minimumHopMessageDemand.reason,
             ScheduleCostReason::DynamicLoopTripCount);
+  EXPECT_EQ(cost.directedNoCLinkCount.value, 48u);
+  EXPECT_EQ(cost.idealizedMinimumPeakLinkByteDemand.knowledge,
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.knowledge,
-            ScheduleCostKnowledge::Unknown);
-  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.reason,
-            ScheduleCostReason::DynamicLoopTripCount);
-  ASSERT_TRUE(cost.maximumNoCHopCount.isKnown());
+            ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.maximumNoCHopCount.value, 1u);
 }
 

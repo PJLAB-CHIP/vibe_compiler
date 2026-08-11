@@ -21,10 +21,6 @@ const PackageModuleExportRecord *
 findModuleExport(const PackageModuleRecord &module,
                  PackageModuleExportRole role);
 
-const PackageCompletionRecord *
-findCompletion(llvm::ArrayRef<PackageCompletionRecord> completions,
-               CompletionId id);
-
 llvm::Expected<PackageManifest> parseManifest(llvm::StringRef json,
                                               const PackageParseLimits &limits);
 

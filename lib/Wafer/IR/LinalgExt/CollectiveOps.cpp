@@ -43,72 +43,74 @@ verifyAllowedAttrs(mlir::Operation *op,
   return mlir::success();
 }
 
-mlir::LogicalResult verifyRankGroup(mlir::Operation *op,
-                                    mlir::DenseI64ArrayAttr rankGroupAttr) {
-  auto rankGroup = rankGroupAttr.asArrayRef();
-  if (rankGroup.empty())
-    return op->emitOpError("rank_group must not be empty");
+mlir::LogicalResult verifyPartitionGroup(mlir::Operation *op,
+                                         mlir::DenseI64ArrayAttr
+                                             partitionGroupAttr) {
+  auto partitionGroup = partitionGroupAttr.asArrayRef();
+  if (partitionGroup.empty())
+    return op->emitOpError("partition_group must not be empty");
 
   llvm::SmallSet<int64_t, 8> seen;
-  for (int64_t rank : rankGroup) {
-    if (rank < 0)
-      return op->emitOpError("rank_group entries must be non-negative");
-    if (!seen.insert(rank).second)
-      return op->emitOpError("rank_group entries must be unique");
+  for (int64_t partitionId : partitionGroup) {
+    if (partitionId < 0)
+      return op->emitOpError("partition_group entries must be non-negative");
+    if (!seen.insert(partitionId).second)
+      return op->emitOpError("partition_group entries must be unique");
   }
 
-  return verifyLogicalRanksWithinExecutionMesh(
-      op, rankGroup, "linalg-ext collective rank_group");
+  return verifyPartitionIdsWithinExecutionMesh(
+      op, partitionGroup, "linalg-ext collective partition_group");
 }
 
 mlir::LogicalResult
-verifyRankGroups(mlir::Operation *op,
-                 mlir::DenseIntElementsAttr rankGroupsAttr) {
+verifyPartitionGroups(mlir::Operation *op,
+                      mlir::DenseIntElementsAttr partitionGroupsAttr) {
   auto groupsType =
-      mlir::dyn_cast<mlir::RankedTensorType>(rankGroupsAttr.getType());
+      mlir::dyn_cast<mlir::RankedTensorType>(partitionGroupsAttr.getType());
   if (!groupsType || groupsType.getRank() != 2)
     return op->emitOpError(
-        "rank_groups must be a rank-2 i64 dense elements attr");
+        "partition_groups must be a rank-2 i64 dense elements attr");
   if (groupsType.getDimSize(0) <= 0 || groupsType.getDimSize(1) <= 0)
-    return op->emitOpError("rank_groups dimensions must be positive");
+    return op->emitOpError("partition_groups dimensions must be positive");
 
   llvm::SmallSet<int64_t, 16> seen;
-  llvm::SmallVector<int64_t, 16> ranks;
-  for (llvm::APInt value : rankGroupsAttr.getValues<llvm::APInt>()) {
+  llvm::SmallVector<int64_t, 16> partitionIds;
+  for (llvm::APInt value : partitionGroupsAttr.getValues<llvm::APInt>()) {
     if (!value.isSignedIntN(63))
-      return op->emitOpError("rank_groups entries must fit in int64");
-    int64_t rank = value.getSExtValue();
-    if (rank < 0)
-      return op->emitOpError("rank_groups entries must be non-negative");
-    if (!seen.insert(rank).second)
-      return op->emitOpError("rank_groups entries must be unique");
-    ranks.push_back(rank);
+      return op->emitOpError("partition_groups entries must fit in int64");
+    int64_t partitionId = value.getSExtValue();
+    if (partitionId < 0)
+      return op->emitOpError("partition_groups entries must be non-negative");
+    if (!seen.insert(partitionId).second)
+      return op->emitOpError("partition_groups entries must be unique");
+    partitionIds.push_back(partitionId);
   }
 
-  return verifyLogicalRanksWithinExecutionMesh(
-      op, ranks, "linalg-ext collective rank_groups");
+  return verifyPartitionIdsWithinExecutionMesh(
+      op, partitionIds, "linalg-ext collective partition_groups");
 }
 
 mlir::LogicalResult
-verifyCollectiveRankGroups(mlir::Operation *op,
-                           mlir::DenseI64ArrayAttr rankGroupAttr,
-                           mlir::DenseIntElementsAttr rankGroupsAttr) {
-  if (rankGroupAttr && rankGroupsAttr)
+verifyCollectivePartitionGroups(mlir::Operation *op,
+                                mlir::DenseI64ArrayAttr partitionGroupAttr,
+                                mlir::DenseIntElementsAttr partitionGroupsAttr) {
+  if (partitionGroupAttr && partitionGroupsAttr)
     return op->emitOpError(
-        "must specify only one of rank_group or rank_groups");
-  if (!rankGroupAttr && !rankGroupsAttr)
-    return op->emitOpError("requires rank_group or rank_groups");
-  if (rankGroupAttr)
-    return verifyRankGroup(op, rankGroupAttr);
-  return verifyRankGroups(op, rankGroupsAttr);
+        "must specify only one of partition_group or partition_groups");
+  if (!partitionGroupAttr && !partitionGroupsAttr)
+    return op->emitOpError("requires partition_group or partition_groups");
+  if (partitionGroupAttr)
+    return verifyPartitionGroup(op, partitionGroupAttr);
+  return verifyPartitionGroups(op, partitionGroupsAttr);
 }
 
-int64_t getCollectiveRankGroupSize(mlir::DenseI64ArrayAttr rankGroupAttr,
-                                   mlir::DenseIntElementsAttr rankGroupsAttr) {
-  if (rankGroupAttr)
-    return static_cast<int64_t>(rankGroupAttr.asArrayRef().size());
+int64_t getCollectivePartitionGroupSize(
+    mlir::DenseI64ArrayAttr partitionGroupAttr,
+    mlir::DenseIntElementsAttr partitionGroupsAttr) {
+  if (partitionGroupAttr)
+    return static_cast<int64_t>(partitionGroupAttr.asArrayRef().size());
   auto groupsType =
-      mlir::cast<mlir::RankedTensorType>(rankGroupsAttr.getType());
+      mlir::cast<mlir::RankedTensorType>(partitionGroupsAttr.getType());
   return groupsType.getDimSize(1);
 }
 
@@ -239,7 +241,7 @@ mlir::LogicalResult verifyAllGatherLikeShape(mlir::Operation *op,
       if (resultDim != expected)
         return op->emitOpError(
             "all_gather result dimension along axis must equal input "
-            "dimension times rank_group size");
+            "dimension times partition_group size");
     }
   }
   return mlir::success();
@@ -271,7 +273,7 @@ mlir::LogicalResult verifyReduceScatterLikeShape(mlir::Operation *op,
       if (inputDim != expectedInput)
         return op->emitOpError(
             "reduce_scatter input dimension along axis must equal result "
-            "dimension times rank_group size");
+            "dimension times partition_group size");
     }
   }
   return mlir::success();
@@ -327,7 +329,7 @@ verifyAllToAllShape(mlir::Operation *op, mlir::OperandRange inputs,
       if (inputSplit != expectedInputSplit)
         return op->emitOpError(
             "all_to_all input split dimension must equal result split "
-            "dimension times rank_group size");
+            "dimension times partition_group size");
     }
 
     int64_t inputConcat = inputType.getDimSize(concatAxis);
@@ -340,7 +342,7 @@ verifyAllToAllShape(mlir::Operation *op, mlir::OperandRange inputs,
       if (resultConcat != expectedResultConcat)
         return op->emitOpError(
             "all_to_all result concat dimension must equal input concat "
-            "dimension times rank_group size");
+            "dimension times partition_group size");
     }
   }
   return mlir::success();
@@ -367,7 +369,7 @@ verifySourceTargetPairs(mlir::Operation *op,
 
   llvm::SmallSet<int64_t, 8> seenSources;
   llvm::SmallSet<int64_t, 8> seenTargets;
-  llvm::SmallVector<int64_t, 8> logicalRanks;
+  llvm::SmallVector<int64_t, 8> partitionIds;
   for (size_t index = 0; index < pairs.size(); index += 2) {
     int64_t source = pairs[index];
     int64_t target = pairs[index + 1];
@@ -375,13 +377,13 @@ verifySourceTargetPairs(mlir::Operation *op,
       return op->emitOpError(
           "source_target_pairs entries must be non-negative");
     if (!seenSources.insert(source).second)
-      return op->emitOpError("source ranks must be unique");
+      return op->emitOpError("source partition IDs must be unique");
     if (!seenTargets.insert(target).second)
-      return op->emitOpError("target ranks must be unique");
-    logicalRanks.push_back(source);
-    logicalRanks.push_back(target);
+      return op->emitOpError("target partition IDs must be unique");
+    partitionIds.push_back(source);
+    partitionIds.push_back(target);
   }
-  return verifyLogicalRanksWithinExecutionMesh(op, logicalRanks,
+  return verifyPartitionIdsWithinExecutionMesh(op, partitionIds,
                                                "source_target_pairs");
 }
 
@@ -681,21 +683,21 @@ mlir::LogicalResult verifyCombinerRegion(mlir::Operation *op,
 
 mlir::LogicalResult LinalgExtCollectiveAllGatherOp::verify() {
   if (mlir::failed(verifyAllowedAttrs(getOperation(),
-                                      {"axis", "rank_group", "rank_groups",
+                                      {"axis", "partition_group", "partition_groups",
                                        "channel_id", "use_global_device_ids"})))
     return mlir::failure();
   if (mlir::failed(verifySingleDestinationStyleShape(
           getOperation(), getInputs(), getOuts(), getResults())))
     return mlir::failure();
-  if (mlir::failed(verifyCollectiveRankGroups(
-          getOperation(), getRankGroupAttr(), getRankGroupsAttr())))
+  if (mlir::failed(verifyCollectivePartitionGroups(
+          getOperation(), getPartitionGroupAttr(), getPartitionGroupsAttr())))
     return mlir::failure();
   if (mlir::failed(verifyChannelAttrs(getOperation(), getChannelIdAttr(),
                                       getUseGlobalDeviceIdsAttr())))
     return mlir::failure();
   return verifyAllGatherLikeShape(
       getOperation(), getInputs(), getResults(), getAxisAttr(),
-      getCollectiveRankGroupSize(getRankGroupAttr(), getRankGroupsAttr()));
+      getCollectivePartitionGroupSize(getPartitionGroupAttr(), getPartitionGroupsAttr()));
 }
 
 WaferLinalgExtCollectiveKind
@@ -738,22 +740,22 @@ mlir::LogicalResult LinalgExtCollectiveAllGatherOp::getResultTilePosition(
 
 mlir::LogicalResult LinalgExtCollectiveReduceScatterOp::verify() {
   if (mlir::failed(verifyAllowedAttrs(getOperation(),
-                                      {"axis", "rank_group", "rank_groups",
+                                      {"axis", "partition_group", "partition_groups",
                                        "channel_id", "use_global_device_ids"})))
     return mlir::failure();
   if (mlir::failed(verifySingleDestinationStyleShape(
           getOperation(), getInputs(), getOuts(), getResults(),
           /*allowPromotedInputs=*/true)))
     return mlir::failure();
-  if (mlir::failed(verifyCollectiveRankGroups(
-          getOperation(), getRankGroupAttr(), getRankGroupsAttr())))
+  if (mlir::failed(verifyCollectivePartitionGroups(
+          getOperation(), getPartitionGroupAttr(), getPartitionGroupsAttr())))
     return mlir::failure();
   if (mlir::failed(verifyChannelAttrs(getOperation(), getChannelIdAttr(),
                                       getUseGlobalDeviceIdsAttr())))
     return mlir::failure();
   return verifyReduceScatterLikeShape(
       getOperation(), getInputs(), getResults(), getAxisAttr(),
-      getCollectiveRankGroupSize(getRankGroupAttr(), getRankGroupsAttr()));
+      getCollectivePartitionGroupSize(getPartitionGroupAttr(), getPartitionGroupsAttr()));
 }
 
 mlir::LogicalResult LinalgExtCollectiveReduceScatterOp::verifyRegions() {
@@ -802,15 +804,15 @@ mlir::LogicalResult LinalgExtCollectiveReduceScatterOp::getResultTilePosition(
 
 mlir::LogicalResult LinalgExtCollectiveAllReduceOp::verify() {
   if (mlir::failed(verifyAllowedAttrs(getOperation(),
-                                      {"rank_group", "rank_groups",
+                                      {"partition_group", "partition_groups",
                                        "channel_id", "use_global_device_ids"})))
     return mlir::failure();
   if (mlir::failed(verifySingleDestinationStyleShape(
           getOperation(), getInputs(), getOuts(), getResults(),
           /*allowPromotedInputs=*/true)))
     return mlir::failure();
-  if (mlir::failed(verifyCollectiveRankGroups(
-          getOperation(), getRankGroupAttr(), getRankGroupsAttr())))
+  if (mlir::failed(verifyCollectivePartitionGroups(
+          getOperation(), getPartitionGroupAttr(), getPartitionGroupsAttr())))
     return mlir::failure();
   if (mlir::failed(verifyChannelAttrs(getOperation(), getChannelIdAttr(),
                                       getUseGlobalDeviceIdsAttr())))
@@ -860,14 +862,14 @@ mlir::LogicalResult LinalgExtCollectiveAllReduceOp::getResultTilePosition(
 mlir::LogicalResult LinalgExtCollectiveAllToAllOp::verify() {
   if (mlir::failed(verifyAllowedAttrs(
           getOperation(),
-          {"split_axis", "concat_axis", "split_count", "rank_group",
-           "rank_groups", "channel_id", "use_global_device_ids"})))
+          {"split_axis", "concat_axis", "split_count", "partition_group",
+           "partition_groups", "channel_id", "use_global_device_ids"})))
     return mlir::failure();
   if (mlir::failed(verifySingleDestinationStyleShape(
           getOperation(), getInputs(), getOuts(), getResults())))
     return mlir::failure();
-  if (mlir::failed(verifyCollectiveRankGroups(
-          getOperation(), getRankGroupAttr(), getRankGroupsAttr())))
+  if (mlir::failed(verifyCollectivePartitionGroups(
+          getOperation(), getPartitionGroupAttr(), getPartitionGroupsAttr())))
     return mlir::failure();
   if (mlir::failed(verifyChannelAttrs(getOperation(), getChannelIdAttr(),
                                       getUseGlobalDeviceIdsAttr())))

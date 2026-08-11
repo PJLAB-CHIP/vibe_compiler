@@ -19,9 +19,12 @@ namespace {
 
 class DDRHighWaterAnalysis {
 public:
-  explicit DDRHighWaterAnalysis(InstructionProgramCost &cost)
+  DDRHighWaterAnalysis(
+      InstructionProgramCost &cost,
+      llvm::function_ref<bool(mlir::Operation *)> includeOperation)
       : metric(cost.ddrHighWaterBytes),
-        bufferCount(cost.compilerOwnedDDRBufferCount) {}
+        bufferCount(cost.compilerOwnedDDRBufferCount),
+        includeOperation(includeOperation) {}
 
   void run(mlir::Operation *root) {
     llvm::SmallVector<mlir::Operation *, 8> scopes;
@@ -41,6 +44,7 @@ public:
         continue;
       scope->walk([&](mlir::memref::AllocOp allocation) {
         if (!isWaferDDRMemRefType(allocation.getType()) ||
+            !includeOperation(allocation.getOperation()) ||
             !seenAllocations.insert(allocation.getOperation()).second)
           return;
         account(allocation);
@@ -61,7 +65,7 @@ private:
     auto offset =
         allocation->getAttrOfType<DDROffsetAttr>(kWaferDDROffsetAttrName);
     if (!offset) {
-      degrade(metric, ScheduleCostKnowledge::Unknown,
+      degrade(metric, ScheduleCostKnowledge::Unavailable,
               ScheduleCostReason::MissingAcceptedDDROffset);
       return;
     }
@@ -73,8 +77,8 @@ private:
     std::optional<WaferPhysicalTensorInfo> physical =
         computeWaferPhysicalTensorInfo(allocation.getType());
     if (!physical || physical->physicalBytes < 0) {
-      degrade(metric, ScheduleCostKnowledge::Unknown,
-              ScheduleCostReason::UnknownPhysicalGeometry);
+      degrade(metric, ScheduleCostKnowledge::Unavailable,
+              ScheduleCostReason::UnavailablePhysicalGeometry);
       return;
     }
     uint64_t end = 0;
@@ -90,12 +94,19 @@ private:
 
   ScheduleCostMetric &metric;
   ScheduleCostMetric &bufferCount;
+  llvm::function_ref<bool(mlir::Operation *)> includeOperation;
 };
 
 } // namespace
 
 void collectDDRHighWater(mlir::Operation *root, InstructionProgramCost &cost) {
-  DDRHighWaterAnalysis(cost).run(root);
+  collectDDRHighWater(root, cost, [](mlir::Operation *) { return true; });
+}
+
+void collectDDRHighWater(
+    mlir::Operation *root, InstructionProgramCost &cost,
+    llvm::function_ref<bool(mlir::Operation *)> includeOperation) {
+  DDRHighWaterAnalysis(cost, includeOperation).run(root);
 }
 
 } // namespace wafer::analysis::detail

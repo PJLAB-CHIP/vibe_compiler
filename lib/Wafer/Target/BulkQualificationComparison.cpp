@@ -111,10 +111,17 @@ llvm::Expected<QualificationRun> runQualification(
     return comparison.takeError();
   const BulkTensorStorage &destinationTemplate =
       testCase.getDestinationTemplate();
+  // The target comparator above owns logical raw-bit equality.  Physical
+  // layouts may contain padding which is not part of that logical tensor and
+  // which a backend is free to preserve or overwrite.  Overlay the formal
+  // values on the backend's final storage so that the two storage digests
+  // differ exactly when an observable logical element differs, rather than
+  // when only unobservable padding differs.  The backend storage digest is
+  // still frozen independently for repeatability by BulkAdmission.
   llvm::Expected<std::vector<uint8_t>> formalPhysical =
       packPhysicalTensorLogicalValues(destinationTemplate.getKey(),
                                       formal->values,
-                                      destinationTemplate.getStorage());
+                                      backend->destination.getStorage());
   if (!formalPhysical)
     return formalPhysical.takeError();
   llvm::Expected<BulkTensorStorage> formalStorage = BulkTensorStorage::create(

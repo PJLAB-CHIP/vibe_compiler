@@ -12,21 +12,19 @@
 
 namespace wafer::support {
 
-/// Stable units of compiler search work. They count actual compiler actions,
-/// not elapsed time, estimated target cycles, or persisted candidate state.
+/// Stable units of compiler work. They count actual compiler actions, not
+/// elapsed time, estimated target cycles, or persisted planning state.
 enum class CompileWorkKind : size_t {
-  CandidateExpandedState,
-  FinalizationCandidateClone,
-  FinalizationInstructionLowering,
+  PhysicalTileFinalization,
+  TileToInstructionLowering,
   SPMPlanning,
   DDRPlanning,
   Count,
 };
 
 struct CompileWorkStatistics {
-  uint64_t candidateExpandedStates = 0;
-  uint64_t finalizationCandidateClones = 0;
-  uint64_t finalizationInstructionLowerings = 0;
+  uint64_t physicalTileFinalizations = 0;
+  uint64_t tileToInstructionLowerings = 0;
   uint64_t spmPlanningInvocations = 0;
   uint64_t ddrPlanningInvocations = 0;
 };
@@ -47,9 +45,8 @@ public:
           std::memory_order_relaxed);
     };
     return {
-        read(CompileWorkKind::CandidateExpandedState),
-        read(CompileWorkKind::FinalizationCandidateClone),
-        read(CompileWorkKind::FinalizationInstructionLowering),
+        read(CompileWorkKind::PhysicalTileFinalization),
+        read(CompileWorkKind::TileToInstructionLowering),
         read(CompileWorkKind::SPMPlanning),
         read(CompileWorkKind::DDRPlanning),
     };

@@ -51,7 +51,7 @@ int main(int argc, char **argv) {
     return 1;
   if (!requireOption(options.inputProgramDirectory, "--input-program-dir") ||
       !requireOption(options.outputProgramDirectory, "--output-program-dir") ||
-      !requireOption(options.executionRanks, "--execution-ranks") ||
+      !requireOption(options.numPartitions, "--num-partitions") ||
       !requireOption(options.runtimeLaunchKind, "--launch-kind"))
     return 1;
   if (options.profile && options.targetModel) {
@@ -229,11 +229,11 @@ int main(int argc, char **argv) {
   }
 #endif
 
-  int64_t rankCount = 0;
-  llvm::StringRef rankValue(*options.executionRanks);
-  if (rankValue.getAsInteger(10, rankCount)) {
-    llvm::errs() << "wafer-compile: invalid --execution-ranks value: "
-                 << rankValue << "\n";
+  int64_t numPartitions = 0;
+  llvm::StringRef partitionValue(*options.numPartitions);
+  if (partitionValue.getAsInteger(10, numPartitions)) {
+    llvm::errs() << "wafer-compile: invalid --num-partitions value: "
+                 << partitionValue << "\n";
     return 1;
   }
 
@@ -246,8 +246,8 @@ int main(int argc, char **argv) {
   }
 
   llvm::Expected<wafer::compiler::ExecutionConfig> executionConfig =
-      wafer::compiler::ExecutionConfig::createForSingleCard(
-          rankCount, *runtimeLaunchKind);
+      wafer::compiler::ExecutionConfig::createForSingleCard(numPartitions,
+                                                            *runtimeLaunchKind);
   if (!executionConfig) {
     llvm::errs() << "wafer-compile: "
                  << llvm::toString(executionConfig.takeError()) << "\n";
@@ -305,47 +305,23 @@ int main(int argc, char **argv) {
   std::optional<wafer::compiler::TargetCompilationProduct>
       targetCompilationProduct;
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
-  const char *failureRank = std::getenv("WAFER_TEST_FAIL_AFTER_LOGICAL_RANK");
-  const char *targetFailureRank =
-      std::getenv("WAFER_TEST_FAIL_AFTER_TARGET_LOGICAL_RANK");
-  const char *packageFailureRank =
-      std::getenv("WAFER_TEST_FAIL_AFTER_PACKAGE_LOGICAL_RANK");
-  const char *reservedBaseline =
-      std::getenv("WAFER_TEST_SELECT_RESERVED_BASELINE");
-  const char *staticFixedSlot =
-      std::getenv("WAFER_TEST_SELECT_STATIC_FIXED_SLOT");
-  const char *directDTEComputeOverlap =
-      std::getenv("WAFER_TEST_SELECT_DIRECT_DTE_COMPUTE_OVERLAP");
-  const char *serializedDirectDTECompute =
-      std::getenv("WAFER_TEST_SELECT_SERIALIZED_DIRECT_DTE_COMPUTE");
-  const char *workerPlacement =
-      std::getenv("WAFER_TEST_SELECT_WORKER_PLACEMENT");
-  const char *noCResidentFixedSlotWorker =
-      std::getenv("WAFER_TEST_SELECT_NOC_RESIDENT_FIXED_SLOT_WORKER");
-  const char *collectiveAlternative =
-      std::getenv("WAFER_TEST_COLLECTIVE_CHARACTERIZATION_ALTERNATIVE");
-  const char *collectiveReport =
-      std::getenv("WAFER_TEST_COLLECTIVE_CHARACTERIZATION_REPORT");
-  unsigned failureInjectionCount = (failureRank ? 1u : 0u) +
-                                   (targetFailureRank ? 1u : 0u) +
-                                   (packageFailureRank ? 1u : 0u);
-  const bool hasTestOnlyCompilationControl =
-      failureInjectionCount != 0 || reservedBaseline || staticFixedSlot ||
-      directDTEComputeOverlap || serializedDirectDTECompute ||
-      workerPlacement || noCResidentFixedSlotWorker || collectiveAlternative ||
-      collectiveReport;
-  if (*optimizationConfig != wafer::OptimizationConfig::production() &&
-      hasTestOnlyCompilationControl) {
+  const char *executableFailureSlot =
+      std::getenv("WAFER_TEST_FAIL_AFTER_EXECUTABLE_LAUNCH_SLOT");
+  const char *targetFailureSlot =
+      std::getenv("WAFER_TEST_FAIL_AFTER_TARGET_LAUNCH_SLOT");
+  const char *packageFailureSlot =
+      std::getenv("WAFER_TEST_FAIL_AFTER_PACKAGE_LAUNCH_SLOT");
+  unsigned failureInjectionCount = (executableFailureSlot ? 1u : 0u) +
+                                   (targetFailureSlot ? 1u : 0u) +
+                                   (packageFailureSlot ? 1u : 0u);
+  if (*optimizationConfig != wafer::OptimizationConfig::search() &&
+      failureInjectionCount != 0) {
     llvm::errs()
         << "wafer-compile: explicit optimization configuration cannot be "
            "combined with test-only compilation controls\n";
     return 1;
   }
-  if (options.profile &&
-      (failureInjectionCount != 0 || reservedBaseline || staticFixedSlot ||
-       directDTEComputeOverlap || workerPlacement ||
-       serializedDirectDTECompute || noCResidentFixedSlotWorker ||
-       collectiveAlternative || collectiveReport)) {
+  if (options.profile && failureInjectionCount != 0) {
     llvm::errs() << "wafer-compile: --profile cannot be combined with "
                     "test-only compilation controls\n";
     return 1;
@@ -355,300 +331,40 @@ int main(int argc, char **argv) {
                     "are not allowed\n";
     return 1;
   }
-  if (reservedBaseline && failureInjectionCount != 0) {
-    llvm::errs()
-        << "wafer-compile: test-only reserved-baseline selection cannot be "
-           "combined with failure injection\n";
-    return 1;
-  }
-  if (staticFixedSlot && failureInjectionCount != 0) {
-    llvm::errs()
-        << "wafer-compile: test-only static fixed-slot qualification cannot "
-           "be combined with failure injection\n";
-    return 1;
-  }
-  if (directDTEComputeOverlap && failureInjectionCount != 0) {
-    llvm::errs() << "wafer-compile: test-only Direct-DTE compute-overlap "
-                    "qualification cannot be combined with failure injection\n";
-    return 1;
-  }
-  if (serializedDirectDTECompute && failureInjectionCount != 0) {
-    llvm::errs() << "wafer-compile: test-only serialized Direct-DTE compute "
-                    "selection cannot be combined with failure injection\n";
-    return 1;
-  }
-  if (workerPlacement && failureInjectionCount != 0) {
-    llvm::errs()
-        << "wafer-compile: test-only worker-placement qualification cannot "
-           "be combined with failure injection\n";
-    return 1;
-  }
-  if (noCResidentFixedSlotWorker && failureInjectionCount != 0) {
-    llvm::errs() << "wafer-compile: test-only NoC-resident fixed-slot worker "
-                    "qualification cannot be combined with failure injection\n";
-    return 1;
-  }
-  if (collectiveAlternative && failureInjectionCount != 0) {
-    llvm::errs()
-        << "wafer-compile: test-only collective characterization cannot be "
-           "combined with failure injection\n";
-    return 1;
-  }
-  unsigned wholeVariantSelectionCount =
-      (reservedBaseline ? 1u : 0u) + (staticFixedSlot ? 1u : 0u) +
-      (directDTEComputeOverlap ? 1u : 0u) +
-      (serializedDirectDTECompute ? 1u : 0u) + (workerPlacement ? 1u : 0u) +
-      (noCResidentFixedSlotWorker ? 1u : 0u) +
-      (collectiveAlternative ? 1u : 0u);
-  if (wholeVariantSelectionCount > 1) {
-    llvm::errs()
-        << "wafer-compile: test-only whole-variant selections are mutually "
-           "exclusive\n";
-    return 1;
-  }
-  if (static_cast<bool>(collectiveAlternative) !=
-      static_cast<bool>(collectiveReport)) {
-    llvm::errs()
-        << "wafer-compile: test-only collective characterization requires "
-           "both alternative and report path\n";
-    return 1;
-  }
-  if (reservedBaseline && llvm::StringRef(reservedBaseline) != "1") {
-    llvm::errs()
-        << "wafer-compile: invalid test-only reserved-baseline selection\n";
-    return 1;
-  }
-  if (staticFixedSlot && llvm::StringRef(staticFixedSlot) != "1") {
-    llvm::errs() << "wafer-compile: invalid test-only static fixed-slot "
-                    "qualification\n";
-    return 1;
-  }
-  if (directDTEComputeOverlap &&
-      llvm::StringRef(directDTEComputeOverlap) != "1") {
-    llvm::errs()
-        << "wafer-compile: invalid test-only Direct-DTE compute-overlap "
-           "qualification\n";
-    return 1;
-  }
-  if (serializedDirectDTECompute &&
-      llvm::StringRef(serializedDirectDTECompute) != "1") {
-    llvm::errs()
-        << "wafer-compile: invalid test-only serialized Direct-DTE compute "
-           "selection\n";
-    return 1;
-  }
-  if (workerPlacement && llvm::StringRef(workerPlacement) != "1") {
-    llvm::errs() << "wafer-compile: invalid test-only worker-placement "
-                    "qualification\n";
-    return 1;
-  }
-  if (noCResidentFixedSlotWorker &&
-      llvm::StringRef(noCResidentFixedSlotWorker) != "1") {
-    llvm::errs()
-        << "wafer-compile: invalid test-only NoC-resident fixed-slot worker "
-           "qualification\n";
-    return 1;
-  }
-  if (failureRank) {
-    int64_t parsedFailureRank = -1;
-    if (llvm::StringRef(failureRank).getAsInteger(10, parsedFailureRank)) {
-      llvm::errs() << "wafer-compile: invalid test-only failure rank\n";
-      return 1;
-    }
-    compilationStatus = wafer::compiler::testing::compileProgramWithRankFailure(
-        std::move(*request), *options.outputProgramDirectory, helperPath,
-        *targetToolchain, parsedFailureRank, llvm::errs());
-  } else if (targetFailureRank) {
-    int64_t parsedFailureRank = -1;
-    if (llvm::StringRef(targetFailureRank)
-            .getAsInteger(10, parsedFailureRank)) {
-      llvm::errs() << "wafer-compile: invalid test-only target failure rank\n";
+  if (executableFailureSlot) {
+    int64_t parsedFailureSlot = -1;
+    if (llvm::StringRef(executableFailureSlot)
+            .getAsInteger(10, parsedFailureSlot)) {
+      llvm::errs()
+          << "wafer-compile: invalid test-only executable launch slot\n";
       return 1;
     }
     compilationStatus =
-        wafer::compiler::testing::compileProgramWithTargetRankFailure(
+        wafer::compiler::testing::compileProgramWithExecutableLaunchSlotFailure(
             std::move(*request), *options.outputProgramDirectory, helperPath,
-            *targetToolchain, parsedFailureRank, llvm::errs());
-  } else if (packageFailureRank) {
-    int64_t parsedFailureRank = -1;
-    if (llvm::StringRef(packageFailureRank)
-            .getAsInteger(10, parsedFailureRank)) {
-      llvm::errs() << "wafer-compile: invalid test-only package failure rank\n";
+            *targetToolchain, parsedFailureSlot, llvm::errs());
+  } else if (targetFailureSlot) {
+    int64_t parsedFailureSlot = -1;
+    if (llvm::StringRef(targetFailureSlot)
+            .getAsInteger(10, parsedFailureSlot)) {
+      llvm::errs() << "wafer-compile: invalid test-only target launch slot\n";
       return 1;
     }
     compilationStatus =
-        wafer::compiler::testing::compileProgramWithPackageRankFailure(
+        wafer::compiler::testing::compileProgramWithTargetLaunchSlotFailure(
             std::move(*request), *options.outputProgramDirectory, helperPath,
-            *targetToolchain, parsedFailureRank, llvm::errs());
-  } else if (reservedBaseline) {
-    if (options.targetModel) {
-      mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
-          compiledProgram = wafer::compiler::testing::
-              compileProgramWithReservedBaselineTargetCompilation(
-                  std::move(*request), *options.outputProgramDirectory,
-                  helperPath, *targetToolchain, llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        targetCompilationProduct.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    } else {
-      mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
-          wafer::compiler::testing::compileProgramWithReservedBaseline(
-              std::move(*request), *options.outputProgramDirectory, helperPath,
-              *targetToolchain, llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        executableBundle.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    }
-  } else if (staticFixedSlot) {
-    if (options.targetModel) {
-      mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
-          compiledProgram = wafer::compiler::testing::
-              compileProgramForStaticFixedSlotTargetQualification(
-                  std::move(*request), *options.outputProgramDirectory,
-                  helperPath, *targetToolchain, llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        targetCompilationProduct.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    } else {
-      mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
-          wafer::compiler::testing::
-              compileProgramForStaticFixedSlotQualification(
-                  std::move(*request), *options.outputProgramDirectory,
-                  helperPath, *targetToolchain, llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        executableBundle.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    }
-  } else if (directDTEComputeOverlap) {
-    if (options.targetModel) {
-      mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
-          compiledProgram = wafer::compiler::testing::
-              compileProgramForDirectDTEComputeOverlapTargetQualification(
-                  std::move(*request), *options.outputProgramDirectory,
-                  helperPath, *targetToolchain, llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        targetCompilationProduct.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    } else {
-      mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
-          wafer::compiler::testing::
-              compileProgramForDirectDTEComputeOverlapQualification(
-                  std::move(*request), *options.outputProgramDirectory,
-                  helperPath, *targetToolchain, llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        executableBundle.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    }
-  } else if (serializedDirectDTECompute) {
-    if (options.targetModel) {
-      llvm::errs()
-          << "wafer-compile: serialized Direct-DTE compute selection does "
-             "not support --target-model\n";
+            *targetToolchain, parsedFailureSlot, llvm::errs());
+  } else if (packageFailureSlot) {
+    int64_t parsedFailureSlot = -1;
+    if (llvm::StringRef(packageFailureSlot)
+            .getAsInteger(10, parsedFailureSlot)) {
+      llvm::errs() << "wafer-compile: invalid test-only package launch slot\n";
       return 1;
     }
-    mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram = wafer::
-        compiler::testing::compileProgramForSerializedDirectDTEComputeBaseline(
+    compilationStatus =
+        wafer::compiler::testing::compileProgramWithPackageLaunchSlotFailure(
             std::move(*request), *options.outputProgramDirectory, helperPath,
-            *targetToolchain, llvm::errs());
-    if (mlir::succeeded(compiledProgram)) {
-      executableBundle.emplace(std::move(*compiledProgram));
-      compilationStatus = mlir::success();
-    }
-  } else if (workerPlacement) {
-    if (options.targetModel) {
-      mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
-          compiledProgram = wafer::compiler::testing::
-              compileProgramForWorkerPlacementTargetQualification(
-                  std::move(*request), *options.outputProgramDirectory,
-                  helperPath, *targetToolchain, llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        targetCompilationProduct.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    } else {
-      mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
-          wafer::compiler::testing::
-              compileProgramForWorkerPlacementQualification(
-                  std::move(*request), *options.outputProgramDirectory,
-                  helperPath, *targetToolchain, llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        executableBundle.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    }
-  } else if (noCResidentFixedSlotWorker) {
-    if (options.targetModel) {
-      mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
-          compiledProgram = wafer::compiler::testing::
-              compileProgramForNoCResidentFixedSlotWorkerTargetQualification(
-                  std::move(*request), *options.outputProgramDirectory,
-                  helperPath, *targetToolchain, llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        targetCompilationProduct.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    } else {
-      mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
-          wafer::compiler::testing::
-              compileProgramForNoCResidentFixedSlotWorkerQualification(
-                  std::move(*request), *options.outputProgramDirectory,
-                  helperPath, *targetToolchain, llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        executableBundle.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    }
-  } else if (collectiveAlternative) {
-    using Algorithm =
-        wafer::compiler::testing::CollectiveCharacterizationAlgorithm;
-    std::optional<Algorithm> algorithm;
-    llvm::StringRef alternative(collectiveAlternative);
-    if (alternative == "all-gather-direct")
-      algorithm = Algorithm::AllGatherDirect;
-    else if (alternative == "all-gather-ring")
-      algorithm = Algorithm::AllGatherRing;
-    else if (alternative == "reduce-scatter-direct")
-      algorithm = Algorithm::ReduceScatterDirect;
-    else if (alternative == "reduce-scatter-ring")
-      algorithm = Algorithm::ReduceScatterRing;
-    else if (alternative == "all-reduce-ring")
-      algorithm = options.targetModel ? Algorithm::NoCResidentAllReduceRing
-                                      : Algorithm::AllReduceRing;
-    else if (alternative == "all-reduce-tree")
-      algorithm = Algorithm::AllReduceTree;
-    if (!algorithm) {
-      llvm::errs()
-          << "wafer-compile: invalid test-only collective characterization "
-             "alternative\n";
-      return 1;
-    }
-    if (options.targetModel) {
-      mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
-          compiledProgram = wafer::compiler::testing::
-              compileProgramForCollectiveCharacterizationTargetCompilation(
-                  std::move(*request), *options.outputProgramDirectory,
-                  helperPath, *targetToolchain, *algorithm, collectiveReport,
-                  llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        targetCompilationProduct.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    } else {
-      mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
-          wafer::compiler::testing::compileProgramForCollectiveCharacterization(
-              std::move(*request), *options.outputProgramDirectory, helperPath,
-              *targetToolchain, *algorithm, collectiveReport, llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        executableBundle.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    }
+            *targetToolchain, parsedFailureSlot, llvm::errs());
   } else
 #endif
   {
@@ -685,8 +401,10 @@ int main(int argc, char **argv) {
   }
 
   llvm::outs() << "wafer-compile: published verified package with "
-                  "execution-ranks="
-               << rankCount << ": " << *options.outputProgramDirectory << "\n";
+                  "num-partitions="
+               << numPartitions << " physical-tiles="
+               << wafer::compiler::ExecutionConfig::kSingleCardPhysicalTileCount
+               << ": " << *options.outputProgramDirectory << "\n";
   if (options.profile)
     llvm::outs() << "wafer-compile: published profile companion: "
                  << *options.outputProgramDirectory << ".profile\n";

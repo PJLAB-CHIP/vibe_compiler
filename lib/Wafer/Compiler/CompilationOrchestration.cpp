@@ -56,17 +56,16 @@ mlir::LogicalResult publishPackageAndCompanionNoReplace(
 static void printOptimizationConfig(OptimizationConfig config,
                                     llvm::raw_ostream &diagnostics) {
   diagnostics << "wafer-compile: optimization-policy="
-              << (config.isProduction() ? "production" : "none") << '\n';
+              << (config.isSearch() ? "search" : "none") << '\n';
 }
 
 mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
-    WholeVariantSelectionMode selectionMode, CompilationOptions options,
-    std::optional<int64_t> failAfterLogicalRank,
-    std::optional<int64_t> failAfterTargetLogicalRank,
-    std::optional<int64_t> failAfterPackageLogicalRank,
+    CompilationOptions options, std::optional<int64_t> failAfterLaunchSlot,
+    std::optional<int64_t> failAfterTargetLaunchSlot,
+    std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<ExecutableBundle> *retainedExecutableBundle,
     std::optional<TargetLLVMModuleBundle> *retainedTargetLLVMModuleBundle) {
 #if !defined(WAFER_ENABLE_STABLEHLO) || !defined(WAFER_ENABLE_SHARDY)
@@ -74,11 +73,10 @@ mlir::LogicalResult runCompilationTransaction(
   (void)outputProgramDirectory;
   (void)xlaSpmdPartitionerHelper;
   (void)targetToolchain;
-  (void)selectionMode;
   (void)options;
-  (void)failAfterLogicalRank;
-  (void)failAfterTargetLogicalRank;
-  (void)failAfterPackageLogicalRank;
+  (void)failAfterLaunchSlot;
+  (void)failAfterTargetLaunchSlot;
+  (void)failAfterPackageLaunchSlot;
   (void)retainedExecutableBundle;
   (void)retainedTargetLLVMModuleBundle;
   reject(diagnostics,
@@ -102,11 +100,9 @@ mlir::LogicalResult runCompilationTransaction(
   auto compileWorkReport = llvm::make_scope_exit([&] {
     wafer::support::CompileWorkStatistics work = compileWorkSession->snapshot();
     diagnostics << "wafer-compile: compile-work"
-                << " candidate_expanded_states=" << work.candidateExpandedStates
-                << " finalization_candidate_clones="
-                << work.finalizationCandidateClones
-                << " finalization_instr_lowerings="
-                << work.finalizationInstructionLowerings
+                << " physical_tile_finalizations="
+                << work.physicalTileFinalizations << " tile_to_instr_lowerings="
+                << work.tileToInstructionLowerings
                 << " spm_planning_invocations=" << work.spmPlanningInvocations
                 << " ddr_planning_invocations=" << work.ddrPlanningInvocations
                 << "\n";
@@ -124,14 +120,10 @@ mlir::LogicalResult runCompilationTransaction(
     return mlir::failure();
   }
   if (options.shouldProduceProfileCompanion() &&
-      selectionMode != WholeVariantSelectionMode::Production) {
+      request.getExecutionConfig().getPhysicalTileCount() !=
+          ExecutionConfig::kSingleCardPhysicalTileCount) {
     reject(diagnostics,
-           "profile companion requires production whole-variant selection");
-    return mlir::failure();
-  }
-  if (options.shouldProduceProfileCompanion() &&
-      request.getExecutionConfig().getRankCount() != 16) {
-    reject(diagnostics, "profile compilation requires execution-ranks=16");
+           "profile compilation requires all physical Tiles on the card");
     return mlir::failure();
   }
   printOptimizationConfig(options.getOptimizationConfig(), diagnostics);
@@ -218,17 +210,6 @@ mlir::LogicalResult runCompilationTransaction(
                canonicalProfileOutput.str().str() + "'");
     return mlir::failure();
   }
-  llvm::SmallString<256> canonicalQualificationOutput(canonicalOutput);
-  canonicalQualificationOutput += ".qualification";
-  if (producesStaticFixedSlotQualificationCompanion(selectionMode) &&
-      pathEntryExists(canonicalQualificationOutput)) {
-    reject(diagnostics,
-           "refusing to replace existing fixed-slot qualification companion "
-           "directory: '" +
-               canonicalQualificationOutput.str().str() + "'");
-    return mlir::failure();
-  }
-
   llvm::SmallString<256> stagingPrefix(canonicalOutputParent);
   llvm::sys::path::append(stagingPrefix, ".wafer-compile-staging");
   llvm::SmallString<256> transactionRoot;
@@ -394,18 +375,17 @@ mlir::LogicalResult runCompilationTransaction(
   std::optional<TargetLLVMModuleBundle> targetLLVMModules;
   if (options.shouldProduceProfileCompanion()) {
     if (mlir::failed(stageProfileTargetPackages(
-            tensorProgram, transactionRoot, outputName,
-            request.getExecutionConfig(), options.getOptimizationConfig(),
-            targetToolchain, diagnostics, failAfterLogicalRank,
-            failAfterTargetLogicalRank, failAfterPackageLogicalRank,
-            executableBundle, targetLLVMModules)))
+            tensorProgram, transactionRoot, request.getExecutionConfig(),
+            options.getOptimizationConfig(), targetToolchain, diagnostics,
+            failAfterLaunchSlot, failAfterTargetLaunchSlot,
+            failAfterPackageLaunchSlot, executableBundle, targetLLVMModules)))
       return mlir::failure();
   } else if (mlir::failed(stageTargetPackage(
                  tensorProgram, transactionRoot, request.getExecutionConfig(),
                  options.getOptimizationConfig(), targetToolchain, diagnostics,
-                 selectionMode, failAfterLogicalRank,
-                 failAfterTargetLogicalRank, failAfterPackageLogicalRank,
-                 executableBundle, targetLLVMModules))) {
+                 failAfterLaunchSlot, failAfterTargetLaunchSlot,
+                 failAfterPackageLaunchSlot, executableBundle,
+                 targetLLVMModules))) {
     return mlir::failure();
   }
   targetProductTiming.reset();
@@ -421,15 +401,7 @@ mlir::LogicalResult runCompilationTransaction(
           "stage", "source-to-package", "publication");
   llvm::SmallString<256> stagedPackage(transactionRoot);
   llvm::sys::path::append(stagedPackage, "package");
-  if (producesStaticFixedSlotQualificationCompanion(selectionMode)) {
-    llvm::SmallString<256> stagedCompanion(transactionRoot);
-    llvm::sys::path::append(stagedCompanion, "qualification-companion");
-    if (mlir::failed(publishPackageAndCompanionNoReplace(
-            stagedPackage, canonicalOutput, stagedCompanion,
-            canonicalQualificationOutput, diagnostics,
-            publishDirectoryNoReplace)))
-      return mlir::failure();
-  } else if (options.shouldProduceProfileCompanion()) {
+  if (options.shouldProduceProfileCompanion()) {
     llvm::SmallString<256> stagedCompanion(transactionRoot);
     llvm::sys::path::append(stagedCompanion, "profile-companion");
     if (mlir::failed(publishPackageAndCompanionNoReplace(

@@ -240,8 +240,6 @@ llvm::StringRef stringifyProfileCaptureKind(ProfileCaptureKind capture) {
   switch (capture) {
   case ProfileCaptureKind::None:
     return "none";
-  case ProfileCaptureKind::Summary:
-    return "summary";
   case ProfileCaptureKind::Count:
     return "count";
   case ProfileCaptureKind::Trace:
@@ -254,7 +252,6 @@ uint64_t getProfileCaptureRecordBytes(ProfileCaptureKind capture) {
   switch (capture) {
   case ProfileCaptureKind::None:
     return 0;
-  case ProfileCaptureKind::Summary:
   case ProfileCaptureKind::Count:
     return WAFER_TX81_PROFILER_MIN_BUFFER_BYTES;
   case ProfileCaptureKind::Trace:
@@ -339,7 +336,7 @@ llvm::Error verifyProfileTargetCallSiteIdentity(
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "profile trace target-call site identity differs from final "
-          "production at rank-local site %llu",
+          "production at physical-Tile-local site %llu",
           static_cast<unsigned long long>(index));
   }
   return llvm::Error::success();

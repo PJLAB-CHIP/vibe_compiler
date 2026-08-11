@@ -19,7 +19,7 @@ DEFAULT_MARCH = "rv64imafdc"
 DEFAULT_CRT_MCPU = "c908"
 DEFAULT_MABI = "lp64d"
 DEFAULT_LOADER_ABI = "tx8-kcore-loader-v1"
-PROFILE_CAPTURE_KINDS = ("none", "summary", "count", "trace")
+PROFILE_CAPTURE_KINDS = ("none", "count", "trace")
 BASE_LOADER_ABI_UNDEFINED_SYMBOLS = frozenset(
     {
         "get_log_level",
@@ -237,9 +237,7 @@ def build_commands(
         "-o",
         str(crt_object_output),
     ]
-    if args.profile_capture == "summary":
-        compile_crt_cmd.insert(-2, "-DWAFER_TX81_PROFILE_CRT=1")
-    elif args.profile_capture in {"count", "trace"}:
+    if args.profile_capture in {"count", "trace"}:
         compile_crt_cmd.insert(-2, "-DWAFER_TX81_PROFILE_TRACE_CRT=1")
 
     normalize_crt_cmds: list[list[str]] = []

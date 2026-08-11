@@ -1,280 +1,279 @@
-# 语义驱动 Superoptimizer 实施计划
+# Semantic Superoptimization 实施计划
 
-状态：设计已收敛，待实现。任务状态以`tasks/progress.md`中的`semantic-superoptimization`为准。
+状态：`later`。动态状态与依赖只看`tasks/progress.md`。本任务不在当前Q49–Q53施工中实现；只有Q53按
+card-level GSPMD、whole-DAG scheduling、`wafer.card.program` / `wafer.tile.program`、physical Tile MPMD和
+schema-v8 package合同重新达到`board-ready`后，Q48才可启动。
 
-本任务吸收Axon类synthesizing superoptimizer的通用方法：从当前IR自动生成实际候选，以统一语义查询证明
-候选与baseline等价，再把通过证明的actual clone交给既有cost/Pareto owner。它不照搬论文中的case、IR或
-目标ISA，也不为Wafer新增一套语义接口、规则表或候选sidecar。
+Q48给现有source-to-package pipeline增加通用的、证明驱动的候选生成能力，不建立第二条优化管线。它从current
+structured MLIR或一个正在评估的whole-card actual candidate生成有界actual alternatives，以query-local SMT查询证明
+外部可观察语义等价；证明通过的候选仍由Q51定义、Q52优化后的唯一whole-DAG owner联合决定physical Tile placement、temporal tiling、
+fusion/SPM residency、communication、buffering和最终winner。
 
-本任务启动前必须由`whole-rank-tile-dataflow-synthesis`达到`board-ready`并完成C0–C6 compiler cutover，同时
-`target-abi-retirement`完成compiler ABI closure。前者提供唯一complete-rank actual-clone decision owner，后者让目标面
-收口到单一current ABI；本任务只把证明通过的source clone交给该owner，并让target synthesis消费final Instr/TargetCall，
-随后迁移删除旧implementation interface，不能一边扩展旧接口一边建立新选择器。
+本计划只依赖current whole-DAG IR、schema-v8 compiler/runtime合同和Q51唯一candidate owner，不依赖独立
+implementation selector。Q48也不改变card partition与physical Tile的分层：`num_partitions`始终属于card-level
+GSPMD；片内工作只由Q51物化到explicit physical `tile_id`。
 
-## Pipeline Contracts
+## 1. 终态边界
 
-### Source operator propagation
+Q48只有两个接入点：
 
-```text
-Pipeline position:
-- Upstream artifact / IR:
-  post-SPMD、normalization完成且verifier-legal的Linalg/Tensor/SCF/Arith/Math structured IR；shape、dtype、
-  indexing map、iterator、DPS tie、region、SSA use-def和effect均显式。
-- Current stage responsibility:
-  从current structured IR统一枚举operator propagation actual clones；用query-local SMT证明每个clone在本任务
-  的数学语义下与baseline具有相同可观察结果；在request/export sharding前形成有界source variants。
-- Output artifact / IR:
-  baseline及至多现有source cap允许的verifier-clean structured MLIR clones；不携带proof、rule、solver AST、
-  candidate metadata或新的semantic IR。
-- Downstream consumer:
-  06唯一complete-rank physical-dataflow decision owner、whole-variant exact gates和Pareto/static policy。
-- User-level driver / named pipeline:
-  wafer-compile production pipeline的typed `production`/`none` policy；wafer-opt只作定向IR replay。
-- Explicit non-goals:
-  不建全图e-graph、νGraph、rewrite-rule registry、ValueSemanticEquivalence interface、proof certificate或
-  exporter-shard内solver；不把单个代数case固化成协议。
-- Completion gate:
-  通用传播生成器同时覆盖正反例和已知代数case，SAT/unknown/timeout稳定回退baseline，16个request shards
-  不重复运行solver，actual source variants进入既有完整candidate pipeline。
-```
+1. **Structured candidate generation**：在Q51调度前，对card-local structured DAG中的pure connected window生成
+   verifier-legal actual structured alternatives。每个alternative作为完整program输入进入同一个whole-DAG搜索。
+2. **Instruction candidate generation**：在Q51已准入materialization的isolated whole-card candidate内，对
+   per-physical-Tile canonical Instr window生成局部替换；替换后仍形成一个包含all-and-only physical Tile programs的
+   whole-card actual candidate，重新经过共同exact gates。
 
-### Target instruction synthesis
+两类生成器共同遵守：
+
+- baseline始终独立保留；SAT、unknown、timeout、资源耗尽或任一verifier失败只淘汰当前optimized alternative；
+- solver只判断语义资格，不提供cost、placement或winner；
+- query、expression graph、solver AST、counterexample和临时proposal均与一次请求同寿命，不进入IR、artifact、cache、
+  package或sidecar；
+- 只有actual MLIR能够跨越生成边界；其余事实必须从current IR重算；
+- 生成、cheap pruning、actual materialization与exact-gate次数计入Q51定义、Q52优化后的同一个deterministic global work ledger；
+- public控制面仍只有typed `search`与`none`。`search`启用Q48生成器，`none`只保留同一whole-card管线中的
+  conservative baseline；不增加逐机制开关、solver mode或第二个selector。
+
+## 2. Pipeline Contracts
+
+### 2.1 Structured candidate generation
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  finalized complete-rank canonical/unplaced Instr actual clone、compiler-fixed current target facts，以及从current clone
-  SSA/effect边界即时派生的query-local connected replacement window。window不是独立artifact或可提交slice。
+  GSPMD与normalization产生的verifier-legal card-local Linalg/Tensor/SCF/Arith/Math DAG；card-partition
+  collective保持typed数学语义，IR尚未绑定physical Tile、SPM/DDR、NoC或launch slot。
 - Current stage responsibility:
-  从canonical Instr ODS/op/enums、family-owned typed constructor/semantic adapters和current verifier/preflight构造
-  有界actual replacement序列，证明其外部可观察value、memory、effect和completion边界与baseline window等价；每个
-  replacement直接rewrite到一份完整complete-rank canonical/unplaced Instr sibling中，query/proposal随即销毁。
+  从current op、region、SSA、type、indexing map、iterator、DPS tie和effect识别pure connected replacement
+  window；用通用typed grammar生成有界actual structured rewrites；以query-local SMT证明全部外部可观察
+  result、memory和effect语义等价，并立即运行canonicalization与verifier。
 - Output artifact / IR:
-  baseline及verifier-clean的complete-rank canonical/unplaced actual Instr siblings；每个sibling按worker/slot/ready-order、
-  fresh completion、lifetime/SPM、whole-variant DDR、post-memory transport/resource、target preflight、final recost/
-  whole-variant selection和atomic commit顺序进入06的executable-finalization gates；只有winner随后进入target module/package publication。
-  不保存slice、sketch或solver residue。
+  baseline以及零个或多个verifier-legal card-local structured program alternatives。每个alternative都是完整
+  actual MLIR，不携带proof、score、搜索历史或physical mapping。
 - Downstream consumer:
-  现有rank/whole-variant candidate owner、memory planning、Target LLVM/package、TargetModel/no-card和板端执行。
+  Q51唯一whole-DAG scheduler；它对每个admitted structured alternative联合搜索physical Tile mapping、
+  temporal tiling、fusion/SPM residency、communication和buffered overlap，并只对bounded shortlist物化
+  wafer.card.program / wafer.tile.program actual candidates。
 - User-level driver / named pipeline:
-  同一wafer-compile production pipeline的typed `production`/`none` policy；没有public instruction-synthesis axis。
+  wafer-compile source-to-package pipeline；wafer-opt只用于局部parser/verifier/rewrite replay。
 - Explicit non-goals:
-  不改变Target ABI，不从TargetCall symbol恢复ISA语义，不合成DTE/NCC协议，不优化随机语义，不宣称覆盖
-  当前typed compiler surface之外的硬件ISA。
+  不运行GSPMD，不决定card partition或physical Tile；不分配memory、route、worker、completion或ABI；不按
+  workload、shape、symbol、operand位置、attention、decode、mask或模型名称选择rewrite。
 - Completion gate:
-  current target-admitted deterministic typed Instr surface全部被exhaustive分类并具有可执行proof adapter或
-  明确boundary/rejection；通过的actual clones完整通过下游并形成package/no-card/board纵向。
+  通用生成器覆盖chain、branch、fanout、fanin、reduction和effect boundary正反例；只有UNSAT且actual IR
+  验证通过的alternative进入Q51；任何失败都确定性保留Q49 baseline，solver对象不越过本stage。
 ```
 
-## 1. 对外控制面收口
+### 2.2 Instruction candidate generation
 
-Q49 C6完成后，public控制面只保留`OptimizationConfig::production()`与`OptimizationConfig::none()`两种typed policy：
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  Q51 global ledger准入的isolated whole-card actual candidate；candidate已显式包含all-and-only available
+  wafer.tile.program、physical tile_id、selected temporal traversal、TileRegion residency与cross-Tile
+  communication，并已投影或正投影为per-physical-Tile canonical/unplaced wafer.instr.*。
+- Current stage responsibility:
+  从current typed Instr、SSA use-def、memory effects、control flow、physical buffer relation和target facts识别
+  Tile-local connected replacement window；用typed builders生成有界actual instruction sequences；证明其
+  external value、memory、effect和completion obligations与baseline window等价。每次替换直接落入当前
+  disposable whole-card evaluation，不创建per-Tile winner。
+- Output artifact / IR:
+  baseline及零个或多个verifier-legal whole-card actual Instr alternatives。每个alternative仍覆盖同一组
+  physical Tiles并显式保留cross-Tile message、resource和observable output obligations；没有solver residue。
+- Downstream consumer:
+  fresh worker/order/completion reconstruction、per-Tile fixed-capacity SPM planning、whole-card DDR planning、
+  communication/resource admission、numeric recost、Q51 final selection、target conversion和schema-v8 package
+  publication。
+- User-level driver / named pipeline:
+  同一wafer-compile source-to-package pipeline；没有public instruction-synthesis axis或手工拼接pass链。
+- Explicit non-goals:
+  不改变physical Tile mapping、CardProgram coverage或schema-v8 ABI；不从TargetCall symbol恢复ISA语义；不合成
+  未有typed语义的协议；不让单个Tile独立提交；late failure不触发隐藏repair或局部重选。
+- Completion gate:
+  current target-admitted deterministic typed Instr surface逐项具有exact、opaque-congruent、boundary或
+  verifier-rejected唯一分类；accepted replacement所在whole-card candidate完整重放所有exact gates，任一Tile或
+  cross-Tile obligation失败即拒绝整个candidate。
+```
 
-- `production`启用包含本任务候选生成在内的唯一完整优化pipeline；`none`只保留fully gated conservative baseline。
-- 不恢复逐项开关、`operator-propagation`、`instruction-synthesis`或其它public axis/spelling；pre-Q49的逐机制
-  枚举只属历史实现证据，旧CLI拼写继续在parse/compile前拒绝。
-- compiler-private qualification seam可在定向测试中请求一个typed candidate family，但不进入public CLI、source IR、
-  candidate attr或artifact schema，也不形成第二个decision owner。
-- 不新增public `SearchBudget`、proof mode、float tolerance、explore preset或第二个selector。局部synthesis bound
-  是实现内hard cap，最终选择仍归06唯一candidate owner。
+## 3. General Structured Grammar
 
-## 2. 删除旧 Implementation 抽象而不造替代品
+### 3.1 Window 与语义来源
 
-完成时删除：
+replacement window从current structured SSA/effect graph枚举，不能由op名、parameter位置或已知模型拓扑识别。
+unknown effect、observable state、unsupported region/control flow、无法证明的alias与dynamic relation形成边界。
 
-- `WaferTargetImplementationOpInterface`及external models/registration；
-- 只有reciprocal/division两个默认true布尔字段的`WaferTargetCapabilities`；
-- `TargetImplementationKind`、`TargetImplementationCandidate`和`WaferTargetImplementationMaterializer`；
-- candidate key/queue中的selected/forced implementation字段及分支。
+一次请求把window内actual scalar regions转换为query-local typed expression DAG：
 
-迁移顺序固定为：
+- leaf是window boundary SSA value或actual constant；
+- application是current region中出现或已有proof adapter支持的typed scalar operation；
+- reduction显式携带iteration domain、init、combiner与body；
+- shared node表达common-subexpression sharing，不把DAG强行退化为tree。
 
-1. 先以已完成layout任务的actual-op probe作为行为基线，记录其从current source op构造typed clone、运行concrete
-   verifier/preflight并进入既有frontier的证据；不再向旧candidate/interface增加字段。
-2. source operator propagation直接读取标准Linalg/DPS/Tiling/effect/SSA事实；target instruction synthesis直接使用
-   typed op builders。两者都立即产生actual IR，不返回implementation descriptor。
-3. 将layout任务的domain probe输入改为这些actual typed clones/current IR facts，再删除旧interface、enum、materializer
-   和registration。删除后不得出现功能fallback或第二份implementation table。
+grammar按type与domain有界枚举leaf、constant、application和reduction的组合，再选择哪些中间结果materialize为
+actual SSA。indexing maps、iterator domain、DPS ties和result correspondence从current boundary binding与
+`IndexRelation` / Presburger composition导出。不能构造exact relation或合法destination时直接拒绝。
 
-保留`WaferInstructionOpInterface::getInstructionFamily()`，因为generic traversal/cost仍有真实consumer；保留
-`IndexRelation`，因为它是从current IR可失效、可重算的analysis。不会新增`UniversalISASemantics`、
-`InstructionSketch`、`ValueSemanticEquivalence`或其它等价替代层。
+reassociation、distribution、factorization、reduction-tree变化和contraction重组只是同一grammar的witness，不是
+内置rewrite表。SMT只过滤已生成的actual alternative，不负责根据某个case反向补造候选。
 
-## 3. Source Candidate Generation
+### 3.2 Bounds 与 determinism
 
-- 以pure connected structured region为scope；unknown effect、observable state、unsupported region/control-flow和dynamic
-  relation形成边界。
-- 对每个有界connected slice先把actual op regions内联成query-local typed expression DAG：leaf是slice boundary SSA或
-  actual constant；application是region中已有的typed scalar op；reduction节点显式携带iterator domain、init和combiner。
-  该DAG只存在于一次生成请求，不进入IR、cache、artifact或新的public semantic interface。
-- 生成grammar按type/domain枚举`leaf | constant | apply(kind, operands) | reduce(domain, init, combiner, body)`；operator
-  alphabet从actual region body和已具有proof adapter的canonical scalar kinds形成，operand binding来自boundary leaves或
-  已生成节点。枚举同时允许树/DAG重组及common-subexpression sharing，所以正向distribution和反向factorization来自
-  同一双向expression enumeration，不靠两张rewrite表。
-- 每个expression DAG再枚举有界materialization cuts：cut result成为真实SSA value，未cut部分进入actual Linalg region；
-  region arguments、iterator和indexing maps由boundary binding与现有`IndexRelation`/Presburger composition生成，DPS ties
-  由actual destinations重建。每个cut立即形成isolated actual MLIR clone并运行canonicalization/verifier。
-- source generation invocation使用固定私有上界：connected slice最多4个structured ops；expression DAG最多16个
-  application/reduction nodes（boundary leaf/已有constant不计）；root-to-leaf application/reduction depth最多6；最多3个
-  materialization cuts。每个出队的唯一`typed expression DAG + cut set + boundary binding`计一次expansion，整个source
-  program最多256次expansions并最多发布现有16个actual clones；顺序由stable IR traversal和canonical key确定。
-- worklist key是canonicalized actual clone加boundary/result correspondence；任一上界耗尽即停止后续optimized生成并保留
-  baseline。不得按op名字、参数位置或case调用不同recipe；不能组合出合法index relation时直接拒绝。这些上界不是
-  public `SearchBudget`，也不因workload、shape或solver结果动态放大。
-- reassociation、reduction tree、distribution/factorization和multiply-through-contraction只是这套grammar的witness tests；
-  SMT只过滤生成结果，不负责补造候选。
-- source variants只在request sharding前生成一次并序列化为真实MLIR/bytecode；Q41的16个export/rank shards只读取
-  已生成variant，不创建Z3 context或重复证明。
+实现采用固定、compiler-private、可审计上界。首版上界为：
 
-## 4. Query-local Semantic Proof
+- connected window最多4个structured ops；
+- expression DAG最多16个application/reduction nodes，boundary leaves与已有constants不计；
+- root-to-leaf application/reduction depth最多6；
+- 最多3个SSA materialization boundaries；
+- 每个card-local program最多256次symbolic expansions。
 
-### 4.1 数值与定义域
+这些上界约束proposal generation，不授权增加Q51的whole-card actual shortlist。stable IR traversal、canonical typed key与
+stable tie-break保证serial/parallel结果一致；预算耗尽停止新增optimized alternatives并保留baseline。上界不是public
+configuration，也不能按workload或solver结果动态放大。
 
-- F16、BF16、F32、TF32在compiler proof中统一为数学`Real`。这就是本任务的浮点等价关系：忽略IEEE rounding、
-  bit pattern、NaN、Inf、signed zero和ULP，不引入epsilon/tolerance参数。
-- integer使用声明位宽的bit-vector，Bool使用native Bool；convert/quantization按typed kind的数学scale、clamp、round
-  与位宽关系表达，而不是把整数也当Real。
-- 除法和其它partial operation同时证明baseline/candidate定义域一致；不能用未定义输入授权rewrite。
-- 超越/未展开非线性操作使用按typed kind、attrs和inputs构造的query-local uninterpreted function，只允许同余类证明。
-- reduction/contraction使用显式base、fold step、iterator/indexing relation和combiner表达；不引入递归UF公理或
-  手写重排定理表。Real sum/product因此自然允许结合、分配和tree重排。
+## 4. Query-Local SMT Proof
 
-### 4.2 Memory、effect与判定
+### 4.1 数值域
 
-- source证明比较全部observable results。target证明比较slice boundary可观察buffer/alias class的live-in read要求、旧
-  destination read、最终memory state、外部effect顺序和completion boundary；candidate不得访问owned domain之外或引入
-  新的external alias/hazard，但可删除或改变slice-internal scratch、movement及issue结构。
-- 内部issue数量、worker placement、queue顺序、scratch touched bytes和join位置不是值等价的逐项trace；它们是actual clone
-  的planning/cost事实。proof只要求boundary happens-before/data hazard约束不被削弱，随后由fresh liveness、worker、
-  completion normalization和target preflight验证新拓扑。DTE/NCC协议本身仍是不可跨越的synthesis boundary。
-- shape/layout/footprint继续由现有Presburger、`IndexRelation`和physical encoding interface证明；Z3不复制shape系统。
-- 查询固定为`preconditions AND observable_difference`。只有UNSAT接受；SAT、unknown、timeout、resource exhaustion
-  都丢弃该optimized clone并保留baseline。
-- solver context、sort、AST、counterexample和proof状态只存在于一次查询；不进入IR、cache key、diagnostic schema、
-  bundle、package或sidecar。
+- F16、BF16、F32与TF32在compiler proof中按数学`Real`解释；该合同忽略IEEE rounding、NaN、Inf、signed zero和
+  bit pattern，不引入epsilon或tolerance参数。是否允许使用这种数学等价candidate由current numeric policy显式控制。
+- integer按声明位宽使用bit-vector，Bool使用native Bool；convert、clamp、scale、round与quantization按typed
+  operation的显式字段建模。
+- division及其它partial operation同时证明baseline与candidate定义域一致，不能用undefined input授权rewrite。
+- 尚无exact symbolic semantics的确定性operation使用由typed kind、attrs和inputs构成的uninterpreted function，
+  只允许同余证明；nondeterministic、opaque-effect与未建模protocol直接形成boundary。
+- reduction/contraction显式表达base、fold step、iterator/indexing relation、init与combiner，不加入按case编写的定理表。
 
-### 4.3 依赖实现
+### 4.2 Observable equivalence
 
-- 使用managed static Z3 4.16.0，release commit
-  `ddb49568d3520e99799e364fb22f35fc67d887b1`，codeload SHA-256
-  `34deac6d0d46002b1040c56a51c4385ebb4ea56baa95fa8dd66e315a25b0cfa6`。
-- 禁止ambient system Z3、configure-time网络下载和solver缺失时静默禁用。构建/安装Q48 production pipeline以及执行
-  production source→package/no-card都必须启用managed Z3，依赖不可用时configure失败。
-- feature-off只保留core library/显式`OptimizationConfig::none()`的link-closure资格，不是支持的production配置；若该配置
-  仍构建`wafer-compile`，任何production optimization请求必须在读取/改写source前稳定fail closed。它不增加public
-  solver mode，feature-off结果也不能代签Q48测试或artifact。
-- pinned LLVM的generic SMT API没有本任务需要的Real sort；实现私有代码直接使用Z3 C/C++ API，不再包一层Wafer
-  public solver interface。
+source查询比较全部observable results、外部memory state与effect ordering。Instr查询另外比较：
 
-## 5. Target Instruction Grammar 与覆盖
+- boundary可观察buffer/alias class的live-in reads、旧destination reads与最终memory state；
+- current window之外的effect顺序、happens-before与completion obligations；
+- physical buffer owned domain与cross-Tile message/resource obligations。
 
-### 5.1 自动生成边界
+window内部temporary、issue数量、worker placement、queue order、scratch bytes与join位置不是逐项trace equivalence；替换后
+必须由current IR重新运行liveness、worker/order、completion、SPM/DDR、transport和target verifier。proof不能授权跳过
+任何exact gate，也不能创造window之外的新alias、effect或访问范围。
 
-- canonical typed Instr ODS/op classes和Instr enums只生成universe与exhaustive dispatch；它们不被宣称能推导operand或
-  attribute。每个family在既有instruction owner内提供唯一私有typed semantic/constructor adapter，enum处理使用无
-  `default`的switch或`std::visit` closure，使新增值在编译/closure test中暴露；这不是新的OpInterface或registry。
-- current TargetCall registry只在最后验证可发射性；112个descriptor、symbol suffix和sparse ABI ordinal均不作为
-  语义或候选生成源，也不建立手写“支持opcode列表”。
-- adapter的有限参数域只能从baseline slice与current target facts生成：value operands绑定slice boundary或较早合成结果；
-  destinations绑定外部observable destination或有界fresh temporary；shape/range/layout从bound values与`IndexRelation`
-  推导；enum attrs遍历canonical enum后由verifier过滤；非enum attrs和canonical scalar identities由actual operands、baseline
-  attrs或该typed semantic adapter给出。worker/route/completion由后续existing planner重建，不作为隐藏recipe参数。
-- BFS直接持有disposable actual MLIR clones及其live typed values；每次扩展调用对应family adapter和typed builder插入一个
-  Instr op并立即运行op verifier/preflight，不建立InstructionSketch IR、长期C++ sketch graph或第二份opcode table。
-- 一个replacement最多3个target issues；baseline Instr生成后另做一次depth-1 local fusion。超限只停止当前slice的
-  optimized生成，不影响baseline。
+shape、layout、footprint与index relation继续由现有MLIR/Presburger/`IndexRelation`/physical encoding verifier证明；
+SMT查询只引用其已证明preconditions，不复制shape system。查询固定为：
 
-### 5.2 Exhaustive semantic classification
+```text
+preconditions AND observable_difference
+```
 
-closure test遍历所有canonical enum/op/`TargetTransactionPayload` variant；每项必须唯一分类为：
+只有UNSAT接受。SAT、unknown、timeout和resource exhaustion都拒绝当前optimized alternative。solver context、AST、
+counterexample和proof状态在查询返回后销毁，不写入diagnostic schema、IR、bundle、package或cache key。
 
-1. `exact`：有完整value/memory/effect adapter，可参与合成；
-2. `opaque-congruent`：用typed UF保守证明，只在同一opaque语义及相同输入下参与；
-3. `boundary`：结束local slice，由现有pipeline处理；
-4. `verifier-rejected`：current target并不接纳该实例，保存权威拒绝原因。
+### 4.3 Dependency policy
 
-目标覆盖不是八个示例op，而是current target-admitted typed surface：
+solver使用repository-managed、版本与source digest固定的Z3构建，不接受ambient system library，不在configure期间联网下载，
+也不在solver缺失时静默关闭search-policy semantic optimization。明确不含solver的build只能运行core library和typed `none`
+baseline；若用户请求search-policy semantic optimization，必须在改写source前fail closed。Q48不增加public solver mode。
 
-- 35个`InstrElementwiseKind`、4个`InstrReduceKind`、36个`InstrConvertKind`；缺参数的ExpLp、SatRelu、
-  LeakyRelu实例保持verifier-rejected，不从grammar静默消失；
-- verifier-legal GEMM/oriented GEMM、ordinary Conv、6个Pool、3个Unpool；Depthwise/BackwardConv在current
-  verifier不接纳时归rejected；
-- logical-valid/physical-footprint Fill、Bit2FP、ArgMax/ArgMin、Bilinear、LUT16/LUT32；Count、Factorize缺少
-  current typed target closure时归rejected；
-- RDMA、WDMA、GatherScatter、MaskMove、TDMA Pad/Img2Col；Mirror、Transpose、Rotate90/180/270、
-  NCHW↔NHWC和TensorNom复用现有exact `IndexRelation`到GatherScatter realization；
-- DTE send/recv/issue/wait和NCCJoin是boundary；RandGen、ElemMask及stochastic rounding是nondeterministic boundary。
+## 5. Typed Instruction Grammar
 
-current target-admitted deterministic family在Q48完成时不能停留在“未实现adapter”。若权威target/model语义不足，先从
-现有typed lowering、CRT和TargetModel证据恢复并补齐；不能在synthesizer里猜测，也不能用缩小grammar宣称完成。
+### 5.1 Universe 与 constructor
 
-### 5.3 必要的现有语义修复
+canonical Instr ODS/op classes、typed enums和transaction payload variants定义需要exhaustive分类的universe。生成器直接
+持有disposable actual MLIR与live typed values，并调用family-owned typed builders创建operation；它不建立新的
+instruction sketch IR、opcode字符串表、public semantic registry或长期C++ shadow graph。
 
-- `InstrMaskMoveOp`的destination operand改为同时Read+Write，因为false mask保留旧destination；对应lifetime、alias、
-  target transaction和model tests同步。
-- 补齐deterministic typed transaction缺失的exact TargetModel kernels，至少包括Bit2FP、MaskMove、TDMA Pad/Img2Col，
-  并最终覆盖Conv/Pool/Unpool/ArgExtrema/Bilinear/LUT等current admitted family。
-- 这些修复服务proof/model differential和既有target正确性，不创建compiler proof与Q22 exact numeric model之间的共享
-  浮点政策。Q22仍独立拥有raw/IEEE reference和board qualification。
+每个family的operand、destination、shape/range/layout和attrs只能来自：
 
-## 6. Numeric Representation Cleanup
+- baseline window的current typed values与attrs；
+- window boundary或较早生成的actual results；
+- current `IndexRelation`、physical encoding和target verifier可证明的facts；
+- family-owned typed semantic constructor明确提供的canonical identity或enum domain。
 
-- 删除35项`NumericElementwiseOperation`和4项`NumericReduceOperation`；NumericCommand、profile、formal evaluator、
-  managed model及selector统一直接使用`InstrElementwiseKind`和`InstrReduceKind`，共用arity/relation/logic helpers。
-- 删除可从其它字段派生的重复状态：
-  - `NumericCapabilitySupport`；
-  - `NumericModelImplementationStatus`，由implementation/reason是否存在派生；
-  - 恒定的`NumericCompilerEmittability*`和每row恒定`NumericEvidence*`；
-  - singleton `NumericComparatorKind::RawExact`；
-  - 可由selector/semantics variant派生的`FormalKernelKind`、stored family、formalBackend和destination format；
-  - `NumericRoutePolicyIdentity` alias、`FormalKernelNotImplemented`和singleton profile parser/registry indirection。
-- pattern只保留不可由current selector/semantics推导的事实：current target/model identity、canonical selector、
-  implementation或明确unimplemented reason、semantics引用和digest。
-- target CT elementwise admission删除`SourceExact`及signed-zero专门拒绝；F16/BF16/F32 Neg三行从unproven变supported，
-  该表由85增至88 supported/128 total。formal/model registry当前已有的88行不是这个计数，文档和测试不能混写。
-- representation变化各自只升级一次digest domain：model policy v1→v2、semantics v4→v5、pattern v2→v3、
-  resolved command v1→v2；不提供旧internal digest reader。
+worker、route、completion和physical offset由下游fresh重建，不作为隐藏recipe参数。TargetCall registry只验证最终可发射性；
+symbol、suffix和ABI ordinal不提供候选语义。
 
-## 7. Search、Selection 与 Failure
+### 5.2 Exhaustive classification
 
-- baseline始终独立保留并先通过现有exact gates。SMT只决定候选是否有资格进入frontier，不提供cost、winner或硬件收益。
-- 全局expanded-state、frontier、executable-finalization lowering与whole-variant attempt hard caps只由06/Q49 current budget owner提供；
-  pre-Q49的rank frontier 273、whole attempt 153等数值只属历史实现证据，本任务不冻结或复制。新增局部3-issue/depth-1
-  bound必须在current全局预算内计数，budget exhaustion稳定保留baseline。
-- 不在本计划复制或改变Q41 request sharding、Q49 whole-variant coordinator和target late-gate ownership。
-- 每个accepted complete-rank canonical/unplaced Instr sibling fresh重算relation/physical facts，再按worker/slot/ready-order、
-  fresh completion、liveness/SPM、whole-variant DDR、post-memory transport/resource、target preflight、final cost与whole-variant
-  gates重放；proof result不授权跳过或重排任何gate。
-- board/TargetModel结果不反馈compile-time selection。性能只由现有final-IR static policy选择；板端只资格化正确性与收益。
+closure test遍历全部current Instr op/enums与target transaction variants，每项唯一分类为：
 
-## 8. 实施 Checkpoints
+1. `exact`：具有完整value/memory/effect symbolic semantics，可参与合成；
+2. `opaque-congruent`：仅能在同一typed opaque semantics与相同inputs下按同余参与；
+3. `boundary`：结束replacement window，仍由原Q51 pipeline处理；
+4. `verifier-rejected`：current target不接纳该instance，并保留权威拒绝原因。
 
-1. 引入managed Z3并完成Real/BV/Bool/UF、定义域、memory observation和IndexRelation桥接的query-local proof core。
-2. 实现generic source operator propagation，替换四个旧algebraic producers；在request sharding前生成actual variants。
-3. 统一numeric enums/helpers，删除重复pattern/status字段并迁移四个digest domain；保持Q22 exact model独立。
-4. 建立current typed Instr exhaustive classification和symbolic/concrete differential；修正MaskMove effect并补齐deterministic
-   TargetModel kernels。
-5. 实现actual Instr BFS/fusion、替换implementation-selection，并将layout任务的actual-op probe迁移到新actual clone输入。
-6. 删除旧target implementation interface/materializer/selected-forced状态，接入现有candidate owner和完整下游exact gates。
-7. 重放host/full-feature、package/fresh no-card，准备FP16/BF16 source/oracle/runner并完成串行真实板端A/B。
+新增typed operation或enum未分类时build/test失败。缺少权威semantics的deterministic target form不能靠缩小遍历范围、
+名字匹配或猜测补齐；应先从typed lowering、CRT与TargetModel合同恢复并验证语义。attention、decode、mask与KV-cache
+只按其current IR的普通value/effect/control语义处理，frontend给出的内容不做任何专门改写。
 
-## 9. Verification Contract
+首版instruction replacement最多3个target issues，并可对baseline做一次depth-1 local fusion；这些是local generation
+上界，所有actual alternatives仍计入Q51 global ledger与whole-card shortlist。
 
-- solver unit：Real/BV/Bool/UF等价与非等价、除法定义域、SAT/UNSAT/unknown/timeout、reduction/contraction、
-  IndexRelation和memory alias；
-- source property：generic chain/diamond/fanout、effect/control boundary，以及reassociation、distribution/factorization、
-  contraction和reduction tree witnesses；证明生产实现没有case matcher，并逐项命中4-op/16-node/depth-6/3-cut/
-  256-expansion/16-clone hard-cap回退；
-- closure：遍历全部Instr enums、op families和current target transaction variants，每项exact/opaque/boundary/rejected唯一，
-  新增值未分类时build/test失败；
-- differential：在有界整数/Bool/Real样本和memory states上对比symbolic adapter与concrete TargetModel/formal evaluator；
-- target witnesses：oriented GEMM、elementwise/reduce/convert、DMA/layout fusion、GatherScatter elimination、Bit2FP和
-  MaskMove旧destination状态；这些只是测试参数，不是grammar whitelist；
-- integration：SAT/unknown/timeout/cap时baseline回退；source variants只生成一次；export shards无Z3；所有actual siblings
-  按worker/slot/order→fresh completion/liveness→SPM→DDR→post-memory transport/resource→preflight/final-cost顺序重放并进入
-  source→package/fresh no-card；
-- board：默认FP16/BF16，同源baseline/winner串行A/B，按现有正常数值容差比较并校验guard、profile、completion和
-  lifecycle。F32只用于明确的格式/转换边界。
+## 6. Integration、Selection 与 Failure
 
-只完成Z3接入、一个代数case、少量手写opcode、局部IR dump或model-only differential均不算完成。实现提交必须与
-Target ABI退役提交分开，建议提交标题为`compiler: add semantic superoptimization`。
+Q48不拥有winner。完整流向为：
+
+```text
+card-local structured baseline
+  -> query-local proven structured actual alternatives
+  -> Q51 whole-DAG joint search
+  -> bounded whole-card CardProgram actual candidates
+  -> per-Tile Instr projection/lowering
+  -> query-local proven Instr actual alternatives
+  -> fresh completion / SPM / DDR / communication / resource exact gates
+  -> cohort-wide numeric makespan selection
+  -> target modules / schema-v8 package / no-card / runtime
+```
+
+每个whole-card alternative都必须保持all-and-only available physical Tiles、explicit `(card_id, tile_id, launch_slot)`
+publication和完整observable obligations。一个Tile、message、resource或completion失败即拒绝整个candidate。任何late
+stage只返回validated result或failure，不在原clone上retile、spill、改placement、切换structured/Instr alternative或插入fallback。
+
+Q51 cost model只比较hard-legal actual candidates：有matching target/profile参数时使用实际值，其次使用已有理论参数，
+完全未知的性能项从整个comparison cohort删除。SMT结果不进入cost，board结果也不反馈compile-time selection。
+
+## 7. 实施顺序
+
+1. **Dependency closure**：确认Q53已达到current whole-card `board-ready`，schema-v8 package/runtime与typed
+   TargetCall closure可消费final whole-card Instr，repository中不存在Q48会重新依赖的旧执行域或独立selector。
+2. **Proof core**：接入managed Z3，实现Real/BV/Bool/UF、partial-operation定义域、observable memory/effect与
+   `IndexRelation` precondition bridge；所有对象保持query-local。
+3. **Structured generator**：实现general expression-DAG enumeration、actual MLIR materialization、canonical key、
+   hard caps和baseline fallback，并在Q51调度前接入唯一global ledger。
+4. **Instr semantic closure**：建立typed exhaustive classification、symbolic/concrete differential与family-owned
+   constructors；权威target/model语义不足时先修复其owner。
+5. **Instr generator**：实现bounded typed sequence enumeration/local fusion，并作为whole-card actual evaluation的一部分
+   接入共同exact gates，不产生per-Tile commit或第二个winner。
+6. **Vertical verification**：重放host/full-feature、source→package/fresh no-card，准备FP16/BF16 source/oracle/runner；
+   达到board-ready后串行执行同源baseline/winner真实板端A/B。
+
+每个checkpoint必须独立闭合设计同步、实现、direct tests与current pipeline integration；不保留临时public开关、双路径、
+空stub或只为旧fixture存在的接口。
+
+## 8. Verification Contract
+
+### Unit / property
+
+- Real/BV/Bool/UF等价与非等价、partial-operation定义域、SAT/UNSAT/unknown/timeout和resource exhaustion；
+- observable result、memory alias/state、effect order与completion boundary正负例；
+- structured chain/diamond/fanout/fanin/reduction/control boundary，以及reassociation、distribution、factorization、
+  contraction和reduction-tree witnesses；
+- 固定generation bounds、canonical key、serial/parallel determinism和baseline fallback；
+- Instr op/enum/transaction universe的exhaustive unique classification与symbolic/concrete differential。
+
+### Integration
+
+- source alternatives只在card-local DAG上生成一次，不按physical Tile重复运行solver；
+- 不同structured alternative全部进入同一Q51 spatial/temporal/fusion/communication search；
+- Instr alternative只在disposable whole-card evaluation内产生，不形成per-Tile winner；
+- 每个accepted alternative重放fresh worker/order/completion、SPM/DDR、communication/resource、target与final numeric
+  cost gates；SAT/unknown/timeout/cap和任一late failure稳定保留baseline；
+- schema-v8 package仍只包含current explicit identities、resources、completion和artifacts，不含proof/search residue。
+
+### End to end
+
+- generic elementwise、GEMM、reduction、conv与mixed DAG，以及official HF prefill、functional KV-cache decode和
+  Llama block FP16/BF16从真实source生成完整package并fresh no-card；
+- frontend保持原始PyTorch/HF语义，不增加mask、`-inf`、shape、参数顺序或decode特判；
+- host build/test使用可用逻辑CPU并行，global work、actual clone、peak live clone、wall与RSS有fresh记录；不设置任意
+  固定秒数作为正确性门禁；
+- 无卡阶段完成case、oracle、runner、package和fresh no-card后才为`board-ready`；真实板端单进程串行matched A/B，
+  只有正确性与可重复收益同时成立才可标记`done`。
+
+只完成solver接入、一个代数case、少量手写opcode、局部IR dump、model-only differential或单个Tile fixture都不算完成。

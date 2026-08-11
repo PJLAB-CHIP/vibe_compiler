@@ -149,25 +149,28 @@ parseInputLocations(const llvm::json::Object &root,
   return locations;
 }
 
-FailureOr<DistributedBoundaryRank>
-parseDistributedBoundaryRank(const llvm::json::Value &value,
-                             llvm::raw_ostream &diagnostics) {
+FailureOr<DistributedBoundaryPartition>
+parseDistributedBoundaryPartition(const llvm::json::Value &value,
+                                  llvm::raw_ostream &diagnostics) {
   const llvm::json::Object *object = value.getAsObject();
   if (!object) {
-    rejectProgramDirectory("distributed boundary rank entries must be objects",
-                           diagnostics);
+    rejectProgramDirectory(
+        "distributed boundary partition entries must be objects", diagnostics);
     return failure();
   }
 
-  DistributedBoundaryRank rank;
-  if (readIntegerField(*object, "rank", rank.rank, diagnostics) ||
-      readIntegerField(*object, "replica_id", rank.replicaId, diagnostics) ||
-      readIntegerArrayField(*object, "offsets", rank.offsets, diagnostics) ||
-      readIntegerArrayField(*object, "sizes", rank.sizes, diagnostics) ||
-      readIntegerArrayField(*object, "strides", rank.strides, diagnostics,
+  DistributedBoundaryPartition partition;
+  if (readIntegerField(*object, "partition_id", partition.partitionId,
+                       diagnostics) ||
+      readIntegerField(*object, "replica_id", partition.replicaId,
+                       diagnostics) ||
+      readIntegerArrayField(*object, "offsets", partition.offsets,
+                            diagnostics) ||
+      readIntegerArrayField(*object, "sizes", partition.sizes, diagnostics) ||
+      readIntegerArrayField(*object, "strides", partition.strides, diagnostics,
                             /*requirePositive=*/true))
     return failure();
-  return rank;
+  return partition;
 }
 
 FailureOr<DistributedBoundaryBinding>
@@ -192,19 +195,20 @@ parseDistributedBoundaryBinding(const llvm::json::Value &value,
       readStringField(*object, "dtype", binding.dtype, diagnostics))
     return failure();
 
-  const llvm::json::Array *ranks = object->getArray("ranks");
-  if (!ranks) {
+  const llvm::json::Array *partitions = object->getArray("partitions");
+  if (!partitions) {
     rejectProgramDirectory(
-        "expected array field 'ranks' in distributed boundary", diagnostics);
+        "expected array field 'partitions' in distributed boundary",
+        diagnostics);
     return failure();
   }
-  binding.ranks.reserve(ranks->size());
-  for (const llvm::json::Value &rankValue : *ranks) {
-    FailureOr<DistributedBoundaryRank> rank =
-        parseDistributedBoundaryRank(rankValue, diagnostics);
-    if (failed(rank))
+  binding.partitions.reserve(partitions->size());
+  for (const llvm::json::Value &partitionValue : *partitions) {
+    FailureOr<DistributedBoundaryPartition> partition =
+        parseDistributedBoundaryPartition(partitionValue, diagnostics);
+    if (failed(partition))
       return failure();
-    binding.ranks.push_back(std::move(*rank));
+    binding.partitions.push_back(std::move(*partition));
   }
   return binding;
 }
@@ -239,7 +243,7 @@ parseDistributedBoundary(const llvm::json::Object &object,
                          llvm::raw_ostream &diagnostics) {
   DistributedBoundary boundary;
   if (readIntegerField(object, "version", boundary.version, diagnostics) ||
-      readIntegerField(object, "logical_rank_count", boundary.logicalRankCount,
+      readIntegerField(object, "num_partitions", boundary.numPartitions,
                        diagnostics))
     return failure();
   FailureOr<std::vector<DistributedBoundaryBinding>> inputs =

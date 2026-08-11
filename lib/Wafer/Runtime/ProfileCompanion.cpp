@@ -30,15 +30,13 @@ namespace wafer::runtime {
 namespace {
 
 constexpr llvm::StringLiteral kPlanSchema = "wafer-profile-plan";
-constexpr llvm::StringLiteral kVariantsSchema = "wafer-profile-variants";
 constexpr llvm::StringLiteral kActivationSchema = "wafer-profile-activation";
 constexpr llvm::StringLiteral kSiteMapSchema =
     "wafer-profile-target-call-site-map";
 constexpr llvm::StringLiteral kSiteBasis =
-    "verified-target-llvm-entry-reachable-profile-target-call-preorder";
+    "verified-target-llvm-entry-reachable-physical-tile-target-call-preorder";
 constexpr llvm::StringLiteral kSiteIdentity =
-    "final-rank-local-typed-target-site-id-and-correlation-key";
-constexpr llvm::StringLiteral kFinalArtifact = "final-artifact";
+    "final-physical-tile-local-typed-target-site-id-and-correlation-key";
 constexpr uint64_t kCountRecordBytes = WAFER_TX81_PROFILER_MIN_BUFFER_BYTES;
 constexpr uint64_t kTraceRecordBytes = WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES;
 
@@ -173,28 +171,12 @@ loadJSONDocument(llvm::StringRef path, llvm::StringRef label,
 }
 
 struct RawActivation {
-  std::string productionManifestDigest;
+  std::string manifestDigest;
   std::string planDigest;
-  std::string variantsDigest;
   std::string siteMapDigest;
 };
 
-struct RawVariant {
-  std::string id;
-  std::string role;
-  std::string packageReference;
-  std::string manifestDigest;
-  ProfileStaticCostModel staticCostModel;
-};
-
-struct RawExecutionPackage {
-  std::string variantId;
-  std::string packageReference;
-  std::string manifestDigest;
-};
-
 struct RawCapturePackage {
-  std::string variantId;
   ProfileCaptureKind capture = ProfileCaptureKind::Count;
   std::string packageReference;
   std::string manifestDigest;
@@ -203,7 +185,7 @@ struct RawCapturePackage {
 };
 
 struct RawPlan {
-  std::vector<RawExecutionPackage> executionPackages;
+  ProfileStaticCostModel staticCostModel;
   std::vector<RawCapturePackage> capturePackages;
 };
 
@@ -218,8 +200,6 @@ llvm::Expected<ProfileCaptureKind> parseCaptureKind(llvm::StringRef value,
 
 uint64_t expectedRecordBytes(ProfileCaptureKind capture) {
   switch (capture) {
-  case ProfileCaptureKind::Summary:
-    llvm_unreachable("summary is not a profile companion v5 capture");
   case ProfileCaptureKind::Count:
     return kCountRecordBytes;
   case ProfileCaptureKind::Trace:
@@ -229,7 +209,7 @@ uint64_t expectedRecordBytes(ProfileCaptureKind capture) {
 }
 
 llvm::Error verifyHeader(const llvm::json::Object &root,
-                         llvm::StringRef expectedSchema, bool hasRankCount,
+                         llvm::StringRef expectedSchema, bool hasTopology,
                          const PackageParseLimits &limits,
                          llvm::StringRef context);
 bool isLowercaseSHA256(llvm::StringRef digest);
@@ -244,7 +224,7 @@ parseActivation(const llvm::json::Object &root,
                         {}, "profile activation"))
     return std::move(error);
   if (llvm::Error error =
-          verifyHeader(root, kActivationSchema, /*hasRankCount=*/false, limits,
+          verifyHeader(root, kActivationSchema, /*hasTopology=*/false, limits,
                        "profile activation"))
     return std::move(error);
   llvm::Expected<std::string> production = requireString(
@@ -256,34 +236,28 @@ parseActivation(const llvm::json::Object &root,
     return invalid("profile activation.metadata_sha256 must be an object");
   if (llvm::Error error = requireFields(
           *metadata,
-          {kProfileCompanionPlanFileName, kProfileCompanionVariantsFileName,
-           kProfileCompanionSiteMapFileName},
-          {}, "profile activation.metadata_sha256"))
+          {kProfileCompanionPlanFileName, kProfileCompanionSiteMapFileName}, {},
+          "profile activation.metadata_sha256"))
     return std::move(error);
   llvm::Expected<std::string> plan =
       requireString(*metadata, kProfileCompanionPlanFileName,
                     "profile activation.metadata_sha256", limits);
   if (!plan)
     return plan.takeError();
-  llvm::Expected<std::string> variants =
-      requireString(*metadata, kProfileCompanionVariantsFileName,
-                    "profile activation.metadata_sha256", limits);
-  if (!variants)
-    return variants.takeError();
   llvm::Expected<std::string> siteMap =
       requireString(*metadata, kProfileCompanionSiteMapFileName,
                     "profile activation.metadata_sha256", limits);
   if (!siteMap)
     return siteMap.takeError();
   if (!isLowercaseSHA256(*production) || !isLowercaseSHA256(*plan) ||
-      !isLowercaseSHA256(*variants) || !isLowercaseSHA256(*siteMap))
+      !isLowercaseSHA256(*siteMap))
     return invalid("profile activation contains a malformed SHA-256 digest");
   return RawActivation{std::move(*production), std::move(*plan),
-                       std::move(*variants), std::move(*siteMap)};
+                       std::move(*siteMap)};
 }
 
 llvm::Error verifyHeader(const llvm::json::Object &root,
-                         llvm::StringRef expectedSchema, bool hasRankCount,
+                         llvm::StringRef expectedSchema, bool hasTopology,
                          const PackageParseLimits &limits,
                          llvm::StringRef context) {
   llvm::Expected<std::string> schema =
@@ -298,35 +272,40 @@ llvm::Error verifyHeader(const llvm::json::Object &root,
     return version.takeError();
   if (*version != kProfileCompanionSchemaVersion)
     return invalid(context + ".schema_version is not supported");
-  if (hasRankCount) {
-    llvm::Expected<uint64_t> rankCount =
-        requireUnsigned(root, "rank_count", context);
-    if (!rankCount)
-      return rankCount.takeError();
-    if (*rankCount != static_cast<uint64_t>(kProfileCompanionRankCount))
-      return invalid(context + ".rank_count must be exactly 16");
+  if (hasTopology) {
+    llvm::Expected<uint64_t> cardCount =
+        requireUnsigned(root, "card_count", context);
+    if (!cardCount)
+      return cardCount.takeError();
+    llvm::Expected<uint64_t> tileCount =
+        requireUnsigned(root, "tile_count", context);
+    if (!tileCount)
+      return tileCount.takeError();
+    if (*cardCount != static_cast<uint64_t>(kProfileCompanionCardCount) ||
+        *tileCount != static_cast<uint64_t>(kProfileCompanionTileCount))
+      return invalid(context + ".card_count/tile_count must be exactly 1/16");
   }
   return llvm::Error::success();
 }
 
+llvm::Expected<ProfileStaticCostModel>
+parseStaticCostModel(const llvm::json::Value &value,
+                     const PackageParseLimits &limits, uint64_t &totalRecords,
+                     llvm::StringRef context);
+
 llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
                                   const PackageParseLimits &limits,
                                   uint64_t &totalRecords) {
-  if (llvm::Error error =
-          requireFields(root,
-                        {"schema", "schema_version", "rank_count",
-                         "variant_metadata", "site_map", "site_identity",
-                         "execution_packages", "capture_packages"},
-                        {}, "profile plan"))
+  if (llvm::Error error = requireFields(
+          root,
+          {"schema", "schema_version", "card_count", "tile_count", "site_map",
+           "site_identity", "static_cost_model", "capture_packages"},
+          {}, "profile plan"))
     return std::move(error);
-  if (llvm::Error error = verifyHeader(root, kPlanSchema, /*hasRankCount=*/true,
+  if (llvm::Error error = verifyHeader(root, kPlanSchema, /*hasTopology=*/true,
                                        limits, "profile plan"))
     return std::move(error);
 
-  llvm::Expected<std::string> variants =
-      requireString(root, "variant_metadata", "profile plan", limits);
-  if (!variants)
-    return variants.takeError();
   llvm::Expected<std::string> siteMap =
       requireString(root, "site_map", "profile plan", limits);
   if (!siteMap)
@@ -335,48 +314,21 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
       requireString(root, "site_identity", "profile plan", limits);
   if (!identity)
     return identity.takeError();
-  if (*variants != kProfileCompanionVariantsFileName ||
-      *siteMap != kProfileCompanionSiteMapFileName)
+  if (*siteMap != kProfileCompanionSiteMapFileName)
     return invalid("profile plan metadata references are not canonical");
   if (*identity != kSiteIdentity)
     return invalid("profile plan site identity is not supported");
 
-  llvm::Expected<const llvm::json::Array *> packages =
-      requireArray(root, "execution_packages", "profile plan");
-  if (!packages)
-    return packages.takeError();
-  if ((*packages)->size() != 1)
-    return invalid("profile plan must contain exactly one execution package");
-  if (llvm::Error error =
-          accountRecords((*packages)->size(), totalRecords, limits))
-    return std::move(error);
-
   RawPlan plan;
-  for (auto [index, value] : llvm::enumerate(**packages)) {
-    std::string context =
-        "profile plan.execution_packages[" + std::to_string(index) + "]";
-    llvm::Expected<const llvm::json::Object *> object =
-        requireObject(value, context);
-    if (!object)
-      return object.takeError();
-    if (llvm::Error error = requireFields(
-            **object, {"variant_id", "package_ref", "manifest_sha256"}, {},
-            context))
-      return std::move(error);
-    llvm::Expected<std::string> id =
-        requireString(**object, "variant_id", context, limits);
-    if (!id)
-      return id.takeError();
-    llvm::Expected<std::string> reference =
-        requireString(**object, "package_ref", context, limits);
-    if (!reference)
-      return reference.takeError();
-    llvm::Expected<std::string> digest =
-        requireString(**object, "manifest_sha256", context, limits);
-    if (!digest)
-      return digest.takeError();
-    plan.executionPackages.push_back({*id, *reference, *digest});
-  }
+  const llvm::json::Value *staticCost = root.get("static_cost_model");
+  if (!staticCost)
+    return invalid("profile plan.static_cost_model is missing");
+  llvm::Expected<ProfileStaticCostModel> parsedStaticCost =
+      parseStaticCostModel(*staticCost, limits, totalRecords,
+                           "profile plan.static_cost_model");
+  if (!parsedStaticCost)
+    return parsedStaticCost.takeError();
+  plan.staticCostModel = std::move(*parsedStaticCost);
 
   llvm::Expected<const llvm::json::Array *> captures =
       requireArray(root, "capture_packages", "profile plan");
@@ -387,11 +339,8 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
   if (llvm::Error error =
           accountRecords((*captures)->size(), totalRecords, limits))
     return std::move(error);
-  const std::array<std::pair<llvm::StringRef, ProfileCaptureKind>, 2>
-      expectedOrder = {{
-          {kFinalArtifact, ProfileCaptureKind::Count},
-          {kFinalArtifact, ProfileCaptureKind::Trace},
-      }};
+  const std::array<ProfileCaptureKind, 2> expectedOrder = {
+      ProfileCaptureKind::Count, ProfileCaptureKind::Trace};
   for (auto [index, value] : llvm::enumerate(**captures)) {
     std::string context =
         "profile plan.capture_packages[" + std::to_string(index) + "]";
@@ -401,14 +350,10 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
       return object.takeError();
     if (llvm::Error error =
             requireFields(**object,
-                          {"variant_id", "capture", "package_ref",
-                           "manifest_sha256", "record_abi", "record_bytes"},
+                          {"capture", "package_ref", "manifest_sha256",
+                           "record_abi", "record_bytes"},
                           {}, context))
       return std::move(error);
-    llvm::Expected<std::string> id =
-        requireString(**object, "variant_id", context, limits);
-    if (!id)
-      return id.takeError();
     llvm::Expected<std::string> captureText =
         requireString(**object, "capture", context, limits);
     if (!captureText)
@@ -433,37 +378,38 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
         requireUnsigned(**object, "record_bytes", context);
     if (!recordBytes)
       return recordBytes.takeError();
-    if (*id != expectedOrder[index].first ||
-        *capture != expectedOrder[index].second)
+    if (*capture != expectedOrder[index])
       return invalid("profile plan capture packages are not in canonical "
-                     "variant/capture order");
+                     "capture order");
     if (*recordBytes != expectedRecordBytes(*capture))
       return invalid(context + ".record_bytes is not the capture contract");
     if (*recordABI != kProfileRecordABI)
       return invalid(context + ".record_abi is not the capture contract");
     plan.capturePackages.push_back(
-        {*id, *capture, *reference, *digest, *recordABI, *recordBytes});
+        {*capture, *reference, *digest, *recordABI, *recordBytes});
   }
   return plan;
 }
 
 bool isStaticCostKnowledge(llvm::StringRef value) {
   static constexpr std::array<llvm::StringLiteral, 4> values = {
-      "known", "unknown", "unsupported", "overflow"};
+      "known", "unavailable", "unsupported", "overflow"};
   return llvm::is_contained(values, value);
 }
 
 bool isStaticCostReason(llvm::StringRef value) {
-  static constexpr std::array<llvm::StringLiteral, 15> values = {
+  static constexpr std::array<llvm::StringLiteral, 17> values = {
       "none",
       "dynamic-loop-trip-count",
       "invalid-loop-step",
       "conditional-control-flow",
       "unsupported-control-flow",
-      "unknown-physical-geometry",
-      "unknown-resource-bytes",
+      "unavailable-physical-geometry",
+      "unavailable-resource-bytes",
       "missing-accepted-spm-offset",
       "invalid-accepted-spm-offset",
+      "missing-accepted-ddr-offset",
+      "invalid-accepted-ddr-offset",
       "unsupported-spm-root",
       "unresolved-noc-route",
       "invalid-execution-topology",
@@ -582,57 +528,8 @@ parseStaticDirectionalNoCWork(const llvm::json::Value &value,
   return result;
 }
 
-llvm::Expected<ProfileStaticCollectiveNoCWork>
-parseStaticCollectiveNoCWork(const llvm::json::Value &value,
-                             const PackageParseLimits &limits,
-                             llvm::StringRef context) {
-  llvm::Expected<const llvm::json::Object *> object =
-      requireObject(value, context);
-  if (!object)
-    return object.takeError();
-  if (llvm::Error error =
-          requireFields(**object,
-                        {"collective_permute", "all_to_all", "all_gather",
-                         "reduce_scatter", "all_reduce"},
-                        {}, context))
-    return std::move(error);
-
-  ProfileStaticCollectiveNoCWork result;
-  auto parse =
-      [&](llvm::StringRef field) -> llvm::Expected<ProfileStaticCostMetric> {
-    const llvm::json::Value *metric = (*object)->get(field);
-    if (!metric)
-      return invalid(context + "." + field + " is missing");
-    return parseStaticCostMetric(*metric, limits,
-                                 (context + "." + field).str());
-  };
-  llvm::Expected<ProfileStaticCostMetric> collectivePermute =
-      parse("collective_permute");
-  if (!collectivePermute)
-    return collectivePermute.takeError();
-  llvm::Expected<ProfileStaticCostMetric> allToAll = parse("all_to_all");
-  if (!allToAll)
-    return allToAll.takeError();
-  llvm::Expected<ProfileStaticCostMetric> allGather = parse("all_gather");
-  if (!allGather)
-    return allGather.takeError();
-  llvm::Expected<ProfileStaticCostMetric> reduceScatter =
-      parse("reduce_scatter");
-  if (!reduceScatter)
-    return reduceScatter.takeError();
-  llvm::Expected<ProfileStaticCostMetric> allReduce = parse("all_reduce");
-  if (!allReduce)
-    return allReduce.takeError();
-  result.collectivePermute = std::move(*collectivePermute);
-  result.allToAll = std::move(*allToAll);
-  result.allGather = std::move(*allGather);
-  result.reduceScatter = std::move(*reduceScatter);
-  result.allReduce = std::move(*allReduce);
-  return result;
-}
-
-llvm::Expected<ProfileStaticRankWork>
-parseStaticRankWork(const llvm::json::Value &value,
+llvm::Expected<ProfileStaticTileWork>
+parseStaticTileWork(const llvm::json::Value &value,
                     const PackageParseLimits &limits, llvm::StringRef context) {
   llvm::Expected<const llvm::json::Object *> object =
       requireObject(value, context);
@@ -644,7 +541,7 @@ parseStaticRankWork(const llvm::json::Value &value,
            "vector_f16_bf16_logical_ops", "vector_f32_logical_ops",
            "vector_other_logical_ops", "ddr_read_bytes", "ddr_write_bytes",
            "spm_movement_bytes", "noc_transmit_bytes", "noc_receive_bytes",
-           "directional_noc_transmit_bytes", "collective_noc_transmit_bytes"},
+           "directional_noc_transmit_bytes"},
           {}, context))
     return std::move(error);
 
@@ -657,7 +554,7 @@ parseStaticRankWork(const llvm::json::Value &value,
                                  (context + "." + field).str());
   };
 
-  ProfileStaticRankWork result;
+  ProfileStaticTileWork result;
 #define PARSE_STATIC_METRIC(JSON_NAME, MEMBER)                                 \
   do {                                                                         \
     llvm::Expected<ProfileStaticCostMetric> metric = parseMetric(JSON_NAME);   \
@@ -688,18 +585,7 @@ parseStaticRankWork(const llvm::json::Value &value,
                 context + ".directional_noc_transmit_bytes is missing"));
   if (!directionalWork)
     return directionalWork.takeError();
-  const llvm::json::Value *collective =
-      (*object)->get("collective_noc_transmit_bytes");
-  llvm::Expected<ProfileStaticCollectiveNoCWork> collectiveWork =
-      collective ? parseStaticCollectiveNoCWork(
-                       *collective, limits,
-                       (context + ".collective_noc_transmit_bytes").str())
-                 : llvm::Expected<ProfileStaticCollectiveNoCWork>(invalid(
-                       context + ".collective_noc_transmit_bytes is missing"));
-  if (!collectiveWork)
-    return collectiveWork.takeError();
   result.directionalNoCTransmitBytes = std::move(*directionalWork);
-  result.collectiveNoCTransmitBytes = std::move(*collectiveWork);
   return result;
 }
 
@@ -756,7 +642,7 @@ parseStaticCostModel(const llvm::json::Value &value,
   if (!object)
     return object.takeError();
   if (llvm::Error error = requireFields(
-          **object, {"model", "scope", "rates", "ranks"}, {}, context))
+          **object, {"model", "scope", "rates", "tiles"}, {}, context))
     return std::move(error);
   llvm::Expected<std::string> model =
       requireString(**object, "model", context, limits);
@@ -778,48 +664,71 @@ parseStaticCostModel(const llvm::json::Value &value,
       parseStaticCostRates(*ratesValue, (context + ".rates").str());
   if (!rates)
     return rates.takeError();
-  llvm::Expected<const llvm::json::Array *> ranks =
-      requireArray(**object, "ranks", context);
-  if (!ranks)
-    return ranks.takeError();
-  if ((*ranks)->size() != static_cast<size_t>(kProfileCompanionRankCount))
-    return invalid(context + ".ranks must contain all and only 16 ranks");
+  llvm::Expected<const llvm::json::Array *> tiles =
+      requireArray(**object, "tiles", context);
+  if (!tiles)
+    return tiles.takeError();
+  if ((*tiles)->size() != static_cast<size_t>(kProfileCompanionTileCount))
+    return invalid(context +
+                   ".tiles must contain all and only 16 physical Tiles");
   if (llvm::Error error =
-          accountRecords((*ranks)->size() * 20, totalRecords, limits))
+          accountRecords((*tiles)->size() * 20, totalRecords, limits))
     return std::move(error);
 
   ProfileStaticCostModel result;
   result.model = std::move(*model);
   result.scope = std::move(*scope);
   result.rates = std::move(*rates);
-  result.ranks.reserve((*ranks)->size());
-  for (auto [index, rankValue] : llvm::enumerate(**ranks)) {
-    std::string rankContext =
-        (context + ".ranks[" + llvm::Twine(index) + "]").str();
-    llvm::Expected<const llvm::json::Object *> rankObject =
-        requireObject(rankValue, rankContext);
-    if (!rankObject)
-      return rankObject.takeError();
+  result.tiles.reserve((*tiles)->size());
+  std::array<bool, kProfileCompanionTileCount> seenTileIds{};
+  std::array<bool, kProfileCompanionTileCount> seenLaunchSlots{};
+  for (auto [index, tileValue] : llvm::enumerate(**tiles)) {
+    std::string tileContext =
+        (context + ".tiles[" + llvm::Twine(index) + "]").str();
+    llvm::Expected<const llvm::json::Object *> tileObject =
+        requireObject(tileValue, tileContext);
+    if (!tileObject)
+      return tileObject.takeError();
     if (llvm::Error error = requireFields(
-            **rankObject, {"logical_rank", "work"}, {}, rankContext))
+            **tileObject, {"card_id", "tile_id", "launch_slot", "work"}, {},
+            tileContext))
       return std::move(error);
-    llvm::Expected<uint64_t> logicalRank =
-        requireUnsigned(**rankObject, "logical_rank", rankContext);
-    if (!logicalRank)
-      return logicalRank.takeError();
-    if (*logicalRank != index)
+    llvm::Expected<uint64_t> cardId =
+        requireUnsigned(**tileObject, "card_id", tileContext);
+    if (!cardId)
+      return cardId.takeError();
+    llvm::Expected<uint64_t> tileId =
+        requireUnsigned(**tileObject, "tile_id", tileContext);
+    if (!tileId)
+      return tileId.takeError();
+    llvm::Expected<uint64_t> launchSlot =
+        requireUnsigned(**tileObject, "launch_slot", tileContext);
+    if (!launchSlot)
+      return launchSlot.takeError();
+    if (*cardId != 0 ||
+        *tileId >= static_cast<uint64_t>(kProfileCompanionTileCount) ||
+        *launchSlot >= static_cast<uint64_t>(kProfileCompanionTileCount) ||
+        seenTileIds[*tileId] || seenLaunchSlots[*launchSlot])
       return invalid(context +
-                     ".ranks must be in canonical logical-rank order");
-    const llvm::json::Value *workValue = (*rankObject)->get("work");
+                     ".tiles must contain unique physical Tiles and a "
+                     "unique dense launch-slot domain");
+    seenTileIds[*tileId] = true;
+    seenLaunchSlots[*launchSlot] = true;
+    const llvm::json::Value *workValue = (*tileObject)->get("work");
     if (!workValue)
-      return invalid(rankContext + ".work is missing");
-    llvm::Expected<ProfileStaticRankWork> work =
-        parseStaticRankWork(*workValue, limits, rankContext + ".work");
+      return invalid(tileContext + ".work is missing");
+    llvm::Expected<ProfileStaticTileWork> work =
+        parseStaticTileWork(*workValue, limits, tileContext + ".work");
     if (!work)
       return work.takeError();
-    result.ranks.push_back(
-        {static_cast<int64_t>(*logicalRank), std::move(*work)});
+    result.tiles.push_back({PhysicalCardId(static_cast<int64_t>(*cardId)),
+                            PhysicalTileId(static_cast<int64_t>(*tileId)),
+                            LaunchSlotId(static_cast<int64_t>(*launchSlot)),
+                            std::move(*work)});
   }
+  llvm::sort(result.tiles, [](const auto &lhs, const auto &rhs) {
+    return lhs.launchSlot.getValue() < rhs.launchSlot.getValue();
+  });
   return result;
 }
 
@@ -835,8 +744,8 @@ void emitStaticCostMetric(llvm::json::OStream &json,
   });
 }
 
-void emitStaticRankWork(llvm::json::OStream &json,
-                        const ProfileStaticRankWork &work) {
+void emitStaticTileWork(llvm::json::OStream &json,
+                        const ProfileStaticTileWork &work) {
   auto emitMetric = [&](llvm::StringRef name,
                         const ProfileStaticCostMetric &metric) {
     json.attributeBegin(name);
@@ -859,15 +768,6 @@ void emitStaticRankWork(llvm::json::OStream &json,
       emitMetric("east", work.directionalNoCTransmitBytes.east);
       emitMetric("south", work.directionalNoCTransmitBytes.south);
       emitMetric("west", work.directionalNoCTransmitBytes.west);
-    });
-    json.attributeObject("collective_noc_transmit_bytes", [&] {
-      emitMetric("collective_permute",
-                 work.collectiveNoCTransmitBytes.collectivePermute);
-      emitMetric("all_to_all", work.collectiveNoCTransmitBytes.allToAll);
-      emitMetric("all_gather", work.collectiveNoCTransmitBytes.allGather);
-      emitMetric("reduce_scatter",
-                 work.collectiveNoCTransmitBytes.reduceScatter);
-      emitMetric("all_reduce", work.collectiveNoCTransmitBytes.allReduce);
     });
   });
 }
@@ -895,88 +795,25 @@ void emitStaticCostModel(llvm::json::OStream &json,
         json.attribute("spm_movement_bytes_per_second",
                        llvm::json::Value(nullptr));
     });
-    json.attributeArray("ranks", [&] {
-      for (const ProfileStaticRankCost &rank : model.ranks)
+    json.attributeArray("tiles", [&] {
+      std::vector<const ProfileStaticTileCost *> tiles;
+      tiles.reserve(model.tiles.size());
+      for (const ProfileStaticTileCost &tile : model.tiles)
+        tiles.push_back(&tile);
+      llvm::sort(tiles, [](const auto *lhs, const auto *rhs) {
+        return lhs->launchSlot.getValue() < rhs->launchSlot.getValue();
+      });
+      for (const ProfileStaticTileCost *tile : tiles)
         json.object([&] {
-          json.attribute("logical_rank", rank.logicalRank);
+          json.attribute("card_id", tile->cardId.getValue());
+          json.attribute("tile_id", tile->tileId.getValue());
+          json.attribute("launch_slot", tile->launchSlot.getValue());
           json.attributeBegin("work");
-          emitStaticRankWork(json, rank.work);
+          emitStaticTileWork(json, tile->work);
           json.attributeEnd();
         });
     });
   });
-}
-
-llvm::Expected<std::vector<RawVariant>>
-parseVariants(const llvm::json::Object &root, const PackageParseLimits &limits,
-              uint64_t &totalRecords) {
-  if (llvm::Error error = requireFields(
-          root, {"schema", "schema_version", "rank_count", "variants"}, {},
-          "profile variants"))
-    return std::move(error);
-  if (llvm::Error error =
-          verifyHeader(root, kVariantsSchema, /*hasRankCount=*/true, limits,
-                       "profile variants"))
-    return std::move(error);
-  llvm::Expected<const llvm::json::Array *> variants =
-      requireArray(root, "variants", "profile variants");
-  if (!variants)
-    return variants.takeError();
-  if ((*variants)->size() != 1)
-    return invalid("profile variants must contain exactly one final artifact");
-  if (llvm::Error error =
-          accountRecords((*variants)->size(), totalRecords, limits))
-    return std::move(error);
-
-  std::vector<RawVariant> result;
-  for (auto [index, value] : llvm::enumerate(**variants)) {
-    std::string context =
-        "profile variants.variants[" + std::to_string(index) + "]";
-    llvm::Expected<const llvm::json::Object *> object =
-        requireObject(value, context);
-    if (!object)
-      return object.takeError();
-    if (llvm::Error error =
-            requireFields(**object,
-                          {"id", "role", "package_ref", "manifest_sha256",
-                           "static_cost_model"},
-                          {}, context))
-      return std::move(error);
-
-    RawVariant variant;
-    llvm::Expected<std::string> id =
-        requireString(**object, "id", context, limits);
-    if (!id)
-      return id.takeError();
-    llvm::Expected<std::string> role =
-        requireString(**object, "role", context, limits);
-    if (!role)
-      return role.takeError();
-    llvm::Expected<std::string> reference =
-        requireString(**object, "package_ref", context, limits);
-    if (!reference)
-      return reference.takeError();
-    llvm::Expected<std::string> digest =
-        requireString(**object, "manifest_sha256", context, limits);
-    if (!digest)
-      return digest.takeError();
-    const llvm::json::Value *staticCostValue =
-        (*object)->get("static_cost_model");
-    if (!staticCostValue)
-      return invalid(context + ".static_cost_model is missing");
-    llvm::Expected<ProfileStaticCostModel> staticCostModel =
-        parseStaticCostModel(*staticCostValue, limits, totalRecords,
-                             context + ".static_cost_model");
-    if (!staticCostModel)
-      return staticCostModel.takeError();
-    variant.id = *id;
-    variant.role = *role;
-    variant.packageReference = *reference;
-    variant.manifestDigest = *digest;
-    variant.staticCostModel = std::move(*staticCostModel);
-    result.push_back(std::move(variant));
-  }
-  return result;
 }
 
 llvm::Expected<ProfileTSMEngine> parseEngine(llvm::StringRef value,
@@ -1063,9 +900,9 @@ parseOptionalEngine(const llvm::json::Object &object, llvm::StringRef context,
 
 llvm::Expected<ProfileTargetCallSite>
 parseSite(const llvm::json::Value &value, uint64_t index,
-          const PackageParseLimits &limits, llvm::StringRef rankContext) {
+          const PackageParseLimits &limits, llvm::StringRef tileContext) {
   std::string context =
-      (rankContext + ".sites[" + llvm::Twine(index) + "]").str();
+      (tileContext + ".sites[" + llvm::Twine(index) + "]").str();
   llvm::Expected<const llvm::json::Object *> object =
       requireObject(value, context);
   if (!object)
@@ -1167,25 +1004,38 @@ parseSite(const llvm::json::Value &value, uint64_t index,
   return site;
 }
 
-llvm::Expected<ProfileRankSiteMap>
-parseRankSiteMap(const llvm::json::Value &value, uint64_t index,
+llvm::Expected<ProfileTileSiteMap>
+parseTileSiteMap(const llvm::json::Value &value, uint64_t index,
                  const PackageParseLimits &limits, uint64_t &totalRecords,
-                 llvm::StringRef variantContext) {
+                 llvm::StringRef siteMapContext) {
   std::string context =
-      (variantContext + ".ranks[" + llvm::Twine(index) + "]").str();
+      (siteMapContext + ".tiles[" + llvm::Twine(index) + "]").str();
   llvm::Expected<const llvm::json::Object *> object =
       requireObject(value, context);
   if (!object)
     return object.takeError();
-  if (llvm::Error error =
-          requireFields(**object, {"logical_rank", "sites"}, {}, context))
+  if (llvm::Error error = requireFields(
+          **object, {"card_id", "tile_id", "launch_slot", "sites"}, {},
+          context))
     return std::move(error);
-  llvm::Expected<uint64_t> rank =
-      requireUnsigned(**object, "logical_rank", context);
-  if (!rank)
-    return rank.takeError();
-  if (*rank >= static_cast<uint64_t>(kProfileCompanionRankCount))
-    return invalid(context + ".logical_rank is outside 0..15");
+  llvm::Expected<uint64_t> cardId =
+      requireUnsigned(**object, "card_id", context);
+  if (!cardId)
+    return cardId.takeError();
+  llvm::Expected<uint64_t> tileId =
+      requireUnsigned(**object, "tile_id", context);
+  if (!tileId)
+    return tileId.takeError();
+  llvm::Expected<uint64_t> launchSlot =
+      requireUnsigned(**object, "launch_slot", context);
+  if (!launchSlot)
+    return launchSlot.takeError();
+  if (*cardId != 0 ||
+      *tileId >= static_cast<uint64_t>(kProfileCompanionTileCount) ||
+      *launchSlot >= static_cast<uint64_t>(kProfileCompanionTileCount))
+    return invalid(context +
+                   " physical Tile/launch-slot identity is outside card0 "
+                   "Tile0..15");
   llvm::Expected<const llvm::json::Array *> sites =
       requireArray(**object, "sites", context);
   if (!sites)
@@ -1194,8 +1044,10 @@ parseRankSiteMap(const llvm::json::Value &value, uint64_t index,
           accountRecords(1 + (*sites)->size(), totalRecords, limits))
     return std::move(error);
 
-  ProfileRankSiteMap result;
-  result.logicalRank = static_cast<int64_t>(*rank);
+  ProfileTileSiteMap result;
+  result.cardId = PhysicalCardId(static_cast<int64_t>(*cardId));
+  result.tileId = PhysicalTileId(static_cast<int64_t>(*tileId));
+  result.launchSlot = LaunchSlotId(static_cast<int64_t>(*launchSlot));
   result.sites.reserve((*sites)->size());
   for (auto [siteIndex, siteValue] : llvm::enumerate(**sites)) {
     llvm::Expected<ProfileTargetCallSite> site =
@@ -1212,21 +1064,22 @@ parseRankSiteMap(const llvm::json::Value &value, uint64_t index,
     if (site.siteId != siteIndex)
       return invalid(context + " site IDs must be unique and dense from zero");
     else if (!correlationKeys.insert(site.correlationKey).second)
-      return invalid(context + " correlation keys must be unique per rank");
+      return invalid(context +
+                     " correlation keys must be unique per physical Tile");
   return result;
 }
 
-llvm::Expected<std::vector<ProfileVariantSiteMap>>
-parseSiteMaps(const llvm::json::Object &root, const PackageParseLimits &limits,
-              uint64_t &totalRecords) {
+llvm::Expected<std::vector<ProfileTileSiteMap>>
+parseSiteMap(const llvm::json::Object &root, const PackageParseLimits &limits,
+             uint64_t &totalRecords) {
   if (llvm::Error error = requireFields(
           root,
-          {"schema", "schema_version", "site_basis", "correlation_basis",
-           "target_call_registry_size", "variants"},
+          {"schema", "schema_version", "card_count", "tile_count", "site_basis",
+           "correlation_basis", "target_call_registry_size", "tiles"},
           {}, "profile site map"))
     return std::move(error);
   if (llvm::Error error =
-          verifyHeader(root, kSiteMapSchema, /*hasRankCount=*/false, limits,
+          verifyHeader(root, kSiteMapSchema, /*hasTopology=*/true, limits,
                        "profile site map"))
     return std::move(error);
   llvm::Expected<std::string> basis =
@@ -1247,56 +1100,38 @@ parseSiteMaps(const llvm::json::Object &root, const PackageParseLimits &limits,
     return registrySize.takeError();
   if (*registrySize != getTargetCallDescriptors().size())
     return invalid("profile site map target-call registry size is stale");
-  llvm::Expected<const llvm::json::Array *> variants =
-      requireArray(root, "variants", "profile site map");
-  if (!variants)
-    return variants.takeError();
-  if ((*variants)->size() != 1)
-    return invalid("profile site map must contain exactly one final artifact");
+  llvm::Expected<const llvm::json::Array *> tiles =
+      requireArray(root, "tiles", "profile site map");
+  if (!tiles)
+    return tiles.takeError();
+  if ((*tiles)->size() != static_cast<size_t>(kProfileCompanionTileCount))
+    return invalid(
+        "profile site map must contain all and only 16 physical Tiles");
   if (llvm::Error error =
-          accountRecords((*variants)->size(), totalRecords, limits))
+          accountRecords((*tiles)->size(), totalRecords, limits))
     return std::move(error);
 
-  std::vector<ProfileVariantSiteMap> result;
-  for (auto [index, value] : llvm::enumerate(**variants)) {
-    std::string context =
-        "profile site map.variants[" + std::to_string(index) + "]";
-    llvm::Expected<const llvm::json::Object *> object =
-        requireObject(value, context);
-    if (!object)
-      return object.takeError();
-    if (llvm::Error error =
-            requireFields(**object, {"variant_id", "ranks"}, {}, context))
-      return std::move(error);
-
-    ProfileVariantSiteMap variant;
-    llvm::Expected<std::string> id =
-        requireString(**object, "variant_id", context, limits);
-    if (!id)
-      return id.takeError();
-    variant.variantId = *id;
-    llvm::Expected<const llvm::json::Array *> ranks =
-        requireArray(**object, "ranks", context);
-    if (!ranks)
-      return ranks.takeError();
-    if ((*ranks)->size() != static_cast<size_t>(kProfileCompanionRankCount))
-      return invalid(context + " must contain all and only 16 ranks");
-    variant.ranks.reserve((*ranks)->size());
-    for (auto [rankIndex, rankValue] : llvm::enumerate(**ranks)) {
-      llvm::Expected<ProfileRankSiteMap> rank = parseRankSiteMap(
-          rankValue, rankIndex, limits, totalRecords, context);
-      if (!rank)
-        return rank.takeError();
-      variant.ranks.push_back(std::move(*rank));
-    }
-    llvm::sort(variant.ranks, [](const auto &lhs, const auto &rhs) {
-      return lhs.logicalRank < rhs.logicalRank;
-    });
-    for (auto [rankIndex, rank] : llvm::enumerate(variant.ranks))
-      if (rank.logicalRank != static_cast<int64_t>(rankIndex))
-        return invalid(context +
-                       " must contain each logical rank exactly once");
-    result.push_back(std::move(variant));
+  std::vector<ProfileTileSiteMap> result;
+  result.reserve((*tiles)->size());
+  for (auto [tileIndex, tileValue] : llvm::enumerate(**tiles)) {
+    llvm::Expected<ProfileTileSiteMap> tile = parseTileSiteMap(
+        tileValue, tileIndex, limits, totalRecords, "profile site map");
+    if (!tile)
+      return tile.takeError();
+    result.push_back(std::move(*tile));
+  }
+  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
+    return lhs.launchSlot.getValue() < rhs.launchSlot.getValue();
+  });
+  std::array<bool, kProfileCompanionTileCount> seenTileIds{};
+  for (auto [launchSlot, tile] : llvm::enumerate(result)) {
+    const int64_t tileId = tile.tileId.getValue();
+    if (tile.cardId != PhysicalCardId(0) || tileId < 0 ||
+        tileId >= kProfileCompanionTileCount || seenTileIds[tileId] ||
+        tile.launchSlot != LaunchSlotId(static_cast<int64_t>(launchSlot)))
+      return invalid("profile site map must contain each physical Tile and "
+                     "launch slot exactly once");
+    seenTileIds[tileId] = true;
   }
   return result;
 }
@@ -1315,45 +1150,16 @@ llvm::Expected<std::string> digestManifest(llvm::StringRef packageRoot) {
   llvm::sys::path::append(manifest, kPackageManifestFileName);
   if (llvm::sys::fs::get_file_type(manifest, /*Follow=*/false) !=
       llvm::sys::fs::file_type::regular_file)
-    return invalid("profile variant manifest is not a regular file");
+    return invalid("profile production manifest is not a regular file");
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
       llvm::MemoryBuffer::getFile(manifest, /*IsText=*/false,
                                   /*RequiresNullTerminator=*/false);
   if (!buffer)
-    return llvm::createStringError(buffer.getError(),
-                                   "failed to read profile variant manifest");
+    return llvm::createStringError(
+        buffer.getError(), "failed to read profile production manifest");
   llvm::SHA256 hasher;
   hasher.update((*buffer)->getBuffer());
   return "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
-}
-
-bool isSafePackageReferenceSyntax(llvm::StringRef reference) {
-  if (reference.empty() || llvm::sys::path::is_absolute(reference) ||
-      reference.contains('\\'))
-    return false;
-  llvm::SmallVector<llvm::StringRef, 4> components;
-  reference.split(components, '/', /*MaxSplit=*/-1, /*KeepEmpty=*/true);
-  return components.size() == 2 && components[0] == ".." &&
-         !components[1].empty() && components[1] != "." &&
-         components[1] != "..";
-}
-
-llvm::Expected<std::string>
-resolvePackageReference(llvm::StringRef companionRoot,
-                        llvm::StringRef reference) {
-  if (!isSafePackageReferenceSyntax(reference))
-    return invalid("profile variant package_ref is not a safe canonical "
-                   "relative reference");
-  llvm::SmallString<256> candidate(companionRoot);
-  llvm::sys::path::append(candidate, reference);
-  if (llvm::sys::fs::get_file_type(candidate, /*Follow=*/false) !=
-      llvm::sys::fs::file_type::directory_file)
-    return invalid("profile variant package_ref is not a directory");
-  llvm::SmallString<256> canonical;
-  if (std::error_code error = llvm::sys::fs::real_path(candidate, canonical))
-    return llvm::createStringError(error,
-                                   "failed to resolve profile package_ref");
-  return canonical.str().str();
 }
 
 bool isPathWithin(llvm::StringRef path, llvm::StringRef parent) {
@@ -1370,9 +1176,8 @@ resolveCapturePackageReference(llvm::StringRef companionRoot,
     return invalid("profile capture package_ref is not a safe relative path");
   llvm::SmallVector<llvm::StringRef, 4> components;
   reference.split(components, '/', /*MaxSplit=*/-1, /*KeepEmpty=*/true);
-  if (components.size() != 3 || components[0] != "captures" ||
-      components[1] != kFinalArtifact ||
-      (components[2] != "count" && components[2] != "trace"))
+  if (components.size() != 2 || components[0] != "captures" ||
+      (components[1] != "count" && components[1] != "trace"))
     return invalid("profile capture package_ref is not canonical");
   llvm::SmallString<256> candidate(companionRoot);
   llvm::sys::path::append(candidate, reference);
@@ -1388,78 +1193,47 @@ resolveCapturePackageReference(llvm::StringRef companionRoot,
   return canonical.str().str();
 }
 
-const RawVariant *findRawVariant(llvm::ArrayRef<RawVariant> variants,
-                                 llvm::StringRef id) {
-  auto iterator = llvm::find_if(
-      variants, [&](const RawVariant &variant) { return variant.id == id; });
-  return iterator == variants.end() ? nullptr : &*iterator;
-}
-
-const RawExecutionPackage *
-findExecutionPackage(llvm::ArrayRef<RawExecutionPackage> packages,
-                     llvm::StringRef id) {
-  auto iterator = llvm::find_if(
-      packages, [&](const auto &package) { return package.variantId == id; });
-  return iterator == packages.end() ? nullptr : &*iterator;
-}
-
 const RawCapturePackage *
 findCapturePackage(llvm::ArrayRef<RawCapturePackage> packages,
-                   llvm::StringRef variantId, ProfileCaptureKind capture) {
+                   ProfileCaptureKind capture) {
   auto iterator = llvm::find_if(packages, [&](const auto &package) {
-    return package.variantId == variantId && package.capture == capture;
+    return package.capture == capture;
   });
   return iterator == packages.end() ? nullptr : &*iterator;
 }
 
-const ProfileVariantSiteMap *
-findRawSiteMap(llvm::ArrayRef<ProfileVariantSiteMap> maps, llvm::StringRef id) {
-  auto iterator =
-      llvm::find_if(maps, [&](const auto &map) { return map.variantId == id; });
-  return iterator == maps.end() ? nullptr : &*iterator;
-}
-
-llvm::Error verifyVariantGraph(llvm::ArrayRef<RawVariant> variants,
-                               const RawPlan &plan,
-                               llvm::ArrayRef<ProfileVariantSiteMap> siteMaps) {
-  const RawVariant *finalArtifact = findRawVariant(variants, kFinalArtifact);
-  if (!finalArtifact || variants.size() != 1 ||
-      finalArtifact->role != kFinalArtifact)
-    return invalid("profile companion must define exactly one final artifact");
-
-  const RawExecutionPackage *execution =
-      findExecutionPackage(plan.executionPackages, kFinalArtifact);
-  if (!execution || plan.executionPackages.size() != 1)
-    return invalid(
-        "profile plan must bind exactly one final execution package");
-  if (finalArtifact->packageReference != execution->packageReference ||
-      finalArtifact->manifestDigest != execution->manifestDigest)
-    return invalid("profile plan and final artifact identities disagree");
-
+llvm::Error verifyProfileGraph(const RawPlan &plan,
+                               llvm::ArrayRef<ProfileTileSiteMap> siteMap) {
   for (ProfileCaptureKind capture :
        {ProfileCaptureKind::Count, ProfileCaptureKind::Trace}) {
     const RawCapturePackage *capturePackage =
-        findCapturePackage(plan.capturePackages, kFinalArtifact, capture);
+        findCapturePackage(plan.capturePackages, capture);
     if (!capturePackage)
-      return invalid("profile plan final capture packages are incomplete");
+      return invalid("profile plan capture packages are incomplete");
     std::string captureName = stringifyProfileCaptureKind(capture).str();
-    std::string reference =
-        ("captures/" + kFinalArtifact + "/" + captureName).str();
+    std::string reference = "captures/" + captureName;
     if (capturePackage->packageReference != reference)
-      return invalid("final capture package_ref is not canonical");
+      return invalid("profile capture package_ref is not canonical");
   }
 
-  const ProfileVariantSiteMap *siteMap =
-      findRawSiteMap(siteMaps, kFinalArtifact);
-  if (!siteMap || siteMaps.size() != 1 ||
-      siteMap->ranks.size() != static_cast<size_t>(kProfileCompanionRankCount))
-    return invalid("final artifact site map must contain all 16 ranks");
+  if (siteMap.size() != static_cast<size_t>(kProfileCompanionTileCount))
+    return invalid("profile site map must contain all 16 physical Tiles");
   return llvm::Error::success();
 }
 
 bool sameSemanticResource(const PackageResourceRecord &lhs,
                           const PackageResourceRecord &rhs) {
-  return lhs.logicalRank == rhs.logicalRank && lhs.role == rhs.role &&
+  auto sameScope = [](const PackageResourceScope &lhsScope,
+                      const PackageResourceScope &rhsScope) {
+    if (lhsScope.index() != rhsScope.index())
+      return false;
+    if (const auto *lhsCard = std::get_if<CardResourceScope>(&lhsScope))
+      return lhsCard->cardId == std::get<CardResourceScope>(rhsScope).cardId;
+    const auto &lhsTile = std::get<TileResourceScope>(lhsScope);
+    const auto &rhsTile = std::get<TileResourceScope>(rhsScope);
+    return lhsTile.cardId == rhsTile.cardId && lhsTile.tileId == rhsTile.tileId;
+  };
+  return sameScope(lhs.scope, rhs.scope) && lhs.role == rhs.role &&
          lhs.roleIndex == rhs.roleIndex && lhs.type.dtype == rhs.type.dtype &&
          lhs.type.shape == rhs.type.shape && lhs.bytes == rhs.bytes &&
          lhs.alignment == rhs.alignment && lhs.access == rhs.access &&
@@ -1474,12 +1248,54 @@ const PackageResourceRecord *findResource(const PackageManifest &manifest,
   return iterator == manifest.resources.end() ? nullptr : &*iterator;
 }
 
-const PackageEntrypointRecord *findEntryForRank(const PackageManifest &manifest,
-                                                int64_t rank) {
+const PackageEntrypointRecord *findEntryForTile(const PackageManifest &manifest,
+                                                int64_t tileId) {
   auto iterator = llvm::find_if(manifest.entries, [&](const auto &entry) {
-    return entry.logicalRank == rank;
+    return entry.cardId == PhysicalCardId(0) &&
+           entry.tileId == PhysicalTileId(tileId);
   });
   return iterator == manifest.entries.end() ? nullptr : &*iterator;
+}
+
+const PackageEntrypointRecord *
+findEntryForLaunchSlot(const PackageManifest &manifest,
+                       LaunchSlotId launchSlot) {
+  auto iterator = llvm::find_if(manifest.entries, [&](const auto &entry) {
+    return entry.launchSlot == launchSlot;
+  });
+  return iterator == manifest.entries.end() ? nullptr : &*iterator;
+}
+
+template <typename TileRecord>
+bool hasSamePhysicalBinding(const PackageEntrypointRecord &entry,
+                            const TileRecord &tile) {
+  return entry.cardId == tile.cardId && entry.tileId == tile.tileId &&
+         entry.launchSlot == tile.launchSlot;
+}
+
+llvm::Error
+verifyProfilePhysicalBindings(const ProfileProductionArtifact &artifact,
+                              llvm::ArrayRef<ProfileTileSiteMap> siteMap) {
+  const PackageManifest &manifest = artifact.getPackage().getManifest();
+  const ProfileStaticCostModel &staticCost = artifact.getStaticCostModel();
+  if (staticCost.tiles.size() != static_cast<size_t>(manifest.tileCount) ||
+      siteMap.size() != static_cast<size_t>(manifest.tileCount))
+    return invalid("profile physical-Tile bindings are incomplete");
+  for (int64_t slot = 0; slot < manifest.tileCount; ++slot) {
+    const LaunchSlotId launchSlot(static_cast<uint64_t>(slot));
+    const PackageEntrypointRecord *entry =
+        findEntryForLaunchSlot(manifest, launchSlot);
+    const ProfileStaticTileCost &staticTile = staticCost.tiles[slot];
+    const ProfileTileSiteMap &siteTile = siteMap[slot];
+    if (!entry || staticTile.launchSlot != launchSlot ||
+        siteTile.launchSlot != launchSlot ||
+        !hasSamePhysicalBinding(*entry, staticTile) ||
+        !hasSamePhysicalBinding(*entry, siteTile))
+      return invalid(
+          "profile physical-Tile/launch-slot binding differs from the "
+          "verified production artifact");
+  }
+  return llvm::Error::success();
 }
 
 bool sameTransport(const PackageManifest &lhsManifest,
@@ -1524,13 +1340,15 @@ llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
       execution.moduleFormat != capture.moduleFormat)
     return invalid("profile capture target/ABI contract differs from its "
                    "execution package");
-  if (execution.rankCount != kProfileCompanionRankCount ||
-      capture.rankCount != kProfileCompanionRankCount)
-    return invalid("profile capture packages must each contain 16 ranks");
+  if (execution.cardCount != 1 || capture.cardCount != 1 ||
+      execution.tileCount != kProfileCompanionTileCount ||
+      capture.tileCount != kProfileCompanionTileCount)
+    return invalid("profile capture packages must each contain one card and "
+                   "16 physical Tiles");
 
   std::vector<const PackageResourceRecord *> executionResources;
   std::vector<const PackageResourceRecord *> captureResources;
-  std::array<const PackageResourceRecord *, kProfileCompanionRankCount>
+  std::array<const PackageResourceRecord *, kProfileCompanionTileCount>
       profilerResources{};
   for (const PackageResourceRecord &resource : execution.resources) {
     if (resource.role == PackageResourceRole::Workspace &&
@@ -1544,12 +1362,14 @@ llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
         resource.roleIndex == 1) {
       if (!isProfilerRecordResource(resource, recordBytes))
         return invalid("profile capture has an invalid profiler workspace");
-      if (resource.logicalRank < 0 ||
-          resource.logicalRank >= kProfileCompanionRankCount ||
-          profilerResources[resource.logicalRank])
-        return invalid("profile capture profiler workspace rank domain is "
+      const auto *scope = std::get_if<TileResourceScope>(&resource.scope);
+      if (!scope || scope->cardId != PhysicalCardId(0) ||
+          scope->tileId.getValue() < 0 ||
+          scope->tileId.getValue() >= kProfileCompanionTileCount ||
+          profilerResources[scope->tileId.getValue()])
+        return invalid("profile capture profiler workspace Tile domain is "
                        "not unique");
-      profilerResources[resource.logicalRank] = &resource;
+      profilerResources[scope->tileId.getValue()] = &resource;
       continue;
     }
     captureResources.push_back(&resource);
@@ -1557,12 +1377,17 @@ llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
   if (llvm::any_of(profilerResources,
                    [](const auto *resource) { return resource == nullptr; }))
     return invalid("profile capture must contain one profiler workspace for "
-                   "each of 16 ranks");
+                   "each of 16 physical Tiles");
   auto bySemanticIdentity = [](const auto *lhs, const auto *rhs) {
-    return std::tuple(lhs->logicalRank, static_cast<int>(lhs->role),
-                      lhs->roleIndex) < std::tuple(rhs->logicalRank,
-                                                   static_cast<int>(rhs->role),
-                                                   rhs->roleIndex);
+    auto key = [](const PackageResourceRecord &resource) {
+      if (const auto *card = std::get_if<CardResourceScope>(&resource.scope))
+        return std::tuple(0, card->cardId.getValue(), int64_t{-1},
+                          static_cast<int>(resource.role), resource.roleIndex);
+      const auto &tile = std::get<TileResourceScope>(resource.scope);
+      return std::tuple(1, tile.cardId.getValue(), tile.tileId.getValue(),
+                        static_cast<int>(resource.role), resource.roleIndex);
+    };
+    return key(*lhs) < key(*rhs);
   };
   llvm::sort(executionResources, bySemanticIdentity);
   llvm::sort(captureResources, bySemanticIdentity);
@@ -1574,18 +1399,22 @@ llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
       return invalid("profile capture base resource contract differs from its "
                      "execution package");
 
-  for (int64_t rank = 0; rank < kProfileCompanionRankCount; ++rank) {
+  for (int64_t tileId = 0; tileId < kProfileCompanionTileCount; ++tileId) {
     const PackageEntrypointRecord *executionEntry =
-        findEntryForRank(execution, rank);
+        findEntryForTile(execution, tileId);
     const PackageEntrypointRecord *captureEntry =
-        findEntryForRank(capture, rank);
+        findEntryForTile(capture, tileId);
     if (!executionEntry || !captureEntry ||
+        executionEntry->cardId != captureEntry->cardId ||
+        executionEntry->tileId != captureEntry->tileId ||
+        executionEntry->launchSlot != captureEntry->launchSlot ||
+        executionEntry->completion != captureEntry->completion ||
         captureEntry->slots.size() != executionEntry->slots.size() + 1 ||
         !sameTransport(execution, executionEntry->transport, capture,
                        captureEntry->transport))
       return invalid("profile capture entry ABI extension is invalid");
     const PackageABISlotBinding &profilerSlot = captureEntry->slots.back();
-    if (profilerSlot.resource != profilerResources[rank]->id ||
+    if (profilerSlot.resource != profilerResources[tileId]->id ||
         profilerSlot.access != PackageAccessMode::ReadWrite)
       return invalid("profile capture profiler workspace is not the final "
                      "entry slot");
@@ -1605,42 +1434,30 @@ llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
   return llvm::Error::success();
 }
 
-llvm::Expected<ProfileVariantPackage>
-loadVariantPackage(const RawVariant &variant, llvm::StringRef companionRoot,
-                   llvm::StringRef productionPackageRoot,
-                   const PackageParseLimits &limits) {
-  if (variant.id != kFinalArtifact || variant.role != kFinalArtifact)
-    return invalid("profile variant is not the final artifact");
-  if (!isLowercaseSHA256(variant.manifestDigest))
-    return invalid("profile variant manifest_sha256 is malformed");
-  llvm::Expected<std::string> packageDirectory =
-      resolvePackageReference(companionRoot, variant.packageReference);
-  if (!packageDirectory)
-    return packageDirectory.takeError();
-  if (*packageDirectory != productionPackageRoot)
-    return invalid("profile final artifact reference does not name the "
-                   "selected ordinary package");
-
-  llvm::Expected<std::string> digest = digestManifest(*packageDirectory);
+llvm::Expected<ProfileProductionArtifact> loadProductionArtifact(
+    llvm::StringRef productionPackageRoot, llvm::StringRef manifestDigest,
+    ProfileStaticCostModel staticCostModel, const PackageParseLimits &limits) {
+  if (!isLowercaseSHA256(manifestDigest))
+    return invalid("profile production manifest_sha256 is malformed");
+  llvm::Expected<std::string> digest = digestManifest(productionPackageRoot);
   if (!digest)
     return digest.takeError();
-  if (*digest != variant.manifestDigest)
-    return invalid("profile variant manifest digest mismatch");
+  if (*digest != manifestDigest)
+    return invalid("profile production manifest digest mismatch");
   llvm::Expected<VerifiedPackageManifest> package =
-      loadVerifiedPackageManifest(*packageDirectory, limits);
+      loadVerifiedPackageManifest(productionPackageRoot, limits);
   if (!package)
     return package.takeError();
 
-  return ProfileVariantPackage(variant.id, ProfileVariantRole::FinalArtifact,
-                               variant.packageReference, variant.manifestDigest,
-                               variant.staticCostModel, *packageDirectory,
-                               std::move(*package));
+  return ProfileProductionArtifact(
+      manifestDigest.str(), std::move(staticCostModel),
+      productionPackageRoot.str(), std::move(*package));
 }
 
 llvm::Expected<ProfileCapturePackage>
 loadCapturePackage(const RawCapturePackage &capture,
                    llvm::StringRef companionRoot,
-                   const ProfileVariantPackage &executionVariant,
+                   const ProfileProductionArtifact &productionArtifact,
                    const PackageParseLimits &limits) {
   if (!isLowercaseSHA256(capture.manifestDigest))
     return invalid("profile capture manifest_sha256 is malformed");
@@ -1662,13 +1479,13 @@ loadCapturePackage(const RawCapturePackage &capture,
   if (!package)
     return package.takeError();
   if (llvm::Error error = verifyCapturePackageContract(
-          executionVariant.getPackage().getManifest(), package->getManifest(),
+          productionArtifact.getPackage().getManifest(), package->getManifest(),
           capture.recordBytes))
     return std::move(error);
-  return ProfileCapturePackage(capture.variantId, capture.capture,
-                               capture.packageReference, capture.manifestDigest,
-                               capture.recordABI, capture.recordBytes,
-                               *packageDirectory, std::move(*package));
+  return ProfileCapturePackage(capture.capture, capture.packageReference,
+                               capture.manifestDigest, capture.recordABI,
+                               capture.recordBytes, *packageDirectory,
+                               std::move(*package));
 }
 
 } // namespace
@@ -1719,41 +1536,26 @@ getProfileTargetSiteKind(const TargetCallDescriptor &descriptor) {
   llvm_unreachable("unknown target-call builtin");
 }
 
-ProfileVariantPackage::ProfileVariantPackage(
-    std::string id, ProfileVariantRole role, std::string packageReference,
+ProfileProductionArtifact::ProfileProductionArtifact(
     std::string manifestDigest, ProfileStaticCostModel staticCostModel,
     std::string packageDirectory, VerifiedPackageManifest package)
-    : id(std::move(id)), role(role),
-      packageReference(std::move(packageReference)),
-      manifestDigest(std::move(manifestDigest)),
+    : manifestDigest(std::move(manifestDigest)),
       staticCostModel(std::move(staticCostModel)),
       packageDirectory(std::move(packageDirectory)),
       package(std::move(package)) {}
 
 ProfileCapturePackage::ProfileCapturePackage(
-    std::string variantId, ProfileCaptureKind capture,
-    std::string packageReference, std::string manifestDigest,
-    std::string recordABI, uint64_t recordBytes, std::string packageDirectory,
-    VerifiedPackageManifest package)
-    : variantId(std::move(variantId)), capture(capture),
-      packageReference(std::move(packageReference)),
+    ProfileCaptureKind capture, std::string packageReference,
+    std::string manifestDigest, std::string recordABI, uint64_t recordBytes,
+    std::string packageDirectory, VerifiedPackageManifest package)
+    : capture(capture), packageReference(std::move(packageReference)),
       manifestDigest(std::move(manifestDigest)),
       recordABI(std::move(recordABI)), recordBytes(recordBytes),
       packageDirectory(std::move(packageDirectory)),
       package(std::move(package)) {}
 
-llvm::StringRef stringifyProfileVariantRole(ProfileVariantRole role) {
-  switch (role) {
-  case ProfileVariantRole::FinalArtifact:
-    return kFinalArtifact;
-  }
-  llvm_unreachable("unknown profile variant role");
-}
-
 llvm::StringRef stringifyProfileCaptureKind(ProfileCaptureKind capture) {
   switch (capture) {
-  case ProfileCaptureKind::Summary:
-    return "summary";
   case ProfileCaptureKind::Count:
     return "count";
   case ProfileCaptureKind::Trace:
@@ -1801,35 +1603,18 @@ void writeProfileStaticCostModel(llvm::json::OStream &json,
   emitStaticCostModel(json, model);
 }
 
-const ProfileVariantPackage *
-VerifiedProfileCompanion::findVariant(ProfileVariantRole role) const {
-  auto iterator = llvm::find_if(
-      variants, [&](const auto &variant) { return variant.getRole() == role; });
-  return iterator == variants.end() ? nullptr : &*iterator;
-}
-
 const ProfileCapturePackage *
-VerifiedProfileCompanion::findCapture(llvm::StringRef variantId,
-                                      ProfileCaptureKind capture) const {
+VerifiedProfileCompanion::findCapture(ProfileCaptureKind capture) const {
   auto iterator = llvm::find_if(captures, [&](const auto &package) {
-    return package.getVariantId() == variantId &&
-           package.getCaptureKind() == capture;
+    return package.getCaptureKind() == capture;
   });
   return iterator == captures.end() ? nullptr : &*iterator;
 }
 
-const ProfileVariantSiteMap *
-VerifiedProfileCompanion::findSiteMap(llvm::StringRef variantId) const {
-  auto iterator = llvm::find_if(
-      siteMaps, [&](const auto &map) { return map.variantId == variantId; });
-  return iterator == siteMaps.end() ? nullptr : &*iterator;
-}
-
 uint64_t VerifiedProfileCompanion::getSiteCount() const {
   uint64_t count = 0;
-  for (const ProfileVariantSiteMap &variant : siteMaps)
-    for (const ProfileRankSiteMap &rank : variant.ranks)
-      count += rank.sites.size();
+  for (const ProfileTileSiteMap &tile : siteMap)
+    count += tile.sites.size();
   return count;
 }
 
@@ -1859,8 +1644,6 @@ loadVerifiedProfileCompanion(llvm::StringRef companionRoot,
   llvm::sys::path::append(activationPath, kProfileCompanionActivationFileName);
   llvm::SmallString<256> planPath(canonicalCompanion);
   llvm::sys::path::append(planPath, kProfileCompanionPlanFileName);
-  llvm::SmallString<256> variantsPath(canonicalCompanion);
-  llvm::sys::path::append(variantsPath, kProfileCompanionVariantsFileName);
   llvm::SmallString<256> siteMapPath(canonicalCompanion);
   llvm::sys::path::append(siteMapPath, kProfileCompanionSiteMapFileName);
 
@@ -1877,23 +1660,18 @@ loadVerifiedProfileCompanion(llvm::StringRef companionRoot,
       digestManifest(canonicalProduction);
   if (!productionDigest)
     return productionDigest.takeError();
-  if (*productionDigest != activation->productionManifestDigest)
+  if (*productionDigest != activation->manifestDigest)
     return invalid("profile activation production manifest digest mismatch");
 
   llvm::Expected<LoadedJSONDocument> planJSON =
       loadJSONDocument(planPath, "profile plan", limits);
   if (!planJSON)
     return planJSON.takeError();
-  llvm::Expected<LoadedJSONDocument> variantsJSON =
-      loadJSONDocument(variantsPath, "profile variants", limits);
-  if (!variantsJSON)
-    return variantsJSON.takeError();
   llvm::Expected<LoadedJSONDocument> siteMapJSON =
       loadJSONDocument(siteMapPath, "profile site map", limits);
   if (!siteMapJSON)
     return siteMapJSON.takeError();
   if (planJSON->digest != activation->planDigest ||
-      variantsJSON->digest != activation->variantsDigest ||
       siteMapJSON->digest != activation->siteMapDigest)
     return invalid("profile activation metadata digest mismatch");
 
@@ -1902,50 +1680,35 @@ loadVerifiedProfileCompanion(llvm::StringRef companionRoot,
       parsePlan(*planJSON->root.getAsObject(), limits, totalRecords);
   if (!plan)
     return plan.takeError();
-  llvm::Expected<std::vector<RawVariant>> rawVariants =
-      parseVariants(*variantsJSON->root.getAsObject(), limits, totalRecords);
-  if (!rawVariants)
-    return rawVariants.takeError();
+  llvm::Expected<std::vector<ProfileTileSiteMap>> siteMap =
+      parseSiteMap(*siteMapJSON->root.getAsObject(), limits, totalRecords);
+  if (!siteMap)
+    return siteMap.takeError();
+  if (llvm::Error error = verifyProfileGraph(*plan, *siteMap))
+    return std::move(error);
 
-  std::vector<ProfileVariantPackage> packages;
-  packages.reserve(rawVariants->size());
-  for (const RawVariant &variant : *rawVariants) {
-    llvm::Expected<ProfileVariantPackage> package = loadVariantPackage(
-        variant, canonicalCompanion, canonicalProduction, limits);
-    if (!package)
-      return package.takeError();
-    packages.push_back(std::move(*package));
-  }
-  if (packages.size() != 1 ||
-      packages.front().getRole() != ProfileVariantRole::FinalArtifact)
-    return invalid("profile companion final artifact is incomplete");
-
-  llvm::Expected<std::vector<ProfileVariantSiteMap>> siteMaps = parseSiteMaps(
-      *siteMapJSON->root.getAsObject(), limits, totalRecords);
-  if (!siteMaps)
-    return siteMaps.takeError();
-  if (llvm::Error error = verifyVariantGraph(*rawVariants, *plan, *siteMaps))
+  llvm::Expected<ProfileProductionArtifact> productionArtifact =
+      loadProductionArtifact(canonicalProduction, activation->manifestDigest,
+                             std::move(plan->staticCostModel), limits);
+  if (!productionArtifact)
+    return productionArtifact.takeError();
+  if (llvm::Error error =
+          verifyProfilePhysicalBindings(*productionArtifact, *siteMap))
     return std::move(error);
 
   std::vector<ProfileCapturePackage> captures;
   captures.reserve(plan->capturePackages.size());
   for (const RawCapturePackage &rawCapture : plan->capturePackages) {
-    const auto execution =
-        llvm::find_if(packages, [&](const ProfileVariantPackage &variant) {
-          return variant.getId() == rawCapture.variantId;
-        });
-    if (execution == packages.end())
-      return invalid("profile capture references an unknown variant");
-    llvm::Expected<ProfileCapturePackage> capture =
-        loadCapturePackage(rawCapture, canonicalCompanion, *execution, limits);
+    llvm::Expected<ProfileCapturePackage> capture = loadCapturePackage(
+        rawCapture, canonicalCompanion, *productionArtifact, limits);
     if (!capture)
       return capture.takeError();
     captures.push_back(std::move(*capture));
   }
 
-  return VerifiedProfileCompanion(
-      canonicalCompanion.str().str(), activation->productionManifestDigest,
-      std::move(packages), std::move(captures), std::move(*siteMaps));
+  return VerifiedProfileCompanion(canonicalCompanion.str().str(),
+                                  std::move(*productionArtifact),
+                                  std::move(captures), std::move(*siteMap));
 }
 
 llvm::Expected<std::optional<VerifiedProfileCompanion>>

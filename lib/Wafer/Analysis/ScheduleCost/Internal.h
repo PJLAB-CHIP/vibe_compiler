@@ -27,7 +27,7 @@ struct Quantity {
   ScheduleCostKnowledge knowledge = ScheduleCostKnowledge::Known;
   ScheduleCostReason reason = ScheduleCostReason::None;
 
-  static Quantity unknown(ScheduleCostReason reason);
+  static Quantity unavailable(ScheduleCostReason reason);
   static Quantity unsupported(ScheduleCostReason reason);
   static Quantity overflow();
 };
@@ -57,8 +57,6 @@ inline constexpr InstructionWorkCountMember kInstructionWorkCountMembers[] = {
     &InstructionProgramWork::dteSendOperations,
     &InstructionProgramWork::dteReceiveOperations,
     &InstructionProgramWork::dteWaitOperations,
-    &InstructionProgramWork::collectiveDTEIssues,
-    &InstructionProgramWork::peerDTEIssues,
     &InstructionProgramWork::nccJoins,
     &InstructionProgramWork::steadyStateNCCJoins,
     &InstructionProgramWork::nonTerminalNCCJoins,
@@ -79,7 +77,7 @@ void walkInstructionProgramWork(
     llvm::function_ref<void()> onUnsupportedControlFlow);
 
 /// Visits the same statically executable instruction stream used by the
-/// rank-local cost collector. The callback receives the current static
+/// physical-Tile-local cost collector. The callback receives the current static
 /// multiplicity. Unsupported recursive/call control flow invokes
 /// `onUnsupportedControlFlow` because it may hide instructions.
 void walkInstructionProgram(
@@ -88,14 +86,19 @@ void walkInstructionProgram(
     llvm::function_ref<void()> onUnsupportedControlFlow);
 
 void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost);
-void collectDataDependencyDepth(mlir::Operation *root,
-                                InstructionProgramCost &cost);
-void collectQualifiedOverlapWindows(mlir::Operation *root,
-                                    InstructionProgramCost &cost,
-                                    const TargetScheduleCostPolicy &policy);
+void collectExecutionCost(
+    mlir::Operation *root, InstructionProgramCost &cost,
+    llvm::function_ref<bool(mlir::Operation *)> includeOperation);
 void collectSPMHighWater(mlir::Operation *root, InstructionProgramCost &cost,
                          const TargetScheduleCostPolicy &policy);
+void collectSPMHighWater(
+    mlir::Operation *root, InstructionProgramCost &cost,
+    const TargetScheduleCostPolicy &policy,
+    llvm::function_ref<bool(mlir::Operation *)> includeOperation);
 void collectDDRHighWater(mlir::Operation *root, InstructionProgramCost &cost);
+void collectDDRHighWater(
+    mlir::Operation *root, InstructionProgramCost &cost,
+    llvm::function_ref<bool(mlir::Operation *)> includeOperation);
 
 } // namespace wafer::analysis::detail
 

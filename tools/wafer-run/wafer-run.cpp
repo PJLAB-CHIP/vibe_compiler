@@ -29,8 +29,6 @@ namespace {
 
 struct Options {
   std::string packageDirectory;
-  uint64_t entryId = std::numeric_limits<uint64_t>::max();
-  bool allRanks = false;
   uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max();
   uint64_t completionTimeoutMilliseconds =
       wafer::runtime::kDefaultBoardCompletionTimeoutMilliseconds;
@@ -54,14 +52,10 @@ struct Options {
 
 void printUsage(llvm::raw_ostream &output) {
   output << "usage:\n"
-            "  wafer-run --package-dir <path> --entry-id <id> --no-card "
+            "  wafer-run --package-dir <path> --no-card "
             "[--max-resource-bytes <bytes>] [--direct-dte-status-abi <abi> "
             "--supports-host-watchdog]\n"
-            "  wafer-run --package-dir <path> --all-ranks --no-card "
-            "[--max-resource-bytes <bytes>] [--direct-dte-status-abi <abi> "
-            "--supports-host-watchdog]\n"
-            "  wafer-run --package-dir <path> (--all-ranks | --entry-id <id>) "
-            "--board "
+            "  wafer-run --package-dir <path> --board "
             "[--device-id <id>] --expected-runtime-version <decimal> "
             "--expected-device-name <name> --expected-pci-bus-id <bdf> "
             "--expected-tile-count <count> "
@@ -101,19 +95,6 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
       if (!value)
         return value.takeError();
       options.packageDirectory = value->str();
-      continue;
-    }
-    if (argument == "--entry-id") {
-      llvm::Expected<llvm::StringRef> value = requireValue();
-      if (!value)
-        return value.takeError();
-      if (value->getAsInteger(10, options.entryId))
-        return llvm::createStringError(llvm::errc::invalid_argument,
-                                       "--entry-id must be an integer");
-      continue;
-    }
-    if (argument == "--all-ranks") {
-      options.allRanks = true;
       continue;
     }
     if (argument == "--max-resource-bytes") {
@@ -243,11 +224,6 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
   if (options.packageDirectory.empty())
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "--package-dir is required");
-  const bool hasEntry = options.entryId != std::numeric_limits<uint64_t>::max();
-  if (hasEntry == options.allRanks)
-    return llvm::createStringError(llvm::errc::invalid_argument,
-                                   "exactly one of --entry-id or --all-ranks "
-                                   "is required");
   if (options.noCard == options.board)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
@@ -304,9 +280,11 @@ void printRuntimeLaunchContract(const wafer::RuntimeLaunchContract &launch) {
   llvm::outs() << "\n";
 }
 
-void printNoCardRankPlan(const wafer::runtime::RuntimeSessionPlan &plan) {
+void printNoCardTilePlan(const wafer::runtime::RuntimeSessionPlan &plan) {
   llvm::outs() << "entry: " << plan.entry.getValue()
-               << " rank=" << plan.logicalRank << "\n";
+               << " card_id=" << plan.cardId.getValue()
+               << " tile_id=" << plan.tileId.getValue()
+               << " launch_slot=" << plan.launchSlot.getValue() << "\n";
   llvm::outs() << "module: " << plan.module.getValue()
                << " path=" << plan.modulePath << "\n";
   for (const wafer::runtime::PlannedRuntimeLaunchPhase &phase : plan.phases)
@@ -323,21 +301,21 @@ void printNoCardRankPlan(const wafer::runtime::RuntimeSessionPlan &plan) {
                  << " externally_bound="
                  << (resource.externallyBound ? "true" : "false") << "\n";
   }
-  llvm::outs() << "terminal_completion: " << plan.terminalCompletion.getValue()
-               << " kind=entry_return\n";
+  llvm::outs() << "completion: "
+               << wafer::runtime::stringifyPackageEntryCompletionKind(
+                      plan.completion)
+               << "\n";
 }
 
 int runNoCard(const Options &options,
               const wafer::runtime::VerifiedPackageManifest &package,
-              const wafer::runtime::PackageEntrypointRecord *selectedEntry,
               const std::optional<wafer::runtime::VerifiedProfileCompanion>
                   &profileCompanion) {
   const wafer::runtime::PackageManifest &manifest = package.getManifest();
   std::vector<wafer::runtime::RuntimeInvocationBinding> bindings;
   for (const wafer::runtime::PackageResourceRecord &resource :
        manifest.resources) {
-    if (!resource.hostVisible ||
-        (selectedEntry && resource.logicalRank != selectedEntry->logicalRank))
+    if (!resource.hostVisible)
       continue;
     bindings.push_back({resource.id, resource.bytes, resource.alignment,
                         resource.access, true});
@@ -357,27 +335,16 @@ int runNoCard(const Options &options,
     environment.directDTEStatusABI = *options.directDTEStatusABI;
   }
   environment.supportsHostWatchdog = options.supportsHostWatchdog;
-  std::optional<wafer::runtime::RuntimeSessionPlan> selectedPlan;
-  std::optional<wafer::runtime::RuntimeInvocationPlan> invocationPlan;
-  if (selectedEntry) {
-    llvm::Expected<wafer::runtime::RuntimeSessionPlan> plan =
-        wafer::runtime::preflightNoCardRuntimeSession(
-            package, selectedEntry->id, bindings, environment);
-    if (!plan)
-      return fail(plan.takeError());
-    selectedPlan.emplace(std::move(*plan));
-  } else {
-    llvm::Expected<wafer::runtime::RuntimeInvocationPlan> plan =
-        wafer::runtime::preflightNoCardRuntimeInvocation(package, bindings,
-                                                         environment);
-    if (!plan)
-      return fail(plan.takeError());
-    invocationPlan.emplace(std::move(*plan));
-  }
+  llvm::Expected<wafer::runtime::RuntimeInvocationPlan> invocationPlan =
+      wafer::runtime::preflightNoCardRuntimeInvocation(package, bindings,
+                                                       environment);
+  if (!invocationPlan)
+    return fail(invocationPlan.takeError());
 
   llvm::outs() << "package: id=" << manifest.program.getValue()
                << " schema=" << manifest.schemaVersion
-               << " ranks=" << manifest.rankCount << "\n";
+               << " cards=" << manifest.cardCount
+               << " tiles=" << manifest.tileCount << "\n";
   llvm::outs() << "target_identity: "
                << wafer::stringifyTargetIdentityId(manifest.targetIdentity)
                << "\n";
@@ -387,18 +354,14 @@ int runNoCard(const Options &options,
                << wafer::stringifyKernelRuntimeABIId(manifest.runtimeABI)
                << " module_format=" << manifest.moduleFormat << "\n";
   printRuntimeLaunchContract(manifest.launch);
-  if (selectedEntry) {
-    printNoCardRankPlan(*selectedPlan);
-  } else {
-    for (const wafer::runtime::RuntimeSessionPlan &rank : invocationPlan->ranks)
-      printNoCardRankPlan(rank);
-    llvm::outs() << "invocation_ranks: " << invocationPlan->rankCount << "\n";
-  }
+  for (const wafer::runtime::RuntimeSessionPlan &tile : invocationPlan->tiles)
+    printNoCardTilePlan(tile);
+  llvm::outs() << "invocation_tiles: " << invocationPlan->tileCount << "\n";
   if (profileCompanion)
     llvm::outs() << "profile_companion: ready schema="
                  << profileCompanion->getSchemaVersion()
-                 << " ranks=" << profileCompanion->getRankCount()
-                 << " variants=" << profileCompanion->getVariants().size()
+                 << " cards=" << profileCompanion->getCardCount()
+                 << " tiles=" << profileCompanion->getTileCount()
                  << " captures=" << profileCompanion->getCaptures().size()
                  << " target_call_sites=" << profileCompanion->getSiteCount()
                  << "\n";
@@ -493,20 +456,17 @@ int runBoard(const Options &options,
                << result->device.runtimeLibraryDigest << "\n";
   printRuntimeLaunchContract(manifest.launch);
   for (const auto &tile : result->device.tiles)
-    llvm::outs() << "board_tile: logical=" << tile.logicalIndex
+    llvm::outs() << "board_tile: tile_id=" << tile.tileId.getValue()
+                 << " launch_slot=" << tile.launchSlot.getValue()
                  << " available=" << (tile.available ? "true" : "false")
                  << " physical_x=" << tile.physicalX
                  << " physical_y=" << tile.physicalY << "\n";
-  if (!options.allRanks) {
-    const wafer::runtime::BoardRuntimeRankResult &rank = result->ranks.front();
-    llvm::outs() << "entry: " << rank.entry.getValue()
-                 << " rank=" << rank.logicalRank << "\n";
-  } else {
-    for (const wafer::runtime::BoardRuntimeRankResult &rank : result->ranks)
-      llvm::outs() << "entry: " << rank.entry.getValue()
-                   << " rank=" << rank.logicalRank
-                   << " module=" << rank.module.getValue() << "\n";
-  }
+  for (const wafer::runtime::BoardRuntimeTileResult &tile : result->tiles)
+    llvm::outs() << "entry: " << tile.entry.getValue()
+                 << " card_id=" << tile.cardId.getValue()
+                 << " tile_id=" << tile.tileId.getValue()
+                 << " launch_slot=" << tile.launchSlot.getValue()
+                 << " module=" << tile.module.getValue() << "\n";
   for (wafer::runtime::BoardRuntimeStage stage : result->completedStages)
     llvm::outs() << "board_stage: "
                  << wafer::runtime::stringifyBoardRuntimeStage(stage) << "\n";
@@ -532,38 +492,29 @@ int runBoard(const Options &options,
                    << " bytes=" << output.bytes.size()
                    << " path=" << capture->second << "\n";
   }
-  if (!options.allRanks) {
-    llvm::outs() << "terminal_completion: "
-                 << result->ranks.front().terminalCompletion.getValue()
-                 << " kind=entry_return\n";
-  } else {
-    for (const wafer::runtime::BoardRuntimeRankResult &rank : result->ranks)
-      llvm::outs() << "terminal_completion: "
-                   << rank.terminalCompletion.getValue()
-                   << " kind=entry_return rank=" << rank.logicalRank << "\n";
-    llvm::outs() << "invocation_ranks: " << result->ranks.size() << "\n";
-    const auto *kernel = manifest.launch.getKernel();
-    if (kernel && kernel->form == wafer::KernelLaunchForm::PerRank) {
-      llvm::outs() << "launch_pattern: independent-grid1\n";
-      llvm::outs() << "logical_tile_execution_basis: none\n";
-    } else if (kernel && kernel->form == wafer::KernelLaunchForm::Grid) {
-      llvm::outs() << "launch_pattern: kernel-grid-x" << manifest.rankCount
-                   << "\n";
-      llvm::outs() << "logical_tile_execution_basis: "
-                      "scheduler-pid-x-and-exact-rank-slices\n";
-    } else if (manifest.launch.getModel()) {
-      llvm::outs() << "launch_pattern: model-type6-type7\n";
-      llvm::outs() << "logical_tile_execution_basis: "
-                      "graph-tile-module-map-and-exact-rank-slices\n";
-    } else {
-      llvm::outs() << "launch_pattern: cluster-x" << manifest.rankCount << "\n";
-      llvm::outs() << "logical_tile_execution_basis: "
-                      "cluster-pid-and-exact-rank-slices\n";
-    }
-    llvm::outs() << "logical_tile_domain: 0.." << manifest.rankCount - 1
+  for (const wafer::runtime::BoardRuntimeTileResult &tile : result->tiles)
+    llvm::outs() << "completion: "
+                 << wafer::runtime::stringifyPackageEntryCompletionKind(
+                        tile.completion)
+                 << " tile_id=" << tile.tileId.getValue() << "\n";
+  llvm::outs() << "invocation_tiles: " << result->tiles.size() << "\n";
+  const auto *kernel = manifest.launch.getKernel();
+  if (kernel && kernel->form == wafer::KernelLaunchForm::Grid) {
+    llvm::outs() << "launch_pattern: kernel-grid-x" << manifest.tileCount
                  << "\n";
-    llvm::outs() << "physical_execution_claim: none\n";
+    llvm::outs() << "physical_tile_execution_basis: "
+                    "scheduler-pid-x-and-exact-tile-slices\n";
+  } else if (manifest.launch.getModel()) {
+    llvm::outs() << "launch_pattern: model-type6-type7\n";
+    llvm::outs() << "physical_tile_execution_basis: "
+                    "graph-tile-module-map-and-exact-tile-slices\n";
+  } else {
+    llvm::outs() << "launch_pattern: cluster-x" << manifest.tileCount << "\n";
+    llvm::outs() << "physical_tile_execution_basis: "
+                    "cluster-pid-and-exact-tile-slices\n";
   }
+  llvm::outs() << "physical_tile_domain: 0.." << manifest.tileCount - 1 << "\n";
+  llvm::outs() << "physical_execution_claim: none\n";
   if (!profileRunDirectory.empty())
     llvm::outs() << "profile_run: " << profileRunDirectory
                  << "\nprofile_report: " << profileRunDirectory
@@ -586,23 +537,6 @@ int main(int argc, char **argv) {
       wafer::runtime::loadVerifiedPackageManifest(options->packageDirectory);
   if (!package)
     return fail(package.takeError());
-  const wafer::runtime::PackageManifest &manifest = package->getManifest();
-  const wafer::runtime::PackageEntrypointRecord *selectedEntry = nullptr;
-  if (!options->allRanks) {
-    wafer::runtime::EntryId entryId(options->entryId);
-    auto entry = llvm::find_if(manifest.entries, [&](const auto &candidate) {
-      return candidate.id == entryId;
-    });
-    if (entry == manifest.entries.end())
-      return fail(llvm::createStringError(
-          llvm::errc::invalid_argument, "entry ID is not present in package"));
-    selectedEntry = &*entry;
-  }
-  if (options->board && !options->allRanks && manifest.rankCount != 1)
-    return fail(llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "multi-rank board execution requires --all-ranks"));
-
   llvm::Expected<std::optional<wafer::runtime::VerifiedProfileCompanion>>
       loaded = wafer::runtime::loadSiblingProfileCompanionIfPresent(
           options->packageDirectory);
@@ -612,7 +546,7 @@ int main(int argc, char **argv) {
   if (*loaded)
     profileCompanion.emplace(std::move(**loaded));
   if (options->noCard) {
-    return runNoCard(*options, *package, selectedEntry, profileCompanion);
+    return runNoCard(*options, *package, profileCompanion);
   }
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
   return runBoard(*options, *package, profileCompanion);

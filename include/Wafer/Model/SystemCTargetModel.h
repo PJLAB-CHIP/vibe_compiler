@@ -44,8 +44,14 @@ private:
   std::string detail;
 };
 
+/// One atomically published card-owned output allocation. physical Tile and
+/// slot fields identify the canonical ABI view used for decoding; aliased
+/// views from other Tiles do not create duplicate result objects.
 struct TargetModelOutput {
-  int64_t logicalRank = -1;
+  TargetModelResourceId resource;
+  PhysicalCardId physicalCardId;
+  PhysicalTileId physicalTileId;
+  LaunchSlotId launchSlotId;
   int64_t slotOrdinal = -1;
   int64_t resourceIndex = -1;
   std::vector<uint8_t> bytes;
@@ -56,7 +62,7 @@ struct TargetModelOutput {
 struct TargetModelResult {
   TargetIdentityId targetIdentity;
   ModelProfileId modelProfile;
-  int64_t completedRankCount = 0;
+  int64_t completedTileCount = 0;
   uint64_t issuedTransactionCount = 0;
   uint64_t systemCThreadProcessCount = 0;
   uint64_t finalDeltaCount = 0;

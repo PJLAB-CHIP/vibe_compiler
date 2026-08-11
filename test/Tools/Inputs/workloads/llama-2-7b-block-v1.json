@@ -19,7 +19,7 @@
     {
       "id": "llama-2-7b-block-f16",
       "kind": "llama_decoder_block",
-      "source_revision": "sha256:5c6336f815efe1a2cd5787bd3028c7df53ea4d8c84c36684d03ae350123de13a",
+      "source_revision": "sha256:072025a7c17bd66800d605db1f0f161fba52d3d317db1f7782fff2535fba760b",
       "seed": 20260715,
       "dtype": "float16",
       "config": {
@@ -34,19 +34,19 @@
           "projection_denominator": 8192
         },
         "execution_mesh_shape": [
-          16
+          1
         ],
         "execution_mesh_axis_names": [
-          "tensor"
+          "card_partition"
         ]
       },
       "digests": {
-        "source_config": "sha256:5c6336f815efe1a2cd5787bd3028c7df53ea4d8c84c36684d03ae350123de13a",
+        "source_config": "sha256:072025a7c17bd66800d605db1f0f161fba52d3d317db1f7782fff2535fba760b",
         "input": "sha256:670af394751491cc639d59f4411eb6a00f876106bfa9a25116cd1b3056c63d24",
         "parameters": "sha256:dca3c064f2d0b228385df06b5b0906b152c4569c88902c7e97dfccf73f0ea5c2",
         "reference_output": "sha256:6071569cde4caf5e8b9bdfd4736fe8ad741094f7b7a7b466cc41d8fa09ec2fa0",
         "reference_output_quantized": "sha256:2f4814b38713f79cf30a6800f644b06a392099b0366db291a4fee5d52e54f197",
-        "exported_program": "sha256:d136e6690ef95632b262e83849a029fd5be36523c59f4c31992d99fdd861f90c"
+        "exported_program": "sha256:4baa43f5e5ec4791cd1dd242168717b5bd0c83b9571fe833a244408771d00e5f"
       },
       "reference": {
         "implementation": "PyTorch eager CPU complete Llama decoder block",

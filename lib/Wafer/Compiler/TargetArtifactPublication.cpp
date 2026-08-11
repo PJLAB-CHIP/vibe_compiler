@@ -14,6 +14,7 @@
 
 #include <cerrno>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -61,56 +62,41 @@ llvm::Error validateRuntimeLaunchContractDomain(
         "runtime launch contract does not match the execution configuration");
 
   const KernelRuntimeLaunchContract *kernel = launch.getKernel();
-  if (kernel && kernel->form == KernelLaunchForm::PerRank) {
-    if (config.getRankCount() != 1 ||
-        targetLLVMModules.getModules().size() != 1)
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "rank-local kernel launch requires the rank-one target domain");
-    for (const TargetLLVMModule &module : targetLLVMModules.getModules())
-      if (module.getKernelABISlots().size() >
-          kTx81KernelArgumentBytesMax / sizeof(uint64_t))
-        return llvm::createStringError(
-            llvm::errc::invalid_argument,
-            "per-rank kernel argument block exceeds the qualified V5.6 "
-            "packet limit");
-    return llvm::Error::success();
-  }
-  if (config.getRankCount() != 16 ||
+  if (config.getPhysicalTileCount() != 16 ||
       targetLLVMModules.getModules().size() != 16)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "multi-tile runtime launch requires the complete 16-rank domain");
+        "multi-Tile runtime launch requires the complete 16-Tile domain");
 
   const TargetLLVMModule &first = targetLLVMModules.getModules().front();
   if (kernel) {
     if (first.getKernelABISlots().empty())
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "multi-tile pointer-table launch requires at least one typed ABI "
+          "multi-Tile pointer-table launch requires at least one typed ABI "
           "slot");
     const uint64_t packetBytes = kernel->form == KernelLaunchForm::Cluster
                                      ? kTx81ClusterKernelArgumentBytesMax
                                      : kTx81KernelArgumentBytesMax;
-    if (kernel->entryABI == KernelEntryABI::RankMajorPointerTable) {
+    if (kernel->entryABI == KernelEntryABI::TileMajorPointerTable) {
       if (first.getKernelABISlots().size() >
           packetBytes / sizeof(uint64_t) /
-              static_cast<uint64_t>(config.getRankCount()))
+              static_cast<uint64_t>(config.getPhysicalTileCount()))
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "multi-tile rank-major argument table exceeds the qualified V5.6 "
+            "multi-Tile Tile-major argument table exceeds the qualified V5.6 "
             "packet limit");
-    } else if (kernel->entryABI == KernelEntryABI::RankRowPointerTable) {
-      if (static_cast<uint64_t>(config.getRankCount()) >
+    } else if (kernel->entryABI == KernelEntryABI::TileRowPointerTable) {
+      if (static_cast<uint64_t>(config.getPhysicalTileCount()) >
           packetBytes / sizeof(uint64_t))
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "multi-tile rank-row pointer table exceeds the qualified V5.6 "
+            "multi-Tile Tile-row pointer table exceeds the qualified V5.6 "
             "packet limit");
     } else {
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "multi-tile kernel launch has an incompatible entry ABI");
+          "multi-Tile kernel launch has an incompatible entry ABI");
     }
     const size_t transportStatusSlots = llvm::count_if(
         first.getKernelABISlots(), [](const KernelABISlot &slot) {
@@ -125,12 +111,12 @@ llvm::Error validateRuntimeLaunchContractDomain(
     if (module.getEntrySymbol() != first.getEntrySymbol())
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "multi-tile runtime launch requires one shared entry symbol");
+          "multi-Tile runtime launch requires one shared entry symbol");
     if (!haveSameKernelABISchema(module.getKernelABISlots(),
                                  first.getKernelABISlots()))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "multi-tile runtime launch requires identical all-rank slot "
+          "multi-Tile runtime launch requires identical per-Tile slot "
           "schemas");
   }
   if (launch.getModel())
@@ -207,9 +193,10 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
     llvm::raw_ostream &diagnostics, detail::ProfileCaptureKind profileCapture) {
   if (targetLLVMModules.getModules().size() !=
       static_cast<size_t>(
-          targetLLVMModules.getExecutionConfig().getRankCount()))
+          targetLLVMModules.getExecutionConfig().getPhysicalTileCount()))
     return detail::fail(diagnostics,
-                        "target LLVM bundle rank domain is incomplete");
+                        "target LLVM bundle physical Tile domain is "
+                        "incomplete");
   if (llvm::Error error =
           detail::validateRuntimeLaunchContractDomain(targetLLVMModules))
     return detail::fail(diagnostics,
@@ -264,32 +251,52 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
                         "failed to create target work directory: " +
                             error.message());
 
-  for (auto [expectedRank, targetLLVMModule] :
-       llvm::enumerate(targetLLVMModules.getModules()))
-    if (targetLLVMModule.getLogicalRank() != static_cast<int64_t>(expectedRank))
-      return detail::fail(diagnostics,
-                          "target LLVM bundle rank domain is not canonical");
-    else if (llvm::Error error = detail::verifyProfileCaptureKernelABISlots(
-                 targetLLVMModule.getKernelABISlots(), profileCapture))
+  std::set<int64_t> physicalTileIds;
+  std::set<int64_t> launchSlotIds;
+  std::optional<PhysicalCardId> physicalCardId;
+  for (const TargetLLVMModule &targetLLVMModule :
+       targetLLVMModules.getModules()) {
+    if (!physicalCardId)
+      physicalCardId = targetLLVMModule.getPhysicalCardId();
+    if (targetLLVMModule.getPhysicalCardId() != *physicalCardId ||
+        targetLLVMModule.getPhysicalCardId().getValue() < 0 ||
+        targetLLVMModule.getPhysicalTileId().getValue() < 0 ||
+        targetLLVMModule.getLaunchSlotId().getValue() < 0 ||
+        !physicalTileIds.insert(
+                            targetLLVMModule.getPhysicalTileId().getValue())
+             .second ||
+        !launchSlotIds.insert(targetLLVMModule.getLaunchSlotId().getValue())
+             .second)
+      return detail::fail(
+          diagnostics,
+          "target LLVM bundle has invalid or duplicate physical identity");
+    if (llvm::Error error = detail::verifyProfileCaptureKernelABISlots(
+            targetLLVMModule.getKernelABISlots(), profileCapture))
       return detail::fail(diagnostics,
                           "target LLVM profiler slot verification failed: " +
                               llvm::toString(std::move(error)));
-    else if (llvm::Error error =
-                 detail::verifyProfileTargetModuleInstrumentation(
-                     targetLLVMModule.getModule(),
-                     targetLLVMModule.getEntrySymbol(), profileCapture))
+    if (llvm::Error error = detail::verifyProfileTargetModuleInstrumentation(
+            targetLLVMModule.getModule(), targetLLVMModule.getEntrySymbol(),
+            profileCapture))
       return detail::fail(
           diagnostics,
           "target LLVM profiler instrumentation verification failed: " +
               llvm::toString(std::move(error)));
+  }
+  for (int64_t launchSlot = 0;
+       launchSlot < static_cast<int64_t>(targetLLVMModules.getModules().size());
+       ++launchSlot)
+    if (launchSlotIds.count(launchSlot) == 0)
+      return detail::fail(
+          diagnostics,
+          "target LLVM bundle launch-slot domain is not dense and canonical");
 
   const ExecutionConfig &config = targetLLVMModules.getExecutionConfig();
   const RuntimeLaunchContract &runtimeLaunchContract =
       targetLLVMModules.getRuntimeLaunchContract();
   const KernelRuntimeLaunchContract *kernelLaunch =
       runtimeLaunchContract.getKernel();
-  const bool isAggregateKernel =
-      kernelLaunch && kernelLaunch->form != KernelLaunchForm::PerRank;
+  const bool isAggregateKernel = kernelLaunch != nullptr;
   const bool hasPrepare = llvm::is_contained(runtimeLaunchContract.getPhases(),
                                              RuntimeLaunchPhaseRole::Prepare);
 
@@ -305,7 +312,7 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
 
   auto linkAndReadback =
       [&](const llvm::Module &source, llvm::StringRef entrySymbol,
-          llvm::ArrayRef<KernelABISlot> slots, int64_t logicalRank,
+          llvm::ArrayRef<KernelABISlot> slots, LaunchSlotId launchSlotId,
           llvm::StringRef workStem, llvm::StringRef modulePath,
           llvm::ArrayRef<VerifiedTargetExport> exports,
           TargetIdentityId targetIdentity, llvm::StringRef expectedFormat,
@@ -321,8 +328,8 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
         hasMaterializedEntryABI
             ? detail::writeTargetLLVMIR(source, llvmIRPath)
             : detail::writeLLVMIR(source, entrySymbol, slots,
-                                  runtimeLaunchContract, logicalRank,
-                                  config.getRankCount(), llvmIRPath,
+                                  runtimeLaunchContract, launchSlotId,
+                                  config.getPhysicalTileCount(), llvmIRPath,
                                   profileCapture);
     if (writeError)
       return std::move(writeError);
@@ -346,8 +353,8 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
   std::vector<VerifiedTargetModule> modules;
   modules.reserve(isAggregateKernel ? 1
                                     : targetLLVMModules.getModules().size());
-  std::vector<VerifiedTargetRankInterface> rankInterfaces;
-  rankInterfaces.reserve(targetLLVMModules.getModules().size());
+  std::vector<VerifiedTargetTileInterface> tileInterfaces;
+  tileInterfaces.reserve(targetLLVMModules.getModules().size());
 
   if (isAggregateKernel) {
     const TargetLLVMModule &first = targetLLVMModules.getModules().front();
@@ -364,7 +371,7 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
         makeExports(first.getEntrySymbol());
     llvm::Expected<detail::TargetModuleReadback> readback = linkAndReadback(
         *aggregate->module, first.getEntrySymbol(), first.getKernelABISlots(),
-        /*logicalRank=*/0, stem, modulePath, exports,
+        LaunchSlotId(0), stem, modulePath, exports,
         first.getTargetIdentityId(), first.getModuleFormat(),
         /*hasMaterializedEntryABI=*/true);
     if (!readback)
@@ -375,17 +382,17 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
     modules.push_back(TargetArtifactBundleBuilder::makeModule(
         moduleId, "modules/module_00000.so", readback->contentDigest,
         first.getTargetIdentityId(), first.getKernelRuntimeABIId(),
-        readback->moduleFormat,
-        std::move(exports)));
-    for (const TargetLLVMModule &rank : targetLLVMModules.getModules())
-      rankInterfaces.push_back(TargetArtifactBundleBuilder::makeRankInterface(
-          rank.getLogicalRank(), moduleId, rank.getKernelABISlots()));
+        readback->moduleFormat, std::move(exports)));
+    for (const TargetLLVMModule &tile : targetLLVMModules.getModules())
+      tileInterfaces.push_back(TargetArtifactBundleBuilder::makeTileInterface(
+          tile.getPhysicalCardId(), tile.getPhysicalTileId(),
+          tile.getLaunchSlotId(), moduleId, tile.getKernelABISlots()));
   } else {
-    for (auto [expectedRank, targetLLVMModule] :
+    for (auto [moduleOrdinal, targetLLVMModule] :
          llvm::enumerate(targetLLVMModules.getModules())) {
-      const TargetArtifactModuleId moduleId(expectedRank);
+      const TargetArtifactModuleId moduleId(moduleOrdinal);
       const std::string stem =
-          llvm::formatv("module_{0:D5}", expectedRank).str();
+          llvm::formatv("module_{0:D5}", moduleOrdinal).str();
       llvm::SmallString<256> modulePath(modulesDirectory);
       llvm::sys::path::append(modulePath, stem + ".so");
       std::vector<VerifiedTargetExport> exports =
@@ -393,7 +400,7 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
       llvm::Expected<detail::TargetModuleReadback> readback = linkAndReadback(
           targetLLVMModule.getModule(), targetLLVMModule.getEntrySymbol(),
           targetLLVMModule.getKernelABISlots(),
-          targetLLVMModule.getLogicalRank(), stem, modulePath, exports,
+          targetLLVMModule.getLaunchSlotId(), stem, modulePath, exports,
           targetLLVMModule.getTargetIdentityId(),
           targetLLVMModule.getModuleFormat(),
           /*hasMaterializedEntryABI=*/false);
@@ -408,8 +415,10 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
           targetLLVMModule.getTargetIdentityId(),
           targetLLVMModule.getKernelRuntimeABIId(), readback->moduleFormat,
           std::move(exports)));
-      rankInterfaces.push_back(TargetArtifactBundleBuilder::makeRankInterface(
-          targetLLVMModule.getLogicalRank(), moduleId,
+      tileInterfaces.push_back(TargetArtifactBundleBuilder::makeTileInterface(
+          targetLLVMModule.getPhysicalCardId(),
+          targetLLVMModule.getPhysicalTileId(),
+          targetLLVMModule.getLaunchSlotId(), moduleId,
           targetLLVMModule.getKernelABISlots()));
     }
   }
@@ -426,7 +435,7 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
   return TargetArtifactBundleBuilder::makeBundle(
       outputDirectory, targetLLVMModules.getExecutionConfig(),
       targetLLVMModules.getRuntimeLaunchContract(), std::move(modules),
-      std::move(rankInterfaces));
+      std::move(tileInterfaces));
 }
 
 llvm::Expected<TargetArtifactBundle>
@@ -439,21 +448,4 @@ compileTargetLLVMModuleBundleToTargetArtifacts(
       detail::ProfileCaptureKind::None);
 }
 
-namespace detail {
-
-llvm::Expected<TargetArtifactBundle>
-compileExecutableBundleToTargetArtifactsImpl(
-    const ExecutableBundle &executableBundle, llvm::StringRef outputDirectory,
-    const TargetToolchain &toolchain, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank) {
-  llvm::Expected<TargetLLVMModuleBundle> targetLLVMModules =
-      compileExecutableBundleToTargetLLVMModulesImpl(
-          executableBundle, diagnostics, failAfterLogicalRank);
-  if (!targetLLVMModules)
-    return targetLLVMModules.takeError();
-  return compileTargetLLVMModuleBundleToTargetArtifacts(
-      *targetLLVMModules, outputDirectory, toolchain, diagnostics);
-}
-
-} // namespace detail
 } // namespace wafer::compiler

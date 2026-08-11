@@ -10,6 +10,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -59,17 +60,24 @@ static bool isDDRDataType(mlir::Type type) {
 /// Unknown shaped producers are traversed only to detect an erased SPM
 /// dependency; they are never accepted as an alias producer for an SPM result.
 static StorageTrace traceSPMStorage(mlir::Value value, TileRegionOp owner,
-                                    llvm::DenseSet<mlir::Value> &active) {
+                                    llvm::DenseSet<mlir::Value> &active,
+                                    llvm::DenseMap<mlir::Value, StorageTrace>
+                                        &memo) {
   StorageTrace trace;
-  if (!value || !active.insert(value).second)
+  if (!value)
+    return trace;
+  if (auto found = memo.find(value); found != memo.end())
+    return found->second;
+  if (!active.insert(value).second)
     return trace;
 
   auto finish = [&](StorageTrace result) {
     active.erase(value);
+    memo[value] = result;
     return result;
   };
   auto traceValue = [&](mlir::Value source) {
-    return traceSPMStorage(source, owner, active);
+    return traceSPMStorage(source, owner, active, memo);
   };
 
   if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
@@ -178,6 +186,7 @@ mlir::LogicalResult TileRegionOp::verify() {
   if (getOperation()->getParentOfType<TileRegionOp>())
     return emitOpError("must be an outer, non-nested SPM residency region");
 
+  llvm::DenseMap<mlir::Value, StorageTrace> inputTraceMemo;
   for (auto [index, input] : llvm::enumerate(getInputs())) {
     if (!isShapedDataType(input.getType()))
       continue;
@@ -185,7 +194,8 @@ mlir::LogicalResult TileRegionOp::verify() {
       return emitOpError("shaped data input at index ")
              << index << " must be a Wafer DDR memref, got " << input.getType();
     llvm::DenseSet<mlir::Value> active;
-    StorageTrace trace = traceSPMStorage(input, *this, active);
+    StorageTrace trace =
+        traceSPMStorage(input, *this, active, inputTraceMemo);
     if (!trace.valid || trace.hasSPMRoot)
       return emitOpError("shaped data input at index ")
              << index
@@ -233,6 +243,7 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
            << yield.getValues().size() << " values and " << getNumResults()
            << " results";
 
+  llvm::DenseMap<mlir::Value, StorageTrace> resultTraceMemo;
   for (auto [index, yieldedAndResult] :
        llvm::enumerate(llvm::zip(yield.getValues(), getResults()))) {
     mlir::Value yielded = std::get<0>(yieldedAndResult);
@@ -244,7 +255,8 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
              << resultType << " at index " << index;
 
     llvm::DenseSet<mlir::Value> active;
-    StorageTrace trace = traceSPMStorage(yielded, *this, active);
+    StorageTrace trace =
+        traceSPMStorage(yielded, *this, active, resultTraceMemo);
     if (!trace.valid)
       return emitOpError("result at index ")
              << index
