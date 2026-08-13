@@ -84,11 +84,19 @@ source program
   就提前要求relation functional/projected-permutation或用bounding box代替exact demand。
 - placement-independent relation证明在同一search query内按SSA edge复用，具体placement的resident/peer相交仍逐候选精确计算；
   这种memo只消除重复证明，不删除spatial、layout、fusion、buffer或通信候选。
+- spatial/temporal reuse从exact `IndexRelation`、selected placement、TileRegion/traversal与wave-loop order按IR epoch派生，保留
+  per-axis/per-wave equivalence和invariance；不要压成aggregate bool attr或另建metadata事实源。它可以优先regular mapping、
+  unicast/multicast与retain/hoist proposal，但不能选择winner或删除合法补集。
 - cheap typed legality、coverage、topology symmetry、SPM lower bound和raw-work dominance在clone前剪枝。
+- analytic footprint只有证明must-coexist的lower bound超过capacity时才是exact rejection；普通footprint/resource estimate与
+  approximate/unverified solver结果只可排序。Boundary-faithful exact局部solver可以返回proof/proposal，但selected choice/offset
+  仍须物化并由typed IR复验；timeout/resource exhaustion保持indeterminate。
 - 只有需要exact legality/cost的状态才按需物化complete CardProgram candidate；任一时刻最多一个live actual clone，避免RSS随
   候选笛卡尔积增长。固定shortlist、beam或candidate cap会丢合法状态，只能在Q52以profile和质量回归证明后作为显式trade-off。
 - global work ledger使用deterministic work units，不用wall-clock timeout决定搜索语义。wall/RSS只做回归诊断。
 - host worker可以并行互不共享可写IR的proposal/Tile-local evaluation；frontier insertion、tie-break和publication保持stable order。
+- regular factorized mapping、reuse-guided movement与分层resource cost应作为现有typed domain上的proposal/order机制；不为它们
+  clone-per-mapping、不以function name/JSON/opaque sidecar关联状态，也不新增第二套hardware graph或winner owner。
 - 每个materialized candidate经过同一链：Tile→Instr、fresh completion、SPM/DDR、transport/resource/ABI和final recost。
 - proven exact failure消耗明确work unit并销毁clone，不建立late repair selector或candidate-local quota；allocator/solver
   resource exhaustion、timeout或internal failure属于indeterminate，不能形成no-good或删除合法state。

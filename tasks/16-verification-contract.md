@@ -98,9 +98,15 @@ position、Attention/decode/mask专用matcher或公共pass残留。
 ### 4.3 Search correctness 与 exact gates
 
 - semantic、spatial、temporal、TileRegion/融合、layout、movement、buffer、communication和order合法域从current IR惰性生成；
+- temporal域同时覆盖完整all-iterator tile vector与Q50.D已选traversal内会改变reuse/lifetime/tail/numeric order的有限
+  wave-loop order；regular
+  mapping、relation-derived reuse和coarse resource estimate只改变proposal顺序，开关后tiny accepted domain与winner不变；
 - independent tiny reference domain enumerator不调用production domain builder，证明complete finite小图合法域完整；
 - production-mechanism flat exhaustive runner使用真实materializer、cost与exact gates全展开，再证明frontier、剪枝和winner；
 - cheap legality、exact coverage、topology symmetry、canonical dedup、已证明SPM lower bound和raw-work dominance只有在不删除合法最优解时才能在clone前剪枝；
+- symbolic footprint只有proven must-coexist lower bound超过capacity才能早拒绝；ranking estimate、未经boundary-faithful proof
+  的solver/model结果和nominal bandwidth projection不能签发packing、overlap或legality；exact局部solver的proof/proposal也须
+  由selected typed materialization与正常gate复验；
 - 需要exact evaluation的choice才物化CardProgram actual candidate，任一时刻最多一个live actual clone；
 - 所有materialized candidate执行同一Tile→Instr、fresh completion、SPM/DDR、transport/resource/ABI和final recost；
 - proven exact failure只拒绝对应causal assignment并消耗确定work unit，不触发late repair、retile、spill或另一selector；
@@ -109,6 +115,8 @@ position、Attention/decode/mask专用matcher或公共pass残留。
 - wall/RSS是回归证据，不设任意60秒硬gate；
 - beam、candidate cap、随机启发式或其它会损失完整性/最优性的策略，只能在实际负载profiling后作为显式trade-off启用，
   并持续报告相对小图oracle和`none`的质量差异。
+- top-k还必须报告`best-found@k`、winner recall@k、regret@k和estimate-vs-final recost误差；永久丢弃合法completion时结果只可
+  标`budgeted-feasible`，外部系统的固定`k`不得成为本项目默认值。
 
 `search`和`none`跨越同一artifact seam。`none`只materialize deterministic conservative baseline；`search`从完整合法域
 惰性生成candidate。测试不得把两者相同结果写成长期合同，也不得为某个case硬编码winner。
@@ -235,7 +243,8 @@ special pass option、shape shortcut或手写替代graph。
 2. Q50.0：baseline与search共用无策略CardExecutable compile/admission boundary，任何lowering失败均不隐式repair；Q50.A：
    placement给定后从IndexRelation形成layout-independent exact logical demand，carrier/layout/route失败不反写spatial legality；
    Q50.S：typed proof和online/partitioned-KV等算法参数点均物化成真实TensorProgram alternatives。
-3. Q50.B–Q50.K依次闭合spatial placement、single-op TileRegion、coupled traversal/region fusion、complete temporal tile、
+3. Q50.B–Q50.K依次闭合spatial placement、single-op TileRegion、coupled traversal/region fusion、complete temporal tile与
+   wave-loop order、
    scoped actual probe、layout/representation、movement、rotating buffers、event/resource schedule与conditional stage pipeline。
    probe缺少因果坐标时必须deferred，资源耗尽不得当作不可行；pipeline event structure形成后必须使旧calendar失效并
    重入event/resource schedule，由新assignment证明实际overlap。

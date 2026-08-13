@@ -133,7 +133,7 @@ StageId  -> members / physical Tile group
 NodeId   -> iteration partition / physical placement / reduction role
 RegionId -> members / traversal roots
 EdgeId   -> coupled / independent / recompute / local-or-remote movement
-LoopId   -> complete temporal tile vector
+LoopId   -> complete temporal tile vector / finite wave-loop nesting and order within selected traversal
 ValueId  -> selected physical representation
 TileId   -> buffer recipe / instruction order / worker / completion choice
 ```
@@ -197,6 +197,12 @@ participant subset、partial/merge owner和独立branch的Tile groups。它考�
 紧凑矩形、自然mesh、使用全部16 Tiles可以作为高优先级seed；它们不是legality条件。搜索域必须惰性包含合法的participant
 count、多轴mesh、reduction partition、remainder和非对称placement。只有硬件拓扑和当前资源真正对称的状态才能
 canonicalize。
+
+高优先级proposal可以先做ordered factorized regular mapping：把一个或多个logical iterator factor映射到typed physical
+topology dimensions。只有axis/factor nesting实际改变extensional partition relation、logical-mesh embedding或physical
+placement时才形成不同typed choice；等价factorization的生成顺序必须canonicalize。它只是完整placement域的构造顺序，
+不能把连续矩形、二维mesh、full occupancy、偶数participant或某一种factor order提升成合法性；未映射的local extent继续交给
+temporal选择，不能由spatial proposal暗中固定tile或loop order。
 
 ### 5.3 Exact producer/consumer demand
 
@@ -274,17 +280,21 @@ traversal、保留一个region-local materialized version、selected recompute�
 有效coupled traversal必须在实际IR中证明：producer位于consumer temporal traversal内、需求slice all-and-only覆盖、
 intermediate为tile-sized而非完整local shard，且不存在中间DDR round-trip。
 
-### 6.4 Complete temporal tile vector
+### 6.4 Complete temporal tile vector 与 wave-loop order
 
-Temporal state覆盖structured op/traversal的全部iterator：
+Temporal state覆盖structured op/traversal的全部iterator，并在Q50.D已选traversal内选择有限、语义可区分的wave-loop
+nesting/order：
 
 ```text
 [parallel tiles..., reduction tiles..., batch/head/channel/window tiles...]
++ wave-loop nesting / order within selected traversal
 ```
 
 它不是单一block size，也不另设与主向量脱节的reduction字段。候选从当前spatial local extent和target-efficient shapes开始，
 系统产生会改变wave、tail、native issued work、padding、transaction、halo、buffer feasibility或SPM footprint的breakpoints。
 若其它choices固定且footprint对某一维单调，可用二分定位capacity边界；layout、buffer、fusion或spatial改变后结论必须失效。
+只有能证明生成相同actual traversal、exact demand、lifetime、tail和numeric order的排列才能canonicalize；默认loop order不能
+删除会改变reuse、SPM或最终resource schedule的合法组合。
 
 Fusion不能在temporal之前选出独立winner，temporal也不能先固定后再附加fusion。完整局部选择至少是：
 
@@ -312,6 +322,13 @@ Lowering只能消费并验证selected choice，不能提供隐藏canonical winne
 
 Logical demand先于physical fragment。Movement materialization必须对exact demand与producer ownership求交，证明local和remote
 fragments all-and-only覆盖、互不重叠，再生成实际staging、send/recv/wait或DDR store/load。
+
+Movement proposal可以消费一个query-local、可失效的relation-derived reuse analysis：它从Q50.A exact demand、selected
+placement、TileRegion/traversal、wave-loop order和representation推导spatial-demand equivalence/invariance classes、
+temporal-wave invariance classes与exact payload/coverage。结果不压成几个boolean attr，不写回候选IR，也不选择broadcast、
+load/receive placement、retention、route或buffer winner；Q50.H据此完整生成direct/refetch/unicast、partial或多维
+multicast/broadcast、合法的same-region load/receive外提与retain/release等普通typed alternatives。最大broadcast只能优先，
+不能提前删除在NoC contention或后续schedule下更好的partial broadcast/unicast。
 
 ### 7.2 Buffer recipe
 
@@ -381,6 +398,10 @@ live inputs + tile-sized intermediates or retained local shards + outputs
 
 只有已证明必然同时live的集合超过capacity时才能安全早拒绝。Region-local probe使用实际TileRegion lowering和SPM packing，
 可快速拒绝固定causal choices；它成功不能替代整卡admission，相关spatial/region/temporal/layout/buffer/order变化后必须失效。
+Symbolic footprint必须区分proven must-coexist lower bound、non-binding ranking estimate和缺少坐标时的
+`deferred(required coordinates)`：只有第一种超过capacity才能exact reject；估算可放下不能证明packing可行，未证明
+coexistence的估算超限也不能拒绝候选。近似或未经typed boundary-faithful proof的外部solver/序列化constraint结果只能排序；
+exact局部solver可对准确建模的子问题返回proof/proposal，但selected offset/choice仍须物化并通过typed gate复验。
 
 完整候选完成TileRegion->Instr、selected order/worker和fresh completion后，SPM/DDR planner才从actual roots、control flow、
 lifetime和coexistence求validated offsets。Planner区分`Feasible`、`ProvenInfeasible`与`ResourceExhausted`，调用边界还必须
@@ -402,6 +423,12 @@ comparison cohort统一删除该term，不能candidate-local按零或无穷。Es
 Tile idle与pipeline prologue/II/epilogue。SPM high-water只用于capacity/headroom与诊断，不作为Pareto目标；working-set
 带来的性能差异通过movement、spill、buffer、waves与issued work计价。Overlap只有actual buffer/resource独立性可证明时
 才计入，不对整程序无条件相加或取`max`。
+
+分层resource projection复用现有target facts，把actual或partial typed assignment依次投影到compute unit/worker、相关local
+SPM resource、directed NoC links与DDR channel/engine。资源集合相交只形成contention estimate/排序信号，不相交可优先提出
+并行proposal；是否能重叠及其cost仍由actual event/resource semantics判定。Nominal bandwidth split、解析关键路径或其它近似
+模型只能用于ordering；没有actual buffer、issue/wait、event与resource independence时，不能据此签发completion、overlap、
+legality或admissible bound。
 
 ### 10.2 分层编译成本
 
@@ -435,8 +462,10 @@ Tile idle与pipeline prologue/II/epilogue。SPM high-water只用于capacity/head
 真实负载不展开平铺笛卡尔积。推荐过程是：
 
 1. 编译deterministic baseline，立即获得合法incumbent；
-2. 生成producer/consumer aligned、compute-balanced、topology-local、reduction-parallel等spatial seeds；
-3. 对每个seed构造最大TileRegion、最大coupled closure和高效大temporal tile；
+2. 生成producer/consumer aligned、compute-balanced、topology-local、reduction-parallel及ordered factorized regular mapping等
+   spatial seeds；
+3. 对每个seed构造最大TileRegion、最大coupled closure和高效大temporal tile，并用relation-derived reuse signature优先
+   direct/local、multicast/broadcast与temporal retention alternatives；
 4. exact cheap gates后按cost与结构diversity排序；
 5. promising state做affected-region probe，少量完整state做CardExecutable compilation；
 6. actual accepted cost更新incumbent；只有proven exact failure才对其causal choices形成no-good，resource exhaustion或internal
@@ -569,3 +598,13 @@ tiling后只进行一次complete CardExecutable compilation。这个优化建立
 本设计吸收但不复制外部实现中的consumer-driven exact demand propagation、factorized spatial mapping、coarse-to-fine
 schedule construction、large-neighborhood search、boundary-compatible DP和event/resource scheduling。任何论文或仓库的
 shape、operator集合、solver依赖、beam width或GPU block常数都不成为本项目协议。
+
+对[TileLoom](https://arxiv.org/abs/2512.22168)只选择性吸收四类机制：ordered factorized regular mapping作为高优先级proposal
+family、从exact relation推导的spatial/temporal reuse analysis、基于现有target facts的分层resource estimate，以及Q52对
+ranking/top-k的实测校准方法。它们只影响query-local analysis、proposal order与profile-driven policy；Q51的完整合法域、
+typed assignments、唯一winner owner和actual exact gates保持不变。
+
+明确不采用：前端预先固定block/tile shape；把连续矩形、full occupancy、二维映射或偶数participant当作完整域；greedy
+pre-fusion或只保留最大broadcast；clone-per-mapping、函数名/attr、aggregate reuse bool或JSON/opaque sidecar状态；approximate
+footprint代替actual lifetime/packing；无actual slots/events就假设double buffering或`max(compute,movement)` overlap；固定top-k、
+论文硬件常数或外部solver/model bound进入exact pruning；把已经算法化的Flash/Decode输入误当成physical planner自动发现算法。

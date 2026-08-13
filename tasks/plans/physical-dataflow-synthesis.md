@@ -84,6 +84,8 @@ current immutable structured IR
 - analysis/probe cache key 必须包含 IR epoch、target facts 和会影响结论的全部 typed assignments。改变
   traversal、tile、layout、movement、buffer 或 schedule 后，旧 calendar、lifetime、SPM/legality 结果全部失效；
 - 任意时刻最多一个 live actual clone；host 可并行计算 immutable analysis，但 frontier insertion 和 tie-break 使用稳定 key；
+- regular mapping、reuse signature和coarse resource estimate只能给普通typed transitions排序；不能clone-per-mapping，不能把
+  reuse/cost annotation写进候选IR，也不能用function name、JSON或opaque solver payload跨越compile seam；
 - 最终 winner 仍重新通过完整 CardProgram projection、TileRegion-to-Instr、fresh completion、SPM/DDR、resource、ABI、
   admission 和 final recost，局部 probe 不替代complete CardExecutable gate。
 
@@ -244,7 +246,7 @@ Q51.Core 在增加下一项 capability 前建立唯一、可测试的 search ker
 ```text
 immutable structured IR + IR epoch
   + semantic DAG root assignment
-  + spatial / region / traversal / temporal assignments
+  + spatial / region / traversal / temporal tile and wave-loop order assignments
   + representation / movement / buffer assignments
   + order / worker / completion / stage assignments
   + enabled mechanism transitions
@@ -264,8 +266,8 @@ assignment重算；它们可用于future-compatible dominance，不能反向成�
 ### 初始算法
 
 - 以 Q49 actual baseline 作为第一个 incumbent；
-- production使用确定性best-first constructive search：先形成baseline，优先构造大TileRegion、coupled traversal和较大高效
-  temporal tile；这些只是稳定排序seed，不是生成条件；
+- production使用确定性best-first constructive search：先形成baseline，优先构造大TileRegion、coupled traversal、较大高效
+  temporal tile、ordered factorized regular mapping与relation-derived reuse proposal；这些只是稳定排序seed，不是生成条件；
 - exact lane每次展开parent都必须把其余合法region cut、tile、layout、movement、buffer和schedule sibling以可惰性
   continuation保留在共同frontier，不论先展开的child是accepted还是rejected。typed rejection只能产生与其
   causal assignment精确对应的no-good或调整排序，不能作为生成sibling的触发器；
@@ -323,6 +325,10 @@ Tile count或KV length都不能提前替代该选择。Q50.S不暴露public Flas
 - 对每个partition惰性枚举verified topology上全部verifier-legal participant subsets、logical-mesh embedding和physical
   placement。compact rectangle、natural mesh、connected set和all-available-Tile只是排序seed；除非verifier能从硬件
   topology证明connectivity是legality，否则必须保留disconnected/asymmetric placement；available Tiles均可参与；
+- 在完整域中优先生成ordered factorized regular mapping：把logical iterator的一个或多个spatial factors映射到typed physical
+  topology dimensions。只有axis/factor nesting改变extensional partition relation、logical-mesh embedding或physical placement
+  时才由对应typed relation/embedding区别；等价factorization的生成顺序canonicalize，不进入state identity。未映射local
+  extent只传给Q50.E，不能在这里隐式固定temporal tile或wave-loop order；
 - 不同 op 可使用不同 Tile sets，独立 branches 可并行，dependent nodes 可 co-locate、partial overlap 或 disjoint；
 - consumer placement 关闭时直接调用 Q50.A exact demand/ownership coverage；physical representation 限制不得反写成
   logical demand 不合法；
@@ -337,6 +343,10 @@ multi-axis remainder、reduction merge和partial redistribution上的stable key�
 直接表达physical Tile ownership。局部gate通过后删除spatial coordinate-descent owner和rank==Tile假设，但保留
 可复用topology/domain/cost mechanics。“非最大参与、非相同Tile group或暂时更贵的placement成为global actual
 winner”是Q51 closure的跨轴gate。
+
+同一factor count中，确实改变partition relation、logical-mesh embedding或physical placement的不同axis/factor nesting必须产生
+不同typed witness；extensionally等价的生成路径必须canonicalize。regular/full-occupancy proposal与非矩形、partial、
+asymmetric、disconnected合法补集均可达；关闭或改变proposal排序后，tiny exhaustive domain和winner不变。
 
 ## Q50.C：Maximal Single-Op TileRegion
 
@@ -382,8 +392,9 @@ Q51 closure，不在temporal/layout/buffer/schedule尚未接入时使用旧owner
 
 ### 机制
 
-每个 scheduled structured op 的 temporal assignment 是覆盖全部 iterator 的完整向量。每个 spatial mapping 从完整
-per-Tile local extent开始，惰性枚举所有会改变实际hardware work或legality的有限breakpoint；需要
+每个 scheduled structured op 的 temporal assignment 是覆盖全部 iterator 的完整向量，加上Q50.D已选traversal内部有限、
+语义可区分的wave-loop nesting/order。每个 spatial mapping 从完整per-Tile local extent开始，惰性枚举所有会改变实际
+hardware work或legality的有限breakpoint与order；需要
 layout、buffer或implementation facts的breakpoint是对这些typed assignment参数化的mechanism查询，不得用未选default：
 
 - `ceilDiv` wave 数、tail 和 divisor；
@@ -391,6 +402,9 @@ layout、buffer或implementation facts的breakpoint是对这些typed assignment�
 - DDR/SPM/NoC transaction、descriptor 和 layout footprint；
 - implementation geometry、reduction order 和 buffer-count feasibility；
 - actual region probe 产生的 scoped infeasible/feasible boundary。
+
+只有能证明生成相同actual traversal、reuse、lifetime、tail和numeric reduction order的permutation才能canonicalize。Q50.E
+不在内部选择load/receive hoist或retention winner；Q50.H在已选wave-loop order下生成这些movement alternatives。
 
 容量失败可在其它轴固定的 branch 内产生二分子状态，再补入区间内所有非二次幂 breakpoint；二分只用于发现 breakpoint，
 不能把最大可放下 tile 固化为全局事实。改变 traversal、layout、buffer、placement 或 Q/other iterator tile 后必须重新判断。
@@ -402,6 +416,7 @@ seed 只影响顺序，不限制域；late allocator 不得在 accepted candidat
 - independent tiny reference enumerator与mechanism生成域的stable key集合相同；涉及尚未施工轴的property
   test必须传入显式typed test assignment；
 - reduction 的 numeric-order legality 由 current policy/IR 证明；
+- 至少一个tiny case证明相同tile vector的不同wave-loop order会改变reuse/SPM或global winner，且两种选择均可达；
 - 删除 fixed temporal seed domain 和 allocation-feedback candidate family 的选择责任。
 
 “小tile使fusion/buffering成为winner”及任何需要actual layout/buffer/resource cost的比较统一放在Q51 closure。
@@ -410,7 +425,11 @@ seed 只影响顺序，不限制域；late allocator 不得在 accepted candidat
 
 ### 机制
 
-cheap footprint只能拒绝已证明超限的状态或排序。Q51可对受影响TileRegion请求isolated actual region probe；
+cheap footprint只能返回proven must-coexist lower bound、non-binding ranking estimate或
+`deferred(required coordinates)`；只有第一种超过capacity才能拒绝状态。估算可放下不能证明actual packing可行，未证明
+coexistence的估算超限也不能exact reject。近似或未经boundary-faithful proof的solver/constraint结果只可排序；exact局部
+solver可对准确建模的子问题返回proof/proposal，但selected offset/choice仍须物化并通过typed gate。Q51可对受影响TileRegion
+请求isolated actual region probe；
 probe先从lowering/packing contract求出结论依赖的causal coordinates。只有traversal、temporal以及实际会影响该
 region的representation、movement/staging、buffer/slot、order/completion等坐标全部显式赋值后，才实际物化并执行
 lowering、fresh lifetime/completion和fixed-capacity SPM packing，返回：
@@ -431,6 +450,7 @@ probe不选择下一tile，不修改state，不在clone内spill/retile/rebuffer�
 
 - cheap lower-bound rejection、deferred missing-coordinate、actual accepted、actual packing failure和已赋值representation下的
   unsupported lowering分别可诊断；
+- estimated-fit/actual-fail与estimated-overfull-but-unproven-coexistence反例证明estimate不签发legality；
 - exact failure回共同parent并保留不同temporal/traversal以及required-coordinate siblings；这里只证明frontier继续，
   不在本checkpoint选出跨轴winner；
 - source IR 无变化、probe clone 全销毁、任意时刻最多一个 live actual；
@@ -463,6 +483,10 @@ temporal tile的SPM legality或global winner改变是Q51 closure gate。
 从Q50.A exact logical demand、Q50.G representation、current placement/topology，以及已选retention/release与boundary
 obligation枚举；movement assignment形成后再重算lifetime，并使相关Q50.F/J analysis失效：
 
+- query-local relation-derived reuse analysis从exact demand、selected placement、TileRegion/traversal、Q50.E wave-loop order与
+  representation推导spatial-demand equivalence/invariance classes、temporal-wave invariance classes和exact payload/coverage；
+  它可失效、可重算，不压成aggregate bool attr，也不输出movement winner；
+
 - 已选**同一 TileRegion**内的retained-value reuse、region-local recompute或解除retention；retained reuse不是
   独立SPM-residency轴，它只是region/traversal assignment及最终lifetime/allocation联合证明的结果；
 - 跨TileRegion或retention解除后的same-Tile refetch/recompute与显式boundary movement；不允许不同TileRegion共享
@@ -470,6 +494,10 @@ obligation枚举；movement assignment形成后再重算lifetime，并使相关Q
 - explicit SPM movement、card-shared DDR spill/reload；
 - partial peer transfer、multicast、gather/reduction 及已定义 collective；
 - representation conversion 与 movement 的合法组合。
+
+reuse analysis只改善候选顺序与构造效率；direct/refetch/unicast、partial或多维multicast/broadcast、same-region
+load/receive外提与retain/release等全部合法siblings仍由本mechanism生成。最大broadcast不得提前删除在NoC contention或后续
+schedule下更好的partial broadcast/unicast。
 
 每种 action 物化明确 participant、logical/physical payload、route/link、destination version、join/completion obligation 和
 resource work。route域必须有finite normal form：默认只枚举verifier-legal cycle-free/simple physical path和有限collective
@@ -482,7 +510,8 @@ route，也不能向Q51返回局部route winner。
 
 ### Gate
 
-local、partial overlap、disjoint、multicast/collective、spill/recompute和fanout共享均有actual witness；coverage、payload、
+local、partial overlap、disjoint、multicast/collective、spill/recompute和fanout共享均有actual witness；至少一个case中
+maximal broadcast因NoC contention败给partial broadcast或unicast；coverage、payload、
 participant、route、join、premature completion、非finite route和跨region隐式retention有负例。通过后逐项替换
 `WholeDAGEdgeStrategyPlan`的选择责任和late movement repair；compatibility carrier仅在仍被actual lowering消费时
 保留。carrier尚未可构造时返回`deferred(required coordinates)`；在已赋值representation/movement下表达失败只能
@@ -526,6 +555,11 @@ release/completion boundary；canonical schedule builder从这些选择推导开
 Q50.J mechanism必须可重入：任何region、temporal、movement、buffer或stage assignment变化都会清除旧event/resource
 analysis，并从新typed assignments重新生成schedule alternatives。
 
+Query-local hierarchical resource projection复用existing target facts，把Instr/movement assignment投影到compute unit/worker、
+相关local SPM resource、directed NoC links与DDR channel/engine。资源集合相交只产生contention estimate/排序信号，不相交可
+优先形成并行proposal；是否可重叠仍由actual event/resource semantics判定。Nominal bandwidth split和解析关键路径只作
+estimate，不能替代actual event calendar、completion、legality或admissible bound。
+
 ### Gate
 
 independent branches、fanin/fanout、shared DDR、NoC link contention、multi-worker join、effect ordering和completion hazard有
@@ -567,7 +601,7 @@ Q51 closure时一个partial state只携带已选typed assignments：
 semantic DAG root
 per-op spatial partition relation and physical Tile placement
 single-op/coupled TileRegion boundaries and traversal choices
-all-iterator temporal tile vectors
+all-iterator temporal tile vectors and finite wave-loop nesting/order within selected traversals
 value layout/encoding/physical-version choices
 movement/collective/spill/recompute actions
 buffer recipes and rotating-slot choices
@@ -645,6 +679,10 @@ split、placement group 或候选数。
   wall/CPU；
 - RSS、global work units、fusion groups、resident bytes、DDR/NoC movement、buffer 和 resource overlap；
 - 每类 actual rejection，以及 candidate 是否因同一失败被重复完整 materialize。
+- ordered-factorized spatial、relation-derived reuse等proposal family各自的generated/accepted/probed/full-compiled数量、
+  time-to-first贡献与单位actual compile成本；
+- analytic estimate rank相对final accepted recost的误差、resource-term prediction error，以及`best-found@k`、winner
+  recall@k与regret@k；`k`只是一组profile横轴，不预设生产常量。
 
 ### 先做保持完备的优化
 
@@ -665,6 +703,8 @@ timeout 或 resource exhaustion 只能提供 proposal 或当前子问题未决�
 ```text
 Constructive lane:
   deterministic fusion-oriented best-first frontier
+  + ordered-factorized regular spatial proposals
+  + relation-derived reuse / movement proposals
   + baseline incumbent
   + canonical memo / scoped no-good / proven dominance
 
@@ -699,6 +739,8 @@ size、选择策略和 repair budget 必须由 profile 与 small oracle regret �
   `budgeted-feasible`；
 - 若采用可回溯 beam/iterative widening，只有所有被延迟状态最终得到公平展开时才能恢复 complete 声明；
 - frontier 必须按semantic root、critical structural class和baseline coverage保留多样性，但coverage规则不等于质量保证；
+- fixed top-k只能在`best-found@k`、winner recall/regret和actual compile成本实测后启用；论文或外部系统的`k`不能直接成为
+  本项目默认值，任何永久丢弃合法completion的top-k结果都标`budgeted-feasible`；
 - 模拟退火或遗传算法只有在LNS/frontier profile仍显示明显local basin且actual gate budget允许时才研究，并只作为
   proposal mechanism，不作为默认生产 owner。
 
