@@ -97,7 +97,9 @@ source program
 - host worker可以并行互不共享可写IR的proposal/Tile-local evaluation；frontier insertion、tie-break和publication保持stable order。
 - regular factorized mapping、reuse-guided movement与分层resource cost应作为现有typed domain上的proposal/order机制；不为它们
   clone-per-mapping、不以function name/JSON/opaque sidecar关联状态，也不新增第二套hardware graph或winner owner。
-- 每个materialized candidate经过同一链：Tile→Instr、fresh completion、SPM/DDR、transport/resource/ABI和final recost。
+- 已选择CardProgram只经过一个无策略CardExecutable compile/admission seam：physical-Tile projection、Tile→Instr、fresh
+  completion、SPM/DDR、transport/resource/ABI和final recost。seam返回accepted、proven exact rejection或indeterminate；
+  caller只能消费结果，不能让lowering枚举、retile、spill、rebuffer或修候选。
 - proven exact failure消耗明确work unit并销毁clone，不建立late repair selector或candidate-local quota；allocator/solver
   resource exhaustion、timeout或internal failure属于indeterminate，不能形成no-good或删除合法state。
 - public optimization policy只使用`search`与`none`：`none`只materialize deterministic conservative baseline；

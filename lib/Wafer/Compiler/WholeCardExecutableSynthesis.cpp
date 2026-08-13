@@ -3,7 +3,7 @@
 #include "WholeCardExecutableSynthesis.h"
 
 #include "BoundedTileExecutor.h"
-#include "PhysicalTileFinalization.h"
+#include "CardExecutableCompilation.h"
 #include "SelectedBufferMaterialization.h"
 #include "WholeDAGCandidateSchedule.h"
 #include "WholeDAGEdgeStrategyPlan.h"
@@ -11,9 +11,7 @@
 #include "WholeDAGSchedule.h"
 #include "WholeDAGSchedulePlan.h"
 
-#include "Wafer/Conversion/WaferCardProgramToTileModules/WaferCardProgramToTileModules.h"
 #include "Wafer/Conversion/WaferTensorProgramToCardProgram/WaferTensorProgramToCardProgram.h"
-#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/Target/PhysicalTopology.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Support/TargetPolicy.h"
@@ -74,18 +72,6 @@ static llvm::StringRef getSpatialEdgeActionName(SpatialEdgeAction action) {
   }
   llvm_unreachable("unknown spatial edge action");
 }
-
-struct PhysicalTileLoweringResult {
-  mlir::OwningOpRef<mlir::ModuleOp> module;
-  std::string failureReason;
-  PhysicalTileFinalizationFailure finalizationFailure;
-  SelectedBufferMaterializationFailure selectedBufferFailure;
-  unsigned rotatingSlotAllocationCount = 0;
-  bool conversionFailed = false;
-  bool selectedBufferingFailed = false;
-  bool finalizationFailed = false;
-  bool attempted = false;
-};
 
 struct SPMCapacityDemandEvidence {
   PhysicalTileId physicalTileId;
@@ -3955,14 +3941,6 @@ static std::vector<WholeCardCandidate> deriveShortlist(
   return proposals;
 }
 
-static std::shared_ptr<const std::string> captureTileIR(mlir::ModuleOp module) {
-  std::string text;
-  llvm::raw_string_ostream stream(text);
-  module.print(stream);
-  stream.flush();
-  return std::make_shared<const std::string>(std::move(text));
-}
-
 template <typename Lineage>
 static bool locationContainsLineage(mlir::Location location,
                                     const Lineage *expected) {
@@ -4084,11 +4062,11 @@ buildSelectedBufferRequestsForTile(
 }
 
 static bool
-moduleContainsLineageLayout(mlir::ModuleOp module,
-                            const CardProgramSourceOperationLineage *lineage,
-                            MemLayout layout) {
+rootContainsLineageLayout(mlir::Operation *root,
+                          const CardProgramSourceOperationLineage *lineage,
+                          MemLayout layout) {
   bool found = false;
-  module.walk([&](mlir::Operation *operation) {
+  root->walk([&](mlir::Operation *operation) {
     if (!found && locationContainsLineage(operation->getLoc(), lineage) &&
         operationCarriesLayout(operation, layout))
       found = true;
@@ -4096,19 +4074,19 @@ moduleContainsLineageLayout(mlir::ModuleOp module,
   return found;
 }
 
-static bool moduleContainsLayout(mlir::ModuleOp module, MemLayout layout) {
+static bool rootContainsLayout(mlir::Operation *root, MemLayout layout) {
   bool found = false;
-  module.walk([&](mlir::Operation *operation) {
+  root->walk([&](mlir::Operation *operation) {
     found |= operationCarriesLayout(operation, layout);
   });
   return found;
 }
 
-static bool moduleContainsLayoutConversion(mlir::ModuleOp module,
-                                           MemLayout source,
-                                           MemLayout destination) {
+static bool rootContainsLayoutConversion(mlir::Operation *root,
+                                         MemLayout source,
+                                         MemLayout destination) {
   bool found = false;
-  module.walk([&](LayoutMaterializeOp materialize) {
+  root->walk([&](LayoutMaterializeOp materialize) {
     auto sourceType =
         mlir::dyn_cast<mlir::MemRefType>(materialize.getSource().getType());
     auto destinationType =
@@ -4136,13 +4114,13 @@ static bool isSPMValue(mlir::Value value) {
 /// connected inside one actual TileRegion.  A direct/transitive SSA path, a
 /// shared typed SPM value, or one fused-location operation is accepted; a DDR
 /// boundary or mere co-location without dataflow is not.
-static bool moduleContainsActualFusedEdge(
-    mlir::ModuleOp module,
+static bool rootContainsActualFusedEdge(
+    mlir::Operation *root,
     const CardProgramSourceOperationLineage *producerLineage,
     const CardProgramSourceOperationLineage *consumerLineage) {
   llvm::SmallVector<mlir::Operation *, 16> producers;
   llvm::SmallVector<mlir::Operation *, 16> consumers;
-  module.walk([&](mlir::Operation *operation) {
+  root->walk([&](mlir::Operation *operation) {
     const bool producer =
         locationContainsLineage(operation->getLoc(), producerLineage);
     const bool consumer =
@@ -4200,8 +4178,7 @@ static bool moduleContainsActualFusedEdge(
 }
 
 static mlir::LogicalResult validateSelectedFusion(
-    llvm::ArrayRef<ProjectedPhysicalTileModule> projected,
-    const WholeCardCandidate &candidate,
+    mlir::ModuleOp cardProgram, const WholeCardCandidate &candidate,
     llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
     uint64_t &actualFusedLogicalEdges, std::string &failureReason) {
   actualFusedLogicalEdges = 0;
@@ -4222,11 +4199,8 @@ static mlir::LogicalResult validateSelectedFusion(
       failureReason = "selected fusion lost structured source lineage";
       return mlir::failure();
     }
-    const bool witnessed =
-        llvm::any_of(projected, [&](const ProjectedPhysicalTileModule &tile) {
-          return moduleContainsActualFusedEdge(*tile.module, producer,
-                                               consumer);
-        });
+    const bool witnessed = rootContainsActualFusedEdge(
+        cardProgram.getOperation(), producer, consumer);
     if (!witnessed) {
       failureReason =
           "selected coupled fusion has no actual in-region dataflow witness";
@@ -4238,7 +4212,7 @@ static mlir::LogicalResult validateSelectedFusion(
 }
 
 static mlir::LogicalResult validateSelectedTileLayouts(
-    mlir::ModuleOp module, const WholeCardCandidate &candidate,
+    mlir::Operation *root, const WholeCardCandidate &candidate,
     PhysicalTileId tile,
     llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
     std::string &failureReason) {
@@ -4255,13 +4229,11 @@ static mlir::LogicalResult validateSelectedTileLayouts(
       return mlir::failure();
     }
     const bool producerWitness =
-        moduleContainsLineageLayout(module, producer,
-                                    strategy.producerLayout) ||
-        moduleContainsLayout(module, strategy.producerLayout);
+        rootContainsLineageLayout(root, producer, strategy.producerLayout) ||
+        rootContainsLayout(root, strategy.producerLayout);
     const bool consumerWitness =
-        moduleContainsLineageLayout(module, consumer,
-                                    strategy.consumerLayout) ||
-        moduleContainsLayout(module, strategy.consumerLayout);
+        rootContainsLineageLayout(root, consumer, strategy.consumerLayout) ||
+        rootContainsLayout(root, strategy.consumerLayout);
     if (strategy.sourceTile == tile && !producerWitness) {
       failureReason = "selected producer layout has no typed actual IR witness";
       return mlir::failure();
@@ -4272,8 +4244,8 @@ static mlir::LogicalResult validateSelectedTileLayouts(
     }
     if (strategy.destinationTile == tile &&
         strategy.action == SpatialEdgeAction::LocalPhysicalConversion &&
-        !moduleContainsLayoutConversion(module, strategy.producerLayout,
-                                        strategy.consumerLayout)) {
+        !rootContainsLayoutConversion(root, strategy.producerLayout,
+                                      strategy.consumerLayout)) {
       failureReason =
           "selected local layout conversion has no actual movement witness";
       return mlir::failure();
@@ -4298,127 +4270,74 @@ static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
     std::optional<PhysicalTileId> preferredFailureProbeTileId,
     std::string &failureGate, std::string &failureReason,
     SelectedBufferMaterializationFailure &selectedBufferFailure,
-    bool &spmCapacityOverflow,
-    llvm::SmallVectorImpl<SPMCapacityDemandEvidence> &spmCapacityDemands,
-    bool failureProbePreflight = false) {
+    bool &indeterminateFailure, bool &spmCapacityOverflow,
+    llvm::SmallVectorImpl<SPMCapacityDemandEvidence> &spmCapacityDemands) {
   selectedBufferFailure = {};
+  indeterminateFailure = false;
   spmCapacityOverflow = false;
   spmCapacityDemands.clear();
-  if (failureProbePreflight && !preferredFailureProbeTileId) {
-    failureGate = "exact-spm-failure-probe";
-    failureReason = "failure probe preflight has no physical Tile evidence";
-    return mlir::failure();
-  }
-  if (preferredFailureProbeTileId && !failureProbePreflight) {
-    mlir::FailureOr<AcceptedWholeCardExecutable> probe = materializeCandidate(
-        tensorProgram, candidate, physicalCardId, expectedTileIds,
-        sourceLineage, outputLineage, operandDemandLineage, program,
-        executionConfig, diagnostics, gateStatistics, searchStatistics,
-        rotatingSlotAllocationsMaterialized, actualFusedLogicalEdges,
-        tilePipelineParallelism, preferredFailureProbeTileId, failureGate,
-        failureReason, selectedBufferFailure, spmCapacityOverflow,
-        spmCapacityDemands, /*failureProbePreflight=*/true);
-    if (mlir::succeeded(probe)) {
-      failureGate = "exact-spm-failure-probe";
-      failureReason =
-          "negative failure probe unexpectedly produced an executable";
-      return mlir::failure();
-    }
-    if (failureGate != "exact-spm-failure-probe-passed")
-      return mlir::failure();
-    diagnostics << "wafer-compile: whole-card-exact-failure-probe-preflight"
-                << " physical_tile_id="
-                << preferredFailureProbeTileId->getValue()
-                << " outcome=passed full_card_materialization_required=1\n";
-    selectedBufferFailure = {};
-    spmCapacityOverflow = false;
-    spmCapacityDemands.clear();
-    failureGate.clear();
-    failureReason.clear();
-  }
+  (void)preferredFailureProbeTileId;
+  (void)searchStatistics;
   mlir::OwningOpRef<mlir::ModuleOp> cardProgram;
   {
     wafer::support::ScopedCompileTimingSpan timing(
         "conversion", "whole-card-executable-synthesis",
         "tensor-program-to-card-program");
-    mlir::LogicalResult loweredCard =
-        failureProbePreflight
-            ? lowerTensorProgramToCardProgramFailureProbe(
-                  tensorProgram, physicalCardId, *preferredFailureProbeTileId,
-                  candidate.mapping, cardProgram, &failureReason, sourceLineage,
-                  outputLineage, operandDemandLineage)
-            : lowerTensorProgramToCardProgram(
-                  tensorProgram, physicalCardId, candidate.mapping, cardProgram,
-                  &failureReason, sourceLineage, outputLineage,
-                  operandDemandLineage);
+    mlir::LogicalResult loweredCard = lowerTensorProgramToCardProgram(
+        tensorProgram, physicalCardId, candidate.mapping, cardProgram,
+        &failureReason, sourceLineage, outputLineage, operandDemandLineage);
     if (mlir::failed(loweredCard)) {
       failureGate = "card-program-materialization";
       return mlir::failure();
     }
   }
 
-  mlir::FailureOr<llvm::SmallVector<ProjectedPhysicalTileModule, 16>> projected;
-  {
-    wafer::support::ScopedCompileTimingSpan timing(
-        "conversion", "whole-card-executable-synthesis",
-        "card-program-to-physical-tiles");
-    projected =
-        projectCardProgramToPhysicalTileModules(*cardProgram, &failureReason);
-  }
-  if (mlir::failed(projected)) {
-    failureGate = "physical-tile-projection";
-    return mlir::failure();
-  }
-  if (projected->size() != expectedTileIds.size()) {
-    failureGate = "physical-tile-projection";
-    failureReason = "physical Tile projection is incomplete";
-    return mlir::failure();
-  }
-  if (!failureProbePreflight && mlir::failed(validateSelectedFusion(
-                                    *projected, candidate, sourceLineage,
-                                    actualFusedLogicalEdges, failureReason))) {
+  if (mlir::failed(
+          validateSelectedFusion(*cardProgram, candidate, sourceLineage,
+                                 actualFusedLogicalEdges, failureReason))) {
     failureGate = "selected-fusion-materialization";
     return mlir::failure();
   }
 
-  std::vector<std::shared_ptr<const std::string>> selectedTileIR;
-  selectedTileIR.reserve(projected->size());
+  llvm::SmallVector<TileProgramOp, 16> tilePrograms;
+  cardProgram->walk(
+      [&](TileProgramOp tileProgram) { tilePrograms.push_back(tileProgram); });
+  llvm::sort(tilePrograms, [](TileProgramOp lhs, TileProgramOp rhs) {
+    return lhs.getTileIdAttr().getInt() < rhs.getTileIdAttr().getInt();
+  });
+  if (tilePrograms.size() != expectedTileIds.size()) {
+    failureGate = "physical-tile-projection";
+    failureReason = "CardProgram physical Tile domain is incomplete";
+    return mlir::failure();
+  }
   std::vector<llvm::SmallVector<SelectedBufferRequest, 4>>
       selectedBufferRequests;
-  selectedBufferRequests.reserve(projected->size());
+  selectedBufferRequests.reserve(tilePrograms.size());
   size_t selectedBufferRequestCount = 0;
-  for (auto [index, tile] : llvm::enumerate(*projected)) {
-    if (tile.cardId != physicalCardId ||
-        tile.tileId != expectedTileIds[index]) {
+  for (auto [index, tileProgram] : llvm::enumerate(tilePrograms)) {
+    const PhysicalTileId tileId(tileProgram.getTileIdAttr().getInt());
+    if (tileId != expectedTileIds[index]) {
       failureGate = "physical-tile-projection";
-      failureReason =
-          "CardProgram projection changed the verified physical Tile domain";
+      failureReason = "CardProgram changed the verified physical Tile domain";
       return mlir::failure();
     }
-    if (failureProbePreflight && tile.tileId != *preferredFailureProbeTileId) {
-      selectedBufferRequests.emplace_back();
-      selectedTileIR.push_back(captureTileIR(*tile.module));
-      continue;
-    }
-    if (mlir::failed(validateSelectedTileLayouts(*tile.module, candidate,
-                                                 tile.tileId, sourceLineage,
-                                                 failureReason))) {
+    if (mlir::failed(validateSelectedTileLayouts(
+            tileProgram.getOperation(), candidate, tileId, sourceLineage,
+            failureReason))) {
       failureGate = "selected-layout-materialization";
       return mlir::failure();
     }
     mlir::FailureOr<llvm::SmallVector<SelectedBufferRequest, 4>> requests =
-        buildSelectedBufferRequestsForTile(candidate, tile.tileId,
-                                           sourceLineage, failureReason);
+        buildSelectedBufferRequestsForTile(candidate, tileId, sourceLineage,
+                                           failureReason);
     if (mlir::failed(requests)) {
       failureGate = "selected-buffer-request";
       return mlir::failure();
     }
     selectedBufferRequestCount += requests->size();
     selectedBufferRequests.push_back(std::move(*requests));
-    selectedTileIR.push_back(captureTileIR(*tile.module));
   }
-  if (!failureProbePreflight && hasBufferedEdge(candidate) &&
-      selectedBufferRequestCount == 0) {
+  if (hasBufferedEdge(candidate) && selectedBufferRequestCount == 0) {
     failureGate = "selected-buffer-request";
     failureReason =
         "selected buffering has no incident logical-edge request on any "
@@ -4426,114 +4345,34 @@ static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
     return mlir::failure();
   }
 
-  std::vector<PhysicalTileLoweringResult> loweringResults(projected->size());
-  auto lowerTile = [&](size_t tileIndex) {
-    ProjectedPhysicalTileModule &tile = (*projected)[tileIndex];
-    PhysicalTileLoweringResult &result = loweringResults[tileIndex];
-    result.attempted = true;
-    result.module = std::move(tile.module);
+  CardExecutableCompilationResult compilation = compileCardProgramToExecutable(
+      std::move(cardProgram), physicalCardId, expectedTileIds,
+      selectedBufferRequests, program, executionConfig, diagnostics,
+      &gateStatistics, tilePipelineParallelism);
+  rotatingSlotAllocationsMaterialized +=
+      compilation.rotatingSlotAllocationsMaterialized;
+  if (compilation.isAccepted())
+    return compilation.takeExecutable();
 
-    // Every projected artifact, including a defined no-work Tile, crosses
-    // this exact boundary once for every actually materialized candidate.
-    if (mlir::failed(convertTileRegionToInstrModule(*result.module,
-                                                    &result.failureReason))) {
-      result.conversionFailed = true;
-      return;
+  indeterminateFailure = compilation.status ==
+                         CardExecutableCompilationStatus::IndeterminateFailure;
+  failureGate = compilation.gate;
+  failureReason = compilation.detail;
+  for (const CardExecutableTileFailure &failure : compilation.tileFailures)
+    if (failure.selectedBuffer.kind !=
+        SelectedBufferMaterializationFailureKind::None) {
+      selectedBufferFailure = failure.selectedBuffer;
+      break;
     }
-    if (containsTileDataflowOperations(result.module->getOperation()) ||
-        mlir::failed(mlir::verify(*result.module))) {
-      result.conversionFailed = true;
-      result.failureReason =
-          "TileRegion-to-Instr result is not canonical verifier-legal Instr "
-          "IR";
-      return;
-    }
-    mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> finalized =
-        finalizePhysicalTileModule(
-            std::move(result.module), &result.finalizationFailure,
-            selectedBufferRequests[tileIndex],
-            &result.rotatingSlotAllocationCount, &result.selectedBufferFailure);
-    if (mlir::failed(finalized)) {
-      result.selectedBufferingFailed =
-          result.finalizationFailure.kind ==
-          PhysicalTileFinalizationFailureKind::SelectedBufferMaterialization;
-      result.finalizationFailed = true;
-      result.failureReason = result.selectedBufferFailure.detail;
-      return;
-    }
-    result.module = std::move(*finalized);
-  };
-  const unsigned requestedWorkers = tilePipelineParallelism == 0
-                                        ? kMaximumBoundedTilePipelineWorkers
-                                        : tilePipelineParallelism;
-  std::optional<size_t> failureProbeTileIndex;
-  if (preferredFailureProbeTileId) {
-    auto found = llvm::find(expectedTileIds, *preferredFailureProbeTileId);
-    if (found != expectedTileIds.end())
-      failureProbeTileIndex =
-          static_cast<size_t>(std::distance(expectedTileIds.begin(), found));
-  }
-  unsigned workers = 0;
-  bool failureProbeRejected = false;
-  if (failureProbeTileIndex) {
-    if (searchStatistics)
-      ++searchStatistics->spmFailureProbeAttempts;
-    lowerTile(*failureProbeTileIndex);
-    workers = 1;
-    const PhysicalTileLoweringResult &probe =
-        loweringResults[*failureProbeTileIndex];
-    failureProbeRejected = probe.conversionFailed || probe.finalizationFailed;
-    diagnostics << "wafer-compile: whole-card-exact-failure-probe"
-                << " physical_tile_id="
-                << expectedTileIds[*failureProbeTileIndex].getValue()
-                << " outcome=" << (failureProbeRejected ? "rejected" : "passed")
-                << " remaining_tiles_skipped="
-                << (failureProbeRejected ? projected->size() - 1 : 0) << '\n';
-    if (failureProbeRejected) {
-      if (searchStatistics) {
-        ++searchStatistics->spmFailureProbeEarlyRejections;
-        searchStatistics->spmFailureProbeTilesSkipped += projected->size() - 1;
-      }
-    }
-    if (failureProbePreflight && !failureProbeRejected) {
-      failureGate = "exact-spm-failure-probe-passed";
-      failureReason =
-          "exact physical Tile preflight passed and requires full-card "
-          "materialization";
-      return mlir::failure();
-    }
-  }
-  if (!failureProbeRejected) {
-    const size_t remainingTileCount =
-        projected->size() -
-        static_cast<size_t>(failureProbeTileIndex.has_value());
-    if (remainingTileCount != 0) {
-      const unsigned remainingWorkers = runBoundedTilePipelines(
-          tensorProgram.getContext(), remainingTileCount,
-          [&](size_t remainingIndex) {
-            const size_t tileIndex =
-                failureProbeTileIndex &&
-                        remainingIndex >= *failureProbeTileIndex
-                    ? remainingIndex + 1
-                    : remainingIndex;
-            lowerTile(tileIndex);
-          },
-          requestedWorkers);
-      workers = std::max(workers, remainingWorkers);
-    }
-  }
-  gateStatistics.maximumTilePipelineWorkers =
-      std::max<uint64_t>(gateStatistics.maximumTilePipelineWorkers, workers);
-
-  std::vector<mlir::OwningOpRef<mlir::ModuleOp>> physicalTileModules;
-  physicalTileModules.reserve(loweringResults.size());
-  spmCapacityOverflow = llvm::any_of(loweringResults, [](const auto &result) {
-    return result.finalizationFailure.spmCapacityOverflow;
-  });
+  spmCapacityOverflow = llvm::any_of(
+      compilation.tileFailures, [](const CardExecutableTileFailure &failure) {
+        return failure.finalization.spmCapacityOverflow;
+      });
   uint64_t largestSPMCapacityDemandBytes = 0;
   bool selectedExactSPMCausalSet = false;
-  for (auto [tileIndex, result] : llvm::enumerate(loweringResults)) {
-    const PhysicalTileFinalizationFailure &failure = result.finalizationFailure;
+  for (const CardExecutableTileFailure &tileFailure :
+       compilation.tileFailures) {
+    const PhysicalTileFinalizationFailure &failure = tileFailure.finalization;
     if (!failure.spmCapacityOverflow)
       continue;
     llvm::SmallVector<PhysicalTileFinalizationFailure::SPMDemandEvidence, 4>
@@ -4572,8 +4411,7 @@ static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
                   << (hasIndividuallyOversizedDemands
                           ? "individually-oversized-demands"
                           : "conflict-certificate")
-                  << " physical_tile_id="
-                  << expectedTileIds[tileIndex].getValue()
+                  << " physical_tile_id=" << tileFailure.tileId.getValue()
                   << " causal_demands=" << exactCausalDemands.size()
                   << " causal_bytes=" << exactConflictBytes
                   << " demand_count=" << failure.spmDemandCount << '\n';
@@ -4631,8 +4469,7 @@ static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
       if (localLineages.empty() && localOutputLineages.empty() &&
           localOperandDemandLineages.empty()) {
         diagnostics << "wafer-compile: whole-card-unattributed-spm-demand"
-                    << " physical_tile_id="
-                    << expectedTileIds[tileIndex].getValue()
+                    << " physical_tile_id=" << tileFailure.tileId.getValue()
                     << " demand_bytes=" << demand.bytes
                     << " demand_count=" << failure.spmDemandCount
                     << " demand_type=" << demand.type
@@ -4650,9 +4487,8 @@ static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
                                 const SpatialOutputLineage *output,
                                 const StructuredOperandDemandLineage *operand) {
         spmCapacityDemands.push_back(
-            {expectedTileIds[tileIndex], op, output, operand,
-             lineageFromAllocation, demand.type, demand.bytes,
-             failure.spmDemandCount,
+            {tileFailure.tileId, op, output, operand, lineageFromAllocation,
+             demand.type, demand.bytes, failure.spmDemandCount,
              hasExactCausalSet ? exactConflictBytes : demand.bytes,
              hasExactCausalSet ? exactConflictDemandCount : uint64_t{1}});
       };
@@ -4678,91 +4514,7 @@ static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
         appendEvidence(nullptr, nullptr, nullptr);
     }
   }
-  unsigned candidateRotatingSlotAllocations = 0;
-  for (auto [tileIndex, result] : llvm::enumerate(loweringResults)) {
-    if (!result.attempted)
-      continue;
-    if (result.selectedBufferingFailed) {
-      selectedBufferFailure = result.selectedBufferFailure;
-      failureGate = "selected-buffer-materialization";
-      failureReason =
-          "card_id=" + std::to_string(physicalCardId.getValue()) +
-          " tile_id=" + std::to_string(expectedTileIds[tileIndex].getValue()) +
-          ": " + result.failureReason;
-      return mlir::failure();
-    }
-    if (result.conversionFailed) {
-      failureGate = "tile-region-to-instr";
-      failureReason =
-          "card_id=" + std::to_string(physicalCardId.getValue()) +
-          " tile_id=" + std::to_string(expectedTileIds[tileIndex].getValue()) +
-          ": " + result.failureReason;
-      return mlir::failure();
-    }
-    if (result.finalizationFailed || !result.module) {
-      failureGate = result.finalizationFailure.kind ==
-                            PhysicalTileFinalizationFailureKind::SPMAllocation
-                        ? "spm-allocation"
-                        : "physical-tile-finalization";
-      failureReason =
-          "card_id=" + std::to_string(physicalCardId.getValue()) +
-          " tile_id=" + std::to_string(expectedTileIds[tileIndex].getValue()) +
-          " finalization_gate=" +
-          std::to_string(
-              static_cast<unsigned>(result.finalizationFailure.kind));
-      return mlir::failure();
-    }
-    candidateRotatingSlotAllocations += result.rotatingSlotAllocationCount;
-    physicalTileModules.push_back(std::move(result.module));
-  }
-  if (failureProbeRejected) {
-    failureGate = "physical-tile-finalization";
-    failureReason = "failure probe rejected without a classified exact gate";
-    return mlir::failure();
-  }
-  if (getMaximumBufferCount(candidate) > 1 &&
-      candidateRotatingSlotAllocations == 0) {
-    failureGate = "selected-buffer-materialization";
-    failureReason =
-        "selected whole-card buffer multiplicity has no actual rotating-slot "
-        "witness";
-    auto detail = llvm::find_if(loweringResults, [](const auto &result) {
-      return !result.failureReason.empty();
-    });
-    if (detail != loweringResults.end())
-      failureReason += ": " + detail->failureReason;
-    return mlir::failure();
-  }
-  rotatingSlotAllocationsMaterialized += candidateRotatingSlotAllocations;
-
-  mlir::FailureOr<AcceptedWholeCardExecutable> accepted =
-      admitWholeCardExecutable(std::move(physicalTileModules), selectedTileIR,
-                               program, executionConfig, diagnostics,
-                               &failureGate, &gateStatistics,
-                               tilePipelineParallelism);
-  if (mlir::failed(accepted)) {
-    if (failureReason.empty())
-      failureReason = "exact executable admission rejected the candidate";
-    return mlir::failure();
-  }
-  if (accepted->tiles.size() != expectedTileIds.size()) {
-    failureGate = "exact-executable-admission";
-    failureReason = "accepted physical Tile domain is incomplete";
-    return mlir::failure();
-  }
-  for (auto [index, tile] : llvm::enumerate(accepted->tiles)) {
-    if (tile.getPhysicalCardId() != physicalCardId ||
-        tile.getPhysicalTileId() != expectedTileIds[index] ||
-        tile.getSelectedTileIR().empty()) {
-      failureGate = "exact-executable-admission";
-      failureReason =
-          "exact admission changed physical identity or lost selected Tile IR";
-      return mlir::failure();
-    }
-  }
-  failureGate.clear();
-  failureReason.clear();
-  return std::move(*accepted);
+  return mlir::failure();
 }
 
 static bool
@@ -5150,6 +4902,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
     failureReason.clear();
     uint64_t candidateActualFusedLogicalEdges = 0;
     SelectedBufferMaterializationFailure selectedBufferFailure;
+    bool indeterminateFailure = false;
     bool spmCapacityOverflow = false;
     llvm::SmallVector<SPMCapacityDemandEvidence, 8> spmCapacityDemands;
     mlir::FailureOr<AcceptedWholeCardExecutable> accepted =
@@ -5161,8 +4914,16 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
             resultStatistics.rotatingSlotAllocationsMaterialized,
             candidateActualFusedLogicalEdges, tilePipelineParallelism,
             preferredSPMFailureProbeTileId, failureGate, failureReason,
-            selectedBufferFailure, spmCapacityOverflow, spmCapacityDemands);
+            selectedBufferFailure, indeterminateFailure, spmCapacityOverflow,
+            spmCapacityDemands);
     if (mlir::failed(accepted)) {
+      if (indeterminateFailure) {
+        ++resultStatistics.indeterminateCompilationFailures;
+        diagnostics << "wafer-compile: whole-card candidate compilation is "
+                       "indeterminate gate="
+                    << failureGate << " detail=" << failureReason << '\n';
+        return mlir::failure();
+      }
       ++resultStatistics.materializationRejections;
       if (failureGate == "card-program-materialization" ||
           failureGate == "physical-tile-projection" ||
@@ -6848,6 +6609,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
   uint64_t selectedRotatingSlots = 0;
   uint64_t selectedActualFusedLogicalEdges = 0;
   SelectedBufferMaterializationFailure selectedBufferFailure;
+  bool selectedIndeterminateFailure = false;
   bool selectedSPMCapacityOverflow = false;
   llvm::SmallVector<SPMCapacityDemandEvidence, 8> selectedSPMCapacityDemands;
   mlir::FailureOr<AcceptedWholeCardExecutable> selectedExecutable =
@@ -6859,8 +6621,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
           /*searchStatistics=*/nullptr, selectedRotatingSlots,
           selectedActualFusedLogicalEdges, tilePipelineParallelism,
           /*preferredFailureProbeTileId=*/std::nullopt, selectedFailureGate,
-          failureReason, selectedBufferFailure, selectedSPMCapacityOverflow,
-          selectedSPMCapacityDemands);
+          failureReason, selectedBufferFailure, selectedIndeterminateFailure,
+          selectedSPMCapacityOverflow, selectedSPMCapacityDemands);
   ++resultStatistics.selectedExecutableRematerializations;
   if (mlir::failed(selectedExecutable)) {
     diagnostics << "wafer-compile: selected whole-card state failed exact "

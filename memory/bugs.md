@@ -406,3 +406,14 @@
   lowering、SPM/DDR planner和communication admission都不能修候选或直接操作frontier。
 - 防复发：用同一logical placement构造至少两个representation/movement alternatives，其中一个carrier失败、另一个actual
   accepted；断言spatial state仍可回溯并找到accepted winner。任务状态必须核对production调用链，不能只凭analysis单测标done。
+
+## 编译边界不能把typed allocator failure压成一个布尔值
+
+- 现象：CardProgram编译入口只看到“SPM allocation failed”，会把unsupported lifetime误归为内部失败，或反过来把未分类的
+  allocator failure误当作candidate非法并从搜索域删除。
+- 根因：physical-Tile finalization跨边界时丢失了`SPMMemoryPlanningFailureKind`，上层只能从诊断文本或capacity布尔量猜taxonomy。
+- 修复模式：finalization failure保留typed SPM failure kind；capacity overflow与unsupported lifetime作为可验证exact rejection，
+  resource exhaustion、未分类allocator/internal failure保持indeterminate。组装结果时先复制primary gate/detail，再move failure
+  容器；不能依赖函数实参求值顺序同时引用元素和转移其owner。
+- 防复发：无策略CardExecutable seam直接测试同一CardProgram的可重复exact rejection，并单测不完整/内部调用保持indeterminate；
+  caller遇到indeterminate必须终止当前编译，不能生成no-good或repair candidate。

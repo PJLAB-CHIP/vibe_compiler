@@ -62,6 +62,7 @@ struct WholeCardExecutableSynthesisStatistics {
   uint64_t feedbackRootBudgetClosures = 0;
   uint64_t shortlistedCandidates = 0;
   uint64_t materializedCandidates = 0;
+  uint64_t indeterminateCompilationFailures = 0;
   uint64_t multiReductionAxisCandidateMaterializations = 0;
   uint64_t nodePlacementCandidateMaterializations = 0;
   uint64_t multiStagePlacementCandidateMaterializations = 0;

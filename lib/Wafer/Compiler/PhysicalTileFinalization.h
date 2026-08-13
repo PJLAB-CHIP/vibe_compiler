@@ -5,6 +5,8 @@
 
 #include "SelectedBufferMaterialization.h"
 
+#include "Wafer/Transforms/Passes.h"
+
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/SmallVector.h"
@@ -31,6 +33,8 @@ struct PhysicalTileFinalizationFailure {
   PhysicalTileFinalizationFailureKind kind =
       PhysicalTileFinalizationFailureKind::None;
   bool spmCapacityOverflow = false;
+  SPMMemoryPlanningFailureKind spmPlanningFailureKind =
+      SPMMemoryPlanningFailureKind::None;
   mlir::LocationAttr spmLargestDemandLocation;
   mlir::Type spmLargestDemandType;
   uint64_t spmLargestDemandBytes = 0;

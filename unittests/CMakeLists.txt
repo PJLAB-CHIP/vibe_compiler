@@ -7,6 +7,7 @@ add_executable(WaferUnitTests
   Analysis/StaticBufferRangeTest.cpp
   Compiler/CompilationPublicationTest.cpp
   Compiler/CompilationTest.cpp
+  Compiler/CardExecutableCompilationTest.cpp
   Compiler/WholeCardExecutableAdmissionTest.cpp
   Compiler/DirectDTETransportTest.cpp
   Compiler/ProgramTensorComparisonTest.cpp

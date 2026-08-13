@@ -767,6 +767,7 @@ TEST(WholeCardExecutableSynthesisTest,
   EXPECT_EQ(statistics.selectedUniqueActiveTileCount, 16u);
   EXPECT_EQ(statistics.selectedParallelComponentCount, 1u);
   EXPECT_EQ(statistics.exactGates.preTargetAttempts, 1u);
+  EXPECT_EQ(statistics.exactGates.cardProgramCompilationInvocations, 1u);
   EXPECT_EQ(statistics.exactGates.targetGateInvocations, 1u);
   EXPECT_EQ(statistics.exactGates.targetTileGateInvocations, 16u);
   EXPECT_EQ(statistics.selectedExecutableRematerializations, 0u);
@@ -886,6 +887,8 @@ TEST(WholeCardExecutableSynthesisTest,
   EXPECT_EQ(statistics.schedulePlanRejections, 0u);
   EXPECT_EQ(statistics.exactGates.preTargetAttempts,
             statistics.materializedCandidates);
+  EXPECT_EQ(statistics.exactGates.cardProgramCompilationInvocations,
+            statistics.materializedCandidates);
   EXPECT_EQ(statistics.exactGates.targetGateInvocations,
             statistics.acceptedCandidates);
   EXPECT_EQ(statistics.exactGates.targetTileGateInvocations,
@@ -894,6 +897,9 @@ TEST(WholeCardExecutableSynthesisTest,
   EXPECT_EQ(
       statistics.selectedExecutableRematerializationGates.preTargetAttempts,
       1u);
+  EXPECT_EQ(statistics.selectedExecutableRematerializationGates
+                .cardProgramCompilationInvocations,
+            1u);
   EXPECT_EQ(statistics.selectedStableOrdinal, 0u);
   EXPECT_EQ(statistics.selectedOutputMappingCount, 1u);
   EXPECT_EQ(statistics.selectedUniqueActiveTileCount, 16u);
@@ -1129,15 +1135,17 @@ TEST(WholeCardExecutableSynthesisTest,
   // mutable baseline state. It never creates candidate siblings, progressive
   // promotions, priority selections or lookahead states.
   EXPECT_EQ(baselineStatistics.allocationFeedbackCandidates, 0u);
-  EXPECT_GT(baselineStatistics.spmFailureProbeAttempts, 0u);
+  EXPECT_EQ(baselineStatistics.spmFailureProbeAttempts, 0u);
   EXPECT_EQ(baselineStatistics.allocationFeedbackProgressivePromotions, 0u);
   EXPECT_EQ(baselineStatistics.allocationFeedbackLookaheadCandidates, 0u);
   EXPECT_EQ(baselineStatistics.allocationFeedbackPrioritySelections, 0u);
-  EXPECT_EQ(baselineStatistics.spmFailureProbeTilesSkipped,
-            baselineStatistics.spmFailureProbeEarlyRejections * 15u);
-  EXPECT_NE(baselineDiagnosticsText.find("whole-card-exact-failure-probe"),
+  EXPECT_EQ(baselineStatistics.spmFailureProbeTilesSkipped, 0u);
+  EXPECT_NE(baselineDiagnosticsText.find(
+                "card-executable-compilation outcome=exact-rejection"),
             std::string::npos)
       << baselineDiagnosticsText;
+  EXPECT_EQ(baselineStatistics.exactGates.cardProgramCompilationInvocations,
+            baselineStatistics.materializedCandidates);
   EXPECT_NE(
       baselineDiagnosticsText.find("whole-card-exact-spm-conflict-certificate"),
       std::string::npos)

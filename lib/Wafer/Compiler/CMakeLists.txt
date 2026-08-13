@@ -34,6 +34,7 @@ add_mlir_library(WaferCompiler
   Compilation.cpp
   CompilationOrchestration.cpp
   CompilationStages.cpp
+  CardExecutableCompilation.cpp
   WholeCardExecutableAdmission.cpp
   DirectDTETransport.cpp
   ExecutableBundle.cpp

@@ -36,6 +36,7 @@ struct AcceptedWholeCardExecutable {
 /// Invocation-local whole-card synthesis instrumentation. It is never stored
 /// in IR, an executable bundle, or a package artifact.
 struct WholeCardSynthesisStatistics {
+  uint64_t cardProgramCompilationInvocations = 0;
   uint64_t preTargetAttempts = 0;
   uint64_t preTargetAccepted = 0;
   uint64_t targetGateInvocations = 0;

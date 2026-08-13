@@ -172,6 +172,8 @@ TEST_F(PhysicalTileFinalizationTest, ReportsSPMFailureForOwnedTileModule) {
             wafer::compiler::detail::PhysicalTileFinalizationFailureKind::
                 SPMAllocation);
   EXPECT_TRUE(failure.spmCapacityOverflow);
+  EXPECT_EQ(failure.spmPlanningFailureKind,
+            wafer::SPMMemoryPlanningFailureKind::CapacityOverflow);
   EXPECT_TRUE(static_cast<bool>(failure.spmLargestDemandLocation));
   EXPECT_EQ(failure.spmLargestDemandBytes, 4'000'000u);
   ASSERT_FALSE(failure.spmLargestDemands.empty());

@@ -1,7 +1,7 @@
 # Physical Dataflow Synthesis 实施计划
 
 状态：Q49 deterministic `none` baseline 已于 2026-08-11 达到 `board-ready`，但其控制流隔离和编译耗时不属于已签发的
-正确性证据。当前先施工Q50.0无策略CardExecutable编译/准入边界，再修复Q50.A production demand boundary并建立
+正确性证据。Q50.0无策略CardExecutable编译/准入边界已闭合；当前先隔离Q49.P baseline控制流，再修复Q50.A production demand boundary并建立
 Q51.Core共同状态、transition和actual-probe seam；随后让Q50.S与Q50.B–Q50.K逐轴接入同一个owner，最后闭合Q51。
 算法、IR和长期pipeline contract仍只由
 `tasks/06-physical-dataflow-synthesis.md` 拥有；本文件只规定施工依赖、现有代码处置和独立 checkpoint。
@@ -184,6 +184,11 @@ communication/resource/ABI admission，输出accepted CardExecutable、proven ex
 
 这个边界不得枚举候选、修改选择、在lowering中retile/spill/rebuffer，也不得把失败降级成performance Unknown。Q49与Q51
 必须共用它；定向测试要证明同一CardProgram得到相同accepted digest或相同rejection，且没有第二条兼容编译路径。
+
+实现结论：actual compile/admission seam只接收owned、已选择的CardProgram和typed buffering assignment，返回
+accepted、proven exact rejection或indeterminate三态结果；baseline与search materialization都调用该入口。physical-Tile
+finalization保留SPM failure kind，只有capacity overflow与unsupported lifetime等可验证失败进入exact rejection，未分类
+allocator/internal failure保持indeterminate，调用方不得据此裁剪候选或启动repair。
 
 ## Q49 / Q49.P：Deterministic Baseline与控制流隔离
 

@@ -204,6 +204,8 @@ static llvm::Expected<ExecutableBundle> buildWholeCardBundle(
       << statistics.bufferStructureEquivalentRejections
       << " shortlisted_candidates=" << statistics.shortlistedCandidates
       << " materialized_candidates=" << statistics.materializedCandidates
+      << " indeterminate_compilation_failures="
+      << statistics.indeterminateCompilationFailures
       << " materialization_rejections=" << statistics.materializationRejections
       << " accepted_candidates=" << statistics.acceptedCandidates
       << " selected_stable_ordinal=" << statistics.selectedStableOrdinal
@@ -217,6 +219,8 @@ static llvm::Expected<ExecutableBundle> buildWholeCardBundle(
       << " enabled_duration_terms=" << statistics.enabledDurationTerms
       << " target_gate_invocations="
       << statistics.exactGates.targetGateInvocations
+      << " card_executable_compilations="
+      << statistics.exactGates.cardProgramCompilationInvocations
       << " target_tile_gate_invocations="
       << statistics.exactGates.targetTileGateInvocations
       << " selected_executable_rematerializations="
@@ -224,6 +228,9 @@ static llvm::Expected<ExecutableBundle> buildWholeCardBundle(
       << " selected_rematerialization_target_gate_invocations="
       << statistics.selectedExecutableRematerializationGates
              .targetGateInvocations
+      << " selected_rematerialization_card_executable_compilations="
+      << statistics.selectedExecutableRematerializationGates
+             .cardProgramCompilationInvocations
       << " tile_pipeline_workers="
       << statistics.exactGates.maximumTilePipelineWorkers << '\n';
   printAcceptedInstructionWork(diagnostics, *accepted);

@@ -136,6 +136,7 @@ mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> finalizePhysicalTileModule(
       failure->spmCapacityOverflow =
           spmFailure.kind == SPMMemoryPlanningFailureKind::CapacityOverflow;
     if (failure) {
+      failure->spmPlanningFailureKind = spmFailure.kind;
       failure->spmLargestDemandLocation = spmFailure.largestDemandLocation;
       failure->spmLargestDemandType = spmFailure.largestDemandType;
       failure->spmLargestDemandBytes = spmFailure.largestDemandBytes;
