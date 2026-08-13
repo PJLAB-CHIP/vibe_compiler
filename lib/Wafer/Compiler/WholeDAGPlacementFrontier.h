@@ -67,9 +67,10 @@ struct WholeDAGPlacementSearchDomain {
 };
 
 mlir::FailureOr<WholeDAGPlacementSearchDomain>
-deriveWholeDAGPlacementSearchDomain(
-    const CardDAGAnalysis &dag, const PhysicalTopology &topology,
-    PhysicalCardId cardId, std::string *failureReason = nullptr);
+deriveWholeDAGPlacementSearchDomain(const CardDAGAnalysis &dag,
+                                    const PhysicalTopology &topology,
+                                    PhysicalCardId cardId,
+                                    std::string *failureReason = nullptr);
 
 /// Query-local evaluator reused by factorized search. It memoizes only the
 /// placement-independent exact SSA/index relation of each edge; every concrete
@@ -82,8 +83,7 @@ public:
                              PhysicalCardId cardId);
   ~WholeDAGPlacementEvaluator();
   WholeDAGPlacementEvaluator(WholeDAGPlacementEvaluator &&) noexcept;
-  WholeDAGPlacementEvaluator &
-  operator=(WholeDAGPlacementEvaluator &&) noexcept;
+  WholeDAGPlacementEvaluator &operator=(WholeDAGPlacementEvaluator &&) noexcept;
   WholeDAGPlacementEvaluator(const WholeDAGPlacementEvaluator &) = delete;
   WholeDAGPlacementEvaluator &
   operator=(const WholeDAGPlacementEvaluator &) = delete;
@@ -101,11 +101,9 @@ private:
 /// placement, edge fragments, routes, local residency and the common resource
 /// calendar.  It is the sole bridge from the factorized spatial domain to a
 /// materializable candidate.
-mlir::FailureOr<WholeDAGPlacementCandidate>
-evaluateWholeDAGPlacement(
+mlir::FailureOr<WholeDAGPlacementCandidate> evaluateWholeDAGPlacement(
     const CardDAGAnalysis &dag, const PhysicalTopology &topology,
-    PhysicalCardId cardId,
-    llvm::ArrayRef<WholeDAGNodePlacement> nodePlacements,
+    PhysicalCardId cardId, llvm::ArrayRef<WholeDAGNodePlacement> nodePlacements,
     std::string *failureReason = nullptr);
 
 /// Explores the finite per-node static shard dimensions and all connected
@@ -114,11 +112,13 @@ evaluateWholeDAGPlacement(
 /// operator-pipeline stages rather than one source/destination cut.
 /// Exact-local, same-group redistribution, genuinely partially overlapping
 /// and disjoint successor placements are ordinary states in the same domain.
-/// Every incoming edge is checked by the exact edge-strategy planner when its
-/// consumer transition closes, so unsupported reduction or non-rectangular
-/// relations reject only that transition. Query work may be reduced only by
-/// exact state equivalence or a component-wise dominance proof; there is no
-/// candidate-count, topology-group, node-option, or beam-width policy.
+/// Every incoming edge is checked by the layout-independent exact demand
+/// planner when its consumer transition closes. A legal non-rectangular demand
+/// remains in the placement domain; current physical representation limits are
+/// applied only when a complete candidate is lowered. Query work may be
+/// reduced only by exact state equivalence or a component-wise dominance
+/// proof; there is no candidate-count, topology-group, node-option, or
+/// beam-width policy.
 mlir::FailureOr<llvm::SmallVector<WholeDAGPlacementCandidate, 12>>
 deriveWholeDAGPlacementFrontier(
     const CardDAGAnalysis &dag, const PhysicalTopology &topology,

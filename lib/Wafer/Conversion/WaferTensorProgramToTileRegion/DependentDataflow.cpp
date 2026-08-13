@@ -2,6 +2,7 @@
 
 #include "Internal.h"
 
+#include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 #include "Wafer/Support/CompileTiming.h"
 
@@ -202,150 +203,46 @@ validateDemandIndexRelation(mlir::Operation *consumer, unsigned consumerOperand,
                             llvm::ArrayRef<int64_t> producerOffsets,
                             llvm::ArrayRef<int64_t> producerSizes,
                             std::string *failureReason) {
-  auto tiling = mlir::dyn_cast<mlir::TilingInterface>(consumer);
-  if (!tiling)
+  auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(consumer);
+  auto consumerResultType = consumer && consumer->getNumResults() == 1
+                                ? mlir::dyn_cast<mlir::RankedTensorType>(
+                                      consumer->getResult(0).getType())
+                                : mlir::RankedTensorType{};
+  auto producerType = consumer && consumerOperand < consumer->getNumOperands()
+                          ? mlir::dyn_cast<mlir::RankedTensorType>(
+                                consumer->getOperand(consumerOperand).getType())
+                          : mlir::RankedTensorType{};
+  if (!linalg || !consumerResultType || !consumerResultType.hasStaticShape() ||
+      !producerType || !producerType.hasStaticShape())
     return failResult(
         failureReason,
-        "edge strategy requires a TilingInterface index relation");
-  mlir::OpBuilder builder(consumer);
-  auto getFoldResults = [&](llvm::ArrayRef<int64_t> values) {
-    llvm::SmallVector<mlir::OpFoldResult, 4> result;
-    for (int64_t value : values)
-      result.push_back(builder.getIndexAttr(value));
-    return result;
-  };
-  llvm::SmallVector<mlir::OpFoldResult, 4> resultOffsets =
-      getFoldResults(consumerOffsets);
-  llvm::SmallVector<mlir::OpFoldResult, 4> resultSizes =
-      getFoldResults(consumerSizes);
-  llvm::SmallVector<mlir::OpFoldResult, 4> operandOffsets =
-      getFoldResults(producerOffsets);
-  llvm::SmallVector<mlir::OpFoldResult, 4> operandSizes =
-      getFoldResults(producerSizes);
-  llvm::SmallVector<mlir::OpFoldResult, 4> resultIterationOffsets;
-  llvm::SmallVector<mlir::OpFoldResult, 4> resultIterationSizes;
-  llvm::SmallVector<mlir::OpFoldResult, 4> operandIterationOffsets;
-  llvm::SmallVector<mlir::OpFoldResult, 4> operandIterationSizes;
-  if (mlir::failed(tiling.getIterationDomainTileFromResultTile(
-          builder, /*resultNumber=*/0, resultOffsets, resultSizes,
-          resultIterationOffsets, resultIterationSizes)) ||
-      mlir::failed(tiling.getIterationDomainTileFromOperandTile(
-          builder, consumerOperand, operandOffsets, operandSizes,
-          operandIterationOffsets, operandIterationSizes)) ||
-      resultIterationOffsets.size() != operandIterationOffsets.size() ||
-      resultIterationSizes.size() != operandIterationSizes.size())
+        "edge strategy requires one static Linalg index relation");
+  llvm::SmallVector<mlir::AffineMap, 4> maps = linalg.getIndexingMapsArray();
+  const unsigned resultMapIndex = linalg.getNumDpsInputs();
+  llvm::SmallVector<int64_t, 4> loopShape = linalg.getStaticLoopRanges();
+  if (consumerOperand >= maps.size() || resultMapIndex >= maps.size() ||
+      llvm::any_of(loopShape, [](int64_t extent) { return extent <= 0; }))
     return failResult(
         failureReason,
         "consumer result and producer demand have no exact index relation");
-  auto sameStaticValues = [](llvm::ArrayRef<mlir::OpFoldResult> lhs,
-                             llvm::ArrayRef<mlir::OpFoldResult> rhs) {
-    return llvm::all_of(llvm::zip_equal(lhs, rhs), [](auto values) {
-      auto [left, right] = values;
-      std::optional<int64_t> leftValue = mlir::getConstantIntValue(left);
-      std::optional<int64_t> rightValue = mlir::getConstantIntValue(right);
-      return leftValue && rightValue && *leftValue == *rightValue;
-    });
-  };
 
-  // A producer operand can be broadcast across consumer iterators. In that
-  // case getIterationDomainTileFromOperandTile necessarily returns the full
-  // broadcast extent, so comparing its inverse domain with one consumer
-  // result shard rejects a legal exact demand. For Linalg projected indexing
-  // maps, validate the stronger forward fact instead: project the consumer's
-  // result-derived iteration tile into the operand domain and require it to
-  // equal the selected producer demand exactly.
-  if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(consumer)) {
-    llvm::SmallVector<mlir::AffineMap, 4> maps = linalg.getIndexingMapsArray();
-    if (consumerOperand < maps.size()) {
-      mlir::AffineMap operandMap = maps[consumerOperand];
-      llvm::SmallVector<int64_t, 4> expectedOffsets;
-      llvm::SmallVector<int64_t, 4> expectedSizes;
-      bool isStaticProjectedDemand =
-          operandMap.getNumDims() == resultIterationOffsets.size() &&
-          operandMap.getNumResults() == producerOffsets.size();
-      for (mlir::AffineExpr expression : operandMap.getResults()) {
-        if (!isStaticProjectedDemand)
-          break;
-        if (auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression)) {
-          const unsigned position = dimension.getPosition();
-          std::optional<int64_t> offset =
-              mlir::getConstantIntValue(resultIterationOffsets[position]);
-          std::optional<int64_t> size =
-              mlir::getConstantIntValue(resultIterationSizes[position]);
-          if (!offset || !size) {
-            isStaticProjectedDemand = false;
-            break;
-          }
-          expectedOffsets.push_back(*offset);
-          expectedSizes.push_back(*size);
-          continue;
-        }
-        auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
-        if (!constant || constant.getValue() != 0) {
-          isStaticProjectedDemand = false;
-          break;
-        }
-        expectedOffsets.push_back(0);
-        expectedSizes.push_back(1);
-      }
-      if (isStaticProjectedDemand) {
-        if (expectedOffsets == producerOffsets &&
-            expectedSizes == producerSizes)
-          return mlir::success();
-        std::string detail;
-        llvm::raw_string_ostream diagnostic(detail);
-        diagnostic << "consumer result projects to a different producer "
-                      "demand: consumer="
-                   << consumer->getName() << " operand=" << consumerOperand
-                   << " expected_offsets=[";
-        llvm::interleaveComma(expectedOffsets, diagnostic);
-        diagnostic << "], expected_sizes=[";
-        llvm::interleaveComma(expectedSizes, diagnostic);
-        diagnostic << "], selected_offsets=[";
-        llvm::interleaveComma(producerOffsets, diagnostic);
-        diagnostic << "], selected_sizes=[";
-        llvm::interleaveComma(producerSizes, diagnostic);
-        diagnostic << ']';
-        return failResult(failureReason, diagnostic.str());
-      }
-    }
-  }
-
-  if (!sameStaticValues(resultIterationOffsets, operandIterationOffsets) ||
-      !sameStaticValues(resultIterationSizes, operandIterationSizes)) {
-    std::string detail;
-    llvm::raw_string_ostream diagnostic(detail);
-    auto printStaticValues = [&](llvm::ArrayRef<mlir::OpFoldResult> values) {
-      diagnostic << '[';
-      llvm::interleaveComma(values, diagnostic, [&](mlir::OpFoldResult value) {
-        if (std::optional<int64_t> constant = mlir::getConstantIntValue(value))
-          diagnostic << *constant;
-        else
-          diagnostic << "dynamic";
-      });
-      diagnostic << ']';
-    };
-    diagnostic << "consumer producer domain differs from its actual result "
-                  "demand: consumer="
-               << consumer->getName() << " operand=" << consumerOperand
-               << " consumer_result_offsets=[";
-    llvm::interleaveComma(consumerOffsets, diagnostic);
-    diagnostic << "], consumer_result_sizes=[";
-    llvm::interleaveComma(consumerSizes, diagnostic);
-    diagnostic << "], producer_offsets=[";
-    llvm::interleaveComma(producerOffsets, diagnostic);
-    diagnostic << "], producer_sizes=[";
-    llvm::interleaveComma(producerSizes, diagnostic);
-    diagnostic << "], result_iteration_offsets=";
-    printStaticValues(resultIterationOffsets);
-    diagnostic << ", result_iteration_sizes=";
-    printStaticValues(resultIterationSizes);
-    diagnostic << ", operand_iteration_offsets=";
-    printStaticValues(operandIterationOffsets);
-    diagnostic << ", operand_iteration_sizes=";
-    printStaticValues(operandIterationSizes);
-    return failResult(failureReason, diagnostic.str());
-  }
+  analysis::IndexRelationResult relation =
+      analysis::IndexRelation::fromCommonIterationDomain(
+          maps[resultMapIndex], consumerResultType.getShape(),
+          maps[consumerOperand], producerType.getShape(), loopShape);
+  if (!relation.isExact())
+    return failResult(
+        failureReason,
+        "consumer result and producer demand have no exact index relation");
+  analysis::StaticRectangularIndexSetResult exactDemand =
+      relation.get()->getExactStaticRectangularImage(consumerOffsets,
+                                                     consumerSizes);
+  if (!exactDemand.isExact() ||
+      exactDemand.domain->offsets != producerOffsets ||
+      exactDemand.domain->sizes != producerSizes)
+    return failResult(
+        failureReason,
+        "selected producer domain differs from the exact relation image");
   return mlir::success();
 }
 
@@ -1067,8 +964,8 @@ mlir::Value insertExactSlice(mlir::OpBuilder &builder, mlir::Location loc,
       .getResult();
 }
 
-mlir::LogicalResult materializeRetainedTraversal(MappedStrategy &mapped,
-                                                 std::string *failureReason) {
+mlir::LogicalResult materializeLocalShardResidency(MappedStrategy &mapped,
+                                                   std::string *failureReason) {
   SpatialEdgeStrategy &strategy = mapped.strategy;
   auto producerType = mlir::cast<mlir::RankedTensorType>(
       mapped.producer->getResult(strategy.producerResult).getType());
@@ -2187,8 +2084,8 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
       }
       break;
     }
-    case SpatialEdgeAction::RetainedTraversal:
-      if (mlir::failed(materializeRetainedTraversal(mapped, failureReason)))
+    case SpatialEdgeAction::LocalShardResidency:
+      if (mlir::failed(materializeLocalShardResidency(mapped, failureReason)))
         return mlir::failure();
       break;
     case SpatialEdgeAction::SpillReload: {
@@ -2223,7 +2120,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
     case SpatialEdgeAction::PeerFragments:
       break;
     case SpatialEdgeAction::LocalPhysicalConversion:
-      if (mlir::failed(materializeRetainedTraversal(mapped, failureReason)))
+      if (mlir::failed(materializeLocalShardResidency(mapped, failureReason)))
         return mlir::failure();
       break;
     }
@@ -2864,9 +2761,10 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
     // consumers in an observable output closure. Materializing only internal
     // consumers would leave the final output traversal free to fuse and
     // recompute the original functional closure across explicit edge actions.
-    // Search-policy CoupledFusion/RetainedTraversal candidates deliberately do
-    // not enter this path: their output traversal remains the owner of actual
-    // producer fusion.
+    // Search-policy CoupledFusion/LocalShardResidency candidates deliberately
+    // do not enter this baseline-only path. Their ordinary output traversal
+    // remains the materialization owner; only CoupledFusion is later accepted
+    // as an actual producer-fusion witness.
     llvm::SmallVector<MappedStrategy *, 16> consumerOrder;
     for (MappedStrategy &mapped : mappedStrategies)
       if (mapped.strategy.destinationTile == currentTile)

@@ -10,6 +10,25 @@ foreach(_wafer_native_jit_lib IN LISTS WAFER_NATIVE_JIT_LIBS)
   endif()
 endforeach()
 
+set(LLVM_OPTIONAL_SOURCES
+  AttentionImplementationAlternative.cpp
+  CoordinatedCommunicationAction.cpp
+  CoordinatedDataflowSearch.cpp
+  CoordinatedExecutableAdmission.cpp
+  CoordinatedExecutableFinalization.cpp
+  CoordinatedStructuredCandidateDerivation.cpp
+  CoordinatedStructuredFrontier.cpp
+  CoordinatedVariantSelection.cpp
+  GlobalTileRelation.cpp
+  NoCCommunicationAction.cpp
+  NoCIntermediateDataflow.cpp
+  NoCPartialDataflow.cpp
+  StaticFixedSlotQualification.cpp
+  StructuredImplementationAlternative.cpp
+  TargetRankPreflight.cpp
+  WholeVariantResourceAcceptance.cpp
+)
+
 add_mlir_library(WaferCompiler
   AcceptedCallClosure.cpp
   Compilation.cpp
@@ -39,6 +58,7 @@ add_mlir_library(WaferCompiler
   TargetCallFrontend.cpp
   WholeDAGCandidateSchedule.cpp
   WholeDAGPlacementFrontier.cpp
+  WholeDAGEdgeDemandPlan.cpp
   WholeDAGEdgeStrategyPlan.cpp
   WholeDAGSchedule.cpp
   WholeDAGSchedulePlan.cpp

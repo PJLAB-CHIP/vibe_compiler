@@ -125,6 +125,15 @@ ready 后启动，而不必等待整个 producer op 完成。
 consumer-driven tile propagation 仍负责根据 indexing semantics 与 `IndexRelation` 计算 consumer 需要 producer 的
 exact domain；它不再拥有全局遍历顺序。唯一全局 owner 是 whole-DAG event-driven scheduler。
 
+该exact domain的稳定合同是关系像集：对已选consumer shard求`IndexRelation.image`，得到all-and-only
+producer logical index set。关系可以一对多；reduction/window不因非functional而非法。矩形fragment、
+strided descriptor、多片搬运或集合通信是该exact set之后的target realizability/lowering选择，不得反向缩窄
+`IndexRelation`的逻辑表达协议。layout-independent edge demand artifact仅在placement已给定后记录每个consumer
+Tile的consumer domain、exact producer demand与producer-owned logical shard；它不携带layout、encoding、bytes、
+local/remote action、route、buffer或fusion。后续representation/lowering才对demand与ownership求交并选择可表达的
+physical fragment；同Tile可用性由`LocalShardResidency`表示，真正的consumer-driven递归遍历只由
+`CoupledFusion`表示并计入fusion gate。
+
 可观察独立分支首先按 current structured SSA 的无向依赖连通分量证明：从每个函数 result 穿过无副作用 support
 op 找到最近 structured roots，再把 producer/consumer edge、共享 structured producer 和同一 result 汇合的 roots
 合并。只有所有相关 structured op 都是无 memory effect 的 tensor SSA、每个 node 都归属于至少一个 observable

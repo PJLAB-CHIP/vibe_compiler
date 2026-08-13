@@ -25,6 +25,7 @@ using wafer::analysis::IndexRelationStatus;
 using wafer::analysis::IndexSetResult;
 using wafer::analysis::PhysicalAccessRelation;
 using wafer::analysis::PhysicalLayoutRelation;
+using wafer::analysis::StaticRectangularIndexSetResult;
 using wafer::analysis::TransferRealizability;
 
 TEST(IndexRelationTest, RepresentsIdentityPermutationAndBroadcastExactly) {
@@ -333,6 +334,110 @@ TEST(IndexRelationTest, ComputesImagePreimageAndDomainIntersections) {
   ASSERT_TRUE(sourceRestricted.isExact());
   EXPECT_TRUE(sourceRestricted.get()->contains({1, 1}, {2, 3}));
   EXPECT_FALSE(sourceRestricted.get()->contains({1, 1}, {2, 4}));
+}
+
+TEST(IndexRelationTest,
+     RecoversExactDenseDemandFromOneToManyReductionAndWindowRelations) {
+  mlir::MLIRContext context;
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr d1 = mlir::getAffineDimExpr(1, &context);
+
+  IndexRelationResult reduction = IndexRelation::fromCommonIterationDomain(
+      mlir::AffineMap::get(2, 0, {d0}, &context),
+      /*destinationShape=*/{8}, mlir::AffineMap::get(2, 0, {d0, d1}, &context),
+      /*sourceShape=*/{8, 4}, /*iterationShape=*/{8, 4});
+  IndexSetResult reductionShard =
+      IndexRelation::staticRectangularDomain(/*offsets=*/{2}, /*sizes=*/{3});
+  ASSERT_TRUE(reduction.isExact());
+  EXPECT_FALSE(reduction.get()->isFunctional().isProvenTrue());
+  ASSERT_TRUE(reductionShard.isExact());
+  IndexSetResult reductionDemand = reduction.get()->image(*reductionShard.set);
+  ASSERT_TRUE(reductionDemand.isExact());
+  StaticRectangularIndexSetResult reductionRectangle =
+      reductionDemand.getExactStaticRectangularDomain();
+  ASSERT_TRUE(reductionRectangle.isExact()) << reductionRectangle.reason;
+  EXPECT_EQ(reductionRectangle.domain->offsets,
+            (llvm::SmallVector<int64_t, 4>{2, 0}));
+  EXPECT_EQ(reductionRectangle.domain->sizes,
+            (llvm::SmallVector<int64_t, 4>{3, 4}));
+  StaticRectangularIndexSetResult reductionDirect =
+      reduction.get()->getExactStaticRectangularImage(/*offsets=*/{2},
+                                                      /*sizes=*/{3});
+  ASSERT_TRUE(reductionDirect.isExact()) << reductionDirect.reason;
+  EXPECT_EQ(reductionDirect.domain->offsets,
+            reductionRectangle.domain->offsets);
+  EXPECT_EQ(reductionDirect.domain->sizes, reductionRectangle.domain->sizes);
+
+  IndexRelationResult window = IndexRelation::fromCommonIterationDomain(
+      mlir::AffineMap::get(2, 0, {d0}, &context),
+      /*destinationShape=*/{4}, mlir::AffineMap::get(2, 0, {d0 + d1}, &context),
+      /*sourceShape=*/{6}, /*iterationShape=*/{4, 3});
+  IndexSetResult windowShard =
+      IndexRelation::staticRectangularDomain(/*offsets=*/{1}, /*sizes=*/{2});
+  ASSERT_TRUE(window.isExact());
+  ASSERT_TRUE(windowShard.isExact());
+  IndexSetResult windowDemand = window.get()->image(*windowShard.set);
+  ASSERT_TRUE(windowDemand.isExact());
+  StaticRectangularIndexSetResult windowRectangle =
+      windowDemand.getExactStaticRectangularDomain();
+  ASSERT_TRUE(windowRectangle.isExact()) << windowRectangle.reason;
+  EXPECT_EQ(windowRectangle.domain->offsets,
+            (llvm::SmallVector<int64_t, 4>{1}));
+  EXPECT_EQ(windowRectangle.domain->sizes, (llvm::SmallVector<int64_t, 4>{4}));
+  StaticRectangularIndexSetResult windowDirect =
+      window.get()->getExactStaticRectangularImage(/*offsets=*/{1},
+                                                   /*sizes=*/{2});
+  ASSERT_TRUE(windowDirect.isExact()) << windowDirect.reason;
+  EXPECT_EQ(windowDirect.domain->offsets, windowRectangle.domain->offsets);
+  EXPECT_EQ(windowDirect.domain->sizes, windowRectangle.domain->sizes);
+}
+
+TEST(IndexRelationTest, DoesNotReplaceExactStridedDemandWithBoundingBox) {
+  mlir::MLIRContext context;
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  IndexRelationResult stride = IndexRelation::fromCommonIterationDomain(
+      mlir::AffineMap::get(1, 0, {d0}, &context),
+      /*destinationShape=*/{4}, mlir::AffineMap::get(1, 0, {d0 * 2}, &context),
+      /*sourceShape=*/{7}, /*iterationShape=*/{4});
+  IndexSetResult shard = IndexRelation::staticDomain({4});
+  ASSERT_TRUE(stride.isExact());
+  ASSERT_TRUE(shard.isExact());
+  IndexSetResult demand = stride.get()->image(*shard.set);
+  ASSERT_TRUE(demand.isExact());
+  EXPECT_TRUE(demand.contains({0}));
+  EXPECT_TRUE(demand.contains({2}));
+  EXPECT_FALSE(demand.contains({1}));
+  StaticRectangularIndexSetResult rectangle =
+      demand.getExactStaticRectangularDomain();
+  EXPECT_FALSE(rectangle.isExact());
+  EXPECT_EQ(rectangle.status, IndexRelationStatus::Unsupported);
+  EXPECT_NE(rectangle.reason.find("not one dense static rectangle"),
+            std::string::npos);
+}
+
+TEST(IndexRelationTest, ProjectedRectangleFastPathRejectsOutOfBoundsDomain) {
+  mlir::MLIRContext context;
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr d1 = mlir::getAffineDimExpr(1, &context);
+  IndexRelationResult broadcast = IndexRelation::fromCommonIterationDomain(
+      mlir::AffineMap::get(2, 0, {d0, d1}, &context),
+      /*destinationShape=*/{8, 4}, mlir::AffineMap::get(2, 0, {d1}, &context),
+      /*sourceShape=*/{4}, /*iterationShape=*/{8, 4});
+  ASSERT_TRUE(broadcast.isExact());
+
+  StaticRectangularIndexSetResult demand =
+      broadcast.get()->getExactStaticRectangularImage(/*offsets=*/{2, 1},
+                                                      /*sizes=*/{3, 2});
+  ASSERT_TRUE(demand.isExact()) << demand.reason;
+  EXPECT_EQ(demand.domain->offsets, (llvm::SmallVector<int64_t, 4>{1}));
+  EXPECT_EQ(demand.domain->sizes, (llvm::SmallVector<int64_t, 4>{2}));
+
+  StaticRectangularIndexSetResult outOfBounds =
+      broadcast.get()->getExactStaticRectangularImage(/*offsets=*/{7, 1},
+                                                      /*sizes=*/{2, 2});
+  EXPECT_FALSE(outOfBounds.isExact());
+  EXPECT_EQ(outOfBounds.status, IndexRelationStatus::Invalid);
+  EXPECT_NE(outOfBounds.reason.find("out of bounds"), std::string::npos);
 }
 
 TEST(IndexRelationTest, ProvesFunctionalInjectiveBijectiveAndContainment) {

@@ -169,15 +169,28 @@ TEST_F(WholeDAGEdgeStrategyPlanTest,
   ASSERT_EQ(plan->strategies.size(), 4u);
   auto resident = collectFragments(*plan, SpatialEdgeFragmentKind::Resident);
   auto peer = collectFragments(*plan, SpatialEdgeFragmentKind::Peer);
-  ASSERT_EQ(resident.size(), 2u);
+  EXPECT_TRUE(
+      llvm::none_of(plan->strategies, [](const SpatialEdgeStrategy &strategy) {
+        return strategy.action == SpatialEdgeAction::PeerFragments &&
+               llvm::any_of(
+                   strategy.fragments, [](const SpatialEdgeFragment &fragment) {
+                     return fragment.kind == SpatialEdgeFragmentKind::Resident;
+                   });
+      }));
+  EXPECT_EQ(resident.size(), 0u);
   ASSERT_EQ(peer.size(), 2u);
   EXPECT_EQ(plan->totalPeerBytes, 8u);
 
-  EXPECT_EQ(resident[0]->sourceTile, PhysicalTileId(0));
-  EXPECT_EQ(resident[0]->offsets, (llvm::SmallVector<int64_t, 4>{0}));
-  EXPECT_EQ(resident[0]->sizes, (llvm::SmallVector<int64_t, 4>{2}));
-  EXPECT_EQ(resident[0]->bytes, 0u);
-  EXPECT_EQ(resident[1]->sourceTile, PhysicalTileId(1));
+  const SpatialEdgeStrategy *destinationZero =
+      findDestination(*plan, PhysicalTileId(0));
+  const SpatialEdgeStrategy *destinationOne =
+      findDestination(*plan, PhysicalTileId(1));
+  ASSERT_NE(destinationZero, nullptr);
+  ASSERT_NE(destinationOne, nullptr);
+  EXPECT_EQ(destinationZero->action, SpatialEdgeAction::LocalShardResidency);
+  EXPECT_EQ(destinationOne->action, SpatialEdgeAction::LocalShardResidency);
+  EXPECT_TRUE(destinationZero->fragments.empty());
+  EXPECT_TRUE(destinationOne->fragments.empty());
 
   EXPECT_EQ(peer[0]->sourceTile, PhysicalTileId(2));
   ASSERT_NE(findDestination(*plan, PhysicalTileId(4)), nullptr);
@@ -608,7 +621,7 @@ TEST_F(WholeDAGEdgeStrategyPlanTest,
 }
 
 TEST_F(WholeDAGEdgeStrategyPlanTest,
-       RejectsReductionDemandWithoutGuessingABox) {
+       DerivesExactPeerFragmentsForOneToManyReductionDemand) {
   auto module = parse(R"mlir(
 module {
   func.func @reduce(%input: tensor<8x4xf16>) -> tensor<8xf16> {
@@ -652,16 +665,159 @@ module {
   ASSERT_EQ(aligned->strategies.size(), 2u);
   EXPECT_TRUE(llvm::all_of(
       aligned->strategies, [](const SpatialEdgeStrategy &strategy) {
-        return strategy.action == SpatialEdgeAction::CoupledFusion;
+        return strategy.action == SpatialEdgeAction::LocalShardResidency;
       }));
 
   llvm::SmallVector<WholeDAGNodePlacement, 3> placements = {
       placement(0, 0, {0, 1}), placement(1, 0, {2, 3}),
       placement(2, 0, {2, 3})};
-  EXPECT_TRUE(mlir::failed(
-      deriveWholeDAGEdgeStrategyPlan(dag, placements, &failureReason)));
-  EXPECT_NE(failureReason.find("exact producer demand"), std::string::npos)
+  auto demandPlan =
+      deriveWholeDAGEdgeDemandPlan(dag, placements, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(demandPlan)) << failureReason;
+  ASSERT_EQ(demandPlan->demands.size(), 2u);
+  for (const WholeDAGEdgeDemand &demand : demandPlan->demands) {
+    analysis::IndexSetResult exactDemand{
+        analysis::IndexRelationStatus::Exact, demand.producerDemand, {}};
+    auto rectangle = exactDemand.getExactStaticRectangularDomain();
+    ASSERT_TRUE(rectangle.isExact()) << rectangle.reason;
+    EXPECT_EQ(rectangle.domain->sizes, (llvm::SmallVector<int64_t, 4>{4, 4}));
+    const llvm::SmallVector<int64_t, 4> firstOffsets{0, 0};
+    const llvm::SmallVector<int64_t, 4> secondOffsets{4, 0};
+    EXPECT_TRUE(rectangle.domain->offsets == firstOffsets ||
+                rectangle.domain->offsets == secondOffsets);
+    EXPECT_EQ(demand.producerShardOwnership.size(), 2u);
+  }
+  auto disjoint =
+      deriveWholeDAGEdgeStrategyPlan(dag, placements, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(disjoint)) << failureReason;
+  ASSERT_EQ(disjoint->strategies.size(), 2u);
+  EXPECT_TRUE(llvm::all_of(
+      disjoint->strategies, [](const SpatialEdgeStrategy &strategy) {
+        return strategy.action == SpatialEdgeAction::PeerFragments &&
+               strategy.producerSizes ==
+                   llvm::SmallVector<int64_t, 4>({4, 4}) &&
+               strategy.fragments.size() == 1 &&
+               strategy.fragments.front().kind == SpatialEdgeFragmentKind::Peer;
+      }));
+  EXPECT_EQ(disjoint->totalPeerBytes, 64u);
+}
+
+TEST_F(WholeDAGEdgeStrategyPlanTest,
+       StridedLogicalDemandSurvivesUntilCanonicalPhysicalLowering) {
+  auto module = parse(R"mlir(
+module {
+  func.func @strided_edge(%input: tensor<8xf16>) -> tensor<4xf16> {
+    %producerOut = tensor.empty() : tensor<8xf16>
+    %producer = linalg.map ins(%input : tensor<8xf16>)
+        outs(%producerOut : tensor<8xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    %consumerOut = tensor.empty() : tensor<4xf16>
+    %consumer = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0 * 2)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%producer : tensor<8xf16>)
+        outs(%consumerOut : tensor<4xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        linalg.yield %value : f16
+    } -> tensor<4xf16>
+    return %consumer : tensor<4xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  CardDAGAnalysis dag = buildDAG(*module);
+  ASSERT_EQ(dag.getNodes().size(), 2u);
+  ASSERT_EQ(dag.getEdges().size(), 1u);
+
+  std::string failureReason;
+  auto demandPlan = deriveWholeDAGEdgeDemandPlan(
+      dag, {placement(0, 0, {0}), placement(1, 0, {1})}, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(demandPlan)) << failureReason;
+  ASSERT_EQ(demandPlan->demands.size(), 1u);
+  const auto &logicalDemand = demandPlan->demands.front().producerDemand;
+  auto contains = [&](int64_t index) {
+    return logicalDemand.containsPoint(llvm::ArrayRef<int64_t>(index));
+  };
+  EXPECT_TRUE(contains(0));
+  EXPECT_TRUE(contains(2));
+  EXPECT_TRUE(contains(4));
+  EXPECT_TRUE(contains(6));
+  EXPECT_FALSE(contains(1));
+  EXPECT_FALSE(contains(7));
+
+  failureReason.clear();
+  auto lowered = lowerWholeDAGEdgeDemandPlanToCanonicalStrategies(
+      dag, *demandPlan, &failureReason);
+  EXPECT_TRUE(mlir::failed(lowered));
+  EXPECT_NE(failureReason.find("dense logical rectangle"), std::string::npos)
       << failureReason;
+}
+
+TEST_F(WholeDAGEdgeStrategyPlanTest,
+       RejectsProducerShardOwnershipThatDoesNotCoverExactDemand) {
+  auto module = parse(kChain);
+  ASSERT_TRUE(module);
+  CardDAGAnalysis dag = buildDAG(*module);
+
+  // Repeating one producer Tile gives both ownership records the first
+  // balanced shard and leaves the upper half of the logical tensor unowned.
+  // The demand planner must prove coverage from domains, not infer it from the
+  // participant count.
+  std::string failureReason;
+  auto demandPlan = deriveWholeDAGEdgeDemandPlan(
+      dag, {placement(0, 0, {0, 0}), placement(1, 0, {1, 2})},
+      &failureReason);
+  EXPECT_TRUE(mlir::failed(demandPlan));
+  EXPECT_NE(failureReason.find("ownership does not cover exact demand"),
+            std::string::npos)
+      << failureReason;
+}
+
+TEST_F(WholeDAGEdgeStrategyPlanTest,
+       BroadcastDemandIsExactForEveryConsumerShard) {
+  auto module = parse(R"mlir(
+module {
+  func.func @broadcast_edge(%input: tensor<4xf16>) -> tensor<8x4xf16> {
+    %producerOut = tensor.empty() : tensor<4xf16>
+    %producer = linalg.map ins(%input : tensor<4xf16>)
+        outs(%producerOut : tensor<4xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    %consumerOut = tensor.empty() : tensor<8x4xf16>
+    %consumer = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d1)>,
+                         affine_map<(d0, d1) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%producer : tensor<4xf16>)
+        outs(%consumerOut : tensor<8x4xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        linalg.yield %value : f16
+    } -> tensor<8x4xf16>
+    return %consumer : tensor<8x4xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  CardDAGAnalysis dag = buildDAG(*module);
+
+  std::string failureReason;
+  auto demandPlan = deriveWholeDAGEdgeDemandPlan(
+      dag, {placement(0, 0, {0}), placement(1, 0, {1, 2})},
+      &failureReason);
+  ASSERT_TRUE(mlir::succeeded(demandPlan)) << failureReason;
+  ASSERT_EQ(demandPlan->demands.size(), 2u);
+  for (const WholeDAGEdgeDemand &demand : demandPlan->demands) {
+    analysis::IndexSetResult exactDemand{
+        analysis::IndexRelationStatus::Exact, demand.producerDemand, {}};
+    auto rectangle = exactDemand.getExactStaticRectangularDomain();
+    ASSERT_TRUE(rectangle.isExact()) << rectangle.reason;
+    EXPECT_EQ(rectangle.domain->offsets,
+              (llvm::SmallVector<int64_t, 4>{0}));
+    EXPECT_EQ(rectangle.domain->sizes,
+              (llvm::SmallVector<int64_t, 4>{4}));
+  }
 }
 
 TEST_F(WholeDAGEdgeStrategyPlanTest, DerivationIsDeterministicForFanoutEdges) {

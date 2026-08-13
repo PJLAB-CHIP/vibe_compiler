@@ -77,6 +77,11 @@ source program
 
 ## Search与materialization
 
+- logical demand与target carrier分层：先从current structured semantics构造query-local `IndexRelation`，以relation image求
+  all-and-only demand set；再证明该集合能否由当前矩形、strided或多片descriptor表达。不能因为当前carrier只支持稠密矩形，
+  就提前要求relation functional/projected-permutation或用bounding box代替exact demand。
+- placement-independent relation证明在同一search query内按SSA edge复用，具体placement的resident/peer相交仍逐候选精确计算；
+  这种memo只消除重复证明，不删除spatial、layout、fusion、buffer或通信候选。
 - cheap typed legality、coverage、topology symmetry、SPM lower bound和raw-work dominance在clone前剪枝。
 - shortlist才materialize whole-card actual candidate；任一时刻最多一个live actual clone，避免RSS随候选笛卡尔积增长。
 - global work ledger使用deterministic work units，不用wall-clock timeout决定搜索语义。wall/RSS只做回归诊断。
@@ -172,6 +177,8 @@ source program
 ## Source organization
 
 - public header只暴露稳定typed边界；query-local recipe、staging builder和failure bookkeeping留在library internal header。
+- LLVM/MLIR目录中需要保留但暂不链接的历史source显式列入`LLVM_OPTIONAL_SOURCES`；不要删文件，也不要用
+  `PARTIAL_SOURCES_INTENDED`整体关闭漏列检查。fresh CMake configure必须能发现新source未归属的问题。
 - CMake显式列source；删除功能时同批删除header/source/CMake/test/fixture，不保留empty target或compatibility alias。
 - tests按Dialect、Analysis、Conversion、Pipeline/Tool、Runtime、Model、Board边界组织；fixture不能成为第二schema/ABI实现。
 - internal low-level aggregate module或JIT bridge可保留，但长期合同仍由explicit Tile interfaces、typed resources和current ABI定义。

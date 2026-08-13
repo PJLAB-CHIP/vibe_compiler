@@ -7,6 +7,7 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/OpDefinition.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
 #include <optional>
@@ -33,6 +34,7 @@ struct IndexRelationLimits {
 struct IndexRelationResult;
 struct IndexSetResult;
 struct IndexRelationQueryResult;
+struct StaticRectangularIndexSetResult;
 
 /// A transformation-local adapter over MLIR Presburger relations. Domain
 /// variables are destination logical indexes and range variables are source
@@ -73,6 +75,17 @@ public:
                 llvm::ArrayRef<int64_t> sourceShape,
                 const IndexRelationLimits &limits = IndexRelationLimits());
 
+  /// Compose two exact mappings out of one common iteration domain and return
+  /// the destination-to-source relation. The result is allowed to be
+  /// one-to-many: iterators projected out of the destination remain quantified
+  /// in the exact source demand instead of making the relation unsupported.
+  static IndexRelationResult fromCommonIterationDomain(
+      mlir::AffineMap iterationToDestination,
+      llvm::ArrayRef<int64_t> destinationShape,
+      mlir::AffineMap iterationToSource, llvm::ArrayRef<int64_t> sourceShape,
+      llvm::ArrayRef<int64_t> iterationShape,
+      const IndexRelationLimits &limits = IndexRelationLimits());
+
   static IndexRelationResult
   staticSlice(llvm::ArrayRef<int64_t> destinationShape,
               llvm::ArrayRef<int64_t> sourceShape,
@@ -110,6 +123,11 @@ public:
   staticDomain(llvm::ArrayRef<int64_t> shape,
                const IndexRelationLimits &limits = IndexRelationLimits());
 
+  /// Build a static half-open rectangular index domain.
+  static IndexSetResult staticRectangularDomain(
+      llvm::ArrayRef<int64_t> offsets, llvm::ArrayRef<int64_t> sizes,
+      const IndexRelationLimits &limits = IndexRelationLimits());
+
   /// Compose this A->B relation with next B->C and return A->C.
   IndexRelationResult
   compose(const IndexRelation &next,
@@ -129,6 +147,15 @@ public:
   IndexSetResult
   image(const mlir::presburger::PresburgerSet &destinationDomain,
         const IndexRelationLimits &limits = IndexRelationLimits()) const;
+
+  /// Query the exact image of one static destination rectangle and recover it
+  /// as one dense source rectangle. Exact projected mappings use a symbolic
+  /// fast path; all other relations use the generic Presburger image and
+  /// equality proof. Neither path accepts a bounding box approximation.
+  StaticRectangularIndexSetResult getExactStaticRectangularImage(
+      llvm::ArrayRef<int64_t> destinationOffsets,
+      llvm::ArrayRef<int64_t> destinationSizes,
+      const IndexRelationLimits &limits = IndexRelationLimits()) const;
 
   IndexSetResult
   preimage(const mlir::presburger::PresburgerSet &sourceDomain,
@@ -150,6 +177,15 @@ public:
 private:
   mlir::presburger::PresburgerRelation relation;
   IndexRelationStatus status;
+  /// Derived rectangular projected-map pattern. Each source coordinate holds
+  /// its destination dimension, or -1 for constant zero. It is populated only
+  /// when construction already proved this map equivalent to `relation` and
+  /// avoids retaining AffineExpr objects from another MLIRContext. The paired
+  /// destination shape validates fast-path queries against the exact relation
+  /// domain rather than accepting an out-of-bounds rectangle.
+  std::optional<llvm::SmallVector<int64_t, 4>> projectedRectanglePattern;
+  std::optional<llvm::SmallVector<int64_t, 4>>
+      projectedRectangleDestinationShape;
 
   friend struct IndexRelationResult;
 };
@@ -179,6 +215,27 @@ struct IndexSetResult {
   bool contains(llvm::ArrayRef<int64_t> point) const {
     return set && set->getSpace().getNumSetDimVars() == point.size() &&
            set->containsPoint(point);
+  }
+
+  /// Recover one dense static rectangle iff it is exactly equal to this set.
+  /// The returned bounds are derived from Presburger extrema and then proved
+  /// equal to the complete set; a bounding box is never accepted as demand.
+  StaticRectangularIndexSetResult getExactStaticRectangularDomain(
+      const IndexRelationLimits &limits = IndexRelationLimits()) const;
+};
+
+struct StaticRectangularIndexSet {
+  llvm::SmallVector<int64_t, 4> offsets;
+  llvm::SmallVector<int64_t, 4> sizes;
+};
+
+struct StaticRectangularIndexSetResult {
+  IndexRelationStatus status = IndexRelationStatus::Invalid;
+  std::optional<StaticRectangularIndexSet> domain;
+  std::string reason;
+
+  bool isExact() const {
+    return status == IndexRelationStatus::Exact && domain.has_value();
   }
 };
 

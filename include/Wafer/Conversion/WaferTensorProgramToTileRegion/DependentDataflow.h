@@ -37,8 +37,9 @@ enum class SpatialEdgeAction : uint8_t {
   /// same TileRegion and keeps the exact producer value resident.
   CoupledFusion,
   /// Producer and consumer use independent traversals in one TileRegion.  An
-  /// explicit tile-local staging copy separates their SPM versions.
-  RetainedTraversal,
+  /// explicit tile-local staging copy separates their SPM versions. This is
+  /// local edge residency, not an op-fusion claim.
+  LocalShardResidency,
   /// Exact local and remote fragments are assembled at the destination.  Only
   /// remote fragments become peer send/receive/wait operations.
   PeerFragments,
@@ -96,7 +97,7 @@ struct SpatialEdgeStrategy {
   llvm::SmallVector<int64_t, 4> producerSizes;
   PhysicalTileId sourceTile{0};
   PhysicalTileId destinationTile{0};
-  SpatialEdgeAction action = SpatialEdgeAction::CoupledFusion;
+  SpatialEdgeAction action = SpatialEdgeAction::LocalShardResidency;
   /// Explicit physical-representation assignment selected by the common
   /// whole-DAG transition.  A false `hasLayoutAssignment` means that current
   /// interfaces expose no provable choice and the incomplete term is omitted;

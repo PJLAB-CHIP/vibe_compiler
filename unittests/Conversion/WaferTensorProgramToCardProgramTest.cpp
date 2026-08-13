@@ -1,6 +1,7 @@
 //===- WaferTensorProgramToCardProgramTest.cpp - Card baseline tests -----===//
 
 #include "Wafer/Conversion/WaferTensorProgramToCardProgram/WaferTensorProgramToCardProgram.h"
+#include "../../lib/Wafer/Compiler/WholeDAGEdgeStrategyPlan.h"
 #include "Wafer/Conversion/WaferCardProgramToTileModules/WaferCardProgramToTileModules.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 
@@ -2217,8 +2218,85 @@ module {
   EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardProgram(
       *source, wafer::PhysicalCardId(0), makeSelected(/*producerSize=*/4),
       invalidModule, &failureReason)));
-  EXPECT_NE(failureReason.find("different producer demand"), std::string::npos)
+  EXPECT_NE(failureReason.find("differs from the exact relation image"),
+            std::string::npos)
       << failureReason;
+}
+
+TEST(WaferTensorProgramToCardProgramTest,
+     MaterializesRelationDerivedReductionPeerFragmentsToActualCardIR) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @reduce(%input: tensor<8x4xf16>) -> tensor<8xf16> {
+    %producer_empty = tensor.empty() : tensor<8x4xf16>
+    %result_empty = tensor.empty() : tensor<8xf16>
+    %producer = linalg.map ins(%input : tensor<8x4xf16>)
+        outs(%producer_empty : tensor<8x4xf16>) (%value: f16) {
+      %sum = arith.addf %value, %value : f16
+      linalg.yield %sum : f16
+    }
+    %zero = arith.constant 0.0 : f16
+    %init = linalg.fill ins(%zero : f16)
+        outs(%result_empty : tensor<8xf16>) -> tensor<8xf16>
+    %sum = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                         affine_map<(d0, d1) -> (d0)>],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%producer : tensor<8x4xf16>) outs(%init : tensor<8xf16>) {
+      ^bb0(%value: f16, %acc: f16):
+        %next = arith.addf %value, %acc : f16
+        linalg.yield %next : f16
+    } -> tensor<8xf16>
+    return %sum : tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  auto function = *source->getOps<mlir::func::FuncOp>().begin();
+  std::string failureReason;
+  auto dag = wafer::compiler::detail::CardDAGAnalysis::create(function,
+                                                              &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+
+  auto placement = [](wafer::compiler::detail::CardDAGNodeID node,
+                      std::initializer_list<int64_t> tiles) {
+    wafer::compiler::detail::WholeDAGNodePlacement result;
+    result.node = node;
+    result.shardDimension = 0;
+    for (int64_t tile : tiles)
+      result.tiles.push_back(wafer::PhysicalTileId(tile));
+    return result;
+  };
+  llvm::SmallVector<wafer::compiler::detail::WholeDAGNodePlacement, 3>
+      placements = {placement(0, {0, 1}), placement(1, {2, 3}),
+                    placement(2, {2, 3})};
+  auto edgePlan = wafer::compiler::detail::deriveWholeDAGEdgeStrategyPlan(
+      *dag, placements, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(edgePlan)) << failureReason;
+  ASSERT_EQ(edgePlan->strategies.size(), 2u);
+  ASSERT_EQ(edgePlan->totalPeerBytes, 64u);
+
+  wafer::CardSpatialMapping selected =
+      mapping(/*shardDimension=*/0, {2, 3}, {4});
+  selected.materializationMode =
+      wafer::SpatialDataflowMaterializationMode::IndependentDDRStages;
+  selected.edgeStrategies.append(edgePlan->strategies.begin(),
+                                 edgePlan->strategies.end());
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
+      *source, wafer::PhysicalCardId(0), std::move(selected), cardModule,
+      &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+  EXPECT_EQ(countOps<wafer::CommPeerSendOp>(cardModule->getOperation()), 2u);
+  EXPECT_EQ(countOps<wafer::CommPeerRecvOp>(cardModule->getOperation()), 2u);
+  EXPECT_EQ(countOps<mlir::async::AwaitOp>(cardModule->getOperation()), 4u);
 }
 
 TEST(WaferTensorProgramToCardProgramTest,
@@ -2274,7 +2352,7 @@ module {
   mlir::OwningOpRef<mlir::ModuleOp> fused =
       lowerAction(wafer::SpatialEdgeAction::CoupledFusion);
   mlir::OwningOpRef<mlir::ModuleOp> retained =
-      lowerAction(wafer::SpatialEdgeAction::RetainedTraversal);
+      lowerAction(wafer::SpatialEdgeAction::LocalShardResidency);
   mlir::OwningOpRef<mlir::ModuleOp> spilled =
       lowerAction(wafer::SpatialEdgeAction::SpillReload);
   mlir::OwningOpRef<mlir::ModuleOp> cut =

@@ -59,8 +59,8 @@ static llvm::StringRef getSpatialEdgeActionName(SpatialEdgeAction action) {
   switch (action) {
   case SpatialEdgeAction::CoupledFusion:
     return "coupled-fusion";
-  case SpatialEdgeAction::RetainedTraversal:
-    return "retained-traversal";
+  case SpatialEdgeAction::LocalShardResidency:
+    return "local-shard-residency";
   case SpatialEdgeAction::PeerFragments:
     return "peer-fragments";
   case SpatialEdgeAction::SpillReload:
@@ -1395,7 +1395,7 @@ static bool populateOperationTemporalTiles(WholeCardCandidate &candidate,
   // staged into the consumer's buffer, so those transients are part of the
   // consumer's SPM residency.  Three sources make a producer in-region:
   //   * an edge strategy that runs the producer traversal inside the
-  //     consumer's TileRegion (CoupledFusion, RetainedTraversal, Recompute);
+  //     consumer's TileRegion (CoupledFusion, LocalShardResidency, Recompute);
   //     PeerFragments runs the producer in its own Tile, SpillReload stores
   //     it to DDR, and RegionCut releases SPM at the region boundary;
   //   * a DAG edge that reaches the producer through a pure view chain
@@ -1415,7 +1415,7 @@ static bool populateOperationTemporalTiles(WholeCardCandidate &candidate,
   auto isInRegionAction = [](SpatialEdgeAction action) {
     switch (action) {
     case SpatialEdgeAction::CoupledFusion:
-    case SpatialEdgeAction::RetainedTraversal:
+    case SpatialEdgeAction::LocalShardResidency:
     case SpatialEdgeAction::Recompute:
       return true;
     default:
@@ -1803,7 +1803,7 @@ static bool refreshCandidateResourceSchedule(
         *temporalBytes, std::max<uint8_t>(1, strategy.bufferCount));
     switch (strategy.action) {
     case SpatialEdgeAction::CoupledFusion:
-    case SpatialEdgeAction::RetainedTraversal:
+    case SpatialEdgeAction::LocalShardResidency:
     case SpatialEdgeAction::Recompute:
     case SpatialEdgeAction::LocalPhysicalConversion:
       addResidency(*edgeID, strategy.destinationTile, bufferedBytes);
@@ -1824,7 +1824,7 @@ static bool refreshCandidateResourceSchedule(
         strategy.hasLayoutAssignment &&
         strategy.producerLayout != strategy.consumerLayout;
     if (needsLayoutMovement ||
-        strategy.action == SpatialEdgeAction::RetainedTraversal ||
+        strategy.action == SpatialEdgeAction::LocalShardResidency ||
         strategy.action == SpatialEdgeAction::LocalPhysicalConversion ||
         strategy.action == SpatialEdgeAction::PeerFragments) {
       localMovements.push_back(WholeDAGLocalMovement{
@@ -3864,7 +3864,7 @@ static std::vector<WholeCardCandidate> deriveShortlist(
           });
           constexpr std::array<SpatialEdgeAction, 6> localActions = {
               SpatialEdgeAction::CoupledFusion,
-              SpatialEdgeAction::RetainedTraversal,
+              SpatialEdgeAction::LocalShardResidency,
               SpatialEdgeAction::SpillReload,
               SpatialEdgeAction::Recompute,
               SpatialEdgeAction::RegionCut,
@@ -6105,7 +6105,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
           if (llvm::any_of(child.mapping.edgeStrategies,
                            [](const SpatialEdgeStrategy &strategy) {
                              return strategy.action ==
-                                    SpatialEdgeAction::RetainedTraversal;
+                                    SpatialEdgeAction::LocalShardResidency;
                            }))
             return 1;
           return 2;

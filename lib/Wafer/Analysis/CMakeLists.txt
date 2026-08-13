@@ -1,3 +1,8 @@
+set(LLVM_OPTIONAL_SOURCES
+  CollectiveTopologyAnalysis.cpp
+  ExecutionTopologyAnalysis.cpp
+)
+
 add_mlir_library(WaferAnalysis
   PhysicalDataflow/IndexRelation.cpp
   PhysicalDataflow/PhysicalAccessRelation.cpp

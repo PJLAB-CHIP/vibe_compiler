@@ -263,16 +263,10 @@ static size_t getPlacementHash(const WholeDAGNodePlacement &placement) {
   return static_cast<size_t>(hash);
 }
 
-/// Exact query-local memoization of one closed DAG edge transition. Placement
-/// options recur across many partial states; recomputing their affine relation
-/// and fragment plan was measured as the dominant model-scale placement cost.
-/// Concrete fragment legality observes the two shard dimensions, participant
-/// counts, and which ordered producer/consumer participants denote the same
-/// Tile. It does not observe an absolute Tile number: consistently translating
-/// both groups changes neither balanced shard domains nor resident/peer payload
-/// bounds. Cache that exact relation class so translated placements remain
-/// distinct search candidates without repeating the same legality proof. Hash
-/// collisions retain a full signature comparison.
+/// Exact query-local memoization of one closed DAG edge's logical demand.
+/// Demand legality observes only each side's shard dimension and participant
+/// count. Tile identity, layout, bytes, residency, and transport are downstream
+/// decisions and therefore cannot affect this cache key.
 class EdgeTransitionLegalityCache {
 public:
   explicit EdgeTransitionLegalityCache(const CardDAGAnalysis &dag)
@@ -287,8 +281,6 @@ public:
         edgeID, relation.producerShardDimension,
         relation.consumerShardDimension, relation.producerParticipants,
         relation.consumerParticipants);
-    for (int32_t consumerPosition : relation.producerToConsumer)
-      relationHash = llvm::hash_combine(relationHash, consumerPosition);
     const size_t hash = static_cast<size_t>(relationHash);
     llvm::SmallVector<Entry, 1> &bucket = buckets[hash];
     auto found = llvm::find_if(bucket, [&](const Entry &entry) {
@@ -298,7 +290,7 @@ public:
       return found->legal;
     std::string ignoredFailure;
     const bool legal = mlir::succeeded(
-        planner.verify(edgeID, producer, consumer, &ignoredFailure));
+        planner.derive(edgeID, producer, consumer, &ignoredFailure));
     bucket.push_back(Entry{edgeID, std::move(relation), legal});
     return legal;
   }
@@ -309,14 +301,11 @@ private:
     unsigned consumerShardDimension = 0;
     uint32_t producerParticipants = 0;
     uint32_t consumerParticipants = 0;
-    llvm::SmallVector<int32_t, 16> producerToConsumer;
-
     bool operator==(const TransitionRelation &other) const {
       return producerShardDimension == other.producerShardDimension &&
              consumerShardDimension == other.consumerShardDimension &&
              producerParticipants == other.producerParticipants &&
-             consumerParticipants == other.consumerParticipants &&
-             producerToConsumer == other.producerToConsumer;
+             consumerParticipants == other.consumerParticipants;
     }
   };
 
@@ -329,14 +318,6 @@ private:
         static_cast<uint32_t>(producer.tiles.size());
     relation.consumerParticipants =
         static_cast<uint32_t>(consumer.tiles.size());
-    relation.producerToConsumer.reserve(producer.tiles.size());
-    for (PhysicalTileId source : producer.tiles) {
-      auto destination = llvm::find(consumer.tiles, source);
-      relation.producerToConsumer.push_back(
-          destination == consumer.tiles.end()
-              ? -1
-              : static_cast<int32_t>(destination - consumer.tiles.begin()));
-    }
     return relation;
   }
 
@@ -346,7 +327,7 @@ private:
     bool legal;
   };
   std::unordered_map<size_t, llvm::SmallVector<Entry, 1>> buckets;
-  WholeDAGEdgeStrategyPlanner planner;
+  WholeDAGEdgeDemandPlanner planner;
 };
 
 uint64_t getNodeElementWork(const CardDAGNode &node) {
@@ -521,7 +502,7 @@ uint64_t getGroupTransitionPenalty(const PhysicalTopology &topology,
   const uint64_t sharedEndpoints = saturatingMultiply(2, overlap);
   penalty = penalty >= sharedEndpoints ? penalty - sharedEndpoints : 0;
   // A shard-axis redistribution on the same physical group is not local and
-  // must not look free to the pre-materialization beam.
+  // must not look free to the pre-materialization frontier.
   if (producer.tiles == consumer.tiles)
     penalty = saturatingAdd(penalty, std::max<uint64_t>(1, consumerCount));
   for (PhysicalTileId destination : consumer.tiles) {
@@ -1181,7 +1162,8 @@ derivePlacementResidencies(const CardDAGAnalysis &dag,
     std::optional<uint64_t> elementBytes = getStrategyElementBytes(strategy);
     if (!edge || !elementBytes)
       return std::nullopt;
-    if (strategy.action == SpatialEdgeAction::CoupledFusion) {
+    if (strategy.action == SpatialEdgeAction::CoupledFusion ||
+        strategy.action == SpatialEdgeAction::LocalShardResidency) {
       std::optional<uint64_t> bytes =
           getDomainBytes(strategy.producerSizes, *elementBytes);
       if (!bytes || *bytes == 0)
@@ -1710,6 +1692,7 @@ deriveWholeDAGPlacementFrontier(const CardDAGAnalysis &dag,
   llvm::SmallVector<WholeDAGPlacementCandidate, 24> accepted;
   std::unordered_map<size_t, llvm::SmallVector<size_t, 1>>
       resourceRenamingClasses;
+  WholeDAGEdgeStrategyPlanner finalEdgePlanner(dag);
   for (PartialPlacementState &state : frontier) {
     llvm::SmallVector<WholeDAGNodePlacement, 16> statePlacements =
         materializePlacements(state);
@@ -1722,7 +1705,7 @@ deriveWholeDAGPlacementFrontier(const CardDAGAnalysis &dag,
     }
     std::string ignoredFailure;
     mlir::FailureOr<WholeDAGEdgeStrategyPlan> edgePlan =
-        deriveWholeDAGEdgeStrategyPlan(dag, statePlacements, &ignoredFailure);
+        finalEdgePlanner.derive(statePlacements, &ignoredFailure);
     if (mlir::failed(edgePlan)) {
       resultStatistics.rejectedTransitions =
           saturatingAdd(resultStatistics.rejectedTransitions, 1);

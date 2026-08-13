@@ -314,17 +314,18 @@
 - 防复发：正例覆盖named-op被generalize后的非方形/permuted affine window与非零显式padding；负例覆盖错误iterator、map、
   payload、dynamic/position-dependent padding和shape relation，并验证source→typed Tile conv→Instr conv纵向。
 
-## 同号shard dimension不能证明跨op数据在同一Tile
+## Fragment carrier不能反向缩窄exact edge relation
 
 - 现象：producer和consumer使用相同Tile集合，且两边都记录`shardDimension = 0`时，edge planner直接选择local fusion；
-  transpose却把consumer result维0映射到producer维1，本应发生的peer transfer消失，no-card仍可能只验证结构而漏掉数值错误。
-- 根因：把各node自己的result-dimension编号当成跨op公共坐标，没有通过consumer result/operand indexing map恢复同一
-  structured iterator。
-- 修复模式：same-Tile residency必须证明consumer result shard和producer operand shard由同一parallel iterator携带；证明失败
-  则进入exact producer-demand/fragment规划。reduction只要result parallel iterator与producer shard对齐，未投影的reduction
-  iterator可继续保持Tile-local，不强迫构造不可逆的point relation。
-- 防复发：same-numbered transpose正例必须产生resident加peer fragments并下沉到DTE recv/send/wait；同Tile reduction正例仍为
-  coupled residency，disjoint reduction因无法证明exact rectangular demand继续fail closed。
+  transpose却把consumer result维0映射到producer维1，本应发生的peer transfer消失；之后为修正它加入的
+  functional/projected-permutation限制又把合法的disjoint reduction误判为无exact relation。
+- 根因：先把各node自己的result-dimension编号当成跨op公共坐标，随后又把当前稠密矩形fragment carrier的表达限制反向写成
+  logical relation legality；edge planner和materializer还各自重建一份indexing-map判断。
+- 修复模式：从producer/consumer共享structured iteration domain只导出一次query-local `IndexRelation`，对consumer shard用
+  relation image求all-and-only producer demand；一对多relation保持合法。矩形、strided或多片传输只在后续target realizability
+  分层判断。同Tile独立traversal使用`LocalShardResidency`，只有实际consumer-driven递归traversal使用`CoupledFusion`。
+- 防复发：same-numbered transpose必须产生resident加peer fragments并下沉到DTE recv/send/wait；同Tile和disjoint reduction均覆盖
+  exact demand，window覆盖一对多稠密像集，stride覆盖“不可用bounding box冒充exact fragment”，baseline继续断言零fusion。
 
 ## Direct-DTE局部endpoint顺序会造成FSM溢出或全卡wait环
 
@@ -341,7 +342,7 @@
 - 现象：为了让`none`逐op独立tiling而给每个consumer补DDR seal/reload后，`search`的`CoupledFusion`候选也被同一逻辑
   强制切断，导致full weight reload、SPM溢出或最终零融合。
 - 根因：candidate materialization没有按typed edge action区分`IndependentEdgeBaseline`与`search`的
-  `CoupledFusion`/retained traversal，把baseline策略写成了所有policy共享的结构改写。
+  `CoupledFusion`/local shard residency，把baseline策略写成了所有policy共享的结构改写。
 - 修复模式：显式consumer boundary只在independent baseline action生效；search-policy fusion仍由output traversal物化，并以
   actual in-region SPM use-def witness计数，不以proposal标记代签。
 - 防复发：none source-to-package测试断言`actual_fused_edges=0`和中间DDR movement；search-policy三阶段/layout-buffering测试断言

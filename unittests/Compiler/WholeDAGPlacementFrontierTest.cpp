@@ -171,9 +171,10 @@ TEST_F(WholeDAGPlacementFrontierTest,
       ASSERT_FALSE(placement.iteratorPartitionFactors.empty());
       ASSERT_LT(placement.spatialIteratorDimension,
                 placement.iteratorPartitionFactors.size());
-      EXPECT_EQ(placement.iteratorPartitionFactors
-                    [placement.spatialIteratorDimension],
-                placement.tiles.size());
+      EXPECT_EQ(
+          placement
+              .iteratorPartitionFactors[placement.spatialIteratorDimension],
+          placement.tiles.size());
       for (auto [iterator, factor] :
            llvm::enumerate(placement.iteratorPartitionFactors))
         if (iterator != placement.spatialIteratorDimension)
@@ -338,7 +339,7 @@ TEST_F(WholeDAGPlacementFrontierTest,
   EXPECT_TRUE(llvm::any_of(candidates, [](const auto &candidate) {
     return llvm::any_of(
         candidate.edgePlan.strategies, [](const SpatialEdgeStrategy &strategy) {
-          return strategy.action == SpatialEdgeAction::CoupledFusion;
+          return strategy.action == SpatialEdgeAction::LocalShardResidency;
         });
   }));
 }
@@ -433,7 +434,7 @@ TEST_F(WholeDAGPlacementFrontierTest,
 }
 
 TEST_F(WholeDAGPlacementFrontierTest,
-       ReductionDataTransitionFailsClosedWithoutSuppressingLocalAlternatives) {
+       ReductionDataTransitionKeepsExactFragmentsAndLocalAlternatives) {
   auto module = parse(R"mlir(
   func.func @reduce(%input: tensor<32x4xf16>) -> tensor<32xf16> {
     %out0 = tensor.empty() : tensor<32x4xf16>
@@ -473,8 +474,7 @@ TEST_F(WholeDAGPlacementFrontierTest,
       for (const SpatialEdgeFragment &fragment : strategy.fragments)
         if (fragment.kind == SpatialEdgeFragmentKind::Peer)
           EXPECT_NE(fragment.communicationId, 0)
-              << "the reduction input edge must never be approximated as a "
-                 "box";
+              << "the reduction input edge must keep its exact edge identity";
   }
 }
 

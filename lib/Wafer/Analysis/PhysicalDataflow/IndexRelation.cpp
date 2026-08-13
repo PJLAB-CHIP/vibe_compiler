@@ -25,6 +25,11 @@ static IndexSetResult failSet(IndexRelationStatus status,
   return IndexSetResult{status, std::nullopt, reason.str()};
 }
 
+static StaticRectangularIndexSetResult failRectangle(IndexRelationStatus status,
+                                                     llvm::StringRef reason) {
+  return StaticRectangularIndexSetResult{status, std::nullopt, reason.str()};
+}
+
 static IndexRelationQueryResult failQuery(IndexRelationStatus status,
                                           llvm::StringRef reason) {
   return IndexRelationQueryResult{status, std::nullopt, reason.str()};
@@ -167,8 +172,9 @@ bool IndexRelation::contains(llvm::ArrayRef<int64_t> destination,
 
 std::optional<AffineMap>
 IndexRelation::getProjectedAffineMap(MLIRContext *context) const {
-  if (!context || status != IndexRelationStatus::Exact ||
-      relation.getNumDisjuncts() != 1)
+  if (!context || status != IndexRelationStatus::Exact)
+    return std::nullopt;
+  if (relation.getNumDisjuncts() != 1)
     return std::nullopt;
 
   const IntegerRelation &disjunct = relation.getDisjunct(0);
@@ -263,6 +269,63 @@ IndexRelationResult IndexRelation::fromAffineMap(
   addStaticShapeBounds(relation, destinationShape, sourceShape);
   bool isBound = hasDynamicDim(destinationShape) || hasDynamicDim(sourceShape);
   return finishExactOrBound(std::move(relation), isBound, limits);
+}
+
+IndexRelationResult IndexRelation::fromCommonIterationDomain(
+    AffineMap iterationToDestination, llvm::ArrayRef<int64_t> destinationShape,
+    AffineMap iterationToSource, llvm::ArrayRef<int64_t> sourceShape,
+    llvm::ArrayRef<int64_t> iterationShape, const IndexRelationLimits &limits) {
+  IndexRelationResult toDestination = fromAffineMap(
+      iterationToDestination, iterationShape, destinationShape, limits);
+  if (!toDestination.relation)
+    return toDestination;
+  IndexRelationResult toSource =
+      fromAffineMap(iterationToSource, iterationShape, sourceShape, limits);
+  if (!toSource.relation)
+    return toSource;
+  IndexRelationResult destinationToIteration =
+      toDestination.relation->inverse(limits);
+  if (!destinationToIteration.relation)
+    return destinationToIteration;
+  IndexRelationResult result =
+      destinationToIteration.relation->compose(*toSource.relation, limits);
+  if (!result.isExact())
+    return result;
+  mlir::AffineMap destinationToIterationMap =
+      mlir::inversePermutation(iterationToDestination);
+  if (destinationToIterationMap) {
+    mlir::AffineMap projected =
+        iterationToSource.compose(destinationToIterationMap);
+    if (projected &&
+        projected.isProjectedPermutation(/*allowZeroInResults=*/true)) {
+      llvm::SmallVector<int64_t, 4> pattern;
+      for (AffineExpr expression : projected.getResults()) {
+        if (auto dimension = dyn_cast<AffineDimExpr>(expression)) {
+          pattern.push_back(dimension.getPosition());
+          continue;
+        }
+        auto constant = dyn_cast<AffineConstantExpr>(expression);
+        if (!constant || constant.getValue() != 0) {
+          pattern.clear();
+          break;
+        }
+        pattern.push_back(-1);
+      }
+      if (pattern.size() == projected.getNumResults()) {
+        IndexRelationResult projectedRelation = fromAffineMap(
+            projected, destinationShape, sourceShape, limits);
+        if (projectedRelation.isExact() &&
+            projectedRelation.relation
+                ->isEquivalentTo(*result.relation, limits)
+                .isProvenTrue()) {
+          result.relation->projectedRectanglePattern = std::move(pattern);
+          result.relation->projectedRectangleDestinationShape =
+              llvm::SmallVector<int64_t, 4>(destinationShape);
+        }
+      }
+    }
+  }
+  return result;
 }
 
 IndexRelationResult IndexRelation::staticSlice(
@@ -413,22 +476,104 @@ IndexRelation::staticConcatPiece(llvm::ArrayRef<int64_t> destinationShape,
 
 IndexSetResult IndexRelation::staticDomain(llvm::ArrayRef<int64_t> shape,
                                            const IndexRelationLimits &limits) {
-  if (!isShapeValid(shape) || hasDynamicDim(shape))
+  llvm::SmallVector<int64_t, 4> offsets(shape.size(), 0);
+  return staticRectangularDomain(offsets, shape, limits);
+}
+
+IndexSetResult
+IndexRelation::staticRectangularDomain(llvm::ArrayRef<int64_t> offsets,
+                                       llvm::ArrayRef<int64_t> sizes,
+                                       const IndexRelationLimits &limits) {
+  if (offsets.size() != sizes.size() || !isShapeValid(sizes) ||
+      hasDynamicDim(sizes) ||
+      llvm::any_of(offsets, [](int64_t offset) { return offset < 0; }))
     return failSet(IndexRelationStatus::Unsupported,
-                   "static index domain requires a static shape");
-  if (shape.size() > limits.maxVariables)
+                   "static index domain requires static non-negative bounds");
+  if (sizes.size() > limits.maxVariables)
     return failSet(IndexRelationStatus::ResourceExhausted,
                    "index domain exceeds variable budget");
-  IntegerPolyhedron domain(PresburgerSpace::getSetSpace(shape.size()));
-  for (auto [index, dim] : llvm::enumerate(shape)) {
-    domain.addBound(BoundType::LB, index, 0);
-    domain.addBound(BoundType::UB, index, dim - 1);
+  IntegerPolyhedron domain(PresburgerSpace::getSetSpace(sizes.size()));
+  for (auto [index, bounds] : llvm::enumerate(llvm::zip(offsets, sizes))) {
+    auto [offset, size] = bounds;
+    int64_t upper = 0;
+    if (llvm::AddOverflow(offset, size, upper))
+      return failSet(IndexRelationStatus::Invalid,
+                     "static index domain bound overflows");
+    domain.addBound(BoundType::LB, index, offset);
+    domain.addBound(BoundType::UB, index, upper - 1);
   }
   PresburgerSet set(domain);
   if (exceedsSetLimits(set, limits))
     return failSet(IndexRelationStatus::ResourceExhausted,
                    "index domain exceeds variable or disjunct budget");
   return IndexSetResult{IndexRelationStatus::Exact, std::move(set), {}};
+}
+
+StaticRectangularIndexSetResult IndexSetResult::getExactStaticRectangularDomain(
+    const IndexRelationLimits &limits) const {
+  if (status != IndexRelationStatus::Exact || !set)
+    return failRectangle(
+        status,
+        reason.empty() ? "rectangular recovery requires an exact set" : reason);
+  if (set->isIntegerEmpty())
+    return failRectangle(IndexRelationStatus::Unsupported,
+                         "empty index demand has no transfer rectangle");
+  if (set->getNumVars() > limits.maxVariables ||
+      set->getNumDisjuncts() > limits.maxDisjuncts)
+    return failRectangle(IndexRelationStatus::ResourceExhausted,
+                         "rectangular recovery exceeds index-set budget");
+
+  const unsigned rank = set->getSpace().getNumSetDimVars();
+  llvm::SmallVector<int64_t, 4> offsets(rank,
+                                        std::numeric_limits<int64_t>::max());
+  llvm::SmallVector<int64_t, 4> inclusiveUpper(
+      rank, std::numeric_limits<int64_t>::min());
+  bool sawNonEmptyDisjunct = false;
+  for (const IntegerRelation &stored : set->getAllDisjuncts()) {
+    if (stored.isIntegerEmpty())
+      continue;
+    sawNonEmptyDisjunct = true;
+    for (unsigned dimension = 0; dimension < rank; ++dimension) {
+      std::optional<int64_t> lower =
+          stored.getConstantBound64(BoundType::LB, dimension);
+      std::optional<int64_t> upper =
+          stored.getConstantBound64(BoundType::UB, dimension);
+      if (!lower || !upper)
+        return failRectangle(
+            IndexRelationStatus::Unsupported,
+            "exact index demand has no finite static rectangular bounds");
+      offsets[dimension] = std::min(offsets[dimension], *lower);
+      inclusiveUpper[dimension] = std::max(inclusiveUpper[dimension], *upper);
+    }
+  }
+  if (!sawNonEmptyDisjunct)
+    return failRectangle(IndexRelationStatus::Unsupported,
+                         "empty index demand has no transfer rectangle");
+
+  llvm::SmallVector<int64_t, 4> sizes;
+  sizes.reserve(rank);
+  for (unsigned dimension = 0; dimension < rank; ++dimension) {
+    int64_t size = 0;
+    if (inclusiveUpper[dimension] < offsets[dimension] ||
+        llvm::SubOverflow(inclusiveUpper[dimension], offsets[dimension],
+                          size) ||
+        llvm::AddOverflow(size, int64_t{1}, size))
+      return failRectangle(IndexRelationStatus::Invalid,
+                           "exact index demand rectangle overflows");
+    sizes.push_back(size);
+  }
+  IndexSetResult rectangle =
+      IndexRelation::staticRectangularDomain(offsets, sizes, limits);
+  if (!rectangle.isExact())
+    return failRectangle(rectangle.status, rectangle.reason);
+  if (!set->isEqual(*rectangle.set))
+    return failRectangle(
+        IndexRelationStatus::Unsupported,
+        "exact index demand is not one dense static rectangle");
+  return StaticRectangularIndexSetResult{
+      IndexRelationStatus::Exact,
+      StaticRectangularIndexSet{std::move(offsets), std::move(sizes)},
+      {}};
 }
 
 IndexRelationResult
@@ -503,6 +648,53 @@ IndexSetResult IndexRelation::image(const PresburgerSet &destinationDomain,
     return failSet(IndexRelationStatus::ResourceExhausted,
                    "index relation image exceeds budget");
   return IndexSetResult{restricted.status, std::move(image), {}};
+}
+
+StaticRectangularIndexSetResult IndexRelation::getExactStaticRectangularImage(
+    llvm::ArrayRef<int64_t> destinationOffsets,
+    llvm::ArrayRef<int64_t> destinationSizes,
+    const IndexRelationLimits &limits) const {
+  if (status != IndexRelationStatus::Exact)
+    return failRectangle(IndexRelationStatus::SoundBound,
+                         "rectangular image requires an exact relation");
+  if (destinationOffsets.size() != getDestinationRank() ||
+      destinationSizes.size() != getDestinationRank())
+    return failRectangle(IndexRelationStatus::Invalid,
+                         "rectangular image destination rank is invalid");
+
+  if (projectedRectanglePattern && projectedRectangleDestinationShape) {
+    for (auto [offset, size, extent] :
+         llvm::zip_equal(destinationOffsets, destinationSizes,
+                         *projectedRectangleDestinationShape)) {
+      int64_t upper = 0;
+      if (offset < 0 || size <= 0 || llvm::AddOverflow(offset, size, upper) ||
+          upper > extent)
+        return failRectangle(IndexRelationStatus::Invalid,
+                             "rectangular image destination is out of bounds");
+    }
+    StaticRectangularIndexSet result;
+    result.offsets.reserve(projectedRectanglePattern->size());
+    result.sizes.reserve(projectedRectanglePattern->size());
+    for (int64_t mappedDimension : *projectedRectanglePattern) {
+      if (mappedDimension >= 0) {
+        const unsigned position = static_cast<unsigned>(mappedDimension);
+        result.offsets.push_back(destinationOffsets[position]);
+        result.sizes.push_back(destinationSizes[position]);
+        continue;
+      }
+      result.offsets.push_back(0);
+      result.sizes.push_back(1);
+    }
+    return StaticRectangularIndexSetResult{
+        IndexRelationStatus::Exact, std::move(result), {}};
+  }
+
+  IndexSetResult destination =
+      staticRectangularDomain(destinationOffsets, destinationSizes, limits);
+  if (!destination.isExact())
+    return failRectangle(destination.status, destination.reason);
+  IndexSetResult exactImage = image(*destination.set, limits);
+  return exactImage.getExactStaticRectangularDomain(limits);
 }
 
 IndexSetResult

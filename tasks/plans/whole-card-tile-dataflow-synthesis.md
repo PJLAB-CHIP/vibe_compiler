@@ -1,7 +1,8 @@
 # Whole-Card Multi-Tile 综合实施计划
 
 状态：2026-08-11 完成独立deterministic baseline controller及最终fresh验证，Q49达到`board-ready`；
-2026-08-13 将过宽的Q50 capability migration拆为Q50.A–Q50.K十一个独立队列项，当前只执行Q50.A。算法、IR与
+2026-08-13 将过宽的Q50 capability migration拆为Q50.A–Q50.K十一个独立队列项，并完成Q50.A的
+layout-independent exact edge demand artifact及canonical compatibility lowering；Q50.B保持`next`。算法、IR与
 pipeline contract仍只由`tasks/06-physical-dataflow-synthesis.md`拥有；本文件是唯一实施计划，只描述施工顺序、
 现有代码处置和独立completion checkpoint；workload/board gate由`tasks/16-verification-contract.md`拥有。
 
@@ -41,7 +42,7 @@ Pipeline position:
 | 队列项 | 唯一职责 | 产出 | 独立完成门禁 |
 | --- | --- | --- | --- |
 | Q49 | 收口当前实现并固定同路径baseline | 可编译的current pipeline和accepted baseline package | baseline fresh build/package/no-card通过 |
-| Q50.A | 精确edge relation与transfer correctness | relation-derived demand及local/peer actual fragments | logical relation与target lowering无第二事实源 |
+| Q50.A | 精确edge relation与logical demand correctness | layout-independent exact demand plan | relation image、ownership coverage与target lowering严格分层 |
 | Q50.B | Attention/decode语义证明 | typed SSA proof及合法算法集合 | 普通图、functional decode和near-miss通过 |
 | Q50.C | online recurrence DAG变换 | isolated clone中的真实online structured DAG | recurrence与observable结果验证通过 |
 | Q50.D | partitioned-K/V DAG变换 | 真实partition/local-reduction/merge DAG | coverage、merge和near-miss测试通过 |
@@ -182,16 +183,21 @@ structured/Card/Tile/Instr IR。只有current正负测试和actual witness等价
 Q50.A–Q50.K都不选择局部winner，也不对Q51搜索域设置固定tile、layout、fusion、buffer、worker或算法上限。
 Q51必须同时消费这些机制并作唯一whole-DAG选择。
 
-### Q50.A：Exact Edge Relation and Transfer Correctness
+### Q50.A：Exact Edge Relation and Logical Demand Correctness
 
-- 输入：已给定spatial placement的current structured producer/consumer SSA edge及其indexing semantics。
+- 输入：已给定spatial placement的current structured producer/consumer SSA edge及其indexing semantics。placement只给出
+  每个node的shard维、participant和physical Tile ownership；它不附带layout、encoding、buffer或movement action。
 - 职责：只从structured semantics导出query-local `IndexRelation`，以relation image求consumer shard需要的all-and-only
-  producer logical demand；将该逻辑集合与矩形fragment、strided descriptor或多片target lowering分层。
-- 输出：local/remote demand decomposition及可物化的DDR/peer fragments。`LocalShardResidency`仅表示同Tile数据可用；
-  `CoupledFusion`保留给Q50.K的真实共同traversal。
-- Gate：reduction、broadcast/window、stride、local与peer边均有正负测试；planner和materializer共用唯一relation API；
-  actual Card/Tile IR中send/recv/wait与exact demand一致；baseline继续保持逐op DDR boundary和零fusion。
-- 非目标：不选spatial、temporal、layout、residency、route或fusion，不处理placement frontier性能。
+  producer logical demand，并证明producer shard ownership覆盖该集合。
+- 输出：`WholeDAGEdgeDemandPlan`。每个destination Tile记录consumer logical domain、exact producer demand及各producer
+  Tile拥有的logical domain；不记录`MemLayout`、physical offset/bytes、local/remote action、route、buffer、send/recv或fusion。
+- 下游边界：当前CardProgram仍只接受稠密矩形fragment，因此通过显式compatibility lowering把exact demand与ownership求交，
+  再派生layout、`LocalShardResidency`/peer fragment和bytes。stride/multi-piece在logical stage合法；旧carrier不能表达时只在该
+  lowering失败。Q50.E迁移layout/representation，Q50.F迁移residency，Q50.G迁移communication，Q50.K迁移真正fusion。
+- Gate：reduction、broadcast/window、stride及ownership coverage均有正负测试；placement transition直接消费demand planner，
+  不经过strategy/layout；canonical compatibility lowering和现有actual Card/Tile IR纵向测试继续证明dense local/peer路径，
+  baseline保持逐op DDR boundary和零fusion。
+- 非目标：不选spatial、temporal、layout、representation、residency、route、buffer或fusion，不处理placement frontier性能。
 
 ### Q50.B：Attention and Decode Semantic Proof
 
