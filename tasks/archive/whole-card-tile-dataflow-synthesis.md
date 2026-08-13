@@ -1,5 +1,9 @@
 # Whole-Card Multi-Tile 综合实施计划
 
+归档说明：本文件保存2026-08-11至2026-08-13期间被替代的完整施工计划，已由
+`tasks/plans/physical-dataflow-synthesis.md`替代；其中旧Q50拆法、whole-card/whole-DAG owner、shortlist与局部
+probe顺序均不是current合同。正文原样保留用于追溯，不作为当前实现依据。
+
 状态：2026-08-11 完成独立deterministic baseline controller及最终fresh验证，Q49达到`board-ready`；
 2026-08-13 将过宽的Q50 capability migration拆为Q50.A–Q50.K十一个独立队列项，并完成Q50.A的
 layout-independent exact edge demand artifact及canonical compatibility lowering；Q50.B保持`next`。算法、IR与

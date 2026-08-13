@@ -1,6 +1,6 @@
-# Wafer Schema-v8 Package、Runtime Preflight 与 Board Launch
+# Wafer ExecutablePackage、Runtime Preflight 与 Board Launch
 
-状态：本文是当前 package/runtime launch 的唯一现行合同。production compiler只发布 single-card、all-and-only
+状态：本文是当前`ExecutablePackage`/runtime launch的唯一现行合同。source-to-package compiler只发布single-card、all-and-only
 16 physical Tiles 的 schema-v8 package。Q49–Q52分别闭合baseline、能力迁移、统一搜索和scalability；host/no-card
 局部合同闭合不等于Q53 `board-ready`，真实板端matched A/B gate也尚未完成。
 
@@ -9,19 +9,21 @@
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  原子验证的 TargetArtifactBundle；包含 current target identity/runtime ABI/module format、RuntimeLaunchContract、
-  verified modules，以及 exactly 16 个带显式 (card_id, tile_id, launch_slot) 的 Tile interfaces。
+  通过admission的`CardExecutable`及其同一transaction中原子验证的target publication view；包含current target
+  identity/runtime ABI/module format、RuntimeLaunchContract、verified modules，以及exactly 16个带显式
+  (card_id, tile_id, launch_slot)的Tile interfaces。
 - Current stage responsibility:
   从 typed target artifacts组装唯一 schema-v8 manifest与module payload；验证resource scope、ABI slot、entry、
   transport、module/export和物理Tile domain；no-card构造完整runtime plan；board runtime按同一plan分配、装载、
   提交、等待、readback和cleanup。
 - Output artifact / IR:
-  canonical manifest.json、all-and-only referenced modules、VerifiedPackageManifest、RuntimeInvocationPlan，以及
-  board invocation result；profile请求额外产生digest-bound schema-v9 companion。
+  `ExecutablePackage`：canonical manifest.json与all-and-only referenced modules；其loader形成
+  VerifiedPackageManifest与RuntimeInvocationPlan，board执行形成invocation result；profile请求额外产生digest-bound
+  schema-v9 companion。
 - Downstream consumer:
   wafer-run no-card、board runtime provider、profile campaign/report和外部package审计。
 - User-level driver / named pipeline:
-  wafer-compile production|none 生成package；wafer-run消费verified package并以whole-card方式执行。
+  wafer-compile `search|none`生成`ExecutablePackage`；wafer-run消费verified package并执行完整card-scoped domain。
 - Explicit non-goals:
   不从资源名、路径、entry ordinal、tile_id或num_partitions推断launch；不暴露provider queue/packet；
   不暴露按EntryId选择单个Tile的runtime入口；不保留旧manifest reader、旧launch ABI或兼容alias；
@@ -35,16 +37,16 @@ Pipeline position:
 
 product-visible launch kind只有：
 
-- `kernel`：current whole-card Grid 或 Cluster form；
+- `kernel`：current card-scoped Grid或Cluster form；
 - `model`：current TX81 model BootParam ABI。
 
 kernel form、entry ABI与phase list是 nested typed facts，不是更多launch kinds。合法组合只能由
 `RuntimeLaunchContract` factory产生；parser、compiler、runtime和provider共享同一enum与canonical spelling。
 
-current kernel entry ABI保留whole-card pointer-table形式，phase只允许typed `prepare`/`main`序列。Direct-DTE是
+current kernel entry ABI保留card-scoped pointer-table形式，phase只允许typed `prepare`/`main`序列。Direct-DTE是
 entry transport requirement，会要求status resource和prepare/main lifecycle；它不是第三种launch kind或用户可选ABI。
 
-单卡source即使`num_partitions=1`，Q49 baseline与Q51 production仍生成16个physical Tile entries；无工作Tile使用合法no-work body，而不是从
+单卡source即使`num_partitions=1`，Q49 `none` baseline与Q51 `search`仍生成16个physical Tile entries；无工作Tile使用合法no-work body，而不是从
 package domain中消失。
 
 ## 3. Manifest schema v8
@@ -109,7 +111,7 @@ host-visible只由role合同决定。workspace和transport status由compiler/run
 ### 3.4 Entry completion 与 transport
 
 schema-v8只接受 `return_after_local_drain`。它要求每个Tile entry返回前完成本地发起且影响结果、reuse或status的
-work；whole-card成功仍要求16个entry和全部transport obligations共同完成。
+work；card-scoped成功仍要求16个entry和全部transport obligations共同完成。
 
 transport是closed union：
 
@@ -117,12 +119,13 @@ transport是closed union：
 - `direct_dte`：exactly one Tile-scoped status resource，dtype/size/alignment/access与current status ABI一致，
   并声明host watchdog required。
 
-status从pending到success/error的协议由current ABI定义。runtime必须在provider-confirmed whole-card completion后
+status从pending到success/error的协议由current ABI定义。runtime必须在provider-confirmed card-scoped completion后
 readback并验证所有required statuses；missing、pending、error或不完整domain均失败。
 
 ## 4. Package assembly 与原子发布
 
-compiler只从同一次 `TargetArtifactBundle`组装package，不重做target lowering。组装顺序：
+compiler只从同一`CardExecutable`绑定的target publication view组装`ExecutablePackage`，不重做target lowering。当前实现类
+`TargetArtifactBundle`只作为该view的迁移索引，不定义稳定artifact。组装顺序：
 
 1. 验证 ExecutionConfig、launch contract、target identity、format和16 Tile interfaces一致；
 2. 依据typed program bindings建立card-scoped resources；
@@ -162,7 +165,7 @@ no-card成功只证明package/runtime contract可执行，不证明target数值�
 `tile_id`↔`launch_slot`关系，形成move-only `QualifiedBoardRuntimeSession`。只要设备和软件身份不变，后续case复用该
 capability，不重复资格化。
 
-public API只允许由第一笔完整whole-card invocation建立该session；不存在先传入任意Tile count建立空session、随后再选择
+public API只允许由第一笔完整card-scoped invocation建立该session；不存在先传入任意Tile count建立空session、随后再选择
 部分entry执行的入口。第一笔invocation失败时不返回session capability。
 
 provider inventory是事实源；runtime不假设物理Tile按launch slot编号。重复、缺失、unavailable Tile或mapping mismatch
@@ -171,7 +174,7 @@ provider inventory是事实源；runtime不假设物理Tile按launch slot编号�
 
 ### 6.2 Invocation
 
-每次whole-card invocation按verified plan执行：
+每次card-scoped invocation按verified plan执行：
 
 1. 按ResourceId分配一次device storage并copy H2D；
 2. 装载all-and-only module payload并解析typed exports；

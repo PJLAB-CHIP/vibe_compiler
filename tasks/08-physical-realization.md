@@ -1,16 +1,15 @@
 # Wafer Physical Realization：Relation、Encoding 与 Transfer
 
-状态：2026-08-09按whole-card CardProgram / physical-Tile MPMD主线重写。本文拥有current-IR-derived
-`IndexRelation`、physical encoding和transfer realizability合同；不拥有spatial/temporal/fusion winner。
-Q49正在收口同路径baseline；现有relation、encoding、descriptor与per-Tile lowering由Q50保全迁移，dependent mapping
-remap、partial-overlap redistribution以及NoC与residency的联合搜索由Q51闭合。实现状态只看`tasks/progress.md`。
+状态：2026-08-13按CardProgram / physical-Tile MPMD主线收敛。本文拥有current-IR-derived
+`IndexRelation`、physical encoding和transfer realizability合同；不拥有spatial/temporal/fusion winner，也不记录
+动态任务状态。实现状态只看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  card-local structured tensor DAG，或whole-DAG scheduler准备物化的isolated whole-card candidate；current op、
+  card-local structured TensorProgram，或physical-dataflow selection准备物化的isolated CardProgram candidate；current op、
   indexing maps、Tiling/DPS interfaces、SSA/view/control flow、dtype/shape/effect与target topology均可验证，
   selected physical Tile work domain尚可处于query-local proposal或actual CardProgram clone中。
 - Current stage responsibility:
@@ -22,15 +21,15 @@ Pipeline position:
   accepted事实只存在于typed memref、SSA/view、wafer.tile.region、movement/event和必要typed attrs中。
 - Downstream consumer:
   per-physical-Tile Tile-to-Instr conversion、fresh completion reconstruction、fixed-capacity SPM/DDR planning、
-  whole-card communication/resource admission、target conversion与package publication。
+  CardExecutable communication/resource admission、target conversion与package publication。
 - User-level driver / named pipeline:
   wafer-compile production pipeline；wafer-opt入口只用于parser/verifier/conversion replay，不能组成第二条production路径。
 - Explicit non-goals:
-  不选择全局placement、tile size、fusion/residency或route；不保存relation/descriptor/search side table；
+  不选择全局placement、tile size、fusion、TileRegion、retention/release或route；lifetime只从actual IR重算；不保存relation/descriptor/search side table；
   不分配runtime handle或launch slot；不从op/value/symbol/workload名字恢复语义；lowering失败不隐式换路线。
 - Completion gate:
   每个accepted view/movement只凭current IR可重建exact logical/physical cover、range、effect、lifetime和completion；
-  cross-Tile movement显式指向physical Tile并经whole-card matching；rewrite后旧analysis不再使用，late exact gate
+  cross-Tile movement显式指向physical Tile并经CardExecutable matching；rewrite后旧analysis不再使用，late exact gate
   不需要search proposal即可验证和lower。
 ```
 
@@ -50,9 +49,10 @@ Pipeline position:
 | logical index relation与shape bounds | `IndexRelation`、Affine/Presburger/ValueBounds | current IR epoch |
 | physical footprint、valid/padding和bit mapping | Wafer physical encoding attr/type interface | typed IR |
 | metadata view / transfer feasibility | source+destination+relation+encoding helper | 单次proof |
-| selected route、temporary与event | actual typed view/movement/SSA IR | candidate clone |
+| selected route、temporary与event | actual typed view/movement/SSA IR | CardProgram candidate |
+| actual SPM residency | 单physical-Tile actual roots、SSA/view、effect、order与completion | finalized CardProgram IR epoch |
 | SPM/DDR accepted offset | memory planning attr及fresh validator | accepted Instr IR |
-| cross-Tile sender/receiver和message | physical Tile communication ops | selected whole-card IR |
+| cross-Tile sender/receiver和message | physical Tile communication ops | selected CardProgram IR |
 
 ## 3. `IndexRelation`
 
@@ -133,7 +133,7 @@ wafer.tile.peer_recv %staging_spm {peer = <physical tile_id>, ...}
 
 peer op携带fixed bytes与stable message identity；source/destination storage、encoding、valid domain和effect由operand
 及current IR解释。它不携带logical card-partition ID、runtime launch slot、raw route、FSM或cost。Tile-to-Instr
-conversion产生`wafer.instr.dte_send` / `dte_recv` / `dte_wait`；memory planning后，whole-card admission才提交
+conversion产生`wafer.instr.dte_send` / `dte_recv` / `dte_wait`；memory planning后，CardExecutable admission才提交
 sender无法从单Tile module重算的remote accepted-address/resource binding。
 
 相同bytes不证明相同logical region。合法peer transfer必须证明producer domain、consumer demanded domain、两端
@@ -142,15 +142,25 @@ typed multicast capability；fanin/reduction必须显式包含receive、local co
 
 ## 6. CardProgram、TileProgram 与 TileRegion 集成
 
-`wafer.card.program`是whole-card verification scope，拥有all-and-only available `wafer.tile.program`。每个
+`wafer.card.program`是CardProgram verification scope，拥有all-and-only available `wafer.tile.program`。每个
 TileProgram绑定一个physical `tile_id`，可以包含不同op、loop、temporal tile shape和执行长度。SPM value不能跨
 TileProgram SSA传递；跨Tile依赖只能通过card DDR或explicit communication表达。
 
 `wafer.tile.region`只表示一个physical Tile内的SPM residency domain。region内允许多个traversal和不同tile shape；
-root可以分别retain、spill、reload或release。跨region SPM root/value/alias非法，跨界数据必须显式materialize。
-region boundary不是自动completion，仍访问root的compute/movement/communication必须完成后才能释放。
+root可以分别retain、spill、reload或release。任何跨region shaped value都必须由显式DDR store/completion/load
+materialize；SPM root/value/alias跨界非法。region boundary不是自动completion，仍访问root的
+compute/movement/communication必须完成后才能释放。
 
-spatial placement、temporal tile、fusion/residency、encoding和communication由06的同一个whole-DAG scheduler共同选择。
+把多个traversal放入同一region只证明共享一个residency domain，不证明op fusion或coupled traversal。coupled traversal
+必须由producer work嵌入consumer traversal及其direct SSA tile use证明；同region的独立loop nests/local staging不能统计为
+fusion。类似地，requested resident action不等于actual residency：只有物化后的root/use/effect/order/completion证明中间值
+未经过DDR，且09在final Instr上给出合法offset，才形成可接受的SPM事实。
+
+stage pipeline的physical realizability也只接受actual结构：chunk/subview、每段movement、独立或rotating buffer roots、
+slot reuse、issue order和matching completion必须能从Tile/Instr IR重建。一个pipeline flag、估算overlap窗口或descriptor
+side list既不能证明transfer，也不能缩短lifetime。
+
+spatial placement、temporal tile、fusion、encoding和communication由06的同一个physical-dataflow selection共同选择。
 本文只验证它物化的actual relation和physical dataflow，不因某个route更便宜而修改placement，也不创建独立layout或
 NoC selector。
 
@@ -170,14 +180,14 @@ IR中显式fill/mask/segmented movement。host-visible output不得把padding发
 
 ## 8. Materialization 与 Cleanup
 
-bounded shortlist中的proposal按以下transaction物化：
+调用方本次选择按以下transaction物化；本文不拥有shortlist或frontier：
 
-1. clone未放置的whole-card parent或构造isolated CardProgram actual candidate；
+1. clone未放置的CardProgram parent或构造isolated complete CardProgram candidate；
 2. 从current clone建立relation、bounds、alias、physical-map和effect snapshot；
 3. 用PatternRewriter/IRMapping/DialectConversion创建typed views、roots、movement、temporary和events；
 4. rewrite后销毁旧analysis；
 5. 对新IR运行verifier、descriptor、invalid-lane、range、lifetime与completion gate；
-6. 失败销毁整个candidate，成功交还唯一whole-DAG owner。
+6. 失败销毁整个candidate并返回typed rejection，成功交还physical-dataflow selection。
 
 cleanup只删除可由exact proof确认的冗余：same-root/same-map metadata view、dead无effect movement、完整等价
 same-space copy和不延长lifetime的duplicate materialization。它不能移动fusion cut、改变encoding/route、创造spill、
@@ -197,7 +207,7 @@ compile-time proof resource limit。分类只用于diagnostic与search control�
 - direct/mapped/staged/local movement和one/multi-descriptor cover；
 - invalid-lane fill/mask/segmented path及negative observation；
 - distinct physical Tile peer IDs、message matching、cross-Tile SPM SSA rejection；
-- actual CardProgram projection后每Tile Instr、SPM/DDR和whole-card communication gate重放；
+- actual CardProgram projection后每Tile Instr、SPM/DDR和CardExecutable communication gate重放；
 - source-to-package integration实际执行，不以单op FileCheck代替。
 
 Q51完成还需要同一search真正生成dependent producer/consumer remap、partial-overlap transfer和NoC-aware placement，

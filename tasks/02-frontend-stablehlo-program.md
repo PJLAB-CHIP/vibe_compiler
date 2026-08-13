@@ -1,6 +1,6 @@
 # Wafer Frontend 与 StableHLO Program Directory 设计
 
-状态：2026-08-08按card-level GSPMD与whole-card MPMD边界同步。本文只拥有StableHLO program directory、
+状态：2026-08-13按card-level GSPMD与card-local multi-Tile边界同步。本文只拥有StableHLO program directory、
 metadata/payload和frontend admission合同；`num_partitions`描述card partition，不描述单卡16个physical Tile。
 typed model/state/resource graph与Tile级时空综合属于下游，不是frontend事实。实现状态看`tasks/progress.md`。
 
@@ -20,16 +20,16 @@ Pipeline position:
   IR-only frontend verifier检查，尚未进入directory schema或production lowering。
 - Output artifact / IR:
   verified StableHLO program directory。它仍由MLIR、`forward.meta`和必要payload共同组成，不是
-  ExecutableBundle、target module或runtime package。
+  `TensorProgram`、`CardProgram`、`CardExecutable`、target module或`ExecutablePackage`。
 - Downstream consumer:
   Q15 typed compiler driver在transaction-owned snapshot上建立card-partition mesh，调用pinned XLA SPMD helper，
   然后做local compute normalization并发布verified card-local structured tensor program；05 structured
-  optimization继续在同一IR上建立optimizer-ready handoff。06随后以target physical topology为独立输入，形成
-  whole-card MPMD并联合搜索spatial placement、temporal tiling、fusion/SPM residency与communication。
+  optimization继续在同一IR上建立verified `TensorProgram` handoff。06随后以target physical topology为独立输入，
+  形成`CardProgram`并联合搜索spatial placement、temporal tiling、TileRegion/融合与communication。
 - User-level driver / named pipeline:
   `wafer-compile-stablehlo --verify-stablehlo-program`只做frontend admission；继续编译只经
   `wafer-compile --input-program-dir=... --output-program-dir=... --num-partitions=1 --launch-kind={kernel|model}`；
-  current target identity由compiler固定提供，不是用户选择。
+  source-to-package optimization policy只为`search|none`，current target identity由compiler固定提供，不是用户选择。
   `wafer-opt`及named MLIR pipelines只处理显式IR，不拥有program-directory I/O。
 - Explicit non-goals:
   不定义typed model/state ABI、MPMD member graph、physical endpoint、layout、SPM/DDR allocation、DTE、
@@ -208,8 +208,8 @@ variant seed和原固定seed全部通过后，scale case只把source/model compa
 
 旧Q44的TP16/rank-as-Tile资格只作历史背景，不属于current frontend合同。当前GEMM、HuggingFace attention、
 KV-cache decode与Llama-2 7B block都从真实framework module和原始dtype tensor导出
-`num_partitions=1`的card-local program；source IR不携带物理Tile mesh或卡内TP标记。Q49 baseline与Q51 production随后
-从同一structured DAG决定16个physical Tile上的spatial mapping、temporal tiling、fusion/SPM residency与通信。不得用手写
+`num_partitions=1`的card-local program；source IR不携带物理Tile mesh或卡内TP标记。Q49 `none` baseline与Q51 `search`随后
+从同一structured DAG决定16个physical Tile上的spatial mapping、temporal tiling、TileRegion/融合与通信。不得用手写
 StableHLO/MLIR、parameter name或测试fixture把这些卡内决定提前编码进frontend。
 同一组tensor先在PyTorch eager CPU执行形成唯一用户级expected；NumPy不得参与expected生成或最终结果比较。
 exporter因NPY artifact格式使用NumPy作payload序列化属于adapter transport，不取得数值参考结果的ownership。
@@ -239,14 +239,14 @@ tensor program。frontend verifier本身不执行helper、不形成调度单元�
 `ExecutionConfig`。它不持有MLIR operation/context、helper path、output path、pass callback、candidate policy、
 target context或publication authority。
 
-production driver在parse前把source directory完整复制到transaction-owned snapshot；后续frontend verify、helper
+source-to-package driver在parse前把source directory完整复制到transaction-owned snapshot；后续frontend verify、helper
 和IR transforms只读/改写staging内成员。source不得被原地补metadata、topology或shards。Q15最终发布的是重新
 parse/verify过的card-partition-local structured tensor program directory；fixed structured optimization完成后，
-physical-dataflow synthesis从单卡partition artifact构造一个whole-card `wafer.card.program`，其中all-and-only
-available physical Tiles各有独立`wafer.tile.program`。每个Tile可有不同op、loop和temporal tile shape；whole-DAG
-scheduler联合决定placement、tiling、fusion/residency和显式NoC/DDR movement，whole-card exact gates通过后再构造
-physical-Tile launch bundle。structured tensor program是调度
-唯一输入artifact；已删除的`wafer.group` formation/selector没有兼容、debug或发布旁路。
+physical-dataflow synthesis从单卡partition artifact构造一个`CardProgram`，其中all-and-only available physical Tiles
+各有独立`wafer.tile.program`。每个Tile可有不同op、loop和temporal tile shape；Q51唯一search owner联合决定
+placement、tiling、TileRegion/融合和显式NoC/DDR movement，exact gates通过后形成`CardExecutable`，再由target与
+package阶段发布`ExecutablePackage`。`TensorProgram`是该综合阶段的唯一输入artifact；已删除的`wafer.group`
+formation/selector没有兼容、debug或发布旁路。
 
 这种最小owner边界有意不保留历史讨论中的复合frontend/executable owner和model-interface registry链。若未来
 确需跨stage不可重算的owner，必须由真实consumer和lifetime bug证明后再引入，不能把未实现对象写成当前架构。
@@ -270,5 +270,5 @@ frontend mandatory coverage包括：
 - pre-exported StableHLO parse/printer及显式IR-local lowering补充测试。
 
 完成记录必须区分真实exporter gate、program verifier和下游Q15 gate。FileCheck、手写MLIR或CPU oracle单独通过
-都不能证明whole-card spatial/temporal/fusion/communication scheduling、physical-Tile executable bundle、target artifact、runtime
+都不能证明card-local spatial/temporal/fusion/communication scheduling、`CardExecutable`、target artifact、`ExecutablePackage`、runtime
 或board正确。

@@ -1,13 +1,13 @@
 # Wafer DDR Memory Planning Design
 
-状态：2026-08-08同步whole-card MPMD、SPM residency-region与typed NCC worker completion；当前合同覆盖default-arena
+状态：2026-08-08同步CardProgram / physical-Tile MPMD、SPM residency-region与typed NCC worker completion；当前合同覆盖default-arena
 DDR demand/range validation、dependency-driven completion和accepted offsets。
 multi-arena、state/streaming weight和provider allocation model延后。实现状态以`tasks/progress.md`为准。
 它不能只是 DDR access validation；凡是会影响 candidate 是否成立的 DDR
 byte footprint、lifetime、capacity和largest-contiguous约束，都必须在DDR offset
 assignment / candidate-selection gate内决定或拒绝。DDR movement bytes按current descriptors精确统计并交给06排序；未经Q9
 校准的“bandwidth pressure”不是硬件legality。
-whole-card commit只能从accepted DDR facts和当前IR demand重算launch-facing requirements，并在bundle commit时形成typed
+CardExecutable commit只能从accepted DDR facts和当前IR demand重算launch-facing requirements，并在commit时形成typed
 physical-Tile resource/entry bindings；当前没有独立resource-view协议或executable dialect。
 post-commit target只派生address/range，package/runtime不重新恢复role/
 alias/lifetime；本stage不执行runtime allocation/import/query，也不重新做planning。
@@ -26,19 +26,20 @@ compiler IR 合同。
 
 目标：
 
-- 从whole-card MPMD clone中all-and-only physical Tile programs的完整instruction-level programs重算DDR
+- 从complete CardProgram candidate中all-and-only physical Tile programs的完整instruction-level programs重算DDR
   access demand 和 compiler-managed DDR allocation demand。
 - 对 external input/output DDR view 做 descriptor、view/root byte range和capacity validation，并输出exact movement bytes。
 - 对当前physical Tile program内compiler-managed workspace、resident constant、显式spill DDR temporary等non-external
   allocation，在default arena中规划symbolic range/offset/size/alignment，并用完整Tile-program内selective
-  spill/materialization和SSA use-def的lifetime/reuse证明互不冲突；region data I/O必须是DDR，nested region与SPM跨界拒绝。
-- 给 candidate-selection 一个真实 candidate gate：成功表示当前 candidate 的 DDR view、accepted offset fact 和
-  IR-derived demand 都可被下游直接消费；失败只返回typed infeasible reason给06 candidate owner，后者可用另一clone尝试
+  spill/materialization和SSA use-def的lifetime/reuse证明互不冲突；任何跨region shaped value都必须经显式DDR
+  store/completion/load，region shaped data I/O必须是DDR，nested region与SPM跨界拒绝。
+- 给physical-dataflow selection一个真实candidate gate：成功表示当前candidate的DDR view、accepted offset fact和
+  IR-derived demand 都可被下游直接消费；失败只返回typed infeasible reason给06 physical-dataflow selection，后者可用另一clone尝试
   implementation、tile、encoding、route、residency/buffering或order。allocator本身不修补候选，也不内置某个
   reduction/tile repair策略；numeric policy能否允许split仍由source op interface和上游rewrite合同决定。
 - 保持 DDR accepted allocation fact 显式：由 SSA use-def、memref type、view、descriptor 和
   offset fact 表达，不能靠名字、测试输入或 pass-local side table 复原。
-- 只在整个whole-card Tile-program set通过时原子提交offsets；任一physical Tile/task/transport/event/target
+- 只在整个CardProgram Tile-program set通过时原子提交offsets；任一physical Tile/task/transport/event/target
   gate 失败都丢弃 clone，不把已通过的 DDR ranges 部分写回主 IR。
 
 非目标：
@@ -58,41 +59,42 @@ compiler IR 合同。
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  SPM offset assignment之后的一份whole-card MPMD candidate clone，包含all-and-only topology-available
+  SPM offset assignment之后的一份complete CardProgram candidate，包含all-and-only topology-available
   physical Tile programs及其完整instruction-level structured programs。每个Tile的accepted SPM offsets均从该
   program的all-and-only roots产生并验证；不同Tile programs可有不同op、loop和temporal tile shape。
   DDR side由`#wafer.memory<ddr, layout>` memref、DDR-only tile-region boundary、`memref.alloc`、
   ViewLike/SelectLike/structured-control aliases、generic async handle及RDMA/WDMA descriptor表达external view、
-  compiler-managed/resident/explicit-spill demand。selected spatial placement、temporal tiling、fusion/residency、
-  mapped/staged/NoC transfer均已成为显式memref/view/instruction事实；不得把逐task或逐Tile已经独立决定offset的
+  compiler-managed/resident/explicit-spill demand。selected spatial placement、temporal tiling、fusion、TileRegion与retention/release/materialization、
+  mapped/staged/NoC transfer均已成为显式memref/view/instruction事实；任何stage pipeline的chunk、movement、
+  physical/rotating buffer、issue order和completion也已经actual materialize；不得把逐task或逐Tile已经独立决定offset的
   artifacts拼成终态输入。
 - Current stage responsibility:
-  对finalized whole-card candidate执行原子exact evaluation：从同一clone逐physical Tile重算DDR access、
+  对finalized complete CardProgram candidate执行原子exact evaluation：从同一clone逐physical Tile重算DDR access、
   compiler-managed allocation、explicit arenas/placement domains和完整Tile-program lifetime，形成all-and-only
   fixed-capacity problems；验证external descriptor与view/root range；在对应Tile default arena内规划symbolic
   offset并验证overlap、capacity、largest-contiguous、alignment和descriptor cover；分别证明generic async与
-  NCC/DTE completion，在真实observer/root reuse和Tile-program terminal验证pending obligations。whole-card只汇总
+  NCC/DTE completion，在真实observer/root reuse和Tile-program terminal验证pending obligations。CardProgram evaluation只汇总
   各Tile计划并原子接受；streaming/state/multi-arena、cross-card shared demand及无法形成可验证timeline的scope fail closed。
 - Output artifact / IR:
-  只存在于complete passing whole-card clone中的同一instruction-level candidate IR，compiler-managed
+  只存在于complete passing CardProgram candidate中的同一instruction-level candidate IR，compiler-managed
   DDR `memref.alloc` 带 offset-only
   `wafer.ddr.offset` accepted fact，或结构化failure reason。成功路径不能只写diagnostic，也不能只把plan保存在pass-local
   analysis 里。
 - Downstream consumer:
-  candidate-selection用完整whole-card candidate的DDR offset assignment成功/失败选择candidate；
+  physical-dataflow selection消费完整CardProgram candidate的DDR offset assignment成功或typed rejection；
   physical transport acceptance、cross-Tile transport verification和physical-Tile executable validation继续消费exact range；
-  committed materialization只把已通过全部gates的complete whole-card candidate及typed C++ resources/entry bindings原子写回。
+  committed materialization只把已通过全部gates的complete CardProgram candidate及typed C++ resources/entry bindings原子写回。
   post-commit target/package/runtime不得从raw instruction IR重新恢复resource语义。
 - User-level driver / named pipeline:
   `wafer-compile --input-program-dir ... --output-program-dir ... --num-partitions=1 --launch-kind={kernel|model}`
-  的whole-card candidate loop调用本stage；frontend只产出verified card-partition structured tensor program，不执行DDR planning；
+  的physical-dataflow selection loop调用本stage；frontend只产出verified card-partition structured tensor program，不执行DDR planning；
   `wafer-opt`、局部`wafer-plan-ddr-memory`和从tile-region/instruction/SPM跑到DDR offset assignment的
   named pipeline只处理显式IR，用于IR-local replay/test，不是用户stop-stage。completion proof必须覆盖
   accepted DDR offset fact 和 descriptor/view/root validation，不接受只验证 external DDR view；该
-  direct pipeline 仍只用于IR-local replay，用户级completion必须由whole-card candidate-selection/
+  direct pipeline仍只用于IR-local replay，用户级completion必须由CardExecutable compilation/admission
   commit pipeline覆盖all-and-only physical Tile programs。
 - Explicit non-goals:
-  不重新推DDR tile subview，不重做SPM memory planning，不选择tile shape/implementation/layout/transfer/residency，
+  不重新推DDR tile subview，不重做SPM memory planning，不选择tile shape/implementation/layout/transfer/TileRegion/retention/release，
   不生成或改变region partition，
   不生成ABI call、packet、physical DDR address或runtime handle；不按task/physical Tile部分提交，
   不以 `busytable` 或 runtime 隐式同步替代 lifetime/completion 事实；当前不实现streaming/state、multi-arena、
@@ -104,7 +106,7 @@ Pipeline position:
   async task identity/completion、typed NCC worker issue/join、region-root release与entry-terminal pending set、descriptor/root range和shared physical
   geometry/range/narrowing contract 全部通过。
   非法 dynamic view、payload/range、overlap/capacity/largest-contiguous/alignment failure 能结构化
-  拒绝，任一失败时整个clone不提交。DDR facts只为whole-card commit决定最终physical-Tile executable
+  拒绝，任一失败时整个clone不提交。DDR facts只为CardExecutable formation决定最终physical-Tile executable
   class提供输入；每个available Tile program都必须实际进入resource gate。
 ```
 
@@ -116,12 +118,12 @@ canonical search。精确pairwise conflict graph通过已验证的deterministic 
 component-local fixed prefix；共享policy使用宽松确定的全局node budget且不设wall-clock timeout，只在
 `ResourceExhausted`时允许first-fit fallback。typed outcome和独立placement validator也由该共享边界拥有。
 shared `MemoryPlanning` fixed-capacity primitive在类型上可复用同一owner-independent DDR problem，且不认识SPM/DDR、workload或
-op名。DDR在whole-card后置stage对finalized candidate执行原子exact evaluation；该evaluation从同一
+op名。DDR在CardProgram后置stage对finalized candidate执行原子exact evaluation；该evaluation从同一
 candidate逐physical Tile构造current explicit arena/placement-domain problems并将all-and-only roots/Tile结果原子汇总，
 不构造cross-card shared arena。每个validated placement提交对应Tile的`wafer.ddr.offset`；actual high-water/headroom从placement
-重算，作为capacity/resource diagnostic，不通过缩小capacity重复probe，也不替代06按whole-card aggregate movement
+重算，作为capacity/resource diagnostic，不通过缩小capacity重复probe，也不替代06按CardProgram aggregate movement
 bytes/executions计算的DDR主成本。placement只有在fresh
-whole-card evaluation clone上原子apply，并重新运行post-memory transport binding、range/ABI/package等全部
+complete CardProgram candidate上原子apply，并重新运行post-memory transport binding、range/ABI/package等全部
 offset-dependent gate后才可接受。DDR owner不选择candidate、不返回repair、不发布proof schema或跨candidate cache，已写DDR
 offset的evaluation clone也不返回generation worklist。
 compiler-managed allocation使用指向packing demand的`RootRef`；caller-owned/external memref
@@ -255,37 +257,34 @@ Q16 typed fields。
 | external output | validate view/range/descriptor and write use in current candidate | derive output binding/writeback visibility requirement |
 | imported immutable parameter/weight shard | validate read-only descriptor/view、content/shard/layout identity和range；不分配runtime-owned root offset | bind exact `ResourceId`/digest/shard requirement；禁止write alias |
 | compiler-packaged resident immutable weight | plan complete read-only range in its declared arena；resident capacity不足时拒绝该candidate，不暗转streaming | summarize content digest、packing/quant descriptor、resident scope和backing bytes |
-| streamed immutable parameter | 从typed consumer slices形成canonical source windows，创建bounded launch-visible staging roots，规划其range/lifetime并materialize copy/consumer/reuse completion | 形成`streamed_planned`：clone-local provisional source refs、source ranges、staging ResourceId/range、consumer slots和completion refs；materializer把digest/chunk proof放入同candidate transaction，final ArtifactRef/ID只在commit完成 |
+| streamed immutable parameter | 未来只接受上游actual IR中已有的typed source chunks、staging roots、copy/consumer/reuse completion和slot relation；本stage不形成window proposal | 按普通compiler-managed DDR/SPM roots规划可见range/lifetime；长期只保留actual IR、accepted offset及commit后的typed resource binding |
 | persistent state resource | validate declared capacity、subview range、alias/update relation、read/write effect和跨invocation lifetime；runtime-owned root不分配physical offset | preserve `ResourceId`、create/attach/reset/update policy、page geometry和exact consistency enum |
 | compiler-managed workspace/temp | plan symbolic offset with lifetime/reuse | summarize workspace bytes/ranges and accepted offset contract |
 | non-parameter resident constant | plan read-only range or reject if residency/streaming choice is not explicit | summarize resident constant bytes/ranges and backing-data requirement |
 | explicit compiler-managed spill DDR value | plan range across producer-to-last-consumer lifetime when explicitly represented；region内selective spill与cross-region materialization使用同一DDR root/lifetime合同 | summarize producer/consumer-visible backing allocation requirement |
 | executable/log/control metadata | not generic tensor DDR planning | launch/package internal resource requirement; runtime allocation is runtime adapter |
 
-### 4.1 Streamed Immutable Window Contract
+### 4.1 Streamed Immutable Chunk Contract
 
-本节只记录未来extension约束，当前planner、Q16 bundle和active vertical gate均不实现streaming/state resource；
+本节只记录未来extension约束，当前planner、CardExecutable和active vertical gate均不实现streaming/state resource；
 它不能作为当前artifact、typed field或completion事实。
 
-streaming是whole-card resource/lifetime候选，不是package读取优化。planner只消费当前IR中已显式存在的immutable
-logical slice reads；它先按source `ResourceId`、artifact byte/chunk coverage、logical slice、storage encoding和
-consumer `EntryId/SlotId`形成window proposals，再在arena capacity、alignment和completion lifetime下选择
-有限staging lanes。每个accepted window必须：
+streaming是CardProgram-wide actual resource/lifetime形态，不是package读取优化，也不是DDR planner内部的window search。
+未来实现只能消费上游已经物化的完整IR：source chunk由typed DDR subview/descriptor表达；每个staging lane由真实
+allocation root表达；single/double/multi-buffer由独立roots或可验证rotating-slot SSA/SCF表达；copy issue/complete、
+consumer issue、slot reuse order和terminal publication全部是typed operation、token/effect与control flow。planner只为这些
+可见roots重算range、lifetime、alignment、capacity和offset。
 
-- 用nonzero scoped `StreamWindowId`记录exact source range/chunk coverage和logical slice，packed/noncontiguous
-  representation必须由typed storage descriptor给出，不能用tensor name或文件offset猜语义；
-- 通过未来typed candidate-resource builder创建或验证launch-visible staging resource，获得显式destination range，
-  并把consumer ABI slot绑定该staging resource而非source resource；
-- materialize `resource_copy_issue/resource_copy_complete` node，copy complete支配全部consumer issue；最后一个
-  consumer terminal支配同一lane的下一window copy，从而用普通DAG表达single/double/multi-buffer；
-- 对所有consumer reads形成exact coverage，无hole/overlap歧义；同时live destination ranges之和不超过declared
-  staging capacity，所有copy/source/destination range满足target alignment和address width；movement bytes作为exact cost，只有
-  Q9取得校准事实后才映射为带宽/时间排序。
+每个actual chunk必须证明source artifact byte coverage与logical slice exact对应，packed/noncontiguous representation由typed
+storage descriptor给出，不能用tensor name或文件offset猜语义；copy complete支配全部consumer issue，最后一个consumer
+completion支配同一slot的下一次copy；所有consumer reads形成all-and-only coverage，同时live staging ranges满足capacity、
+alignment和address width。movement bytes可按actual descriptors精确统计，未经校准的带宽仍不是legality。
 
-planner不能为形成window而隐式切分一个尚需完整weight的kernel。若source slice需要新的K/internal reduction、expert
+planner不能为形成chunk而隐式切分一个尚需完整weight的kernel，也不能选择lane数、创建copy、重排consumer或补completion。
+若source slice需要新的K/internal reduction、expert
 partition或partial-sum combine，必须先由task scheduler/op tiling和instruction IR显式表达数学等价、scratch和completion，之后
-本stage只计划其可见slices。无法证明时结构化拒绝streaming candidate。若未来实现，accepted window和staging
-offset必须由accepted IR/completion事实直接解释并进入typed C++ physical-Tile executable record，不能维护pass-local streaming schedule。
+本stage只计划其可见slices。无法证明时结构化拒绝streaming candidate。若未来实现，不能新增`StreamWindowId`、
+`streamed_planned`、pass-local lane表或可重放streaming schedule；长期事实仍是actual IR、accepted offset和commit后的typed binding。
 
 ## 5. Demand Recovery
 
@@ -346,7 +345,7 @@ Rules:
 
 DDR memory planning is an analysis + transformation pair:
 
-调用边界固定为：对每个finalized whole-card candidate原子执行exact evaluation；下列步骤按current
+调用边界固定为：对每个finalized complete CardProgram candidate原子执行exact evaluation；下列步骤按current
 explicit arenas/placement domains形成fixed-capacity problems。problem/query数量只作budget diagnostic，逐physical Tile结果
 不形成survivor或commit，只有all-and-only physical Tile programs全部通过才原子接受整个candidate。
 
@@ -371,7 +370,7 @@ explicit arenas/placement domains形成fixed-capacity problems。problem/query�
 10. Validate capacity, largest contiguous range and alignment；同时输出exact DDR read/write bytes而不设未校准bandwidth gate。
 11. Materialize accepted offset facts only after every function/scope, descriptor and resource-limit check succeeds；
     any failure discards the provisional map without changing allocation attrs. Facts become main-IR state only with
-    whole-card atomic commit。
+    CardExecutable atomic formation。
 
 The search order, lifetime bounds, intent merge and rejected candidates are analysis. The accepted offset is the
 cross-stage fact and must be explicit.
@@ -480,9 +479,9 @@ transfer进入所需physical version；这不需要identity DMA，也不需要
 新的DDR协议，也不表示任意transpose都能由DMA完成。只有package-time persistent prepack才需要未来typed resource/package
 合同，当前保持非目标。
 
-### 9.3 Candidate Selection
+### 9.3 与 Physical-Dataflow Selection 的边界
 
-candidate selection由tasks/06拥有，可提交任意有界whole-card MPMD actual candidate。spatial placement、region partition、temporal tile/loop、resident edge、
+physical-dataflow selection由tasks/06拥有，可提交完整CardProgram actual candidate。spatial placement、region partition、temporal tile/loop、retention/release/materialization、
 explicit spill、mapped/staged movement与completion都必须已经在current IR显式；typed opaque SPM clobber输入拒绝，DDR
 planner不创建或改变boundary。DDR owner不知道scope policy、artifact kind、
 candidate ordinal或生成历史，只执行exact demand、lifetime、range、capacity与offset gate。逐physical Tile只能对已物化的DDR
@@ -490,7 +489,7 @@ view、movement、spill和instruction descriptor做structural/lower-bound cheap 
 all-and-only physical Tile programs形成complete actual variant后，对current explicit DDR arenas/domains形成fixed problems并原子接受或拒绝；
 problem/query数量进入统一budget但不属于IR语义。
 first/tail representative tiles只允许便宜地拒绝candidate，不能证明traversal coverage、descriptor closure、lifetime、
-capacity或completion。DDR planning拒绝candidate时不写主IR、不改变transfer/residency choice，并丢弃完整clone；
+capacity或completion。DDR planning拒绝candidate时不写主IR、不改变transfer、TileRegion或retention/release，也不反写派生lifetime，并丢弃完整clone；
 其它candidate clone继续独立评估。reserved conservative spill拥有独立allowance，但仍执行同一complete late gates。
 SPM的3 MiB fixed-problem constraints与DDR的explicit arena/placement-domain constraints分别是各自planning gate输入；
 DDR exact movement bytes是06 cost输入，不是candidate field或未校准
@@ -499,24 +498,24 @@ bandwidth legality。12统计每个static descriptor site的exact bytes；static
 
 ### 9.4 Physical-Tile Executable Handoff
 
-当前没有executable dialect或独立resource-view analysis对象。每个candidate在atomic commit前的whole-card exact gate
+当前没有executable dialect或独立resource-view analysis对象。每个candidate在CardExecutable formation前的exact admission gate
 直接从candidate-local instruction IR、accepted DDR/SPM offsets、topology/execution mesh和memref use-def/view relation
 重算并验证：
 
 - 所有memref都有Wafer memory space，compiler-managed SPM/DDR alloc有accepted offset；
 - 完整physical-Tile instruction program中不再残留`wafer.group`/Linalg/Tensor/Bufferization或target-abstract tile op；
 - frontend verifier给出的external IO、parameter、constant role和card-partition slice与ExecutionConfig一致；
-- completion合同闭合，transport为`None`或已由whole-card cross-Tile matching与resource/status gate验证的
+- completion合同闭合，transport为`None`或已由CardExecutable cross-Tile matching与resource/status gate验证的
   `DirectDTE`；只有unsupported或未闭合的physical transport才拒绝。
 
-通过上述gate的完整whole-card candidate在transaction-local storage中构造全部typed physical-Tile records；不能从IR重算的boundary
+通过上述gate的完整CardProgram candidate在transaction-local storage中构造全部typed physical-Tile records；不能从IR重算的boundary
 role/slice/payload locator进入typed card-partition binding；accepted offsets、内部alias、descriptor和lifetime继续由
 owning module表达，不复制成第二份resource record。physical-Tile executable显式声明
 `DefaultArenaRelativeOffsets`，不allocate/import/query runtime object或materialize physical address。all-Tile records
-通过后才能在同一transaction中构造并验证`ExecutableBundle`；只有bundle也通过才把winning Tile programs与bundle一次
+通过后才能在同一transaction中构造并验证`CardExecutable`；只有CardExecutable也通过才把winning Tile programs与执行对象一次
 提交，commit之后不再执行可能失败的record materialization。Q17已把returned compiler-managed DDR root重定向到显式output slot，并结合
 committed instruction IR与这些bindings派生arena-base/address/range/descriptor和fixed `void(i64...)` entry ABI；
-Q18只从Q16 bundle和Q17 verified `TargetArtifactBundle`序列化runtime-observable
+package emission只从accepted `CardExecutable`及其verified target publication view序列化runtime-observable
 fields。package/runtime不从program shard文件名或薄launch metadata恢复resource。
 
 ## 10. Example Shape
@@ -602,7 +601,7 @@ Expected coverage:
 - PMU-calibrated DDR bandwidth model。
 
 显式spill DDR lifetime不是deferred work：只要producer store、可信completion、consumer load及其relation已由
-当前SSA、view、region、explicit allocation或transport facts表达，它就是physical Tile program / whole-card gate的
+当前SSA、view、region、explicit allocation或transport facts表达，它就是physical Tile program / CardExecutable admission的
   mandatory输入；region内selective spill只结束目标SPM root，并通过DDR store/completion/load连接matching reload。
   cross-region data同样必须走显式DDR合同；nested region或SPM root跨界拒绝。关系无法表达时candidate
 必须结构化失败或先扩IR，不能退回局部task planning。

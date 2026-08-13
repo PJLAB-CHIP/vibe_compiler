@@ -1,26 +1,27 @@
 # Wafer Target Execution Model
 
 状态：当前模型是 owner-backed target LLVM/TargetCall 上的 untimed functional-event model。它验证target语义、physical
-Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或cycle model。Q49仍为`doing`且Q50–Q53已排队；
-现有model能力必须由current whole-card MPMD source vertical重新证明，不能沿用旧执行域结论。
+Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或cycle model。动态任务状态只看
+`tasks/progress.md`；现有model能力必须由current `CardExecutable` source vertical重新证明，不能沿用旧执行域结论。
 
 ## 1. Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  同一次compiler transaction产生的 ExecutableBundle、TargetLLVMModuleBundle、typed program invocation与独立CPU
-  expected；bundle覆盖single card的all-and-only 16 physical Tiles并保留(card_id, tile_id, launch_slot)。
+  同一次compiler transaction产生的`CardExecutable`、与其绑定的owner-backed target LLVM module set、typed program
+  invocation与独立CPU expected；`CardExecutable`覆盖single card的all-and-only 16 physical Tiles并保留
+  (card_id, tile_id, launch_slot)。
 - Current stage responsibility:
   将program tensors编码到exact Kernel ABI slots；通过host JIT执行final target LLVM entries并解码closed TargetCall
   registry；在SystemC中按physical Tile、worker、engine、event和private memory执行functional语义；原子发布完整结果。
 - Output artifact / IR:
-  TargetModelResult：target/model identity、whole-card completion统计、numeric flags、typed outputs及诊断；
+  TargetModelResult：target/model identity、card-scoped completion统计、numeric flags、typed outputs及诊断；
   不产生可被compiler或runtime消费的schedule sidecar。
 - Downstream consumer:
   source/model differential、target command qualification、Q53无卡验证，以及后续独立board numeric correlation。
 - User-level driver / named pipeline:
-  wafer-compile的target-model执行路径和configured model integration tests。
+  wafer-compile `search|none`的target-model执行路径和configured model integration tests；model不增加第三种optimization policy。
 - Explicit non-goals:
   不重新lower accepted IR；不解释package中的历史格式；不模拟vendor packet/loader；不宣称cycle accuracy、
   bandwidth或board performance；不从symbol、OS thread、ordinal或container position恢复Tile身份。
@@ -35,10 +36,12 @@ Pipeline position:
 
 model只接受compiler保留的same-invocation owners：
 
-- `ExecutableBundle`提供program boundary bindings、physical Tile executable domain和completion/transport contract；
-- `TargetLLVMModuleBundle`提供target conversion真正发布所用的LLVM modules与typed Kernel ABI slots；
+- `CardExecutable`提供program boundary bindings、physical Tile executable domain和completion/transport contract；
+- 与该`CardExecutable`绑定的target LLVM owner set提供target conversion真正发布所用的LLVM modules与typed Kernel ABI slots；
 - program invocation提供source tensor值，不复制target schema或猜测slot；
 - independent CPU expected只用于最终差分，不进入compiler IR/package。
+
+当前实现类`ExecutableBundle`与`TargetLLVMModuleBundle`只作为上述两个owner边界的迁移索引，不定义额外稳定artifact层。
 
 `prepareTargetModelInvocation`必须在JIT materialization前all-and-only消费每个非output program resource和每个ABI slot。
 它按显式resource owner、Kernel ABI role和resource index建立allocation identity：program-boundary resource由card拥有，
@@ -72,7 +75,7 @@ TargetCall frontend是final target LLVM到typed transaction的唯一host桥：
 7. 任一失败 `abort`，不发布partial transactions或outputs。
 
 内部 `wafer_target_call_dispatch`只完成JIT call interception。它不是package export、runtime ABI、serialized schema或
-用户入口，也不拥有whole-card scheduling语义。
+用户入口，也不拥有physical-dataflow scheduling语义。
 
 ## 3. SystemC functional-event architecture
 
@@ -82,7 +85,7 @@ SystemC elaboration为每个physical Tile建立一个SC_THREAD，在线程中调
 线程等待model event，同时保留JIT stack；独立Tile线程可继续推进。
 
 model使用event-driven fixed point：只有ready transaction执行，执行后发出data-ready/engine-completion/transport event，
-再唤醒依赖线程。没有ready work且未达到whole-card completion时报告NoProgress，不通过host轮询猜测顺序。
+再唤醒依赖线程。没有ready work且未达到card-scoped completion时报告NoProgress，不通过host轮询猜测顺序。
 
 ### 3.2 Tile memory与地址
 
@@ -106,7 +109,7 @@ TargetCall registry拥有issue engine、optional NCC worker argument及local ins
 - Direct-DTE prepare/issue返回opaque event，wait只完成exact event；
 - `NCCJoin`只等待participant mask指定的local NCC domains；
 - Tile entry返回只有在其local drain contract满足时才计为completed；
-- whole-card commit要求16个Tiles与所有transport obligations闭合。
+- card-scoped commit要求16个Tiles与所有transport obligations闭合。
 
 缺失wait、wrong worker/participant、range hazard、event reuse或cross-Tile message mismatch都必须确定失败。
 
@@ -152,7 +155,7 @@ NaN/Inf分类、shape、bytes与guard。
 
 Grid/Cluster target publication可以把16个不同Tile body合成一个低层module；model对此不增加第二协议：
 
-- `TargetLLVMModuleBundle`或Tile interfaces仍显式列出16个三元组和每Tile ABI；
+- `CardExecutable`的Tile interfaces与其target LLVM owner set仍显式列出16个三元组和每Tile ABI；
 - internal dispatch通过verified launch-slot relation选择body；
 - `tile_id`与`launch_slot`非恒等时结果必须保持一致；
 - module count不改变SC_THREAD count、memory ownership、transaction identity或completion gate。
@@ -163,7 +166,7 @@ Grid/Cluster target publication可以把16个不同Tile body合成一个低层mo
 
 所有failure归因到明确stage和physical identity：
 
-- invalid bundle/program binding/ABI slot在JIT前失败；
+- invalid CardExecutable/program binding/ABI slot在JIT前失败；
 - decoder/target transaction错误带card/tile/launch slot与issue ordinal；
 - address/alias/hazard在issue时失败；
 - deadlock/no-progress带pending event/resource摘要；

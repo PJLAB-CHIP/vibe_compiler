@@ -2,7 +2,7 @@
 
 状态：2026-08-08 按logical card partition与physical Tile双域重置。本文拥有
 `wafer.target.topology`、card-level logical execution mesh以及两者的可重算基础事实；
-`tasks/06-physical-dataflow-synthesis.md`唯一拥有whole-card MPMD和时空搜索，tasks/14拥有current target identity。
+`tasks/06-physical-dataflow-synthesis.md`唯一拥有card-local physical-dataflow搜索与CardProgram，tasks/14拥有current target identity。
 实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -20,14 +20,14 @@ Pipeline position:
   `wafer.target.topology @default`表达physical card/Tile topology；`wafer.execution.mesh @default_mesh`只表达
   logical card-partition domain。两者都不是sharding strategy、selected Tile mapping、per-Tile executable或runtime placement。
 - Downstream consumer:
-  Shardy/XLA SPMD只消费logical card-partition mesh；whole-DAG physical-dataflow synthesis独立消费每个card-local DAG
-  和target topology的available physical tile_id domain，产生whole-card MPMD；target/package lowering再把selected
+  Shardy/XLA SPMD只消费logical card-partition mesh；physical-dataflow synthesis独立消费每个card-local DAG
+  和target topology的available physical tile_id domain，产生CardProgram；target/package lowering再把selected
   `(card_id, tile_id)`投影为当前ABI launch slot。
 - User-level driver / named pipeline:
   正式入口为`wafer-compile --num-partitions=N --launch-kind={kernel|model}`。topology/mesh materialization passes和
   `wafer-opt`只处理显式IR，用于debug/test，不能成为production placement旁路。
 - Explicit non-goals:
-  本层不表达spatial work assignment、temporal tiling、fusion/SPM residency、route、DTE binding、cost、target ABI、
+  本层不表达spatial work assignment、temporal tiling、TileRegion/融合、route、DTE binding、cost、target ABI、
   runtime handle或search state；不从axis名恢复dp/tp/pp语义，也不拥有multi-card deployment policy。
 - Completion gate:
   num_partitions与logical mesh exact-match；physical topology独立给出稳定card_id/tile_id与availability；
@@ -146,11 +146,11 @@ topology/mesh不是helper必须保留的unknown op，也不是opaque sidecar。l
 physical topology可以在helper边界后fresh重建，因为helper不消费physical Tile语义。helper path、output path和pass名不
 进入`ExecutionConfig`或IR。
 
-## 5. Whole-card MPMD 与 late projection
+## 5. CardProgram MPMD 与 late physical-Tile projection
 
 对每个card-local structured DAG，下游产生一个`wafer.card.program(card_id=...)`，内部包含selected
 `wafer.tile.program(tile_id=...)`。不同Tile program可以包含不同op、loop和work domain；完整语义覆盖、跨Tile消息、
-SPM ownership和completion由whole-card verifier证明。具体搜索状态、候选生成、fusion/residency和cost只在
+SPM ownership和completion由CardProgram verifier证明。具体搜索状态、候选生成、fusion和cost只在
 `tasks/06-physical-dataflow-synthesis.md`定义，本文不复制。
 
 selected card program之后才执行physical-Tile projection：
@@ -183,4 +183,4 @@ launch slot一一对应。launch slot只是最低层ABI编码，不能反向进�
 
 任一frontend失败发生在transaction staging内，source和既有final output保持byte-identical。IR-local pass success只证明
 op或analysis合同；只有统一driver从真实program重放helper、metadata、structured program和final readback才完成
-frontend gate。whole-card MPMD、projection和package completion由各自owner的integration gate证明。
+frontend gate。CardProgram、projection和package completion由各自owner的integration gate证明。

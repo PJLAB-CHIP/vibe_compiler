@@ -1,7 +1,7 @@
 # Wafer Target Conversion、TargetCall 与 Module Publication
 
 状态：本文是当前 target conversion 与 module publication 的唯一现行合同。单卡编译边界固定覆盖 16 个
-available physical Tiles；Q49先收口同路径baseline，Q51再把whole-card MPMD winner接入这条边界。现有host/model
+available physical Tiles；Q49先收口`none` baseline，Q51再把selected `CardExecutable`接入这条边界。现有host/model
 验证不能代替Q53的fresh package/no-card和真实板端matched A/B gate。
 
 ## 1. Pipeline Contract
@@ -9,22 +9,23 @@ available physical Tiles；Q49先收口同路径baseline，Q51再把whole-card M
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  Q49 baseline或Q51 production选中的whole-card MPMD actual IR；其all-and-only wafer.tile.program已投影为16个physical-Tile
-  ModuleOp，并完成 Tile→Instr、fresh completion、SPM/DDR placement、transport 与 executable admission。
+  Q49 `none` baseline或Q51 `search`选中的`CardExecutable`；其中all-and-only `wafer.tile.program`已投影为16个
+  physical-Tile ModuleOp，并完成TileRegion→Instr、fresh completion、SPM/DDR placement、transport与executable admission。
 - Current stage responsibility:
   对每个 physical Tile 做 current target ABI preparation、Instr→Target LLVM conversion、LLVM translation、
   target-call legality、device link、ELF/readback 验证，并原子发布保留显式物理身份的 target artifacts。
 - Output artifact / IR:
-  invocation-local TargetLLVMModuleBundle，以及原子发布的 TargetArtifactBundle；每个 Tile interface 都携带
-  (card_id, tile_id, launch_slot)、entry symbol、typed Kernel ABI slots、module relation、target identity、
-  runtime ABI、format 与 digest。
+  与同一`CardExecutable`绑定的invocation-local target LLVM owner set及原子发布target-module view；每个Tile
+  interface都携带(card_id, tile_id, launch_slot)、entry symbol、typed Kernel ABI slots、module relation、
+  target identity、runtime ABI、format与digest。它们是`CardExecutable -> ExecutablePackage`之间的lowering内部表示，
+  不是新的稳定artifact层。
 - Downstream consumer:
-  schema-v8 package assembly、no-card/runtime preflight、host TargetCall frontend、SystemC model、profile companion
+  `ExecutablePackage` assembly、no-card/runtime preflight、host TargetCall frontend、SystemC model、profile companion
   与 board runtime provider。
 - User-level driver / named pipeline:
-  wafer-compile production|none；用户不手工拼接 target passes，也不选择内部 TargetCall 或 module materialization。
+  wafer-compile `search|none`；用户不手工拼接target passes，也不选择内部TargetCall或module materialization。
 - Explicit non-goals:
-  不重新做 whole-DAG mapping；不从 symbol、文件名、vector ordinal、pid 或 launch position 恢复物理身份；
+  不重新做physical-dataflow mapping；不从symbol、文件名、vector ordinal、pid或launch position恢复物理身份；
   不把低层module dispatch提升为公开ABI；不兼容读取旧 target metadata、旧 entry ABI 或旧 artifact schema。
 - Completion gate:
   16 个 physical Tile interfaces all-and-only、物理三元组唯一且关系一致；每个 target module 的 current
@@ -34,9 +35,10 @@ Pipeline position:
 
 ## 2. 稳定对象与身份
 
-### 2.1 Physical Tile executable
+### 2.1 CardExecutable 的 Physical Tile entry
 
-`PhysicalTileExecutable` 是 executable boundary 的最小目标输入。它是 move-only owner，包含：
+`CardExecutable`原子拥有当前卡all-and-only 16个physical Tile entries；当前实现中的
+`PhysicalTileExecutable`只是单个entry的C++类型索引。每个entry包含：
 
 - `PhysicalCardId`：当前单卡为 `card_id=0`；
 - `PhysicalTileId`：来自 verified physical topology；
@@ -49,13 +51,15 @@ Pipeline position:
 三个 ID 不互相推导。`launch_slot` 必须唯一、dense、可排序，但不要求等于 `tile_id`。任何 producer、aggregate
 materializer、JIT bridge、runtime 或 diagnostic 都必须转发 typed fields，而不是使用容器位置重建它们。
 
-`ExecutableBundle` 原子拥有当前卡 all-and-only 16 个 executable。没有单 Tile production bundle，也没有把
-`num_partitions` 当作 physical Tile count 的入口；`num_partitions` 仍属于 GSPMD 的 card-level domain。
+没有单Tile production artifact，也没有把`num_partitions`当作physical Tile count的入口；`num_partitions`仍属于
+GSPMD的card-level domain。当前实现类`ExecutableBundle`必须收敛为`CardExecutable`的实现或迁移索引，不能继续定义
+一层长期artifact。
 
 ### 2.2 Target LLVM module
 
-每个 accepted Tile 只翻译一次，结果由 `TargetLLVMModule` 连同其 `LLVMContext` 所有。下游 target publication、
-TargetCall frontend 和 model 必须共享这个 owner-backed bundle，不得重新 lower accepted IR。
+每个accepted Tile只翻译一次，结果由`TargetLLVMModule`连同其`LLVMContext`所有。下游target publication、
+TargetCall frontend和model必须共享这组owner-backed modules，不得重新lower accepted IR。当前实现类
+`TargetLLVMModuleBundle`只作为该owner set的代码索引，不是稳定artifact名称。
 
 current target LLVM metadata schema 是 `wafer-target-llvm-module-v4`，至少精确绑定：
 
@@ -88,7 +92,7 @@ ABI preparation只消费 final accepted Instr IR 和 program boundary bindings�
 - target call descriptor 是唯一 field-position 与 scalar-width 事实源。
 
 ABI preparation不得改变 selected mapping、temporal tile、fusion、movement、worker、completion 或 placement；
-late failure拒绝整个whole-card candidate，由Q51 frontier选择其它候选；Q49 baseline则返回明确失败诊断。
+late failure拒绝整个`CardExecutable` candidate，由Q51 frontier选择其它候选；Q49 baseline则返回明确失败诊断。
 
 ### 3.2 Instr 到 TargetCall
 
@@ -110,19 +114,22 @@ conversion保留 source control-flow、SSA/effect与明确的异步 completion�
 `ReturnAfterLocalDrain` 表示：该 Tile entry 返回前，所有本地发起且影响其可观察结果、resource reuse 或
 transport status 的工作已由 current Instr/TargetCall completion chain收敛。
 
-它不表示整卡 barrier。whole-card completion由下游同时观察 16 个 Tile entry 和 transport obligations；target
+它不表示整卡 barrier。card-scoped completion由下游同时观察16个Tile entry和transport obligations；target
 conversion不得新增“最终统一等待”来掩盖缺失的 Tile-local completion。
 
 ## 4. Module topology 与 publication
 
 ### 4.1 保留显式 Tile interfaces
 
-`TargetArtifactBundle`包含：
+与`CardExecutable`绑定的target publication view包含：
 
 - verified module records；
 - exactly 16 个 `VerifiedTargetTileInterface`；
 - 每个 interface 的显式 `(card_id, tile_id, launch_slot)`、module ID 与 typed ABI slots；
-- bundle-level ExecutionConfig 与 RuntimeLaunchContract。
+- card-level ExecutionConfig与RuntimeLaunchContract。
+
+当前实现类`TargetArtifactBundle`可暂时作为这一publication view的代码索引，但不能成为`CardExecutable`与
+`ExecutablePackage`之间的第二个长期artifact事实源。
 
 module topology可以按 runtime launch contract使用不同低层表示：Grid/Cluster允许将 16 个不同 Tile body
 materialize到一个 aggregate target module，也允许每个 Tile独立 module。无论选择哪一种，长期 artifact合同始终是
@@ -170,7 +177,8 @@ Host gates至少覆盖：
 - ABI slot role/layout/size/alignment/signature双射；
 - unsupported target call、geometry、dtype、overflow、undefined symbol与digest mismatch负例；
 - transaction staging的原子失败；
-- 同一个 TargetLLVMModuleBundle 被 package、TargetCall frontend和SystemC直接消费，无第二次 lowering。
+- 同一组owner-backed target LLVM modules被`ExecutablePackage` assembly、TargetCall frontend和SystemC直接消费，
+  无第二次lowering。
 
 Q53完成还必须由current source重新生成generic DAG、HF prefill/decode与Llama package，fresh no-card后达到
 `board-ready`；真实设备上 Llama 和一个 prefill/decode代表做同源 matched A/B、exact output/guard并获得可重复改善后

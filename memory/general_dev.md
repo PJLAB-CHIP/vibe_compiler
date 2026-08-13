@@ -60,16 +60,18 @@ source program
 - no-work Tile仍需合法entry并进入artifact/runtime domain。module count不拥有Tile domain；Grid/Cluster可以低层聚合module，
   但必须保留16个显式Tile interfaces和每Tile不同body。
 
-## Whole-DAG时空综合
+## Physical-dataflow时空综合
 
 - `search`策略的优化对象是card-local完整structured DAG，不是单op、单consumer chain或预切好的Tile副本。
-- 同一个候选共同决定不同op的Tile集合、intra-op spatial work、temporal tile、loop order、fusion/SPM residency、
+- 同一个候选共同决定不同op的Tile集合、intra-op spatial work、temporal tile、loop order、TileRegion/融合、
   NoC redistribution、spill/reload/recompute、buffering和overlap。
-- query-local DAG state包含ready/running/completed op-wave、per-Tile finish time与LiveSPM、pending movement/event和
-  observable obligations。winner全部事实必须物化进actual IR，search state随后销毁。
-- spatial/temporal/implementation候选只从structured op interface、indexing maps、type/shape/dtype、SSA/effect、
-  explicit communication和target capability生成。算子先验可以为对应interface贡献有限domain ordering，但不能形成
-  framework/model/algorithm matcher、opaque provider identity或公共专用pass。
+- query-local DAG state只保存semantic root、spatial/region/traversal/temporal、representation/movement、buffer、
+  event/resource order、worker与completion等typed assignments。ready/running/completed op-wave、lifetime、per-Tile finish、
+  LiveSPM、calendar、makespan和observable completion分析都从current IR epoch与这些assignments重算，不进入state identity；
+  winner全部事实必须物化进actual IR，search state随后销毁。
+- semantic root与physical候选只从structured op semantics、indexing maps、type/shape/dtype、SSA/effect、
+  explicit communication和target capability生成。改变算法DAG的候选必须先物化为actual TensorProgram root；算子先验
+  可以贡献有限domain ordering，但不能形成framework/model/algorithm matcher、opaque provider identity或公共专用pass。
 - frontend给出的operation、constant、mask、RoPE、scalar flow、dtype和function boundary原样消费。RoPE table可以作为普通
   constant预计算；mask中的finite值或`-inf`不由compiler注入、删改或特判。
 - 通用static concatenate可在通用normalization中变成exact `tensor.insert_slice`链；不能为某个模型建立cache marker。
@@ -83,11 +85,13 @@ source program
 - placement-independent relation证明在同一search query内按SSA edge复用，具体placement的resident/peer相交仍逐候选精确计算；
   这种memo只消除重复证明，不删除spatial、layout、fusion、buffer或通信候选。
 - cheap typed legality、coverage、topology symmetry、SPM lower bound和raw-work dominance在clone前剪枝。
-- shortlist才materialize whole-card actual candidate；任一时刻最多一个live actual clone，避免RSS随候选笛卡尔积增长。
+- 只有需要exact legality/cost的状态才按需物化complete CardProgram candidate；任一时刻最多一个live actual clone，避免RSS随
+  候选笛卡尔积增长。固定shortlist、beam或candidate cap会丢合法状态，只能在Q52以profile和质量回归证明后作为显式trade-off。
 - global work ledger使用deterministic work units，不用wall-clock timeout决定搜索语义。wall/RSS只做回归诊断。
 - host worker可以并行互不共享可写IR的proposal/Tile-local evaluation；frontier insertion、tie-break和publication保持stable order。
 - 每个materialized candidate经过同一链：Tile→Instr、fresh completion、SPM/DDR、transport/resource/ABI和final recost。
-- exact failure消耗明确work unit并销毁clone，不建立late repair selector或candidate-local quota。
+- proven exact failure消耗明确work unit并销毁clone，不建立late repair selector或candidate-local quota；allocator/solver
+  resource exhaustion、timeout或internal failure属于indeterminate，不能形成no-good或删除合法state。
 - public optimization policy只使用`search`与`none`：`none`只materialize deterministic conservative baseline；
   `search`启用compiler-owned搜索，但二者经过相同artifact/exact gates。
 - `none`的SPM反馈循环从完整per-Tile iterator tile开始；每次只消费fresh allocator返回的causal demand，按有限breakpoint
@@ -96,9 +100,11 @@ source program
 
 ## Spatial、fusion、SPM与communication
 
-- 同一Tile、相同domain优先local SPM reuse；部分重叠mapping只传缺失domain；mapping改变时显式形成
+- 同一TileRegion、相同domain优先local SPM reuse；不同TileRegion即使位于同一Tile也必须显式DDR materialize；
+  部分重叠mapping只传缺失domain；mapping改变时显式形成
   scatter/gather/broadcast/reduction/redistribution。
-- 同一 `tile.region`可包含不同temporal tile和独立traversal；region表示Tile-local residency，不表示hardware Tile。
+- 同一 `tile.region`可包含不同temporal tile和独立traversal；region表示单个physical Tile内的SPM lifetime/ownership domain，
+  不表示hardware Tile本身。
 - maximal feasible residency与cross-Tile operator pipeline必须作为对立候选比较，fusion长度本身不是收益。
 - search-time LiveSPM包含input/intermediate/output、implementation temporary、layout buffer、NoC staging和rotating buffers。
 - exact SPM packing只读final roots、lifetime、alignment和conflict，返回validated offsets或失败；不改变选择。
@@ -110,8 +116,8 @@ source program
 
 - 每个actual candidate在Tile→Instr及selected worker/order已经物化后清除旧completion，再从final effects/tokens/control flow/reuse fresh重建；不要恢复独立worker/fixed-slot selector。
 - loop backedge、branch merge、entry return、Direct-DTE exact event/wait和async resource reuse都必须闭合。
-- `ReturnAfterLocalDrain`表示该Tile entry返回前，本地发起且影响结果/reuse/status的work已收敛；它不是whole-card barrier。
-- whole-card成功要求16个Tile entries和全部transport obligations完成。runtime不能用统一尾等待掩盖compiler缺失的local completion。
+- `ReturnAfterLocalDrain`表示该Tile entry返回前，本地发起且影响结果/reuse/status的work已收敛；它不是card-scoped barrier。
+- CardExecutable成功要求16个Tile entries和全部transport obligations完成。runtime不能用统一尾等待掩盖compiler缺失的local completion。
 - lifetime必须覆盖最后consumer和所有async use；release、SPM/DDR reuse、D2H都发生在相应completion证明之后。
 
 ## Theoretical cost
@@ -127,7 +133,7 @@ source program
 
 ## Target conversion与TargetCall
 
-- accepted physical Tile只做一次target LLVM translation；package、TargetCall frontend和model共享owner-backed bundle。
+- accepted physical Tile只做一次target LLVM translation；ExecutablePackage、TargetCall frontend和model共享owner-backed target module set。
 - current target LLVM metadata显式包含card/tile/launch slot、entry、target identity、runtime ABI、format与dense Kernel ABI slots。
 - ABI slot记录role、resource index、dtype、layout、shape、physical bytes和alignment；output是caller-owned slot。
 - target call descriptor registry是symbol/signature/field position/issue domain的唯一事实源。consumer用typed semantic和decoder，
@@ -159,7 +165,7 @@ source program
 
 ## Target model
 
-- model消费same-invocation TargetLLVMModuleBundle，通过TargetCall frontend解码closed typed payload，不解释accepted IR。
+- model消费same-invocation owner-backed target module set，通过TargetCall frontend解码closed typed payload，不解释accepted IR。
 - 每个physical Tile有独立SystemC process和private SPM/address domain；card DDR可由typed resource共享。
 - transaction携带显式card/tile/launch slot和Tile-local issue ordinal；OS thread、symbol和容器位置不拥有身份。
 - descriptor/decoder负责ABI，plain C++ kernel负责functional semantics，SystemC wrapper负责event/resource ordering。

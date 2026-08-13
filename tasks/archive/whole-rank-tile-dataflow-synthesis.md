@@ -1,5 +1,8 @@
 # Whole-DAG Multi-Tile 时空综合实施计划
 
+归档说明：本文件是2026-08-08的历史施工计划，已由`tasks/plans/physical-dataflow-synthesis.md`替代；其中
+`production|none`、whole-DAG/whole-card owner和预设bounded frontier均不是current合同。
+
 状态：2026-08-08 按新的 card-level GSPMD、whole-card MPMD 与 whole-DAG event-driven scheduler 合同重新施工。
 旧 whole-rank C0–C6 的 host/no-card 与 board-ready 记录仅证明 relation、movement、completion、packing、package 等
 mechanics，不再证明当前架构完成。算法、IR 与 pipeline contract 只由 `tasks/06-physical-dataflow-synthesis.md` 拥有；

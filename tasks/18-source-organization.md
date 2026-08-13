@@ -1,7 +1,8 @@
 # Wafer 源码与构建模块化
 
-状态：本文定义当前source ownership和依赖方向，不复制IR/ABI/schema语义。Q49、Q50.A–Q50.K及Q51–Q53正在用whole-card MPMD替换旧执行域；
-与新owner冲突的source、public header、CMake entry、test和兼容wrapper只有在负责该能力的Q50.A–Q50.K子项及替代测试闭合后才删除，
+状态：本文定义当前source ownership和依赖方向，不复制IR/ABI/schema语义。稳定编译边界为
+`TensorProgram -> physical-dataflow selection -> CardProgram/TileRegion/Instr -> CardExecutable -> ExecutablePackage`。
+与新owner冲突的source、public header、CMake entry、test和兼容wrapper只有在负责该能力的Q50.0/Q50.S/Q50.A–Q50.K子项及替代测试闭合后才删除；
 不保留空stub或旧接口alias，也不把旧owner连同仍需能力直接清空。
 
 ## 1. Pipeline Contract
@@ -9,10 +10,10 @@
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  当前frontend program、structured tensor DAG、wafer.card.program/wafer.tile.program、TileRegion、Instr、
-  TargetLLVMModuleBundle、TargetArtifactBundle、schema-v8 package、runtime/model invocation及其CMake libraries。
+  当前frontend program、TensorProgram、CardProgram/TileRegion、Instr、CardExecutable、target modules/artifacts、
+  ExecutablePackage、runtime/model invocation及其CMake libraries。
 - Current stage responsibility:
-  按稳定IR/artifact边界组织public API、internal helper、translation unit和build依赖；保证whole-DAG search、
+  按稳定IR/artifact边界组织public API、internal helper、translation unit和build依赖；保证physical-dataflow selection、
   conversion、target publication、runtime和model各有唯一owner，并删除旧架构旁路。
 - Output artifact / IR:
   依赖单向、职责可检查的libraries/tools/tests；不改变各owner定义的IR/artifact语义，也不产生第二份schema或sidecar。
@@ -21,7 +22,7 @@ Pipeline position:
 - User-level driver / named pipeline:
   current public drivers与named pipelines；源码组织本身不增加用户入口、pass option或optimization mode。
 - Explicit non-goals:
-  不按任务编号/agent/checkpoint建production module；不保留deprecated API；不把common helper变成语义恢复黑箱；
+  不按任务编号/agent/checkpoint建用户级module；不保留deprecated API；不把common helper变成语义恢复黑箱；
   不在test/tool中复制compiler/runtime合同。
 - Completion gate:
   current owner map与CMake一致；public header只暴露稳定typed boundary；repo-wide无旧execution-domain、旧schema/
@@ -64,7 +65,7 @@ recipe、staging builder、failure bookkeeping和单library协作helper放在 `l
 - package parse、serialize、semantic verify、runtime preflight和board execution分开；
 - TargetCall decode、functional kernel、SystemC scheduling和numeric codec分开。
 
-facade只编排typed substage，不重写业务逻辑。internal helper不可复制公共verifier的规则。
+顶层driver只编排typed substage，不重写业务逻辑；不为此另造`Facade`架构层。internal helper不可复制公共verifier的规则。
 
 ## 3. Current compiler organization
 
@@ -73,48 +74,55 @@ facade只编排typed substage，不重写业务逻辑。internal helper不可复
 `Frontend`拥有source program metadata、DPS/program boundary、distribution和parameter shards。`Transforms/SPMD`只负责
 global tensor到card partition；`num_partitions`属于card domain，不能创建或编号physical Tiles。
 
-single-card current path向whole-DAG stage交付一个完整card-local structured tensor DAG。frontend不识别Attention/decode、
+single-card current path向physical-dataflow stage交付一个完整card-local TensorProgram。frontend不识别Attention/decode、
 不注入mask或模型数学，也不写physical placement attrs。
 
-### 3.2 Whole-card synthesis
+### 3.2 Physical-dataflow selection 与 materialization
 
-`Compiler`是whole-DAG决策唯一owner：
+`Compiler`是整图physical-dataflow决策唯一owner，源码按下列artifact动作组织：
 
-- `WholeDAGSchedule`：从current structured SSA/effects构造query-local DAG、component/event facts；
-- `WholeCardExecutableSynthesis`：生成bounded spatial/temporal/fusion/residency/communication proposals，cheap prune、
-  shortlist actual materialization、exact gates和numeric cost selection；
-- `BoundedTileExecutor`：只并行互不共享可写IR的Tile-local工作，并维持deterministic output order；
-- `PhysicalTileFinalization`：对selected Tile module执行fresh completion与late physical finalization；
-- `WholeCardResourceAcceptance`/executable admission：只验证whole-card actual结果，不生成repair。
+- semantic-alternative builder：从current TensorProgram typed SSA证明资格，并把每个算法/参数点构造成isolated actual
+  TensorProgram alternative；proof、算法名和参数向量不越过actual IR边界；
+- physical-dataflow selection：从actual TensorProgram alternatives构造query-local DAG、component/event facts和typed
+  partial choices，惰性生成spatial/temporal/TileRegion/fusion/layout/movement/communication/buffering候选；
+- CardProgram/TileRegion materialization：只把当前choice写入isolated actual IR并运行对应verifier；
+- Tile-local evaluation executor：只并行互不共享可写IR的evaluation work，并维持deterministic output order；
+- Instr realization/finalization：对selected Tile program物化worker/slot/order，fresh重建completion并执行late physical finalization；
+- CardExecutable admission：只验证card-scoped actual结果，不生成repair。
 
-这些名字是实现索引；长期合同仍是：structured card DAG → selected `wafer.card.program` → all-and-only
-`wafer.tile.program` → accepted physical Tile executable bundle。
+现有类名或函数名只作为实现索引；长期合同仍是：TensorProgram → selected CardProgram/TileRegion → all-and-only
+physical Tile Instr → CardExecutable。实现索引不得升级为artifact名或要求其它library读取search对象。
 
 禁止恢复：
 
 - GSPMD partition直接绑定Tile；
-- 每Tile独立winner再拼whole-card；
+- 每Tile独立winner再拼CardExecutable；
 - complete execution domain clone N、late NoC profitability或第二selector；
-- algorithm/model/shape/name matcher和公共Flash/Decode materialization pass；
+- algorithm/model/shape/name matcher和拥有独立selection/public控制面的Flash/Decode pass；typed SSA proof驱动的
+  internal semantic-alternative builder属于current TensorProgram候选生成，不在此禁止；
 - performance Unknown promotion/fallback。
 
 ### 3.3 Conversion chain
 
-conversion libraries按IR边界组织：
+conversion libraries按IR边界组织。稳定artifact流为：
 
 ```text
-WaferTensorProgramToCardProgram
-  -> WaferCardProgramToTileModules
-  -> WaferTensorProgramToTileRegion
-  -> WaferTileRegionToInstr
+TensorProgram
+  -> physical-dataflow selection
+  -> CardProgram / TileRegion
+  -> Instr
+  -> CardExecutable
   -> target conversion
+  -> ExecutablePackage
 ```
 
-- Tensor→Card materializes selected physical spatial mapping及coverage；
-- Card→Tile projection只从explicit Tile programs拆出ModuleOps并保留physical identity；
-- Tensor→TileRegion使用structured tiling/reduction interfaces、DPS和IndexRelation，负责Tile-local dataflow；
+- TensorProgram→CardProgram materializes selected physical spatial mapping及coverage；
+- CardProgram→Tile projection只从explicit Tile programs拆出ModuleOps并保留physical identity；
+- CardProgram/TileProgram内的TileRegion materialization使用structured tiling/reduction interfaces、DPS和IndexRelation，
+  负责Tile-local dataflow；
 - TileRegion→Instr lower actual compute/movement/communication，不做全局选择；
-- target conversion消费final Instr并产生current TargetCall/LLVM ABI。
+- CardExecutable admission只消费all-and-only finalized Instr并原子验证；
+- target conversion和package publication分别消费CardExecutable与verified target artifacts，不恢复physical choice。
 
 不同output/op可拥有不同active Tile set与tile shape；projection不能假设common result tile vector。conversion failure返回
 candidate owner，不在内部反复缩tile或切换算法。
@@ -126,7 +134,7 @@ performance estimator只计算enabled numeric terms；完全未知项不进入�
 
 `Transforms`/planning libraries materialize fresh completion、SPM offsets、DDR offsets、worker/order和communication。allocator
 只解fixed problem，不能生成spill/retile/reorder repair。任何会影响search的事实都必须从current actual IR重算并返回
-whole-card owner。
+physical-dataflow owner。
 
 ## 4. Target、runtime与model organization
 
@@ -139,8 +147,8 @@ whole-card owner。
 - LLVM translation与current metadata verification；
 - optional Grid/Cluster aggregate target-module materialization；
 - device link、ELF/export/digest readback；
-- TargetArtifactBundle atomic publication；
-- schema-v8 package assembly与schema-v9 profile companion publication。
+- verified target artifacts atomic publication；
+- ExecutablePackage assembly与profile companion publication。
 
 aggregate module是低层representation，不能吞掉16个explicit Tile interfaces。host TargetCall JIT dispatch是internal
 transaction bridge，不能进入package/runtime ABI文档或public header。
@@ -158,9 +166,9 @@ transaction bridge，不能进入package/runtime ABI文档或public header。
 - TX provider adapter；
 - ProfileCompanion strict loader/verifier。
 
-package schema-v8与profile companion schema-v9的version、fields和verification只在typed runtime owner定义；package的
+ExecutablePackage当前manifest schema与profile companion schema的version、fields和verification只在typed runtime owner定义；package的
 resource scopes与entry completion同样由该owner持有。Python runner只能消费canonical manifest/evidence或调用public tool；
-不得内置另一份schema validator。旧schema reader和兼容translation不存在。profile v9只暴露单一production artifact、
+不得内置另一份schema validator。旧schema reader和兼容translation不存在。profile companion只暴露单一primary executable artifact、
 count/trace captures和一个16-Tile site map，不保留artifact集合shell或重复digest API。
 
 ### 4.3 TargetCall与model
@@ -188,8 +196,8 @@ model不依赖package parser来重建compiler owners，也不共享vendor runtim
 IR / Support / Target typed facts
   -> Analysis
   -> Conversion / Transforms
-  -> Compiler orchestration and target publication
-  -> Runtime package/preflight
+  -> Compiler orchestration and CardExecutable/target publication
+  -> ExecutablePackage / Runtime preflight
   -> Board provider or Model consumer
   -> Tools
 ```
@@ -229,17 +237,17 @@ source。删除功能时删除对应only-purpose fixture/golden/catalog；通用
 8. full build、unit/lit/CTest和source-organization scan是否fresh通过。
 
 推荐的residual search按概念分组执行，并逐条区分合法tensor rank、外部ABI spelling和已归档历史；不能机械替换所有
-`rank`。当前source合同不得再出现旧execution-domain API、旧manifest version/reader、late selector、
-algorithm-specific pass/matcher或已删除board tooling入口。
+`rank`。当前source合同不得再出现旧execution-domain API、旧manifest version/reader、late selector、按模型/shape/name
+恢复语义的matcher、拥有独立selection/public控制面的algorithm pass或已删除board tooling入口。
 
-## 8. Q49、Q50.A–Q50.K与Q51–Q53 completion boundary
+## 8. Q49/P、Q50与Q51–Q53 completion boundary
 
-源码组织收口横跨Q49、Q50.A–Q50.K及Q51–Q53；当前状态只看`tasks/progress.md`。相关源码删除必须满足：
+源码组织收口横跨Q49/P、Q50.0/Q50.S/Q50.A–Q50.K及Q51–Q53；当前状态只看`tasks/progress.md`。相关源码删除必须满足：
 
-- whole-card synthesis成为production唯一owner，`none`只提供同pipeline baseline；
+- physical-dataflow selection成为唯一decision owner，public optimization policy只为`search|none`，`none`只提供同pipeline baseline；
 - old/new双interface、compatibility wrapper、unused public pass和only-for-them tests全部删除；
-- Q50.A–Q50.K各自能为其负责的旧能力指向current实现、actual witness和替代测试，并独立提交；
-- current source→16-Tile MPMD→Target LLVM→schema-v8 package→no-card/model纵向由Q49/Q51 fresh通过；
+- Q50.0、Q50.S和Q50.A–Q50.K各自能为其负责的旧能力指向current实现、actual witness和替代测试，并独立提交；
+- current TensorProgram→CardProgram/TileRegion/Instr→CardExecutable→ExecutablePackage→no-card/model纵向由Q49/Q51 fresh通过；
 - generic DAG、HF prefill/decode和Llama workload由Q53完整达到board-ready；
 - 真实板端matched A/B完成后Q53才满足最终done gate。
 

@@ -7,7 +7,7 @@
 
 - 现象：GSPMD的partition count直接决定单卡Tile程序数量，spatial mapping、不同op并行和cross-Tile communication搜索消失。
 - 根因：把card-level global tensor partition误当成card内执行映射，并复用同一个整数/ordinal贯穿frontend到runtime。
-- 修复模式：`num_partitions`只属于card domain；card-local structured DAG进入whole-card scheduler，后者显式生成
+- 修复模式：`num_partitions`只属于card domain；card-local structured DAG进入physical-dataflow selection，后者显式生成
   all-and-only 16个physical Tile programs。
 - 防复发：single-card `num_partitions=1`的source必须产生16个Tile interfaces；测试同时检查card count、Tile count和
   nontrivial spatial mapping，不能只检查module数量。
@@ -23,7 +23,7 @@
 
 - 现象：`search`与`none`在所有workload上产生相同IR/package，新增搜索代码从未影响winner。
 - 根因：driver解析了optimization policy，却在executable synthesis边界丢弃或绕过它；测试反而把相同结果锁成合同。
-- 修复模式：`search`调用whole-card search，`none`只materialize conservative baseline；两者从同一source进入同一
+- 修复模式：`search`调用唯一physical-dataflow selection，`none`只materialize conservative baseline；两者从同一source进入同一
   actual/exact pipeline。
 - 防复发：测试验证两种policy都真正进入synthesis统计，并允许结果不同；不能要求它们永远产生相同digest。
 
@@ -31,16 +31,17 @@
 
 - 现象：model-scale图在candidate笛卡尔积上重复clone、Tile→Instr、completion和packing，编译时间远超单算子合理范围。
 - 根因：把actual materialization当作candidate enumeration，或给不同Tile/mechanism各建局部shortlist再组合。
-- 修复模式：先用query-local legality、coverage、topology symmetry、SPM lower bound和raw-work dominance剪枝；只有bounded
-  shortlist materialize，且peak live actual clone为1。
-- 防复发：统计proposal/pruned/shortlist/materialized/exact-failure/peak-live；scale gate同时看deterministic work、wall和RSS，
+- 修复模式：先用query-local typed legality、topology symmetry、exact equivalence、admissible lower bound与future-compatible
+  dominance安全剪枝；其余状态惰性保留，只有需要exact结论时才按需materialize，且peak live actual clone为1。有损shortlist/
+  beam/cap只能在实际profile后作为显式budgeted trade-off。
+- 防复发：统计generated/rejected/deduplicated/expanded/actual-probed/exact-failure/peak-live；scale gate同时看deterministic work、wall和RSS，
   不设任意固定秒数替代复杂度分析。
 
 ## Late exact failure不能触发隐藏repair
 
 - 现象：SPM packing或ABI failure后，late pass自行缩tile、spill、改worker或切communication，selected IR与search cost不一致。
 - 根因：allocator/finalizer被赋予了搜索职责，产生第二winner owner。
-- 修复模式：late stage只返回validated result或candidate failure；failure回到同一whole-card frontier选择其它已表示候选。
+- 修复模式：late stage只返回validated result或candidate failure；failure回到同一physical-dataflow frontier选择其它已表示候选。
 - 防复发：negative test锁定packing/ABI failure不改写candidate；repo scan禁止late retile/spill/replan selector。
 
 ## 性能未知项不能阻塞或污染比较
@@ -52,11 +53,14 @@
 
 ## Algorithm shortcut会缩窄通用search
 
-- 现象：为某个Attention/decode或shape case加入matcher、专用public pass、opaque provider key或coordinator分支，异构DAG无法复用。
-- 根因：把“op interface可贡献先验”误写成“识别整段模型并走第二实现协议”。
-- 修复模式：spatial/temporal/implementation候选从structured op interface、indexing map、type/shape/dtype、SSA/effect、
-  explicit communication和target capability生成；专用算法身份不进入common owner。
-- 防复发：源码检查禁止framework/model/function/value-name和固定shape matcher；generic mixed DAG与真实HF/Llama走同一public pipeline。
+- 现象：为某个Attention/decode或shape case加入名字/形状matcher、独立public selector/pass、opaque provider key或第二winner
+  分支，异构DAG无法复用；另一种错误是完全禁止typed算法变换，使online/partition-merge DAG永远不可能出现。
+- 根因：没有区分“由typed SSA证明并物化actual TensorProgram alternative”和“按模型名进入第二实现协议”。
+- 修复模式：算法资格只从structured semantics、indexing relation、type、SSA/effect、loop-carried dataflow和numeric policy证明；
+  每个算法/拓扑参数点先成为verifier-legal actual TensorProgram，再由同一physical-dataflow owner选择。名字、shape或独立
+  selector不进入协议，physical tiling/layout/buffer也不能提前替代算法DAG选择。
+- 防复发：源码检查禁止framework/model/function/value-name和固定shape matcher；generic mixed DAG与真实HF/Llama走同一public
+  pipeline，并以正负witness证明typed semantic builder既会命中合法图，也会保持near-miss原图。
 
 ## Frontend不得为了compiler命中改写模型语义
 
@@ -79,7 +83,7 @@
 
 - 现象：先固定Tile分配再选temporal tile/fusion，或先尽量融合再事后安排NoC，导致SPM放不下、Tile空闲或通信爆炸。
 - 根因：将互相决定resource和critical path的变量交给独立selector。
-- 修复模式：同一whole-DAG candidate共同表达Tile集合/work domain、temporal tile、region/residency、communication、buffering和overlap。
+- 修复模式：同一complete CardProgram candidate共同表达Tile集合/work domain、temporal tile、TileRegion/融合、communication、buffering和overlap。
 - 防复发：测试同时保留maximal local residency与cross-Tile operator pipeline、large-tile cut与small-tile overlap等对立候选。
 
 ## Tile region不要求所有op使用相同tile shape
@@ -97,11 +101,11 @@
   engine join和Direct-DTE exact wait。
 - 防复发：每个actual candidate都执行fresh completion；missing/wrong worker/event/participant/reuse分别有负例。
 
-## `ReturnAfterLocalDrain`不是whole-card barrier
+## `ReturnAfterLocalDrain`不是card-scoped barrier
 
 - 现象：每个Tile local return合法，却在其它Tile或transport尚未完成时发布output；或在每个entry尾插入全卡等待造成死锁。
-- 根因：混淆entry-local drain、cross-Tile message completion和whole-card invocation success。
-- 修复模式：Tile entry只保证本地发起的observable/reuse/status work已收敛；whole-card owner另行等待16个entries与全部transport obligations。
+- 根因：混淆entry-local drain、cross-Tile message completion和card-scoped invocation success。
+- 修复模式：Tile entry只保证本地发起的observable/reuse/status work已收敛；CardExecutable/runtime owner另行等待16个entries与全部transport obligations。
 - 防复发：一个Tile提前返回、另一个仍有Direct-DTE/event的正例；缺失global obligations和多余cycle分别失败。
 
 ## SPM packing只能求解final fixed problem
@@ -110,6 +114,16 @@
 - 根因：把allocation quality与schedule search混合，且没有从final roots/effects形成exact conflict problem。
 - 修复模式：search-time用safe lower/upper bound剪枝；final actual IR形成fixed roots、lifetimes、alignment和conflict，MiniMalloc只返回offsets或失败。
 - 防复发：验证overlap clique、alias、loop-carried lifetime、async use、padding与high-water；packing失败不产生IR mutation。
+
+## 资源耗尽不能伪装成exact infeasible
+
+- 现象：allocator或局部solver达到work budget、timeout或内部错误后，search把该结果缓存成capacity failure/no-good，合法的
+  spatial、temporal、layout或buffer siblings从frontier永久消失。
+- 根因：调用边界只有success/failure布尔值，没有区分`ProvenInfeasible`与`ResourceExhausted`/internal failure。
+- 修复模式：mechanism统一返回accepted、deferred、proven exact rejection或indeterminate；只有证明无解或确定unsupported
+  才能形成causal no-good，资源耗尽、timeout和内部失败只消耗work并保留parent与siblings。
+- 防复发：定向测试让同一assignment分别触发证明无解、预算耗尽和内部错误，断言只有第一类缩域；结果等级按exact frontier
+  是否仍完整报告，不能仅因budget中止一律声称有界或一律降级。
 
 ## Logical elements与physical bytes不可混用
 
@@ -151,14 +165,14 @@
 
 - 现象：host target-call dispatcher symbol被写入package contract、public enum或外部tool，后续JIT实现无法演进。
 - 根因：把实现桥接点误当成artifact semantic boundary。
-- 修复模式：public合同只到TargetLLVMModuleBundle、typed descriptors和transaction sink；dispatcher保持internal且不序列化。
+- 修复模式：public合同只到owner-backed target module set、typed descriptors和transaction sink；dispatcher保持internal且不序列化。
 - 防复发：package/export allowlist不要求internal host symbol；文档和public header不暴露其调用约定。
 
 ## Target LLVM不能被不同consumer重复lower
 
 - 现象：target publication、model和host frontend各自从accepted IR重新lower，metadata、ABI slot或call ordinals漂移。
 - 根因：没有owner-backed same-invocation target LLVM boundary。
-- 修复模式：accepted Tile只翻译一次，TargetLLVMModuleBundle连同LLVMContext move-own；下游共享不可变bundle。
+- 修复模式：accepted Tile只翻译一次，target module连同LLVMContext move-own；下游共享不可变owner set。
 - 防复发：测试统计单次translation，并让package/TargetCall/SystemC消费同一owner；metadata逐field readback。
 
 ## TargetCall语义不能从symbol解析
@@ -182,7 +196,7 @@
 - 修复模式：unknown或non-empty accepted subset、timeout和不可信completion使context sticky poisoned；poison后不再调用provider。
 - 防复发：failure injection覆盖每个stage、accepted subset与cleanup；无自动retry/reset/power，session move/invalid状态严格验证。
 
-## Card-shared output必须在whole-card完成后一次发布
+## Card-shared output必须在card-scoped invocation完成后一次发布
 
 - 现象：某个Tile完成就D2H shared output，读到其它Tile尚未写完的区域；或同一ResourceId被多次copyback覆盖。
 - 根因：把Tile-local completion和card-scoped resource publication混淆。
@@ -282,7 +296,7 @@
 ## Iterator域体积不能冒充operand tile驻留
 
 - 现象：GEMM的cheap model按`M*N*K*元素字节和`估算SPM，把三个二维operand误当成三个三维buffer；合法大tile被过早剪掉，
-  搜索倾向大量小wave，优化后的whole-card执行反而没有性能收益。
+  搜索倾向大量小wave，优化后的card-scoped执行反而没有性能收益。
 - 根因：只看到iteration domain，没有用每个operand自己的indexing map求实际window；同时用一个整体alignment掩盖了
   per-buffer allocation事实。
 - 修复模式：对每个Linalg operand从当前iterator tile和symbol-free affine indexing map求常量包围盒，按真实element width和
@@ -380,3 +394,15 @@
   的唯一executable，selection直接move发布。统计必须明确baseline rematerialization为零。
 - 防复发：none与search unit分别断言0次和1次selected executable rematerialization；模型规模timing检查publication前不再出现
   第二轮16-Tile exact pipeline。
+
+## 分配器carrier失败不得反向删除logical placement
+
+- 现象：logical demand analysis已经用`IndexRelation.image()`正确求出consumer需要的producer集合，但placement evaluation
+  随即把它降成dense rectangle/layout fragments/route；当前carrier表达失败被当成spatial placement非法，导致搜索域仍被悄悄缩窄。
+- 根因：layout-independent demand与physical representation/movement materialization没有形成调用边界，analysis“存在”被误报为
+  production合同已闭合；memory/edge planner又同时承担候选生成和准入。
+- 修复模式：placement transition只消费logical demand与ownership coverage；layout、fragment、route和transport只在对应
+  physical坐标关闭后物化。任何carrier失败只拒绝包含这些坐标的candidate，并把typed rejection交回唯一search owner；
+  lowering、SPM/DDR planner和communication admission都不能修候选或直接操作frontier。
+- 防复发：用同一logical placement构造至少两个representation/movement alternatives，其中一个carrier失败、另一个actual
+  accepted；断言spatial state仍可回溯并找到accepted winner。任务状态必须核对production调用链，不能只凭analysis单测标done。
