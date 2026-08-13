@@ -1,7 +1,7 @@
 # Wafer Compiler Stack Architecture
 
-状态：2026-08-09已同步card-level GSPMD、whole-card MPMD和whole-DAG multi-Tile时空综合终态边界。
-Q49正在收口current同路径baseline；Q50–Q53依次负责能力迁移、完整event-driven joint search、实际负载scalability和
+状态：2026-08-13已同步card-level GSPMD、whole-card MPMD和whole-DAG multi-Tile时空综合终态边界。
+Q49已达到`board-ready`；Q50.A–Q50.K分别迁移可组合机制，Q51–Q53依次负责完整event-driven joint search、实际负载scalability和
 production board readiness。当前保守output-domain spatial mapping与whole-card exact admission已经进入主线，但dependent-op
 remap及由mapping差异生成的NoC redistribution尚未闭合。本文是compiler、
 target artifact、package/runtime与target-model分支的主架构入口，
@@ -247,9 +247,9 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | 维度 | 稳定终态合同 | 当前未闭合 / 后续 |
 | --- | --- | --- |
 | source boundary | static-ranked StableHLO program directory；card-level num_partitions显式 | dynamic shape、cross-card transport |
-| decision owner | whole-DAG event-driven scheduler联合评估physical placement、不同op/branch/wave并行、temporal tile、region/fusion/residency、representation、movement和buffering；shortlist才actual-clone | Q51负责补齐dependent-op remap、NoC redistribution与完整event state；不得把Q49 baseline写成终态已完成 |
+| decision owner | whole-DAG event-driven scheduler联合评估physical placement、不同op/branch/wave并行、temporal tile、region/fusion/residency、representation、movement和buffering；shortlist才actual-clone | Q50.A/Q50.G闭合dependent edge与NoC机制，Q51负责mapping/route选择与完整event state；不得把Q49 baseline写成终态已完成 |
 | numeric transformation | supported integer exact/modular变换，以及f16/bf16/f32 reassociation、tree、distribution/factorization、reduction/GEMM split与floating collective；统一typed comparator验收 | 任意fast-math、未证明FMA contraction、用容差掩盖special value/index/layout/guard错误 |
-| physical realization | `card.program`、per-`tile_id` `tile.program`、typed Tensor/Cx/NCx movement、local SPM regions、liveness-derived fixed-capacity packing | Q50/Q51迁移并接入dependent mapping的physical realization；bank phase不改变hard feasible set或反向产生spill/region/join |
+| physical realization | `card.program`、per-`tile_id` `tile.program`、typed Tensor/Cx/NCx movement、local SPM regions、liveness-derived fixed-capacity packing | Q50.A/Q50.E–Q50.K迁移并接入dependent mapping的physical realization；Q51统一选择，bank phase不改变hard feasible set或反向产生spill/region/join |
 | communication | card-local topology-derived physical-Tile peer/collective、显式p2p/local work/completion和whole-card Direct DTE acceptance | mapping-changing NoC joint generation、cross-card transport |
 | artifact/runtime | all-and-only physical Tile `ExecutableBundle`、same-lowering Target LLVM、verified package、no-card、TargetCall/SystemC和configured RuntimeProvider | exact-package ISS/vendor simulator |
 | hardware evidence | hard legality/capacity与性能estimate分离；性能term有actual值则用actual，其次理论值，完全未知则整批删除 | 通用model/board numeric correlation、packet/MMIO provenance、cycle-accurate timing |

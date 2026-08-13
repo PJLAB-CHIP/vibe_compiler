@@ -1,6 +1,6 @@
 # Wafer Whole-DAG Multi-Tile 时空综合
 
-状态：2026-08-11 作为Q49–Q53 current whole-card synthesis主线的唯一设计 owner。旧 whole-rank 实现已经证明
+状态：2026-08-13 作为Q49、Q50.A–Q50.K及Q51–Q53 current whole-card synthesis主线的唯一设计 owner。旧 whole-rank 实现已经证明
 relation、actual clone、SPM/DDR packing、NoC lowering、completion 和 package mechanics 可以工作，但它在
 GSPMD 后把 logical rank 直接绑定到单卡 16 个物理 Tile，因而丢失了 Tile 级 spatial mapping、不同 op 并行和
 spatial/temporal/fusion 的联合搜索空间。本设计替换该决策合同；实现状态只看 `tasks/progress.md`，施工顺序只看
@@ -456,8 +456,10 @@ ready-order、fixed-slot software pipeline、NCC worker placement、peer/collect
 
 ## 11. Completion Gate
 
-本设计按五个独立队列项交付：Q49闭合current同路径baseline，Q50闭合能力保全迁移，Q51闭合统一搜索正确性与
-search-policy cutover，Q52只基于实际负载优化scalability，Q53形成fresh package/no-card与board证据。任一前项的阶段性
+本设计按独立队列项交付：Q49闭合current同路径baseline；Q50.A–Q50.K分别闭合edge correctness、semantic proof、
+online DAG、partitioned-K/V DAG、layout、residency、communication、ready-order、multi-buffer、worker/completion和
+fusion traversal机制；Q51闭合统一搜索正确性与search-policy cutover，Q52只基于实际负载优化scalability，Q53形成
+fresh package/no-card与board证据。任一前项的阶段性
 编译或测试通过都不能代替后项完成；具体依赖、状态与提交门禁由`tasks/progress.md`和唯一实施计划管理。
 
 ### IR / verifier

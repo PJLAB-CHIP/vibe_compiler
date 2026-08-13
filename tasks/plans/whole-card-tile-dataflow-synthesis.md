@@ -1,12 +1,13 @@
 # Whole-Card Multi-Tile 综合实施计划
 
-状态：2026-08-11 将原来全部压在Q49中的工作拆为Q49–Q53五个独立队列项；同日完成独立deterministic
-baseline controller及最终fresh验证，Q49达到`board-ready`，Q50仍为下一独立队列项。算法、IR与pipeline contract
-仍只由`tasks/06-physical-dataflow-synthesis.md`拥有；本文件是唯一实施计划，只描述施工顺序、现有代码处置和
-独立completion checkpoint；workload/board gate由`tasks/16-verification-contract.md`拥有。
+状态：2026-08-11 完成独立deterministic baseline controller及最终fresh验证，Q49达到`board-ready`；
+2026-08-13 将过宽的Q50 capability migration拆为Q50.A–Q50.K十一个独立队列项，当前只执行Q50.A。算法、IR与
+pipeline contract仍只由`tasks/06-physical-dataflow-synthesis.md`拥有；本文件是唯一实施计划，只描述施工顺序、
+现有代码处置和独立completion checkpoint；workload/board gate由`tasks/16-verification-contract.md`拥有。
 
-拆分的是交付闭环，不是搜索维度。Q50只提供可被共同搜索消费的候选生成、actual transformation和verifier机制；
-Q51是唯一whole-DAG选择owner。不得重新引入layout、fusion、communication、buffering或worker独立selector。
+拆分的是交付闭环，不是搜索维度。Q50.A–Q50.K分别提供可被共同搜索消费的一种candidate mechanism、actual
+transformation和verifier；这些队列项都不选择局部winner。Q51仍是唯一whole-DAG选择owner，不得重新引入layout、
+fusion、communication、buffering或worker独立selector。
 
 ## Pipeline Contract
 
@@ -30,7 +31,7 @@ Pipeline position:
   不重做跨card GSPMD；不建立第二搜索owner、shadow plan或late repair selector；不从名字、shape或workload恢复语义；
   不把board结果写回IR；本计划不包含Q48 semantic superoptimization。
 - Completion gate:
-  Q49–Q52依次闭合baseline、能力迁移、联合搜索正确性和实际负载scalability；Q53为通用DAG、HF prefill、
+  Q49闭合baseline；Q50.A–Q50.K分别闭合一种候选机制；Q51、Q52依次闭合联合搜索正确性和实际负载scalability；Q53为通用DAG、HF prefill、
   functional decode和Llama block生成FP16/BF16 fresh package、oracle、runner并通过no-card后达到board-ready；
   真实matched板端A/B获得可重复改善后才done。
 ```
@@ -40,7 +41,17 @@ Pipeline position:
 | 队列项 | 唯一职责 | 产出 | 独立完成门禁 |
 | --- | --- | --- | --- |
 | Q49 | 收口当前实现并固定同路径baseline | 可编译的current pipeline和accepted baseline package | baseline fresh build/package/no-card通过 |
-| Q50 | 保全并迁移已有算法能力 | current IR上的candidate mechanism、actual transformation、verifier和测试 | capability parity无缺项 |
+| Q50.A | 精确edge relation与transfer correctness | relation-derived demand及local/peer actual fragments | logical relation与target lowering无第二事实源 |
+| Q50.B | Attention/decode语义证明 | typed SSA proof及合法算法集合 | 普通图、functional decode和near-miss通过 |
+| Q50.C | online recurrence DAG变换 | isolated clone中的真实online structured DAG | recurrence与observable结果验证通过 |
+| Q50.D | partitioned-K/V DAG变换 | 真实partition/local-reduction/merge DAG | coverage、merge和near-miss测试通过 |
+| Q50.E | physical layout与representation | layout/encoding候选、actual movement及fanout共享 | current actual-IR witness与正负测试通过 |
+| Q50.F | value residency与recompute | resident/refetch/spill/recompute actual IR | lifetime/capacity/alias gate通过 |
+| Q50.G | peer与collective通信 | peer/collective participant、payload、transport和join IR | coverage/completion正负测试通过 |
+| Q50.H | ready-order scheduling | dependency/effect/resource合法的per-Tile Instr顺序 | branch/fanin/fanout/effect测试通过 |
+| Q50.I | multi-buffer流水机制 | fixed-slot、rotating buffer与Direct-DTE issue/wait IR | slot lifetime/capacity/hazard测试通过 |
+| Q50.J | worker与completion | typed worker placement及跨worker join/completion IR | multi-worker actual witness与负例通过 |
+| Q50.K | 真正fusion traversal | 共同TileRegion/consumer-driven recursive traversal | fusion与独立traversal均可实际物化 |
 | Q51 | 闭合唯一联合搜索及search-policy cutover | accepted whole-DAG winner actual IR | 小图最优oracle、exact gate和有效融合通过 |
 | Q52 | 按实际负载优化搜索规模和时间 | 有质量守护的memo/DP/pruning/solver或启发式实现 | 代表负载在受管时间内完成且不劣于baseline |
 | Q53 | 形成current production board-ready证据 | fresh package、oracle、runner、no-card和融合有效性证据 | 无卡阶段board-ready；真实板测后done |
@@ -92,7 +103,7 @@ Q49只回答“当前已有实现能否稳定地产生一个真实合法whole-ca
    Linalg op间边界统一显式落入compiler-owned DDR，`actual_fused_edges`必须为零，buffer count固定为1。同一physical
    Tile拥有producer/consumer shard时直接使用DDR RegionCut；两个确定性spatial shard集合不一致时，只按typed indexing
    relation物化完成该依赖所必需的exact peer fragments，并在consumer端DDR assembly后开始独立op stage。baseline不搜索
-   edge action、route、layout、residency、recompute或overlap；这些可选维度只属于Q50/Q51，并且baseline默认值不成为
+   edge action、route、layout、residency、recompute或overlap；这些可选维度只由Q50.A–Q50.K提供机制并由Q51联合选择，baseline默认值不成为
    `search`搜索空间限制。
 4. baseline从current spatial mapping产生的完整per-Tile local extent开始。actual fixed-capacity SPM packing失败后，
    allocator返回带source lineage的冲突demand；controller只按有限breakpoint缩小该Linalg op的parallel/reduction
@@ -115,13 +126,13 @@ Q49只回答“当前已有实现能否稳定地产生一个真实合法whole-ca
 - `none`结果稳定可复现，并可在Q51 `search`没有accepted winner时作为合法fallback；
 - official HF prefill和functional KV-cache decode均有同源eager oracle、payload、完整package、no-card和可串行执行的
   board runner；无板阶段标`board-ready`，真实板端运行后才可标`done`；
-- 当前whole-card相关文件均已归属到Q49–Q53之一，没有未解释的继续删除项；
-- Q49独立提交且真实板端baseline通过后标`done`；Q50可在Q49达到`board-ready`后进入`doing`。
+- 当前whole-card相关文件均已归属到Q49、Q50.A–Q50.K或Q51–Q53之一，没有未解释的继续删除项；
+- Q49独立提交且真实板端baseline通过后标`done`；Q50.A可在Q49达到`board-ready`后进入`doing`。
 
 长期回归owner为`test/Tools/wafer-compile-whole-card-baseline.test`：它从FP16 StableHLO source分别构造普通
 multi-op chain、16-Tile GEMM和transpose前后均为observable的16-Tile dataflow，检查none零融合、本地依赖零peer、
 跨轴依赖只有exact required peer fragments、consumer端DDR stage、16-Tile coverage、完整schema-v8 package及fresh
-no-card。Q50/Q51负责搜索可选peer/retained/recompute/layout动作和优化route；Q49只保留当前spatial assignment要求的
+no-card。Q50.A–Q50.K提供可选peer/retained/recompute/layout机制，Q51负责联合选优和route；Q49只保留当前spatial assignment要求的
 确定性correctness communication，不把它当作搜索坐标。
 
 ### 2026-08-11失效checkpoint与重新开放原因
@@ -133,7 +144,7 @@ no-card。Q50/Q51负责搜索可选peer/retained/recompute/layout动作和优化
 - Llama FP16 `none`只有一个初始proposal，却在首个SPM失败后进入公共allocation-feedback frontier，30分钟内累计
   数百次CardProgram物化并尝试`CoupledFusion` edge transition，最终被bounded deadline终止；因此先前
   `board-ready`结论撤销，Q49回到`doing`。
-- Q49不运行search-policy workload或fusion/peer gate；`search`融合、通信、质量和scalability证据只由Q50–Q53签发，
+- Q49不运行search-policy workload或fusion/peer gate；`search`机制、融合、通信、质量和scalability证据只由Q50.A–Q50.K及Q51–Q53签发，
   不进入baseline状态判断。Q49重新达到board-ready前，prefill、decode、Llama必须在最终controller上fresh重跑。
 - board CTest已为prefill和decode的`none` baseline准备同源FP16、固定seed、独立work-dir、repeat=3、单一resource lock的
   串行runner；但runner准备不能替代最终controller上的三类fresh package/no-card，因此当时Q49仍为`doing`。
@@ -156,55 +167,108 @@ no-card。Q50/Q51负责搜索可选peer/retained/recompute/layout动作和优化
   三类workload的source、eager oracle、payload、package与no-card runner完整，Q49因此标`board-ready`；本轮没有
   启动真实板端，故不能标`done`。融合有效性仍是Q51/Q53的独立门禁，Q49零融合是baseline合同而非融合结论。
 
-## Q50：Capability-Preserving Migration
+## Q50.A–Q50.K：Capability Mechanism Migration
 
-### 责任边界
+### 共同边界
 
-Q50恢复的是机制能力，不是旧调度架构。它输出可由Q51共同搜索消费的typed candidate provider、actual
-transformation、legality analysis和verifier；不在Q50选择最终winner。
+原Q50不再作为一个有状态、需一次性完成的队列项；它只保留为Q50.A–Q50.K的任务族名称。每个子项只迁移一种
+compiler mechanism，独立同步设计、实现、actual-IR witness、正负测试和提交，完成后即可标`done`。后项只能消费
+前项的current artifact，不能为赶进度恢复旧selector、side table或compatibility path。
 
-### Capability parity
+每项均遵守同一施工顺序：先识别旧实现中应保留的算法、transformation、verifier和测试，再剥离旧独立owner；随后
+在current IR上提供query-local analysis、candidate provider或actual materializer，并把结果直接写入isolated clone的
+structured/Card/Tile/Instr IR。只有current正负测试和actual witness等价或更强后，旧入口才满足删除门禁。
 
-最低迁移范围：
+Q50.A–Q50.K都不选择局部winner，也不对Q51搜索域设置固定tile、layout、fusion、buffer、worker或算法上限。
+Q51必须同时消费这些机制并作唯一whole-DAG选择。
 
-- physical layout assignment/movement solver、physical encoding legality与fanout版本共享；
-- dependency/effect约束下的ready-order instruction scheduling；
-- fixed-slot prologue/steady/epilogue、rotating allocation、multi-buffer与Direct-DTE issue/wait；
-- typed NCC worker placement、participant join和跨worker completion；
-- peer/collective materialization及all-gather、all-reduce、reduce-scatter等合法性；
-- complete traversal、boundary movement、resident/refetch/recompute与recursive tile-and-fuse；
-- typed Attention与functional K/V-cache decode语义证明、online recurrence和split-K/V actual materialization；
-- 对应正例、near-miss负例、verifier failure和integration测试。
+### Q50.A：Exact Edge Relation and Transfer Correctness
 
-每项按同一顺序迁移：
+- 输入：已给定spatial placement的current structured producer/consumer SSA edge及其indexing semantics。
+- 职责：只从structured semantics导出query-local `IndexRelation`，以relation image求consumer shard需要的all-and-only
+  producer logical demand；将该逻辑集合与矩形fragment、strided descriptor或多片target lowering分层。
+- 输出：local/remote demand decomposition及可物化的DDR/peer fragments。`LocalShardResidency`仅表示同Tile数据可用；
+  `CoupledFusion`保留给Q50.K的真实共同traversal。
+- Gate：reduction、broadcast/window、stride、local与peer边均有正负测试；planner和materializer共用唯一relation API；
+  actual Card/Tile IR中send/recv/wait与exact demand一致；baseline继续保持逐op DDR boundary和零fusion。
+- 非目标：不选spatial、temporal、layout、residency、route或fusion，不处理placement frontier性能。
 
-1. 从旧IR、接口、实现和测试说明它解决的legality、planning、lowering或performance问题；
-2. 分离旧独立owner/side channel与可复用算法、transformation和verifier；
-3. 在current IR上提供候选动作或actual materializer，不保存跨stage side table；
-4. 直接把结果物化到isolated candidate的Card/Tile/Instr IR；
-5. 将旧测试改写为current user-level pipeline或直接IR边界测试；
-6. current正负测试和actual witness等价或更强后，才删除旧入口和重复代码。
+### Q50.B：Attention and Decode Semantic Proof
 
-### Attention/decode边界
+- 输入：target-independent canonicalization后的typed structured SSA DAG。
+- 职责：证明普通Attention或functional K/V-cache decode语义并导出合法算法集合；不改图。
+- 输出：query-local semantic proof及允许进入后续materializer的普通、online、partitioned-K/V候选种类。
+- Gate：普通Attention、functional decode和near-miss正负测试通过；不依赖op/tensor名、shape、参数位置、
+  `Q length == 1`或外部mode。
 
-1. physical search前从current typed SSA证明普通Attention或functional decode语义；不依赖op名、tensor名、shape、
-   `Q length == 1`或外部mode。
-2. 普通Attention产生online recurrence候选；functional decode产生online与split-K/V候选。前端图只决定合法算法集合，
-   不提前替Q51选择winner。
-3. 每个算法候选先在isolated clone中改写为真实recurrence或partition/merge DAG，再交给Q51搜索；算法名和参数向量
-   不能作为未物化旁路进入physical legality或cost。
-4. `keyValueTileSize`是K/V reduction window，`splitCount`是split-K/V partition数；都不是KV cache长度、SPM容量或
-   allocation结果。`128`等值只允许作为遍历prior。
-5. Q50只证明候选生成与actual DAG正确；K/V tile与spatial、Q tile、layout、fusion、buffer和overlap的联合选优属于Q51。
+### Q50.C：Online-Recurrence DAG Materialization
 
-### Gate
+- 输入：Q50.B证明允许online实现的semantic candidate。
+- 职责：在isolated clone中实际构造online max/sum/output recurrence structured DAG。
+- 输出：可直接进入physical search的真实DAG，而不是算法名或未物化参数向量。
+- Gate：recurrence、mask/effect和observable result verifier与正负测试闭合；`keyValueTileSize`只表示K/V reduction
+  window，SPM最终是否合法留给actual packing，`128`等值只可作为遍历prior。
 
-- capability parity表每行都有current接入点、actual-IR witness、正例和负例测试；
-- old selector没有恢复为search owner；
-- Attention普通图、functional decode和near-miss图产生正确候选集合；
-- online与split-K/V候选均先实际改写DAG，随后才能进入physical search；
-- 没有“旧文件已删但current能力或覆盖尚未接回”的条目；
-- Q50独立提交后标`done`，Q51才进入`doing`。
+### Q50.D：Partitioned-K/V DAG Materialization
+
+- 输入：Q50.B证明为functional decode且允许split-K/V的semantic candidate。
+- 职责：在isolated clone中实际构造partition、local reduction和merge DAG。
+- 输出：带真实partition/merge SSA dataflow的structured DAG。
+- Gate：partition coverage、merge数学语义、effect/observable result和near-miss测试通过；`splitCount`仅为候选参数，
+  不等于KV长度、SPM容量或allocation结果。
+
+### Q50.E：Physical Layout and Representation Mechanisms
+
+- 输入：current structured value、typed movement relation和target representation facts。
+- 职责：迁移layout assignment、physical encoding legality、movement transformation和fanout版本共享。
+- 输出：可由Q51组合的layout/encoding候选及其actual movement IR。
+- Gate：每种current候选均有actual-IR witness、fanout共享正例、encoding/movement负例；不恢复layout独立selector。
+
+### Q50.F：Value Residency and Recompute Mechanisms
+
+- 输入：已给定placement/layout的value及current lifetime、capacity和alias facts。
+- 职责：迁移resident、refetch、spill和recompute的actual transformation及verifier。
+- 输出：显式local SPM或DDR value lifetime与storage action IR。
+- Gate：actual witness及capacity、alias、premature release负例通过；不选择通信route、buffer数或fusion partition。
+
+### Q50.G：Peer and Collective Communication Mechanisms
+
+- 输入：Q50.A exact demand、已给定placement/layout/residency和typed topology。
+- 职责：迁移peer与collective movement，包括all-gather、all-reduce、reduce-scatter的participant、payload、transport和join。
+- 输出：actual send/recv/collective及completion IR。
+- Gate：local、peer与collective正例，以及coverage、mismatch、missing join和premature completion负例通过；不选route优劣。
+
+### Q50.H：Ready-Order Scheduling Mechanisms
+
+- 输入：已物化Tile-level work的SSA dependency、effect和resource约束。
+- 职责：形成合法per-Tile ready-order instruction sequence。
+- 输出：具有显式依赖顺序的actual Tile/Instr IR。
+- Gate：独立分支、fanin/fanout和effect hazard正负测试通过；不决定buffer数、worker placement或whole-DAG winner。
+
+### Q50.I：Multi-Buffer Pipeline Mechanisms
+
+- 输入：Q50.H合法ordered instruction work及current lifetime/resource facts。
+- 职责：迁移fixed-slot prologue/steady/epilogue、rotating allocation、multi-buffer和Direct-DTE issue/wait。
+- 输出：具有可验证slot lifetime和exact range hazard的serialized与overlapped Instr候选。
+- Gate：actual Instr witness、capacity、alias、issue/wait和slot-reuse正负测试通过；不选择全图pipeline方案。
+
+### Q50.J：Worker and Completion Mechanisms
+
+- 输入：ordered或pipelined Instr work及typed worker/completion facts。
+- 职责：迁移NCC worker placement、participant join和跨worker completion。
+- 输出：可由Q51组合的actual multi-worker Instr候选。
+- Gate：非零worker actual witness及missing join、premature reuse/completion负例通过；不恢复worker独立selector。
+
+### Q50.K：Fusion Traversal Materialization
+
+- 输入：structured producer/consumer edge、Q50.A exact relation及已给定tile/residency候选。
+- 职责：迁移complete traversal、boundary movement和真正multi-op recursive tile-and-fuse。
+- 输出：实际共同TileRegion或consumer-driven recursive traversal，以及可验证的中间值驻留。
+- Gate：融合和独立traversal均可物化；融合正例不存在对应中间值的无意义DDR round-trip；单边action、group字段或
+  `fused edge > 0`统计不能代替actual witness。Q50.K不选最终fusion partition。
+
+Q50.A–Q50.K全部独立提交并标`done`后，Q51才可进入`doing`。若某个旧删除项仍无法指向上述某一current实现、
+actual witness和替代测试，则对应子项不能完成；但它不再阻塞无关子项形成独立提交。
 
 ## Q51：Unified Whole-DAG Search Correctness
 
@@ -372,7 +436,7 @@ shape/op/name shortcut，再用编译变快证明其合理。
 
 ## 提交与收尾
 
-1. Q49、Q50、Q51、Q52、Q53各自使用独立可评审提交；不得等到最后把全部dirty diff一次提交。
+1. Q49、Q50.A–Q50.K、Q51、Q52、Q53各自使用独立可评审提交；不得等到最后把全部dirty diff一次提交。
 2. 每项提交前同步`tasks/progress.md`对应row；只有当前项gate全部fresh通过才转换状态并启动下一项。
 3. 提交使用`Codex <codex@openai.com>`并附`Co-authored-by: hehesnail <shashen008he@gmail.com>`。
 4. 终态同步01/03/04/06-09/11-13/16/18和受影响memory；稳定的新bug模式进入`memory/bugs.md`，可复用build/debug

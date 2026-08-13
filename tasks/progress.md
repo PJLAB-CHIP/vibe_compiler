@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-08-11
+更新时间：2026-08-13
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -33,8 +33,19 @@ Q32 + Q37 -> Q46 layout movement elimination                 [board-ready]
 Q46 compiler closure -> Q47 target ABI retirement            [board-ready]
 Q32 + Q38-Q41 + Q46/Q47 compiler mechanics
   -> Q49 current whole-card baseline stabilization           [board-ready]
-  -> Q50 capability-preserving mechanism migration           [queued]
-  -> Q51 unified whole-DAG search correctness                [queued]
+Q49 -> Q50.A exact edge relation and transfer correctness     [doing]
+Q49 -> Q50.B attention and decode semantic proof              [next]
+Q50.B -> Q50.C online-recurrence DAG materialization          [queued]
+Q50.B -> Q50.D partitioned-KV DAG materialization             [queued]
+Q50.A -> Q50.E physical layout and representation mechanisms [queued]
+Q50.A + Q50.E -> Q50.F value residency/recompute mechanisms  [queued]
+Q50.A + Q50.E + Q50.F
+  -> Q50.G peer and collective communication mechanisms      [queued]
+Q50.G -> Q50.H ready-order scheduling mechanisms             [queued]
+Q50.H -> Q50.I multi-buffer pipeline mechanisms              [queued]
+Q50.H -> Q50.J worker and completion mechanisms              [queued]
+Q50.A + Q50.F -> Q50.K fusion traversal materialization      [queued]
+Q50.A–Q50.K -> Q51 unified whole-DAG search correctness      [queued]
   -> Q52 workload-driven search scalability                  [queued]
 Q52 + Q44 source mechanics + Q47 compiler ABI closure
   -> Q53 current production board readiness                  [queued]
@@ -45,17 +56,27 @@ Q45 compiler terminology and naming                           [later]
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q9 | `production-artifact-profiler` | `done` | Q32、Q6.B、configured board | 未插桩Primary TX stream launch-to-completion设备包络、分离的host diagnostics、Trace来源的五类NCC per-tile engine active ns/work-volume摘要、独立Direct-DTE cycles/raw activity、Count/Trace、逐次保留真实动态调用与rdcycle的16-tile timeline、exclusive语义成本与非加和Trace-only成本、final Instr静态work与硬件峰值下界对照、exact output、schema-v9单一production artifact companion、三文件专业UI和profile全树`0777`均闭合；不构造card-wide纯engine elapsed，静态cost不回灌ranking。Ranking feedback保留为后续独立门禁。 | 06、14-16；`tasks/archive/board-profiler.md` |
-| Q38 | `multi-engine-software-pipelining` | `done` | Q32、Q6.B、Q37 | 历史任务已经证明typed multi-buffer、prologue/steady/epilogue、Direct-DTE issue/wait和exact range hazard可表达、可验证；旧fixed-slot candidate、worker selector及其专用测试已删除。Q50迁移机制后，Q51必须把buffering/worker作为同一whole-DAG state的联合动作直接物化到selected physical-Tile IR，不得恢复独立owner。 | 06、08-17；历史计划已归档 |
-| Q39 | `noc-resident-tile-dataflow` | `done` | Q38历史表达/验证能力闭合；板端资格作为独立external gate | physical peer materialization、resident/spill mechanics和板端exact资格已经闭合；旧Tile collective/late selector、静态profitability owner及其artifact合同已删除，communication mechanism由Q50保全迁移，choice统一由Q51 whole-DAG search拥有。 | 02-13、16-17；历史计划已归档 |
+| Q38 | `multi-engine-software-pipelining` | `done` | Q32、Q6.B、Q37 | 历史任务已经证明typed multi-buffer、prologue/steady/epilogue、Direct-DTE issue/wait和exact range hazard可表达、可验证；旧fixed-slot candidate、worker selector及其专用测试已删除。Q50.I/Q50.J迁移机制后，Q51必须把buffering/worker作为同一whole-DAG state的联合动作直接物化到selected physical-Tile IR，不得恢复独立owner。 | 06、08-17；历史计划已归档 |
+| Q39 | `noc-resident-tile-dataflow` | `done` | Q38历史表达/验证能力闭合；板端资格作为独立external gate | physical peer materialization、resident/spill mechanics和板端exact资格已经闭合；旧Tile collective/late selector、静态profitability owner及其artifact合同已删除，residency/communication mechanism由Q50.F/Q50.G保全迁移，choice统一由Q51 whole-DAG search拥有。 | 02-13、16-17；历史计划已归档 |
 | Q43 | `compiler-collaboration-review-materials` | `done` | Q9、Q37-Q39完成证据 | 2026-08-03冻结的历史汇报材料已经闭合；它不作为current architecture合同。 | 01、08–16、19；`tasks/archive/vibe-compiler-collaboration-review.md` |
 | Q42 | `test-load-reduction` | `done` | 无 | 默认lit/unit/CTest和owner integration均只判直接合同；历史catalog、campaign、model-scale与重复package执行已退出默认入口。 | 16；`tasks/archive/test-gate-scope-reduction.md` |
-| Q40 | `composed-choice-search-and-dte-overlap` | `board-ready` | Q39、Q42完成 | Direct-DTE issue→FP16/BF16 compute→exact wait结构witness、serialized baseline和buffered overlap qualification mechanics已经闭合；旧组合owner及package不再是current production evidence。真实板端matched A/B尚未执行，Q50/Q51只能复用其typed completion/overlap机制。 | 06、08-13、16；历史计划已归档 |
+| Q40 | `composed-choice-search-and-dte-overlap` | `board-ready` | Q39、Q42完成 | Direct-DTE issue→FP16/BF16 compute→exact wait结构witness、serialized baseline和buffered overlap qualification mechanics已经闭合；旧组合owner及package不再是current production evidence。真实板端matched A/B尚未执行，Q50.I/Q50.J迁移typed completion/overlap机制，Q51才统一选择。 | 06、08-13、16；历史计划已归档 |
 | Q41 | `compiler-search-scalability` | `board-ready` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | stage/pipeline/pass/analysis/candidate计时、RSS、bounded executor和低扰动诊断基础已经闭合；pre-current-whole-card model-scale compile与package仅作历史性能背景，current性能证据由Q52、current package证据由Q53 fresh生成。public policy只保留`search`/`none`，剪枝不得按shape/op/name恢复语义。 | 06、14-16、18；`tasks/archive/compiler-search-scalability.md` |
 | Q44 | `pytorch-source-board-verticals` | `board-ready` | Q15、Q18、Q35；Q41通用movement lowering与compile scalability | PyTorch/XLA capture、固定seed、case-owned dtype、同module eager oracle和原dtype/shape比较mechanics已经闭合；旧执行域package与ABI fixture已删除，GEMM、KV-cache decode和Llama workload必须由Q53 current whole-card pipeline fresh重建后才形成新的board-ready证据。 | 02、15-16；历史计划已归档 |
-| Q46 | `layout-movement-elimination` | `board-ready` | Q32、Q37；复用Q41已闭合的compiler-side有界搜索与计时基础 | 唯一`MemLayout`事实源、exact relation motion、typed layout choice、fanout共享和cross-Tile physical payload gate mechanics已经闭合；其旧候选owner已退出production，Q50迁移机制后layout/physical encoding只作为Q51同一whole-DAG候选的维度，structured op只走唯一direct typed lowering。真实板端matched性能尚未执行。 | 06-08、10-11、13-14、16-17；历史计划已归档 |
+| Q46 | `layout-movement-elimination` | `board-ready` | Q32、Q37；复用Q41已闭合的compiler-side有界搜索与计时基础 | 唯一`MemLayout`事实源、exact relation motion、typed layout choice、fanout共享和cross-Tile physical payload gate mechanics已经闭合；其旧候选owner已退出production，Q50.E迁移机制后layout/physical encoding只作为Q51同一whole-DAG候选的维度，structured op只走唯一direct typed lowering。真实板端matched性能尚未执行。 | 06-08、10-11、13-14、16-17；历史计划已归档 |
 | Q49 | `whole-card-baseline-stabilization` | `board-ready` | Q32 relation/actual-clone/exact-gate mechanics；当前whole-card/CardProgram实现 | `none`已由独立deterministic controller闭合：固定16-Tile、逐Linalg op独立temporal tiling、op间compiler-owned DDR、buffer=1、零fusion/零可选edge-action search；spatial shard不一致时只物化typed relation要求的deterministic peer fragments并在consumer端DDR assembly，不搜索通信方案。2026-08-11最终代码上FP16原始DAG prefill、两步functional decode和Llama均fresh生成完整package并通过no-card，且accepted baseline直接复用唯一exact-admitted executable。尚无本轮真实板端输出，因此不是`done`；Q50仍独立迁移搜索能力。 | 01、03-16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md`；`test/Tools/wafer-compile-whole-card-baseline.test` |
-| Q50 | `whole-card-capability-migration` | `queued` | Q49 | 对当前tracked删除与HEAD旧实现建立capability parity：将layout assignment/fanout共享、ready-order、fixed-slot multi-buffer、NCC worker、peer/collective、complete traversal/fusion以及typed Attention/functional decode分析和online/split-K/V actual materializer改造成current IR上的候选生成、transformation和verifier机制；不恢复旧search selector。每项必须有current接入点、selected actual-IR witness及正负测试后，旧入口才能删除。 | 05-13、16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
-| Q51 | `whole-dag-unified-search` | `queued` | Q50 | 建立唯一whole-DAG选择owner：同一可回溯partial state联合表达semantic DAG、跨op/intra-op spatial mapping、完整iterator temporal tile、multi-op fusion、layout/storage、实际SPM residency、buffer count、NoC/DDR/compute资源时序、worker/order和completion；候选从完整合法域惰性生成，seed只排序，actual packing/admission决定最终合法性。小型DAG以完整枚举oracle证明搜索维度没有断开；`search` winner与`none`走同一materialization/exact gate，并证明存在有效多op融合而非仅单边标记。 | 06-13、16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
+| Q50.A | `exact-edge-relation-transfer` | `doing` | Q49 | 只闭合dependent edge correctness：从current structured semantics导出唯一query-local `IndexRelation`，精确计算consumer shard所需producer demand，将逻辑集合与target矩形fragment lowering分层，并区分`LocalShardResidency`和真实`CoupledFusion`。完成门禁是reduction、broadcast/window、stride及local/peer actual Card/Tile IR均有正负测试，planner与materializer不再各自恢复第二套relation事实。 | 05-07、09-13、16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
+| Q50.B | `attention-decode-semantic-proof` | `next` | Q49 | 只从current typed SSA证明普通Attention或functional K/V-cache decode语义并导出合法算法集合；不改图、不按名字、shape、参数位置或`Q length == 1`恢复语义，也不选择算法。普通图、functional decode和near-miss正负测试闭合后完成。 | 05-08、10、16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
+| Q50.C | `online-recurrence-dag-materialization` | `queued` | Q50.B | 只把Q50.B证明可用的online recurrence候选在isolated clone中改写成真实structured DAG，并验证max/sum/output recurrence与observable结果；K/V window只由合法枚举产生，prior只排序。actual-DAG正负测试闭合后完成。 | 05-08、10、16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
+| Q50.D | `partitioned-kv-dag-materialization` | `queued` | Q50.B | 只把functional decode的split-K/V候选改写为真实partition/local-reduction/merge DAG，`splitCount`是候选参数而不是KV长度或SPM结论；不做physical placement或winner选择。actual-DAG coverage、merge语义和near-miss测试闭合后完成。 | 05-08、10、16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
+| Q50.E | `physical-layout-representation-mechanisms` | `queued` | Q50.A | 只迁移physical layout assignment、movement relation、encoding legality和fanout版本共享，使其成为current IR上的候选生成、actual transformation和verifier机制；不选择winner，不恢复layout独立selector。每项需current接入点、selected actual-IR witness和正负测试。 | 06-08、10-13、16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
+| Q50.F | `value-residency-recompute-mechanisms` | `queued` | Q50.A、Q50.E | 只迁移value的resident、refetch、spill和recompute机制，使每种动作都有current IR表示、lifetime/capacity legality、actual transformation和verifier；不选择通信route、buffer数或fusion partition。local SPM/DDR actual witness及容量、alias、premature-release负例闭合后完成。 | 06、08-13、16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
+| Q50.G | `peer-collective-communication-mechanisms` | `queued` | Q50.A、Q50.E、Q50.F | 只迁移peer与collective physical movement，包括all-gather、all-reduce、reduce-scatter的participant、payload、transport和join语义；不选择spatial、layout、residency或route优劣。actual send/recv/collective IR及coverage、mismatch、completion负例闭合后完成。 | 06、08-13、16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
+| Q50.H | `ready-order-scheduling-mechanisms` | `queued` | Q50.G | 只迁移dependency、effect和resource约束下的ready-order instruction scheduling，显式形成合法的per-Tile执行顺序；不决定buffer数、worker分配或whole-DAG winner。独立分支、fanin/fanout与effect hazard的actual Instr正负测试闭合后完成。 | 06、08-13、16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
+| Q50.I | `multi-buffer-pipeline-mechanisms` | `queued` | Q50.H | 只迁移fixed-slot prologue/steady/epilogue、rotating allocation、multi-buffer和Direct-DTE issue/wait，使slot lifetime与exact range hazard可验证；不选择worker或全图pipeline方案。serialized与overlapped actual Instr、容量和hazard正负测试闭合后完成。 | 06、08-13、16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
+| Q50.J | `worker-completion-mechanisms` | `queued` | Q50.H | 只迁移typed NCC worker placement、participant join和跨worker completion，使worker动作能进入current candidate state并物化到Instr；不建立worker独立selector。actual multi-worker IR与missing join、premature reuse等负例闭合后完成。 | 08、11、14-17；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
+| Q50.K | `fusion-traversal-materialization` | `queued` | Q50.A、Q50.F | 只闭合complete traversal、boundary movement与真正multi-op recursive tile-and-fuse：候选必须实际形成共同TileRegion/consumer-driven traversal并可验证中间值驻留，不能以单边action或group字段冒充融合。正负测试证明融合和独立traversal均可物化后完成；不选择最终fusion partition。 | 05-13、16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
+| Q51 | `whole-dag-unified-search` | `queued` | Q50.A–Q50.K | 建立唯一whole-DAG选择owner：同一可回溯partial state联合表达semantic DAG、跨op/intra-op spatial mapping、完整iterator temporal tile、multi-op fusion、layout/storage、实际SPM residency、buffer count、NoC/DDR/compute资源时序、worker/order和completion；候选从完整合法域惰性生成，seed只排序，actual packing/admission决定最终合法性。小型DAG以完整枚举oracle证明搜索维度没有断开；`search` winner与`none`走同一materialization/exact gate，并证明存在有效多op融合而非仅单边标记。 | 06-13、16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
 | Q52 | `whole-dag-search-scalability` | `queued` | Q51；复用Q41计时/RSS/work ledger | 先在通用DAG、HF prefill/decode和Llama representative load上记录状态数、重复率、失败原因、clone/packing/cost时间与峰值内存，再按热点引入canonical memo、DP、constraint/no-good cache、dominance/branch-and-bound或局部solver；启发式、beam、遗传/退火等trade-off只能在实际组合爆炸后启用，并以小图最优oracle、`none`质量和融合保全约束校准。10分钟以上必须分析热点，允许继续到30分钟；不得用固定tile/fusion/buffer上限冒充优化。 | 06、14-18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
 | Q53 | `whole-card-production-readiness` | `queued` | Q52、Q44 source/oracle mechanics、Q47 current ABI closure | 冻结`search`策略并fresh生成通用mixed DAG、official HF prefill、functional KV-cache decode和Llama block的FP16/BF16 package、oracle、runner与no-card证据；逐case证明selected actual IR中的多op融合、中间值SPM驻留、无无意义DDR round-trip及数值一致后标`board-ready`。真实板端只串行执行current matched baseline/winner；Llama及至少一个prefill/decode代表获得可重复改善后才`done`。 | 02、06-16、18；`tasks/plans/whole-card-tile-dataflow-synthesis.md` |
 
@@ -117,14 +138,14 @@ WCRE/global registry、capability lease、跨model state migration、共享weigh
 | Q28 | `llama-7b-block-vertical` | `done` | Llama-2 7B单block TP16 source→package→SystemC/PyTorch differential闭合。 | 02、03、06、09、11、12、16、17；`tasks/archive/llama-7b-block-vertical.md` |
 | Q30 | `llama-block-production-performance` | `done` | 保持语义不变，收口static movement和physical codec host开销。 | 08、10、11、16-18；`tasks/archive/llama-block-production-performance.md` |
 | Q31 | `llama-block-numeric-characterization` | `done` | ProgramTensor边界统计、多seed 7B characterization及source/model gate闭合。 | 02、16-18；`tasks/archive/llama-block-numeric-characterization.md` |
-| Q32.I | `mlir-native-implementation-relation-foundation` | `done` | MLIR-native IndexRelation与typed lowering foundation闭合；旧implementation-choice接口在current whole-card cutover工作树中已删除，current替代能力由Q50/Q51闭合。 | `tasks/archive/mlir-native-implementation-relation-foundation.md` |
+| Q32.I | `mlir-native-implementation-relation-foundation` | `done` | MLIR-native IndexRelation与typed lowering foundation闭合；旧implementation-choice接口在current whole-card cutover工作树中已删除，current替代能力由Q50.A–Q50.K迁移并由Q51统一选择。 | `tasks/archive/mlir-native-implementation-relation-foundation.md` |
 | Q32.R | `physical-relation-realization` | `done` | Relation、encoding、transfer和resident handoff realization闭合。 | `tasks/archive/physical-relation-realization.md` |
 | Q32.B | `physical-dataflow-test-seam-vertical` | `done` | Production-shaped spill/resident actual-clone seam及late gates闭合。 | `tasks/archive/physical-dataflow-test-seam-vertical.md` |
 | Q32.V | `typed-target-capability-vertical` | `done` | Mapped transfer、physical fill和oriented GEMM typed capability纵向闭合。 | `tasks/archive/typed-target-capability-vertical.md` |
 | Q32.M | `physical-mechanism-choice-closure` | `done` | 历史任务闭合了recompute、LICM、numeric、residency、ready-order和communication的表达/验证实验；旧独立candidate API已删除，current mechanism由Q50迁移，choice只能由Q51/Q48唯一owner接入。 | `tasks/archive/physical-mechanism-choice-closure.md` |
 | Q32.S | `bounded-joint-physical-dataflow-selection` | `done` | Bounded actual-clone组合、whole-card Pareto和target-owned选择闭合。 | `tasks/archive/bounded-joint-physical-dataflow-selection.md` |
 | Q32.G | `physical-dataflow-production-cutover` | `done` | `wafer-compile`成为唯一production decision owner，旧旁路退役。 | `tasks/archive/physical-dataflow-production-cutover.md` |
-| Q32 | `physical-dataflow-synthesis` | `done` | MLIR-native actual-clone、implementation/relation/layout/storage/order/communication机制与exact-gate基础闭合；旧独立frontier和per-task物化在current cutover工作树中已删除，Q50/Q51迁移与统一owner只由06定义。 | `tasks/archive/physical-dataflow-synthesis-completion-audit.md` |
+| Q32 | `physical-dataflow-synthesis` | `done` | MLIR-native actual-clone、implementation/relation/layout/storage/order/communication机制与exact-gate基础闭合；旧独立frontier和per-task物化在current cutover工作树中已删除，Q50.A–Q50.K迁移与Q51统一owner只由06定义。 | `tasks/archive/physical-dataflow-synthesis-completion-audit.md` |
 | Q32.C | `candidate-search-throughput` | `done` | Candidate search有界并发、parse复用和late-gate开销收口。 | `tasks/archive/whole-variant-search-throughput.md` |
 | Q32.N | `numeric-algebraic-extension` | `done` | Supported floating algebraic candidates、typed tolerance和整数负例闭合。 | `tasks/archive/numeric-algebraic-extension.md` |
 | Q36 | `topology-aware-collective-lowering` | `done` | 历史实验曾闭合Typed topology到Ring/ordered Tree mechanics；其Tile collective IR、late lowering和topology helper现已删除，不属于current architecture。 | `tasks/archive/topology-aware-collective-lowering.md` |
@@ -139,7 +160,7 @@ WCRE/global registry、capability lease、跨model state migration、共享weigh
 
 ## 导航
 
-- Q49–Q53 whole-card baseline、能力迁移、统一搜索、scalability与production readiness共用实施计划：
+- Q49、Q50.A–Q50.K及Q51–Q53 whole-card baseline、机制迁移、统一搜索、scalability与production readiness共用实施计划：
   `tasks/plans/whole-card-tile-dataflow-synthesis.md`。
 - Q48语义驱动superoptimizer计划：`tasks/plans/semantic-superoptimization.md`。
 - Q9完成证据：`tasks/archive/board-profiler.md`。

@@ -1,7 +1,7 @@
 # Wafer 源码与构建模块化
 
-状态：本文定义当前source ownership和依赖方向，不复制IR/ABI/schema语义。Q49–Q53正在用whole-card MPMD替换旧执行域；
-与新owner冲突的source、public header、CMake entry、test和兼容wrapper只有在Q50能力迁移及替代测试闭合后才删除，
+状态：本文定义当前source ownership和依赖方向，不复制IR/ABI/schema语义。Q49、Q50.A–Q50.K及Q51–Q53正在用whole-card MPMD替换旧执行域；
+与新owner冲突的source、public header、CMake entry、test和兼容wrapper只有在负责该能力的Q50.A–Q50.K子项及替代测试闭合后才删除，
 不保留空stub或旧接口alias，也不把旧owner连同仍需能力直接清空。
 
 ## 1. Pipeline Contract
@@ -232,13 +232,13 @@ source。删除功能时删除对应only-purpose fixture/golden/catalog；通用
 `rank`。当前source合同不得再出现旧execution-domain API、旧manifest version/reader、late selector、
 algorithm-specific pass/matcher或已删除board tooling入口。
 
-## 8. Q49–Q53 completion boundary
+## 8. Q49、Q50.A–Q50.K与Q51–Q53 completion boundary
 
-源码组织收口横跨Q49–Q53；当前状态只看`tasks/progress.md`。相关源码删除必须满足：
+源码组织收口横跨Q49、Q50.A–Q50.K及Q51–Q53；当前状态只看`tasks/progress.md`。相关源码删除必须满足：
 
 - whole-card synthesis成为production唯一owner，`none`只提供同pipeline baseline；
 - old/new双interface、compatibility wrapper、unused public pass和only-for-them tests全部删除；
-- Q50 capability parity能为每项旧能力指向current实现、actual witness和替代测试；
+- Q50.A–Q50.K各自能为其负责的旧能力指向current实现、actual witness和替代测试，并独立提交；
 - current source→16-Tile MPMD→Target LLVM→schema-v8 package→no-card/model纵向由Q49/Q51 fresh通过；
 - generic DAG、HF prefill/decode和Llama workload由Q53完整达到board-ready；
 - 真实板端matched A/B完成后Q53才满足最终done gate。

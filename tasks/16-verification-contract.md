@@ -1,7 +1,7 @@
 # Wafer Compiler Verification Contract
 
-状态：本文只定义当前架构的验证层级和完成证明，不保存历史case台账。current whole-card主线已拆为Q49–Q53；
-Q49仍为`doing`，Q50–Q53为`queued`。host局部gate、schema-v8 roundtrip或一次source compile都不能把Q53提升为
+状态：本文只定义当前架构的验证层级和完成证明，不保存历史case台账。current whole-card主线已拆为Q49、
+Q50.A–Q50.K及Q51–Q53；Q49为`board-ready`，当前只执行Q50.A。host局部gate、schema-v8 roundtrip或一次source compile都不能把Q53提升为
 `board-ready`；没有真实设备matched A/B改善时也不能标`done`。
 
 ## 1. Pipeline Contract
@@ -212,13 +212,14 @@ Q53无卡matrix至少包含：
 所有workload走同一public source→package path。case-specific harness只提供source、payload和oracle，不生成compiler marker、
 special pass option、shape shortcut或手写替代graph。
 
-## 9. Q49–Q53 completion gate
+## 9. Q49、Q50.A–Q50.K与Q51–Q53 completion gate
 
 各队列项分别形成fresh证据，不能用后项的局部通过倒签前项：
 
 1. Q49：`none`通过current source→CardProgram→physical Tile→Instr→fresh SPM/DDR→admission→package链路；
    普通多op、spatially sharded compute和cross-Tile baseline package/no-card通过。
-2. Q50：每项保留能力都有current接入点、actual-IR witness和实际执行的正负测试；旧owner删除不能代替能力迁移。
+2. Q50.A–Q50.K：每个子项只验收自己的current接入点、actual-IR witness和实际执行的正负测试并独立提交；
+   旧owner删除不能代替能力迁移，某一子项通过也不能代签其它机制。
 3. Q51：小图完整枚举oracle与`search` winner一致；全部联合维度实际参与选择，late exact failure回到同一frontier，
    且selected IR存在有效多op fusion group。
 4. Q52：generic/HF/Llama representative load的work、wall、RSS和热点fresh记录；基于实测引入的优化在小图oracle上
