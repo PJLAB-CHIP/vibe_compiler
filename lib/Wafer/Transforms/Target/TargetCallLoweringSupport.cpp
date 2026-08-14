@@ -32,7 +32,6 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -44,12 +43,10 @@
 namespace wafer::target_llvm_detail {
 
 FunctionLowering::FunctionLowering(mlir::MLIRContext *context,
-                                   mlir::OpBuilder &builder,
-                                   llvm::StringMap<CalleeSignature> &used)
+                                   mlir::OpBuilder &builder)
     : builder(builder), context(context),
       i64Type(mlir::IntegerType::get(context, 64)),
-      i32Type(mlir::IntegerType::get(context, 32)),
-      voidType(mlir::LLVM::LLVMVoidType::get(context)), usedCallees(used) {}
+      i32Type(mlir::IntegerType::get(context, 32)) {}
 
 mlir::Value FunctionLowering::constantI64(mlir::Location loc, int64_t value) {
   return builder.create<mlir::LLVM::ConstantOp>(loc, i64Type, value);
@@ -207,17 +204,6 @@ void FunctionLowering::emitCall(mlir::Location loc,
                                 const TargetCallDescriptor &descriptor,
                                 mlir::ValueRange args) {
   verifyCallSignature(descriptor, args, TargetCallResultType::Void);
-  llvm::SmallVector<mlir::Type, 16> argTypes;
-  for (mlir::Value arg : args)
-    argTypes.push_back(arg.getType());
-  mlir::LLVM::LLVMFunctionType functionType =
-      mlir::LLVM::LLVMFunctionType::get(voidType, argTypes,
-                                        /*isVarArg=*/false);
-  auto [it, inserted] =
-      usedCallees.try_emplace(descriptor.symbol, CalleeSignature{functionType});
-  if (!inserted && it->second.type != functionType)
-    llvm_unreachable(
-        "same target CRT symbol emitted with incompatible signature");
   builder.create<mlir::LLVM::CallOp>(
       loc, mlir::TypeRange(),
       mlir::FlatSymbolRefAttr::get(context, descriptor.symbol), args);
@@ -242,17 +228,6 @@ FunctionLowering::emitI64Call(mlir::Location loc,
                               const TargetCallDescriptor &descriptor,
                               mlir::ValueRange args) {
   verifyCallSignature(descriptor, args, TargetCallResultType::I64);
-  llvm::SmallVector<mlir::Type, 16> argTypes;
-  for (mlir::Value arg : args)
-    argTypes.push_back(arg.getType());
-  mlir::LLVM::LLVMFunctionType functionType =
-      mlir::LLVM::LLVMFunctionType::get(i64Type, argTypes,
-                                        /*isVarArg=*/false);
-  auto [it, inserted] =
-      usedCallees.try_emplace(descriptor.symbol, CalleeSignature{functionType});
-  if (!inserted && it->second.type != functionType)
-    llvm_unreachable(
-        "same target CRT symbol emitted with incompatible signature");
   auto call = builder.create<mlir::LLVM::CallOp>(
       loc, mlir::TypeRange{i64Type},
       mlir::FlatSymbolRefAttr::get(context, descriptor.symbol), args);

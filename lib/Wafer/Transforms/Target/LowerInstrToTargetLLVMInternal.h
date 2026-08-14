@@ -89,12 +89,9 @@ struct FunctionLowering {
   mlir::MLIRContext *context;
   mlir::Type i64Type;
   mlir::Type i32Type;
-  mlir::Type voidType;
   llvm::DenseMap<mlir::Value, mlir::Value> convertedValues;
-  llvm::StringMap<CalleeSignature> &usedCallees;
 
-  FunctionLowering(mlir::MLIRContext *context, mlir::OpBuilder &builder,
-                   llvm::StringMap<CalleeSignature> &used);
+  FunctionLowering(mlir::MLIRContext *context, mlir::OpBuilder &builder);
 
   mlir::Value constantI64(mlir::Location loc, int64_t value);
   mlir::Value constantI32(mlir::Location loc, int64_t value);
@@ -181,24 +178,19 @@ void populateTargetLLVMStructureConversionPatterns(
     int64_t defaultDDRArenaArgumentIndex);
 void populateTargetInstructionConversionPatterns(
     mlir::LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns,
-    llvm::StringMap<CalleeSignature> &usedCallees,
     const DirectDTEEndpointDomain *dteDomain);
 
-mlir::LogicalResult
-injectDirectDTEStatusLifecycle(mlir::ModuleOp moduleOp,
-                               llvm::StringRef entrySymbol,
-                               int64_t statusArgumentIndex,
-                               int64_t participantCount,
-                               TargetCallBuiltin beginBuiltin,
-                               llvm::StringMap<CalleeSignature> &usedCallees);
+mlir::LogicalResult injectDirectDTEStatusLifecycle(
+    mlir::ModuleOp moduleOp, llvm::StringRef entrySymbol,
+    int64_t statusArgumentIndex, int64_t participantCount,
+    TargetCallBuiltin beginBuiltin,
+    llvm::StringMap<CalleeSignature> &usedCallees);
 
-mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
-                                       bool transportPreparedBeforeEntry,
-                                       int64_t defaultDDRArenaArgumentIndex,
-                                       int64_t physicalCardId,
-                                       int64_t physicalTileId,
-                                       int64_t transportStatusArgumentIndex,
-                                       int64_t profileRecordArgumentIndex);
+mlir::LogicalResult
+lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
+                   int64_t defaultDDRArenaArgumentIndex, int64_t physicalCardId,
+                   int64_t physicalTileId, int64_t transportStatusArgumentIndex,
+                   int64_t profileRecordArgumentIndex);
 
 } // namespace wafer::target_llvm_detail
 

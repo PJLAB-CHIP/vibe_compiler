@@ -2,8 +2,8 @@
 
 #include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
-#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/IR/Target/PhysicalTopology.h"
+#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
@@ -100,6 +100,26 @@ declareCallees(mlir::ModuleOp moduleOp,
   return mlir::success();
 }
 
+static mlir::LogicalResult
+collectDirectCalleeSignatures(mlir::ModuleOp moduleOp,
+                              llvm::StringMap<CalleeSignature> &callees) {
+  mlir::WalkResult result = moduleOp.walk([&](mlir::LLVM::CallOp call) {
+    mlir::FlatSymbolRefAttr callee = call.getCalleeAttr();
+    if (!callee)
+      return mlir::WalkResult::advance();
+    mlir::LLVM::LLVMFunctionType type = call.getCalleeFunctionType();
+    auto [entry, inserted] =
+        callees.try_emplace(callee.getValue(), CalleeSignature{type});
+    if (inserted || entry->second.type == type)
+      return mlir::WalkResult::advance();
+    call.emitError() << "target_llvm_symbol_collision: direct calls to @"
+                     << callee.getValue()
+                     << " have incompatible target signatures";
+    return mlir::WalkResult::interrupt();
+  });
+  return result.wasInterrupted() ? mlir::failure() : mlir::success();
+}
+
 static mlir::FailureOr<int64_t>
 resolveDirectDTEContractParticipantCount(mlir::ModuleOp moduleOp,
                                          PhysicalCardId physicalCardId) {
@@ -122,13 +142,11 @@ resolveDirectDTEContractParticipantCount(mlir::ModuleOp moduleOp,
 }
 } // namespace
 
-mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
-                                       bool transportPreparedBeforeEntry,
-                                       int64_t defaultDDRArenaArgumentIndex,
-                                       int64_t physicalCardId,
-                                       int64_t physicalTileId,
-                                       int64_t transportStatusArgumentIndex,
-                                       int64_t profileRecordArgumentIndex) {
+mlir::LogicalResult
+lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
+                   int64_t defaultDDRArenaArgumentIndex, int64_t physicalCardId,
+                   int64_t physicalTileId, int64_t transportStatusArgumentIndex,
+                   int64_t profileRecordArgumentIndex) {
   if (mlir::failed(flattenTileRegions(moduleOp)))
     return mlir::failure();
 
@@ -236,7 +254,7 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
   populateTargetLLVMStructureConversionPatterns(converter, patterns,
                                                 defaultDDRArenaArgumentIndex);
   populateTargetInstructionConversionPatterns(
-      converter, patterns, usedCallees, dteDomain ? &*dteDomain : nullptr);
+      converter, patterns, dteDomain ? &*dteDomain : nullptr);
   mlir::arith::populateArithToLLVMConversionPatterns(converter, patterns);
   mlir::cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
 
@@ -253,6 +271,9 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
            << "target_llvm_lowering_failure: full target LLVM conversion "
               "failed";
 
+  if (mlir::failed(collectDirectCalleeSignatures(moduleOp, usedCallees)))
+    return mlir::failure();
+
   TargetCallBuiltin dteBeginBuiltin =
       transportPreparedBeforeEntry
           ? TargetCallBuiltin::DirectDTEBeginAfterPrepare
@@ -260,8 +281,7 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
   if (hasDirectDTEContract &&
       mlir::failed(injectDirectDTEStatusLifecycle(
           moduleOp, dteEntrySymbol, transportStatusArgumentIndex,
-          *dteParticipantCount,
-          dteBeginBuiltin, usedCallees)))
+          *dteParticipantCount, dteBeginBuiltin, usedCallees)))
     return mlir::failure();
 
   if (mlir::failed(declareCallees(moduleOp, usedCallees)))
