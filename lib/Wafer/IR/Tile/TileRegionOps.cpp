@@ -182,6 +182,32 @@ static StorageTrace traceSPMStorage(mlir::Value value, TileRegionOp owner,
 
 } // namespace
 
+mlir::OperandRange TileRegionOp::getEntrySuccessorOperands(
+    mlir::RegionBranchPoint point) {
+  assert(point == getBody() &&
+         "wafer.tile.region only enters its body region");
+  return getInputs();
+}
+
+void TileRegionOp::getSuccessorRegions(
+    mlir::RegionBranchPoint point,
+    llvm::SmallVectorImpl<mlir::RegionSuccessor> &regions) {
+  if (point.isParent()) {
+    regions.emplace_back(&getBody(), getBody().getArguments());
+    return;
+  }
+  assert(point == getBody() &&
+         "wafer.tile.region has no region successor other than its body");
+  regions.emplace_back(getResults());
+}
+
+void TileRegionOp::getRegionInvocationBounds(
+    llvm::ArrayRef<mlir::Attribute> operands,
+    llvm::SmallVectorImpl<mlir::InvocationBounds> &invocationBounds) {
+  (void)operands;
+  invocationBounds.emplace_back(/*lb=*/1, /*ub=*/1);
+}
+
 mlir::LogicalResult TileRegionOp::verify() {
   if (getOperation()->getParentOfType<TileRegionOp>())
     return emitOpError("must be an outer, non-nested SPM residency region");

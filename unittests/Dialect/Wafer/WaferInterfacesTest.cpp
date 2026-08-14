@@ -14,6 +14,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
@@ -74,6 +75,72 @@ TEST(WaferInterfacesTest,
   builder.create<mlir::func::ReturnOp>(loc, priorDDRValues.back());
 
   EXPECT_TRUE(mlir::succeeded(mlir::verify(module)));
+}
+
+TEST(WaferInterfacesTest, TileRegionExposesStandardRegionBranchFlow) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
+  wafer::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @region_branch(%input: memref<4xf16, #wafer.memory<ddr, tensor>>)
+      -> memref<4xf16, #wafer.memory<ddr, tensor>> {
+    %result = wafer.tile.region(
+        %input : memref<4xf16, #wafer.memory<ddr, tensor>>) ->
+        (memref<4xf16, #wafer.memory<ddr, tensor>>) {
+      ^bb0(%arg: memref<4xf16, #wafer.memory<ddr, tensor>>):
+        wafer.tile.yield %arg
+            : memref<4xf16, #wafer.memory<ddr, tensor>>
+    }
+    return %result : memref<4xf16, #wafer.memory<ddr, tensor>>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  wafer::TileRegionOp tileRegion;
+  module->walk([&](wafer::TileRegionOp op) {
+    EXPECT_FALSE(tileRegion);
+    tileRegion = op;
+  });
+  ASSERT_TRUE(tileRegion);
+  auto branch = mlir::dyn_cast<mlir::RegionBranchOpInterface>(
+      tileRegion.getOperation());
+  ASSERT_TRUE(branch);
+
+  llvm::SmallVector<mlir::RegionSuccessor, 1> successors;
+  branch.getSuccessorRegions(mlir::RegionBranchPoint::parent(), successors);
+  ASSERT_EQ(successors.size(), 1u);
+  EXPECT_EQ(successors.front().getSuccessor(), &tileRegion.getBody());
+  ASSERT_EQ(branch.getEntrySuccessorOperands(successors.front()).size(), 1u);
+  EXPECT_EQ(branch.getEntrySuccessorOperands(successors.front()).front(),
+            tileRegion.getInputs().front());
+
+  successors.clear();
+  branch.getSuccessorRegions(tileRegion.getBody(), successors);
+  ASSERT_EQ(successors.size(), 1u);
+  EXPECT_FALSE(successors.front().getSuccessor());
+  ASSERT_EQ(successors.front().getSuccessorInputs().size(), 1u);
+  EXPECT_EQ(successors.front().getSuccessorInputs().front(),
+            tileRegion.getResult(0));
+
+  auto yield = mlir::cast<wafer::TileYieldOp>(
+      tileRegion.getBody().front().getTerminator());
+  auto terminator = mlir::dyn_cast<mlir::RegionBranchTerminatorOpInterface>(
+      yield.getOperation());
+  ASSERT_TRUE(terminator);
+  ASSERT_EQ(terminator.getSuccessorOperands(
+                mlir::RegionBranchPoint::parent()).size(),
+            1u);
+  EXPECT_EQ(terminator.getSuccessorOperands(
+                mlir::RegionBranchPoint::parent()).front(),
+            yield.getValues().front());
 }
 
 template <typename OpT> OpT findSingleOp(mlir::ModuleOp module) {

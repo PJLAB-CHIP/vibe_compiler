@@ -4,6 +4,8 @@
 #define WAFER_IR_OPS_TILEREGIONOPS_TD
 
 def Wafer_TileRegionOp : Wafer_Op<"tile.region", [
+    DeclareOpInterfaceMethods<RegionBranchOpInterface,
+      ["getEntrySuccessorOperands", "getRegionInvocationBounds"]>,
     IsolatedFromAbove,
     RecursiveMemoryEffects,
     SingleBlockImplicitTerminator<"TileYieldOp">
@@ -34,6 +36,7 @@ def Wafer_TileRegionOp : Wafer_Op<"tile.region", [
 }
 
 def Wafer_TileYieldOp : Wafer_Op<"tile.yield", [
+    DeclareOpInterfaceMethods<RegionBranchTerminatorOpInterface>,
     HasParent<"TileRegionOp">,
     Pure,
     ReturnLike,
