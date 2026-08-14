@@ -174,6 +174,40 @@ Pipeline position:
   op 语义、effect、type 或明确 op 表达，不滥用 attr。
 - 不维护影子调度计划，不把 body 已表达的执行结构复制成全局计划 attr。
 
+### MLIR 工程规则
+
+- **先核对版本事实。** MLIR 语义和推荐方式以官方文档为依据，当前可用 API 以仓库 pinned LLVM/MLIR
+  headers、实现和测试为准；不得假设 newer upstream 选项、interface 或 driver 行为已经存在。
+- **IR 必须自包含。** 影响 legality、rewiring、lowering 或 candidate 结果的事实用 SSA、region、type、effect、
+  typed op/attr/interface 表达；`Location`只作诊断 provenance，不承载指针、identity 或跨 pass 语义。
+- **ODS 和标准 interface 优先。** 稳定 semantic field 进入 ODS typed argument/property并使用 generated accessor；
+  优先复用 RegionBranch、Call、MemoryEffect、ViewLike、DPS/Bufferizable、Tiling 等标准 interface。只有标准机制
+  无法稳定表达且已有 verifier/lowering consumer 时才新增 Wafer-specific interface。
+- **operation scope 就是 ownership。** pass/analysis锚定包含所需事实的最窄合法 operation；可独立处理的
+  `IsolatedFromAbove` op使用 nested pass。call/symbol closure、function-boundary bufferization、跨region completion、
+  card级resource/admission等真实全局阶段保留在 func/module/card scope，不机械地下沉。operation pass不得替换自己的root；
+  删除wrapper或重接parent SSA由父operation transformation负责。
+- **pipeline 只有一个实现。** 一个pass只做一个可命名的IR变换，声明dependent dialect、typed option和analysis
+  preservation；production driver与`wafer-opt` named pipeline复用同一query/apply和pipeline builder，不维护direct
+  mutation平行实现，也不长期手工拼pass。
+- **analysis 可重算、可失效。** 只由current IR和显式immutable target facts派生且会重复消费的事实进入
+  `AnalysisManager`；mutation明确preserve/invalidate。query-local candidate assignment、一次性preflight和跨clone memo
+  不硬塞成MLIR analysis，也不写回IR。跨全局关系在最近container一次验证，不在每个leaf verifier重复walk module。
+- **rewrite 必须事务安全。** pattern callback中的IR修改全部通过`PatternRewriter`；尽量在首次mutation前完成preflight，
+  failed match使用`notifyMatchFailure`，不得更新rollback之外的`failureReason`、callee set或其它mutable side state。
+  clone对应使用`IRMapping`，不用pointer、walk顺序、ordinal、打印字符串或symbol拼写恢复identity。
+- **conversion legality 要 fail closed。** source op类别使用稳定marker interface/trait或等价单一分类；所有source实现者
+  默认illegal，structural/metadata/target op显式legal，postcheck复用同一分类。full conversion必须证明source语义全部
+  消失；只lower子集时明确使用partial conversion和独立stage verifier，不能用“unknown全legal”伪装full conversion。
+- **fold、canonicalization 和声明式rewrite各司其职。** `fold`只放便宜、局部、确定的恒等式；canonicalizer只优化，
+  不承担correctness legalization；greedy rewrite限制affected roots和work budget。简单typed op-to-op规则优先DRR，
+  复杂layout/index/resource/region逻辑保留C++ pattern；PDLL或Transform dialect只有出现明确consumer时才引入，不设使用配额。
+- **alias/effect 在lowering前必须确定。** view、new allocation、destination mutation和materializing copy不能由lowering按
+  users临时切换；tensor层用DPS/Bufferizable分析in-place/out-of-place，进入memref/Instr层后alias和memory effect是稳定合同。
+- **按MLIR合同验证。** 至少覆盖custom/generic form roundtrip、verifier正负例、conversion failure atomicity、analysis
+  invalidation、named/production pipeline parity和`verify-each`；局部pass成功、canonicalizer恰好清掉残留或旧generated
+  build能编译，都不能代替fresh source/build和下游artifact gate。
+
 ### 协议和语义恢复
 
 - 跨模块共享的常量、attr key、enum value、field name 定义在一处，消费侧引用定义。
