@@ -268,9 +268,11 @@ verifier，不能把unknown全legal的`applyFullConversion`当作闭合证明。
 ## 8. Source 与测试组织
 
 具体source/build ownership、CMake增删和test mirror合同仍只由18拥有；本文不建立第二份source map。Q54只在该合同上增加
-MLIR conformance gate：active build、ODS/generated declarations、source list和test list必须一致。未进入CMake的旧
-collective、旧materializer或旧API source必须按18删除/归档；若仍属current architecture，则按18恢复build并加入
-compile/test gate。stale build生成头不能作为fresh source compatibility证据。
+MLIR conformance gate：active build、ODS/generated declarations、source list和test list必须一致。source未进入CMake
+只证明它不属于active build，不证明其中算法、proof、diagnostic或测试资产已经失去价值。每个dormant source必须先分类为
+`reactivate/refactor`、`extract-then-delete`或`delete`并指定新owner；当前或后续合同仍需要的独有能力与测试先迁入active
+source并通过compile/test gate，随后才删除旧owner。只有已被现行IR/API明确淘汰且没有独有能力的source可以直接按18
+清理。stale build生成头不能作为fresh source compatibility证据。
 
 测试按基础设施合同分层：
 

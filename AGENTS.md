@@ -207,6 +207,9 @@ Pipeline position:
 - **按MLIR合同验证。** 至少覆盖custom/generic form roundtrip、verifier正负例、conversion failure atomicity、analysis
   invalidation、named/production pipeline parity和`verify-each`；局部pass成功、canonicalizer恰好清掉残留或旧generated
   build能编译，都不能代替fresh source/build和下游artifact gate。
+- **退役owner前先迁移能力。** source未进入CMake只说明它不属于active build，不能据此推断其中算法、proof、diagnostic或
+  测试资产已经无用。先逐项确定新owner；仍被当前或后续合同需要的能力必须迁入active source并受测，之后才能删除旧
+  owner。只有已被现行IR/API明确淘汰且没有独有能力的源码可以直接清理。
 
 ### 协议和语义恢复
 

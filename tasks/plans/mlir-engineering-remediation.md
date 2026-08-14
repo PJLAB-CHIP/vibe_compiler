@@ -42,6 +42,8 @@ Pipeline position:
 5. rich compiler result、artifact fan-out和atomic publication留在 typed driver API；IR→IR transformation共用唯一 pipeline
    builder，不为 pass manager 和 direct compiler各写一份业务逻辑。
 6. host build/test 使用 `nproc`；本任务默认不执行真实板端。若 target artifact发生有意变化，先转交14–17扩大 gate。
+7. dormant source不按“未进CMake”机械删除。先建立逐文件去向：`reactivate/refactor`、`extract-then-delete`或`delete`；
+   当前或Q49–Q53合同仍需要的算法、proof、diagnostic和测试资产必须先进入新的active owner并受测，再删除旧owner。
 
 ## Checkpoint A：active source 与基础门禁
 
@@ -52,8 +54,11 @@ Pipeline position:
 
 施工：
 
-- 核对 `lib/Wafer/**/CMakeLists.txt` 与 active source；删除已经退役且未构建的 collective/lowering/materializer source，
-  或明确恢复 build 并补 compile/test owner，不能留两份实现事实源；
+- 核对 `lib/Wafer/**/CMakeLists.txt` 与 active source，为每个dormant collective/lowering/materializer/search source记录
+  `reactivate/refactor`、`extract-then-delete`或`delete`及其新owner；`CompleteTraversal`、attention materializer、topology
+  analysis和旧coordinated/rank实现中的独有mechanism/proof/test资产必须逐项对照Q49–Q53合同，不能因未进CMake直接删除；
+- 对`reactivate/refactor`恢复active build并补compile/test owner；对`extract-then-delete`先把仍需能力与测试迁入新active
+  owner，再删除旧owner；只有已被现行IR/API淘汰且无独有能力的`delete`项可直接清理，最终不能留两份实现事实源；
 - fresh configure/build 生成 ODS headers，禁止复用 stale generated declarations判断 current API；
 - 扩 `check_source_organization.py`：CMake source、ODS op、public declaration、test mirror 的增删必须一致；
 - 添加受控 grep/静态 gate：semantic `OpaqueLoc` consumer、raw semantic attr key、pass 外 shadow identity、
@@ -61,8 +66,8 @@ Pipeline position:
 - 记录当前 named pipeline、pass invocation、clone/materialization计数和代表 baseline wall/RSS，作为结构回归基线，
   不把历史耗时写成完成结论。
 
-完成门禁：fresh build不依赖旧生成物；source organization检查为绿；active/dormant source边界唯一；基线统计可由本轮
-构建重现。
+完成门禁：fresh build不依赖旧生成物；source organization检查为绿；每个dormant source都有经后续合同核对的分类、新
+owner和迁移/删除证据；active/dormant source边界唯一；基线统计可由本轮构建重现。
 
 ## Checkpoint B：IR 自包含与 ODS schema
 
@@ -186,7 +191,8 @@ canonicalizer只负责优化。
 
 - semantic lineage/OpaqueLoc carrier、raw attr accessor、ordinal/print identity、synthetic local-fit wrapper；
 - flat all-Module pass、重复 direct/pipeline implementation、手工 analysis revision/cache；
-- dormant/unbuilt旧 lowering、stale API declaration和only-for-them tests；
+- 已完成独有能力/测试迁移的dormant旧owner、stale API declaration和only-for-retired-semantics tests；不得以删除仍被
+  Q49–Q53合同需要的实现资产来满足本门禁；
 - whole-module greedy/fixed-point helper和由 canonicalizer承担的 correctness前置；
 - 与新 standard interface重复的 whitelist/special case。
 
