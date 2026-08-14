@@ -518,7 +518,9 @@ struct NormalizeStablehloCollectivesPass
       }
     }
 
-    stablehlo_normalization::foldConstantTensorOps(getOperation());
+    if (mlir::failed(
+            stablehlo_normalization::foldConstantTensorOps(getOperation())))
+      signalPassFailure();
 #endif
   }
 };

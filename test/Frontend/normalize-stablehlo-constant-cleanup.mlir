@@ -4,6 +4,7 @@
 #map0 = affine_map<() -> ()>
 #map1 = affine_map<(d0, d1, d2, d3) -> ()>
 #map2 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
+#map3 = affine_map<(d0) -> (d0)>
 
 module {
   func.func @rank_mask_constant_cleanup() -> (tensor<1x1x4x1xi1>, index) {
@@ -88,6 +89,22 @@ module {
     %value = tensor.extract %table[%index] : tensor<4xi32>
     return %value : i32
   }
+
+  func.func @large_constant_generic_respects_budget()
+      -> tensor<1048577xi32> {
+    %input = arith.constant dense<1> : tensor<1048577xi32>
+    %empty = tensor.empty() : tensor<1048577xi32>
+    %result = linalg.generic {
+      indexing_maps = [#map3, #map3],
+      iterator_types = ["parallel"]
+    } ins(%input : tensor<1048577xi32>)
+      outs(%empty : tensor<1048577xi32>) {
+    ^bb0(%in: i32, %out: i32):
+      %sum = arith.addi %in, %in : i32
+      linalg.yield %sum : i32
+    } -> tensor<1048577xi32>
+    return %result : tensor<1048577xi32>
+  }
 }
 
 // CHECK-LABEL: func.func @rank_mask_constant_cleanup
@@ -104,3 +121,6 @@ module {
 
 // CHECK-LABEL: func.func @dynamic_rank_table_is_not_folded
 // CHECK: tensor.extract {{.+}}[%arg0] : tensor<4xi32>
+
+// CHECK-LABEL: func.func @large_constant_generic_respects_budget
+// CHECK: linalg.generic

@@ -8,6 +8,8 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -16,6 +18,23 @@
 #include <optional>
 
 namespace wafer::stablehlo_normalization {
+
+static constexpr int64_t kMaximumFoldedTensorElements = 1 << 20;
+static constexpr uint64_t kMaximumFoldedTensorBytes = 16 * 1024 * 1024;
+static constexpr uint64_t kMaximumScalarEvaluations = 4 * 1024 * 1024;
+
+static bool isWithinConstantFoldBudget(mlir::RankedTensorType type) {
+  if (!type || !type.hasStaticShape() || type.getNumElements() < 0 ||
+      type.getNumElements() > kMaximumFoldedTensorElements)
+    return false;
+  mlir::Type elementType = type.getElementType();
+  if (!mlir::isa<mlir::IntegerType, mlir::FloatType>(elementType))
+    return false;
+  const uint64_t elementBytes = std::max<uint64_t>(
+      1, llvm::divideCeil(elementType.getIntOrFloatBitWidth(), 8u));
+  const uint64_t elements = static_cast<uint64_t>(type.getNumElements());
+  return elements <= kMaximumFoldedTensorBytes / elementBytes;
+}
 
 static bool allStatic(llvm::ArrayRef<int64_t> values) {
   return llvm::all_of(values, [](int64_t value) {
@@ -180,32 +199,36 @@ getConstantTensorElement(mlir::Value value, llvm::ArrayRef<int64_t> indices) {
   return std::nullopt;
 }
 
-static bool replaceWithDenseConstant(mlir::Operation *op, mlir::Value result,
-                                     mlir::DenseElementsAttr attr) {
-  mlir::OpBuilder builder(op);
-  auto constant = builder.create<mlir::arith::ConstantOp>(
+static mlir::LogicalResult
+replaceWithDenseConstant(mlir::Operation *op, mlir::Value result,
+                         mlir::DenseElementsAttr attr,
+                         mlir::PatternRewriter &rewriter) {
+  auto constant = rewriter.create<mlir::arith::ConstantOp>(
       op->getLoc(), result.getType(), attr);
-  result.replaceAllUsesWith(constant.getResult());
-  op->erase();
-  return true;
+  rewriter.replaceOp(op, constant.getResult());
+  return mlir::success();
 }
 
-static bool foldConstantTensorExtractSlice(mlir::tensor::ExtractSliceOp slice) {
+static mlir::LogicalResult
+foldConstantTensorExtractSlice(mlir::tensor::ExtractSliceOp slice,
+                               mlir::PatternRewriter &rewriter) {
   auto sourceType =
       mlir::dyn_cast<mlir::RankedTensorType>(slice.getSourceType());
   auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(slice.getType());
   if (!sourceType || !resultType || !sourceType.hasStaticShape() ||
       !resultType.hasStaticShape() ||
       sourceType.getRank() != resultType.getRank())
-    return false;
+    return mlir::failure();
   if (!allStatic(slice.getStaticOffsets()) ||
       !allStatic(slice.getStaticSizes()) ||
       !allStatic(slice.getStaticStrides()))
-    return false;
+    return mlir::failure();
 
   mlir::DenseElementsAttr sourceAttr = getDenseConstantAttr(slice.getSource());
   if (!sourceAttr)
-    return false;
+    return mlir::failure();
+  if (!isWithinConstantFoldBudget(resultType))
+    return mlir::failure();
 
   llvm::SmallVector<mlir::Attribute> sourceValues;
   for (mlir::Attribute value : sourceAttr.getValues<mlir::Attribute>())
@@ -226,66 +249,69 @@ static bool foldConstantTensorExtractSlice(mlir::tensor::ExtractSliceOp slice) {
     int64_t sourceLinear = getLinearIndex(sourceShape, sourceIndices);
     if (sourceLinear < 0 ||
         sourceLinear >= static_cast<int64_t>(sourceValues.size()))
-      return false;
+      return mlir::failure();
     resultValues.push_back(sourceValues[sourceLinear]);
   }
 
   auto resultAttr = mlir::DenseElementsAttr::get(resultType, resultValues);
   return replaceWithDenseConstant(slice.getOperation(), slice.getResult(),
-                                  resultAttr);
+                                  resultAttr, rewriter);
 }
 
-static bool foldConstantTensorReshape(mlir::Operation *op, mlir::Value source,
-                                      mlir::Value result) {
+static mlir::LogicalResult
+foldConstantTensorReshape(mlir::Operation *op, mlir::Value source,
+                          mlir::Value result, mlir::PatternRewriter &rewriter) {
   auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(source.getType());
   auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(result.getType());
   if (!sourceType || !resultType || !sourceType.hasStaticShape() ||
       !resultType.hasStaticShape() ||
       sourceType.getElementType() != resultType.getElementType() ||
       sourceType.getNumElements() != resultType.getNumElements())
-    return false;
+    return mlir::failure();
+  if (!isWithinConstantFoldBudget(resultType))
+    return mlir::failure();
 
   mlir::DenseElementsAttr sourceAttr = getDenseConstantAttr(source);
   if (!sourceAttr)
-    return false;
+    return mlir::failure();
 
   llvm::SmallVector<mlir::Attribute> values;
   for (mlir::Attribute value : sourceAttr.getValues<mlir::Attribute>())
     values.push_back(value);
   auto resultAttr = mlir::DenseElementsAttr::get(resultType, values);
-  return replaceWithDenseConstant(op, result, resultAttr);
+  return replaceWithDenseConstant(op, result, resultAttr, rewriter);
 }
 
-static bool foldConstantTensorExtract(mlir::tensor::ExtractOp extract) {
+static mlir::LogicalResult
+foldConstantTensorExtract(mlir::tensor::ExtractOp extract,
+                          mlir::PatternRewriter &rewriter) {
   auto sourceType =
       mlir::dyn_cast<mlir::RankedTensorType>(extract.getTensor().getType());
   if (!sourceType || !sourceType.hasStaticShape() ||
       extract.getIndices().size() != static_cast<size_t>(sourceType.getRank()))
-    return false;
+    return mlir::failure();
 
   llvm::SmallVector<int64_t> indices;
   indices.reserve(extract.getIndices().size());
   for (mlir::Value index : extract.getIndices()) {
     std::optional<int64_t> constantIndex = getConstantIntegerValue(index);
     if (!constantIndex)
-      return false;
+      return mlir::failure();
     indices.push_back(*constantIndex);
   }
 
   std::optional<mlir::Attribute> element =
       getConstantTensorElement(extract.getTensor(), indices);
   if (!element)
-    return false;
+    return mlir::failure();
   auto value = mlir::dyn_cast<mlir::TypedAttr>(*element);
   if (!value)
-    return false;
+    return mlir::failure();
 
-  mlir::OpBuilder builder(extract);
   auto constant =
-      builder.create<mlir::arith::ConstantOp>(extract.getLoc(), value);
-  extract.getResult().replaceAllUsesWith(constant.getResult());
-  extract.erase();
-  return true;
+      rewriter.create<mlir::arith::ConstantOp>(extract.getLoc(), value);
+  rewriter.replaceOp(extract, constant.getResult());
+  return mlir::success();
 }
 
 static std::optional<int64_t>
@@ -401,31 +427,43 @@ evaluateConstantScalarOp(mlir::Operation *op,
   return std::nullopt;
 }
 
-static bool foldConstantLinalgGeneric(mlir::linalg::GenericOp generic) {
+static mlir::LogicalResult
+foldConstantLinalgGeneric(mlir::linalg::GenericOp generic,
+                          mlir::PatternRewriter &rewriter) {
   if (generic->getNumResults() != 1 || generic.getNumDpsInits() != 1)
-    return false;
+    return mlir::failure();
   if (!llvm::all_of(generic.getIteratorTypesArray(), [](auto iteratorType) {
         return iteratorType == mlir::utils::IteratorType::parallel;
       }))
-    return false;
+    return mlir::failure();
 
   auto resultType =
       mlir::dyn_cast<mlir::RankedTensorType>(generic->getResult(0).getType());
   if (!resultType || !resultType.hasStaticShape())
-    return false;
+    return mlir::failure();
+  if (!isWithinConstantFoldBudget(resultType))
+    return mlir::failure();
+
+  const uint64_t bodyOperations = static_cast<uint64_t>(
+      std::distance(generic.getBody()->without_terminator().begin(),
+                    generic.getBody()->without_terminator().end()));
+  const uint64_t elements = static_cast<uint64_t>(resultType.getNumElements());
+  if (bodyOperations != 0 &&
+      elements > kMaximumScalarEvaluations / bodyOperations)
+    return mlir::failure();
 
   llvm::SmallVector<mlir::AffineMap> indexingMaps =
       generic.getIndexingMapsArray();
   if (indexingMaps.size() !=
       generic.getNumDpsInputs() + generic.getNumDpsInits())
-    return false;
+    return mlir::failure();
 
   llvm::SmallVector<std::optional<mlir::DenseElementsAttr>> operandAttrs;
   operandAttrs.reserve(generic.getNumDpsInputs() + generic.getNumDpsInits());
   for (mlir::Value input : generic.getDpsInputs()) {
     mlir::DenseElementsAttr attr = getDenseConstantAttr(input);
     if (!attr)
-      return false;
+      return mlir::failure();
     operandAttrs.push_back(attr);
   }
   for (auto [index, init] : llvm::enumerate(generic.getDpsInits())) {
@@ -433,7 +471,7 @@ static bool foldConstantLinalgGeneric(mlir::linalg::GenericOp generic) {
     if (!attr && !generic.getBody()
                       ->getArgument(generic.getNumDpsInputs() + index)
                       .use_empty())
-      return false;
+      return mlir::failure();
     if (attr)
       operandAttrs.push_back(attr);
     else
@@ -443,7 +481,7 @@ static bool foldConstantLinalgGeneric(mlir::linalg::GenericOp generic) {
   auto yield =
       mlir::dyn_cast<mlir::linalg::YieldOp>(generic.getBody()->getTerminator());
   if (!yield || yield.getValues().size() != 1)
-    return false;
+    return mlir::failure();
 
   llvm::SmallVector<mlir::Attribute> resultValues;
   resultValues.reserve(resultType.getNumElements());
@@ -458,60 +496,108 @@ static bool foldConstantLinalgGeneric(mlir::linalg::GenericOp generic) {
       std::optional<mlir::Attribute> value =
           getDenseElementAt(*attr, indexingMaps[index], resultIndices);
       if (!value)
-        return false;
+        return mlir::failure();
       scalarValues[generic.getBody()->getArgument(index)] = *value;
     }
 
     for (mlir::Operation &op : generic.getBody()->without_terminator()) {
       if (op.getNumResults() != 1)
-        return false;
+        return mlir::failure();
       std::optional<mlir::Attribute> value =
           evaluateConstantScalarOp(&op, scalarValues);
       if (!value)
-        return false;
+        return mlir::failure();
       scalarValues[op.getResult(0)] = *value;
     }
 
     auto it = scalarValues.find(yield.getValues().front());
     if (it == scalarValues.end())
-      return false;
+      return mlir::failure();
     resultValues.push_back(it->second);
   }
 
   auto resultAttr = mlir::DenseElementsAttr::get(resultType, resultValues);
   return replaceWithDenseConstant(generic.getOperation(), generic.getResult(0),
-                                  resultAttr);
+                                  resultAttr, rewriter);
 }
 
-static bool foldConstantTensorOp(mlir::Operation *op) {
-  if (auto slice = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(op))
-    return foldConstantTensorExtractSlice(slice);
-  if (auto collapse = mlir::dyn_cast<mlir::tensor::CollapseShapeOp>(op))
-    return foldConstantTensorReshape(op, collapse.getSrc(),
-                                     collapse.getResult());
-  if (auto expand = mlir::dyn_cast<mlir::tensor::ExpandShapeOp>(op))
-    return foldConstantTensorReshape(op, expand.getSrc(), expand.getResult());
-  if (auto extract = mlir::dyn_cast<mlir::tensor::ExtractOp>(op))
-    return foldConstantTensorExtract(extract);
-  if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(op))
-    return foldConstantLinalgGeneric(generic);
-  return false;
-}
+struct ConstantExtractSlicePattern final
+    : mlir::OpRewritePattern<mlir::tensor::ExtractSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
 
-void foldConstantTensorOps(mlir::Operation *root) {
-  bool changed = true;
-  while (changed) {
-    changed = false;
-    llvm::SmallVector<mlir::Operation *> ops;
-    root->walk([&](mlir::Operation *op) {
-      if (mlir::isa<mlir::tensor::ExtractSliceOp, mlir::tensor::CollapseShapeOp,
-                    mlir::tensor::ExpandShapeOp, mlir::tensor::ExtractOp,
-                    mlir::linalg::GenericOp>(op))
-        ops.push_back(op);
-    });
-    for (mlir::Operation *op : ops)
-      changed |= foldConstantTensorOp(op);
+  mlir::LogicalResult
+  matchAndRewrite(mlir::tensor::ExtractSliceOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    return foldConstantTensorExtractSlice(op, rewriter);
   }
+};
+
+struct ConstantCollapseShapePattern final
+    : mlir::OpRewritePattern<mlir::tensor::CollapseShapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::tensor::CollapseShapeOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    return foldConstantTensorReshape(op, op.getSrc(), op.getResult(), rewriter);
+  }
+};
+
+struct ConstantExpandShapePattern final
+    : mlir::OpRewritePattern<mlir::tensor::ExpandShapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::tensor::ExpandShapeOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    return foldConstantTensorReshape(op, op.getSrc(), op.getResult(), rewriter);
+  }
+};
+
+struct ConstantExtractPattern final
+    : mlir::OpRewritePattern<mlir::tensor::ExtractOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::tensor::ExtractOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    return foldConstantTensorExtract(op, rewriter);
+  }
+};
+
+struct ConstantLinalgGenericPattern final
+    : mlir::OpRewritePattern<mlir::linalg::GenericOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::linalg::GenericOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    return foldConstantLinalgGeneric(op, rewriter);
+  }
+};
+
+mlir::LogicalResult foldConstantTensorOps(mlir::Operation *root) {
+  if (!root)
+    return mlir::failure();
+
+  llvm::SmallVector<mlir::Operation *, 32> candidates;
+  root->walk([&](mlir::Operation *op) {
+    if (mlir::isa<mlir::tensor::ExtractSliceOp, mlir::tensor::CollapseShapeOp,
+                  mlir::tensor::ExpandShapeOp, mlir::tensor::ExtractOp,
+                  mlir::linalg::GenericOp>(op))
+      candidates.push_back(op);
+  });
+  if (candidates.empty())
+    return mlir::success();
+
+  mlir::RewritePatternSet patterns(root->getContext());
+  patterns.add<ConstantExtractSlicePattern, ConstantCollapseShapePattern,
+               ConstantExpandShapePattern, ConstantExtractPattern,
+               ConstantLinalgGenericPattern>(root->getContext());
+  mlir::FrozenRewritePatternSet frozenPatterns(std::move(patterns));
+  mlir::GreedyRewriteConfig config;
+  config.strictMode = mlir::GreedyRewriteStrictness::ExistingOps;
+  return mlir::applyOpPatternsAndFold(candidates, frozenPatterns, config);
 }
 
 } // namespace wafer::stablehlo_normalization
