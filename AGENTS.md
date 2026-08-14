@@ -196,6 +196,10 @@ Pipeline position:
 - **rewrite 必须事务安全。** pattern callback中的IR修改全部通过`PatternRewriter`；尽量在首次mutation前完成preflight，
   failed match使用`notifyMatchFailure`，不得更新rollback之外的`failureReason`、callee set或其它mutable side state。
   clone对应使用`IRMapping`，不用pointer、walk顺序、ordinal、打印字符串或symbol拼写恢复identity。
+- **隔离变换事务只clone最小真实owner。** 只有查询必须消费实际改写后的IR且不得修改原artifact时，才clone最近的
+  `IsolatedFromAbove` operation；普通lowering直接使用nested pass，不clone。带外部operands的owner必须用`IRMapping`
+  映射到scratch-owned SSA，不能让clone交叉引用或新增原IR的use；事务结束只返回typed结果并销毁scratch IR，不为取得
+  module anchor构造synthetic Module/Func。
 - **conversion legality 要 fail closed。** source op类别使用稳定marker interface/trait或等价单一分类；所有source实现者
   默认illegal，structural/metadata/target op显式legal，postcheck复用同一分类。full conversion必须证明source语义全部
   消失；只lower子集时明确使用partial conversion和独立stage verifier，不能用“unknown全legal”伪装full conversion。
