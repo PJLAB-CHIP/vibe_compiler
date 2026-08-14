@@ -8,10 +8,12 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/AnalysisManager.h"
 
 #include "gtest/gtest.h"
 
@@ -96,6 +98,53 @@ TEST(PathConditionTest, IntersectionImplicationAndSubtractionAreExact) {
   remaining.clear();
   thenPath->subtract(root, remaining);
   EXPECT_TRUE(remaining.empty());
+}
+
+TEST_F(LifetimeAnalysisTest,
+       StructuredTimelineUsesAnalysisManagerCacheAndInvalidation) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::ModuleAnalysisManager moduleAnalyses(*module,
+                                             /*passInstrumentor=*/nullptr);
+  mlir::AnalysisManager moduleAnalysis = moduleAnalyses;
+  mlir::AnalysisManager functionAnalyses = moduleAnalysis.nest(function);
+
+  auto &first =
+      functionAnalyses.getAnalysis<StructuredTimelineAnalysis>();
+  auto &cached =
+      functionAnalyses.getAnalysis<StructuredTimelineAnalysis>();
+  ASSERT_TRUE(first.isValid());
+  EXPECT_EQ(&first, &cached);
+
+  mlir::detail::PreservedAnalyses preserved;
+  preserved.preserve<StructuredTimelineAnalysis>();
+  functionAnalyses.invalidate(preserved);
+  auto stillCached =
+      functionAnalyses.getCachedAnalysis<StructuredTimelineAnalysis>();
+  ASSERT_TRUE(stillCached.has_value());
+  EXPECT_EQ(&first, &stillCached->get());
+
+  mlir::OpBuilder builder(function.getContext());
+  builder.setInsertionPointToStart(&function.getBody().front());
+  mlir::Operation *inserted =
+      builder.create<mlir::arith::ConstantIntOp>(function.getLoc(), 0, 32);
+  mlir::detail::PreservedAnalyses preserveNone;
+  functionAnalyses.invalidate(preserveNone);
+  EXPECT_FALSE(functionAnalyses
+                   .getCachedAnalysis<StructuredTimelineAnalysis>()
+                   .has_value());
+
+  auto &rebuilt =
+      functionAnalyses.getAnalysis<StructuredTimelineAnalysis>();
+  ASSERT_TRUE(rebuilt.isValid());
+  EXPECT_TRUE(rebuilt.getTimeline().lookup(inserted).has_value());
 }
 
 TEST(PathConditionTest, RepeatableDecisionCannotProvePackingExclusion) {

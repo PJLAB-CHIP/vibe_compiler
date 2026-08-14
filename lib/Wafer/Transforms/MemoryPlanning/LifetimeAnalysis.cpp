@@ -735,6 +735,13 @@ StructuredTimeline::lookupSubtreeEnd(mlir::Operation *op) const {
   return it->second;
 }
 
+StructuredTimelineAnalysis::StructuredTimelineAnalysis(mlir::Operation *scope) {
+  mlir::FailureOr<StructuredTimeline> built =
+      StructuredTimeline::build(scope, &failure);
+  if (mlir::succeeded(built))
+    timeline.emplace(std::move(*built));
+}
+
 LifetimeDataflow::LifetimeDataflow(
     const StructuredTimeline &timeline,
     llvm::MutableArrayRef<LifetimeDemand> demands,
@@ -866,8 +873,6 @@ LifetimeDataflow::rootsAt(mlir::Value value, PathCondition usePath) const {
       } else if (auto toTensor =
                      mlir::dyn_cast<mlir::bufferization::ToTensorOp>(def)) {
         appendAt(toTensor.getMemref(), timeline.lookup(def));
-      } else if (auto reshape = mlir::dyn_cast<ViewReshapeOp>(def)) {
-        appendAt(reshape.getSource(), timeline.lookup(def));
       } else if (auto viewLike =
                      mlir::dyn_cast<mlir::ViewLikeOpInterface>(def)) {
         appendAt(viewLike.getViewSource(), timeline.lookup(def));
@@ -985,9 +990,6 @@ LifetimeDataflow::originsAt(mlir::Value value, PathCondition usePath) const {
                      mlir::dyn_cast<mlir::bufferization::ToTensorOp>(def)) {
         hasAliasSemantics = true;
         appendAt(toTensor.getMemref(), timeline.lookup(def));
-      } else if (auto reshape = mlir::dyn_cast<ViewReshapeOp>(def)) {
-        hasAliasSemantics = true;
-        appendAt(reshape.getSource(), timeline.lookup(def));
       } else if (auto viewLike =
                      mlir::dyn_cast<mlir::ViewLikeOpInterface>(def)) {
         hasAliasSemantics = true;
@@ -1139,15 +1141,9 @@ void LifetimeDataflow::recordOperands(mlir::Operation *op) {
 void LifetimeDataflow::mapViewLikeResults(mlir::Operation *op) {
   auto viewLike = mlir::dyn_cast<mlir::ViewLikeOpInterface>(op);
   std::optional<ProgramPoint> point = timeline.lookup(op);
-  if (!point)
+  if (!viewLike || !point)
     return;
-  mlir::Value source;
-  if (viewLike)
-    source = viewLike.getViewSource();
-  else if (auto reshape = mlir::dyn_cast<ViewReshapeOp>(op))
-    source = reshape.getSource();
-  if (!source)
-    return;
+  mlir::Value source = viewLike.getViewSource();
   llvm::SmallVector<RootRef, 2> refs = rootsAt(source, point->path);
   llvm::SmallVector<ValueOriginRef, 2> origins = originsAt(source, point->path);
   for (mlir::Value result : op->getResults()) {
@@ -1919,7 +1915,6 @@ LifetimeDataflow::processBlock(mlir::Block &block,
             mlir::scf::IfOp, mlir::scf::ForOp, TileRegionOp>(op) ||
         mlir::isa<mlir::ViewLikeOpInterface, mlir::SelectLikeOpInterface,
                   mlir::MemoryEffectOpInterface>(op) ||
-        mlir::isa<ViewReshapeOp>(op) ||
         op.hasTrait<mlir::OpTrait::IsTerminator>();
     if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op))
       hasSupportedTrackedUse = hasSupportedTrackedUse ||
@@ -1958,7 +1953,7 @@ LifetimeDataflow::processBlock(mlir::Block &block,
     bool hasKnownTrackedSemantics = mlir::isa<mlir::memref::AllocOp>(op);
     bool hasAliasProducerSemantics =
         mlir::isa<mlir::scf::IfOp, mlir::scf::ForOp, TileRegionOp,
-                  mlir::bufferization::ToMemrefOp, ViewReshapeOp>(op) ||
+                  mlir::bufferization::ToMemrefOp>(op) ||
         mlir::isa<mlir::ViewLikeOpInterface, mlir::SelectLikeOpInterface>(op);
     if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op))
       hasAliasProducerSemantics =

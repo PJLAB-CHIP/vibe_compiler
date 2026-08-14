@@ -37,6 +37,9 @@ namespace {
 
 namespace mp = memory_planning::detail;
 
+using ManagedTimelineMap =
+    llvm::DenseMap<mlir::Operation *, const mp::StructuredTimelineAnalysis *>;
+
 struct DTECompletionRef {
   mlir::Value originToken;
   mp::PathCondition path = mp::PathCondition::root();
@@ -589,17 +592,25 @@ private:
   llvm::SmallVector<DTECompletionRef, 8> pendingCompletions;
 };
 
-static mlir::LogicalResult
-initializeSPMDemands(mlir::func::FuncOp funcOp, int64_t defaultAlignment,
-                     llvm::SmallVectorImpl<mp::LifetimeDemand> &demands) {
+static mlir::LogicalResult initializeSPMDemands(
+    mlir::Operation *scope, int64_t defaultAlignment,
+    llvm::SmallVectorImpl<mp::LifetimeDemand> &demands) {
   mlir::LogicalResult result = mlir::success();
-  funcOp.walk([&](mlir::memref::AllocOp alloc) {
+  scope->walk([&](mlir::memref::AllocOp alloc) {
     if (mlir::failed(result))
       return;
     TileRegionOp tileRegion = alloc->getParentOfType<TileRegionOp>();
-    if (!tileRegion ||
-        tileRegion->getParentOfType<mlir::func::FuncOp>() != funcOp)
+    if (!tileRegion)
       return;
+    if (auto function = mlir::dyn_cast<mlir::func::FuncOp>(scope)) {
+      if (tileRegion->getParentOfType<mlir::func::FuncOp>() != function)
+        return;
+    } else if (auto region = mlir::dyn_cast<TileRegionOp>(scope)) {
+      if (tileRegion != region)
+        return;
+    } else {
+      return;
+    }
 
     mlir::MemRefType memrefType = alloc.getType();
     if (!isWaferSPMMemRefType(memrefType))
@@ -656,11 +667,10 @@ initializeSPMDemands(mlir::func::FuncOp funcOp, int64_t defaultAlignment,
   return result;
 }
 
-static mlir::LogicalResult
-emitLifetimeFailure(mlir::func::FuncOp funcOp,
-                    const mp::LifetimeFailure &failure) {
+static mlir::LogicalResult emitLifetimeFailure(
+    mlir::Operation *scope, const mp::LifetimeFailure &failure) {
   mlir::Operation *origin =
-      failure.origin ? failure.origin : funcOp.getOperation();
+      failure.origin ? failure.origin : scope;
   switch (failure.kind) {
   case mp::LifetimeFailureKind::MissingAllocationEvent:
     return origin->emitError()
@@ -720,14 +730,20 @@ emitLifetimeFailure(mlir::func::FuncOp funcOp,
     return mlir::failure();
   }
   case mp::LifetimeFailureKind::LoopBackedgeCompletion:
-    return origin->emitError()
-           << "missing_local_completion: local Compute/Movement issue has a "
-              "reachable loop backedge without a same-worker ordered "
-              "successor or matching participant join "
-              "(operation "
-           << origin->getName() << ")";
+  {
+    std::string originIR;
+    llvm::raw_string_ostream originStream(originIR);
+    origin->print(originStream);
+    mlir::InFlightDiagnostic diagnostic = origin->emitError();
+    diagnostic
+        << "missing_local_completion: local Compute/Movement issue has a "
+           "reachable loop backedge without a same-worker ordered successor "
+           "or matching participant join (operation "
+        << origin->getName() << "); origin_ir='" << originStream.str() << "'";
+    return mlir::failure();
+  }
   case mp::LifetimeFailureKind::InconsistentCompletionState:
-    return funcOp.emitError()
+    return scope->emitError()
            << "completion_proof_failure: local issue lifetime state remains "
               "after all local completion domains were discharged";
   }
@@ -811,7 +827,8 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
              int64_t spmAlignment,
              const llvm::DenseSet<mlir::Operation *> &mayClobberFunctions,
              llvm::SmallVectorImpl<PendingSPMPlacement> &pendingPlacements,
-             SPMMemoryPlanningFailure *failure) {
+             SPMMemoryPlanningFailure *failure,
+             const ManagedTimelineMap *managedTimelines = nullptr) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "transformation-phase", "planFunction(SPM)", "total");
   bool hasTileRegion = false;
@@ -820,11 +837,29 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
     return mlir::success();
 
   auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-      "analysis-phase", "planFunction(SPM)", "StructuredTimeline::build");
+      "analysis-phase", "planFunction(SPM)", "StructuredTimeline");
   mp::TimelineFailure timelineFailure;
-  mlir::FailureOr<mp::StructuredTimeline> timeline =
-      mp::StructuredTimeline::build(funcOp.getOperation(), &timelineFailure);
-  if (mlir::failed(timeline)) {
+  std::optional<mp::StructuredTimeline> ownedTimeline;
+  const mp::StructuredTimeline *timeline = nullptr;
+  if (managedTimelines) {
+    auto found = managedTimelines->find(funcOp.getOperation());
+    if (found != managedTimelines->end()) {
+      const mp::StructuredTimelineAnalysis &analysis = *found->second;
+      if (analysis.isValid())
+        timeline = &analysis.getTimeline();
+      else
+        timelineFailure = analysis.getFailure();
+    }
+  }
+  if (!timeline && !managedTimelines) {
+    mlir::FailureOr<mp::StructuredTimeline> built =
+        mp::StructuredTimeline::build(funcOp.getOperation(), &timelineFailure);
+    if (mlir::succeeded(built)) {
+      ownedTimeline.emplace(std::move(*built));
+      timeline = &*ownedTimeline;
+    }
+  }
+  if (!timeline) {
     mlir::Operation *origin =
         timelineFailure.origin ? timelineFailure.origin : funcOp.getOperation();
     if (timelineFailure.kind ==
@@ -846,7 +881,8 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
   llvm::SmallVector<mp::LifetimeDemand, 8> demands;
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "analysis-phase", "planFunction(SPM)", "initializeSPMDemands");
-  if (mlir::failed(initializeSPMDemands(funcOp, spmAlignment, demands)))
+  if (mlir::failed(initializeSPMDemands(funcOp.getOperation(), spmAlignment,
+                                        demands)))
     return mlir::failure();
 
   // Preserve the owner-specific DTE completion contract and diagnostic before
@@ -866,7 +902,7 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
                                 &lifetimeFailure))) {
     if (failure)
       failure->kind = SPMMemoryPlanningFailureKind::UnsupportedLifetime;
-    return emitLifetimeFailure(funcOp, lifetimeFailure);
+    return emitLifetimeFailure(funcOp.getOperation(), lifetimeFailure);
   }
   if (mlir::failed(verifyLiveSPMAcrossCalls(funcOp, *timeline, demands,
                                             mayClobberFunctions)))
@@ -1057,10 +1093,132 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
 
 } // namespace
 
-mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
-                                        int64_t spmBase, int64_t spmLimit,
-                                        int64_t spmAlignment,
-                                        SPMMemoryPlanningFailure *failure) {
+mlir::LogicalResult checkTileRegionSPMCapacity(
+    TileRegionOp region, int64_t spmBase, int64_t spmLimit,
+    int64_t spmAlignment, SPMMemoryPlanningFailure *failure) {
+  if (failure)
+    *failure = {};
+  if (!region || spmBase < 0 || spmLimit <= spmBase || spmAlignment <= 0) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::Other;
+    return mlir::failure();
+  }
+
+  wafer::support::recordCompileWork(
+      wafer::support::CompileWorkKind::SPMPlanning);
+  wafer::support::ScopedCompileTimingSpan timing(
+      "analysis", "tile-region-spm-capacity", "region-capacity-query");
+
+  mp::TimelineFailure timelineFailure;
+  mlir::FailureOr<mp::StructuredTimeline> timeline =
+      mp::StructuredTimeline::build(region.getOperation(), &timelineFailure);
+  if (mlir::failed(timeline)) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::UnsupportedLifetime;
+    mlir::Operation *origin =
+        timelineFailure.origin ? timelineFailure.origin : region.getOperation();
+    timing.markFailed();
+    return origin->emitError()
+           << "unsupported_lifetime_control_flow: TileRegion capacity query "
+              "requires structured single-block region, scf.if and scf.for "
+              "control flow";
+  }
+
+  llvm::SmallVector<mp::LifetimeDemand, 8> demands;
+  if (mlir::failed(initializeSPMDemands(region.getOperation(), spmAlignment,
+                                        demands))) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::Other;
+    timing.markFailed();
+    return mlir::failure();
+  }
+
+  DTECompletionTracker dteCompletion(*timeline);
+  if (mlir::failed(dteCompletion.run(region.getOperation()))) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::UnsupportedLifetime;
+    timing.markFailed();
+    return mlir::failure();
+  }
+  mp::LocalCompletionTracker localCompletion;
+  mp::LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return isWaferSPMMemRefType(type);
+  });
+  mp::LifetimeFailure lifetimeFailure;
+  if (mlir::failed(dataflow.run(region.getOperation(), &localCompletion,
+                                &lifetimeFailure))) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::UnsupportedLifetime;
+    timing.markFailed();
+    return emitLifetimeFailure(region.getOperation(), lifetimeFailure);
+  }
+
+  mp::PackingResult packing =
+      mp::packStaticMemory(demands, mp::ArenaRange{spmBase, spmLimit});
+  if (packing.succeeded())
+    return mlir::success();
+
+  timing.markFailed();
+  mlir::Operation *origin = region.getOperation();
+  if (packing.demandIndex && *packing.demandIndex < demands.size())
+    origin = demands[*packing.demandIndex].allocation.getOperation();
+  if (packing.status != mp::PackingStatus::ProvenInfeasible) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::Other;
+    if (packing.status == mp::PackingStatus::ResourceExhausted)
+      return origin->emitError()
+             << "packing_search_exhausted: TileRegion SPM capacity query "
+                "exhausted deterministic search";
+    return origin->emitError()
+           << "invalid_packing_result: TileRegion SPM capacity query failed "
+              "without a proven infeasibility certificate";
+  }
+
+  if (failure)
+    failure->kind = SPMMemoryPlanningFailureKind::CapacityOverflow;
+  auto appendEvidence = [](mp::LifetimeDemand &demand) {
+    SPMMemoryPlanningFailure::DemandEvidence evidence{
+        demand.allocation.getLoc(), demand.allocation.getType(),
+        static_cast<uint64_t>(demand.sizeBytes), {}};
+    for (mlir::Operation *user : demand.allocation.getResult().getUsers())
+      evidence.userLocations.push_back(user->getLoc());
+    return evidence;
+  };
+  if (failure) {
+    for (unsigned index : packing.capacityConflictDemandIndices)
+      if (index < demands.size())
+        failure->capacityConflictDemands.push_back(
+            appendEvidence(demands[index]));
+    for (unsigned index : packing.individuallyOversizedDemandIndices)
+      if (index < demands.size())
+        failure->individuallyOversizedDemands.push_back(
+            appendEvidence(demands[index]));
+    failure->demandCount = demands.size();
+    if (!demands.empty()) {
+      mp::LifetimeDemand &largest =
+          *llvm::max_element(demands, [](const mp::LifetimeDemand &lhs,
+                                         const mp::LifetimeDemand &rhs) {
+            return lhs.sizeBytes < rhs.sizeBytes;
+          });
+      failure->largestDemandLocation = largest.allocation.getLoc();
+      failure->largestDemandType = largest.allocation.getType();
+      failure->largestDemandBytes = largest.sizeBytes;
+      for (mp::LifetimeDemand &demand : demands)
+        if (demand.sizeBytes == largest.sizeBytes)
+          failure->largestDemands.push_back(appendEvidence(demand));
+    }
+  }
+  return origin->emitError()
+         << "capacity_overflow: TileRegion SPM planning range [" << spmBase
+         << ", " << spmLimit
+         << ") has no valid static placement; demand_count="
+         << demands.size();
+}
+
+static mlir::LogicalResult planSPMMemoryModuleImpl(
+    mlir::ModuleOp moduleOp, int64_t spmBase, int64_t spmLimit,
+    int64_t spmAlignment, SPMMemoryPlanningFailure *failure,
+    const ManagedTimelineMap *managedTimelines) {
   if (failure)
     *failure = {};
   wafer::support::recordCompileWork(
@@ -1122,7 +1280,8 @@ mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
     if (funcOp.isExternal())
       continue;
     result = planFunction(funcOp, spmBase, spmLimit, spmAlignment,
-                          mayClobberFunctions, pendingPlacements, failure);
+                          mayClobberFunctions, pendingPlacements, failure,
+                          managedTimelines);
   }
   if (mlir::failed(result)) {
     if (failure && failure->kind == SPMMemoryPlanningFailureKind::None)
@@ -1139,6 +1298,14 @@ mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
   return mlir::success();
 }
 
+mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
+                                        int64_t spmBase, int64_t spmLimit,
+                                        int64_t spmAlignment,
+                                        SPMMemoryPlanningFailure *failure) {
+  return planSPMMemoryModuleImpl(moduleOp, spmBase, spmLimit, spmAlignment,
+                                 failure, /*managedTimelines=*/nullptr);
+}
+
 namespace {
 
 struct PlanSPMMemoryPass
@@ -1146,9 +1313,23 @@ struct PlanSPMMemoryPass
   using impl::PlanSPMMemoryPassBase<PlanSPMMemoryPass>::PlanSPMMemoryPassBase;
 
   void runOnOperation() final {
-    if (mlir::failed(planSPMMemoryModule(getOperation(), spmBase, spmLimit,
-                                         spmAlignment)))
+    ManagedTimelineMap managedTimelines;
+    for (mlir::func::FuncOp function :
+         getOperation().getOps<mlir::func::FuncOp>()) {
+      bool hasTileRegion = false;
+      function.walk([&](TileRegionOp) { hasTileRegion = true; });
+      if (!function.isExternal() && hasTileRegion)
+        managedTimelines.try_emplace(
+            function.getOperation(),
+            &getChildAnalysis<mp::StructuredTimelineAnalysis>(function));
+    }
+    if (mlir::failed(planSPMMemoryModuleImpl(
+            getOperation(), spmBase, spmLimit, spmAlignment,
+            /*failure=*/nullptr, &managedTimelines))) {
       signalPassFailure();
+      return;
+    }
+    markAnalysesPreserved<mp::StructuredTimelineAnalysis>();
   }
 };
 

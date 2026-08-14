@@ -14,6 +14,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
+#include <cassert>
 #include <functional>
 #include <optional>
 #include <utility>
@@ -98,6 +99,26 @@ public:
 private:
   llvm::DenseMap<mlir::Operation *, ProgramPoint> points;
   llvm::DenseMap<mlir::Operation *, int64_t> subtreeEnds;
+};
+
+/// Operation-anchored, recomputable timeline facts for MLIR pass pipelines.
+/// The analysis owns no target policy and writes nothing to IR. Passes that do
+/// not mutate structured control flow may explicitly preserve it; all other
+/// transformations use the AnalysisManager's default invalidation.
+class StructuredTimelineAnalysis {
+public:
+  explicit StructuredTimelineAnalysis(mlir::Operation *scope);
+
+  bool isValid() const { return timeline.has_value(); }
+  const StructuredTimeline &getTimeline() const {
+    assert(timeline && "requested an invalid structured timeline");
+    return *timeline;
+  }
+  const TimelineFailure &getFailure() const { return failure; }
+
+private:
+  std::optional<StructuredTimeline> timeline;
+  TimelineFailure failure;
 };
 
 struct LiveSegment {

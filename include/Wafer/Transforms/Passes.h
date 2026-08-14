@@ -17,6 +17,8 @@ class Pass;
 
 namespace wafer {
 
+class TileRegionOp;
+
 #define GEN_PASS_DECL
 #include "Wafer/Transforms/WaferPasses.h.inc"
 
@@ -74,6 +76,13 @@ mlir::LogicalResult
 planSPMMemoryModule(mlir::ModuleOp moduleOp, int64_t spmBase, int64_t spmLimit,
                     int64_t spmAlignment,
                     SPMMemoryPlanningFailure *failure = nullptr);
+/// Prove fixed-capacity SPM feasibility for one already isolated TileRegion.
+/// This query derives lifetimes and packing from the region's current IR,
+/// does not assign offsets, and does not inspect or mutate sibling regions.
+mlir::LogicalResult
+checkTileRegionSPMCapacity(TileRegionOp region, int64_t spmBase,
+                           int64_t spmLimit, int64_t spmAlignment,
+                           SPMMemoryPlanningFailure *failure = nullptr);
 mlir::LogicalResult planDDRMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t ddrAlignmentBytes,
                                         int64_t ddrCapacityBytes,
