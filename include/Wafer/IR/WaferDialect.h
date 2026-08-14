@@ -43,7 +43,34 @@ namespace wafer {
 inline constexpr char kWaferCommSlotAttrName[] = "slot";
 inline constexpr char kWaferSPMOffsetAttrName[] = "wafer.spm.offset";
 inline constexpr char kWaferDDROffsetAttrName[] = "wafer.ddr.offset";
+inline constexpr char kWaferCompilationLineagesAttrName[] =
+    "wafer.compilation.lineages";
 inline constexpr int64_t kWaferSPMBankLineBytes = 256;
+
+/// Returns the transient, self-contained lineage carried by `operation`.
+/// Malformed payloads are rejected by the dialect verifier and therefore
+/// produce an empty result here instead of becoming a second permissive
+/// interpretation path.
+llvm::SmallVector<CompilationLineageAttr, 2>
+getCompilationLineages(mlir::Operation *operation);
+
+/// Adds one lineage identity without duplicating an existing entry.  The
+/// payload remains deterministic so textual/bytecode round trips do not
+/// change evaluation behavior.
+void addCompilationLineage(mlir::Operation *operation,
+                           CompilationLineageKind kind, int64_t identity);
+
+/// Copies all transient lineage from `source` to `target`, merging and
+/// deduplicating entries.  Rewrites call this explicitly: discardable attrs
+/// are not assumed to propagate through arbitrary replacements.
+void inheritCompilationLineages(mlir::Operation *source,
+                                mlir::Operation *target);
+
+bool hasCompilationLineage(mlir::Operation *operation,
+                           CompilationLineageKind kind, int64_t identity);
+
+/// Removes all transient lineage below `root`, including `root` itself.
+void eraseCompilationLineages(mlir::Operation *root);
 
 /// Typed parameter contract shared by instruction verification and consumers
 /// of an accepted convert instruction.

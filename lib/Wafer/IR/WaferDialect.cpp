@@ -20,6 +20,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <tuple>
 
 using namespace wafer;
 
@@ -314,6 +315,108 @@ static std::optional<int64_t> linearizeIndex(llvm::ArrayRef<int64_t> shape,
 }
 
 } // namespace
+
+mlir::LogicalResult CompilationLineageAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    CompilationLineageKind kind, int64_t identity) {
+  (void)kind;
+  if (identity < 0)
+    return emitError() << "compilation lineage identity must be non-negative";
+  return mlir::success();
+}
+
+llvm::SmallVector<CompilationLineageAttr, 2>
+wafer::getCompilationLineages(mlir::Operation *operation) {
+  llvm::SmallVector<CompilationLineageAttr, 2> result;
+  if (!operation)
+    return result;
+  auto payload = operation->getAttrOfType<mlir::ArrayAttr>(
+      kWaferCompilationLineagesAttrName);
+  if (!payload)
+    return result;
+  result.reserve(payload.size());
+  for (mlir::Attribute attr : payload) {
+    auto lineage = mlir::dyn_cast<CompilationLineageAttr>(attr);
+    if (!lineage)
+      return {};
+    result.push_back(lineage);
+  }
+  return result;
+}
+
+void wafer::addCompilationLineage(mlir::Operation *operation,
+                                  CompilationLineageKind kind,
+                                  int64_t identity) {
+  assert(operation && identity >= 0 && "invalid compilation lineage");
+  llvm::SmallVector<CompilationLineageAttr, 2> lineages =
+      getCompilationLineages(operation);
+  if (llvm::any_of(lineages, [&](CompilationLineageAttr lineage) {
+        return lineage.getKind() == kind && lineage.getIdentity() == identity;
+      }))
+    return;
+  lineages.push_back(
+      CompilationLineageAttr::get(operation->getContext(), kind, identity));
+  llvm::sort(lineages, [](CompilationLineageAttr lhs,
+                          CompilationLineageAttr rhs) {
+    return std::tuple(static_cast<uint32_t>(lhs.getKind()), lhs.getIdentity()) <
+           std::tuple(static_cast<uint32_t>(rhs.getKind()), rhs.getIdentity());
+  });
+  llvm::SmallVector<mlir::Attribute, 2> attributes(lineages.begin(),
+                                                   lineages.end());
+  operation->setAttr(
+      kWaferCompilationLineagesAttrName,
+      mlir::ArrayAttr::get(operation->getContext(), attributes));
+}
+
+void wafer::inheritCompilationLineages(mlir::Operation *source,
+                                       mlir::Operation *target) {
+  for (CompilationLineageAttr lineage : getCompilationLineages(source))
+    addCompilationLineage(target, lineage.getKind(), lineage.getIdentity());
+}
+
+bool wafer::hasCompilationLineage(mlir::Operation *operation,
+                                  CompilationLineageKind kind,
+                                  int64_t identity) {
+  return llvm::any_of(getCompilationLineages(operation),
+                      [&](CompilationLineageAttr lineage) {
+                        return lineage.getKind() == kind &&
+                               lineage.getIdentity() == identity;
+                      });
+}
+
+void wafer::eraseCompilationLineages(mlir::Operation *root) {
+  if (!root)
+    return;
+  root->walk<mlir::WalkOrder::PreOrder>([](mlir::Operation *operation) {
+    operation->removeAttr(kWaferCompilationLineagesAttrName);
+  });
+}
+
+mlir::LogicalResult WaferDialect::verifyOperationAttribute(
+    mlir::Operation *operation, mlir::NamedAttribute attribute) {
+  if (attribute.getName().getValue() != kWaferCompilationLineagesAttrName)
+    return mlir::success();
+  auto payload = mlir::dyn_cast<mlir::ArrayAttr>(attribute.getValue());
+  if (!payload)
+    return operation->emitError()
+           << kWaferCompilationLineagesAttrName
+           << " must be an array of #wafer.compilation_lineage attributes";
+  llvm::SmallVector<std::pair<CompilationLineageKind, int64_t>, 2> seen;
+  for (mlir::Attribute value : payload) {
+    auto lineage = mlir::dyn_cast<CompilationLineageAttr>(value);
+    if (!lineage)
+      return operation->emitError()
+             << kWaferCompilationLineagesAttrName
+             << " must contain only #wafer.compilation_lineage attributes";
+    auto identity = std::pair(lineage.getKind(), lineage.getIdentity());
+    if (llvm::is_contained(seen, identity))
+      return operation->emitError()
+             << kWaferCompilationLineagesAttrName
+             << " contains duplicate lineage identity";
+    seen.push_back(identity);
+  }
+  return mlir::success();
+}
 
 MemoryAttr wafer::getWaferMemoryAttr(mlir::MemRefType type) {
   return mlir::dyn_cast_or_null<MemoryAttr>(type.getMemorySpace());

@@ -17,6 +17,7 @@ def Wafer_Dialect : Dialect {
   }];
   let useDefaultAttributePrinterParser = 1;
   let useDefaultTypePrinterParser = 0;
+  let hasOperationAttrVerify = 1;
 }
 
 class Wafer_Op<string mnemonic, list<Trait> traits = []>

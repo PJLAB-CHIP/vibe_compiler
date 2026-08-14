@@ -249,6 +249,51 @@ TEST(WaferDialectTest, ParsesMemoryAttrAndComputesPhysicalInfo) {
   EXPECT_EQ(info->tailC, 4);
 }
 
+TEST(WaferDialectTest, CompilationLineageIsTypedSerializableAndRemovable) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(module attributes {
+        wafer.compilation.lineages = [
+          #wafer.compilation_lineage<source_operation, 7>,
+          #wafer.compilation_lineage<spatial_output, 1>
+        ]
+      } {})mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  EXPECT_TRUE(wafer::hasCompilationLineage(
+      module->getOperation(),
+      wafer::CompilationLineageKind::SourceOperation, 7));
+  EXPECT_TRUE(wafer::hasCompilationLineage(
+      module->getOperation(), wafer::CompilationLineageKind::SpatialOutput,
+      1));
+
+  wafer::addCompilationLineage(
+      module->getOperation(),
+      wafer::CompilationLineageKind::StructuredOperandDemand, 7);
+  wafer::addCompilationLineage(
+      module->getOperation(),
+      wafer::CompilationLineageKind::StructuredOperandDemand, 7);
+  EXPECT_EQ(wafer::getCompilationLineages(module->getOperation()).size(), 3u);
+
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  module->print(stream);
+  stream.flush();
+  auto reparsed = mlir::parseSourceString<mlir::ModuleOp>(
+      text, mlir::ParserConfig(&context));
+  ASSERT_TRUE(reparsed);
+  EXPECT_TRUE(wafer::hasCompilationLineage(
+      reparsed->getOperation(),
+      wafer::CompilationLineageKind::StructuredOperandDemand, 7));
+
+  wafer::eraseCompilationLineages(reparsed->getOperation());
+  EXPECT_TRUE(wafer::getCompilationLineages(reparsed->getOperation()).empty());
+}
+
 TEST(WaferDialectTest, PhysicalEncodingInterfaceOwnsStaticStorageFacts) {
   mlir::DialectRegistry registry;
   wafer::registerAllDialects(registry);
