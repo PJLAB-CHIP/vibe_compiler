@@ -42,23 +42,6 @@ namespace wafer {
 
 namespace {
 
-template <typename... SourceOps> struct TileDataflowOperationSet {
-  static bool contains(mlir::Operation *operation) {
-    return mlir::isa<SourceOps...>(operation);
-  }
-
-  static void markIllegal(mlir::ConversionTarget &target) {
-    target.addIllegalOp<SourceOps...>();
-  }
-};
-
-using TileRegionToInstrSourceOperations = TileDataflowOperationSet<
-    StorageLoadOp, StorageStoreOp, LayoutMaterializeOp, ComputeFillOp,
-    ComputeConvertOp, ComputeGemmOp, ComputeConvOp, ComputeElementwiseOp,
-    ComputeReduceOp, MoveCopyOp, MoveCopyIntoOp, MoveExtractSliceOp,
-    MoveInsertSliceOp, MoveTransposeOp, MoveBroadcastOp, ViewReshapeOp,
-    CommPeerSendOp, CommPeerRecvOp>;
-
 static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.addLegalDialect<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
                          mlir::func::FuncDialect, mlir::memref::MemRefDialect,
@@ -71,7 +54,6 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.addDynamicallyLegalOp<InstrTDMADataMoveOp>([](InstrTDMADataMoveOp op) {
     return !requiresGatherScatterMaterialization(op.getKindAttr().getValue());
   });
-  TileRegionToInstrSourceOperations::markIllegal(target);
   target.addDynamicallyLegalOp<mlir::async::AwaitOp>(
       [](mlir::async::AwaitOp op) {
         mlir::Value operand = op.getOperand();
@@ -80,7 +62,9 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
                !operand.getDefiningOp<InstrDTESendOp>() &&
                !operand.getDefiningOp<InstrDTERecvOp>();
       });
-  target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });
+  target.markUnknownOpDynamicallyLegal([](mlir::Operation *operation) {
+    return !mlir::isa<WaferTileDataflowOpInterface>(operation);
+  });
 }
 
 static void populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
@@ -928,7 +912,7 @@ bool wafer::containsTileDataflowOperations(mlir::Operation *root) {
     return false;
   bool found = false;
   root->walk([&](mlir::Operation *operation) {
-    if (!TileRegionToInstrSourceOperations::contains(operation))
+    if (!mlir::isa<WaferTileDataflowOpInterface>(operation))
       return mlir::WalkResult::advance();
     found = true;
     return mlir::WalkResult::interrupt();

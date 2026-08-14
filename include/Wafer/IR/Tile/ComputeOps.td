@@ -4,6 +4,7 @@
 #define WAFER_IR_OPS_COMPUTEOPS_TD
 
 def Wafer_ComputeFillOp : Wafer_Op<"tile.fill", [
+    WaferTileDataflowOpInterface,
     MemoryEffects<[MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
@@ -26,6 +27,7 @@ def Wafer_ComputeFillOp : Wafer_Op<"tile.fill", [
 }
 
 def Wafer_ComputeConvertOp : Wafer_Op<"tile.compute.convert", [
+    WaferTileDataflowOpInterface,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -46,6 +48,7 @@ def Wafer_ComputeConvertOp : Wafer_Op<"tile.compute.convert", [
 }
 
 def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
+    WaferTileDataflowOpInterface,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -55,7 +58,17 @@ def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
     Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$lhs,
     Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$rhs,
     OptionalAttr<Wafer_GemmOrientationAttr>:$lhs_orientation,
-    OptionalAttr<Wafer_GemmOrientationAttr>:$rhs_orientation
+    OptionalAttr<Wafer_GemmOrientationAttr>:$rhs_orientation,
+    OptionalAttr<I64Attr>:$batch_count,
+    OptionalAttr<DenseI64ArrayAttr>:$lhs_batch_dims,
+    OptionalAttr<I64Attr>:$lhs_m_dim,
+    OptionalAttr<I64Attr>:$lhs_contracting_dim,
+    OptionalAttr<DenseI64ArrayAttr>:$rhs_batch_dims,
+    OptionalAttr<I64Attr>:$rhs_contracting_dim,
+    OptionalAttr<I64Attr>:$rhs_n_dim,
+    OptionalAttr<DenseI64ArrayAttr>:$result_batch_dims,
+    OptionalAttr<I64Attr>:$result_m_dim,
+    OptionalAttr<I64Attr>:$result_n_dim
   );
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
@@ -64,6 +77,7 @@ def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
 }
 
 def Wafer_ComputeConvOp : Wafer_Op<"tile.conv", [
+    WaferTileDataflowOpInterface,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -94,6 +108,7 @@ def Wafer_ComputeConvOp : Wafer_Op<"tile.conv", [
 }
 
 def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
+    WaferTileDataflowOpInterface,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -111,7 +126,8 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
 
   let arguments = (ins
     Wafer_ComputeElementwiseKindAttr:$kind,
-    Arg<Variadic<Wafer_AnySPMMemRef>, "", [MemRead]>:$inputs
+    Arg<Variadic<Wafer_AnySPMMemRef>, "", [MemRead]>:$inputs,
+    OptionalAttr<AffineMapArrayAttr>:$indexing_maps
   );
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
@@ -120,6 +136,7 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
 }
 
 def Wafer_ComputeReduceOp : Wafer_Op<"tile.reduce", [
+    WaferTileDataflowOpInterface,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -137,7 +154,9 @@ def Wafer_ComputeReduceOp : Wafer_Op<"tile.reduce", [
   let arguments = (ins
     Wafer_ComputeReduceKindAttr:$kind,
     Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$input,
-    Optional<AnyType>:$init
+    Optional<AnyType>:$init,
+    DenseI64ArrayAttr:$dimensions,
+    OptionalAttr<TypedAttrInterface>:$init_value
   );
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;

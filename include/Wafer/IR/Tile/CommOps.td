@@ -7,7 +7,7 @@ include "mlir/Dialect/Async/IR/AsyncTypes.td"
 
 class Wafer_CommPeerOp<string mnemonic, list<Trait> resourceEffects,
                        list<SideEffect> bufferEffects>
-    : Wafer_Op<mnemonic, resourceEffects> {
+    : Wafer_Op<mnemonic, [WaferTileDataflowOpInterface] # resourceEffects> {
   let description = [{
     Target-abstract movement of one fixed-size SPM tile between two physical
     Tiles on the selected card. `peer` is an available physical `tile_id` and

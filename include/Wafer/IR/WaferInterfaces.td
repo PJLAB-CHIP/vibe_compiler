@@ -29,6 +29,18 @@ def WaferLinalgExtCollectiveOpInterface
   ];
 }
 
+def WaferTileDataflowOpInterface
+    : OpInterface<"WaferTileDataflowOpInterface"> {
+  let cppNamespace = "::wafer";
+  let description = [{
+    Marker interface for target-abstract Tile dataflow operations that must be
+    consumed before Instr IR is legal. Structural TileRegion/TileYield ops,
+    metadata and instruction-level operations intentionally do not implement
+    this interface. Dialect conversion and its postcondition query this single
+    classification so newly added Tile dataflow operations fail closed.
+  }];
+}
+
 def WaferInstructionOpInterface : OpInterface<"WaferInstructionOpInterface"> {
   let cppNamespace = "::wafer";
   let description = [{

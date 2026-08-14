@@ -814,7 +814,7 @@ getMaterializationCost(mlir::MemRefType sourceType, mlir::MemRefType destType) {
 
 static bool isEligiblePointwiseCompute(mlir::Operation *operation) {
   if (auto elementwise = mlir::dyn_cast<ComputeElementwiseOp>(operation))
-    return !elementwise->hasAttr("indexing_maps") &&
+    return !elementwise.getIndexingMapsAttr() &&
            elementwise->getNumResults() == 1;
   return mlir::isa<ComputeConvertOp>(operation) &&
          operation->getNumResults() == 1;

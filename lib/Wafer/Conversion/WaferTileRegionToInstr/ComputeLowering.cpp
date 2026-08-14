@@ -45,20 +45,22 @@ inferGemmMKN(ComputeGemmOp op, mlir::PatternRewriter &rewriter,
         "tile.gemm lowering requires Wafer memref operands");
 
   if (lhs->getRank() != 2 || rhs->getRank() != 2 || result->getRank() != 2) {
-    mlir::FailureOr<int64_t> lhsMDim =
-        readRequiredI64Attr(rewriter, op, "lhs_m_dim", failureReason);
-    mlir::FailureOr<int64_t> lhsKDim =
-        readRequiredI64Attr(rewriter, op, "lhs_contracting_dim", failureReason);
-    mlir::FailureOr<int64_t> rhsNDim =
-        readRequiredI64Attr(rewriter, op, "rhs_n_dim", failureReason);
-    if (mlir::failed(lhsMDim) || mlir::failed(lhsKDim) || mlir::failed(rhsNDim))
-      return mlir::failure();
+    mlir::IntegerAttr lhsMDimAttr = op.getLhsMDimAttr();
+    mlir::IntegerAttr lhsKDimAttr = op.getLhsContractingDimAttr();
+    mlir::IntegerAttr rhsNDimAttr = op.getRhsNDimAttr();
+    if (!lhsMDimAttr || !lhsKDimAttr || !rhsNDimAttr)
+      return failFailureOr<llvm::SmallVector<int64_t, 3>>(
+          rewriter, op, failureReason,
+          "batched tile.gemm requires typed dimension attributes");
+    int64_t lhsMDim = lhsMDimAttr.getInt();
+    int64_t lhsKDim = lhsKDimAttr.getInt();
+    int64_t rhsNDim = rhsNDimAttr.getInt();
     mlir::FailureOr<int64_t> m = getStaticDim(
-        rewriter, op, *lhs, *lhsMDim, failureReason, "batched tile.gemm");
+        rewriter, op, *lhs, lhsMDim, failureReason, "batched tile.gemm");
     mlir::FailureOr<int64_t> k = getStaticDim(
-        rewriter, op, *lhs, *lhsKDim, failureReason, "batched tile.gemm");
+        rewriter, op, *lhs, lhsKDim, failureReason, "batched tile.gemm");
     mlir::FailureOr<int64_t> n = getStaticDim(
-        rewriter, op, *rhs, *rhsNDim, failureReason, "batched tile.gemm");
+        rewriter, op, *rhs, rhsNDim, failureReason, "batched tile.gemm");
     if (mlir::failed(m) || mlir::failed(k) || mlir::failed(n))
       return mlir::failure();
     return llvm::SmallVector<int64_t, 3>{*m, *k, *n};
@@ -255,9 +257,8 @@ public:
     if (!resultType || !selectedType || selectedType != resultType)
       return mlir::failure();
 
-    if (mlir::Attribute rawMaps = op->getAttr("indexing_maps")) {
-      auto maps = mlir::dyn_cast<mlir::ArrayAttr>(rawMaps);
-      if (!maps || maps.size() != op.getInputs().size() + 1)
+    if (mlir::ArrayAttr maps = op.getIndexingMapsAttr()) {
+      if (maps.size() != op.getInputs().size() + 1)
         return mlir::failure();
       auto hasIdentityMap = [&](unsigned mapIndex) {
         auto mapAttr = mlir::dyn_cast<mlir::AffineMapAttr>(maps[mapIndex]);
@@ -361,14 +362,8 @@ public:
     // operand sequence in the pattern rewriter.
     llvm::SmallVector<InputMovementPlan, 3> movementPlans;
     movementPlans.reserve(op.getInputs().size());
-    mlir::Attribute rawIndexingMaps = op->getAttr("indexing_maps");
-    mlir::ArrayAttr indexingMaps;
-    if (rawIndexingMaps) {
-      indexingMaps = mlir::dyn_cast<mlir::ArrayAttr>(rawIndexingMaps);
-      if (!indexingMaps)
-        return failPattern(
-            rewriter, op, failureReason,
-            "tile.elementwise indexing_maps must be an array attribute");
+    mlir::ArrayAttr indexingMaps = op.getIndexingMapsAttr();
+    if (indexingMaps) {
       if (indexingMaps.size() != op.getInputs().size() + 1)
         return failPattern(
             rewriter, op, failureReason,
@@ -626,7 +621,7 @@ public:
     if (mlir::failed(accumulationKind))
       return mlir::failure();
 
-    mlir::Attribute initValue = op->getAttr("init_value");
+    mlir::TypedAttr initValue = op.getInitValueAttr();
     bool hasInitOperand = static_cast<bool>(op.getInit());
     if (hasInitOperand == static_cast<bool>(initValue))
       return failPattern(
@@ -634,8 +629,8 @@ public:
           "tile.reduce lowering requires exactly one constant init source");
     mlir::TypedAttr typedInit;
     if (initValue) {
-      typedInit = mlir::dyn_cast<mlir::TypedAttr>(initValue);
-      if (!typedInit || typedInit.getType() != elementType)
+      typedInit = initValue;
+      if (typedInit.getType() != elementType)
         return failPattern(
             rewriter, op, failureReason,
             "tile.reduce init_value type must match input element type");
@@ -650,11 +645,7 @@ public:
             "tile.reduce init operand must be a matching arith.constant");
     }
 
-    auto dimensionsAttr =
-        op->getAttrOfType<mlir::DenseI64ArrayAttr>("dimensions");
-    if (!dimensionsAttr)
-      return failPattern(rewriter, op, failureReason,
-                         "tile.reduce lowering requires dimensions attr");
+    mlir::DenseI64ArrayAttr dimensionsAttr = op.getDimensionsAttr();
 
     llvm::SmallVector<int64_t, 4> reducedDims(
         dimensionsAttr.asArrayRef().begin(), dimensionsAttr.asArrayRef().end());
@@ -918,14 +909,13 @@ public:
   matchAndRewrite(ComputeGemmOp op,
                   mlir::PatternRewriter &rewriter) const final {
     ScopedLoweringPatternTiming timing(op.getOperation());
-    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
-        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
-    if (mlir::failed(dest))
-      return mlir::failure();
-
     mlir::FailureOr<llvm::SmallVector<int64_t, 3>> mkn =
         inferGemmMKN(op, rewriter, failureReason);
     if (mlir::failed(mkn))
+      return mlir::failure();
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    if (mlir::failed(dest))
       return mlir::failure();
 
     auto instr = rewriter.create<InstrGemmOp>(
@@ -933,27 +923,12 @@ public:
         getI64Attr(rewriter, (*mkn)[0]), getI64Attr(rewriter, (*mkn)[1]),
         getI64Attr(rewriter, (*mkn)[2]), op.getLhsOrientationAttr(),
         op.getRhsOrientationAttr(),
-        /*batch_count=*/mlir::IntegerAttr{},
-        /*lhs_batch_dims=*/mlir::DenseI64ArrayAttr{},
-        /*lhs_m_dim=*/mlir::IntegerAttr{},
-        /*lhs_contracting_dim=*/mlir::IntegerAttr{},
-        /*rhs_batch_dims=*/mlir::DenseI64ArrayAttr{},
-        /*rhs_contracting_dim=*/mlir::IntegerAttr{},
-        /*rhs_n_dim=*/mlir::IntegerAttr{},
-        /*result_batch_dims=*/mlir::DenseI64ArrayAttr{},
-        /*result_m_dim=*/mlir::IntegerAttr{},
-        /*result_n_dim=*/mlir::IntegerAttr{},
+        op.getBatchCountAttr(), op.getLhsBatchDimsAttr(), op.getLhsMDimAttr(),
+        op.getLhsContractingDimAttr(), op.getRhsBatchDimsAttr(),
+        op.getRhsContractingDimAttr(), op.getRhsNDimAttr(),
+        op.getResultBatchDimsAttr(), op.getResultMDimAttr(),
+        op.getResultNDimAttr(),
         getDefaultNCCWorkerAttr(rewriter));
-    copyOptionalAttr(op, instr, "batch_count");
-    copyOptionalAttr(op, instr, "lhs_batch_dims");
-    copyOptionalAttr(op, instr, "lhs_m_dim");
-    copyOptionalAttr(op, instr, "lhs_contracting_dim");
-    copyOptionalAttr(op, instr, "rhs_batch_dims");
-    copyOptionalAttr(op, instr, "rhs_contracting_dim");
-    copyOptionalAttr(op, instr, "rhs_n_dim");
-    copyOptionalAttr(op, instr, "result_batch_dims");
-    copyOptionalAttr(op, instr, "result_m_dim");
-    copyOptionalAttr(op, instr, "result_n_dim");
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }

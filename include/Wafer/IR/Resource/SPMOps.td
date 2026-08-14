@@ -6,6 +6,7 @@
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 
 def Wafer_StorageLoadOp : Wafer_Op<"tile.load", [
+    WaferTileDataflowOpInterface,
     DestinationStyleOpInterface,
     MemoryEffects<[MemRead<Wafer_DDRResource>,
                    MemWrite<Wafer_SPMResource>,
@@ -24,6 +25,7 @@ def Wafer_StorageLoadOp : Wafer_Op<"tile.load", [
 }
 
 def Wafer_StorageStoreOp : Wafer_Op<"tile.store", [
+    WaferTileDataflowOpInterface,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_DDRResource>,
                    MemWrite<Wafer_MovementResource>]>

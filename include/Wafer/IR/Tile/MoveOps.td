@@ -4,6 +4,7 @@
 #define WAFER_IR_OPS_MOVEOPS_TD
 
 class Wafer_MoveOp<string mnemonic> : Wafer_Op<mnemonic, [
+    WaferTileDataflowOpInterface,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_MovementResource>]>

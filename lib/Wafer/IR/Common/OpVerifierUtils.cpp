@@ -397,52 +397,74 @@ mlir::LogicalResult verifyDTEWaitTokens(mlir::Operation *op,
   }
   return mlir::success();
 }
+template <typename GemmOp>
+static bool hasAnyBatchedGemmAttrsImpl(GemmOp op) {
+  return op.getBatchCountAttr() || op.getLhsBatchDimsAttr() ||
+         op.getRhsBatchDimsAttr() || op.getResultBatchDimsAttr() ||
+         op.getLhsMDimAttr() || op.getLhsContractingDimAttr() ||
+         op.getRhsContractingDimAttr() || op.getRhsNDimAttr() ||
+         op.getResultMDimAttr() || op.getResultNDimAttr();
+}
+
 bool hasAnyBatchedGemmAttrs(mlir::Operation *op) {
-  return op->hasAttr("batch_count") || op->hasAttr("lhs_batch_dims") ||
-         op->hasAttr("rhs_batch_dims") || op->hasAttr("result_batch_dims") ||
-         op->hasAttr("lhs_m_dim") || op->hasAttr("lhs_contracting_dim") ||
-         op->hasAttr("rhs_contracting_dim") || op->hasAttr("rhs_n_dim") ||
-         op->hasAttr("result_m_dim") || op->hasAttr("result_n_dim");
+  if (auto tile = mlir::dyn_cast<ComputeGemmOp>(op))
+    return hasAnyBatchedGemmAttrsImpl(tile);
+  if (auto instr = mlir::dyn_cast<InstrGemmOp>(op))
+    return hasAnyBatchedGemmAttrsImpl(instr);
+  return false;
 }
 
-static mlir::LogicalResult
-readRequiredI64Attr(mlir::Operation *op, llvm::StringRef name, int64_t &value) {
-  auto attr = op->getAttrOfType<mlir::IntegerAttr>(name);
-  if (!attr)
-    return op->emitOpError("GEMM batched form requires ") << name << " attr";
-  value = attr.getInt();
-  return mlir::success();
-}
-
-static mlir::LogicalResult
-readRequiredDenseI64Attr(mlir::Operation *op, llvm::StringRef name,
-                         llvm::SmallVectorImpl<int64_t> &values) {
-  auto attr = op->getAttrOfType<mlir::DenseI64ArrayAttr>(name);
-  if (!attr)
-    return op->emitOpError("GEMM batched form requires ") << name << " attr";
-  values.assign(attr.asArrayRef().begin(), attr.asArrayRef().end());
-  return mlir::success();
-}
-
-static mlir::LogicalResult getBatchedGemmDimAttrs(mlir::Operation *op,
-                                                  BatchedGemmDimAttrs &attrs) {
-  if (mlir::failed(readRequiredI64Attr(op, "batch_count", attrs.batchCount)) ||
-      mlir::failed(
-          readRequiredDenseI64Attr(op, "lhs_batch_dims", attrs.lhsBatchDims)) ||
-      mlir::failed(
-          readRequiredDenseI64Attr(op, "rhs_batch_dims", attrs.rhsBatchDims)) ||
-      mlir::failed(readRequiredDenseI64Attr(op, "result_batch_dims",
-                                            attrs.resultBatchDims)) ||
-      mlir::failed(readRequiredI64Attr(op, "lhs_m_dim", attrs.lhsMDim)) ||
-      mlir::failed(readRequiredI64Attr(op, "lhs_contracting_dim",
-                                       attrs.lhsContractingDim)) ||
-      mlir::failed(readRequiredI64Attr(op, "rhs_contracting_dim",
-                                       attrs.rhsContractingDim)) ||
-      mlir::failed(readRequiredI64Attr(op, "rhs_n_dim", attrs.rhsNDim)) ||
-      mlir::failed(readRequiredI64Attr(op, "result_m_dim", attrs.resultMDim)) ||
-      mlir::failed(readRequiredI64Attr(op, "result_n_dim", attrs.resultNDim)))
+template <typename GemmOp>
+static mlir::LogicalResult getBatchedGemmDimAttrsImpl(
+    GemmOp op, BatchedGemmDimAttrs &attrs) {
+  auto requireI64 = [&](mlir::IntegerAttr attr, llvm::StringRef name,
+                        int64_t &value) -> mlir::LogicalResult {
+    if (!attr)
+      return op.emitOpError("GEMM batched form requires ") << name << " attr";
+    value = attr.getInt();
+    return mlir::success();
+  };
+  auto requireDense = [&](mlir::DenseI64ArrayAttr attr, llvm::StringRef name,
+                          llvm::SmallVectorImpl<int64_t> &values)
+      -> mlir::LogicalResult {
+    if (!attr)
+      return op.emitOpError("GEMM batched form requires ") << name << " attr";
+    values.assign(attr.asArrayRef().begin(), attr.asArrayRef().end());
+    return mlir::success();
+  };
+  if (mlir::failed(requireI64(op.getBatchCountAttr(), "batch_count",
+                              attrs.batchCount)) ||
+      mlir::failed(requireDense(op.getLhsBatchDimsAttr(), "lhs_batch_dims",
+                                attrs.lhsBatchDims)) ||
+      mlir::failed(requireDense(op.getRhsBatchDimsAttr(), "rhs_batch_dims",
+                                attrs.rhsBatchDims)) ||
+      mlir::failed(requireDense(op.getResultBatchDimsAttr(),
+                                "result_batch_dims", attrs.resultBatchDims)) ||
+      mlir::failed(requireI64(op.getLhsMDimAttr(), "lhs_m_dim",
+                              attrs.lhsMDim)) ||
+      mlir::failed(requireI64(op.getLhsContractingDimAttr(),
+                              "lhs_contracting_dim",
+                              attrs.lhsContractingDim)) ||
+      mlir::failed(requireI64(op.getRhsContractingDimAttr(),
+                              "rhs_contracting_dim",
+                              attrs.rhsContractingDim)) ||
+      mlir::failed(requireI64(op.getRhsNDimAttr(), "rhs_n_dim",
+                              attrs.rhsNDim)) ||
+      mlir::failed(requireI64(op.getResultMDimAttr(), "result_m_dim",
+                              attrs.resultMDim)) ||
+      mlir::failed(requireI64(op.getResultNDimAttr(), "result_n_dim",
+                              attrs.resultNDim)))
     return mlir::failure();
   return mlir::success();
+}
+
+static mlir::LogicalResult getBatchedGemmDimAttrs(
+    mlir::Operation *op, BatchedGemmDimAttrs &attrs) {
+  if (auto tile = mlir::dyn_cast<ComputeGemmOp>(op))
+    return getBatchedGemmDimAttrsImpl(tile, attrs);
+  if (auto instr = mlir::dyn_cast<InstrGemmOp>(op))
+    return getBatchedGemmDimAttrsImpl(instr, attrs);
+  return mlir::failure();
 }
 
 static mlir::LogicalResult
@@ -642,8 +664,8 @@ mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
   if (!resultLayout)
     return op->emitOpError("elementwise result must carry Wafer layout");
 
-  mlir::ArrayAttr indexingMaps =
-      op->getAttrOfType<mlir::ArrayAttr>("indexing_maps");
+  auto elementwise = mlir::cast<ComputeElementwiseOp>(op);
+  mlir::ArrayAttr indexingMaps = elementwise.getIndexingMapsAttr();
 
   if (indexingMaps) {
     if (indexingMaps.size() != inputs.size() + 1)
@@ -788,9 +810,8 @@ mlir::LogicalResult verifyReduceTileContract(mlir::Operation *op,
       return op->emitOpError(
           "reduce input/result shapes must be static and positive");
 
-  auto dimensions = op->getAttrOfType<mlir::DenseI64ArrayAttr>("dimensions");
-  if (!dimensions)
-    return op->emitOpError("requires reduce dimensions attr");
+  auto reduce = mlir::cast<ComputeReduceOp>(op);
+  mlir::DenseI64ArrayAttr dimensions = reduce.getDimensionsAttr();
   llvm::ArrayRef<int64_t> dims = dimensions.asArrayRef();
   if (dims.empty())
     return op->emitOpError("reduce dimensions must be non-empty");
@@ -822,21 +843,20 @@ mlir::LogicalResult verifyReduceTileContract(mlir::Operation *op,
     ++resultDim;
   }
 
-  mlir::Attribute initValue = op->getAttr("init_value");
-  bool hasInitOperand = op->getNumOperands() == 2;
+  mlir::TypedAttr initValue = reduce.getInitValueAttr();
+  bool hasInitOperand = static_cast<bool>(reduce.getInit());
   if (hasInitOperand == static_cast<bool>(initValue))
     return op->emitOpError(
         "requires exactly one of scalar init operand or init_value attr");
 
   if (initValue) {
-    auto typedInit = mlir::dyn_cast<mlir::TypedAttr>(initValue);
-    if (!typedInit || typedInit.getType() != inputTensor->getElementType())
+    if (initValue.getType() != inputTensor->getElementType())
       return op->emitOpError(
           "reduce init_value type must match input element type");
     return mlir::success();
   }
 
-  mlir::Value init = op->getOperand(1);
+  mlir::Value init = reduce.getInit();
   if (init.getType() != inputTensor->getElementType())
     return op->emitOpError(
         "reduce init operand type must match input element type");

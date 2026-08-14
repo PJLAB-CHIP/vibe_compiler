@@ -491,7 +491,7 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::createAccumulatorCombine(
       ComputeElementwiseKindAttr::get(builder.getContext(), elementwiseKind);
   auto combined = builder.create<ComputeElementwiseOp>(
       loc, tensorBufferType, kindAttr,
-      mlir::ValueRange{*previous, partialTensor});
+      mlir::ValueRange{*previous, partialTensor}, mlir::ArrayAttr{});
   return combined.getResult();
 }
 
@@ -532,7 +532,10 @@ TileRegionBodyEmitter::convertMatmul(mlir::linalg::LinalgOp op,
   }
   auto gemm = builder.create<ComputeGemmOp>(
       op->getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Cx), *lhs,
-      *rhs, lhsOrientation, rhsOrientation);
+      *rhs, lhsOrientation, rhsOrientation, mlir::IntegerAttr{},
+      mlir::DenseI64ArrayAttr{}, mlir::IntegerAttr{}, mlir::IntegerAttr{},
+      mlir::DenseI64ArrayAttr{}, mlir::IntegerAttr{}, mlir::IntegerAttr{},
+      mlir::DenseI64ArrayAttr{}, mlir::IntegerAttr{}, mlir::IntegerAttr{});
   if (!overwriteInit) {
     mlir::FailureOr<mlir::Value> combined = createAccumulatorCombine(
         op->getLoc(), ComputeReduceKind::Sum, op.getDpsInits().front(),
@@ -715,22 +718,17 @@ TileRegionBodyEmitter::convertBatchMatmul(mlir::linalg::LinalgOp op,
   }
   auto gemm = builder.create<ComputeGemmOp>(
       op->getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::NCx), *lhs,
-      *rhs, lhsOrientationAttr, rhsOrientationAttr);
-  gemm->setAttr("batch_count", builder.getI64IntegerAttr(attrs->batchCount));
-  gemm->setAttr("lhs_batch_dims",
-                builder.getDenseI64ArrayAttr(attrs->lhsBatchDims));
-  gemm->setAttr("lhs_m_dim", builder.getI64IntegerAttr(attrs->lhsMDim));
-  gemm->setAttr("lhs_contracting_dim",
-                builder.getI64IntegerAttr(attrs->lhsContractingDim));
-  gemm->setAttr("rhs_batch_dims",
-                builder.getDenseI64ArrayAttr(attrs->rhsBatchDims));
-  gemm->setAttr("rhs_contracting_dim",
-                builder.getI64IntegerAttr(attrs->rhsContractingDim));
-  gemm->setAttr("rhs_n_dim", builder.getI64IntegerAttr(attrs->rhsNDim));
-  gemm->setAttr("result_batch_dims",
-                builder.getDenseI64ArrayAttr(attrs->resultBatchDims));
-  gemm->setAttr("result_m_dim", builder.getI64IntegerAttr(attrs->resultMDim));
-  gemm->setAttr("result_n_dim", builder.getI64IntegerAttr(attrs->resultNDim));
+      *rhs, lhsOrientationAttr, rhsOrientationAttr,
+      builder.getI64IntegerAttr(attrs->batchCount),
+      builder.getDenseI64ArrayAttr(attrs->lhsBatchDims),
+      builder.getI64IntegerAttr(attrs->lhsMDim),
+      builder.getI64IntegerAttr(attrs->lhsContractingDim),
+      builder.getDenseI64ArrayAttr(attrs->rhsBatchDims),
+      builder.getI64IntegerAttr(attrs->rhsContractingDim),
+      builder.getI64IntegerAttr(attrs->rhsNDim),
+      builder.getDenseI64ArrayAttr(attrs->resultBatchDims),
+      builder.getI64IntegerAttr(attrs->resultMDim),
+      builder.getI64IntegerAttr(attrs->resultNDim));
   if (!overwriteInit) {
     mlir::FailureOr<mlir::Value> combined = createAccumulatorCombine(
         op->getLoc(), ComputeReduceKind::Sum, op.getDpsInits().front(),
@@ -987,18 +985,13 @@ mlir::LogicalResult TileRegionBodyEmitter::createReduceOp(
     mlir::Location loc, mlir::Type resultType, ComputeReduceKindAttr kindAttr,
     mlir::Value input, llvm::ArrayRef<int64_t> dims, mlir::Value init,
     mlir::Attribute initAttr, mlir::OpBuilder &builder, mlir::Value &result) {
-  mlir::OperationState state(loc, ComputeReduceOp::getOperationName());
-  state.addAttribute("kind", kindAttr);
-  state.addAttribute("dimensions",
-                     mlir::DenseI64ArrayAttr::get(builder.getContext(), dims));
-  if (initAttr)
-    state.addAttribute("init_value", initAttr);
-  state.addOperands(input);
-  if (init)
-    state.addOperands(init);
-  state.addTypes(resultType);
-  mlir::Operation *op = builder.create(state);
-  result = op->getResult(0);
+  mlir::TypedAttr typedInit = mlir::dyn_cast_or_null<mlir::TypedAttr>(initAttr);
+  if (initAttr && !typedInit)
+    return fail("reduction init_value must be a typed scalar attribute");
+  auto reduce = builder.create<ComputeReduceOp>(
+      loc, resultType, kindAttr, input, init,
+      builder.getDenseI64ArrayAttr(dims), typedInit);
+  result = reduce.getResult();
   return mlir::success();
 }
 

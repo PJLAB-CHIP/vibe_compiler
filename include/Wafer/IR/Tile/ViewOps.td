@@ -3,7 +3,8 @@
 #ifndef WAFER_IR_OPS_VIEWOPS_TD
 #define WAFER_IR_OPS_VIEWOPS_TD
 
-def Wafer_ViewReshapeOp : Wafer_Op<"tile.reshape", []> {
+def Wafer_ViewReshapeOp
+    : Wafer_Op<"tile.reshape", [WaferTileDataflowOpInterface]> {
   let summary = "tile-local logical reshape";
   let description = [{
     `wafer.tile.reshape` changes the logical tensor shape attached to storage

@@ -194,7 +194,7 @@ TileRegionBodyEmitter::createElementwiseOpExprValue(
   auto kindAttr = ComputeElementwiseKindAttr::get(builder.getContext(), kind);
   auto elementwise = builder.create<ComputeElementwiseOp>(
       loc, makeSPMMemRefType(resultTensorType, MemLayout::Tensor), kindAttr,
-      materializedInputs);
+      materializedInputs, mlir::ArrayAttr{});
   return ElementwiseExprValue{elementwise.getResult(),
                               getIdentityMap(resultTensorType)};
 }
