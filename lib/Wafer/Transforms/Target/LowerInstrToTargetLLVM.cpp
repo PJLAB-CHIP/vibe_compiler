@@ -66,8 +66,6 @@ struct LowerInstrToTargetLLVMPass
     moduleOp->setAttrs((*loweredModule)->getAttrs());
     moduleOp.getBodyRegion().takeBody(loweredModule->getBodyRegion());
   }
-
-  int64_t profileRecordArgumentIndex = -1;
 };
 
 } // namespace

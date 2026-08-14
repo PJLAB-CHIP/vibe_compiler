@@ -11,8 +11,8 @@ mlir::LogicalResult wafer::lowerSpatialOutputShardsToTileRegionModule(
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
     int64_t currentLogicalPartition,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
-    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage) {
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    StructuredMaterializationRelations *materializationRelations) {
   if (failureReason)
     failureReason->clear();
   if (!sourceModule) {
@@ -67,10 +67,34 @@ mlir::LogicalResult wafer::lowerSpatialOutputShardsToTileRegionModule(
         StructuredOpTemporalTile{mapped, tile.iteratorTileSizes});
   }
 
+  llvm::DenseSet<mlir::Operation *> seenNodeOperations;
+  llvm::DenseSet<uint32_t> seenNodeIds;
+  llvm::SmallVector<StructuredOperationNodeMapping, 16> mappedOperationNodes;
+  mappedOperationNodes.reserve(operationNodes.size());
+  for (const StructuredOperationNodeMapping &node : operationNodes) {
+    if (!node.operation || !seenNodeOperations.insert(node.operation).second ||
+        !seenNodeIds.insert(node.structuredNodeId).second) {
+      setFailureReason(failureReason,
+                       "structured operation-node mapping contains a null or "
+                       "duplicate entry");
+      return mlir::failure();
+    }
+    mlir::Operation *mapped = cloneMapping.lookupOrNull(node.operation);
+    if (!mapped) {
+      setFailureReason(failureReason,
+                       "structured operation-node mapping is outside source "
+                       "module");
+      return mlir::failure();
+    }
+    mappedOperationNodes.push_back({mapped, node.structuredNodeId});
+  }
+
   TensorProgramScope scope(function, functionalArgumentCount);
   if (mlir::failed(materializeCandidateOutputTileSlices(
-          scope, outputShards, mappedTemporalTiles, failureReason)))
+          scope, outputShards, mappedTemporalTiles, failureReason,
+          &mappedOperationNodes)))
     return mlir::failure();
+  TileRegionEmissionRelations emissionRelations;
   if (mlir::failed(convertTensorProgramToTileRegionModuleInPlace(
           *candidate, sourceModule.getContext(), functionalArgumentCount,
           currentLogicalPartition, failureReason,
@@ -78,9 +102,12 @@ mlir::LogicalResult wafer::lowerSpatialOutputShardsToTileRegionModule(
           /*verifyResult=*/true,
           /*populateFallbackFailureReason=*/true,
           /*peerEndpoints=*/{}, /*selectedDDRStages=*/{},
-          /*emissionRelations=*/nullptr, sourceLineage, operandDemandLineage)))
+          &emissionRelations, mappedOperationNodes)))
     return mlir::failure();
 
+  if (materializationRelations)
+    *materializationRelations =
+        std::move(emissionRelations.materializedBuffers);
   module = std::move(candidate);
   return mlir::success();
 }

@@ -889,17 +889,17 @@ static llvm::Expected<RankSummary> deriveRankSummary(const RankExecutable &rank)
       if (error)
         return mlir::WalkResult::interrupt();
 
-      NCCCompletionContract completion = getNCCCompletionContract(operation);
+      NCCSynchronizationContract completion = getNCCSynchronizationContract(operation);
       switch (completion.behavior) {
-      case LocalInstructionCompletion::None:
+      case NCCSynchronizationBehavior::None:
         break;
-      case LocalInstructionCompletion::OrderedPending:
+      case NCCSynchronizationBehavior::OrderedAsynchronousIssue:
         ++summary.completionCounts[0];
         break;
-      case LocalInstructionCompletion::ParticipantJoin:
+      case NCCSynchronizationBehavior::ParticipantJoin:
         ++summary.completionCounts[1];
         break;
-      case LocalInstructionCompletion::SynchronousWriteback:
+      case NCCSynchronizationBehavior::SynchronousWriteback:
         ++summary.completionCounts[2];
         break;
       }
@@ -941,7 +941,7 @@ static llvm::Expected<RankSummary> deriveRankSummary(const RankExecutable &rank)
             static_cast<bool>(join->getParentOfType<mlir::scf::ForOp>());
         summary.participantJoins.push_back(std::move(joinSummary));
       } else if (completion.behavior ==
-                 LocalInstructionCompletion::ParticipantJoin) {
+                 NCCSynchronizationBehavior::ParticipantJoin) {
         error = invalid(
             "fixed-slot qualification found an untyped participant join");
         return mlir::WalkResult::interrupt();

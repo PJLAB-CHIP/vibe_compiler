@@ -33,7 +33,10 @@ static bool isCardSharedDeclaration(mlir::Operation &operation) {
 
 static mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
 projectOneTileModule(mlir::ModuleOp sourceModule, CardProgramOp cardProgram,
-                     TileProgramOp tileProgram, std::string *failureReason) {
+                     TileProgramOp tileProgram,
+                     const StructuredMaterializationRelations *sourceRelations,
+                     StructuredMaterializationRelations &projectedRelations,
+                     std::string *failureReason) {
   mlir::OwningOpRef<mlir::ModuleOp> projected =
       mlir::ModuleOp::create(sourceModule.getLoc());
   projected->getOperation()->setAttrs(sourceModule->getAttrDictionary());
@@ -62,6 +65,35 @@ projectOneTileModule(mlir::ModuleOp sourceModule, CardProgramOp cardProgram,
   for (mlir::Operation &operation : tileProgram.getBody().front())
     builder.clone(operation, mapping);
 
+  if (sourceRelations) {
+    auto remap = [&](const auto &source, auto &destination) {
+      for (const auto &relation : source) {
+        mlir::Value buffer = relation.buffer;
+        mlir::Operation *parent =
+            buffer ? buffer.getParentRegion()->getParentOp() : nullptr;
+        const bool belongsToTile =
+            parent && (parent == tileProgram.getOperation() ||
+                       tileProgram->isProperAncestor(parent));
+        if (mlir::Value mapped = mapping.lookupOrNull(buffer)) {
+          auto copy = relation;
+          copy.buffer = mapped;
+          destination.push_back(copy);
+          continue;
+        }
+        if (belongsToTile && failureReason)
+          *failureReason =
+              "physical Tile projection failed to remap a current-IR buffer "
+              "relation";
+      }
+    };
+    remap(sourceRelations->operationResultBuffers,
+          projectedRelations.operationResultBuffers);
+    remap(sourceRelations->operandBuffers, projectedRelations.operandBuffers);
+    remap(sourceRelations->outputBuffers, projectedRelations.outputBuffers);
+    if (failureReason && !failureReason->empty())
+      return mlir::failure();
+  }
+
   if (mlir::failed(mlir::verify(*projected))) {
     if (failureReason)
       *failureReason = "projected physical Tile module is not verifier-legal";
@@ -74,7 +106,9 @@ projectOneTileModule(mlir::ModuleOp sourceModule, CardProgramOp cardProgram,
 
 mlir::FailureOr<llvm::SmallVector<ProjectedPhysicalTileModule, 16>>
 projectCardProgramToPhysicalTileModules(mlir::ModuleOp sourceModule,
-                                        std::string *failureReason) {
+                                        std::string *failureReason,
+                                        const StructuredMaterializationRelations
+                                            *materializationRelations) {
   if (failureReason)
     failureReason->clear();
   if (!sourceModule)
@@ -99,15 +133,17 @@ projectCardProgramToPhysicalTileModules(mlir::ModuleOp sourceModule,
   ProjectionList projectedModules;
   projectedModules.reserve(tilePrograms.size());
   for (TileProgramOp tileProgram : tilePrograms) {
+    StructuredMaterializationRelations projectedRelations;
     mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> projected =
         projectOneTileModule(sourceModule, cardProgram, tileProgram,
+                             materializationRelations, projectedRelations,
                              failureReason);
     if (mlir::failed(projected))
       return mlir::failure();
     projectedModules.push_back(ProjectedPhysicalTileModule{
         PhysicalCardId(cardProgram.getCardIdAttr().getInt()),
         PhysicalTileId(tileProgram.getTileIdAttr().getInt()),
-        std::move(*projected)});
+        std::move(*projected), std::move(projectedRelations)});
   }
   return std::move(projectedModules);
 }

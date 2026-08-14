@@ -19,72 +19,18 @@ static std::vector<Scalar> signature(unsigned i64Count, unsigned i32Count) {
   return result;
 }
 
-static bool isUnaryElementwise(InstrElementwiseKind kind) {
-  switch (kind) {
-  case InstrElementwiseKind::Abs:
-  case InstrElementwiseKind::Recip:
-  case InstrElementwiseKind::Square:
-  case InstrElementwiseKind::Sqrt:
-  case InstrElementwiseKind::Rsqrt:
-  case InstrElementwiseKind::Neg:
-  case InstrElementwiseKind::LogicNot:
-  case InstrElementwiseKind::Log2:
-  case InstrElementwiseKind::Ln:
-  case InstrElementwiseKind::Pow2:
-  case InstrElementwiseKind::Exp:
-  case InstrElementwiseKind::ExpLp:
-  case InstrElementwiseKind::Sin:
-  case InstrElementwiseKind::Cos:
-  case InstrElementwiseKind::Tanh:
-  case InstrElementwiseKind::Sigmoid:
-  case InstrElementwiseKind::Relu:
-  case InstrElementwiseKind::SatRelu:
-  case InstrElementwiseKind::LeakyRelu:
-  case InstrElementwiseKind::Softplus:
-    return true;
-  case InstrElementwiseKind::Max:
-  case InstrElementwiseKind::Min:
-  case InstrElementwiseKind::Add:
-  case InstrElementwiseKind::Sub:
-  case InstrElementwiseKind::Mul:
-  case InstrElementwiseKind::Div:
-  case InstrElementwiseKind::Eq:
-  case InstrElementwiseKind::Ne:
-  case InstrElementwiseKind::Ge:
-  case InstrElementwiseKind::Gt:
-  case InstrElementwiseKind::Le:
-  case InstrElementwiseKind::Lt:
-  case InstrElementwiseKind::LogicAnd:
-  case InstrElementwiseKind::LogicOr:
-  case InstrElementwiseKind::LogicXor:
-    return false;
-  }
-  llvm_unreachable("unknown elementwise kind");
-}
-
-static llvm::StringRef convStem(InstrConvKind kind) {
-  switch (kind) {
-  case InstrConvKind::Conv:
-    return "conv";
-  case InstrConvKind::Depthwise:
-    return "depthwise_conv";
-  case InstrConvKind::BackwardConv:
-    return "backward_conv";
-  }
-  llvm_unreachable("unknown convolution kind");
-}
-
-static LocalInstructionCompletion
+static TargetNCCCompletionBehavior
 getTargetCallCompletionBehavior(const TargetCallSemantic &semantic,
                                 TargetCallTSMEngine engine) {
   if (engine == TargetCallTSMEngine::DirectDTE)
-    return LocalInstructionCompletion::None;
-  if (const auto *peripheral = std::get_if<InstrPeripheralKind>(&semantic)) {
-    if (*peripheral == InstrPeripheralKind::ArgMax ||
-        *peripheral == InstrPeripheralKind::ArgMin)
-      return LocalInstructionCompletion::SynchronousWriteback;
+    return TargetNCCCompletionBehavior::None;
+  if (const auto *peripheral =
+          std::get_if<TargetPeripheralOperation>(&semantic)) {
+    if (*peripheral == TargetPeripheralOperation::ArgMaximum ||
+        *peripheral == TargetPeripheralOperation::ArgMinimum)
+      return TargetNCCCompletionBehavior::SynchronousWriteback;
   }
-  return LocalInstructionCompletion::OrderedPending;
+  return TargetNCCCompletionBehavior::OrderedAsynchronousIssue;
 }
 
 static std::vector<TargetCallDescriptor> buildDescriptors() {
@@ -129,70 +75,59 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
   addVoid("direct_dte_finish", {}, TargetCallBuiltin::DirectDTEFinish);
 
   auto addEnumSelectedCalls = [&](llvm::StringRef suffix) {
-    for (uint32_t value = 0; value <= getMaxEnumValForInstrElementwiseKind();
-         ++value) {
-      std::optional<InstrElementwiseKind> kind =
-          symbolizeInstrElementwiseKind(value);
-      if (!kind)
-        continue;
-      std::string stem = ("elementwise_" + stringifyEnum(*kind) + suffix).str();
-      addVoid(stem, signature(isUnaryElementwise(*kind) ? 2 : 3, 2), *kind);
+    for (NumericElementwiseOperation operation :
+         getNumericElementwiseOperations())
+      addVoid(("elementwise_" + stringifyNumericElementwiseOperation(operation) +
+               suffix)
+                  .str(),
+              signature(getNumericElementwiseArity(operation) == 1 ? 2 : 3,
+                        2),
+              operation);
+
+    for (NumericReduceOperation operation : getNumericReduceOperations())
+      addVoid(("reduce_" + stringifyNumericReduceOperation(operation) + suffix)
+                  .str(),
+              signature(2, 6), operation);
+
+    for (const TargetConvertRoute &route : getTargetConvertRoutes()) {
+      TargetConvertOperation operation =
+          llvm::cantFail(TargetConvertOperation::create(route.opcode));
+      addVoid(("convert_" + route.canonicalSpelling + suffix).str(),
+              signature(2, 3), operation);
     }
 
-    for (uint32_t value = 0; value <= getMaxEnumValForInstrReduceKind();
-         ++value) {
-      std::optional<InstrReduceKind> kind = symbolizeInstrReduceKind(value);
-      if (kind)
-        addVoid(("reduce_" + stringifyEnum(*kind) + suffix).str(),
-                signature(2, 6), *kind);
+    for (TargetConvolutionOperation operation :
+         getTargetConvolutionOperations())
+      addVoid((stringifyTargetConvolutionOperation(operation) + suffix).str(),
+              signature(3, 28), operation);
+
+    for (TargetPoolingOperation operation : getTargetPoolingOperations()) {
+      bool indexed = operation == TargetPoolingOperation::IndexedMaximum ||
+                     operation == TargetPoolingOperation::IndexedMinimum;
+      addVoid(("pool_" + stringifyTargetPoolingOperation(operation) + suffix)
+                  .str(),
+              signature(indexed ? 3 : 2, 18), operation);
     }
 
-    for (uint32_t value = 0; value <= getMaxEnumValForInstrConvertKind();
-         ++value) {
-      std::optional<InstrConvertKind> kind = symbolizeInstrConvertKind(value);
-      if (kind)
-        addVoid(("convert_" + stringifyEnum(*kind) + suffix).str(),
-                signature(2, 3), *kind);
-    }
+    for (TargetUnpoolingOperation operation : getTargetUnpoolingOperations())
+      addVoid(("unpool_" + stringifyTargetUnpoolingOperation(operation) + suffix)
+                  .str(),
+              signature(2, 15), operation);
 
-    for (uint32_t value = 0; value <= getMaxEnumValForInstrConvKind();
-         ++value) {
-      std::optional<InstrConvKind> kind = symbolizeInstrConvKind(value);
-      if (kind)
-        addVoid((convStem(*kind) + suffix).str(), signature(3, 28), *kind);
-    }
-
-    for (uint32_t value = 0; value <= getMaxEnumValForInstrPoolKind();
-         ++value) {
-      std::optional<InstrPoolKind> kind = symbolizeInstrPoolKind(value);
-      if (kind) {
-        bool indexed = *kind == InstrPoolKind::IndexedMax ||
-                       *kind == InstrPoolKind::IndexedMin;
-        addVoid(("pool_" + stringifyEnum(*kind) + suffix).str(),
-                signature(indexed ? 3 : 2, 18), *kind);
-      }
-    }
-
-    for (uint32_t value = 0; value <= getMaxEnumValForInstrUnpoolKind();
-         ++value) {
-      std::optional<InstrUnpoolKind> kind = symbolizeInstrUnpoolKind(value);
-      if (kind)
-        addVoid(("unpool_" + stringifyEnum(*kind) + suffix).str(),
-                signature(2, 15), *kind);
-    }
-
-    auto addPeripheral = [&](InstrPeripheralKind kind, unsigned i64Count,
+    auto addPeripheral = [&](TargetPeripheralOperation kind, unsigned i64Count,
                              unsigned i32Count) {
-      addVoid(("peripheral_" + stringifyEnum(kind) + suffix).str(),
+      addVoid(("peripheral_" + stringifyTargetPeripheralOperation(kind) +
+               suffix)
+                  .str(),
               signature(i64Count, i32Count), kind);
     };
-    addPeripheral(InstrPeripheralKind::ArgMax, 3, 7);
-    addPeripheral(InstrPeripheralKind::ArgMin, 3, 7);
-    addPeripheral(InstrPeripheralKind::Bilinear, 2, 15);
-    addPeripheral(InstrPeripheralKind::Lut16, 3, 7);
-    addPeripheral(InstrPeripheralKind::Lut32, 3, 7);
-    addPeripheral(InstrPeripheralKind::RandGen, 5, 7);
-    addPeripheral(InstrPeripheralKind::ElemMask, 2, 7);
+    addPeripheral(TargetPeripheralOperation::ArgMaximum, 3, 7);
+    addPeripheral(TargetPeripheralOperation::ArgMinimum, 3, 7);
+    addPeripheral(TargetPeripheralOperation::Bilinear, 2, 15);
+    addPeripheral(TargetPeripheralOperation::LookupTable16, 3, 7);
+    addPeripheral(TargetPeripheralOperation::LookupTable32, 3, 7);
+    addPeripheral(TargetPeripheralOperation::Random, 5, 7);
+    addPeripheral(TargetPeripheralOperation::ElementMask, 2, 7);
   };
   // The current ordinary instruction ABI carries an explicit trailing worker.
   addVoid("rdma_v3", signature(2, 9), TargetCallBuiltin::RDMA);
@@ -229,7 +164,7 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
                      if (*semanticEngine == TargetCallTSMEngine::DirectDTE)
                        return !descriptor.issueDomain->nccWorkerArgument &&
                               descriptor.issueDomain->completionBehavior ==
-                                  LocalInstructionCompletion::None;
+                                  TargetNCCCompletionBehavior::None;
                      const bool argumentWorker =
                          descriptor.issueDomain->nccWorkerArgument &&
                          *descriptor.issueDomain->nccWorkerArgument + 1 ==
@@ -317,14 +252,14 @@ getTargetCallTSMEngine(const TargetCallSemantic &semantic) {
     }
     llvm_unreachable("unknown target-call builtin");
   }
-  if (std::holds_alternative<InstrConvKind>(semantic))
+  if (std::holds_alternative<TargetConvolutionOperation>(semantic))
     return TargetCallTSMEngine::NE;
-  if (std::holds_alternative<InstrElementwiseKind>(semantic) ||
-      std::holds_alternative<InstrReduceKind>(semantic) ||
-      std::holds_alternative<InstrConvertKind>(semantic) ||
-      std::holds_alternative<InstrPoolKind>(semantic) ||
-      std::holds_alternative<InstrUnpoolKind>(semantic) ||
-      std::holds_alternative<InstrPeripheralKind>(semantic))
+  if (std::holds_alternative<NumericElementwiseOperation>(semantic) ||
+      std::holds_alternative<NumericReduceOperation>(semantic) ||
+      std::holds_alternative<TargetConvertOperation>(semantic) ||
+      std::holds_alternative<TargetPoolingOperation>(semantic) ||
+      std::holds_alternative<TargetUnpoolingOperation>(semantic) ||
+      std::holds_alternative<TargetPeripheralOperation>(semantic))
     return TargetCallTSMEngine::CT;
   llvm_unreachable("unknown target-call semantic");
 }
@@ -359,37 +294,37 @@ const TargetCallDescriptor &getTargetCallDescriptor(TargetCallBuiltin call) {
 }
 
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrElementwiseKind kind) {
+getTargetCallDescriptor(NumericElementwiseOperation kind) {
   return getDescriptor(kind);
 }
 
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrReduceKind kind) {
+getTargetCallDescriptor(NumericReduceOperation kind) {
   return getDescriptor(kind);
 }
 
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrConvertKind kind) {
+getTargetCallDescriptor(TargetConvertOperation kind) {
   return getDescriptor(kind);
 }
 
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrConvKind kind) {
+getTargetCallDescriptor(TargetConvolutionOperation kind) {
   return getDescriptor(kind);
 }
 
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrPoolKind kind) {
+getTargetCallDescriptor(TargetPoolingOperation kind) {
   return getDescriptor(kind);
 }
 
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrUnpoolKind kind) {
+getTargetCallDescriptor(TargetUnpoolingOperation kind) {
   return getDescriptor(kind);
 }
 
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrPeripheralKind kind) {
+getTargetCallDescriptor(TargetPeripheralOperation kind) {
   return getDescriptor(kind);
 }
 

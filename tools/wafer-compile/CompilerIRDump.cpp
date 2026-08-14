@@ -27,8 +27,7 @@ llvm::SmallString<256> physicalTilePath(llvm::StringRef directory,
                                         llvm::StringRef extension) {
   llvm::SmallString<32> filename;
   llvm::raw_svector_ostream stream(filename);
-  stream << "tile_" << llvm::formatv("{0:05}", tileId.getValue())
-         << extension;
+  stream << "tile_" << llvm::formatv("{0:05}", tileId.getValue()) << extension;
   llvm::SmallString<256> path(directory);
   llvm::sys::path::append(path, filename);
   return path;
@@ -57,10 +56,9 @@ bool writeIRFile(llvm::StringRef path, Print print,
 
 } // namespace
 
-bool dumpCompilerIR(
-    llvm::StringRef destination,
-    const wafer::compiler::TargetCompilationProduct &product,
-    llvm::raw_ostream &diagnostics) {
+bool dumpCompilerIR(llvm::StringRef destination,
+                    const wafer::compiler::TargetCompilationProduct &product,
+                    llvm::raw_ostream &diagnostics) {
   if (destination.empty()) {
     diagnostics << "wafer-compile: --dump-compiler-ir must not be empty\n";
     return false;
@@ -85,9 +83,9 @@ bool dumpCompilerIR(
 
   const auto &tiles =
       product.getExecutableBundle().getPhysicalTileExecutables();
-  const auto &targetModules =
-      product.getTargetLLVMModuleBundle().getModules();
-  if (tiles.size() != targetModules.size()) {
+  const auto &targetModules = product.getTargetLLVMModuleBundle().getModules();
+  const auto &irTrace = product.getIRTrace().physicalTiles;
+  if (tiles.size() != targetModules.size() || tiles.size() != irTrace.size()) {
     diagnostics
         << "wafer-compile: compiler IR dump physical Tile domains differ\n";
     return false;
@@ -96,20 +94,23 @@ bool dumpCompilerIR(
     const wafer::compiler::PhysicalTileExecutable &tile = tiles[index];
     const wafer::compiler::TargetLLVMModule &targetModule =
         targetModules[index];
+    const wafer::compiler::PhysicalTileIRTrace &tileTrace = irTrace[index];
     if (tile.getPhysicalCardId() != targetModule.getPhysicalCardId() ||
         tile.getPhysicalTileId() != targetModule.getPhysicalTileId() ||
-        tile.getLaunchSlotId() != targetModule.getLaunchSlotId()) {
+        tile.getLaunchSlotId() != targetModule.getLaunchSlotId() ||
+        tile.getPhysicalCardId() != tileTrace.physicalCardId ||
+        tile.getPhysicalTileId() != tileTrace.physicalTileId ||
+        tile.getLaunchSlotId() != tileTrace.launchSlotId) {
       diagnostics
           << "wafer-compile: compiler IR dump physical Tile order differs\n";
       return false;
     }
-    llvm::SmallString<256> tileDataflowPath =
-        physicalTilePath(tileDataflowDirectory, tile.getPhysicalTileId(),
-                         ".mlir");
+    llvm::SmallString<256> tileDataflowPath = physicalTilePath(
+        tileDataflowDirectory, tile.getPhysicalTileId(), ".mlir");
     if (!writeIRFile(
             tileDataflowPath,
             [&](llvm::raw_ostream &output) {
-              output << tile.getSelectedTileIR();
+              output << tileTrace.tileDataflowIR;
             },
             diagnostics))
       return false;
@@ -117,9 +118,7 @@ bool dumpCompilerIR(
         instructionDirectory, tile.getPhysicalTileId(), ".mlir");
     if (!writeIRFile(
             instructionPath,
-            [&](llvm::raw_ostream &output) {
-              tile.getModule().print(output);
-            },
+            [&](llvm::raw_ostream &output) { tile.getModule().print(output); },
             diagnostics))
       return false;
 

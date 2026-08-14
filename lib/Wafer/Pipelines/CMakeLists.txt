@@ -5,9 +5,8 @@ add_mlir_library(WaferPipelines
   WaferIR
   WaferTarget
   WaferTransforms
+  MLIRAffineToStandard
   MLIRArithToLLVM
-  MLIRBufferizationDialect
-  MLIRBufferizationTransforms
   MLIRControlFlowDialect
   MLIRControlFlowToLLVM
   MLIRFuncToLLVM

@@ -3,7 +3,7 @@
 #include "Wafer/Model/SystemCTargetModel.h"
 
 #include "Wafer/Compiler/TargetCallFrontend.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
 #include "Wafer/Compiler/CompilationInternal.h"
@@ -55,6 +55,7 @@ namespace {
 using namespace wafer;
 using namespace wafer::compiler;
 using namespace wafer::model;
+using namespace wafer::target;
 
 frontend::ProgramBoundaryBinding boundary(int64_t index) {
   frontend::ProgramBoundaryBinding binding;
@@ -125,8 +126,8 @@ llvm::Error rewriteGemmAsOrientationChain(TargetLLVMModuleBundle &bundle) {
         module.getOrInsertFunction("wafer_tx81_gemm_oriented_v3", functionType);
     auto emit = [&](llvm::Value *callLhs, llvm::Value *callRhs,
                     llvm::Value *callDestination,
-                    GemmOrientation lhsOrientation,
-                    GemmOrientation rhsOrientation) {
+                    TargetGemmOrientation lhsOrientation,
+                    TargetGemmOrientation rhsOrientation) {
       builder.CreateCall(
           oriented, {callLhs, callRhs, callDestination, gemm->getArgOperand(3),
                      gemm->getArgOperand(4), gemm->getArgOperand(5),
@@ -135,14 +136,14 @@ llvm::Error rewriteGemmAsOrientationChain(TargetLLVMModuleBundle &bundle) {
                      builder.getInt32(static_cast<uint32_t>(rhsOrientation)),
                      gemm->getArgOperand(8)});
     };
-    emit(lhs, rhs, destination, GemmOrientation::Normal,
-         GemmOrientation::Normal);
-    emit(lhs, rhs, destination, GemmOrientation::Normal,
-         GemmOrientation::Transpose);
-    emit(lhs, rhs, destination, GemmOrientation::Transpose,
-         GemmOrientation::Normal);
-    emit(lhs, rhs, destination, GemmOrientation::Transpose,
-         GemmOrientation::Transpose);
+    emit(lhs, rhs, destination, TargetGemmOrientation::Normal,
+         TargetGemmOrientation::Normal);
+    emit(lhs, rhs, destination, TargetGemmOrientation::Normal,
+         TargetGemmOrientation::Transpose);
+    emit(lhs, rhs, destination, TargetGemmOrientation::Transpose,
+         TargetGemmOrientation::Normal);
+    emit(lhs, rhs, destination, TargetGemmOrientation::Transpose,
+         TargetGemmOrientation::Transpose);
     gemm->eraseFromParent();
   }
   return llvm::Error::success();
@@ -231,7 +232,7 @@ TEST(SystemCTargetModelOrientedGemmIntegrationTest,
   ASSERT_EQ(bundle->getModules().size(), 16u);
 
   NumericTensorKey tensorKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, MemLayout::Tensor, {16, 2, 2}));
+      LogicalFormat::F16, PhysicalTensorLayout::Tensor, {16, 2, 2}));
   const std::array<RawLogicalValue, 4> lhsMatrix{
       {{LogicalFormat::F16, UINT64_C(0x3c00)},
        {LogicalFormat::F16, UINT64_C(0x4000)},
@@ -303,7 +304,7 @@ TEST(SystemCTargetModelOrientedGemmIntegrationTest,
       executeTargetCallFrontend(*bundle, arguments, recording);
   ASSERT_TRUE(static_cast<bool>(decoded))
       << llvm::toString(decoded.takeError());
-  std::array<std::vector<std::pair<GemmOrientation, GemmOrientation>>, 16>
+  std::array<std::vector<std::pair<TargetGemmOrientation, TargetGemmOrientation>>, 16>
       orientationsByLaunchSlot;
   for (const TargetTransaction &transaction : recording.transactions)
     if (const auto *gemm =
@@ -314,11 +315,11 @@ TEST(SystemCTargetModelOrientedGemmIntegrationTest,
       orientationsByLaunchSlot[static_cast<size_t>(launchSlot)].emplace_back(
           gemm->lhsOrientation, gemm->rhsOrientation);
     }
-  const std::vector<std::pair<GemmOrientation, GemmOrientation>> expectedOrder{
-      {GemmOrientation::Normal, GemmOrientation::Normal},
-      {GemmOrientation::Normal, GemmOrientation::Transpose},
-      {GemmOrientation::Transpose, GemmOrientation::Normal},
-      {GemmOrientation::Transpose, GemmOrientation::Transpose}};
+  const std::vector<std::pair<TargetGemmOrientation, TargetGemmOrientation>> expectedOrder{
+      {TargetGemmOrientation::Normal, TargetGemmOrientation::Normal},
+      {TargetGemmOrientation::Normal, TargetGemmOrientation::Transpose},
+      {TargetGemmOrientation::Transpose, TargetGemmOrientation::Normal},
+      {TargetGemmOrientation::Transpose, TargetGemmOrientation::Transpose}};
   for (const auto &orientations : orientationsByLaunchSlot)
     EXPECT_EQ(orientations, expectedOrder);
 

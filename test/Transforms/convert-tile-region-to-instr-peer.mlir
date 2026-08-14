@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-convert-tile-region-to-instr %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s | FileCheck %s
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s | FileCheck %s
 
 module {

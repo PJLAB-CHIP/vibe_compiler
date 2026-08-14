@@ -1,7 +1,7 @@
 //===- TargetFormatTest.cpp - Closed target format registry tests --------===//
 
 #include "Wafer/Target/TargetFormat.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -412,7 +412,7 @@ TEST(TargetFormatTest, TypedConvertWhitelistDoesNotOpenGenericCTRows) {
 TEST(TargetFormatTest, EveryTypedConvertRoutePassesTargetPreflight) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
@@ -486,7 +486,7 @@ parseNCCJoinModule(mlir::MLIRContext &context, uint64_t operationCount) {
 TEST(TargetFormatTest, DirectTargetAcceptsExactly4096TerminalOperations) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
@@ -504,7 +504,7 @@ TEST(TargetFormatTest, DirectTargetAcceptsExactly4096TerminalOperations) {
 TEST(TargetFormatTest, DirectTargetAccepts4097ExecutableOperations) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
@@ -522,7 +522,7 @@ TEST(TargetFormatTest, DirectTargetAccepts4097ExecutableOperations) {
 TEST(TargetFormatTest, TargetPreflightRejectsResidualReduceInitAtomically) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
@@ -560,8 +560,8 @@ module {
   wafer::TargetConversionRequest request{};
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
   EXPECT_TRUE(mlir::failed(manager.run(*module)));
-  EXPECT_NE(diagnostics.find("terminal reduce retains source initialization "
-                             "after instruction legalization"),
+  EXPECT_NE(diagnostics.find(
+                "does not accept schema-free semantic attribute 'init_value'"),
             std::string::npos)
       << diagnostics;
   EXPECT_TRUE(reduce->hasAttr("init_value"));

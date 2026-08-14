@@ -20,9 +20,28 @@
 #include <limits>
 #include <numeric>
 #include <optional>
-#include <tuple>
 
 using namespace wafer;
+
+mlir::LogicalResult
+wafer::verifyNoSchemaFreeSemanticAttributes(mlir::Operation *operation) {
+  std::optional<mlir::RegisteredOperationName> registered =
+      operation->getRegisteredInfo();
+  for (mlir::NamedAttribute attribute : operation->getAttrs()) {
+    if (registered && llvm::is_contained(registered->getAttributeNames(),
+                                         attribute.getName()))
+      continue;
+    llvm::StringRef name = attribute.getName().getValue();
+    auto [dialectNamespace, suffix] = name.split('.');
+    if (!dialectNamespace.empty() && !suffix.empty() &&
+        dialectNamespace != WaferDialect::getDialectNamespace())
+      continue;
+    return operation->emitOpError(
+               "does not accept schema-free semantic attribute '")
+           << name << "'";
+  }
+  return mlir::success();
+}
 
 #include "Wafer/IR/WaferEnums.cpp.inc"
 #include "Wafer/IR/WaferPhysicalEncodingInterfaces.cpp.inc"
@@ -89,19 +108,6 @@ static std::optional<int64_t> getElementStorageBytes(mlir::Type elementType) {
   return ceilDivToBytes(*elementBits);
 }
 
-static std::optional<int64_t> alignTo(int64_t value, int64_t alignment) {
-  if (value < 0 || alignment <= 0)
-    return std::nullopt;
-  int64_t remainder = value % alignment;
-  if (remainder == 0)
-    return value;
-  int64_t delta = alignment - remainder;
-  int64_t result = 0;
-  if (!checkedAdd(value, delta, result))
-    return std::nullopt;
-  return result;
-}
-
 static std::optional<int64_t>
 getStaticElementCount(llvm::ArrayRef<int64_t> shape) {
   int64_t elements = 1;
@@ -114,157 +120,6 @@ getStaticElementCount(llvm::ArrayRef<int64_t> shape) {
     elements = next;
   }
   return elements;
-}
-
-static std::optional<int64_t> getStaticProduct(llvm::ArrayRef<int64_t> shape) {
-  int64_t product = 1;
-  for (int64_t dim : shape) {
-    if (dim == mlir::ShapedType::kDynamic)
-      return std::nullopt;
-    int64_t next = 0;
-    if (!checkedMul(product, dim, next))
-      return std::nullopt;
-    product = next;
-  }
-  return product;
-}
-
-static bool usesInt8ChannelBlock(mlir::Type elementType) {
-  auto integerType = mlir::dyn_cast<mlir::IntegerType>(elementType);
-  return integerType && integerType.getWidth() == 8;
-}
-
-static int64_t alignCxTail(int64_t tail) {
-  if (tail <= 4)
-    return 4;
-  if (tail <= 8)
-    return 8;
-  if (tail <= 16)
-    return 16;
-  if (tail <= 32)
-    return 32;
-  return 64;
-}
-
-static bool computeCxC0(int64_t c, int64_t cBlock, int64_t retainThreshold,
-                        int64_t &cxBlocks, int64_t &c0, int64_t &alignedC) {
-  if (c < 0 || cBlock <= 0 || retainThreshold <= 0)
-    return false;
-  int64_t q = c / cBlock;
-  int64_t r = c % cBlock;
-  if (r == 0) {
-    cxBlocks = q;
-    c0 = 0;
-    return checkedMul(q, cBlock, alignedC);
-  }
-  if (r <= retainThreshold) {
-    cxBlocks = q;
-    c0 = alignCxTail(r);
-    int64_t full = 0;
-    if (!checkedMul(q, cBlock, full))
-      return false;
-    return checkedAdd(full, c0, alignedC);
-  }
-  cxBlocks = q + 1;
-  c0 = 0;
-  return checkedMul(cxBlocks, cBlock, alignedC);
-}
-
-static std::optional<int64_t>
-getStaticPhysicalElementCount(llvm::ArrayRef<int64_t> shape,
-                              mlir::Type elementType, MemLayout layout,
-                              WaferPhysicalTensorInfo &info) {
-  if (shape.empty())
-    return getStaticElementCount(shape);
-  if (layout != MemLayout::Cx && layout != MemLayout::NCx)
-    return getStaticElementCount(shape);
-
-  int64_t c = shape.back();
-  if (c == mlir::ShapedType::kDynamic)
-    return std::nullopt;
-
-  int64_t cBlock = usesInt8ChannelBlock(elementType) ? 128 : 64;
-  int64_t retainThreshold = usesInt8ChannelBlock(elementType) ? 64 : 32;
-  int64_t cxBlocks = 0;
-  int64_t c0 = 0;
-  int64_t alignedC = 0;
-  if (!computeCxC0(c, cBlock, retainThreshold, cxBlocks, c0, alignedC))
-    return std::nullopt;
-
-  std::optional<int64_t> elementBits = getElementBitWidth(elementType);
-  std::optional<int64_t> elementBytes = getElementStorageBytes(elementType);
-  if (!elementBits || *elementBits <= 0 ||
-      kWaferSPMBankLineBytes > std::numeric_limits<int64_t>::max() / int64_t{8})
-    return std::nullopt;
-  const int64_t bankLineBits = kWaferSPMBankLineBytes * int64_t{8};
-  if (bankLineBits % *elementBits != 0)
-    return std::nullopt;
-  int64_t bankAlignElements = bankLineBits / *elementBits;
-
-  info.cBlock = cBlock;
-  info.cxBlocks = cxBlocks;
-  info.c0 = c0;
-  info.alignedC = alignedC;
-  info.tailC = c0;
-  info.elementBytes = elementBytes.value_or(0);
-  info.bankAlignElements = bankAlignElements;
-
-  int64_t physicalElements = 0;
-  if (layout == MemLayout::NCx) {
-    int64_t n = 1;
-    llvm::ArrayRef<int64_t> hwShape;
-    if (shape.size() > 1) {
-      n = shape.front();
-      hwShape = shape.drop_front().drop_back();
-    }
-    if (n == mlir::ShapedType::kDynamic)
-      return std::nullopt;
-    std::optional<int64_t> hwElements = getStaticProduct(hwShape);
-    if (!hwElements)
-      return std::nullopt;
-    int64_t unalignedBatch = 0;
-    if (!checkedMul(*hwElements, alignedC, unalignedBatch))
-      return std::nullopt;
-    std::optional<int64_t> batchElements =
-        alignTo(unalignedBatch, bankAlignElements);
-    if (!batchElements)
-      return std::nullopt;
-    if (!checkedMul(n, *batchElements, physicalElements))
-      return std::nullopt;
-    int64_t outerElements = 0;
-    if (!checkedMul(n, *hwElements, outerElements))
-      return std::nullopt;
-    info.outerElements = outerElements;
-    info.hwElements = *hwElements;
-    info.batchElements = *batchElements;
-  } else {
-    std::optional<int64_t> outerElements = getStaticProduct(shape.drop_back());
-    if (!outerElements)
-      return std::nullopt;
-    int64_t unalignedBatch = 0;
-    if (!checkedMul(*outerElements, alignedC, unalignedBatch))
-      return std::nullopt;
-    std::optional<int64_t> batchElements =
-        alignTo(unalignedBatch, bankAlignElements);
-    if (!batchElements)
-      return std::nullopt;
-    physicalElements = *batchElements;
-    info.outerElements = *outerElements;
-    info.hwElements = *outerElements;
-    info.batchElements = *batchElements;
-  }
-  return physicalElements;
-}
-
-static std::optional<int64_t> getStaticByteSize(mlir::Type elementType,
-                                                int64_t elementCount) {
-  std::optional<int64_t> elementBits = getElementBitWidth(elementType);
-  if (!elementBits || *elementBits <= 0)
-    return std::nullopt;
-  int64_t totalBits = 0;
-  if (!checkedMul(elementCount, *elementBits, totalBits))
-    return std::nullopt;
-  return ceilDivToBytes(totalBits);
 }
 
 static std::optional<int64_t>
@@ -315,108 +170,6 @@ static std::optional<int64_t> linearizeIndex(llvm::ArrayRef<int64_t> shape,
 }
 
 } // namespace
-
-mlir::LogicalResult CompilationLineageAttr::verify(
-    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    CompilationLineageKind kind, int64_t identity) {
-  (void)kind;
-  if (identity < 0)
-    return emitError() << "compilation lineage identity must be non-negative";
-  return mlir::success();
-}
-
-llvm::SmallVector<CompilationLineageAttr, 2>
-wafer::getCompilationLineages(mlir::Operation *operation) {
-  llvm::SmallVector<CompilationLineageAttr, 2> result;
-  if (!operation)
-    return result;
-  auto payload = operation->getAttrOfType<mlir::ArrayAttr>(
-      kWaferCompilationLineagesAttrName);
-  if (!payload)
-    return result;
-  result.reserve(payload.size());
-  for (mlir::Attribute attr : payload) {
-    auto lineage = mlir::dyn_cast<CompilationLineageAttr>(attr);
-    if (!lineage)
-      return {};
-    result.push_back(lineage);
-  }
-  return result;
-}
-
-void wafer::addCompilationLineage(mlir::Operation *operation,
-                                  CompilationLineageKind kind,
-                                  int64_t identity) {
-  assert(operation && identity >= 0 && "invalid compilation lineage");
-  llvm::SmallVector<CompilationLineageAttr, 2> lineages =
-      getCompilationLineages(operation);
-  if (llvm::any_of(lineages, [&](CompilationLineageAttr lineage) {
-        return lineage.getKind() == kind && lineage.getIdentity() == identity;
-      }))
-    return;
-  lineages.push_back(
-      CompilationLineageAttr::get(operation->getContext(), kind, identity));
-  llvm::sort(lineages, [](CompilationLineageAttr lhs,
-                          CompilationLineageAttr rhs) {
-    return std::tuple(static_cast<uint32_t>(lhs.getKind()), lhs.getIdentity()) <
-           std::tuple(static_cast<uint32_t>(rhs.getKind()), rhs.getIdentity());
-  });
-  llvm::SmallVector<mlir::Attribute, 2> attributes(lineages.begin(),
-                                                   lineages.end());
-  operation->setAttr(
-      kWaferCompilationLineagesAttrName,
-      mlir::ArrayAttr::get(operation->getContext(), attributes));
-}
-
-void wafer::inheritCompilationLineages(mlir::Operation *source,
-                                       mlir::Operation *target) {
-  for (CompilationLineageAttr lineage : getCompilationLineages(source))
-    addCompilationLineage(target, lineage.getKind(), lineage.getIdentity());
-}
-
-bool wafer::hasCompilationLineage(mlir::Operation *operation,
-                                  CompilationLineageKind kind,
-                                  int64_t identity) {
-  return llvm::any_of(getCompilationLineages(operation),
-                      [&](CompilationLineageAttr lineage) {
-                        return lineage.getKind() == kind &&
-                               lineage.getIdentity() == identity;
-                      });
-}
-
-void wafer::eraseCompilationLineages(mlir::Operation *root) {
-  if (!root)
-    return;
-  root->walk<mlir::WalkOrder::PreOrder>([](mlir::Operation *operation) {
-    operation->removeAttr(kWaferCompilationLineagesAttrName);
-  });
-}
-
-mlir::LogicalResult WaferDialect::verifyOperationAttribute(
-    mlir::Operation *operation, mlir::NamedAttribute attribute) {
-  if (attribute.getName().getValue() != kWaferCompilationLineagesAttrName)
-    return mlir::success();
-  auto payload = mlir::dyn_cast<mlir::ArrayAttr>(attribute.getValue());
-  if (!payload)
-    return operation->emitError()
-           << kWaferCompilationLineagesAttrName
-           << " must be an array of #wafer.compilation_lineage attributes";
-  llvm::SmallVector<std::pair<CompilationLineageKind, int64_t>, 2> seen;
-  for (mlir::Attribute value : payload) {
-    auto lineage = mlir::dyn_cast<CompilationLineageAttr>(value);
-    if (!lineage)
-      return operation->emitError()
-             << kWaferCompilationLineagesAttrName
-             << " must contain only #wafer.compilation_lineage attributes";
-    auto identity = std::pair(lineage.getKind(), lineage.getIdentity());
-    if (llvm::is_contained(seen, identity))
-      return operation->emitError()
-             << kWaferCompilationLineagesAttrName
-             << " contains duplicate lineage identity";
-    seen.push_back(identity);
-  }
-  return mlir::success();
-}
 
 MemoryAttr wafer::getWaferMemoryAttr(mlir::MemRefType type) {
   return mlir::dyn_cast_or_null<MemoryAttr>(type.getMemorySpace());
@@ -657,9 +410,11 @@ wafer::computeWaferPhysicalTensorInfo(mlir::MemRefType type) {
       mlir::RankedTensorType::get(type.getShape(), type.getElementType());
   info.memorySpace = memory.getSpace();
   info.layout = memory.getLayout();
-  if (auto integerType =
-          mlir::dyn_cast<mlir::IntegerType>(type.getElementType()))
-    info.bitPackedElement = integerType.getWidth() == 1;
+  auto integerType = mlir::dyn_cast<mlir::IntegerType>(type.getElementType());
+  info.bitPackedElement = integerType && integerType.getWidth() == 1;
+  if (std::optional<int64_t> elementBytes =
+          getElementStorageBytes(type.getElementType()))
+    info.elementBytes = *elementBytes;
 
   // Cx/NCx already own a block-major physical map in the memory encoding.
   // A second non-identity MemRef layout would describe a different view whose
@@ -670,30 +425,51 @@ wafer::computeWaferPhysicalTensorInfo(mlir::MemRefType type) {
       (type.getRank() == 0 || !type.getLayout().isIdentity()))
     return std::nullopt;
 
-  if (std::optional<int64_t> elementBytes =
-          getElementStorageBytes(type.getElementType()))
-    info.elementBytes = *elementBytes;
-
-  std::optional<int64_t> compactElements =
-      getStaticElementCount(type.getShape());
-  if (compactElements) {
-    if (std::optional<int64_t> bytes =
-            getStaticByteSize(type.getElementType(), *compactElements))
-      info.compactBytes = *bytes;
+  std::optional<int64_t> elementBits =
+      getElementBitWidth(type.getElementType());
+  if (!elementBits)
+    return std::nullopt;
+  // The pure target calculator intentionally accepts only concrete geometry.
+  // The MLIR type adapter must still distinguish a legal dynamic buffer from
+  // an invalid encoding; retain the known type facts and leave sizes unknown.
+  if (!type.hasStaticShape())
+    return info;
+  PhysicalTensorLayout physicalLayout;
+  switch (info.layout) {
+  case MemLayout::Tensor:
+    physicalLayout = PhysicalTensorLayout::Tensor;
+    break;
+  case MemLayout::NTensor:
+    physicalLayout = PhysicalTensorLayout::NTensor;
+    break;
+  case MemLayout::Cx:
+    physicalLayout = PhysicalTensorLayout::Cx;
+    break;
+  case MemLayout::NCx:
+    physicalLayout = PhysicalTensorLayout::NCx;
+    break;
   }
-
-  std::optional<int64_t> physicalElements;
-  if (info.layout == MemLayout::Tensor || info.layout == MemLayout::NTensor)
-    physicalElements = getStaticStridedElementSpan(type);
-  else
-    physicalElements = getStaticPhysicalElementCount(
-        type.getShape(), type.getElementType(), info.layout, info);
-  if (physicalElements) {
-    info.physicalElements = *physicalElements;
-    if (std::optional<int64_t> bytes =
-            getStaticByteSize(type.getElementType(), *physicalElements))
-      info.physicalBytes = *bytes;
-  }
+  std::optional<PhysicalTensorGeometry> geometry =
+      computePhysicalTensorGeometry(type.getShape(), *elementBits,
+                                    integerType && integerType.getWidth() == 8,
+                                    physicalLayout,
+                                    getStaticStridedElementSpan(type));
+  if (!geometry)
+    return std::nullopt;
+  info.compactBytes = geometry->compactBytes;
+  info.physicalBytes = geometry->physicalBytes;
+  info.physicalElements = geometry->physicalElements;
+  info.elementBytes = geometry->elementBytes;
+  info.cBlock = geometry->cBlock;
+  info.cxBlocks = geometry->cxBlocks;
+  info.c0 = geometry->c0;
+  info.alignedC = geometry->alignedC;
+  info.tailC = geometry->tailC;
+  info.outerElements = geometry->outerElements;
+  info.hwElements = geometry->hwElements;
+  info.batchElements = geometry->batchElements;
+  info.bankAlignElements = geometry->bankAlignElements;
+  info.bitPackedElement = geometry->bitPackedElement;
 
   return info;
 }
@@ -729,6 +505,59 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
   return computeWaferPhysicalElementByteOffset(type, *info, logicalIndices);
 }
 
+namespace {
+
+static PhysicalTensorGeometry
+projectPhysicalTensorGeometry(const WaferPhysicalTensorInfo &info) {
+  PhysicalTensorGeometry geometry;
+  switch (info.layout) {
+  case MemLayout::Tensor:
+    geometry.layout = PhysicalTensorLayout::Tensor;
+    break;
+  case MemLayout::NTensor:
+    geometry.layout = PhysicalTensorLayout::NTensor;
+    break;
+  case MemLayout::Cx:
+    geometry.layout = PhysicalTensorLayout::Cx;
+    break;
+  case MemLayout::NCx:
+    geometry.layout = PhysicalTensorLayout::NCx;
+    break;
+  }
+  geometry.compactBytes = info.compactBytes;
+  geometry.physicalBytes = info.physicalBytes;
+  geometry.physicalElements = info.physicalElements;
+  geometry.elementBytes = info.elementBytes;
+  geometry.cBlock = info.cBlock;
+  geometry.cxBlocks = info.cxBlocks;
+  geometry.c0 = info.c0;
+  geometry.alignedC = info.alignedC;
+  geometry.tailC = info.tailC;
+  geometry.outerElements = info.outerElements;
+  geometry.hwElements = info.hwElements;
+  geometry.batchElements = info.batchElements;
+  geometry.bankAlignElements = info.bankAlignElements;
+  geometry.bitPackedElement = info.bitPackedElement;
+  return geometry;
+}
+
+static std::optional<StaticPhysicalTensorOffsetCalculator>
+createSharedOffsetCalculator(mlir::MemRefType type,
+                             const WaferPhysicalTensorInfo &info) {
+  llvm::SmallVector<int64_t, 4> elementStrides;
+  if (info.layout != MemLayout::Cx && info.layout != MemLayout::NCx) {
+    int64_t ignoredOffset = 0;
+    if (mlir::failed(
+            mlir::getStridesAndOffset(type, elementStrides, ignoredOffset)) ||
+        elementStrides.size() != static_cast<size_t>(type.getRank()))
+      return std::nullopt;
+  }
+  return StaticPhysicalTensorOffsetCalculator::create(
+      projectPhysicalTensorGeometry(info), type.getShape(), elementStrides);
+}
+
+} // namespace
+
 std::optional<WaferStaticPhysicalOffsetCalculator>
 WaferStaticPhysicalOffsetCalculator::create(mlir::MemRefType type) {
   std::optional<WaferPhysicalTensorInfo> info =
@@ -737,255 +566,38 @@ WaferStaticPhysicalOffsetCalculator::create(mlir::MemRefType type) {
       info->bitPackedElement)
     return std::nullopt;
 
-  llvm::SmallVector<int64_t, 4> shape(type.getShape());
-  if (llvm::any_of(shape, [](int64_t dim) {
-        return dim == mlir::ShapedType::kDynamic || dim <= 0;
-      }))
+  std::optional<StaticPhysicalTensorOffsetCalculator> calculator =
+      createSharedOffsetCalculator(type, *info);
+  if (!calculator)
     return std::nullopt;
-
-  auto multiply = [](int64_t lhs, int64_t rhs) -> std::optional<int64_t> {
-    int64_t result = 0;
-    if (!checkedMul(lhs, rhs, result))
-      return std::nullopt;
-    return result;
-  };
-
-  llvm::SmallVector<int64_t, 4> byteStrides;
-  llvm::SmallVector<int64_t, 4> linearStrides;
-  int64_t fullC = 0;
-  int64_t blockStrideBytes = 0;
-  int64_t fullBlockBytes = 0;
-  if (info->layout != MemLayout::Cx && info->layout != MemLayout::NCx) {
-    llvm::SmallVector<int64_t, 4> elementStrides;
-    int64_t offset = 0;
-    if (mlir::failed(mlir::getStridesAndOffset(type, elementStrides, offset)) ||
-        elementStrides.size() != static_cast<size_t>(type.getRank()))
-      return std::nullopt;
-    byteStrides.reserve(elementStrides.size());
-    for (int64_t stride : elementStrides) {
-      if (stride == mlir::ShapedType::kDynamic || stride < 0)
-        return std::nullopt;
-      std::optional<int64_t> byteStride = multiply(stride, info->elementBytes);
-      if (!byteStride)
-        return std::nullopt;
-      byteStrides.push_back(*byteStride);
-    }
-  } else {
-    if (shape.empty() || info->cBlock <= 0 || info->cxBlocks < 0 ||
-        info->outerElements <= 0 || info->c0 < 0)
-      return std::nullopt;
-
-    linearStrides.resize(shape.size() - 1, 1);
-    int64_t linearStride = 1;
-    for (int64_t dim = static_cast<int64_t>(linearStrides.size()) - 1; dim >= 0;
-         --dim) {
-      linearStrides[dim] = linearStride;
-      std::optional<int64_t> next = multiply(linearStride, shape[dim]);
-      if (!next)
-        return std::nullopt;
-      linearStride = *next;
-    }
-
-    std::optional<int64_t> computedFullC =
-        multiply(info->cxBlocks, info->cBlock);
-    int64_t blockOuterElements =
-        info->layout == MemLayout::NCx ? info->hwElements : info->outerElements;
-    std::optional<int64_t> blockStrideElements =
-        multiply(blockOuterElements, info->cBlock);
-    if (!computedFullC || !blockStrideElements)
-      return std::nullopt;
-    std::optional<int64_t> computedBlockStrideBytes =
-        multiply(*blockStrideElements, info->elementBytes);
-    std::optional<int64_t> fullBlockElements =
-        multiply(info->cxBlocks, *blockStrideElements);
-    if (!computedBlockStrideBytes || !fullBlockElements)
-      return std::nullopt;
-    std::optional<int64_t> computedFullBlockBytes =
-        multiply(*fullBlockElements, info->elementBytes);
-    if (!computedFullBlockBytes)
-      return std::nullopt;
-    fullC = *computedFullC;
-    blockStrideBytes = *computedBlockStrideBytes;
-    fullBlockBytes = *computedFullBlockBytes;
-  }
-  return WaferStaticPhysicalOffsetCalculator(
-      std::move(*info), std::move(shape), std::move(byteStrides),
-      std::move(linearStrides), fullC, blockStrideBytes, fullBlockBytes);
+  return WaferStaticPhysicalOffsetCalculator(std::move(*info),
+                                             std::move(*calculator));
 }
 
 std::optional<int64_t> WaferStaticPhysicalOffsetCalculator::getByteOffset(
     llvm::ArrayRef<int64_t> logicalIndices) const {
-  if (shape.size() != logicalIndices.size())
+  std::optional<int64_t> bitOffset = calculator.getBitOffset(logicalIndices);
+  if (!bitOffset || *bitOffset % 8 != 0)
     return std::nullopt;
-  for (auto [dim, index] : llvm::zip_equal(shape, logicalIndices))
-    if (index < 0 || index >= dim)
-      return std::nullopt;
-  int64_t byteOffset = getByteOffsetForValidIndices(logicalIndices);
+  int64_t byteOffset = *bitOffset / 8;
   if (byteOffset < 0 || byteOffset > info.physicalBytes - info.elementBytes)
     return std::nullopt;
   return byteOffset;
 }
-
-namespace {
-
-/// Return the blocked-layout lane ordinal independently of the element storage
-/// width. Byte-addressable and bitpacked consumers scale this one encoding-
-/// owned ordering into bytes or bits respectively.
-static std::optional<int64_t>
-computeBlockedPhysicalElementOffset(mlir::MemRefType type,
-                                    const WaferPhysicalTensorInfo &info,
-                                    llvm::ArrayRef<int64_t> logicalIndices) {
-  if (info.layout != MemLayout::Cx && info.layout != MemLayout::NCx)
-    return std::nullopt;
-  if (type.getRank() == 0 ||
-      type.getRank() != static_cast<int64_t>(logicalIndices.size()))
-    return std::nullopt;
-  for (auto [dim, index] : llvm::zip_equal(type.getShape(), logicalIndices)) {
-    if (dim == mlir::ShapedType::kDynamic || dim < 0 || index < 0 ||
-        index >= dim)
-      return std::nullopt;
-  }
-
-  int64_t logicalC = logicalIndices.back();
-  int64_t fullC = 0;
-  if (!checkedMul(info.cxBlocks, info.cBlock, fullC))
-    return std::nullopt;
-  int64_t physicalElementOffset = 0;
-  if (info.layout == MemLayout::NCx) {
-    int64_t n = type.getRank() > 1 ? logicalIndices.front() : 0;
-    llvm::ArrayRef<int64_t> hwShape;
-    llvm::ArrayRef<int64_t> hwIndices;
-    if (type.getRank() > 1) {
-      hwShape = type.getShape().drop_front().drop_back();
-      hwIndices = logicalIndices.drop_front().drop_back();
-    }
-    std::optional<int64_t> hwIndex = linearizeIndex(hwShape, hwIndices);
-    if (!hwIndex)
-      return std::nullopt;
-    int64_t batchBase = 0;
-    if (!checkedMul(n, info.batchElements, batchBase))
-      return std::nullopt;
-    if (logicalC < fullC) {
-      int64_t cb = logicalC / info.cBlock;
-      int64_t lane = logicalC % info.cBlock;
-      int64_t blockOffset = 0;
-      int64_t blockStride = 0;
-      if (!checkedMul(info.hwElements, info.cBlock, blockStride) ||
-          !checkedMul(cb, blockStride, blockOffset))
-        return std::nullopt;
-      int64_t hwOffset = 0;
-      if (!checkedMul(*hwIndex, info.cBlock, hwOffset))
-        return std::nullopt;
-      if (!checkedAdd(batchBase, blockOffset, physicalElementOffset) ||
-          !checkedAdd(physicalElementOffset, hwOffset, physicalElementOffset) ||
-          !checkedAdd(physicalElementOffset, lane, physicalElementOffset))
-        return std::nullopt;
-    } else {
-      if (info.c0 <= 0)
-        return std::nullopt;
-      int64_t tailLane = logicalC - fullC;
-      int64_t fullBlockElements = 0;
-      int64_t fullBlockStride = 0;
-      if (!checkedMul(info.hwElements, info.cBlock, fullBlockStride) ||
-          !checkedMul(info.cxBlocks, fullBlockStride, fullBlockElements))
-        return std::nullopt;
-      int64_t hwOffset = 0;
-      if (!checkedMul(*hwIndex, info.c0, hwOffset))
-        return std::nullopt;
-      if (!checkedAdd(batchBase, fullBlockElements, physicalElementOffset) ||
-          !checkedAdd(physicalElementOffset, hwOffset, physicalElementOffset) ||
-          !checkedAdd(physicalElementOffset, tailLane, physicalElementOffset))
-        return std::nullopt;
-    }
-  } else {
-    llvm::ArrayRef<int64_t> outerShape = type.getShape().drop_back();
-    llvm::ArrayRef<int64_t> outerIndices = logicalIndices.drop_back();
-    std::optional<int64_t> outerIndex =
-        linearizeIndex(outerShape, outerIndices);
-    if (!outerIndex)
-      return std::nullopt;
-    if (logicalC < fullC) {
-      int64_t cb = logicalC / info.cBlock;
-      int64_t lane = logicalC % info.cBlock;
-      int64_t blockOffset = 0;
-      int64_t blockStride = 0;
-      if (!checkedMul(info.outerElements, info.cBlock, blockStride) ||
-          !checkedMul(cb, blockStride, blockOffset))
-        return std::nullopt;
-      int64_t outerOffset = 0;
-      if (!checkedMul(*outerIndex, info.cBlock, outerOffset))
-        return std::nullopt;
-      if (!checkedAdd(blockOffset, outerOffset, physicalElementOffset) ||
-          !checkedAdd(physicalElementOffset, lane, physicalElementOffset))
-        return std::nullopt;
-    } else {
-      if (info.c0 <= 0)
-        return std::nullopt;
-      int64_t tailLane = logicalC - fullC;
-      int64_t fullBlockElements = 0;
-      int64_t fullBlockStride = 0;
-      if (!checkedMul(info.outerElements, info.cBlock, fullBlockStride) ||
-          !checkedMul(info.cxBlocks, fullBlockStride, fullBlockElements))
-        return std::nullopt;
-      int64_t outerOffset = 0;
-      if (!checkedMul(*outerIndex, info.c0, outerOffset))
-        return std::nullopt;
-      if (!checkedAdd(fullBlockElements, outerOffset, physicalElementOffset) ||
-          !checkedAdd(physicalElementOffset, tailLane, physicalElementOffset))
-        return std::nullopt;
-    }
-  }
-  if (physicalElementOffset < 0 ||
-      physicalElementOffset >= info.physicalElements)
-    return std::nullopt;
-  return physicalElementOffset;
-}
-
-} // namespace
 
 std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
     mlir::MemRefType type, const WaferPhysicalTensorInfo &info,
     llvm::ArrayRef<int64_t> logicalIndices) {
   if (info.elementBytes <= 0 || info.bitPackedElement)
     return std::nullopt;
-  if (type.getRank() != static_cast<int64_t>(logicalIndices.size()))
+  std::optional<StaticPhysicalTensorOffsetCalculator> calculator =
+      createSharedOffsetCalculator(type, info);
+  if (!calculator)
     return std::nullopt;
-  for (auto [dim, index] : llvm::zip_equal(type.getShape(), logicalIndices)) {
-    if (dim == mlir::ShapedType::kDynamic || dim < 0 || index < 0 ||
-        index >= dim)
-      return std::nullopt;
-  }
-
-  if (info.layout != MemLayout::Cx && info.layout != MemLayout::NCx) {
-    llvm::SmallVector<int64_t> strides;
-    int64_t offset = 0;
-    if (mlir::failed(mlir::getStridesAndOffset(type, strides, offset)) ||
-        strides.size() != logicalIndices.size())
-      return std::nullopt;
-
-    int64_t linear = 0;
-    for (auto [index, stride] : llvm::zip_equal(logicalIndices, strides)) {
-      if (stride == mlir::ShapedType::kDynamic || stride < 0)
-        return std::nullopt;
-      int64_t scaled = 0;
-      if (!checkedMul(index, stride, scaled) ||
-          !checkedAdd(linear, scaled, linear))
-        return std::nullopt;
-    }
-
-    int64_t byteOffset = 0;
-    if (!checkedMul(linear, info.elementBytes, byteOffset))
-      return std::nullopt;
-    return byteOffset;
-  }
-
-  std::optional<int64_t> physicalElementOffset =
-      computeBlockedPhysicalElementOffset(type, info, logicalIndices);
-  int64_t byteOffset = 0;
-  if (!physicalElementOffset ||
-      !checkedMul(*physicalElementOffset, info.elementBytes, byteOffset))
+  std::optional<int64_t> bitOffset = calculator->getBitOffset(logicalIndices);
+  if (!bitOffset || *bitOffset < 0 || *bitOffset % 8 != 0)
     return std::nullopt;
-  return byteOffset;
+  return *bitOffset / 8;
 }
 
 std::optional<int64_t> wafer::computeWaferPhysicalElementBitOffset(
@@ -995,48 +607,11 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementBitOffset(
   if (!info)
     return std::nullopt;
 
-  if (!info->bitPackedElement) {
-    std::optional<int64_t> byteOffset =
-        computeWaferPhysicalElementByteOffset(type, logicalIndices);
-    int64_t bitOffset = 0;
-    if (!byteOffset || !checkedMul(*byteOffset, 8, bitOffset))
-      return std::nullopt;
-    return bitOffset;
-  }
-
-  if (info->layout == MemLayout::Cx || info->layout == MemLayout::NCx)
-    return computeBlockedPhysicalElementOffset(type, *info, logicalIndices);
-  if (type.getRank() != static_cast<int64_t>(logicalIndices.size()))
+  std::optional<StaticPhysicalTensorOffsetCalculator> calculator =
+      createSharedOffsetCalculator(type, *info);
+  if (!calculator)
     return std::nullopt;
-  for (auto [dim, index] : llvm::zip_equal(type.getShape(), logicalIndices)) {
-    if (dim == mlir::ShapedType::kDynamic || dim < 0 || index < 0 ||
-        index >= dim)
-      return std::nullopt;
-  }
-
-  llvm::SmallVector<int64_t> strides;
-  int64_t ignoredViewOffset = 0;
-  if (mlir::failed(
-          mlir::getStridesAndOffset(type, strides, ignoredViewOffset)) ||
-      strides.size() != logicalIndices.size())
-    return std::nullopt;
-
-  int64_t bitOffset = 0;
-  for (auto [index, stride] : llvm::zip_equal(logicalIndices, strides)) {
-    if (stride == mlir::ShapedType::kDynamic || stride < 0)
-      return std::nullopt;
-    int64_t scaled = 0;
-    if (!checkedMul(index, stride, scaled) ||
-        !checkedAdd(bitOffset, scaled, bitOffset))
-      return std::nullopt;
-  }
-
-  int64_t capacityBits = 0;
-  if (info->physicalBytes < 0 ||
-      !checkedMul(info->physicalBytes, 8, capacityBits) ||
-      bitOffset >= capacityBits)
-    return std::nullopt;
-  return bitOffset;
+  return calculator->getBitOffset(logicalIndices);
 }
 
 mlir::LogicalResult

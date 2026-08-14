@@ -11,4 +11,4 @@ module {
   }
 }
 
-// CHECK: expected 1 body block arguments matching wafer.tile.region inputs, got 0
+// CHECK: region control flow edge from parent operands to Region #0: source has 1 operands, but target successor needs 0

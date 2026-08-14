@@ -3,6 +3,7 @@
 #ifndef WAFER_IR_WAFERDIALECT_H
 #define WAFER_IR_WAFERDIALECT_H
 
+#include "Wafer/Target/PhysicalLayout.h"
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/Dialect/Async/IR/AsyncTypes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -35,42 +36,39 @@
 
 #include "Wafer/IR/WaferInterfaces.h"
 
+namespace wafer {
+
+/// Reject attributes that are neither declared by the operation schema nor
+/// explicitly owned by another dialect. This keeps instrumentation metadata
+/// composable while preventing an unnamespaced spelling or an undeclared
+/// `wafer.*` attribute from becoming a second semantic IR schema.
+mlir::LogicalResult
+verifyNoSchemaFreeSemanticAttributes(mlir::Operation *operation);
+
+} // namespace wafer
+
+namespace mlir::OpTrait::wafer {
+
+template <typename ConcreteType>
+class NoSchemaFreeSemanticAttrs
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                     NoSchemaFreeSemanticAttrs> {
+public:
+  static mlir::LogicalResult verifyTrait(mlir::Operation *operation) {
+    return ::wafer::verifyNoSchemaFreeSemanticAttributes(operation);
+  }
+};
+
+} // namespace mlir::OpTrait::wafer
+
 #define GET_OP_CLASSES
 #include "Wafer/IR/WaferOps.h.inc"
 
 namespace wafer {
 
-inline constexpr char kWaferCommSlotAttrName[] = "slot";
 inline constexpr char kWaferSPMOffsetAttrName[] = "wafer.spm.offset";
 inline constexpr char kWaferDDROffsetAttrName[] = "wafer.ddr.offset";
-inline constexpr char kWaferCompilationLineagesAttrName[] =
-    "wafer.compilation.lineages";
 inline constexpr int64_t kWaferSPMBankLineBytes = 256;
-
-/// Returns the transient, self-contained lineage carried by `operation`.
-/// Malformed payloads are rejected by the dialect verifier and therefore
-/// produce an empty result here instead of becoming a second permissive
-/// interpretation path.
-llvm::SmallVector<CompilationLineageAttr, 2>
-getCompilationLineages(mlir::Operation *operation);
-
-/// Adds one lineage identity without duplicating an existing entry.  The
-/// payload remains deterministic so textual/bytecode round trips do not
-/// change evaluation behavior.
-void addCompilationLineage(mlir::Operation *operation,
-                           CompilationLineageKind kind, int64_t identity);
-
-/// Copies all transient lineage from `source` to `target`, merging and
-/// deduplicating entries.  Rewrites call this explicitly: discardable attrs
-/// are not assumed to propagate through arbitrary replacements.
-void inheritCompilationLineages(mlir::Operation *source,
-                                mlir::Operation *target);
-
-bool hasCompilationLineage(mlir::Operation *operation,
-                           CompilationLineageKind kind, int64_t identity);
-
-/// Removes all transient lineage below `root`, including `root` itself.
-void eraseCompilationLineages(mlir::Operation *root);
 
 /// Typed parameter contract shared by instruction verification and consumers
 /// of an accepted convert instruction.
@@ -124,59 +122,19 @@ public:
   /// lexicographic traversal or verified op index relation.
   int64_t
   getByteOffsetForValidIndices(llvm::ArrayRef<int64_t> logicalIndices) const {
-    assert(shape.size() == logicalIndices.size());
-#ifndef NDEBUG
-    for (auto [dim, index] : llvm::zip_equal(shape, logicalIndices))
-      assert(index >= 0 && index < dim);
-#endif
-    int64_t byteOffset = 0;
-    if (info.layout != MemLayout::Cx && info.layout != MemLayout::NCx) {
-      for (auto [index, byteStride] :
-           llvm::zip_equal(logicalIndices, byteStrides))
-        byteOffset += index * byteStride;
-      return byteOffset;
-    }
-
-    int64_t logicalC = logicalIndices.back();
-    int64_t outerIndex = 0;
-    int64_t firstOuterDim = info.layout == MemLayout::NCx ? 1 : 0;
-    for (int64_t dim = firstOuterDim;
-         dim < static_cast<int64_t>(logicalIndices.size()) - 1; ++dim)
-      outerIndex += logicalIndices[dim] * linearStrides[dim];
-
-    if (info.layout == MemLayout::NCx && logicalIndices.size() > 1)
-      byteOffset =
-          logicalIndices.front() * info.batchElements * info.elementBytes;
-    if (logicalC < fullC) {
-      byteOffset += (logicalC / info.cBlock) * blockStrideBytes;
-      byteOffset += (outerIndex * info.cBlock + logicalC % info.cBlock) *
-                    info.elementBytes;
-    } else {
-      byteOffset += fullBlockBytes;
-      byteOffset +=
-          (outerIndex * info.c0 + logicalC - fullC) * info.elementBytes;
-    }
-    return byteOffset;
+    std::optional<int64_t> bitOffset = calculator.getBitOffset(logicalIndices);
+    assert(bitOffset && *bitOffset >= 0 && *bitOffset % 8 == 0);
+    return *bitOffset / 8;
   }
 
 private:
   WaferStaticPhysicalOffsetCalculator(
-      WaferPhysicalTensorInfo info, llvm::SmallVector<int64_t, 4> shape,
-      llvm::SmallVector<int64_t, 4> byteStrides,
-      llvm::SmallVector<int64_t, 4> linearStrides, int64_t fullC,
-      int64_t blockStrideBytes, int64_t fullBlockBytes)
-      : info(std::move(info)), shape(std::move(shape)),
-        byteStrides(std::move(byteStrides)),
-        linearStrides(std::move(linearStrides)), fullC(fullC),
-        blockStrideBytes(blockStrideBytes), fullBlockBytes(fullBlockBytes) {}
+      WaferPhysicalTensorInfo info,
+      StaticPhysicalTensorOffsetCalculator calculator)
+      : info(std::move(info)), calculator(std::move(calculator)) {}
 
   WaferPhysicalTensorInfo info;
-  llvm::SmallVector<int64_t, 4> shape;
-  llvm::SmallVector<int64_t, 4> byteStrides;
-  llvm::SmallVector<int64_t, 4> linearStrides;
-  int64_t fullC = 0;
-  int64_t blockStrideBytes = 0;
-  int64_t fullBlockBytes = 0;
+  StaticPhysicalTensorOffsetCalculator calculator;
 };
 
 bool isWaferMemRefType(mlir::Type type);

@@ -142,7 +142,8 @@ struct TargetFuncOpLowering
                                                       /*isVarArg=*/false);
     auto newFunc = rewriter.create<mlir::LLVM::LLVMFuncOp>(
         funcOp.getLoc(), funcOp.getSymName(), llvmType);
-    newFunc.setVisibility(funcOp.getVisibility());
+    rewriter.modifyOpInPlace(
+        newFunc, [&] { newFunc.setVisibility(funcOp.getVisibility()); });
 
     rewriter.inlineRegionBefore(funcOp.getBody(), newFunc.getBody(),
                                 newFunc.end());

@@ -2,7 +2,7 @@
 
 #include "SystemCTargetModelTestSupport.h"
 
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
 #include "Wafer/Target/TargetFormat.h"
 
@@ -76,7 +76,7 @@ std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
                   mlir::LLVM::LLVMDialect, mlir::linalg::LinalgDialect,
                   mlir::math::MathDialect, mlir::memref::MemRefDialect,
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
-  registerAllDialects(registry);
+  registerWaferCoreDialects(registry);
   mlir::registerBuiltinDialectTranslation(registry);
   mlir::registerLLVMDialectTranslation(registry);
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
@@ -161,7 +161,8 @@ buildDirectDTEInvocationData(const compiler::TargetLLVMModuleBundle &bundle) {
   result.arguments.reserve(16);
   result.inputBytesByRank.resize(16);
   NumericTensorKey tensorKey = llvm::cantFail(
-      NumericTensorKey::create(LogicalFormat::F32, MemLayout::Tensor, {4}));
+      NumericTensorKey::create(LogicalFormat::F32,
+                               PhysicalTensorLayout::Tensor, {4}));
   for (const compiler::TargetLLVMModule &module : bundle.getModules()) {
     const int64_t rank = module.getLogicalRank();
     if (rank < 0 || rank >= 16)
@@ -260,14 +261,16 @@ rewriteNCCJoinsAfter(compiler::TargetLLVMModuleBundle &bundle,
       llvm::IRBuilder<> builder(next);
       builder.CreateCall(
           join, {builder.getInt32(
-                    uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0))});
+                    uint32_t{1}
+                        << static_cast<uint32_t>(TargetNCCWorker::Worker0))});
       ++result.insertedJoinCount;
     }
     for (llvm::ReturnInst *returnInstruction : returns) {
       llvm::IRBuilder<> builder(returnInstruction);
       builder.CreateCall(
           join, {builder.getInt32(
-                    uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0))});
+                    uint32_t{1}
+                        << static_cast<uint32_t>(TargetNCCWorker::Worker0))});
       ++result.insertedTerminalJoinCount;
     }
   }
@@ -308,7 +311,7 @@ insertPendingComputeBeforeDTEReceive(compiler::TargetLLVMModuleBundle &bundle,
   const TargetCallDescriptor &receiveDescriptor = getTargetCallDescriptor(
       TargetCallBuiltin::DirectDTERecvPrepare);
   const TargetCallDescriptor &elementwiseDescriptor =
-      getTargetCallDescriptor(InstrElementwiseKind::Add);
+      getTargetCallDescriptor(NumericElementwiseOperation::Add);
   const TargetCallDescriptor &gemmDescriptor =
       getTargetCallDescriptor(TargetCallBuiltin::Gemm);
   const TargetCallDescriptor &joinDescriptor =
@@ -361,7 +364,8 @@ insertPendingComputeBeforeDTEReceive(compiler::TargetLLVMModuleBundle &bundle,
             {builder.getInt64(lhs), builder.getInt64(rhs),
              builder.getInt64(destination), builder.getInt32(4),
              builder.getInt32(format->dataFormatCode),
-             builder.getInt32(static_cast<uint32_t>(NCCWorker::Worker0))});
+             builder.getInt32(
+                 static_cast<uint32_t>(TargetNCCWorker::Worker0))});
         ++result.elementwiseCount;
       } else {
         llvm::Function *gemm = getOrDeclareTargetCall(module, gemmDescriptor);
@@ -371,7 +375,8 @@ insertPendingComputeBeforeDTEReceive(compiler::TargetLLVMModuleBundle &bundle,
              builder.getInt64(destination), builder.getInt32(2),
              builder.getInt32(2), builder.getInt32(2), builder.getInt32(1),
              builder.getInt32(format->dataFormatCode),
-             builder.getInt32(static_cast<uint32_t>(NCCWorker::Worker0))});
+             builder.getInt32(
+                 static_cast<uint32_t>(TargetNCCWorker::Worker0))});
         ++result.gemmCount;
       }
       compute->setCallingConv(llvm::CallingConv::C);
@@ -380,7 +385,8 @@ insertPendingComputeBeforeDTEReceive(compiler::TargetLLVMModuleBundle &bundle,
       llvm::IRBuilder<> setupBuilder(compute);
       llvm::CallInst *setupJoin = setupBuilder.CreateCall(
           join, {setupBuilder.getInt32(
-                    uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0))});
+                    uint32_t{1}
+                        << static_cast<uint32_t>(TargetNCCWorker::Worker0))});
       setupJoin->setCallingConv(llvm::CallingConv::C);
       ++result.insertedSetupJoinCount;
 
@@ -407,7 +413,7 @@ insertPendingComputeBeforeDTEReceive(compiler::TargetLLVMModuleBundle &bundle,
       if (accessMode == PendingComputeDTEAccessMode::OverlapWithPreIssueJoin) {
         llvm::CallInst *joinCall = builder.CreateCall(
             join, {builder.getInt32(uint32_t{1} << static_cast<uint32_t>(
-                                        NCCWorker::Worker0))});
+                                        TargetNCCWorker::Worker0))});
         joinCall->setCallingConv(llvm::CallingConv::C);
         ++result.insertedJoinCount;
       }
@@ -438,7 +444,7 @@ insertPendingComputeWithLateJoin(compiler::TargetLLVMModuleBundle &bundle,
   const TargetCallDescriptor &receiveDescriptor = getTargetCallDescriptor(
       TargetCallBuiltin::DirectDTERecvPrepare);
   const TargetCallDescriptor &elementwiseDescriptor =
-      getTargetCallDescriptor(InstrElementwiseKind::Add);
+      getTargetCallDescriptor(NumericElementwiseOperation::Add);
   const TargetCallDescriptor &joinDescriptor =
       getTargetCallDescriptor(TargetCallBuiltin::NCCJoin);
   const TargetDataFormatCodeRecord *format =
@@ -516,14 +522,16 @@ insertPendingComputeWithLateJoin(compiler::TargetLLVMModuleBundle &bundle,
         {builder.getInt64(lhs), builder.getInt64(safeRHS),
          builder.getInt64(destination), builder.getInt32(4),
          builder.getInt32(format->dataFormatCode),
-         builder.getInt32(static_cast<uint32_t>(NCCWorker::Worker0))});
+         builder.getInt32(
+             static_cast<uint32_t>(TargetNCCWorker::Worker0))});
     compute->setCallingConv(llvm::CallingConv::C);
     ++result.insertedComputeCount;
 
     llvm::IRBuilder<> setupBuilder(compute);
     llvm::CallInst *setupJoin = setupBuilder.CreateCall(
         join, {setupBuilder.getInt32(
-                  uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0))});
+                  uint32_t{1}
+                      << static_cast<uint32_t>(TargetNCCWorker::Worker0))});
     setupJoin->setCallingConv(llvm::CallingConv::C);
     ++result.insertedSetupJoinCount;
 
@@ -555,7 +563,8 @@ insertPendingComputeWithLateJoin(compiler::TargetLLVMModuleBundle &bundle,
     llvm::IRBuilder<> lateJoinBuilder(afterIssue);
     llvm::CallInst *lateJoin = lateJoinBuilder.CreateCall(
         join, {lateJoinBuilder.getInt32(
-                  uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0))});
+                  uint32_t{1}
+                      << static_cast<uint32_t>(TargetNCCWorker::Worker0))});
     lateJoin->setCallingConv(llvm::CallingConv::C);
     ++result.insertedLateJoinCount;
 

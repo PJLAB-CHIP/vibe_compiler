@@ -1,6 +1,7 @@
 //===- Target LLVM lowering implementation -------------------------------===//
 
 #include "Target/LowerInstrToTargetLLVMInternal.h"
+#include "Target/TargetCallIRAdapter.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"

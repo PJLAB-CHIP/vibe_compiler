@@ -7,11 +7,11 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LLVM.h"
 
 #include <cstdint>
 #include <memory>
-#include <string>
 
 namespace wafer {
 
@@ -42,11 +42,11 @@ countStaticExecutableOperations(mlir::Operation *root,
 /// rerun this normalizer before lifetime/resource planning. The operation is
 /// intentionally function-level because pending NCC state can cross
 /// tile-region and static-loop boundaries, but never crosses a call boundary.
-mlir::LogicalResult normalizeMinimumNCCJoins(mlir::func::FuncOp function);
+mlir::LogicalResult placeRequiredNCCJoins(mlir::func::FuncOp function);
 
 /// Compatibility adapter for owned module transformations. New pass
 /// pipelines should use the function-anchored operation above.
-mlir::LogicalResult normalizeMinimumNCCJoins(mlir::ModuleOp module);
+mlir::LogicalResult placeRequiredNCCJoins(mlir::ModuleOp module);
 
 /// Erase every compiler-derived NCC participant join and rebuild completion
 /// solely from the module's current worker order, typed issues/effects,
@@ -54,10 +54,18 @@ mlir::LogicalResult normalizeMinimumNCCJoins(mlir::ModuleOp module);
 /// finalization uses this after function-boundary bufferization; action
 /// construction uses the incremental normalizer above while its loop-carried
 /// handoff topology is still being formed.
-mlir::LogicalResult rebuildMinimumNCCJoins(mlir::func::FuncOp function);
+mlir::LogicalResult rebuildRequiredNCCJoins(mlir::func::FuncOp function);
 
 /// Compatibility adapter for owned module transformations.
-mlir::LogicalResult rebuildMinimumNCCJoins(mlir::ModuleOp module);
+mlir::LogicalResult rebuildRequiredNCCJoins(mlir::ModuleOp module);
+
+/// Rebuild joins required by one isolated TileRegion's local SPM roots.
+/// The query starts with no access to the clone's private allocations and
+/// drains those roots before they leave their owning region. It does not
+/// model unrelated function-level outstanding accesses and must not replace
+/// the function-anchored production pass.
+mlir::LogicalResult
+rebuildRequiredNCCJoinsForIsolatedTileRegion(TileRegionOp tileRegion);
 
 /// Returns true when `root` contains a typed Tile dataflow operation consumed
 /// by Tile-region-to-Instr conversion. TileRegionOp and TileYieldOp are
@@ -84,7 +92,7 @@ private:
 
   friend mlir::LogicalResult
   convertTileRegionToInstr(TileRegionOp, TileRegionToInstrLoweringSession &,
-                           std::string *);
+                           mlir::RewriterBase::Listener *);
 };
 
 /// Lower exactly one isolated TileRegion body. This operation does not run
@@ -92,20 +100,27 @@ private:
 mlir::LogicalResult
 convertTileRegionToInstr(TileRegionOp region,
                          TileRegionToInstrLoweringSession &session,
-                         std::string *failureReason = nullptr);
+                         mlir::RewriterBase::Listener *listener = nullptr);
 
 /// One-shot compatibility adapter. Multi-region compiler requests should
 /// construct one request-scoped session and use the overload above.
-mlir::LogicalResult
-convertTileRegionToInstr(TileRegionOp region,
-                         std::string *failureReason = nullptr);
+mlir::LogicalResult convertTileRegionToInstr(TileRegionOp region);
 
 /// Compatibility adapter that lowers every TileRegion in an owned module and
 /// then runs function-wide NCC completion. Production pass pipelines should
 /// use the region-anchored conversion and function-anchored completion passes.
+mlir::LogicalResult convertTileRegionToInstrModule(mlir::ModuleOp module);
+
+namespace detail {
+
+/// Place joins directly in one function owned by a disposable artifact
+/// transaction. The caller must discard that complete artifact on failure.
+/// Production pipelines use the function-anchored pass, which consumes this
+/// same operation-scoped kernel.
 mlir::LogicalResult
-convertTileRegionToInstrModule(mlir::ModuleOp module,
-                               std::string *failureReason = nullptr);
+placeRequiredNCCJoinsInPrivateFunction(mlir::func::FuncOp function);
+
+} // namespace detail
 
 } // namespace wafer
 

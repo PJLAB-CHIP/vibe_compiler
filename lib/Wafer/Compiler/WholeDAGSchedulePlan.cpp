@@ -284,93 +284,6 @@ bool conservesRawCost(const WholeCardInstructionProgramCost &whole,
          equalMetric(linkMessages, whole.minimumHopMessageDemand);
 }
 
-template <typename Lineage>
-void collectLineagePointers(mlir::Location location,
-                            llvm::SmallVectorImpl<const Lineage *> &result) {
-  if (auto opaque = mlir::dyn_cast<mlir::OpaqueLoc>(location)) {
-    if (const auto *lineage =
-            mlir::OpaqueLoc::getUnderlyingLocationOrNull<const Lineage *>(
-                opaque)) {
-      result.push_back(lineage);
-      return;
-    }
-    collectLineagePointers(opaque.getFallbackLocation(), result);
-    return;
-  }
-  if (auto fused = mlir::dyn_cast<mlir::FusedLoc>(location)) {
-    for (mlir::Location nested : fused.getLocations())
-      collectLineagePointers(nested, result);
-    return;
-  }
-  if (auto named = mlir::dyn_cast<mlir::NameLoc>(location)) {
-    collectLineagePointers(named.getChildLoc(), result);
-    return;
-  }
-  if (auto callSite = mlir::dyn_cast<mlir::CallSiteLoc>(location)) {
-    collectLineagePointers(callSite.getCallee(), result);
-    collectLineagePointers(callSite.getCaller(), result);
-  }
-}
-
-template <typename Lineage>
-mlir::Location
-stripLineageLocation(mlir::Location location,
-                     const llvm::DenseSet<const Lineage *> &known,
-                     bool &changed) {
-  if (auto opaque = mlir::dyn_cast<mlir::OpaqueLoc>(location)) {
-    if (const auto *lineage =
-            mlir::OpaqueLoc::getUnderlyingLocationOrNull<const Lineage *>(
-                opaque)) {
-      if (known.contains(lineage)) {
-        changed = true;
-        return stripLineageLocation(opaque.getFallbackLocation(), known,
-                                    changed);
-      }
-      return location;
-    }
-    bool nestedChanged = false;
-    mlir::Location fallback = stripLineageLocation(opaque.getFallbackLocation(),
-                                                   known, nestedChanged);
-    if (!nestedChanged)
-      return location;
-    changed = true;
-    return mlir::OpaqueLoc::get(opaque.getUnderlyingLocation(),
-                                opaque.getUnderlyingTypeID(), fallback);
-  }
-  if (auto fused = mlir::dyn_cast<mlir::FusedLoc>(location)) {
-    bool nestedChanged = false;
-    llvm::SmallVector<mlir::Location, 4> locations;
-    for (mlir::Location nested : fused.getLocations())
-      locations.push_back(stripLineageLocation(nested, known, nestedChanged));
-    if (!nestedChanged)
-      return location;
-    changed = true;
-    return mlir::FusedLoc::get(locations, fused.getMetadata(),
-                               location.getContext());
-  }
-  if (auto named = mlir::dyn_cast<mlir::NameLoc>(location)) {
-    bool nestedChanged = false;
-    mlir::Location child =
-        stripLineageLocation(named.getChildLoc(), known, nestedChanged);
-    if (!nestedChanged)
-      return location;
-    changed = true;
-    return mlir::NameLoc::get(named.getName(), child);
-  }
-  if (auto callSite = mlir::dyn_cast<mlir::CallSiteLoc>(location)) {
-    bool nestedChanged = false;
-    mlir::Location callee =
-        stripLineageLocation(callSite.getCallee(), known, nestedChanged);
-    mlir::Location caller =
-        stripLineageLocation(callSite.getCaller(), known, nestedChanged);
-    if (!nestedChanged)
-      return location;
-    changed = true;
-    return mlir::CallSiteLoc::get(callee, caller);
-  }
-  return location;
-}
-
 bool tileSetsIntersect(llvm::ArrayRef<PhysicalTileId> lhs,
                        llvm::ArrayRef<PhysicalTileId> rhs) {
   return llvm::any_of(
@@ -414,10 +327,10 @@ llvm::BitVector getObservableDAGNodes(const CardDAGAnalysis &dag) {
 /// work is eliminated or absorbed by a surviving downstream operation. Such a
 /// node remains schedule-covered only when every observable successor path is
 /// already covered. Observable terminal nodes therefore still require actual
-/// accepted-IR lineage, while source-only dead nodes do not become artificial
+/// accepted-IR buffer use, while source-only dead nodes do not become artificial
 /// schedule obligations.
-bool hasCompleteObservableLineageCoverage(const CardDAGAnalysis &dag,
-                                          const llvm::BitVector &observed) {
+bool hasCompleteObservableNodeCoverage(const CardDAGAnalysis &dag,
+                                       const llvm::BitVector &observed) {
   llvm::BitVector observable = getObservableDAGNodes(dag);
   llvm::BitVector covered = observed;
   covered.resize(observable.size());
@@ -473,43 +386,29 @@ oneWholeCardResourceStage(const WholeCardInstructionProgramCost &cost,
 mlir::FailureOr<StaticSchedulePlan> buildAcceptedWholeDAGSchedulePlan(
     const CardDAGAnalysis &dag,
     llvm::ArrayRef<WholeDAGNodePlacement> nodePlacements,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
+    llvm::ArrayRef<AcceptedOperationNodeRelation> operationNodeRelations,
     AcceptedWholeCardExecutable &executable,
     llvm::SmallVectorImpl<WholeCardInstructionProgramCost> &phaseCosts,
     std::string *failureReason) {
   if (failureReason)
     failureReason->clear();
   if (nodePlacements.size() != dag.getNodes().size() ||
-      sourceLineage.size() != dag.getNodes().size() ||
       executable.tiles.empty()) {
     setFailure(failureReason,
                "accepted schedule plan lacks a complete DAG/Tile domain");
     return mlir::failure();
   }
 
-  llvm::DenseMap<const CardProgramSourceOperationLineage *, CardDAGNodeID>
-      knownLineage;
-  llvm::BitVector seenNodes(dag.getNodes().size());
-  for (const CardProgramSourceOperationLineage &lineage : sourceLineage) {
-    if (lineage.structuredNodeId >= dag.getNodes().size() ||
-        !lineage.sourceOperation || seenNodes.test(lineage.structuredNodeId)) {
+  llvm::DenseMap<mlir::Operation *, llvm::BitVector> operationNodes;
+  for (const AcceptedOperationNodeRelation &relation : operationNodeRelations) {
+    if (!relation.operation || relation.structuredNodeId >= dag.getNodes().size()) {
       setFailure(failureReason,
-                 "accepted schedule plan has invalid source lineage");
+                 "accepted operation-node relation is null or out of range");
       return mlir::failure();
     }
-    const CardDAGNode *node = dag.getNode(lineage.structuredNodeId);
-    if (!node || node->operation != lineage.sourceOperation) {
-      setFailure(failureReason,
-                 "accepted schedule lineage disagrees with the current DAG");
-      return mlir::failure();
-    }
-    seenNodes.set(lineage.structuredNodeId);
-    knownLineage.try_emplace(&lineage, lineage.structuredNodeId);
-  }
-  if (!seenNodes.all()) {
-    setFailure(failureReason,
-               "accepted schedule lineage does not cover every DAG node");
-    return mlir::failure();
+    auto [entry, inserted] = operationNodes.try_emplace(
+        relation.operation, llvm::BitVector(dag.getNodes().size()));
+    entry->second.set(relation.structuredNodeId);
   }
 
   llvm::SmallVector<const WholeDAGNodePlacement *, 16> placements(
@@ -537,7 +436,7 @@ mlir::FailureOr<StaticSchedulePlan> buildAcceptedWholeDAGSchedulePlan(
 
   llvm::SmallVector<mlir::func::FuncOp, 16> entries;
   entries.reserve(executable.tiles.size());
-  llvm::BitVector observedNodeLineage(dag.getNodes().size());
+  llvm::BitVector observedNodes(dag.getNodes().size());
   const std::vector<llvm::BitVector> reachable = computeDAGReachability(dag);
   for (auto [tileIndex, tile] : llvm::enumerate(executable.tiles)) {
     llvm::Expected<AcceptedCallClosure> closure =
@@ -552,43 +451,28 @@ mlir::FailureOr<StaticSchedulePlan> buildAcceptedWholeDAGSchedulePlan(
     for (mlir::func::FuncOp function : closure->functions) {
       std::string walkFailure;
       mlir::WalkResult walk = function.walk([&](mlir::Operation *operation) {
-        llvm::SmallVector<const CardProgramSourceOperationLineage *, 2>
-            lineagePointers;
-        collectLineagePointers(operation->getLoc(), lineagePointers);
-        llvm::DenseSet<const CardProgramSourceOperationLineage *> unique;
-        llvm::BitVector operationLineage(dag.getNodes().size());
-        for (const CardProgramSourceOperationLineage *lineage :
-             lineagePointers) {
-          if (!unique.insert(lineage).second)
-            continue;
-          auto found = knownLineage.find(lineage);
-          if (found == knownLineage.end()) {
-            llvm::raw_string_ostream message(walkFailure);
-            message << "accepted operation carries foreign DAG lineage"
-                    << " tile_id=" << tile.getPhysicalTileId().getValue()
-                    << " op=" << operation->getName().getStringRef();
-            return mlir::WalkResult::interrupt();
-          }
-          operationLineage.set(found->second);
-        }
-        observedNodeLineage |= operationLineage;
+        llvm::BitVector operationNodeSet(dag.getNodes().size());
+        if (auto found = operationNodes.find(operation);
+            found != operationNodes.end())
+          operationNodeSet = found->second;
+        observedNodes |= operationNodeSet;
 
         const bool residual = belongsToResidualPhase(operation);
         std::optional<CardDAGNodeID> node;
-        if (!operationLineage.none() && !residual) {
-          // Fusion may retain several source locations. Attribute its exact
-          // accepted work once to the unique lineage node that is downstream
-          // of every other retained lineage. Incomparable lineages without a
-          // retained sink have no sound phase owner and remain a hard error.
+        if (!operationNodeSet.none() && !residual) {
+          // Fusion may touch buffers from several source nodes. Attribute its
+          // exact work once to the unique node downstream of every other
+          // retained node. Incomparable sets without a retained sink remain a
+          // hard error.
           unsigned eligibleOwnerCount = 0;
-          for (int lineageNode = operationLineage.find_first();
-               lineageNode >= 0;
-               lineageNode = operationLineage.find_next(lineageNode)) {
-            CardDAGNodeID candidate = static_cast<CardDAGNodeID>(lineageNode);
+          for (int relationNode = operationNodeSet.find_first();
+               relationNode >= 0;
+               relationNode = operationNodeSet.find_next(relationNode)) {
+            CardDAGNodeID candidate = static_cast<CardDAGNodeID>(relationNode);
             bool downstreamOfAll = true;
-            for (int other = operationLineage.find_first(); other >= 0;
-                 other = operationLineage.find_next(other)) {
-              if (other == lineageNode)
+            for (int other = operationNodeSet.find_first(); other >= 0;
+                 other = operationNodeSet.find_next(other)) {
+              if (other == relationNode)
                 continue;
               downstreamOfAll &=
                   reachable[static_cast<size_t>(other)].test(candidate);
@@ -601,19 +485,19 @@ mlir::FailureOr<StaticSchedulePlan> buildAcceptedWholeDAGSchedulePlan(
           if (eligibleOwnerCount != 1) {
             llvm::raw_string_ostream message(walkFailure);
             message << "accepted operation has no unique downstream DAG "
-                       "lineage owner"
+                       "node"
                     << " tile_id=" << tile.getPhysicalTileId().getValue()
                     << " op=" << operation->getName().getStringRef()
                     << " eligible_owners=" << eligibleOwnerCount
-                    << " lineage_nodes=[";
+                    << " relation_nodes=[";
             bool first = true;
-            for (int lineageNode = operationLineage.find_first();
-                 lineageNode >= 0;
-                 lineageNode = operationLineage.find_next(lineageNode)) {
+            for (int relationNode = operationNodeSet.find_first();
+                 relationNode >= 0;
+                 relationNode = operationNodeSet.find_next(relationNode)) {
               if (!first)
                 message << ',';
               first = false;
-              message << lineageNode;
+              message << relationNode;
             }
             message << ']';
             return mlir::WalkResult::interrupt();
@@ -622,10 +506,10 @@ mlir::FailureOr<StaticSchedulePlan> buildAcceptedWholeDAGSchedulePlan(
         if (node && !llvm::is_contained(placements[*node]->tiles,
                                         tile.getPhysicalTileId())) {
           llvm::raw_string_ostream message(walkFailure);
-          message << "accepted operation is outside its DAG lineage placement"
+          message << "accepted operation is outside its DAG node placement"
                   << " tile_id=" << tile.getPhysicalTileId().getValue()
                   << " op=" << operation->getName().getStringRef()
-                  << " lineage_node=" << *node
+                  << " structured_node=" << *node
                   << " source_op="
                   << dag.getNodes()[*node].operation->getName().getStringRef()
                   << " placement_tiles=[";
@@ -660,16 +544,15 @@ mlir::FailureOr<StaticSchedulePlan> buildAcceptedWholeDAGSchedulePlan(
       if (walk.wasInterrupted()) {
         setFailure(failureReason,
                    walkFailure.empty()
-                       ? "accepted operation has ambiguous or foreign DAG "
-                         "lineage"
+                       ? "accepted operation has an ambiguous DAG node relation"
                        : llvm::StringRef(walkFailure));
         return mlir::failure();
       }
     }
   }
-  if (!hasCompleteObservableLineageCoverage(dag, observedNodeLineage)) {
+  if (!hasCompleteObservableNodeCoverage(dag, observedNodes)) {
     setFailure(failureReason,
-               "accepted lowering lost an observable terminal DAG lineage");
+               "accepted lowering lost an observable terminal DAG node");
     return mlir::failure();
   }
 
@@ -770,115 +653,6 @@ mlir::FailureOr<StaticSchedulePlan> buildAcceptedWholeDAGSchedulePlan(
     return mlir::failure();
   }
   return std::move(*plan);
-}
-
-mlir::LogicalResult stripCardProgramSourceOperationLineage(
-    AcceptedWholeCardExecutable &executable,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
-    std::string *failureReason) {
-  llvm::DenseSet<const CardProgramSourceOperationLineage *> known;
-  for (const CardProgramSourceOperationLineage &lineage : sourceLineage)
-    known.insert(&lineage);
-  for (PhysicalTileExecutable &tile : executable.tiles) {
-    tile.getModule()->walk([&](mlir::Operation *operation) {
-      bool changed = false;
-      operation->setLoc(
-          stripLineageLocation(operation->getLoc(), known, changed));
-    });
-  }
-  if (containsCardProgramSourceOperationLineage(executable)) {
-    setFailure(failureReason,
-               "query-local DAG lineage remained after artifact stripping");
-    return mlir::failure();
-  }
-  return mlir::success();
-}
-
-bool containsCardProgramSourceOperationLineage(
-    const AcceptedWholeCardExecutable &executable) {
-  bool found = false;
-  for (const PhysicalTileExecutable &tile : executable.tiles) {
-    tile.getModule()->walk([&](mlir::Operation *operation) {
-      llvm::SmallVector<const CardProgramSourceOperationLineage *, 2> pointers;
-      collectLineagePointers(operation->getLoc(), pointers);
-      if (!pointers.empty())
-        found = true;
-    });
-  }
-  return found;
-}
-
-mlir::LogicalResult
-stripSpatialOutputLineage(AcceptedWholeCardExecutable &executable,
-                          llvm::ArrayRef<SpatialOutputLineage> outputLineage,
-                          std::string *failureReason) {
-  llvm::DenseSet<const SpatialOutputLineage *> known;
-  for (const SpatialOutputLineage &lineage : outputLineage)
-    known.insert(&lineage);
-  for (PhysicalTileExecutable &tile : executable.tiles) {
-    tile.getModule()->walk([&](mlir::Operation *operation) {
-      bool changed = false;
-      operation->setLoc(
-          stripLineageLocation(operation->getLoc(), known, changed));
-    });
-  }
-  if (containsSpatialOutputLineage(executable)) {
-    setFailure(failureReason,
-               "query-local output lineage remained after artifact stripping");
-    return mlir::failure();
-  }
-  return mlir::success();
-}
-
-bool containsSpatialOutputLineage(
-    const AcceptedWholeCardExecutable &executable) {
-  bool found = false;
-  for (const PhysicalTileExecutable &tile : executable.tiles) {
-    tile.getModule()->walk([&](mlir::Operation *operation) {
-      llvm::SmallVector<const SpatialOutputLineage *, 2> pointers;
-      collectLineagePointers(operation->getLoc(), pointers);
-      if (!pointers.empty())
-        found = true;
-    });
-  }
-  return found;
-}
-
-mlir::LogicalResult stripStructuredOperandDemandLineage(
-    AcceptedWholeCardExecutable &executable,
-    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage,
-    std::string *failureReason) {
-  llvm::DenseSet<const StructuredOperandDemandLineage *> known;
-  for (const StructuredOperandDemandLineage &lineage : operandDemandLineage)
-    known.insert(&lineage);
-  for (PhysicalTileExecutable &tile : executable.tiles) {
-    tile.getModule()->walk([&](mlir::Operation *operation) {
-      bool changed = false;
-      operation->setLoc(
-          stripLineageLocation(operation->getLoc(), known, changed));
-    });
-  }
-  if (containsStructuredOperandDemandLineage(executable)) {
-    setFailure(failureReason,
-               "query-local operand-demand lineage remained after artifact "
-               "stripping");
-    return mlir::failure();
-  }
-  return mlir::success();
-}
-
-bool containsStructuredOperandDemandLineage(
-    const AcceptedWholeCardExecutable &executable) {
-  bool found = false;
-  for (const PhysicalTileExecutable &tile : executable.tiles) {
-    tile.getModule()->walk([&](mlir::Operation *operation) {
-      llvm::SmallVector<const StructuredOperandDemandLineage *, 2> pointers;
-      collectLineagePointers(operation->getLoc(), pointers);
-      if (!pointers.empty())
-        found = true;
-    });
-  }
-  return found;
 }
 
 } // namespace wafer::compiler::detail

@@ -15,6 +15,23 @@ using namespace wafer;
 
 namespace wafer::tensor_program_to_tile_region {
 
+static void inheritStructuredOperationNodes(
+    mlir::Operation *source, mlir::Operation *materialized,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
+  if (!source || !materialized || !operationNodes)
+    return;
+  llvm::SmallVector<uint32_t, 2> nodeIds;
+  for (const StructuredOperationNodeMapping &mapping : *operationNodes)
+    if (mapping.operation == source)
+      nodeIds.push_back(mapping.structuredNodeId);
+  for (uint32_t nodeId : nodeIds)
+    if (!llvm::any_of(*operationNodes, [&](const auto &mapping) {
+          return mapping.operation == materialized &&
+                 mapping.structuredNodeId == nodeId;
+        }))
+      operationNodes->push_back({materialized, nodeId});
+}
+
 static bool isCandidateOutputDestination(TensorProgramScope scope,
                                          mlir::Value value,
                                          unsigned outputIndex) {
@@ -325,7 +342,8 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredStructuredLeaf(
     llvm::ArrayRef<int64_t> reductionSizes, mlir::Value accumulator,
     llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    std::string *failureReason) {
+    std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   unsigned outputMapIndex =
       static_cast<unsigned>(sourceReduction.getNumDpsInputs());
   llvm::SmallVector<mlir::AffineMap, 4> maps =
@@ -358,6 +376,8 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredStructuredLeaf(
   }
 
   mlir::Operation *tiledOperation = tiled->tiledOps.front();
+  inheritStructuredOperationNodes(sourceReduction.getOperation(),
+                                  tiledOperation, operationNodes);
   if (accumulator) {
     auto dps =
         mlir::dyn_cast<mlir::DestinationStyleOpInterface>(tiledOperation);
@@ -380,7 +400,8 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredStructuredLeaf(
                                                                  loops.end());
   if (mlir::failed(fuseCandidateProducerSlices(
           tiledOperation, sourceReduction.getOperation(), scope, enclosingLoops,
-          operationTemporalTiles, builder.getListener(), failureReason)))
+          operationTemporalTiles, builder.getListener(), failureReason,
+          operationNodes)))
     return mlir::failure();
   builder.setInsertionPointAfter(tiledOperation);
   return tiled->tiledValues.front();
@@ -401,7 +422,8 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredReductionProducer(
     llvm::ArrayRef<int64_t> reductionTileSizes,
     llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    std::string *failureReason) {
+    std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   llvm::SmallVector<unsigned, 2> reductionDims =
       getReductionLoopDims(sourceReduction);
   llvm::SmallVector<int64_t, 4> loopRanges =
@@ -513,7 +535,8 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredReductionProducer(
       return materializeConfiguredStructuredLeaf(
           nestedBuilder, scope, sourceReduction, requestedOutputOffsets,
           requestedOutputSizes, reductionOffsets, chunkSizes, accumulator,
-          enclosingLoops, operationTemporalTiles, failureReason);
+          enclosingLoops, operationTemporalTiles, failureReason,
+          operationNodes);
 
     const unsigned ordinal = splitOrdinals[depth];
     const int64_t range = loopRanges[reductionDims[ordinal]];
@@ -583,7 +606,8 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredComputeTile(
     llvm::ArrayRef<int64_t> outputSizes,
     llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    std::string *failureReason) {
+    std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   mlir::FailureOr<llvm::SmallVector<int64_t, 2>> reductionTiles =
       getConfiguredReductionTileSizes(sourceCompute, operationTemporalTiles,
                                       failureReason);
@@ -604,7 +628,8 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredComputeTile(
   if (hasReductionSplit)
     return materializeConfiguredReductionProducer(
         builder, scope, sourceCompute, outputOffsets, outputSizes,
-        *reductionTiles, loops, operationTemporalTiles, failureReason);
+        *reductionTiles, loops, operationTemporalTiles, failureReason,
+        operationNodes);
 
   llvm::SmallVector<mlir::OpFoldResult, 2> reductionOffsets(
       reductionDims.size(), builder.getIndexAttr(0));
@@ -615,7 +640,7 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredComputeTile(
   return materializeConfiguredStructuredLeaf(
       builder, scope, sourceCompute, outputOffsets, outputSizes,
       reductionOffsets, reductionSizes, /*accumulator=*/{}, loops,
-      operationTemporalTiles, failureReason);
+      operationTemporalTiles, failureReason, operationNodes);
 }
 
 static mlir::FailureOr<mlir::Value> materializeConfiguredCollectiveTile(
@@ -623,7 +648,8 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredCollectiveTile(
     mlir::linalg::LinalgOp sourceCompute,
     llvm::ArrayRef<mlir::OpFoldResult> outputOffsets,
     llvm::ArrayRef<int64_t> outputSizes, mlir::Value localValue,
-    std::string *failureReason) {
+    std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   if (root == sourceCompute.getOperation())
     return localValue;
   auto allReduce = mlir::dyn_cast<LinalgExtCollectiveAllReduceOp>(root);
@@ -658,6 +684,8 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredCollectiveTile(
         "typed all-reduce tile does not match the local result tile");
     return mlir::failure();
   }
+  inheritStructuredOperationNodes(root, tiledAllReduce.getOperation(),
+                                  operationNodes);
   mlir::Value unusedInputSlice = tiledAllReduce.getInputs().front();
   tiledAllReduce->setOperand(/*input=*/0, localValue);
   if (mlir::Operation *slice = unusedInputSlice.getDefiningOp();
@@ -705,16 +733,17 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredParallelTraversal(
     llvm::SmallVectorImpl<int64_t> &tileSizes,
     llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    std::string *failureReason) {
+    std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   if (dimension == requestedOutputSizes.size()) {
     mlir::FailureOr<mlir::Value> local = materializeConfiguredComputeTile(
         builder, scope, sourceCompute, sourceOffsets, tileSizes, loops,
-        operationTemporalTiles, failureReason);
+        operationTemporalTiles, failureReason, operationNodes);
     if (mlir::failed(local))
       return mlir::failure();
     mlir::FailureOr<mlir::Value> wrapped = materializeConfiguredCollectiveTile(
         builder, root, sourceCompute, sourceOffsets, tileSizes, *local,
-        failureReason);
+        failureReason, operationNodes);
     if (mlir::failed(wrapped))
       return mlir::failure();
     return insertCandidateRootTile(builder, root->getLoc(), *wrapped, output,
@@ -759,7 +788,8 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredParallelTraversal(
             nestedBuilder, scope, root, sourceCompute, requestedOutputOffsets,
             requestedOutputSizes, parallelTileSizes, dimension + 1, destination,
             destinationBaseOffsets, sourceOffsets, localOffsets, tileSizes,
-            nestedLoops, operationTemporalTiles, failureReason);
+            nestedLoops, operationTemporalTiles, failureReason,
+            operationNodes);
     tileSizes.pop_back();
     localOffsets.pop_back();
     sourceOffsets.pop_back();
@@ -817,7 +847,9 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredStructuredTraversal(
     llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     std::string *failureReason, mlir::Value outputDestination = {},
-    llvm::ArrayRef<mlir::OpFoldResult> destinationBaseOffsets = {}) {
+    llvm::ArrayRef<mlir::OpFoldResult> destinationBaseOffsets = {},
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes =
+        nullptr) {
   auto selected = llvm::find_if(
       operationTemporalTiles, [&](const StructuredOpTemporalTile &tile) {
         return tile.operation == sourceCompute.getOperation();
@@ -854,12 +886,13 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredStructuredTraversal(
   if (!hasParallelSplit) {
     mlir::FailureOr<mlir::Value> local = materializeConfiguredComputeTile(
         builder, scope, sourceCompute, requestedOutputOffsets,
-        requestedOutputSizes, loops, operationTemporalTiles, failureReason);
+        requestedOutputSizes, loops, operationTemporalTiles, failureReason,
+        operationNodes);
     if (mlir::failed(local))
       return mlir::failure();
     mlir::FailureOr<mlir::Value> wrapped = materializeConfiguredCollectiveTile(
         builder, root, sourceCompute, requestedOutputOffsets,
-        requestedOutputSizes, *local, failureReason);
+        requestedOutputSizes, *local, failureReason, operationNodes);
     if (mlir::failed(wrapped) || !outputDestination)
       return wrapped;
     llvm::ArrayRef<mlir::OpFoldResult> outputOffsets =
@@ -893,7 +926,7 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredStructuredTraversal(
       builder, scope, root, sourceCompute, requestedOutputOffsets,
       requestedOutputSizes, parallelTileSizes, /*dimension=*/0, output,
       destinationBaseOffsets, sourceOffsets, localOffsets, tileSizes, loops,
-      operationTemporalTiles, failureReason);
+      operationTemporalTiles, failureReason, operationNodes);
 }
 
 /// A consumer window that cannot be expressed through a non-unit reshape
@@ -906,108 +939,11 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredStructuredTraversal(
 /// Returns true when the boundary value was assembled and the producer result
 /// replaced, false when the view chain does not lead to a configured
 /// structured producer (the window keeps reading the retained producer).
-/// Adds one downstream schedule owner to every operation created through a
-/// builder while the scope is active.  Listener chaining is deliberate: a
-/// configured producer can recursively create another IRRewriter, and every
-/// nested operation must retain all consumer owners on whose behalf it was
-/// materialized.  Existing operations that are merely moved are excluded,
-/// matching the old before/after operation-set difference without repeatedly
-/// walking the whole, increasingly deep candidate function.
-class ScopedDownstreamLineage final : public mlir::RewriterBase::Listener {
-public:
-  ScopedDownstreamLineage(mlir::OpBuilder &builder,
-                          mlir::Location downstreamLocation)
-      : builder(builder), previous(builder.getListener()),
-        downstreamLocation(downstreamLocation) {
-    builder.setListener(this);
-  }
-
-  ~ScopedDownstreamLineage() override {
-    assert(builder.getListener() == this &&
-           "downstream lineage listener scopes must be properly nested");
-    builder.setListener(previous);
-  }
-
-  void notifyOperationInserted(mlir::Operation *operation,
-                               mlir::OpBuilder::InsertPoint oldPoint) override {
-    if (!oldPoint.isSet() && operation->getLoc() != downstreamLocation)
-      operation->setLoc(mlir::FusedLoc::get(
-          operation->getContext(), {operation->getLoc(), downstreamLocation}));
-    if (previous)
-      previous->notifyOperationInserted(operation, oldPoint);
-  }
-
-  void notifyBlockInserted(mlir::Block *block, mlir::Region *oldRegion,
-                           mlir::Region::iterator oldPoint) override {
-    if (previous)
-      previous->notifyBlockInserted(block, oldRegion, oldPoint);
-  }
-
-  void notifyBlockErased(mlir::Block *block) override {
-    if (auto *listener =
-            llvm::dyn_cast_if_present<mlir::RewriterBase::Listener>(previous))
-      listener->notifyBlockErased(block);
-  }
-
-  void notifyOperationModified(mlir::Operation *operation) override {
-    if (auto *listener =
-            llvm::dyn_cast_if_present<mlir::RewriterBase::Listener>(previous))
-      listener->notifyOperationModified(operation);
-  }
-
-  void notifyOperationReplaced(mlir::Operation *operation,
-                               mlir::Operation *replacement) override {
-    if (auto *listener =
-            llvm::dyn_cast_if_present<mlir::RewriterBase::Listener>(previous))
-      listener->notifyOperationReplaced(operation, replacement);
-  }
-
-  void notifyOperationReplaced(mlir::Operation *operation,
-                               mlir::ValueRange replacements) override {
-    if (auto *listener =
-            llvm::dyn_cast_if_present<mlir::RewriterBase::Listener>(previous))
-      listener->notifyOperationReplaced(operation, replacements);
-  }
-
-  void notifyOperationErased(mlir::Operation *operation) override {
-    if (auto *listener =
-            llvm::dyn_cast_if_present<mlir::RewriterBase::Listener>(previous))
-      listener->notifyOperationErased(operation);
-  }
-
-  void notifyPatternBegin(const mlir::Pattern &pattern,
-                          mlir::Operation *operation) override {
-    if (auto *listener =
-            llvm::dyn_cast_if_present<mlir::RewriterBase::Listener>(previous))
-      listener->notifyPatternBegin(pattern, operation);
-  }
-
-  void notifyPatternEnd(const mlir::Pattern &pattern,
-                        mlir::LogicalResult status) override {
-    if (auto *listener =
-            llvm::dyn_cast_if_present<mlir::RewriterBase::Listener>(previous))
-      listener->notifyPatternEnd(pattern, status);
-  }
-
-  void notifyMatchFailure(
-      mlir::Location location,
-      llvm::function_ref<void(mlir::Diagnostic &)> reasonCallback) override {
-    if (auto *listener =
-            llvm::dyn_cast_if_present<mlir::RewriterBase::Listener>(previous))
-      listener->notifyMatchFailure(location, reasonCallback);
-  }
-
-private:
-  mlir::OpBuilder &builder;
-  mlir::OpBuilder::Listener *previous = nullptr;
-  mlir::Location downstreamLocation;
-};
-
 static mlir::FailureOr<bool> tryAssembleBoundaryProducerValue(
     mlir::IRRewriter &rewriter, TensorProgramScope scope,
     mlir::tensor::ExtractSliceOp slice,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    mlir::Location downstreamLocation, std::string *failureReason) {
+    std::string *failureReason) {
   mlir::Value value = slice.getSource();
   while (mlir::Operation *definition = value.getDefiningOp()) {
     if (auto expand = mlir::dyn_cast<mlir::tensor::ExpandShapeOp>(definition)) {
@@ -1037,7 +973,6 @@ static mlir::FailureOr<bool> tryAssembleBoundaryProducerValue(
       resultType.getRank(), rewriter.getIndexAttr(0));
   mlir::OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(structured.getOperation());
-  ScopedDownstreamLineage lineageScope(rewriter, downstreamLocation);
   mlir::FailureOr<mlir::Value> assembled =
       materializeConfiguredStructuredTraversal(
           rewriter, scope, structured.getOperation(), structured, fullOffsets,
@@ -1166,7 +1101,8 @@ mlir::LogicalResult fuseCandidateProducerSlices(
     TensorProgramScope scope,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    mlir::OpBuilder::Listener *insertionListener, std::string *failureReason) {
+    mlir::OpBuilder::Listener *insertionListener, std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   // With a structured loop nest, a fused tile is created in a nested block and
   // therefore cannot be mistaken for another untiled scope producer.  The
   // direct untiled API has no enclosing loop, so remember the finite set
@@ -1183,7 +1119,6 @@ mlir::LogicalResult fuseCandidateProducerSlices(
     mlir::Operation *sourceConsumer = nullptr;
     mlir::Operation *sourceProducer = nullptr;
     llvm::SmallVector<unsigned, 2> sourceConsumerOperandNumbers;
-    mlir::LocationAttr downstreamLocation;
   };
   struct MaterializedCoupledProducerTile {
     mlir::OpResult producerResult;
@@ -1219,13 +1154,10 @@ mlir::LogicalResult fuseCandidateProducerSlices(
       if (!slice)
         continue;
       llvm::SmallVector<unsigned, 2> operandNumbers;
-      llvm::SmallVector<mlir::Location, 2> downstreamLocations;
       for (mlir::OpOperand &use : slice.getResult().getUses()) {
         if (!llvm::is_contained(tiledConsumers, use.getOwner()))
           continue;
         operandNumbers.push_back(use.getOperandNumber());
-        if (!llvm::is_contained(downstreamLocations, use.getOwner()->getLoc()))
-          downstreamLocations.push_back(use.getOwner()->getLoc());
       }
       llvm::sort(operandNumbers);
       operandNumbers.erase(
@@ -1233,15 +1165,13 @@ mlir::LogicalResult fuseCandidateProducerSlices(
           operandNumbers.end());
       if (operandNumbers.empty())
         continue;
-      mlir::LocationAttr downstreamLocation =
-          mlir::FusedLoc::get(scope.getContext(), downstreamLocations);
       // tileAndFuseProducerOfSlice may reuse the same extract_slice operation
       // while retargeting it to the next producer upstream.  A slice is only
       // duplicate work when its exact source-consumer operand relation and its
       // current source producer have already been visited; remembering only
       // the operation pair conflates two operands of the same consumer.
       PendingProducerSlice relation{slice, downstreamProducer, sourceProducer,
-                                    operandNumbers, downstreamLocation};
+                                    operandNumbers};
       auto seen = llvm::find_if(
           seenRelations, [&](const PendingProducerSlice &existing) {
             return existing.slice == relation.slice &&
@@ -1387,8 +1317,7 @@ mlir::LogicalResult fuseCandidateProducerSlices(
         (mlir::isa<mlir::tensor::ExpandShapeOp>(producerResult.getOwner()) ||
          mlir::isa<mlir::tensor::CollapseShapeOp>(producerResult.getOwner()))) {
       mlir::FailureOr<bool> assembled = tryAssembleBoundaryProducerValue(
-          rewriter, scope, slice, operationTemporalTiles,
-          mlir::Location(pendingSlice.downstreamLocation), failureReason);
+          rewriter, scope, slice, operationTemporalTiles, failureReason);
       if (mlir::failed(assembled))
         return mlir::failure();
       if (*assembled)
@@ -1926,13 +1855,13 @@ mlir::LogicalResult fuseCandidateProducerSlices(
         rewriter.setInsertionPoint(slice);
         auto requestedType =
             mlir::cast<mlir::RankedTensorType>(slice.getType());
-        ScopedDownstreamLineage lineageScope(
-            rewriter, mlir::Location(pendingSlice.downstreamLocation));
         mlir::FailureOr<mlir::Value> tiled =
             materializeConfiguredStructuredTraversal(
                 rewriter, scope, structured.getOperation(), structured,
                 slice.getMixedOffsets(), requestedType.getShape(), loops,
-                operationTemporalTiles, failureReason);
+                operationTemporalTiles, failureReason,
+                /*outputDestination=*/{}, /*destinationBaseOffsets=*/{},
+                operationNodes);
         if (mlir::failed(tiled))
           return mlir::failure();
         materializedCoupledTiles.push_back(MaterializedCoupledProducerTile{
@@ -1945,19 +1874,17 @@ mlir::LogicalResult fuseCandidateProducerSlices(
       }
     }
 
-    std::optional<mlir::scf::SCFFuseProducerOfSliceResult> fused;
-    {
-      ScopedDownstreamLineage lineageScope(
-          rewriter, mlir::Location(pendingSlice.downstreamLocation));
-      fused = mlir::scf::tileAndFuseProducerOfSlice(rewriter, slice, loops);
-      if (!fused) {
-        setFailureReason(failureReason,
-                         "candidate producer tile fusion failed");
-        return mlir::failure();
-      }
-      if (mlir::failed(rebaseFusedDPSInit(*fused, failureReason)))
-        return mlir::failure();
+    std::optional<mlir::scf::SCFFuseProducerOfSliceResult> fused =
+        mlir::scf::tileAndFuseProducerOfSlice(rewriter, slice, loops);
+    if (!fused) {
+      setFailureReason(failureReason, "candidate producer tile fusion failed");
+      return mlir::failure();
     }
+    if (mlir::failed(rebaseFusedDPSInit(*fused, failureReason)))
+      return mlir::failure();
+    for (mlir::Operation *tiledOperation : fused->tiledOps)
+      inheritStructuredOperationNodes(fused->origProducer.getOwner(),
+                                      tiledOperation, operationNodes);
     materializedCoupledTiles.push_back(MaterializedCoupledProducerTile{
         producerResult, slice->getBlock(), slice.getType(),
         llvm::to_vector(slice.getMixedOffsets()),
@@ -1996,7 +1923,8 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    std::string *failureReason) {
+    std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   if (root->getNumResults() != 1) {
     setFailureReason(failureReason,
                      "candidate tile materialization requires one result");
@@ -2021,7 +1949,7 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
   llvm::SmallVector<mlir::LoopLikeOpInterface, 0> loops;
   return materializeCandidateRootTileValue(
       builder, scope, root, outputIndex, mixedOffsets, candidateTileSizes,
-      loops, operationTemporalTiles, failureReason);
+      loops, operationTemporalTiles, failureReason, operationNodes);
 }
 
 mlir::FailureOr<mlir::Value> materializeCandidateOperandConsumerTileValue(
@@ -2124,7 +2052,8 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileIntoDestination(
     llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    mlir::Value destination, std::string *failureReason) {
+    mlir::Value destination, std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   if (!root || root->getNumResults() != 1 || !destination) {
     setFailureReason(
         failureReason,
@@ -2149,7 +2078,8 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileIntoDestination(
   llvm::SmallVector<mlir::LoopLikeOpInterface, 0> loops;
   return materializeConfiguredStructuredTraversal(
       builder, scope, root, *computeRoot, mixedOffsets, candidateTileSizes,
-      loops, operationTemporalTiles, failureReason, destination, mixedOffsets);
+      loops, operationTemporalTiles, failureReason, destination, mixedOffsets,
+      operationNodes);
 }
 
 static mlir::FailureOr<mlir::Value>
@@ -2159,14 +2089,16 @@ materializeConfiguredStructuredRootTileValue(
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    std::string *failureReason) {
+    std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   mlir::FailureOr<mlir::linalg::LinalgOp> computeRoot =
       getCandidateReductionComputeRoot(root, failureReason);
   if (mlir::failed(computeRoot))
     return mlir::failure();
   return materializeConfiguredStructuredTraversal(
       builder, scope, root, *computeRoot, candidateTileOffsets,
-      candidateTileSizes, loops, operationTemporalTiles, failureReason);
+      candidateTileSizes, loops, operationTemporalTiles, failureReason,
+      /*outputDestination=*/{}, /*destinationBaseOffsets=*/{}, operationNodes);
 }
 
 static mlir::FailureOr<mlir::Value> materializeCandidateInterfaceRootTileValue(
@@ -2176,7 +2108,8 @@ static mlir::FailureOr<mlir::Value> materializeCandidateInterfaceRootTileValue(
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    std::string *failureReason) {
+    std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(root);
   auto tiling = mlir::dyn_cast<mlir::TilingInterface>(root);
   if (!dps || !tiling || dps.getNumDpsInits() != 1 ||
@@ -2290,9 +2223,10 @@ static mlir::FailureOr<mlir::Value> materializeCandidateInterfaceRootTileValue(
   }
 
   mlir::Operation *tiledRoot = tiled->tiledOps.front();
+  inheritStructuredOperationNodes(root, tiledRoot, operationNodes);
   if (mlir::failed(fuseCandidateProducerSlices(
           tiledRoot, root, scope, loops, operationTemporalTiles,
-          builder.getListener(), failureReason)))
+          builder.getListener(), failureReason, operationNodes)))
     return mlir::failure();
   builder.setInsertionPointAfter(tiledRoot);
   return tiled->tiledValues.front();
@@ -2305,7 +2239,8 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    std::string *failureReason) {
+    std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   if (classifyStructuredRoot(root) != StructuredRootCapability::Tiled) {
     setFailureReason(failureReason,
                      "candidate traversal root does not support tiling");
@@ -2328,11 +2263,12 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     if (selected != operationTemporalTiles.end())
       return materializeConfiguredStructuredRootTileValue(
           builder, scope, root, candidateTileOffsets, candidateTileSizes, loops,
-          operationTemporalTiles, failureReason);
+          operationTemporalTiles, failureReason, operationNodes);
   }
   return materializeCandidateInterfaceRootTileValue(
       builder, scope, root, outputIndex, candidateTileOffsets,
-      candidateTileSizes, loops, operationTemporalTiles, failureReason);
+      candidateTileSizes, loops, operationTemporalTiles, failureReason,
+      operationNodes);
 }
 
 mlir::FailureOr<mlir::Value>
@@ -2402,16 +2338,8 @@ static mlir::LogicalResult materializeCandidateOutputAnchors(
         resultType.getRank(), builder.getContext());
     llvm::SmallVector<mlir::utils::IteratorType, 4> iteratorTypes(
         resultType.getRank(), mlir::utils::IteratorType::parallel);
-    mlir::Location anchorLoc = returned.getLoc();
-    auto selected =
-        llvm::find_if(outputShards, [&](const SpatialOutputShard &shard) {
-          return shard.outputIndex == outputIndex;
-        });
-    if (selected != outputShards.end() && selected->lineage)
-      anchorLoc = mlir::OpaqueLoc::get<const SpatialOutputLineage *>(
-          selected->lineage, anchorLoc);
     auto anchor = builder.create<mlir::linalg::GenericOp>(
-        anchorLoc, mlir::TypeRange{returned.getType()},
+        returned.getLoc(), mlir::TypeRange{returned.getType()},
         mlir::ValueRange{returned}, mlir::ValueRange{*outputBoundary},
         llvm::ArrayRef<mlir::AffineMap>{identity, identity}, iteratorTypes,
         [&](mlir::OpBuilder &bodyBuilder, mlir::Location loc,
@@ -2574,11 +2502,12 @@ static mlir::FailureOr<mlir::Value> materializeTemporalRootTraversal(
     llvm::SmallVectorImpl<int64_t> &tileSizes,
     llvm::SmallVectorImpl<mlir::LoopLikeOpInterface> &loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    std::string *failureReason) {
+    std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   if (dimension == shardSizes.size()) {
     mlir::FailureOr<mlir::Value> tile = materializeCandidateRootTileValue(
         builder, scope, root, outputIndex, tileOffsets, tileSizes, loops,
-        operationTemporalTiles, failureReason);
+        operationTemporalTiles, failureReason, operationNodes);
     if (mlir::failed(tile))
       return mlir::failure();
     return insertCandidateRootTile(builder, root->getLoc(), *tile, output,
@@ -2600,7 +2529,7 @@ static mlir::FailureOr<mlir::Value> materializeTemporalRootTraversal(
     mlir::FailureOr<mlir::Value> next = materializeTemporalRootTraversal(
         builder, scope, root, outputIndex, shardOffsets, shardSizes,
         temporalTileSizes, dimension + 1, currentOutput, tileOffsets, tileSizes,
-        loops, operationTemporalTiles, failureReason);
+        loops, operationTemporalTiles, failureReason, operationNodes);
     tileSizes.pop_back();
     tileOffsets.pop_back();
     return next;
@@ -2614,7 +2543,7 @@ static mlir::FailureOr<mlir::Value> materializeTemporalRootTraversal(
   mlir::FailureOr<mlir::Value> prologue = materializeTemporalRootTraversal(
       builder, scope, root, outputIndex, shardOffsets, shardSizes,
       temporalTileSizes, dimension + 1, currentOutput, tileOffsets, tileSizes,
-      loops, operationTemporalTiles, failureReason);
+      loops, operationTemporalTiles, failureReason, operationNodes);
   tileSizes.pop_back();
   tileOffsets.pop_back();
   if (mlir::failed(prologue))
@@ -2638,7 +2567,8 @@ static mlir::FailureOr<mlir::Value> materializeTemporalRootTraversal(
     mlir::FailureOr<mlir::Value> next = materializeTemporalRootTraversal(
         bodyBuilder, scope, root, outputIndex, shardOffsets, shardSizes,
         temporalTileSizes, dimension + 1, loop.getRegionIterArgs().front(),
-        tileOffsets, tileSizes, loops, operationTemporalTiles, failureReason);
+        tileOffsets, tileSizes, loops, operationTemporalTiles, failureReason,
+        operationNodes);
     loops.pop_back();
     tileSizes.pop_back();
     tileOffsets.pop_back();
@@ -2655,7 +2585,7 @@ static mlir::FailureOr<mlir::Value> materializeTemporalRootTraversal(
     mlir::FailureOr<mlir::Value> tail = materializeTemporalRootTraversal(
         builder, scope, root, outputIndex, shardOffsets, shardSizes,
         temporalTileSizes, dimension + 1, currentOutput, tileOffsets, tileSizes,
-        loops, operationTemporalTiles, failureReason);
+        loops, operationTemporalTiles, failureReason, operationNodes);
     tileSizes.pop_back();
     tileOffsets.pop_back();
     if (mlir::failed(tail))
@@ -2669,6 +2599,7 @@ mlir::LogicalResult materializeCandidateOutputTileSlices(
     TensorProgramScope scope, llvm::ArrayRef<SpatialOutputShard> outputShards,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes,
     llvm::ArrayRef<mlir::Operation *> preservedOperations) {
   if (mlir::failed(materializeCandidateOutputAnchors(scope, outputShards,
                                                      failureReason)))
@@ -2757,7 +2688,7 @@ mlir::LogicalResult materializeCandidateOutputTileSlices(
         builder, scope, root, static_cast<unsigned>(index), shard->offsets,
         shard->sizes, shard->temporalTileSizes,
         /*dimension=*/0, *outputBoundary, tileOffsets, tileSizes, loops,
-        operationTemporalTiles, failureReason);
+        operationTemporalTiles, failureReason, operationNodes);
     if (mlir::failed(traversed))
       return mlir::failure();
     returnOp->setOperand(index, *traversed);
@@ -2769,6 +2700,14 @@ mlir::LogicalResult materializeCandidateOutputTileSlices(
   // directly is incorrect when one observable result is also the producer of
   // another observable result (or the same value is returned twice).
   eraseDeadCandidateSupportClosure(scope, preservedOperations);
+  if (operationNodes) {
+    llvm::DenseSet<mlir::Operation *> liveOperations;
+    scope.getBody().getParentOp()->walk(
+        [&](mlir::Operation *operation) { liveOperations.insert(operation); });
+    llvm::erase_if(*operationNodes, [&](const auto &mapping) {
+      return !liveOperations.contains(mapping.operation);
+    });
+  }
   return mlir::success();
 }
 

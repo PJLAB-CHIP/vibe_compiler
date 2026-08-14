@@ -550,7 +550,7 @@ static mlir::LogicalResult validateLeadingBackedgeJoins(
     }
 
     uint32_t participants =
-        getNCCCompletionContract(join).participantMask & kAllNCCWorkersMask;
+        getNCCSynchronizationContract(join).participantMask & kAllNCCWorkersMask;
     if (conflictParticipants != participants)
       return fail(
           "fixed-slot leading NCC join has a participant without an exact "
@@ -603,7 +603,7 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
     plan.operationIndices.try_emplace(&operation, index);
     plan.operations.push_back(&operation);
 
-    NCCCompletionContract contract = getNCCCompletionContract(&operation);
+    NCCSynchronizationContract contract = getNCCSynchronizationContract(&operation);
     if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(operation)) {
       llvm::SmallVector<mlir::Operation *, 4> producers;
       bool missingParticipantProducer = false;
@@ -667,7 +667,7 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
       sawTypedInstructionOrCompletion = true;
       continue;
     }
-    if (contract.behavior != LocalInstructionCompletion::OrderedPending ||
+    if (contract.behavior != NCCSynchronizationBehavior::OrderedAsynchronousIssue ||
         !contract.issueWorker)
       return failPlan(
           failureReason,
@@ -732,8 +732,8 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
   std::array<llvm::SmallVector<unsigned, 4>, kNCCWorkerCount>
       pendingWorkerIssues;
   for (auto [index, operation] : llvm::enumerate(plan.operations)) {
-    NCCCompletionContract contract = getNCCCompletionContract(operation);
-    if (contract.behavior == LocalInstructionCompletion::OrderedPending) {
+    NCCSynchronizationContract contract = getNCCSynchronizationContract(operation);
+    if (contract.behavior == NCCSynchronizationBehavior::OrderedAsynchronousIssue) {
       if (!contract.issueWorker)
         return failPlan(failureReason,
                         "fixed-slot NCC issue has no typed worker");
@@ -745,7 +745,7 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
       pendingWorkerIssues[worker].push_back(static_cast<unsigned>(index));
       continue;
     }
-    if (contract.behavior != LocalInstructionCompletion::ParticipantJoin)
+    if (contract.behavior != NCCSynchronizationBehavior::ParticipantJoin)
       continue;
     if (contract.participantMask == 0 ||
         (contract.participantMask & ~kAllNCCWorkersMask) != 0)
@@ -1835,8 +1835,8 @@ deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
   {
     wafer::support::ScopedCompileTimingSpan normalizeTiming(
         "transformation-phase", "deriveStaticFixedSlotPipelineCandidate",
-        "normalizeMinimumNCCJoins");
-    if (mlir::failed(normalizeMinimumNCCJoins(*candidate)))
+        "placeRequiredNCCJoins");
+    if (mlir::failed(placeRequiredNCCJoins(*candidate)))
       return failCandidate(
           failureReason,
           "fixed-slot candidate failed NCC completion normalization");

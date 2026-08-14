@@ -3,7 +3,9 @@
 #ifndef WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H
 #define WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H
 
+#include "Wafer/Analysis/DirectCallGraphAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/IR/Target/PhysicalTopology.h"
 #include "Wafer/Target/PhysicalIds.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Transforms/TargetConversion.h"
@@ -80,7 +82,8 @@ getDataFormatCode(mlir::Operation *op, mlir::Value value, llvm::StringRef role);
 mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp);
 mlir::LogicalResult preflightTargetAddresses(mlir::ModuleOp moduleOp);
 mlir::FailureOr<DirectDTEEndpointDomain>
-resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp,
+resolveDirectDTEEndpointDomain(const PhysicalTopology &topology,
+                               mlir::ModuleOp diagnosticModule,
                                PhysicalCardId physicalCardId,
                                PhysicalTileId physicalTileId);
 
@@ -150,26 +153,18 @@ struct FunctionLowering {
 
 using AliasSummary = llvm::SmallVector<unsigned, 4>;
 
-struct DirectCallGraph {
-  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<mlir::func::CallOp, 4>>
-      calls;
-  llvm::DenseSet<mlir::Operation *> calledFunctions;
-  llvm::SmallVector<mlir::func::FuncOp, 8> calleeFirstOrder;
-};
-
 mlir::LogicalResult flattenTileRegions(mlir::ModuleOp moduleOp);
-mlir::LogicalResult analyzeDirectCallGraph(mlir::ModuleOp moduleOp,
-                                           DirectCallGraph &graph,
-                                           int64_t defaultDDRArenaArgumentIndex,
-                                           int64_t transportStatusArgumentIndex,
-                                           int64_t profileRecordArgumentIndex);
+mlir::LogicalResult validateDirectCallsForTarget(
+    const analysis::DirectCallGraphAnalysis &graph,
+    int64_t defaultDDRArenaArgumentIndex,
+    int64_t transportStatusArgumentIndex, int64_t profileRecordArgumentIndex);
 mlir::FailureOr<mlir::func::FuncOp>
-findUniqueRootFunction(mlir::ModuleOp moduleOp, const DirectCallGraph &graph);
+findUniqueRootFunction(const analysis::DirectCallGraphAnalysis &graph);
 mlir::LogicalResult analyzeDDRAliasContracts(
-    mlir::ModuleOp moduleOp, const DirectCallGraph &graph,
+    mlir::ModuleOp moduleOp, const analysis::DirectCallGraphAnalysis &graph,
     llvm::DenseMap<mlir::Operation *, AliasSummary> &summaries);
 void dropRootAliasResults(mlir::ModuleOp moduleOp,
-                          const DirectCallGraph &graph);
+                          const analysis::DirectCallGraphAnalysis &graph);
 void eraseTargetMetadata(mlir::ModuleOp moduleOp);
 mlir::LogicalResult lowerSCFToControlFlow(mlir::ModuleOp moduleOp);
 

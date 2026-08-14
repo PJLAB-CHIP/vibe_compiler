@@ -1,6 +1,7 @@
 wafer_require_gtest()
 
 add_executable(WaferUnitTests
+  Analysis/DirectCallGraphAnalysisTest.cpp
   Analysis/TheoreticalScheduleCostAnalysisTest.cpp
   Analysis/PhysicalDataflow/IndexRelationTest.cpp
   Analysis/ScheduleCostAnalysisTest.cpp
@@ -12,17 +13,19 @@ add_executable(WaferUnitTests
   Compiler/DirectDTETransportTest.cpp
   Compiler/ProgramTensorComparisonTest.cpp
   Compiler/PhysicalTileFinalizationTest.cpp
+  Compiler/StructuredBufferRelationsTest.cpp
   Compiler/TargetABIPreparationTest.cpp
   Compiler/TargetArtifactTest.cpp
   Compiler/TargetCallFrontendTest.cpp
   Compiler/TargetIdentityTest.cpp
-  Compiler/TileRegionLocalFitTest.cpp
+  Compiler/TileRegionSPMCapacityEvaluationTest.cpp
   Compiler/WholeDAGScheduleTest.cpp
   Compiler/WholeDAGEdgeStrategyPlanTest.cpp
-  Compiler/WholeDAGPlacementFrontierTest.cpp
+  Compiler/WholeDAGPlacementEnumerationTest.cpp
   Compiler/WholeCardResourceAcceptanceTest.cpp
   Compiler/WholeCardExecutableSynthesisTest.cpp
   Conversion/BidirectionalTilingTest.cpp
+  Conversion/RequiredNCCJoinPlacementTest.cpp
   Conversion/WaferCardProgramToTileModulesTest.cpp
   Conversion/WaferTensorProgramToCardProgramTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
@@ -43,6 +46,7 @@ add_executable(WaferUnitTests
   Target/NumericSemanticsTest.cpp
   Target/PhysicalTensorCodecTest.cpp
   Target/TargetFormatTest.cpp
+  Target/TargetSchedulingCapabilityTest.cpp
   Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp
   Transforms/MemoryPlanning/MiniMallocPackingTest.cpp
   Transforms/MemoryPlanning/StaticMemoryPackingTest.cpp
@@ -91,7 +95,6 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
   target_compile_definitions(WaferUnitTests PRIVATE WAFER_ENABLE_STABLEHLO=1)
   target_link_libraries(WaferUnitTests PRIVATE StablehloRegister)
 endif()
-
 add_test(NAME WaferUnitTests
   COMMAND WaferUnitTests
 )
@@ -116,10 +119,51 @@ target_link_libraries(WaferRunBoardIOUnitTests
 )
 add_test(NAME WaferRunBoardIOUnitTests COMMAND WaferRunBoardIOUnitTests)
 
+add_executable(WaferTargetPublicLinkSmoke
+  LinkClosure/TargetPublicLinkSmoke.cpp)
+llvm_update_compile_flags(WaferTargetPublicLinkSmoke)
+target_link_libraries(WaferTargetPublicLinkSmoke PRIVATE WaferTarget)
+
+add_executable(WaferRuntimePublicLinkSmoke
+  LinkClosure/RuntimePublicLinkSmoke.cpp)
+llvm_update_compile_flags(WaferRuntimePublicLinkSmoke)
+target_link_libraries(WaferRuntimePublicLinkSmoke PRIVATE WaferRuntime)
+
+add_executable(WaferCompilerPublicLinkSmoke
+  LinkClosure/CompilerPublicLinkSmoke.cpp)
+llvm_update_compile_flags(WaferCompilerPublicLinkSmoke)
+target_link_libraries(WaferCompilerPublicLinkSmoke PRIVATE WaferCompiler)
+
+add_executable(WaferModelPublicLinkSmoke
+  LinkClosure/ModelPublicLinkSmoke.cpp)
+llvm_update_compile_flags(WaferModelPublicLinkSmoke)
+target_link_libraries(WaferModelPublicLinkSmoke PRIVATE WaferTargetModelCore)
+
+foreach(_wafer_public_link_smoke IN ITEMS
+    WaferTargetPublicLinkSmoke
+    WaferRuntimePublicLinkSmoke
+    WaferCompilerPublicLinkSmoke
+    WaferModelPublicLinkSmoke)
+  add_test(NAME ${_wafer_public_link_smoke}
+    COMMAND ${_wafer_public_link_smoke})
+  set_tests_properties(${_wafer_public_link_smoke} PROPERTIES
+    LABELS "public-header;link-closure")
+endforeach()
+
 add_custom_target(check-wafer-unit
   COMMAND $<TARGET_FILE:WaferUnitTests>
   COMMAND $<TARGET_FILE:WaferRunBoardIOUnitTests>
-  DEPENDS WaferUnitTests WaferRunBoardIOUnitTests
+  COMMAND $<TARGET_FILE:WaferTargetPublicLinkSmoke>
+  COMMAND $<TARGET_FILE:WaferRuntimePublicLinkSmoke>
+  COMMAND $<TARGET_FILE:WaferCompilerPublicLinkSmoke>
+  COMMAND $<TARGET_FILE:WaferModelPublicLinkSmoke>
+  DEPENDS
+    WaferUnitTests
+    WaferRunBoardIOUnitTests
+    WaferTargetPublicLinkSmoke
+    WaferRuntimePublicLinkSmoke
+    WaferCompilerPublicLinkSmoke
+    WaferModelPublicLinkSmoke
   USES_TERMINAL
 )
 

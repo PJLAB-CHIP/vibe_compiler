@@ -2,11 +2,10 @@
 
 #include "AcceptedCallClosure.h"
 
+#include "Wafer/Analysis/DirectCallGraphAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Interfaces/CallInterfaces.h"
-
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Errc.h"
@@ -28,8 +27,11 @@ llvm::Expected<AcceptedCallClosure>
 analyzeAcceptedCallClosure(mlir::ModuleOp module,
                            std::optional<llvm::StringRef> expectedEntry) {
   AcceptedCallClosure closure;
-  for (mlir::func::FuncOp function : module.getOps<mlir::func::FuncOp>())
-    closure.functions.push_back(function);
+  analysis::DirectCallGraphAnalysis callGraph(module.getOperation());
+  if (!callGraph.hasModuleScope())
+    return invalid("accepted call closure requires a module");
+  closure.functions.append(callGraph.getFunctions().begin(),
+                           callGraph.getFunctions().end());
   if (closure.functions.empty())
     return invalid("accepted physical-Tile executable has no entry function");
 
@@ -52,9 +54,7 @@ analyzeAcceptedCallClosure(mlir::ModuleOp module,
   if (expectedEntry && closure.entry.getSymName() != *expectedEntry)
     return invalid("accepted entry symbol disagrees with the typed artifact");
 
-  llvm::DenseSet<mlir::Operation *> functionSet;
   for (mlir::func::FuncOp function : closure.functions) {
-    functionSet.insert(function.getOperation());
     if (function != closure.entry && !function.isPrivate())
       return invalid(
           ("non-entry function @" + function.getSymName() + " must be private")
@@ -88,36 +88,27 @@ analyzeAcceptedCallClosure(mlir::ModuleOp module,
                          .str());
   }
 
-  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<mlir::func::FuncOp, 2>>
-      callees;
-  for (mlir::func::FuncOp function : closure.functions) {
-    llvm::Error error = llvm::Error::success();
-    function.walk([&](mlir::Operation *operation) {
-      if (error)
-        return mlir::WalkResult::interrupt();
-      if (auto call = mlir::dyn_cast<mlir::func::CallOp>(operation)) {
-        mlir::func::FuncOp callee =
-            module.lookupSymbol<mlir::func::FuncOp>(call.getCallee());
-        if (!callee || !functionSet.contains(callee.getOperation())) {
-          error = invalid(("direct call from @" + function.getSymName() +
-                           " has unresolved callee @" + call.getCallee())
-                              .str());
-          return mlir::WalkResult::interrupt();
-        }
-        callees[function.getOperation()].push_back(callee);
-        return mlir::WalkResult::advance();
-      }
-      if (mlir::isa<mlir::CallOpInterface>(operation)) {
-        error = invalid(("accepted call closure contains unsupported indirect "
-                         "or non-func call operation " +
-                         operation->getName().getStringRef())
-                            .str());
-        return mlir::WalkResult::interrupt();
-      }
-      return mlir::WalkResult::advance();
-    });
-    if (error)
-      return std::move(error);
+  if (!callGraph.getUnresolvedCalls().empty()) {
+    mlir::func::CallOp call = callGraph.getUnresolvedCalls().front();
+    mlir::func::FuncOp caller = call->getParentOfType<mlir::func::FuncOp>();
+    return invalid(("direct call from @" + caller.getSymName() +
+                    " has unresolved callee @" + call.getCallee())
+                       .str());
+  }
+  if (!callGraph.getUnsupportedCallOperations().empty()) {
+    mlir::Operation *operation =
+        callGraph.getUnsupportedCallOperations().front();
+    return invalid(("accepted call closure contains unsupported indirect or "
+                    "non-func call operation " +
+                    operation->getName().getStringRef())
+                       .str());
+  }
+  if (callGraph.hasRecursiveCycle()) {
+    auto function = mlir::dyn_cast<mlir::func::FuncOp>(
+        callGraph.getRecursiveCycleOrigin());
+    return invalid(("accepted call closure is recursive at @" +
+                    function.getSymName())
+                       .str());
   }
 
   llvm::DenseMap<mlir::Operation *, uint8_t> state;
@@ -132,7 +123,7 @@ analyzeAcceptedCallClosure(mlir::ModuleOp module,
       return llvm::Error::success();
     current = 1;
     reachable.insert(function.getOperation());
-    for (mlir::func::FuncOp callee : callees[function.getOperation()])
+    for (mlir::func::FuncOp callee : callGraph.getCallees(function))
       if (llvm::Error error = self(self, callee))
         return error;
     current = 2;

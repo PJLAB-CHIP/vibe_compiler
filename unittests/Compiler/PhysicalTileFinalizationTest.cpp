@@ -78,6 +78,19 @@ module {
                                                    context.get());
   }
 
+  mlir::OwningOpRef<mlir::ModuleOp> candidateWithSPMPlacement() {
+    return mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main() {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir",
+                                                   context.get());
+  }
+
   mlir::OwningOpRef<mlir::ModuleOp> candidateWithStaleMidRegionJoin() {
     return mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
@@ -219,12 +232,26 @@ TEST_F(PhysicalTileFinalizationTest,
   EXPECT_TRUE(mlir::failed(finalized));
   EXPECT_EQ(failure.kind,
             wafer::compiler::detail::PhysicalTileFinalizationFailureKind::
-                PrematureWholeCardFacts);
+                PreexistingPhysicalAssignments);
   EXPECT_NE(diagnostics.find(
-                "physical_tile_finalization_contains_premature_whole_card_"
-                "facts"),
+                "physical_tile_finalization_contains_preexisting_physical_"
+                "assignments"),
             std::string::npos)
       << diagnostics;
+}
+
+TEST_F(PhysicalTileFinalizationTest,
+       RejectsPreexistingSPMAssignmentInsteadOfScrubbingIt) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = candidateWithSPMPlacement();
+  ASSERT_TRUE(module);
+
+  wafer::compiler::detail::PhysicalTileFinalizationFailure failure;
+  auto finalized = wafer::compiler::detail::finalizePhysicalTileModule(
+      std::move(module), &failure);
+  EXPECT_TRUE(mlir::failed(finalized));
+  EXPECT_EQ(failure.kind,
+            wafer::compiler::detail::PhysicalTileFinalizationFailureKind::
+                PreexistingPhysicalAssignments);
 }
 
 TEST_F(PhysicalTileFinalizationTest,

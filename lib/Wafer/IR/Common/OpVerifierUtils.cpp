@@ -16,6 +16,19 @@
 
 namespace wafer::detail {
 
+bool isExternalDiscardableAttribute(mlir::Operation *op,
+                                    mlir::NamedAttribute attribute) {
+  if (std::optional<mlir::RegisteredOperationName> registered =
+          op->getRegisteredInfo())
+    if (llvm::is_contained(registered->getAttributeNames(),
+                           attribute.getName()))
+      return false;
+  llvm::StringRef name = attribute.getName().getValue();
+  auto [dialectNamespace, suffix] = name.split('.');
+  return !suffix.empty() && !dialectNamespace.empty() &&
+         dialectNamespace != WaferDialect::getDialectNamespace();
+}
+
 bool isSPMMemRef(mlir::Type type) { return wafer::isWaferSPMMemRefType(type); }
 
 bool isSPMBuffer(mlir::Type type) { return isSPMMemRef(type); }
@@ -88,29 +101,26 @@ getOptionalExecutionMeshPartitionCount(mlir::Operation *op) {
   if (!moduleOp)
     return std::optional<int64_t>();
 
-  ExecutionMeshOp meshOp =
-      moduleOp.lookupSymbol<ExecutionMeshOp>("default_mesh");
-  if (!meshOp) {
-    bool multipleMeshes = false;
-    moduleOp.walk([&](ExecutionMeshOp candidate) {
-      if (!meshOp) {
-        meshOp = candidate;
-        return;
-      }
-      multipleMeshes = true;
-    });
-    if (multipleMeshes)
-      return op->emitOpError(
-          "execution mesh partition validation requires @default_mesh when "
-          "multiple execution meshes exist");
+  ExecutionMeshOp meshOp;
+  bool multipleMeshes = false;
+  for (ExecutionMeshOp candidate : moduleOp.getOps<ExecutionMeshOp>()) {
+    if (!meshOp) {
+      meshOp = candidate;
+      continue;
+    }
+    multipleMeshes = true;
+    break;
   }
+  if (multipleMeshes)
+    return op->emitOpError(
+        "execution mesh partition validation requires a unique direct "
+        "module execution mesh");
   if (!meshOp)
     return std::optional<int64_t>();
 
   int64_t partitionCount = 1;
   for (int64_t dim : meshOp.getShapeAttr().asArrayRef()) {
-    if (dim <= 0 ||
-        !checkedMul(partitionCount, dim, partitionCount))
+    if (dim <= 0 || !checkedMul(partitionCount, dim, partitionCount))
       return op->emitOpError("execution mesh partition count is invalid");
   }
   return std::optional<int64_t>(partitionCount);
@@ -149,41 +159,6 @@ verifyPartitionIdsWithinExecutionMesh(mlir::Operation *op,
                 "count";
   }
   return mlir::success();
-}
-
-static PhysicalCardId getEnclosingPhysicalCardId(mlir::Operation *op) {
-  if (auto tileProgram = op->getParentOfType<TileProgramOp>())
-    if (auto cardProgram = tileProgram->getParentOfType<CardProgramOp>())
-      return PhysicalCardId(cardProgram.getCardIdAttr().getInt());
-  return PhysicalCardId(0);
-}
-
-mlir::LogicalResult verifyPhysicalTileIdsWithinTopology(
-    mlir::Operation *op, llvm::ArrayRef<int64_t> physicalTileIds,
-    llvm::StringRef subject) {
-  mlir::ModuleOp module = op->getParentOfType<mlir::ModuleOp>();
-  if (!module)
-    return op->emitOpError() << subject << " requires a module topology";
-  std::string reason;
-  mlir::FailureOr<PhysicalTopology> topology =
-      PhysicalTopology::create(module, &reason);
-  if (mlir::failed(topology))
-    return op->emitOpError()
-           << subject << " requires a valid physical topology: " << reason;
-  PhysicalCardId cardId = getEnclosingPhysicalCardId(op);
-  for (int64_t tileId : physicalTileIds) {
-    if (tileId < 0 ||
-        !topology->isTileAvailable(cardId, PhysicalTileId(tileId)))
-      return op->emitOpError()
-             << subject << " contains unavailable physical tile_id "
-             << tileId;
-  }
-  return mlir::success();
-}
-
-mlir::LogicalResult verifyPhysicalTileIdWithinTopology(
-    mlir::Operation *op, int64_t physicalTileId, llvm::StringRef subject) {
-  return verifyPhysicalTileIdsWithinTopology(op, {physicalTileId}, subject);
 }
 
 static std::optional<int64_t> getElementBitWidth(mlir::Type elementType) {
@@ -257,8 +232,7 @@ mlir::LogicalResult verifyCanonicalConv2DGeometry(
   auto error = [&](llvm::Twine message) -> mlir::LogicalResult {
     return op->emitOpError() << diagnosticPrefix << message;
   };
-  if (input.getRank() != 4 || weight.getRank() != 4 ||
-      output.getRank() != 4)
+  if (input.getRank() != 4 || weight.getRank() != 4 || output.getRank() != 4)
     return error("ordinary convolution requires rank-4 input, weight and "
                  "output");
   if (!input.hasStaticShape() || !weight.hasStaticShape() ||
@@ -268,7 +242,8 @@ mlir::LogicalResult verifyCanonicalConv2DGeometry(
       dilations.size() != 2)
     return error("ordinary convolution geometry attribute lengths are "
                  "invalid");
-  if (llvm::any_of(input.getShape(), [](int64_t value) { return value <= 0; }) ||
+  if (llvm::any_of(input.getShape(),
+                   [](int64_t value) { return value <= 0; }) ||
       llvm::any_of(weight.getShape(),
                    [](int64_t value) { return value <= 0; }) ||
       llvm::any_of(output.getShape(),
@@ -291,9 +266,8 @@ mlir::LogicalResult verifyCanonicalConv2DGeometry(
                  "relation");
 
   auto inferOutput = [&](int64_t inputSize, int64_t kernel, int64_t stride,
-                         int64_t dilation, int64_t padBefore,
-                         int64_t padAfter, int64_t unpadBefore,
-                         int64_t unpadAfter,
+                         int64_t dilation, int64_t padBefore, int64_t padAfter,
+                         int64_t unpadBefore, int64_t unpadAfter,
                          llvm::StringRef role) -> mlir::FailureOr<int64_t> {
     int64_t padded = 0;
     int64_t dilatedSpan = 0;
@@ -322,18 +296,15 @@ mlir::LogicalResult verifyCanonicalConv2DGeometry(
     return windowed - totalUnpad;
   };
 
-  mlir::FailureOr<int64_t> expectedH =
-      inferOutput(input.getDimSize(1), weight.getDimSize(1), strides[0],
-                  dilations[0], pads[0], pads[1], unpads[0], unpads[1],
-                  "height");
-  mlir::FailureOr<int64_t> expectedW =
-      inferOutput(input.getDimSize(2), weight.getDimSize(0), strides[1],
-                  dilations[1], pads[2], pads[3], unpads[2], unpads[3],
-                  "width");
+  mlir::FailureOr<int64_t> expectedH = inferOutput(
+      input.getDimSize(1), weight.getDimSize(1), strides[0], dilations[0],
+      pads[0], pads[1], unpads[0], unpads[1], "height");
+  mlir::FailureOr<int64_t> expectedW = inferOutput(
+      input.getDimSize(2), weight.getDimSize(0), strides[1], dilations[1],
+      pads[2], pads[3], unpads[2], unpads[3], "width");
   if (mlir::failed(expectedH) || mlir::failed(expectedW))
     return mlir::failure();
-  if (output.getDimSize(1) != *expectedH ||
-      output.getDimSize(2) != *expectedW)
+  if (output.getDimSize(1) != *expectedH || output.getDimSize(2) != *expectedW)
     return error("convolution output spatial shape does not match "
                  "input/kernel/stride/dilation/pad/unpad");
   return mlir::success();
@@ -372,18 +343,6 @@ mlir::LogicalResult verifyDTEP2P(mlir::Operation *op, mlir::Value buffer,
     return op->emitOpError(
         "target_geometry_mismatch: DTE byte count exceeds buffer physical "
         "byte size");
-  if (op->hasAttr(kWaferCommSlotAttrName)) {
-    auto slot = op->getAttrOfType<mlir::IntegerAttr>(kWaferCommSlotAttrName);
-    if (!slot)
-      return op->emitOpError("DTE slot must be an integer attr");
-    if (slot.getInt() < 0)
-      return op->emitOpError("DTE slot must be non-negative");
-    if (static_cast<uint64_t>(slot.getInt()) >
-        std::numeric_limits<uint32_t>::max())
-      return op->emitOpError(
-          "target_abi_narrowing: DTE slot must fit uint32_t");
-  }
-
   return mlir::success();
 }
 
@@ -397,8 +356,7 @@ mlir::LogicalResult verifyDTEWaitTokens(mlir::Operation *op,
   }
   return mlir::success();
 }
-template <typename GemmOp>
-static bool hasAnyBatchedGemmAttrsImpl(GemmOp op) {
+template <typename GemmOp> static bool hasAnyBatchedGemmAttrsImpl(GemmOp op) {
   return op.getBatchCountAttr() || op.getLhsBatchDimsAttr() ||
          op.getRhsBatchDimsAttr() || op.getResultBatchDimsAttr() ||
          op.getLhsMDimAttr() || op.getLhsContractingDimAttr() ||
@@ -415,8 +373,8 @@ bool hasAnyBatchedGemmAttrs(mlir::Operation *op) {
 }
 
 template <typename GemmOp>
-static mlir::LogicalResult getBatchedGemmDimAttrsImpl(
-    GemmOp op, BatchedGemmDimAttrs &attrs) {
+static mlir::LogicalResult
+getBatchedGemmDimAttrsImpl(GemmOp op, BatchedGemmDimAttrs &attrs) {
   auto requireI64 = [&](mlir::IntegerAttr attr, llvm::StringRef name,
                         int64_t &value) -> mlir::LogicalResult {
     if (!attr)
@@ -424,9 +382,9 @@ static mlir::LogicalResult getBatchedGemmDimAttrsImpl(
     value = attr.getInt();
     return mlir::success();
   };
-  auto requireDense = [&](mlir::DenseI64ArrayAttr attr, llvm::StringRef name,
-                          llvm::SmallVectorImpl<int64_t> &values)
-      -> mlir::LogicalResult {
+  auto requireDense =
+      [&](mlir::DenseI64ArrayAttr attr, llvm::StringRef name,
+          llvm::SmallVectorImpl<int64_t> &values) -> mlir::LogicalResult {
     if (!attr)
       return op.emitOpError("GEMM batched form requires ") << name << " attr";
     values.assign(attr.asArrayRef().begin(), attr.asArrayRef().end());
@@ -440,26 +398,26 @@ static mlir::LogicalResult getBatchedGemmDimAttrsImpl(
                                 attrs.rhsBatchDims)) ||
       mlir::failed(requireDense(op.getResultBatchDimsAttr(),
                                 "result_batch_dims", attrs.resultBatchDims)) ||
-      mlir::failed(requireI64(op.getLhsMDimAttr(), "lhs_m_dim",
-                              attrs.lhsMDim)) ||
+      mlir::failed(
+          requireI64(op.getLhsMDimAttr(), "lhs_m_dim", attrs.lhsMDim)) ||
       mlir::failed(requireI64(op.getLhsContractingDimAttr(),
                               "lhs_contracting_dim",
                               attrs.lhsContractingDim)) ||
       mlir::failed(requireI64(op.getRhsContractingDimAttr(),
                               "rhs_contracting_dim",
                               attrs.rhsContractingDim)) ||
-      mlir::failed(requireI64(op.getRhsNDimAttr(), "rhs_n_dim",
-                              attrs.rhsNDim)) ||
+      mlir::failed(
+          requireI64(op.getRhsNDimAttr(), "rhs_n_dim", attrs.rhsNDim)) ||
       mlir::failed(requireI64(op.getResultMDimAttr(), "result_m_dim",
                               attrs.resultMDim)) ||
-      mlir::failed(requireI64(op.getResultNDimAttr(), "result_n_dim",
-                              attrs.resultNDim)))
+      mlir::failed(
+          requireI64(op.getResultNDimAttr(), "result_n_dim", attrs.resultNDim)))
     return mlir::failure();
   return mlir::success();
 }
 
-static mlir::LogicalResult getBatchedGemmDimAttrs(
-    mlir::Operation *op, BatchedGemmDimAttrs &attrs) {
+static mlir::LogicalResult getBatchedGemmDimAttrs(mlir::Operation *op,
+                                                  BatchedGemmDimAttrs &attrs) {
   if (auto tile = mlir::dyn_cast<ComputeGemmOp>(op))
     return getBatchedGemmDimAttrsImpl(tile, attrs);
   if (auto instr = mlir::dyn_cast<InstrGemmOp>(op))
@@ -506,6 +464,7 @@ verifyDimsCoverRank(mlir::Operation *op, llvm::StringRef name,
 mlir::LogicalResult verifyBatchedGemmTileContract(
     mlir::Operation *op, mlir::RankedTensorType lhsTensor,
     mlir::RankedTensorType rhsTensor, mlir::RankedTensorType resultTensor,
+    GemmOrientation lhsOrientation, GemmOrientation rhsOrientation,
     BatchedGemmDimAttrs &attrs) {
   if (mlir::failed(getBatchedGemmDimAttrs(op, attrs)))
     return mlir::failure();
@@ -520,12 +479,6 @@ mlir::LogicalResult verifyBatchedGemmTileContract(
       !resultTensor.hasStaticShape())
     return op->emitOpError("GEMM batched form requires static tensor shapes");
 
-  GemmOrientation lhsOrientation = GemmOrientation::Normal;
-  GemmOrientation rhsOrientation = GemmOrientation::Normal;
-  if (auto attr = op->getAttrOfType<GemmOrientationAttr>("lhs_orientation"))
-    lhsOrientation = attr.getValue();
-  if (auto attr = op->getAttrOfType<GemmOrientationAttr>("rhs_orientation"))
-    rhsOrientation = attr.getValue();
   int64_t expectedLhsMDim = lhsOrientation == GemmOrientation::Normal ? 1 : 2;
   int64_t expectedLhsKDim = lhsOrientation == GemmOrientation::Normal ? 2 : 1;
   int64_t expectedRhsKDim = rhsOrientation == GemmOrientation::Normal ? 1 : 2;
@@ -644,10 +597,10 @@ static bool isSelectKind(ComputeElementwiseKind kind) {
   return kind == ComputeElementwiseKind::Select;
 }
 
-mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
-                                                  ComputeElementwiseKind kind,
-                                                  mlir::ValueRange inputs,
-                                                  mlir::Type resultType) {
+mlir::LogicalResult
+verifyElementwiseTileContract(mlir::Operation *op, ComputeElementwiseKind kind,
+                              mlir::ValueRange inputs, mlir::Type resultType,
+                              mlir::ArrayAttr indexingMaps) {
   std::optional<mlir::RankedTensorType> resultTensor =
       getLogicalTensorType(resultType);
   if (!resultTensor)
@@ -663,9 +616,6 @@ mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
   std::optional<MemLayout> resultLayout = getWaferLayout(resultType);
   if (!resultLayout)
     return op->emitOpError("elementwise result must carry Wafer layout");
-
-  auto elementwise = mlir::cast<ComputeElementwiseOp>(op);
-  mlir::ArrayAttr indexingMaps = elementwise.getIndexingMapsAttr();
 
   if (indexingMaps) {
     if (indexingMaps.size() != inputs.size() + 1)

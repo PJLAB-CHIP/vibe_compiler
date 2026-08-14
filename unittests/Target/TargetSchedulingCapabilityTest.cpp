@@ -1,6 +1,7 @@
 //===- TargetSchedulingCapabilityTest.cpp - Scheduling contract tests ---===//
 
 #include "Wafer/Target/TargetSchedulingCapability.h"
+#include "Wafer/Analysis/TargetSchedulingAnalysis.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/IR/WaferInterfaces.h"
@@ -37,6 +38,7 @@ using wafer::TargetSchedulingProfitabilityScope;
 using wafer::TargetSchedulingWindowPredicate;
 using wafer::TargetSchedulingWindowQuery;
 using wafer::TargetSchedulingWorkerRelation;
+using wafer::analysis::analyzeTargetSchedulingWindow;
 
 constexpr TargetSchedulingEngineMask engine(TargetSchedulingEngine value) {
   return wafer::targetSchedulingEngineBit(value);
@@ -72,12 +74,10 @@ static TargetSchedulingWindowPredicate makeSameWorkerFixed(
                        minimumBytes, maximumBytes);
 }
 
-static TargetSchedulingWindowQuery
-makeQuery(TargetSchedulingMechanism mechanism,
-          TargetSchedulingEngineMask engines,
-          TargetSchedulingWorkerRelation workerRelation,
-          TargetSchedulingCompletionKind completion,
-          uint64_t payloadBytes = 16) {
+static TargetSchedulingWindowQuery makeQuery(
+    TargetSchedulingMechanism mechanism, TargetSchedulingEngineMask engines,
+    TargetSchedulingWorkerRelation workerRelation,
+    TargetSchedulingCompletionKind completion, uint64_t payloadBytes = 16) {
   TargetSchedulingWindowQuery query(mechanism);
   query.engines = engines;
   query.workerRelation = workerRelation;
@@ -227,7 +227,8 @@ TEST(TargetSchedulingCapabilityTest,
   const TargetSchedulingLegalityRow supported{
       makeSameWorkerFixed(kCTRdma), TargetSchedulingCapabilityState::Supported};
 
-  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create({supported, supported}, {}))
+  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create(
+                                  {supported, supported}, {}))
                 .find("duplicate or overlapping"),
             std::string::npos);
 
@@ -237,7 +238,8 @@ TEST(TargetSchedulingCapabilityTest,
   const TargetSchedulingLegalityRow overlappingRange{
       makeSameWorkerFixed(kCTRdma, 16, 32),
       TargetSchedulingCapabilityState::Supported};
-  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create({firstRange, overlappingRange}, {}))
+  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create(
+                                  {firstRange, overlappingRange}, {}))
                 .find("duplicate or overlapping"),
             std::string::npos);
 
@@ -246,7 +248,8 @@ TEST(TargetSchedulingCapabilityTest,
                     TargetSchedulingWorkerRelation::SameNCCWorker,
                     TargetSchedulingCompletionKind::ParticipantJoin),
       TargetSchedulingCapabilityState::Supported};
-  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create({mismatched}, {}))
+  EXPECT_NE(takeExpectedError(
+                TargetSchedulingCapabilityRegistry::create({mismatched}, {}))
                 .find("mismatched"),
             std::string::npos);
 }
@@ -263,25 +266,26 @@ TEST(TargetSchedulingCapabilityTest,
       groupLegality.predicate, TargetSchedulingProfitabilityScope::ExactPair,
       TargetSchedulingOverlapEvidence::QualifiedOverlap,
       TargetSchedulingDrainEvidence::Unknown};
-  EXPECT_NE(
-      takeExpectedError(TargetSchedulingCapabilityRegistry::create({groupLegality}, {pairWithGroupEngines}))
-          .find("scope does not match"),
-      std::string::npos);
+  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create(
+                                  {groupLegality}, {pairWithGroupEngines}))
+                .find("scope does not match"),
+            std::string::npos);
 
   const TargetSchedulingProfitabilityRow groupWithPairEngines{
       pairLegality.predicate, TargetSchedulingProfitabilityScope::ExactGroup,
       TargetSchedulingOverlapEvidence::QualifiedOverlap,
       TargetSchedulingDrainEvidence::Unknown};
-  EXPECT_NE(
-      takeExpectedError(TargetSchedulingCapabilityRegistry::create({pairLegality}, {groupWithPairEngines}))
-          .find("scope does not match"),
-      std::string::npos);
+  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create(
+                                  {pairLegality}, {groupWithPairEngines}))
+                .find("scope does not match"),
+            std::string::npos);
 
   const TargetSchedulingProfitabilityRow noEvidence{
       pairLegality.predicate, TargetSchedulingProfitabilityScope::ExactPair,
       TargetSchedulingOverlapEvidence::Unknown,
       TargetSchedulingDrainEvidence::Unknown};
-  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create({pairLegality}, {noEvidence}))
+  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create(
+                                  {pairLegality}, {noEvidence}))
                 .find("no qualified evidence"),
             std::string::npos);
 
@@ -291,7 +295,8 @@ TEST(TargetSchedulingCapabilityTest,
       TargetSchedulingProfitabilityScope::ExactPair,
       TargetSchedulingOverlapEvidence::QualifiedOverlap,
       TargetSchedulingDrainEvidence::Unknown};
-  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create({pairLegality}, {uncovered}))
+  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create(
+                                  {pairLegality}, {uncovered}))
                 .find("lacks one supported covering legality"),
             std::string::npos);
 
@@ -301,18 +306,17 @@ TEST(TargetSchedulingCapabilityTest,
       pairLegality.predicate, TargetSchedulingProfitabilityScope::ExactPair,
       TargetSchedulingOverlapEvidence::QualifiedOverlap,
       TargetSchedulingDrainEvidence::Unknown};
-  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create({unsupported}, {falselyQualified}))
+  EXPECT_NE(takeExpectedError(TargetSchedulingCapabilityRegistry::create(
+                                  {unsupported}, {falselyQualified}))
                 .find("lacks one supported covering legality"),
             std::string::npos);
 }
 
-TEST(TargetSchedulingCapabilityTest,
-     QueryKeepsUnsupportedAndUnknownDistinct) {
+TEST(TargetSchedulingCapabilityTest, QueryKeepsUnsupportedAndUnknownDistinct) {
   const TargetSchedulingLegalityRow unsupported{
       makeSameWorkerFixed(kCTRdma),
       TargetSchedulingCapabilityState::Unsupported};
-  auto registry =
-      TargetSchedulingCapabilityRegistry::create({unsupported}, {});
+  auto registry = TargetSchedulingCapabilityRegistry::create({unsupported}, {});
   ASSERT_TRUE(static_cast<bool>(registry))
       << llvm::toString(registry.takeError());
 
@@ -356,6 +360,12 @@ TEST(TargetSchedulingCapabilityTest,
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>,
+    card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>,
+    unavailable_tiles = array<i64>
+  }
   func.func @arbitrary_name(
       %input: memref<4xf16, #wafer.memory<ddr, tensor>>) {
     %buffer = memref.alloc()
@@ -373,7 +383,7 @@ module {
        to memref<4xf16, #wafer.memory<spm, tensor>>
     %sent = wafer.instr.dte_send %buffer
         {peer = 0 : i64, bytes = 8 : i64,
-         message = #wafer.dte_message<communication = 1, phase = peer_dataflow, round = 0, slice = 0>}
+         message = #wafer.dte_message<communication = 1, round = 0, slice = 0>}
         : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
     wafer.instr.dte_wait %sent : !async.token
     return
@@ -383,7 +393,7 @@ module {
       &context);
   ASSERT_TRUE(module);
 
-  auto query = wafer::analyzeTargetSchedulingWindow(
+  auto query = analyzeTargetSchedulingWindow(
       *module, TargetSchedulingMechanism::DirectDTEOverlap);
   ASSERT_TRUE(static_cast<bool>(query)) << llvm::toString(query.takeError());
   EXPECT_EQ(query->engines, engine(TargetSchedulingEngine::TDMA) |
@@ -433,7 +443,7 @@ module {
   EXPECT_EQ(windows.issuedWorkerMask, UINT32_C(0x3));
   EXPECT_FALSE(windows.hasCrossWorkerWindow);
 
-  auto query = wafer::analyzeTargetSchedulingWindow(
+  auto query = analyzeTargetSchedulingWindow(
       *module, TargetSchedulingMechanism::WorkerPlacement);
   ASSERT_TRUE(static_cast<bool>(query)) << llvm::toString(query.takeError());
   EXPECT_EQ(query->workerRelation,

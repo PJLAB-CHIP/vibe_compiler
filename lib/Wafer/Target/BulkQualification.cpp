@@ -190,15 +190,16 @@ llvm::Expected<std::string> requireDigest(const llvm::json::Object &object,
   return value->str();
 }
 
-static llvm::Expected<MemLayout> parseLayout(llvm::StringRef spelling) {
+static llvm::Expected<PhysicalTensorLayout>
+parseLayout(llvm::StringRef spelling) {
   if (spelling == "tensor")
-    return MemLayout::Tensor;
+    return PhysicalTensorLayout::Tensor;
   if (spelling == "ntensor")
-    return MemLayout::NTensor;
+    return PhysicalTensorLayout::NTensor;
   if (spelling == "cx")
-    return MemLayout::Cx;
+    return PhysicalTensorLayout::Cx;
   if (spelling == "ncx")
-    return MemLayout::NCx;
+    return PhysicalTensorLayout::NCx;
   return invalid("unknown numeric tensor layout " + spelling);
 }
 
@@ -235,9 +236,10 @@ llvm::json::Object specJSON(const BulkQualificationSpec &spec) {
       {"k", static_cast<int64_t>(spec.getK())},
       {"n", static_cast<int64_t>(spec.getN())},
       {"batch_count", static_cast<int64_t>(spec.getBatchCount())},
-      {"lhs_layout", stringifyMemLayout(spec.getLHSLayout())},
-      {"rhs_layout", stringifyMemLayout(spec.getRHSLayout())},
-      {"destination_layout", stringifyMemLayout(spec.getDestinationLayout())},
+      {"lhs_layout", stringifyPhysicalTensorLayout(spec.getLHSLayout())},
+      {"rhs_layout", stringifyPhysicalTensorLayout(spec.getRHSLayout())},
+      {"destination_layout",
+       stringifyPhysicalTensorLayout(spec.getDestinationLayout())},
       {"seed", static_cast<int64_t>(spec.getSeed())},
   };
   if (spec.hasExplicitPhysicalPayload()) {
@@ -396,9 +398,9 @@ parseSpecObject(const llvm::json::Object &object) {
                              rhsLayoutText, destinationLayoutText, seed))
     return error;
   llvm::Expected<LogicalFormat> format = parseLogicalFormat(*formatText);
-  llvm::Expected<MemLayout> lhsLayout = parseLayout(*lhsLayoutText);
-  llvm::Expected<MemLayout> rhsLayout = parseLayout(*rhsLayoutText);
-  llvm::Expected<MemLayout> destinationLayout =
+  llvm::Expected<PhysicalTensorLayout> lhsLayout = parseLayout(*lhsLayoutText);
+  llvm::Expected<PhysicalTensorLayout> rhsLayout = parseLayout(*rhsLayoutText);
+  llvm::Expected<PhysicalTensorLayout> destinationLayout =
       parseLayout(*destinationLayoutText);
   if (llvm::Error error =
           takeExpectedErrors(format, lhsLayout, rhsLayout, destinationLayout))
@@ -504,11 +506,11 @@ namespace wafer {
 
 using namespace bulk_qualification_detail;
 
-llvm::Expected<BulkQualificationSpec>
-BulkQualificationSpec::create(LogicalFormat format, uint64_t m, uint64_t k,
-                              uint64_t n, uint64_t batchCount,
-                              MemLayout lhsLayout, MemLayout rhsLayout,
-                              MemLayout destinationLayout, uint64_t seed) {
+llvm::Expected<BulkQualificationSpec> BulkQualificationSpec::create(
+    LogicalFormat format, uint64_t m, uint64_t k, uint64_t n,
+    uint64_t batchCount, PhysicalTensorLayout lhsLayout,
+    PhysicalTensorLayout rhsLayout, PhysicalTensorLayout destinationLayout,
+    uint64_t seed) {
   if (format != LogicalFormat::F16 && format != LogicalFormat::BF16 &&
       format != LogicalFormat::F32)
     return invalid("bulk qualification only accepts f16, bf16 or f32");
@@ -520,7 +522,8 @@ BulkQualificationSpec::create(LogicalFormat format, uint64_t m, uint64_t k,
       seed > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
     return invalid("bulk qualification dimensions must be positive uint16 and "
                    "seed must fit int64");
-  const MemLayout required = batchCount == 1 ? MemLayout::Cx : MemLayout::NCx;
+  const PhysicalTensorLayout required =
+      batchCount == 1 ? PhysicalTensorLayout::Cx : PhysicalTensorLayout::NCx;
   if (lhsLayout != required || rhsLayout != required ||
       destinationLayout != required)
     return invalid("unbatched qualification requires cx; batched requires ncx");
@@ -538,9 +541,10 @@ BulkQualificationSpec::create(LogicalFormat format, uint64_t m, uint64_t k,
 llvm::Expected<BulkQualificationSpec>
 BulkQualificationSpec::createWithPhysicalPayload(
     LogicalFormat format, uint64_t m, uint64_t k, uint64_t n,
-    uint64_t batchCount, MemLayout lhsLayout, MemLayout rhsLayout,
-    MemLayout destinationLayout, uint64_t seed,
-    std::vector<uint8_t> lhsPhysical, std::vector<uint8_t> rhsPhysical,
+    uint64_t batchCount, PhysicalTensorLayout lhsLayout,
+    PhysicalTensorLayout rhsLayout, PhysicalTensorLayout destinationLayout,
+    uint64_t seed, std::vector<uint8_t> lhsPhysical,
+    std::vector<uint8_t> rhsPhysical,
     std::vector<uint8_t> destinationTemplatePhysical) {
   llvm::Expected<BulkQualificationSpec> generated =
       create(format, m, k, n, batchCount, lhsLayout, rhsLayout,

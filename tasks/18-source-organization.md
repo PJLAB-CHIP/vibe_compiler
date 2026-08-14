@@ -136,6 +136,21 @@ performance estimator只计算enabled numeric terms；完全未知项不进入�
 只解fixed problem，不能生成spill/retile/reorder repair。任何会影响search的事实都必须从current actual IR重算并返回
 physical-dataflow owner。
 
+### 3.5 Dormant mechanism迁移边界
+
+source未进入CMake只表示它不属于current build，不能据此把仍被Q50合同需要的算法与证明一起删除。当前明确分类如下；
+这些文件不得以旧public pass、旧`Comm*` op或独立selector形式重新激活，完成承接实现与替代测试后必须删除旧文件：
+
+| 当前dormant source/test | 仍需保留的能力 | 处置与删除门禁 |
+| --- | --- | --- |
+| `CollectiveTopologyAnalysis.{h,cpp}`、`CollectiveTopologyTest.cpp` | bounded participant集合上的deterministic ring/tree topology推导与exact负例 | `extract-then-delete`：Q50.H迁入physical communication candidate domain，使用typed participant/topology relation并补active test后删除旧API/test |
+| `WaferTileRegionToInstr/CollectiveLowering.cpp`及旧`Comm*` tests | collective拆成typed message、DTE issue/wait、局部reduce/copy的materialization mechanics | `extract-then-delete`：旧Tile collective op已退出current ODS，文件不得原样进CMake；Q50.H迁移mechanics与正负proof后删除 |
+| `AttentionSemantics.cpp`、`MaterializeFlashAttention.cpp`、`MaterializeFlashDecoding.cpp`及对应未注册tests | 从current SSA证明attention/decode语义并物化online/split recurrence | `extract-then-delete`：Q50.S接入统一structured semantic-alternative builder，不恢复独立Flash pass/selector；actual TensorProgram与替代test闭合后删除 |
+| `CompleteTraversal.cpp`及依赖它的optional attention implementation source | complete structured traversal和partition/local-reduction/merge materialization | `extract-then-delete`：Q50.S/Q50.D迁到active traversal/materializer seam，chain/fanout/fanin/diamond witness受测后删除旧实现 |
+
+`tools/check_source_organization.py`从CMake target读取active translation unit；本表列出的dormant文件作为政策allowlist单独核对。
+新增dormant source必须先在本节说明承接合同和删除门禁，不能通过扩allowlist逃避build/test职责。
+
 ## 4. Target、runtime与model organization
 
 ### 4.1 Target conversion/publication

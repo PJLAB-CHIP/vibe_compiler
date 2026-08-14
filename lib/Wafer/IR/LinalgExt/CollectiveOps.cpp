@@ -33,9 +33,10 @@ mlir::LogicalResult
 verifyAllowedAttrs(mlir::Operation *op,
                    llvm::ArrayRef<llvm::StringRef> allowedAttrs) {
   for (mlir::NamedAttribute attr : op->getAttrs()) {
-    if (!isAllowedAttr(attr, allowedAttrs))
+    if (!isAllowedAttr(attr, allowedAttrs) &&
+        !wafer::detail::isExternalDiscardableAttribute(op, attr))
       return op->emitOpError("does not accept attribute '")
-             << attr.getName()
+             << attr.getName().getValue()
              << "'; linalg-ext collectives must not carry physical endpoint "
                 "mapping, "
                 "SPM, DTE, byte schedule, or runtime metadata";

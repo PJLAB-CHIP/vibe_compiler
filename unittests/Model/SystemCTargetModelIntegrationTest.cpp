@@ -2,7 +2,7 @@
 
 #include "Wafer/Model/SystemCTargetModel.h"
 
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
 #include "Wafer/Compiler/CompilationInternal.h"
@@ -199,7 +199,8 @@ TEST(SystemCTargetModelIntegrationTest,
   std::vector<TargetCallTileArguments> arguments;
   std::vector<TargetModelInputBinding> inputs;
   NumericTensorKey tensorKey = llvm::cantFail(
-      NumericTensorKey::create(LogicalFormat::F32, MemLayout::Tensor, {8}));
+      NumericTensorKey::create(LogicalFormat::F32,
+                               PhysicalTensorLayout::Tensor, {8}));
   const std::vector<RawLogicalValue> lhs =
       makeSequentialF32Values(/*globalOffset=*/0, /*elementCount=*/8, 0.0f);
   std::vector<RawLogicalValue> rhs(8,

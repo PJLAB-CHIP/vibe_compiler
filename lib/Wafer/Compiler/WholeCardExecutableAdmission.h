@@ -10,6 +10,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
 #include <memory>
@@ -18,6 +19,39 @@
 #include <vector>
 
 namespace wafer::compiler::detail {
+
+enum class WholeCardAdmissionFailureKind : uint8_t {
+  None,
+  Contract,
+  PhysicalTileDomain,
+  PhysicalTileMaterialization,
+  PhysicalTileVerification,
+  DDRPlanning,
+  IndexLowering,
+  DirectDTETransport,
+  WholeCardResources,
+  AcceptedPhysicalTileVerification,
+  AcceptedCallClosure,
+  PartitionResourceProjection,
+  RuntimeLaunchContract,
+  TargetABIPreparation,
+  TargetABILowering,
+};
+
+/// Typed rejection produced by the whole-card admission boundary.  `kind`
+/// drives compiler control flow; `detail` and the stable label are diagnostic
+/// only and must never be parsed to recover the rejection category.
+struct WholeCardAdmissionFailure {
+  WholeCardAdmissionFailureKind kind = WholeCardAdmissionFailureKind::None;
+  std::string detail;
+
+  explicit operator bool() const {
+    return kind != WholeCardAdmissionFailureKind::None;
+  }
+
+  bool isProvenExactRejection() const;
+  llvm::StringRef getDiagnosticLabel() const;
+};
 
 struct AcceptedWholeCardExecutable {
   AcceptedWholeCardExecutable(
@@ -49,14 +83,14 @@ struct WholeCardSynthesisStatistics {
 /// physical Tile. The disposable set receives DDR placement, index lowering,
 /// exact Direct-DTE binding, whole-card resource validation, physical Tile
 /// executable projection, and target ABI/LLVM preflight atomically.
-/// `selectedTileIR` remains query-local evidence owned by finalization and must
-/// match the physical Tile domain.
+/// `failure` is reset on entry and remains empty on success; callers branch on
+/// its typed kind, never its diagnostic label or detail. Diagnostic IR traces
+/// are deliberately outside this semantic admission boundary.
 mlir::FailureOr<AcceptedWholeCardExecutable> admitWholeCardExecutable(
     std::vector<mlir::OwningOpRef<mlir::ModuleOp>> physicalTileModules,
-    llvm::ArrayRef<std::shared_ptr<const std::string>> selectedTileIR,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    std::string *failureGate = nullptr,
+    WholeCardAdmissionFailure &failure,
     WholeCardSynthesisStatistics *statistics = nullptr,
     unsigned tilePipelineParallelism = 0);
 

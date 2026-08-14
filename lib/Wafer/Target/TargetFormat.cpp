@@ -8,6 +8,16 @@
 #include <cstddef>
 
 namespace wafer {
+
+llvm::StringRef stringifyTargetGemmOrientation(TargetGemmOrientation value) {
+  switch (value) {
+  case TargetGemmOrientation::Normal:
+    return "normal";
+  case TargetGemmOrientation::Transpose:
+    return "transpose";
+  }
+  llvm_unreachable("unknown target GEMM orientation");
+}
 namespace {
 
 using Format = LogicalFormat;
@@ -49,12 +59,9 @@ constexpr LogicalFormatDescriptor kLogicalFormats[] = {
 // the vendor enum for the current target, not permission for any engine to
 // emit it.
 constexpr TargetDataFormatCodeRecord kTargetDataFormatCodes[] = {
-    {Format::I8, 0},   {Format::I16, 1},
-    {Format::F16, 2},  {Format::BF16, 3},
-    {Format::I32, 4},  {Format::F32, 5},
-    {Format::TF32, 6}, {Format::Bool, 7},
-    {Format::U8, 8},   {Format::U16, 9},
-    {Format::U32, 10}, {Format::I64, 11},
+    {Format::I8, 0},   {Format::I16, 1}, {Format::F16, 2},  {Format::BF16, 3},
+    {Format::I32, 4},  {Format::F32, 5}, {Format::TF32, 6}, {Format::Bool, 7},
+    {Format::U8, 8},   {Format::U16, 9}, {Format::U32, 10}, {Format::I64, 11},
     {Format::U64, 12},
 };
 
@@ -86,8 +93,7 @@ constexpr TargetFormatEncodingRecord kTargetFormatEncodings[] = {
     supported(Engine::RDMA, Format::I32),
     supported(Engine::RDMA, Format::F32),
     supported(Engine::RDMA, Format::TF32),
-    supported(Engine::RDMA, Format::Bool,
-              Constraint::BitpackedDMA),
+    supported(Engine::RDMA, Format::Bool, Constraint::BitpackedDMA),
     supported(Engine::RDMA, Format::U8),
     supported(Engine::RDMA, Format::U16),
     supported(Engine::RDMA, Format::U32),
@@ -101,8 +107,7 @@ constexpr TargetFormatEncodingRecord kTargetFormatEncodings[] = {
     supported(Engine::WDMA, Format::I32),
     supported(Engine::WDMA, Format::F32),
     supported(Engine::WDMA, Format::TF32),
-    supported(Engine::WDMA, Format::Bool,
-              Constraint::BitpackedDMA),
+    supported(Engine::WDMA, Format::Bool, Constraint::BitpackedDMA),
     supported(Engine::WDMA, Format::U8),
     supported(Engine::WDMA, Format::U16),
     supported(Engine::WDMA, Format::U32),
@@ -154,65 +159,40 @@ constexpr TargetFormatEncodingRecord kTargetFormatEncodings[] = {
 
 constexpr TargetConvertRoute kTargetConvertRoutes[] = {
     {139, "int8_fp16", Format::I8, Format::F16, Parameter::ZeroPoint},
-    {140, "int8_bf16", Format::I8, Format::BF16,
-     Parameter::ZeroPoint},
+    {140, "int8_bf16", Format::I8, Format::BF16, Parameter::ZeroPoint},
     {141, "int8_fp32", Format::I8, Format::F32, Parameter::ZeroPoint},
-    {142, "int8_tf32", Format::I8, Format::TF32,
-     Parameter::ZeroPoint},
+    {142, "int8_tf32", Format::I8, Format::TF32, Parameter::ZeroPoint},
     {143, "int16_fp16", Format::I16, Format::F16, Parameter::None},
-    {144, "int16_bf16", Format::I16, Format::BF16,
-     Parameter::RoundingMode},
-    {145, "int16_fp32", Format::I16, Format::F32,
-     Parameter::RoundingMode},
-    {146, "int16_tf32", Format::I16, Format::TF32,
-     Parameter::RoundingMode},
-    {147, "int32_fp16", Format::I32, Format::F16,
-     Parameter::RoundingMode},
-    {148, "int32_bf16", Format::I32, Format::BF16,
-     Parameter::RoundingMode},
-    {149, "int32_fp32", Format::I32, Format::F32,
-     Parameter::RoundingMode},
-    {150, "int32_tf32", Format::I32, Format::TF32,
-     Parameter::RoundingMode},
+    {144, "int16_bf16", Format::I16, Format::BF16, Parameter::RoundingMode},
+    {145, "int16_fp32", Format::I16, Format::F32, Parameter::RoundingMode},
+    {146, "int16_tf32", Format::I16, Format::TF32, Parameter::RoundingMode},
+    {147, "int32_fp16", Format::I32, Format::F16, Parameter::RoundingMode},
+    {148, "int32_bf16", Format::I32, Format::BF16, Parameter::RoundingMode},
+    {149, "int32_fp32", Format::I32, Format::F32, Parameter::RoundingMode},
+    {150, "int32_tf32", Format::I32, Format::TF32, Parameter::RoundingMode},
     {151, "bf16_int8", Format::BF16, Format::I8, Parameter::None},
-    {152, "bf16_int16", Format::BF16, Format::I16,
-     Parameter::RoundingMode},
-    {153, "bf16_int32", Format::BF16, Format::I32,
-     Parameter::RoundingMode},
+    {152, "bf16_int16", Format::BF16, Format::I16, Parameter::RoundingMode},
+    {153, "bf16_int32", Format::BF16, Format::I32, Parameter::RoundingMode},
     {154, "bf16_fp16", Format::BF16, Format::F16, Parameter::None},
     {155, "bf16_fp32", Format::BF16, Format::F32, Parameter::None},
     {156, "bf16_tf32", Format::BF16, Format::TF32, Parameter::None},
-    {157, "fp16_int8", Format::F16, Format::I8,
-     Parameter::RoundingMode},
-    {158, "fp16_int16", Format::F16, Format::I16,
-     Parameter::RoundingMode},
-    {159, "fp16_int32", Format::F16, Format::I32,
-     Parameter::RoundingMode},
-    {160, "fp16_bf16", Format::F16, Format::BF16,
-     Parameter::RoundingMode},
+    {157, "fp16_int8", Format::F16, Format::I8, Parameter::RoundingMode},
+    {158, "fp16_int16", Format::F16, Format::I16, Parameter::RoundingMode},
+    {159, "fp16_int32", Format::F16, Format::I32, Parameter::RoundingMode},
+    {160, "fp16_bf16", Format::F16, Format::BF16, Parameter::RoundingMode},
     {161, "fp16_fp32", Format::F16, Format::F32, Parameter::None},
     {162, "fp16_tf32", Format::F16, Format::TF32, Parameter::None},
-    {163, "fp32_int8", Format::F32, Format::I8,
-     Parameter::RoundingMode},
-    {164, "fp32_int16", Format::F32, Format::I16,
-     Parameter::RoundingMode},
-    {165, "fp32_int32", Format::F32, Format::I32,
-     Parameter::RoundingMode},
-    {166, "fp32_fp16", Format::F32, Format::F16,
-     Parameter::RoundingMode},
-    {167, "fp32_bf16", Format::F32, Format::BF16,
-     Parameter::RoundingMode},
-    {168, "fp32_tf32", Format::F32, Format::TF32,
-     Parameter::RoundingMode},
-    {169, "tf32_int8", Format::TF32, Format::I8,
-     Parameter::RoundingMode},
-    {170, "tf32_int16", Format::TF32, Format::I16,
-     Parameter::RoundingMode},
-    {171, "tf32_int32", Format::TF32, Format::I32,
-     Parameter::RoundingMode},
+    {163, "fp32_int8", Format::F32, Format::I8, Parameter::RoundingMode},
+    {164, "fp32_int16", Format::F32, Format::I16, Parameter::RoundingMode},
+    {165, "fp32_int32", Format::F32, Format::I32, Parameter::RoundingMode},
+    {166, "fp32_fp16", Format::F32, Format::F16, Parameter::RoundingMode},
+    {167, "fp32_bf16", Format::F32, Format::BF16, Parameter::RoundingMode},
+    {168, "fp32_tf32", Format::F32, Format::TF32, Parameter::RoundingMode},
+    {169, "tf32_int8", Format::TF32, Format::I8, Parameter::RoundingMode},
+    {170, "tf32_int16", Format::TF32, Format::I16, Parameter::RoundingMode},
+    {171, "tf32_int32", Format::TF32, Format::I32, Parameter::RoundingMode},
     {172, "tf32_fp16", Format::TF32, Format::F16, Parameter::None},
-    {173, "tf32_bf16", Format::TF32, Format::BF16,
-     Parameter::RoundingMode},
+    {173, "tf32_bf16", Format::TF32, Format::BF16, Parameter::RoundingMode},
     {174, "tf32_fp32", Format::TF32, Format::F32, Parameter::None},
 };
 
@@ -320,8 +300,7 @@ constexpr bool hasCompleteAndConsistentEncodingRegistry() {
     for (const LogicalFormatDescriptor &format : kLogicalFormats) {
       size_t count = 0;
       for (const TargetFormatEncodingRecord &record : kTargetFormatEncodings)
-        if (record.engine == engine &&
-            record.format == format.format)
+        if (record.engine == engine && record.format == format.format)
           ++count;
       if (count != 1)
         return false;
@@ -335,8 +314,7 @@ constexpr bool hasCompleteAndUniqueConvertRegistry() {
     return false;
   for (size_t index = 0; index < arrayLength(kTargetConvertRoutes); ++index) {
     const TargetConvertRoute &route = kTargetConvertRoutes[index];
-    if (route.opcode != 139 + index ||
-        route.source == route.destination)
+    if (route.opcode != 139 + index || route.source == route.destination)
       return false;
     for (size_t other = index + 1; other < arrayLength(kTargetConvertRoutes);
          ++other) {
@@ -447,8 +425,7 @@ llvm::ArrayRef<TargetFormatEncodingRecord> getTargetFormatEncodingRecords() {
 const TargetFormatEncodingRecord *
 findTargetFormatEncoding(TargetFormatEngine engine, LogicalFormat format) {
   for (const TargetFormatEncodingRecord &record : kTargetFormatEncodings)
-    if (record.engine == engine &&
-        record.format == format)
+    if (record.engine == engine && record.format == format)
       return &record;
   return nullptr;
 }
@@ -500,8 +477,7 @@ const TargetConvertRoute *findTargetConvertRoute(uint16_t opcode) {
 const TargetConvertRoute *findTargetConvertRoute(LogicalFormat source,
                                                  LogicalFormat destination) {
   for (const TargetConvertRoute &route : kTargetConvertRoutes)
-    if (route.source == source &&
-        route.destination == destination)
+    if (route.source == source && route.destination == destination)
       return &route;
   return nullptr;
 }

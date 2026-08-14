@@ -22,30 +22,30 @@ executeTargetModelCommand(const compiler::TargetTransaction &transaction,
         TargetModelKernelErrorCode::InvalidTransactionField,
         "transaction launch slot is outside invocation");
 
-  if (const auto *value = std::get_if<compiler::TargetStridedDMATransaction>(
+  if (const auto *value = std::get_if<target::TargetStridedDMATransaction>(
           &transaction.payload))
     return kernel_detail::executeMovement(transaction, *value, memory, budget);
-  if (const auto *value = std::get_if<compiler::TargetGatherScatterTransaction>(
+  if (const auto *value = std::get_if<target::TargetGatherScatterTransaction>(
           &transaction.payload))
     return kernel_detail::executeGatherScatter(transaction, *value, memory,
                                                budget);
   if (const auto *value =
-          std::get_if<compiler::TargetMemsetTransaction>(&transaction.payload))
+          std::get_if<target::TargetMemsetTransaction>(&transaction.payload))
     return kernel_detail::executeMemset(transaction, *value, memory);
-  if (const auto *value = std::get_if<compiler::TargetElementwiseTransaction>(
+  if (const auto *value = std::get_if<target::TargetElementwiseTransaction>(
           &transaction.payload))
     return kernel_detail::executeElementwise(transaction, *value, memory,
                                              budget, policy);
   if (const auto *value =
-          std::get_if<compiler::TargetConvertTransaction>(&transaction.payload))
+          std::get_if<target::TargetConvertTransaction>(&transaction.payload))
     return kernel_detail::executeConvert(transaction, *value, memory, budget,
                                          policy);
   if (const auto *value =
-          std::get_if<compiler::TargetReduceTransaction>(&transaction.payload))
+          std::get_if<target::TargetReduceTransaction>(&transaction.payload))
     return kernel_detail::executeReduce(transaction, *value, memory, budget,
                                         policy);
   if (const auto *value =
-          std::get_if<compiler::TargetGemmTransaction>(&transaction.payload))
+          std::get_if<target::TargetGemmTransaction>(&transaction.payload))
     return kernel_detail::executeGemm(transaction, *value, memory, budget,
                                       policy);
 

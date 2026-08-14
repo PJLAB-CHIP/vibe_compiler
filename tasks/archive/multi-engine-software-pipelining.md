@@ -154,7 +154,7 @@ Pipeline position:
 
 | 层 / 当前入口 | 审计时旧行为 | 审计结论 | 当前 checkpoint / 剩余责任 |
 | --- | --- | --- | --- |
-| Instr completion interface | 所有Compute/Movement写resource的op都曾被归入“等待全域fence”，blocking op又被归入无scope barrier | ordinary NCC issue与blocking waitfinish被错误捆绑；ArgMax/ArgMin当前例外确有host writeback需求 | 旧分类已删除；共享合同现为`OrderedPending`、`ParticipantJoin`、`SynchronousWriteback`和非NCC `None` |
+| Instr completion interface | 所有Compute/Movement写resource的op都曾被归入“等待全域fence”，blocking op又被归入无scope barrier | ordinary NCC issue与blocking waitfinish被错误捆绑；ArgMax/ArgMin当前例外确有host writeback需求 | 旧分类已删除；共享合同现为`OrderedAsynchronousIssue`、`ParticipantJoin`、`SynchronousWriteback`和非NCC `None` |
 | Tile→Instr general lowering | 2个旧结构边界、1个tile store及10个compute/composite位置显式创建`local_fence` | WDMA、same-worker gather/compute/reduce、loop backedge和旧内部scope exit均不是drain理由 | 结构创建点已归零；general lowering只发typed issue，统一DAG placement生成必要join；root释放边界与entry terminal分别验证各自pending set |
 | Collective lowering | 两层lowering共18个显式创建点，混合local copy、NCC compute、DTE send/wait与round forwarding | NCC→DTE source的真实handoff可能必须；DTE wait后的same-worker consumer、local copy后的NCC consumer和旧scope final fence通常不必 | 结构创建点已归零；保留exact DTE token，只在真实NCC producer→DTE source cut放join并跨slot/round尽量batch；region boundary不自动完成无关pending，entry terminal完成剩余observable work |
 | Direct DTE target path | 旧send TargetCall只prepare参数，真正`send_async`/completion/release都在后续wait中；旧model却在prepare时建立endpoint并可匹配copy | 旧`send → independent NCC → wait`不构成真实transport overlap，model还会高估；raw DTE能力不能代签production调用点 | current ABI已物化独立typed issue TargetCall，CRT在issue完成peer-ready与`send_async`，wait只完成completion/release；profiler分别报告issue与completion wait |

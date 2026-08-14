@@ -77,18 +77,18 @@ static llvm::Expected<ProductT> compileTensorProgram(
 llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLaunchSlot) {
+    std::optional<int64_t> failAfterLaunchSlot, CompilationIRTrace &irTrace) {
   return compileTensorProgram<ExecutableBundle>(
-      tensorProgramDirectory, executionConfig, diagnostics,
-      failAfterLaunchSlot,
-      [optimizations](std::shared_ptr<mlir::MLIRContext> &context,
-                      mlir::ModuleOp tensorModule,
-                      frontend::FrontendProgramVerificationResult program,
-                      ExecutionConfig config, llvm::raw_ostream &output,
-                      std::optional<int64_t> failAfterLaunchSlot) {
-        return buildExecutableBundle(context, tensorModule, std::move(program),
-                                     config, optimizations, output,
-                                     failAfterLaunchSlot);
+      tensorProgramDirectory, executionConfig, diagnostics, failAfterLaunchSlot,
+      [optimizations,
+       &irTrace](std::shared_ptr<mlir::MLIRContext> &context,
+                 mlir::ModuleOp tensorModule,
+                 frontend::FrontendProgramVerificationResult program,
+                 ExecutionConfig config, llvm::raw_ostream &output,
+                 std::optional<int64_t> failAfterLaunchSlot) {
+        return buildExecutableBundleWithIRTrace(
+            context, tensorModule, std::move(program), config, optimizations,
+            output, failAfterLaunchSlot, irTrace);
       });
 }
 

@@ -5,9 +5,11 @@
 #include "BoundedTileExecutor.h"
 #include "CardExecutableCompilation.h"
 #include "SelectedBufferMaterialization.h"
+#include "StructuredBufferRelations.h"
+#include "TileRegionSPMCapacityEvaluation.h"
 #include "WholeDAGCandidateSchedule.h"
 #include "WholeDAGEdgeStrategyPlan.h"
-#include "WholeDAGPlacementFrontier.h"
+#include "WholeDAGPlacementEnumeration.h"
 #include "WholeDAGSchedule.h"
 #include "WholeDAGSchedulePlan.h"
 
@@ -74,11 +76,11 @@ static llvm::StringRef getSpatialEdgeActionName(SpatialEdgeAction action) {
 }
 
 struct SPMCapacityDemandEvidence {
-  PhysicalTileId physicalTileId;
-  const CardProgramSourceOperationLineage *operationLineage = nullptr;
-  const SpatialOutputLineage *outputLineage = nullptr;
-  const StructuredOperandDemandLineage *operandDemandLineage = nullptr;
-  bool lineageFromAllocation = false;
+  PhysicalTileId physicalTileId{-1};
+  std::optional<CardDAGNodeID> operationNode;
+  std::optional<unsigned> outputIndex;
+  std::optional<CardDAGNodeID> operandDemandNode;
+  bool relationFromAllocation = false;
   mlir::Type type;
   uint64_t bytes = 0;
   uint64_t demandCount = 0;
@@ -86,15 +88,15 @@ struct SPMCapacityDemandEvidence {
   uint64_t exactConflictDemandCount = 0;
 };
 
-struct WholeCardCandidate {
-  uint64_t stableOrdinal = 0;
-  /// Stable identity of one candidate emitted by the initial factorized
-  /// joint search. Exact allocator-directed temporal and hard-capacity edge
-  /// neighbors inherit it so an admitted repair closes that one search basin
-  /// without merging distinct spatial/layout/action/buffer seeds.
-  uint64_t feedbackRootOrdinal = 0;
+struct WholeCardCandidateAssignment {
   CardSpatialMapping mapping;
   llvm::SmallVector<WholeDAGNodePlacement, 16> nodePlacements;
+};
+
+/// Facts derived from the candidate assignment and the current TensorProgram
+/// epoch. They are recomputed after an assignment change and never serve as
+/// cross-epoch identity.
+struct WholeCardCandidateEvaluation {
   uint64_t criticalStructuredElementWork = 0;
   uint64_t shardImbalance = 0;
   uint64_t queryExpansionWork = 0;
@@ -113,6 +115,32 @@ struct WholeCardCandidate {
   uint32_t distinctTileGroupCount = 1;
   uint32_t partialOverlapEdgeCount = 0;
   uint32_t disjointEdgeCount = 0;
+};
+
+struct SPMDemandRelation {
+  std::optional<CardDAGNodeID> operationNode;
+  std::optional<unsigned> outputIndex;
+  std::optional<CardDAGNodeID> operandDemandNode;
+  mlir::Type type;
+  uint64_t bytes = 0;
+
+  bool matches(const SPMCapacityDemandEvidence &evidence) const {
+    return operationNode == evidence.operationNode &&
+           outputIndex == evidence.outputIndex &&
+           operandDemandNode == evidence.operandDemandNode &&
+           type == evidence.type && bytes == evidence.bytes;
+  }
+};
+
+/// Query-local controller bookkeeping. It may order or generate another
+/// assignment but cannot establish legality or become selected IR semantics.
+struct WholeCardCandidateTransition {
+  uint64_t stableOrdinal = 0;
+  /// Stable identity of one candidate emitted by the initial factorized
+  /// joint search. Exact allocator-directed temporal and hard-capacity edge
+  /// neighbors inherit it so an admitted repair closes that one search basin
+  /// without merging distinct spatial/layout/action/buffer seeds.
+  uint64_t feedbackRootOrdinal = 0;
   bool nodePlacementCandidate = false;
   unsigned temporalRefinementDepth = 0;
   bool bufferFeedbackBoundary = false;
@@ -126,13 +154,11 @@ struct WholeCardCandidate {
   /// feedback transition.  It is query-local evidence used only to detect
   /// that the chosen adjacent coordinate left the limiting actual allocation
   /// unchanged; it never accepts or rejects a candidate by estimate.
-  mlir::Operation *previousSPMDemandOperation = nullptr;
-  mlir::Type previousSPMDemandType;
-  uint64_t previousSPMDemandBytes = 0;
+  std::optional<SPMDemandRelation> previousSPMDemand;
   /// Number of consecutive exact failures with the same limiting allocator
   /// signature along the current feedback lane.  It controls only how far an
   /// additional probe looks ahead; the adjacent state remains in the common
-  /// frontier.
+  /// candidate queue.
   uint64_t unchangedSPMDemandStreak = 0;
   /// Exact allocator result of the parent state that generated this pending
   /// feedback candidate.  These fields order already-legal search states;
@@ -142,14 +168,28 @@ struct WholeCardCandidate {
   uint64_t parentSPMTotalDemandCount = 0;
   /// Query-local ordering memory for progressive multi-demand allocator
   /// feedback. It is not part of exact-state identity or selected IR.
-  llvm::SmallVector<const void *, 8> progressiveSPMDemandHistory;
+  llvm::SmallVector<uint64_t, 8> progressiveSPMDemandHistory;
 };
 
+struct WholeCardCandidate {
+  WholeCardCandidateAssignment assignment;
+  WholeCardCandidateEvaluation evaluation;
+  WholeCardCandidateTransition transition;
+};
+
+static SPMDemandRelation
+getSPMDemandRelation(const SPMCapacityDemandEvidence &evidence) {
+  return {evidence.operationNode, evidence.outputIndex,
+          evidence.operandDemandNode, evidence.type, evidence.bytes};
+}
+
 struct AdmittedWholeCardCandidate {
-  AdmittedWholeCardCandidate(WholeCardCandidate candidate,
-                             AcceptedWholeCardExecutable executable,
-                             uint64_t actualFusedLogicalEdges)
+  AdmittedWholeCardCandidate(
+      WholeCardCandidate candidate, AcceptedWholeCardExecutable executable,
+      llvm::SmallVector<AcceptedOperationNodeRelation, 64> operationNodes,
+      uint64_t actualFusedLogicalEdges)
       : candidate(std::move(candidate)), executable(std::move(executable)),
+        operationNodes(std::move(operationNodes)),
         actualFusedLogicalEdges(actualFusedLogicalEdges) {}
   AdmittedWholeCardCandidate(AdmittedWholeCardCandidate &&) noexcept = default;
   AdmittedWholeCardCandidate &
@@ -160,6 +200,7 @@ struct AdmittedWholeCardCandidate {
 
   WholeCardCandidate candidate;
   AcceptedWholeCardExecutable executable;
+  llvm::SmallVector<AcceptedOperationNodeRelation, 64> operationNodes;
   llvm::SmallVector<analysis::WholeCardInstructionProgramCost, 16> phaseCosts;
   std::optional<analysis::StaticSchedulePlan> schedulePlan;
   uint64_t actualFusedLogicalEdges = 0;
@@ -323,7 +364,7 @@ makeJointCandidate(uint64_t stableOrdinal, size_t activeTileCount,
                    const StaticOutputDomains &outputDomains,
                    const CardDAGAnalysis &dag) {
   WholeCardCandidate candidate;
-  candidate.stableOrdinal = stableOrdinal;
+  candidate.transition.stableOrdinal = stableOrdinal;
   uint64_t totalOutputElements = 0;
   for (auto [outputIndex, domain] : llvm::enumerate(outputDomains)) {
     CardOutputSpatialMapping output;
@@ -332,15 +373,15 @@ makeJointCandidate(uint64_t stableOrdinal, size_t activeTileCount,
     output.activeTileIds.append(availableTileIds.begin(),
                                 availableTileIds.begin() + activeTileCount);
     output.temporalTileSizes.assign(domain.begin(), domain.end());
-    candidate.mapping.outputs.push_back(std::move(output));
+    candidate.assignment.mapping.outputs.push_back(std::move(output));
     totalOutputElements =
         saturatingAdd(totalOutputElements, getOutputElementCount(domain));
-    candidate.shardImbalance =
-        saturatingAdd(candidate.shardImbalance,
+    candidate.evaluation.shardImbalance =
+        saturatingAdd(candidate.evaluation.shardImbalance,
                       static_cast<uint64_t>(domain[dimensions[outputIndex]]) %
                           activeTileCount);
   }
-  candidate.criticalStructuredElementWork = saturatingMultiply(
+  candidate.evaluation.criticalStructuredElementWork = saturatingMultiply(
       ceilDivide(totalOutputElements, activeTileCount),
       std::max<uint64_t>(1, static_cast<uint64_t>(dag.getNodes().size())));
   for (const CardDAGNode &node : dag.getNodes()) {
@@ -369,32 +410,34 @@ makeJointCandidate(uint64_t stableOrdinal, size_t activeTileCount,
     }
     placement.tiles.append(availableTileIds.begin(),
                            availableTileIds.begin() + activeTileCount);
-    candidate.nodePlacements.push_back(std::move(placement));
+    candidate.assignment.nodePlacements.push_back(std::move(placement));
   }
   // This is compile-time query expansion, not a runtime communication model.
-  candidate.queryExpansionWork = saturatingMultiply(
-      getActiveTileAssignmentCount(candidate.mapping, candidate.nodePlacements),
+  candidate.evaluation.queryExpansionWork = saturatingMultiply(
+      getActiveTileAssignmentCount(candidate.assignment.mapping,
+                                   candidate.assignment.nodePlacements),
       saturatingAdd(dag.getNodes().size(), dag.getEdges().size()));
   return candidate;
 }
 
 static bool prepareEdgeStrategies(WholeCardCandidate &candidate,
                                   const CardDAGAnalysis &dag) {
-  if (!candidate.mapping.edgeStrategies.empty())
+  if (!candidate.assignment.mapping.edgeStrategies.empty())
     return true;
   std::string failureReason;
   mlir::FailureOr<WholeDAGEdgeStrategyPlan> edgePlan =
-      deriveWholeDAGEdgeStrategyPlan(dag, candidate.nodePlacements,
+      deriveWholeDAGEdgeStrategyPlan(dag, candidate.assignment.nodePlacements,
                                      &failureReason);
   if (mlir::failed(edgePlan))
     return false;
-  candidate.mapping.edgeStrategies = std::move(edgePlan->strategies);
-  candidate.peerBytes = edgePlan->totalPeerBytes;
-  candidate.queryExpansionWork = saturatingMultiply(
+  candidate.assignment.mapping.edgeStrategies = std::move(edgePlan->strategies);
+  candidate.evaluation.peerBytes = edgePlan->totalPeerBytes;
+  candidate.evaluation.queryExpansionWork = saturatingMultiply(
       saturatingAdd(dag.getNodes().size(), dag.getEdges().size()),
-      saturatingAdd(getActiveTileAssignmentCount(candidate.mapping,
-                                                 candidate.nodePlacements),
-                    getPeerFragmentCount(candidate.mapping)));
+      saturatingAdd(
+          getActiveTileAssignmentCount(candidate.assignment.mapping,
+                                       candidate.assignment.nodePlacements),
+          getPeerFragmentCount(candidate.assignment.mapping)));
   return true;
 }
 
@@ -455,7 +498,8 @@ static bool appendBaselineSupportChainTransfers(WholeCardCandidate &candidate,
                                                 std::string *failureReason) {
   llvm::SmallVector<const WholeDAGNodePlacement *, 16> placements(
       dag.getNodes().size(), nullptr);
-  for (const WholeDAGNodePlacement &placement : candidate.nodePlacements) {
+  for (const WholeDAGNodePlacement &placement :
+       candidate.assignment.nodePlacements) {
     if (placement.node >= placements.size() || placements[placement.node]) {
       if (failureReason)
         *failureReason = "baseline has an invalid structured placement";
@@ -627,10 +671,12 @@ static bool appendBaselineSupportChainTransfers(WholeCardCandidate &candidate,
         strategy.fragments.push_back(SpatialEdgeFragment{
             SpatialEdgeFragmentKind::Peer, offsets, sizes, source, bytes,
             static_cast<int64_t>(edge.id), payloadSlice++});
-        candidate.peerBytes = saturatingAdd(candidate.peerBytes, bytes);
+        candidate.evaluation.peerBytes =
+            saturatingAdd(candidate.evaluation.peerBytes, bytes);
       }
 
-      candidate.mapping.edgeStrategies.push_back(std::move(strategy));
+      candidate.assignment.mapping.edgeStrategies.push_back(
+          std::move(strategy));
     }
   }
   return true;
@@ -643,20 +689,25 @@ static std::optional<WholeCardCandidate> makeNodePlacementCandidate(
     return std::nullopt;
 
   WholeCardCandidate candidate;
-  candidate.stableOrdinal = stableOrdinal;
-  candidate.nodePlacementCandidate = true;
-  candidate.peerBytes = placement.edgePlan.totalPeerBytes;
-  candidate.topologyHopByteWork = placement.topologyHopByteWork;
-  candidate.scheduledEventCount = placement.schedule.eventCount;
-  candidate.scheduledMakespan = placement.schedule.makespan;
-  candidate.scheduledPeakLiveSPMBytes = placement.schedule.peakLiveSPMBytes;
-  candidate.criticalStructuredElementWork = placement.schedule.makespan;
-  candidate.distinctTileGroupCount = placement.distinctTileGroupCount;
-  candidate.partialOverlapEdgeCount = placement.partialOverlapEdgeCount;
-  candidate.disjointEdgeCount = placement.disjointEdgeCount;
-  candidate.nodePlacements = placement.nodePlacements;
-  candidate.parallelComponentCount =
-      getDisjointDependencyComponentCount(dag, candidate.nodePlacements);
+  candidate.transition.stableOrdinal = stableOrdinal;
+  candidate.transition.nodePlacementCandidate = true;
+  candidate.evaluation.peerBytes = placement.edgePlan.totalPeerBytes;
+  candidate.evaluation.topologyHopByteWork = placement.topologyHopByteWork;
+  candidate.evaluation.scheduledEventCount = placement.schedule.eventCount;
+  candidate.evaluation.scheduledMakespan = placement.schedule.makespan;
+  candidate.evaluation.scheduledPeakLiveSPMBytes =
+      placement.schedule.peakLiveSPMBytes;
+  candidate.evaluation.criticalStructuredElementWork =
+      placement.schedule.makespan;
+  candidate.evaluation.distinctTileGroupCount =
+      placement.distinctTileGroupCount;
+  candidate.evaluation.partialOverlapEdgeCount =
+      placement.partialOverlapEdgeCount;
+  candidate.evaluation.disjointEdgeCount = placement.disjointEdgeCount;
+  candidate.assignment.nodePlacements = placement.nodePlacements;
+  candidate.evaluation.parallelComponentCount =
+      getDisjointDependencyComponentCount(dag,
+                                          candidate.assignment.nodePlacements);
   for (const WholeDAGObservablePlacement &selected :
        placement.outputPlacements) {
     if (selected.outputIndex >= outputDomains.size() ||
@@ -669,25 +720,27 @@ static std::optional<WholeCardCandidate> makeNodePlacementCandidate(
     output.activeTileIds = selected.tiles;
     output.temporalTileSizes.assign(outputDomains[selected.outputIndex].begin(),
                                     outputDomains[selected.outputIndex].end());
-    candidate.shardImbalance = saturatingAdd(
-        candidate.shardImbalance,
+    candidate.evaluation.shardImbalance = saturatingAdd(
+        candidate.evaluation.shardImbalance,
         static_cast<uint64_t>(
             outputDomains[selected.outputIndex][selected.shardDimension]) %
             selected.tiles.size());
-    candidate.mapping.outputs.push_back(std::move(output));
+    candidate.assignment.mapping.outputs.push_back(std::move(output));
   }
-  llvm::sort(candidate.mapping.outputs,
+  llvm::sort(candidate.assignment.mapping.outputs,
              [](const CardOutputSpatialMapping &lhs,
                 const CardOutputSpatialMapping &rhs) {
                return lhs.outputIndex < rhs.outputIndex;
              });
-  candidate.mapping.edgeStrategies.assign(placement.edgePlan.strategies.begin(),
-                                          placement.edgePlan.strategies.end());
-  candidate.queryExpansionWork = saturatingMultiply(
+  candidate.assignment.mapping.edgeStrategies.assign(
+      placement.edgePlan.strategies.begin(),
+      placement.edgePlan.strategies.end());
+  candidate.evaluation.queryExpansionWork = saturatingMultiply(
       saturatingAdd(dag.getNodes().size(), dag.getEdges().size()),
-      saturatingAdd(getActiveTileAssignmentCount(candidate.mapping,
-                                                 candidate.nodePlacements),
-                    getPeerFragmentCount(candidate.mapping)));
+      saturatingAdd(
+          getActiveTileAssignmentCount(candidate.assignment.mapping,
+                                       candidate.assignment.nodePlacements),
+          getPeerFragmentCount(candidate.assignment.mapping)));
   return candidate;
 }
 
@@ -1313,17 +1366,17 @@ static bool populateOperationTemporalTiles(WholeCardCandidate &candidate,
                                            const CardDAGAnalysis &dag,
                                            unsigned additionalWaveRefinements,
                                            bool minimumEndpoint = false) {
-  candidate.mapping.operationTemporalTiles.clear();
+  candidate.assignment.mapping.operationTemporalTiles.clear();
   const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
   llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 16> rangesByNode;
   rangesByNode.reserve(dag.getNodes().size());
   for (const CardDAGNode &node : dag.getNodes()) {
-    if (node.id >= candidate.nodePlacements.size() ||
-        candidate.nodePlacements[node.id].node != node.id)
+    if (node.id >= candidate.assignment.nodePlacements.size() ||
+        candidate.assignment.nodePlacements[node.id].node != node.id)
       return false;
     std::optional<llvm::SmallVector<int64_t, 4>> ranges =
-        getMaximumSpatialIteratorRanges(node.operation,
-                                        candidate.nodePlacements[node.id]);
+        getMaximumSpatialIteratorRanges(
+            node.operation, candidate.assignment.nodePlacements[node.id]);
     if (!ranges)
       return false;
     rangesByNode.push_back(std::move(*ranges));
@@ -1333,7 +1386,8 @@ static bool populateOperationTemporalTiles(WholeCardCandidate &candidate,
     if (minimumEndpoint)
       std::fill(tile.iteratorTileSizes.begin(), tile.iteratorTileSizes.end(),
                 1);
-    candidate.mapping.operationTemporalTiles.push_back(std::move(tile));
+    candidate.assignment.mapping.operationTemporalTiles.push_back(
+        std::move(tile));
   }
   if (minimumEndpoint)
     return true;
@@ -1341,7 +1395,7 @@ static bool populateOperationTemporalTiles(WholeCardCandidate &candidate,
        ++refinement) {
     bool changed = false;
     for (auto [node, tile] :
-         llvm::enumerate(candidate.mapping.operationTemporalTiles)) {
+         llvm::enumerate(candidate.assignment.mapping.operationTemporalTiles)) {
       std::optional<unsigned> dimension = selectOperationTemporalRefinementAxis(
           tile.operation, rangesByNode[node], tile.iteratorTileSizes, memory);
       if (!dimension)
@@ -1359,7 +1413,7 @@ static bool populateOperationTemporalTiles(WholeCardCandidate &candidate,
 [[maybe_unused]] static bool populateEstimatedOperationTemporalTiles(
     WholeCardCandidate &candidate, const CardDAGAnalysis &dag,
     unsigned additionalWaveRefinements, bool minimumEndpoint = false) {
-  candidate.mapping.operationTemporalTiles.clear();
+  candidate.assignment.mapping.operationTemporalTiles.clear();
   const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
   const size_t nodeCount = dag.getNodes().size();
 
@@ -1420,7 +1474,8 @@ static bool populateOperationTemporalTiles(WholeCardCandidate &candidate,
     if (!llvm::is_contained(producers, producerIt->second))
       producers.push_back(producerIt->second);
   };
-  for (const SpatialEdgeStrategy &strategy : candidate.mapping.edgeStrategies) {
+  for (const SpatialEdgeStrategy &strategy :
+       candidate.assignment.mapping.edgeStrategies) {
     if (!strategy.consumer || !strategy.producer ||
         !isInRegionAction(strategy.action))
       continue;
@@ -1522,19 +1577,21 @@ static bool populateOperationTemporalTiles(WholeCardCandidate &candidate,
     }
     selected.push_back(std::move(nodeTile));
   }
-  candidate.mapping.operationTemporalTiles = std::move(selected);
-  return candidate.mapping.operationTemporalTiles.size() == nodeCount;
+  candidate.assignment.mapping.operationTemporalTiles = std::move(selected);
+  return candidate.assignment.mapping.operationTemporalTiles.size() ==
+         nodeCount;
 }
 
 static void populateTemporalMetrics(WholeCardCandidate &candidate,
                                     const StaticOutputDomains &outputDomains,
                                     const CardDAGAnalysis &dag) {
-  candidate.temporalWaveLowerBound = 0;
-  candidate.instructionExecutionLowerBound = 0;
-  candidate.peakOutputTileFootprintEstimate = 0;
-  candidate.peakAlignedResidencyEstimate = 0;
+  candidate.evaluation.temporalWaveLowerBound = 0;
+  candidate.evaluation.instructionExecutionLowerBound = 0;
+  candidate.evaluation.peakOutputTileFootprintEstimate = 0;
+  candidate.evaluation.peakAlignedResidencyEstimate = 0;
   const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
-  for (const CardOutputSpatialMapping &output : candidate.mapping.outputs) {
+  for (const CardOutputSpatialMapping &output :
+       candidate.assignment.mapping.outputs) {
     llvm::SmallVector<int64_t, 4> shardShape =
         getMaximumSpatialShardShape(output, outputDomains[output.outputIndex]);
     uint64_t waves = 1;
@@ -1547,10 +1604,10 @@ static void populateTemporalMetrics(WholeCardCandidate &candidate,
                                  ceilDivide(static_cast<uint64_t>(shardExtent),
                                             static_cast<uint64_t>(effective)));
     }
-    candidate.temporalWaveLowerBound =
-        std::max(candidate.temporalWaveLowerBound, waves);
-    candidate.instructionExecutionLowerBound =
-        saturatingAdd(candidate.instructionExecutionLowerBound,
+    candidate.evaluation.temporalWaveLowerBound =
+        std::max(candidate.evaluation.temporalWaveLowerBound, waves);
+    candidate.evaluation.instructionExecutionLowerBound =
+        saturatingAdd(candidate.evaluation.instructionExecutionLowerBound,
                       saturatingMultiply(
                           waves, std::max<uint64_t>(1, dag.getNodes().size())));
     std::optional<uint64_t> elementBytes = getElementByteWidth(
@@ -1559,21 +1616,21 @@ static void populateTemporalMetrics(WholeCardCandidate &candidate,
       continue;
     const uint64_t tileBytes = saturatingMultiply(
         getElementProduct(effectiveTemporalShape), *elementBytes);
-    candidate.peakOutputTileFootprintEstimate =
-        std::max(candidate.peakOutputTileFootprintEstimate, tileBytes);
-    candidate.peakAlignedResidencyEstimate = std::max(
-        candidate.peakAlignedResidencyEstimate,
+    candidate.evaluation.peakOutputTileFootprintEstimate = std::max(
+        candidate.evaluation.peakOutputTileFootprintEstimate, tileBytes);
+    candidate.evaluation.peakAlignedResidencyEstimate = std::max(
+        candidate.evaluation.peakAlignedResidencyEstimate,
         estimateAlignedResidencyBytes(
             effectiveTemporalShape, *elementBytes,
             getOutputFusedTensorByteScale(dag, output.outputIndex), memory));
   }
   for (auto [node, selected] :
-       llvm::enumerate(candidate.mapping.operationTemporalTiles)) {
-    if (node >= candidate.nodePlacements.size())
+       llvm::enumerate(candidate.assignment.mapping.operationTemporalTiles)) {
+    if (node >= candidate.assignment.nodePlacements.size())
       continue;
     std::optional<llvm::SmallVector<int64_t, 4>> ranges =
-        getMaximumSpatialIteratorRanges(selected.operation,
-                                        candidate.nodePlacements[node]);
+        getMaximumSpatialIteratorRanges(
+            selected.operation, candidate.assignment.nodePlacements[node]);
     auto tiling =
         mlir::dyn_cast_or_null<mlir::TilingInterface>(selected.operation);
     if (!ranges || !tiling ||
@@ -1586,10 +1643,10 @@ static void populateTemporalMetrics(WholeCardCandidate &candidate,
           ceilDivide(
               static_cast<uint64_t>((*ranges)[dimension]),
               static_cast<uint64_t>(selected.iteratorTileSizes[dimension])));
-    candidate.temporalWaveLowerBound =
-        std::max(candidate.temporalWaveLowerBound, operationWaves);
-    candidate.instructionExecutionLowerBound =
-        saturatingAdd(candidate.instructionExecutionLowerBound, operationWaves);
+    candidate.evaluation.temporalWaveLowerBound =
+        std::max(candidate.evaluation.temporalWaveLowerBound, operationWaves);
+    candidate.evaluation.instructionExecutionLowerBound = saturatingAdd(
+        candidate.evaluation.instructionExecutionLowerBound, operationWaves);
   }
 }
 
@@ -1614,11 +1671,11 @@ static std::optional<uint64_t> getStrategyTemporalBytes(
   std::optional<CardDAGEdgeID> edgeID =
       resolveCandidateStrategyEdge(dag, strategy);
   const CardDAGEdge *edge = edgeID ? dag.getEdge(*edgeID) : nullptr;
-  if (!edge ||
-      edge->producer >= candidate.mapping.operationTemporalTiles.size())
+  if (!edge || edge->producer >=
+                   candidate.assignment.mapping.operationTemporalTiles.size())
     return std::nullopt;
   const StructuredOpTemporalTile &tile =
-      candidate.mapping.operationTemporalTiles[edge->producer];
+      candidate.assignment.mapping.operationTemporalTiles[edge->producer];
   if (tile.operation != strategy.producer)
     return std::nullopt;
   return estimateKnownResultTileBytes(strategy.producer,
@@ -1754,12 +1811,12 @@ static std::vector<uint64_t> buildCandidateResourceScheduleKey(
 static void applyCandidateResourceScheduleSummary(
     WholeCardCandidate &candidate,
     const CandidateResourceScheduleSummary &summary) {
-  candidate.scheduledEventCount = summary.eventCount;
-  candidate.scheduledMakespan = summary.makespan;
-  candidate.scheduledPeakLiveSPMBytes = summary.peakLiveSPMBytes;
-  candidate.scheduledSPMMovementWork = summary.spmMovementWork;
-  candidate.scheduledDDRMovementWork = summary.ddrMovementWork;
-  candidate.criticalStructuredElementWork = summary.makespan;
+  candidate.evaluation.scheduledEventCount = summary.eventCount;
+  candidate.evaluation.scheduledMakespan = summary.makespan;
+  candidate.evaluation.scheduledPeakLiveSPMBytes = summary.peakLiveSPMBytes;
+  candidate.evaluation.scheduledSPMMovementWork = summary.spmMovementWork;
+  candidate.evaluation.scheduledDDRMovementWork = summary.ddrMovementWork;
+  candidate.evaluation.criticalStructuredElementWork = summary.makespan;
 }
 
 static bool refreshCandidateResourceSchedule(
@@ -1778,7 +1835,8 @@ static bool refreshCandidateResourceSchedule(
     uint64_t &current = residencyBytes[{edge, tile.getValue()}];
     current = saturatingAdd(current, bytes);
   };
-  for (const SpatialEdgeStrategy &strategy : candidate.mapping.edgeStrategies) {
+  for (const SpatialEdgeStrategy &strategy :
+       candidate.assignment.mapping.edgeStrategies) {
     std::optional<CardDAGEdgeID> edgeID =
         resolveCandidateStrategyEdge(dag, strategy);
     std::optional<uint64_t> temporalBytes =
@@ -1851,7 +1909,7 @@ static bool refreshCandidateResourceSchedule(
   CandidateResourceScheduleMemo::Lookup memoLookup;
   if (memo) {
     memoLookup = memo->lookupOrCreate(buildCandidateResourceScheduleKey(
-        candidate.nodePlacements, localResidencies, peerMovements,
+        candidate.assignment.nodePlacements, localResidencies, peerMovements,
         localMovements));
     if (!memoLookup.owner) {
       if (!memoLookup.entry->legal) {
@@ -1867,10 +1925,10 @@ static bool refreshCandidateResourceSchedule(
 
   std::string scheduleFailure;
   mlir::FailureOr<WholeDAGCandidateSchedule> schedule =
-      scheduleWholeDAGCandidate(dag, availableTiles, candidate.nodePlacements,
-                                localResidencies, &scheduleFailure,
-                                peerMovements, localMovements,
-                                /*enforceSPMCapacity=*/false);
+      scheduleWholeDAGCandidate(
+          dag, availableTiles, candidate.assignment.nodePlacements,
+          localResidencies, &scheduleFailure, peerMovements, localMovements,
+          /*enforceSPMCapacity=*/false);
   if (mlir::failed(schedule)) {
     if (memo)
       memo->publish(memoLookup.entry, /*legal=*/false, {}, scheduleFailure);
@@ -1893,9 +1951,10 @@ makeTemporalVariant(const WholeCardCandidate &spatial,
                     const CardDAGAnalysis &dag, uint64_t stableOrdinal,
                     unsigned additionalWaveRefinements) {
   WholeCardCandidate candidate = spatial;
-  candidate.stableOrdinal = stableOrdinal;
-  candidate.temporalRefinementDepth = additionalWaveRefinements;
-  for (CardOutputSpatialMapping &output : candidate.mapping.outputs) {
+  candidate.transition.stableOrdinal = stableOrdinal;
+  candidate.transition.temporalRefinementDepth = additionalWaveRefinements;
+  for (CardOutputSpatialMapping &output :
+       candidate.assignment.mapping.outputs) {
     std::optional<uint64_t> elementBytes = getElementByteWidth(
         dag.getFunction().getResultTypes()[output.outputIndex]);
     if (!elementBytes)
@@ -1927,14 +1986,14 @@ makeTemporalVariant(const WholeCardCandidate &spatial,
 /// prologue/steady/tail classes on a producer chain and can duplicate an
 /// exponential number of IR classes before the next pack. The largest failed
 /// demand carries source
-/// lineage when lowering preserved it. An internal assembled producer is
-/// refined through an exact downstream operand relation; a terminal producer
-/// is refined together with the exact observable traversal coordinate that
-/// materializes its result.
+/// structured-node relation when lowering preserved it. An internal assembled
+/// producer is refined through an exact downstream operand relation; a terminal
+/// producer is refined together with the exact observable traversal coordinate
+/// that materializes its result.
 ///
-/// An allocation without recoverable structured lineage cannot identify a
-/// related temporal coordinate. That complete candidate is rejected and the
-/// common frontier continues with its other placement/action states; the
+/// An allocation without a recoverable structured-node relation cannot identify
+/// a related temporal coordinate. That complete candidate is rejected and the
+/// candidate queue continues with its other placement/action states; the
 /// search must not retile an unrelated modeled operation from an estimate.
 static bool refineOperationTemporalVariantOnce(
     WholeCardCandidate &candidate, const StaticOutputDomains &outputDomains,
@@ -1974,7 +2033,7 @@ static bool refineOperationTemporalVariantOnce(
                                   *elementBytes) > capacity;
       };
   if (!explicitProducerCanStreamToDDR && preferredOperation &&
-      llvm::any_of(candidate.mapping.edgeStrategies,
+      llvm::any_of(candidate.assignment.mapping.edgeStrategies,
                    hasOversizedExplicitProducerWindow))
     return false;
 
@@ -1988,12 +2047,12 @@ static bool refineOperationTemporalVariantOnce(
   std::optional<Refinement> downstream;
   std::optional<Refinement> preferred;
   for (auto [node, tile] :
-       llvm::enumerate(candidate.mapping.operationTemporalTiles)) {
-    if (node >= candidate.nodePlacements.size())
+       llvm::enumerate(candidate.assignment.mapping.operationTemporalTiles)) {
+    if (node >= candidate.assignment.nodePlacements.size())
       continue;
     std::optional<llvm::SmallVector<int64_t, 4>> ranges =
-        getMaximumSpatialIteratorRanges(tile.operation,
-                                        candidate.nodePlacements[node]);
+        getMaximumSpatialIteratorRanges(
+            tile.operation, candidate.assignment.nodePlacements[node]);
     if (!ranges || ranges->size() != tile.iteratorTileSizes.size())
       continue;
     std::optional<unsigned> dimension = selectOperationTemporalRefinementAxis(
@@ -2008,7 +2067,7 @@ static bool refineOperationTemporalVariantOnce(
       preferred = option;
   }
 
-  // A large allocation carrying producer lineage is commonly an assembled
+  // A large allocation related to a producer is commonly an assembled
   // full producer value. Shrinking that producer's own result traversal still
   // assembles the same full tensor before its consumer and therefore cannot
   // reduce the allocation. Use the current SSA edge relation to find a
@@ -2020,17 +2079,19 @@ static bool refineOperationTemporalVariantOnce(
       const CardDAGNode *producer = dag.getNode(edge.producer);
       const CardDAGNode *consumer = dag.getNode(edge.consumer);
       if (!producer || !consumer || producer->operation != preferredOperation ||
-          edge.consumer >= candidate.mapping.operationTemporalTiles.size())
+          edge.consumer >=
+              candidate.assignment.mapping.operationTemporalTiles.size())
         continue;
       StructuredOpTemporalTile &consumerTile =
-          candidate.mapping.operationTemporalTiles[edge.consumer];
+          candidate.assignment.mapping.operationTemporalTiles[edge.consumer];
       auto linalg = mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(
           consumerTile.operation);
       if (!linalg || edge.consumerOperand >= linalg->getNumOperands())
         continue;
       std::optional<llvm::SmallVector<int64_t, 4>> ranges =
           getMaximumSpatialIteratorRanges(
-              consumerTile.operation, candidate.nodePlacements[edge.consumer]);
+              consumerTile.operation,
+              candidate.assignment.nodePlacements[edge.consumer]);
       if (!ranges || ranges->size() != consumerTile.iteratorTileSizes.size())
         continue;
       mlir::AffineMap operandMap = linalg.getMatchingIndexingMap(
@@ -2093,10 +2154,10 @@ static bool refineOperationTemporalVariantOnce(
   if (!selected)
     return false;
   StructuredOpTemporalTile &tile =
-      candidate.mapping.operationTemporalTiles[selected->node];
+      candidate.assignment.mapping.operationTemporalTiles[selected->node];
   std::optional<llvm::SmallVector<int64_t, 4>> ranges =
-      getMaximumSpatialIteratorRanges(tile.operation,
-                                      candidate.nodePlacements[selected->node]);
+      getMaximumSpatialIteratorRanges(
+          tile.operation, candidate.assignment.nodePlacements[selected->node]);
   if (!ranges || selected->dimension >= ranges->size())
     return false;
   const int64_t previous = tile.iteratorTileSizes[selected->dimension];
@@ -2130,11 +2191,11 @@ static bool refineOperationTemporalVariantOnce(
         if (returned != result)
           continue;
         auto output =
-            llvm::find_if(candidate.mapping.outputs,
+            llvm::find_if(candidate.assignment.mapping.outputs,
                           [&](const CardOutputSpatialMapping &mapping) {
                             return mapping.outputIndex == returnIndex;
                           });
-        if (output == candidate.mapping.outputs.end())
+        if (output == candidate.assignment.mapping.outputs.end())
           continue;
         llvm::SmallVector<int64_t, 4> shardShape =
             getMaximumSpatialShardShape(*output, outputDomains[returnIndex]);
@@ -2168,8 +2229,9 @@ static bool refineOperationTemporalVariantOnce(
     *previousExtent = previous;
   if (refinedExtent)
     *refinedExtent = tile.iteratorTileSizes[selected->dimension];
-  if (candidate.temporalRefinementDepth != std::numeric_limits<unsigned>::max())
-    ++candidate.temporalRefinementDepth;
+  if (candidate.transition.temporalRefinementDepth !=
+      std::numeric_limits<unsigned>::max())
+    ++candidate.transition.temporalRefinementDepth;
   populateTemporalMetrics(candidate, outputDomains, dag);
   return true;
 }
@@ -2177,18 +2239,18 @@ static bool refineOperationTemporalVariantOnce(
 /// Advances only the observable traversal named by an actual allocation
 /// failure.  This covers view/update roots (for example a stateful output
 /// assembled from DDR-resident tensors) that intentionally are not structured
-/// DAG nodes.  The allocation's query-local output lineage is the authority;
+/// DAG nodes. The allocation's current-IR output relation is the authority;
 /// result shape is used only to enumerate the next finite coordinate value.
 static bool refineOutputTemporalVariantOnce(
     WholeCardCandidate &candidate, const StaticOutputDomains &outputDomains,
     const CardDAGAnalysis &dag, unsigned outputIndex,
     unsigned *refinedDimension = nullptr, int64_t *previousExtent = nullptr,
     int64_t *refinedExtent = nullptr) {
-  auto output = llvm::find_if(candidate.mapping.outputs,
+  auto output = llvm::find_if(candidate.assignment.mapping.outputs,
                               [&](const CardOutputSpatialMapping &mapping) {
                                 return mapping.outputIndex == outputIndex;
                               });
-  if (output == candidate.mapping.outputs.end() ||
+  if (output == candidate.assignment.mapping.outputs.end() ||
       outputIndex >= outputDomains.size())
     return false;
   std::optional<uint64_t> elementBytes =
@@ -2214,8 +2276,9 @@ static bool refineOutputTemporalVariantOnce(
     *previousExtent = previous;
   if (refinedExtent)
     *refinedExtent = output->temporalTileSizes[*dimension];
-  if (candidate.temporalRefinementDepth != std::numeric_limits<unsigned>::max())
-    ++candidate.temporalRefinementDepth;
+  if (candidate.transition.temporalRefinementDepth !=
+      std::numeric_limits<unsigned>::max())
+    ++candidate.transition.temporalRefinementDepth;
   populateTemporalMetrics(candidate, outputDomains, dag);
   return true;
 }
@@ -2229,7 +2292,8 @@ static bool refineOutputTemporalVariantOnce(
     const CardDAGAnalysis &dag) {
   const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
   bool changed = false;
-  for (CardOutputSpatialMapping &output : candidate.mapping.outputs) {
+  for (CardOutputSpatialMapping &output :
+       candidate.assignment.mapping.outputs) {
     std::optional<uint64_t> elementBytes = getElementByteWidth(
         dag.getFunction().getResultTypes()[output.outputIndex]);
     if (!elementBytes)
@@ -2247,12 +2311,12 @@ static bool refineOutputTemporalVariantOnce(
     changed = true;
   }
   for (auto [node, tile] :
-       llvm::enumerate(candidate.mapping.operationTemporalTiles)) {
-    if (node >= candidate.nodePlacements.size())
+       llvm::enumerate(candidate.assignment.mapping.operationTemporalTiles)) {
+    if (node >= candidate.assignment.nodePlacements.size())
       return false;
     std::optional<llvm::SmallVector<int64_t, 4>> ranges =
-        getMaximumSpatialIteratorRanges(tile.operation,
-                                        candidate.nodePlacements[node]);
+        getMaximumSpatialIteratorRanges(
+            tile.operation, candidate.assignment.nodePlacements[node]);
     if (!ranges || ranges->size() != tile.iteratorTileSizes.size())
       return false;
     std::optional<unsigned> dimension = selectOperationTemporalRefinementAxis(
@@ -2273,7 +2337,7 @@ static unsigned
 refineOversizedExplicitProducerEdges(WholeCardCandidate &candidate,
                                      mlir::Operation *producer);
 
-/// Returns true when an allocation carrying only generic operation lineage
+/// Returns true when an allocation related only to a generic operation
 /// cannot be that operation's selected result tile.  In that case its exact
 /// byte size is evidence for an operand or internal working-set demand even
 /// if the more specific operand marker was lost while composing movement
@@ -2284,11 +2348,12 @@ isLargerThanKnownOperationResultTile(const WholeCardCandidate &candidate,
                                      uint64_t demandBytes) {
   if (!operation || demandBytes == 0)
     return false;
-  auto selected = llvm::find_if(candidate.mapping.operationTemporalTiles,
-                                [&](const StructuredOpTemporalTile &tile) {
-                                  return tile.operation == operation;
-                                });
-  if (selected == candidate.mapping.operationTemporalTiles.end())
+  auto selected =
+      llvm::find_if(candidate.assignment.mapping.operationTemporalTiles,
+                    [&](const StructuredOpTemporalTile &tile) {
+                      return tile.operation == operation;
+                    });
+  if (selected == candidate.assignment.mapping.operationTemporalTiles.end())
     return false;
   const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
   uint64_t largestKnownResultBytes = 0;
@@ -2315,16 +2380,15 @@ static bool refineAllocationDemandTowardCapacityProbe(
     uint64_t *temporalTransitions = nullptr,
     uint64_t *edgeTransitions = nullptr) {
   mlir::Operation *demandOperation =
-      demand.operandDemandLineage ? demand.operandDemandLineage->sourceOperation
-      : demand.operationLineage   ? demand.operationLineage->sourceOperation
-                                  : nullptr;
+      demand.operandDemandNode
+          ? dag.getNodes()[*demand.operandDemandNode].operation
+      : demand.operationNode ? dag.getNodes()[*demand.operationNode].operation
+                             : nullptr;
   const bool repeatedUnchangedDemand =
-      demandOperation &&
-      candidate.previousSPMDemandOperation == demandOperation &&
-      candidate.previousSPMDemandType == demand.type &&
-      candidate.previousSPMDemandBytes == demand.bytes;
+      candidate.transition.previousSPMDemand &&
+      candidate.transition.previousSPMDemand->matches(demand);
   const bool inferredOperandDemand =
-      !demand.operandDemandLineage && !demand.outputLineage &&
+      !demand.operandDemandNode && !demand.outputIndex &&
       isLargerThanKnownOperationResultTile(candidate, demandOperation,
                                            demand.bytes);
   const unsigned changedEdges =
@@ -2347,19 +2411,19 @@ static bool refineAllocationDemandTowardCapacityProbe(
     int64_t previousExtent = 0;
     int64_t refinedExtent = 0;
     bool refined = false;
-    if (demand.operandDemandLineage) {
+    if (demand.operandDemandNode) {
       refined = refineOperationTemporalVariantOnce(
           candidate, outputDomains, dag, demandOperation,
           /*preferredIsOperandDemand=*/true, nullptr, nullptr,
           &refinedDimension, &previousExtent, &refinedExtent);
-    } else if (demand.outputLineage) {
+    } else if (demand.outputIndex) {
       refined = refineOutputTemporalVariantOnce(
-          candidate, outputDomains, dag, demand.outputLineage->outputIndex,
-          &refinedDimension, &previousExtent, &refinedExtent);
-    } else if (demand.operationLineage) {
+          candidate, outputDomains, dag, *demand.outputIndex, &refinedDimension,
+          &previousExtent, &refinedExtent);
+    } else if (demand.operationNode) {
       refined = refineOperationTemporalVariantOnce(
           candidate, outputDomains, dag, demandOperation,
-          // A first source-lineage failure may be an assembled producer whose
+          // A first producer-result failure may be an assembled producer whose
           // demanded window is controlled by a downstream consumer. If that
           // exact allocation survives the downstream transition unchanged,
           // the measured result disproves that causal direction for this
@@ -2386,27 +2450,31 @@ static bool refineAllocationDemandTowardCapacityProbe(
 
 static bool sameMapping(const WholeCardCandidate &lhs,
                         const WholeCardCandidate &rhs) {
-  if (lhs.mapping.materializationMode != rhs.mapping.materializationMode ||
-      lhs.mapping.outputs.size() != rhs.mapping.outputs.size() ||
-      lhs.mapping.operationTemporalTiles.size() !=
-          rhs.mapping.operationTemporalTiles.size() ||
-      lhs.mapping.edgeStrategies.size() != rhs.mapping.edgeStrategies.size())
+  if (lhs.assignment.mapping.materializationMode !=
+          rhs.assignment.mapping.materializationMode ||
+      lhs.assignment.mapping.outputs.size() !=
+          rhs.assignment.mapping.outputs.size() ||
+      lhs.assignment.mapping.operationTemporalTiles.size() !=
+          rhs.assignment.mapping.operationTemporalTiles.size() ||
+      lhs.assignment.mapping.edgeStrategies.size() !=
+          rhs.assignment.mapping.edgeStrategies.size())
     return false;
-  for (auto [lhsOutput, rhsOutput] :
-       llvm::zip_equal(lhs.mapping.outputs, rhs.mapping.outputs))
+  for (auto [lhsOutput, rhsOutput] : llvm::zip_equal(
+           lhs.assignment.mapping.outputs, rhs.assignment.mapping.outputs))
     if (lhsOutput.outputIndex != rhsOutput.outputIndex ||
         lhsOutput.shardDimension != rhsOutput.shardDimension ||
         lhsOutput.activeTileIds != rhsOutput.activeTileIds ||
         lhsOutput.temporalTileSizes != rhsOutput.temporalTileSizes)
       return false;
   for (auto [lhsTile, rhsTile] :
-       llvm::zip_equal(lhs.mapping.operationTemporalTiles,
-                       rhs.mapping.operationTemporalTiles))
+       llvm::zip_equal(lhs.assignment.mapping.operationTemporalTiles,
+                       rhs.assignment.mapping.operationTemporalTiles))
     if (lhsTile.operation != rhsTile.operation ||
         lhsTile.iteratorTileSizes != rhsTile.iteratorTileSizes)
       return false;
-  for (auto [lhsStrategy, rhsStrategy] : llvm::zip_equal(
-           lhs.mapping.edgeStrategies, rhs.mapping.edgeStrategies)) {
+  for (auto [lhsStrategy, rhsStrategy] :
+       llvm::zip_equal(lhs.assignment.mapping.edgeStrategies,
+                       rhs.assignment.mapping.edgeStrategies)) {
     if (lhsStrategy.producer != rhsStrategy.producer ||
         lhsStrategy.producerResult != rhsStrategy.producerResult ||
         lhsStrategy.consumer != rhsStrategy.consumer ||
@@ -2444,12 +2512,13 @@ static bool sameMapping(const WholeCardCandidate &lhs,
 static size_t getMappingHash(const WholeCardCandidate &candidate,
                              bool includeBufferCount = true) {
   llvm::hash_code hash = llvm::hash_combine(
-      static_cast<unsigned>(candidate.mapping.materializationMode),
-      candidate.mapping.outputs.size(),
-      candidate.mapping.operationTemporalTiles.size(),
-      candidate.mapping.edgeStrategies.size());
+      static_cast<unsigned>(candidate.assignment.mapping.materializationMode),
+      candidate.assignment.mapping.outputs.size(),
+      candidate.assignment.mapping.operationTemporalTiles.size(),
+      candidate.assignment.mapping.edgeStrategies.size());
   auto mix = [&](auto value) { hash = llvm::hash_combine(hash, value); };
-  for (const CardOutputSpatialMapping &output : candidate.mapping.outputs) {
+  for (const CardOutputSpatialMapping &output :
+       candidate.assignment.mapping.outputs) {
     mix(output.outputIndex);
     mix(output.shardDimension);
     for (PhysicalTileId tile : output.activeTileIds)
@@ -2458,12 +2527,13 @@ static size_t getMappingHash(const WholeCardCandidate &candidate,
       mix(extent);
   }
   for (const StructuredOpTemporalTile &tile :
-       candidate.mapping.operationTemporalTiles) {
+       candidate.assignment.mapping.operationTemporalTiles) {
     mix(tile.operation);
     for (int64_t extent : tile.iteratorTileSizes)
       mix(extent);
   }
-  for (const SpatialEdgeStrategy &strategy : candidate.mapping.edgeStrategies) {
+  for (const SpatialEdgeStrategy &strategy :
+       candidate.assignment.mapping.edgeStrategies) {
     mix(strategy.producer);
     mix(strategy.producerResult);
     mix(strategy.consumer);
@@ -2483,8 +2553,10 @@ static size_t getMappingHash(const WholeCardCandidate &candidate,
 
 static bool sameNodePlacements(const WholeCardCandidate &lhs,
                                const WholeCardCandidate &rhs) {
-  return lhs.nodePlacements.size() == rhs.nodePlacements.size() &&
-         llvm::all_of(llvm::zip_equal(lhs.nodePlacements, rhs.nodePlacements),
+  return lhs.assignment.nodePlacements.size() ==
+             rhs.assignment.nodePlacements.size() &&
+         llvm::all_of(llvm::zip_equal(lhs.assignment.nodePlacements,
+                                      rhs.assignment.nodePlacements),
                       [](auto values) {
                         const auto &[left, right] = values;
                         return left.node == right.node &&
@@ -2503,9 +2575,11 @@ static bool samePreBufferMapping(const WholeCardCandidate &lhs,
     return false;
   WholeCardCandidate normalizedLhs = lhs;
   WholeCardCandidate normalizedRhs = rhs;
-  for (SpatialEdgeStrategy &strategy : normalizedLhs.mapping.edgeStrategies)
+  for (SpatialEdgeStrategy &strategy :
+       normalizedLhs.assignment.mapping.edgeStrategies)
     strategy.bufferCount = 1;
-  for (SpatialEdgeStrategy &strategy : normalizedRhs.mapping.edgeStrategies)
+  for (SpatialEdgeStrategy &strategy :
+       normalizedRhs.assignment.mapping.edgeStrategies)
     strategy.bufferCount = 1;
   return sameMapping(normalizedLhs, normalizedRhs);
 }
@@ -2518,7 +2592,8 @@ static bool samePreBufferMapping(const WholeCardCandidate &lhs,
 static WholeCardCandidate
 normalizeBufferStructure(const WholeCardCandidate &candidate) {
   WholeCardCandidate normalized = candidate;
-  for (SpatialEdgeStrategy &strategy : normalized.mapping.edgeStrategies)
+  for (SpatialEdgeStrategy &strategy :
+       normalized.assignment.mapping.edgeStrategies)
     if (strategy.bufferCount > 1)
       strategy.bufferCount = 2;
   return normalized;
@@ -2542,28 +2617,32 @@ static bool sameNonTemporalState(const WholeCardCandidate &lhs,
     return false;
   WholeCardCandidate normalizedLhs = lhs;
   WholeCardCandidate normalizedRhs = rhs;
-  for (CardOutputSpatialMapping &output : normalizedLhs.mapping.outputs)
+  for (CardOutputSpatialMapping &output :
+       normalizedLhs.assignment.mapping.outputs)
     output.temporalTileSizes.clear();
-  for (CardOutputSpatialMapping &output : normalizedRhs.mapping.outputs)
+  for (CardOutputSpatialMapping &output :
+       normalizedRhs.assignment.mapping.outputs)
     output.temporalTileSizes.clear();
   for (StructuredOpTemporalTile &tile :
-       normalizedLhs.mapping.operationTemporalTiles)
+       normalizedLhs.assignment.mapping.operationTemporalTiles)
     tile.iteratorTileSizes.clear();
   for (StructuredOpTemporalTile &tile :
-       normalizedRhs.mapping.operationTemporalTiles)
+       normalizedRhs.assignment.mapping.operationTemporalTiles)
     tile.iteratorTileSizes.clear();
   return sameMapping(normalizedLhs, normalizedRhs);
 }
 
 static bool isStrictTemporalRefinementOf(const WholeCardCandidate &candidate,
                                          const WholeCardCandidate &coarser) {
-  if (candidate.mapping.outputs.size() != coarser.mapping.outputs.size() ||
-      candidate.mapping.operationTemporalTiles.size() !=
-          coarser.mapping.operationTemporalTiles.size())
+  if (candidate.assignment.mapping.outputs.size() !=
+          coarser.assignment.mapping.outputs.size() ||
+      candidate.assignment.mapping.operationTemporalTiles.size() !=
+          coarser.assignment.mapping.operationTemporalTiles.size())
     return false;
   bool strict = false;
   for (auto [fine, coarse] :
-       llvm::zip_equal(candidate.mapping.outputs, coarser.mapping.outputs)) {
+       llvm::zip_equal(candidate.assignment.mapping.outputs,
+                       coarser.assignment.mapping.outputs)) {
     if (fine.temporalTileSizes.size() != coarse.temporalTileSizes.size())
       return false;
     for (auto [fineExtent, coarseExtent] :
@@ -2574,8 +2653,8 @@ static bool isStrictTemporalRefinementOf(const WholeCardCandidate &candidate,
     }
   }
   for (auto [fine, coarse] :
-       llvm::zip_equal(candidate.mapping.operationTemporalTiles,
-                       coarser.mapping.operationTemporalTiles)) {
+       llvm::zip_equal(candidate.assignment.mapping.operationTemporalTiles,
+                       coarser.assignment.mapping.operationTemporalTiles)) {
     if (fine.operation != coarse.operation ||
         fine.iteratorTileSizes.size() != coarse.iteratorTileSizes.size())
       return false;
@@ -2594,26 +2673,27 @@ static bool isStrictlyDominatedByAdmittedTemporalState(
     const WholeCardCandidate &admittedCoarser) {
   return sameNonTemporalState(candidate, admittedCoarser) &&
          isStrictTemporalRefinementOf(candidate, admittedCoarser) &&
-         admittedCoarser.temporalWaveLowerBound <=
-             candidate.temporalWaveLowerBound &&
-         admittedCoarser.instructionExecutionLowerBound <=
-             candidate.instructionExecutionLowerBound &&
-         admittedCoarser.scheduledMakespan <= candidate.scheduledMakespan &&
-         admittedCoarser.scheduledSPMMovementWork <=
-             candidate.scheduledSPMMovementWork &&
-         admittedCoarser.scheduledDDRMovementWork <=
-             candidate.scheduledDDRMovementWork &&
-         admittedCoarser.peerBytes <= candidate.peerBytes;
+         admittedCoarser.evaluation.temporalWaveLowerBound <=
+             candidate.evaluation.temporalWaveLowerBound &&
+         admittedCoarser.evaluation.instructionExecutionLowerBound <=
+             candidate.evaluation.instructionExecutionLowerBound &&
+         admittedCoarser.evaluation.scheduledMakespan <=
+             candidate.evaluation.scheduledMakespan &&
+         admittedCoarser.evaluation.scheduledSPMMovementWork <=
+             candidate.evaluation.scheduledSPMMovementWork &&
+         admittedCoarser.evaluation.scheduledDDRMovementWork <=
+             candidate.evaluation.scheduledDDRMovementWork &&
+         admittedCoarser.evaluation.peerBytes <= candidate.evaluation.peerBytes;
 }
 
 static bool hasMultiReductionAxisSplit(const WholeCardCandidate &candidate) {
   for (auto [node, selected] :
-       llvm::enumerate(candidate.mapping.operationTemporalTiles)) {
-    if (node >= candidate.nodePlacements.size())
+       llvm::enumerate(candidate.assignment.mapping.operationTemporalTiles)) {
+    if (node >= candidate.assignment.nodePlacements.size())
       continue;
     std::optional<llvm::SmallVector<int64_t, 4>> ranges =
-        getMaximumSpatialIteratorRanges(selected.operation,
-                                        candidate.nodePlacements[node]);
+        getMaximumSpatialIteratorRanges(
+            selected.operation, candidate.assignment.nodePlacements[node]);
     auto tiling =
         mlir::dyn_cast_or_null<mlir::TilingInterface>(selected.operation);
     if (!ranges || !tiling ||
@@ -2633,7 +2713,7 @@ static bool hasMultiReductionAxisSplit(const WholeCardCandidate &candidate) {
 
 static bool hasAlternativeEdgeAction(const WholeCardCandidate &candidate) {
   return llvm::any_of(
-      candidate.mapping.edgeStrategies,
+      candidate.assignment.mapping.edgeStrategies,
       [](const SpatialEdgeStrategy &strategy) {
         return strategy.action != SpatialEdgeAction::CoupledFusion &&
                strategy.action != SpatialEdgeAction::PeerFragments;
@@ -2641,14 +2721,14 @@ static bool hasAlternativeEdgeAction(const WholeCardCandidate &candidate) {
 }
 
 static bool hasLayoutAssignment(const WholeCardCandidate &candidate) {
-  return llvm::any_of(candidate.mapping.edgeStrategies,
+  return llvm::any_of(candidate.assignment.mapping.edgeStrategies,
                       [](const SpatialEdgeStrategy &strategy) {
                         return strategy.hasLayoutAssignment;
                       });
 }
 
 static bool hasLayoutConversion(const WholeCardCandidate &candidate) {
-  return llvm::any_of(candidate.mapping.edgeStrategies,
+  return llvm::any_of(candidate.assignment.mapping.edgeStrategies,
                       [](const SpatialEdgeStrategy &strategy) {
                         return strategy.action ==
                                SpatialEdgeAction::LocalPhysicalConversion;
@@ -2657,7 +2737,8 @@ static bool hasLayoutConversion(const WholeCardCandidate &candidate) {
 
 static uint8_t getMaximumBufferCount(const WholeCardCandidate &candidate) {
   uint8_t count = 1;
-  for (const SpatialEdgeStrategy &strategy : candidate.mapping.edgeStrategies)
+  for (const SpatialEdgeStrategy &strategy :
+       candidate.assignment.mapping.edgeStrategies)
     count = std::max(count, strategy.bufferCount);
   return count;
 }
@@ -2711,11 +2792,11 @@ static bool outputDependsOnOperation(const CardDAGAnalysis &dag,
 static bool outputContainsBufferedConsumer(
     const WholeCardCandidate &candidate, const CardDAGAnalysis &dag,
     unsigned outputIndex,
-    const CardProgramSourceOperationLineage *consumerLineage = nullptr) {
-  if (consumerLineage && consumerLineage->sourceOperation)
+    std::optional<CardDAGNodeID> consumerNode = std::nullopt) {
+  if (consumerNode && *consumerNode < dag.getNodes().size())
     return outputDependsOnOperation(dag, outputIndex,
-                                    consumerLineage->sourceOperation);
-  return llvm::any_of(candidate.mapping.edgeStrategies,
+                                    dag.getNodes()[*consumerNode].operation);
+  return llvm::any_of(candidate.assignment.mapping.edgeStrategies,
                       [&](const SpatialEdgeStrategy &strategy) {
                         return strategy.bufferCount > 1 &&
                                outputDependsOnOperation(dag, outputIndex,
@@ -2726,22 +2807,23 @@ static bool outputContainsBufferedConsumer(
 static std::vector<WholeCardCandidate> refineSelectedBufferConsumerWaveOnce(
     const WholeCardCandidate &candidate, const CardDAGAnalysis &dag,
     const StaticOutputDomains &outputDomains,
-    const CardProgramSourceOperationLineage *consumerLineage,
-    uint64_t &nextStableOrdinal) {
+    std::optional<CardDAGNodeID> consumerNode, uint64_t &nextStableOrdinal) {
   std::vector<WholeCardCandidate> result;
-  if (!consumerLineage || !consumerLineage->sourceOperation)
+  if (!consumerNode || *consumerNode >= dag.getNodes().size())
     return result;
-  for (size_t outputIndex = 0; outputIndex < candidate.mapping.outputs.size();
+  mlir::Operation *consumer = dag.getNodes()[*consumerNode].operation;
+  for (size_t outputIndex = 0;
+       outputIndex < candidate.assignment.mapping.outputs.size();
        ++outputIndex) {
     const unsigned resultIndex =
-        candidate.mapping.outputs[outputIndex].outputIndex;
-    if (!outputDependsOnOperation(dag, resultIndex,
-                                  consumerLineage->sourceOperation))
+        candidate.assignment.mapping.outputs[outputIndex].outputIndex;
+    if (!outputDependsOnOperation(dag, resultIndex, consumer))
       continue;
     llvm::SmallVector<int64_t, 4> ranges = getMaximumSpatialShardShape(
-        candidate.mapping.outputs[outputIndex], outputDomains[resultIndex]);
+        candidate.assignment.mapping.outputs[outputIndex],
+        outputDomains[resultIndex]);
     const llvm::SmallVector<int64_t, 4> &current =
-        candidate.mapping.outputs[outputIndex].temporalTileSizes;
+        candidate.assignment.mapping.outputs[outputIndex].temporalTileSizes;
     if (ranges.size() != current.size())
       continue;
     for (size_t dimension = 0; dimension < ranges.size(); ++dimension) {
@@ -2754,9 +2836,11 @@ static std::vector<WholeCardCandidate> refineSelectedBufferConsumerWaveOnce(
       if (next >= current[dimension])
         continue;
       WholeCardCandidate child = candidate;
-      child.stableOrdinal = nextStableOrdinal++;
-      child.mapping.outputs[outputIndex].temporalTileSizes[dimension] = next;
-      child.queryExpansionWork = saturatingAdd(child.queryExpansionWork, 1);
+      child.transition.stableOrdinal = nextStableOrdinal++;
+      child.assignment.mapping.outputs[outputIndex]
+          .temporalTileSizes[dimension] = next;
+      child.evaluation.queryExpansionWork =
+          saturatingAdd(child.evaluation.queryExpansionWork, 1);
       populateTemporalMetrics(child, outputDomains, dag);
       result.push_back(std::move(child));
     }
@@ -2776,11 +2860,12 @@ static llvm::SmallVector<llvm::SmallVector<size_t, 16>, 32>
 getLogicalEdgeStrategyGroups(const WholeCardCandidate &candidate) {
   llvm::SmallVector<llvm::SmallVector<size_t, 16>, 32> groups;
   for (auto [index, strategy] :
-       llvm::enumerate(candidate.mapping.edgeStrategies)) {
+       llvm::enumerate(candidate.assignment.mapping.edgeStrategies)) {
     auto group = llvm::find_if(groups, [&](llvm::ArrayRef<size_t> members) {
       return !members.empty() &&
-             sameLogicalEdge(candidate.mapping.edgeStrategies[members.front()],
-                             strategy);
+             sameLogicalEdge(
+                 candidate.assignment.mapping.edgeStrategies[members.front()],
+                 strategy);
     });
     if (group == groups.end())
       groups.push_back({index});
@@ -2791,13 +2876,14 @@ getLogicalEdgeStrategyGroups(const WholeCardCandidate &candidate) {
 }
 
 static uint64_t countBufferedLogicalEdges(const WholeCardCandidate &candidate) {
-  return llvm::count_if(
-      getLogicalEdgeStrategyGroups(candidate),
-      [&](llvm::ArrayRef<size_t> group) {
-        return llvm::any_of(group, [&](size_t index) {
-          return candidate.mapping.edgeStrategies[index].bufferCount > 1;
-        });
-      });
+  return llvm::count_if(getLogicalEdgeStrategyGroups(candidate),
+                        [&](llvm::ArrayRef<size_t> group) {
+                          return llvm::any_of(group, [&](size_t index) {
+                            return candidate.assignment.mapping
+                                       .edgeStrategies[index]
+                                       .bufferCount > 1;
+                          });
+                        });
 }
 
 static bool isLegalLocalEdgeAction(const WholeCardCandidate &candidate,
@@ -2807,7 +2893,7 @@ static bool isLegalLocalEdgeAction(const WholeCardCandidate &candidate,
     return false;
   for (size_t index : group) {
     const SpatialEdgeStrategy &strategy =
-        candidate.mapping.edgeStrategies[index];
+        candidate.assignment.mapping.edgeStrategies[index];
     if (!strategy.fragments.empty() ||
         strategy.sourceTile != strategy.destinationTile)
       return false;
@@ -2827,7 +2913,7 @@ static uint64_t getLogicalEdgeBytes(const WholeCardCandidate &candidate,
   uint64_t result = 0;
   for (size_t index : group) {
     const SpatialEdgeStrategy &strategy =
-        candidate.mapping.edgeStrategies[index];
+        candidate.assignment.mapping.edgeStrategies[index];
     if (!strategy.producer || strategy.producerSizes.empty())
       continue;
     std::optional<uint64_t> elementBytes = getElementByteWidth(
@@ -2847,11 +2933,12 @@ makeSingleEdgeActionVariant(const WholeCardCandidate &base,
   uint64_t selectedBytes = 0;
   for (const llvm::SmallVector<size_t, 16> &group :
        getLogicalEdgeStrategyGroups(base)) {
-    if (!llvm::all_of(group,
-                      [&](size_t index) {
-                        return base.mapping.edgeStrategies[index].action ==
-                               SpatialEdgeAction::CoupledFusion;
-                      }) ||
+    if (!llvm::all_of(
+            group,
+            [&](size_t index) {
+              return base.assignment.mapping.edgeStrategies[index].action ==
+                     SpatialEdgeAction::CoupledFusion;
+            }) ||
         !isLegalLocalEdgeAction(base, group, action))
       continue;
     const uint64_t bytes = getLogicalEdgeBytes(base, group);
@@ -2863,10 +2950,11 @@ makeSingleEdgeActionVariant(const WholeCardCandidate &base,
   if (!selected)
     return std::nullopt;
   WholeCardCandidate candidate = base;
-  candidate.stableOrdinal = stableOrdinal;
+  candidate.transition.stableOrdinal = stableOrdinal;
   for (size_t index : *selected)
-    candidate.mapping.edgeStrategies[index].action = action;
-  candidate.queryExpansionWork = saturatingAdd(candidate.queryExpansionWork, 1);
+    candidate.assignment.mapping.edgeStrategies[index].action = action;
+  candidate.evaluation.queryExpansionWork =
+      saturatingAdd(candidate.evaluation.queryExpansionWork, 1);
   return candidate;
 }
 
@@ -2881,7 +2969,7 @@ makeSingleEdgeBufferVariant(const WholeCardCandidate &base, uint8_t bufferCount,
        getLogicalEdgeStrategyGroups(base)) {
     if (group.empty() || llvm::any_of(group, [&](size_t index) {
           const SpatialEdgeStrategy &strategy =
-              base.mapping.edgeStrategies[index];
+              base.assignment.mapping.edgeStrategies[index];
           return !strategy.producer || strategy.producerSizes.empty() ||
                  strategy.action == SpatialEdgeAction::RegionCut;
         }))
@@ -2895,10 +2983,12 @@ makeSingleEdgeBufferVariant(const WholeCardCandidate &base, uint8_t bufferCount,
   if (!selected)
     return std::nullopt;
   WholeCardCandidate candidate = base;
-  candidate.stableOrdinal = stableOrdinal;
+  candidate.transition.stableOrdinal = stableOrdinal;
   for (size_t index : *selected)
-    candidate.mapping.edgeStrategies[index].bufferCount = bufferCount;
-  candidate.queryExpansionWork = saturatingAdd(candidate.queryExpansionWork, 1);
+    candidate.assignment.mapping.edgeStrategies[index].bufferCount =
+        bufferCount;
+  candidate.evaluation.queryExpansionWork =
+      saturatingAdd(candidate.evaluation.queryExpansionWork, 1);
   return candidate;
 }
 
@@ -2909,7 +2999,8 @@ makeLogicalEdgeVariant(const WholeCardCandidate &base,
   if (group.empty() || bufferCount < 1 || bufferCount > 3)
     return std::nullopt;
   const bool peer = llvm::any_of(group, [&](size_t index) {
-    const SpatialEdgeStrategy &strategy = base.mapping.edgeStrategies[index];
+    const SpatialEdgeStrategy &strategy =
+        base.assignment.mapping.edgeStrategies[index];
     return !strategy.fragments.empty() ||
            strategy.sourceTile != strategy.destinationTile;
   });
@@ -2919,13 +3010,15 @@ makeLogicalEdgeVariant(const WholeCardCandidate &base,
     return std::nullopt;
 
   WholeCardCandidate candidate = base;
-  candidate.stableOrdinal = stableOrdinal;
+  candidate.transition.stableOrdinal = stableOrdinal;
   for (size_t index : group) {
-    SpatialEdgeStrategy &strategy = candidate.mapping.edgeStrategies[index];
+    SpatialEdgeStrategy &strategy =
+        candidate.assignment.mapping.edgeStrategies[index];
     strategy.action = action;
     strategy.bufferCount = bufferCount;
   }
-  candidate.queryExpansionWork = saturatingAdd(candidate.queryExpansionWork, 1);
+  candidate.evaluation.queryExpansionWork =
+      saturatingAdd(candidate.evaluation.queryExpansionWork, 1);
   return candidate;
 }
 
@@ -2949,7 +3042,7 @@ refineOversizedExplicitProducerEdges(WholeCardCandidate &candidate,
     const bool hasProvenOversizedWindow =
         llvm::any_of(group, [&](size_t index) {
           const SpatialEdgeStrategy &strategy =
-              candidate.mapping.edgeStrategies[index];
+              candidate.assignment.mapping.edgeStrategies[index];
           if (strategy.producer != producer ||
               strategy.action == SpatialEdgeAction::CoupledFusion ||
               strategy.producerResult >= producer->getNumResults() ||
@@ -2966,14 +3059,15 @@ refineOversizedExplicitProducerEdges(WholeCardCandidate &candidate,
                                 SpatialEdgeAction::CoupledFusion))
       continue;
     for (size_t index : group) {
-      SpatialEdgeStrategy &strategy = candidate.mapping.edgeStrategies[index];
+      SpatialEdgeStrategy &strategy =
+          candidate.assignment.mapping.edgeStrategies[index];
       strategy.action = SpatialEdgeAction::CoupledFusion;
       strategy.bufferCount = 1;
     }
     ++refinedGroups;
   }
-  candidate.queryExpansionWork =
-      saturatingAdd(candidate.queryExpansionWork, refinedGroups);
+  candidate.evaluation.queryExpansionWork =
+      saturatingAdd(candidate.evaluation.queryExpansionWork, refinedGroups);
   return refinedGroups;
 }
 
@@ -2982,7 +3076,7 @@ static uint64_t countFusedLogicalEdges(const WholeCardCandidate &candidate) {
   for (const llvm::SmallVector<size_t, 16> &group :
        getLogicalEdgeStrategyGroups(candidate))
     if (!group.empty() && llvm::all_of(group, [&](size_t index) {
-          return candidate.mapping.edgeStrategies[index].action ==
+          return candidate.assignment.mapping.edgeStrategies[index].action ==
                  SpatialEdgeAction::CoupledFusion;
         }))
       ++result;
@@ -2994,32 +3088,40 @@ static bool cheapCandidateLess(const WholeCardCandidate &lhs,
   const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
   const uint64_t capacity =
       static_cast<uint64_t>(memory.spmLimit - memory.spmBase);
-  const uint64_t lhsEstimatedResidency = saturatingAdd(
-      lhs.peakAlignedResidencyEstimate, lhs.scheduledPeakLiveSPMBytes);
-  const uint64_t rhsEstimatedResidency = saturatingAdd(
-      rhs.peakAlignedResidencyEstimate, rhs.scheduledPeakLiveSPMBytes);
+  const uint64_t lhsEstimatedResidency =
+      saturatingAdd(lhs.evaluation.peakAlignedResidencyEstimate,
+                    lhs.evaluation.scheduledPeakLiveSPMBytes);
+  const uint64_t rhsEstimatedResidency =
+      saturatingAdd(rhs.evaluation.peakAlignedResidencyEstimate,
+                    rhs.evaluation.scheduledPeakLiveSPMBytes);
   const bool lhsEstimatedFits = lhsEstimatedResidency <= capacity;
   const bool rhsEstimatedFits = rhsEstimatedResidency <= capacity;
   return std::tuple(
-             !lhsEstimatedFits, lhs.criticalStructuredElementWork,
-             lhs.instructionExecutionLowerBound, lhs.temporalWaveLowerBound,
-             lhs.shardImbalance, lhsEstimatedResidency, lhs.topologyHopByteWork,
-             lhs.peerBytes,
+             !lhsEstimatedFits, lhs.evaluation.criticalStructuredElementWork,
+             lhs.evaluation.instructionExecutionLowerBound,
+             lhs.evaluation.temporalWaveLowerBound,
+             lhs.evaluation.shardImbalance, lhsEstimatedResidency,
+             lhs.evaluation.topologyHopByteWork, lhs.evaluation.peerBytes,
              std::numeric_limits<size_t>::max() -
-                 getUniqueActiveTileCount(lhs.mapping, lhs.nodePlacements),
-             lhs.queryExpansionWork,
-             std::numeric_limits<uint64_t>::max() - lhs.parallelComponentCount,
-             lhs.stableOrdinal) <
+                 getUniqueActiveTileCount(lhs.assignment.mapping,
+                                          lhs.assignment.nodePlacements),
+             lhs.evaluation.queryExpansionWork,
+             std::numeric_limits<uint64_t>::max() -
+                 lhs.evaluation.parallelComponentCount,
+             lhs.transition.stableOrdinal) <
          std::tuple(
-             !rhsEstimatedFits, rhs.criticalStructuredElementWork,
-             rhs.instructionExecutionLowerBound, rhs.temporalWaveLowerBound,
-             rhs.shardImbalance, rhsEstimatedResidency, rhs.topologyHopByteWork,
-             rhs.peerBytes,
+             !rhsEstimatedFits, rhs.evaluation.criticalStructuredElementWork,
+             rhs.evaluation.instructionExecutionLowerBound,
+             rhs.evaluation.temporalWaveLowerBound,
+             rhs.evaluation.shardImbalance, rhsEstimatedResidency,
+             rhs.evaluation.topologyHopByteWork, rhs.evaluation.peerBytes,
              std::numeric_limits<size_t>::max() -
-                 getUniqueActiveTileCount(rhs.mapping, rhs.nodePlacements),
-             rhs.queryExpansionWork,
-             std::numeric_limits<uint64_t>::max() - rhs.parallelComponentCount,
-             rhs.stableOrdinal);
+                 getUniqueActiveTileCount(rhs.assignment.mapping,
+                                          rhs.assignment.nodePlacements),
+             rhs.evaluation.queryExpansionWork,
+             std::numeric_limits<uint64_t>::max() -
+                 rhs.evaluation.parallelComponentCount,
+             rhs.transition.stableOrdinal);
 }
 
 static std::optional<WholeCardCandidate>
@@ -3249,13 +3351,70 @@ deriveBaseline(const PhysicalTopology &topology, PhysicalCardId cardId,
                                     outputDomains, dag);
 }
 
-static std::vector<WholeCardCandidate> deriveShortlist(
-    OptimizationConfig optimizations, const PhysicalTopology &topology,
-    PhysicalCardId cardId, llvm::ArrayRef<PhysicalTileId> availableTileIds,
+static std::optional<WholeCardCandidate> deriveDeterministicBaseline(
+    const PhysicalTopology &topology, PhysicalCardId cardId,
+    llvm::ArrayRef<PhysicalTileId> availableTileIds,
     const StaticOutputDomains &outputDomains, const CardDAGAnalysis &dag,
     WholeCardExecutableSynthesisStatistics &statistics,
-    llvm::raw_ostream &diagnostics,
-    CandidateResourceScheduleMemo &resourceScheduleMemo) {
+    llvm::raw_ostream &diagnostics) {
+  std::string failure;
+  std::optional<WholeCardCandidate> spatial = deriveBaseline(
+      topology, cardId, availableTileIds, outputDomains, dag, &failure);
+  if (!spatial || !prepareEdgeStrategies(*spatial, dag)) {
+    diagnostics << "wafer-compile: deterministic whole-card baseline failed: "
+                << (failure.empty() ? "no legal spatial coordinate" : failure)
+                << '\n';
+    return std::nullopt;
+  }
+  spatial->assignment.mapping.materializationMode =
+      SpatialDataflowMaterializationMode::IndependentDDRStages;
+  for (SpatialEdgeStrategy &strategy :
+       spatial->assignment.mapping.edgeStrategies) {
+    if (strategy.fragments.empty()) {
+      if (strategy.sourceTile != strategy.destinationTile) {
+        diagnostics << "wafer-compile: deterministic whole-card baseline has "
+                       "a nonlocal edge without exact fragments\n";
+        return std::nullopt;
+      }
+      strategy.action = SpatialEdgeAction::RegionCut;
+    }
+    strategy.bufferCount = 1;
+  }
+  if (!appendBaselineSupportChainTransfers(*spatial, dag, &failure)) {
+    diagnostics << "wafer-compile: deterministic whole-card baseline cannot "
+                   "isolate a structured support dependency: "
+                << failure << '\n';
+    return std::nullopt;
+  }
+  std::optional<WholeCardCandidate> baseline =
+      makeTemporalVariant(*spatial, outputDomains, dag, /*stableOrdinal=*/0,
+                          /*additionalWaveRefinements=*/0);
+  if (!baseline)
+    return std::nullopt;
+  baseline->transition.feedbackRootOrdinal = baseline->transition.stableOrdinal;
+  statistics.candidateProposals = 1;
+  statistics.shortlistedCandidates = 0;
+  statistics.multiReductionAxisCandidateProposals =
+      hasMultiReductionAxisSplit(*baseline) ? 1 : 0;
+  statistics.layoutAssignedCandidateProposals =
+      hasLayoutAssignment(*baseline) ? 1 : 0;
+  statistics.layoutConversionCandidateProposals =
+      hasLayoutConversion(*baseline) ? 1 : 0;
+  statistics.bufferedCandidateProposals = hasBufferedEdge(*baseline) ? 1 : 0;
+  statistics.applicableFusionLogicalEdges = countFusedLogicalEdges(*baseline);
+  statistics.fusedEdgeCandidateProposals =
+      statistics.applicableFusionLogicalEdges != 0 ? 1 : 0;
+  return baseline;
+}
+
+static std::vector<WholeCardCandidate>
+deriveShortlist(const PhysicalTopology &topology, PhysicalCardId cardId,
+                llvm::ArrayRef<PhysicalTileId> availableTileIds,
+                const StaticOutputDomains &outputDomains,
+                const CardDAGAnalysis &dag,
+                WholeCardExecutableSynthesisStatistics &statistics,
+                llvm::raw_ostream &diagnostics,
+                CandidateResourceScheduleMemo &resourceScheduleMemo) {
   std::string baselineFailure;
   std::optional<WholeCardCandidate> derivedBaseline = deriveBaseline(
       topology, cardId, availableTileIds, outputDomains, dag, &baselineFailure);
@@ -3274,39 +3433,6 @@ static std::vector<WholeCardCandidate> deriveShortlist(
     statistics.shortlistedCandidates = 0;
     return {};
   }
-  if (optimizations.isNone()) {
-    baselineSpatial.mapping.materializationMode =
-        SpatialDataflowMaterializationMode::IndependentDDRStages;
-    for (SpatialEdgeStrategy &strategy :
-         baselineSpatial.mapping.edgeStrategies) {
-      if (strategy.fragments.empty()) {
-        if (strategy.sourceTile != strategy.destinationTile) {
-          statistics.candidateProposals = 0;
-          statistics.shortlistedCandidates = 0;
-          diagnostics << "wafer-compile: deterministic whole-card baseline "
-                         "has a nonlocal edge without exact fragments\n";
-          return {};
-        }
-        // Every baseline dependency is a real op-stage boundary.  The
-        // producer wave is committed to compiler-owned DDR and the following
-        // TileRegion reloads it, so unrelated per-op temporal loops never
-        // compose into one monolithic loop product.  Fanout is handled by the
-        // materializer's shared producer spill and consecutive cut ordering.
-        strategy.action = SpatialEdgeAction::RegionCut;
-      }
-      strategy.bufferCount = 1;
-    }
-    std::string supportFailure;
-    if (!appendBaselineSupportChainTransfers(baselineSpatial, dag,
-                                             &supportFailure)) {
-      statistics.candidateProposals = 0;
-      statistics.shortlistedCandidates = 0;
-      diagnostics << "wafer-compile: deterministic whole-card baseline "
-                     "cannot isolate a structured support dependency: "
-                  << supportFailure << '\n';
-      return {};
-    }
-  }
   std::optional<WholeCardCandidate> baselineProposal = makeTemporalVariant(
       baselineSpatial, outputDomains, dag, /*stableOrdinal=*/0,
       /*additionalWaveRefinements=*/0);
@@ -3316,28 +3442,6 @@ static std::vector<WholeCardCandidate> deriveShortlist(
     return {};
   }
   WholeCardCandidate baseline = std::move(*baselineProposal);
-  if (optimizations.isNone()) {
-    // The deterministic baseline has exactly one semantic state.  It starts
-    // at the maximum per-op temporal shape and lets only the real fixed-size
-    // SPM allocator shrink the named operation/output coordinates below.
-    // The conservative resource calendar is useful search ordering, but it is
-    // neither baseline legality nor permission to pre-tile an operation.
-    statistics.candidateProposals = 1;
-    statistics.multiReductionAxisCandidateProposals =
-        hasMultiReductionAxisSplit(baseline) ? 1 : 0;
-    statistics.shortlistedCandidates = 1;
-    statistics.layoutAssignedCandidateProposals =
-        hasLayoutAssignment(baseline) ? 1 : 0;
-    statistics.layoutConversionCandidateProposals =
-        hasLayoutConversion(baseline) ? 1 : 0;
-    statistics.bufferedCandidateProposals = hasBufferedEdge(baseline) ? 1 : 0;
-    statistics.applicableFusionLogicalEdges = countFusedLogicalEdges(baseline);
-    statistics.fusedEdgeCandidateProposals =
-        statistics.applicableFusionLogicalEdges != 0 ? 1 : 0;
-    baseline.feedbackRootOrdinal = baseline.stableOrdinal;
-    return {std::move(baseline)};
-  }
-
   std::vector<WholeCardCandidate> spatialSeeds;
   spatialSeeds.push_back(baselineSpatial);
   std::optional<WholeCardCandidate> bestSpatialOpposing;
@@ -3360,12 +3464,12 @@ static std::vector<WholeCardCandidate> deriveShortlist(
   mlir::FailureOr<WholeDAGPlacementSearchDomain> spatialDomain = [&] {
     wafer::support::ScopedCompileTimingSpan timing(
         "search-phase", "whole-card-executable-synthesis",
-        "spatial-placement-frontier");
+        "spatial-placement-enumeration");
     return deriveWholeDAGPlacementSearchDomain(dag, topology, cardId,
                                                &spatialFailure);
   }();
   if (mlir::failed(spatialDomain)) {
-    ++statistics.nodePlacementFrontierFailures;
+    ++statistics.nodePlacementEnumerationFailures;
     diagnostics << "wafer-compile: whole-DAG placement domain failed: "
                 << spatialFailure << '\n';
   } else {
@@ -3373,7 +3477,8 @@ static std::vector<WholeCardCandidate> deriveShortlist(
     WholeDAGPlacementEvaluator placementEvaluator(dag, topology, cardId);
     WholeCardCandidate incumbent = baselineSpatial;
     mlir::FailureOr<WholeDAGPlacementCandidate> baselinePlacement =
-        placementEvaluator.evaluate(incumbent.nodePlacements, &spatialFailure);
+        placementEvaluator.evaluate(incumbent.assignment.nodePlacements,
+                                    &spatialFailure);
     if (mlir::succeeded(baselinePlacement)) {
       if (std::optional<WholeCardCandidate> evaluated =
               makeNodePlacementCandidate(
@@ -3390,13 +3495,13 @@ static std::vector<WholeCardCandidate> deriveShortlist(
       if (sameNodePlacements(baselineSpatial, candidate))
         return;
       retainSpatialWitness(bestSpatialOpposing, candidate);
-      if (candidate.distinctTileGroupCount >= 3)
+      if (candidate.evaluation.distinctTileGroupCount >= 3)
         retainSpatialWitness(bestMultiStageSpatial, candidate);
-      if (candidate.parallelComponentCount > 1)
+      if (candidate.evaluation.parallelComponentCount > 1)
         retainSpatialWitness(bestIndependentSpatial, candidate);
-      if (candidate.partialOverlapEdgeCount > 0)
+      if (candidate.evaluation.partialOverlapEdgeCount > 0)
         retainSpatialWitness(bestPartialOverlapSpatial, candidate);
-      if (candidate.disjointEdgeCount > 0)
+      if (candidate.evaluation.disjointEdgeCount > 0)
         retainSpatialWitness(bestDisjointSpatial, candidate);
     };
 
@@ -3419,7 +3524,7 @@ static std::vector<WholeCardCandidate> deriveShortlist(
         for (const WholeDAGNodePlacement &option :
              spatialDomain->nodeOptions[node]) {
           const WholeDAGNodePlacement &currentPlacement =
-              incumbent.nodePlacements[node];
+              incumbent.assignment.nodePlacements[node];
           if (option.spatialIteratorDimension ==
                   currentPlacement.spatialIteratorDimension &&
               option.iteratorPartitionFactors ==
@@ -3428,7 +3533,7 @@ static std::vector<WholeCardCandidate> deriveShortlist(
               option.tiles == currentPlacement.tiles)
             continue;
           PlacementQuery query;
-          query.placements = incumbent.nodePlacements;
+          query.placements = incumbent.assignment.nodePlacements;
           query.placements[node] = option;
           queries.push_back(std::move(query));
         }
@@ -3512,7 +3617,7 @@ static std::vector<WholeCardCandidate> deriveShortlist(
     // a topology-derived multi-start, not a cap or a special-case placement.
     if (spatialDomain->nodeOptions.size() >= 3 && !availableTileIds.empty()) {
       llvm::SmallVector<WholeDAGNodePlacement, 16> stagedPlacements =
-          incumbent.nodePlacements;
+          incumbent.assignment.nodePlacements;
       bool constructed = true;
       for (size_t node = 0; node < spatialDomain->nodeOptions.size(); ++node) {
         PhysicalTileId desired =
@@ -3620,16 +3725,17 @@ static std::vector<WholeCardCandidate> deriveShortlist(
   };
   auto retainBufferWitness = [&](std::optional<WholeCardCandidate> &slot,
                                  const WholeCardCandidate &candidate) {
-    if (!slot ||
-        std::tuple(countBufferedLogicalEdges(candidate),
-                   candidate.temporalWaveLowerBound, candidate.stableOrdinal) <
-            std::tuple(countBufferedLogicalEdges(*slot),
-                       slot->temporalWaveLowerBound, slot->stableOrdinal))
+    if (!slot || std::tuple(countBufferedLogicalEdges(candidate),
+                            candidate.evaluation.temporalWaveLowerBound,
+                            candidate.transition.stableOrdinal) <
+                     std::tuple(countBufferedLogicalEdges(*slot),
+                                slot->evaluation.temporalWaveLowerBound,
+                                slot->transition.stableOrdinal))
       slot = candidate;
   };
   auto observeJointAxes = [&](const WholeCardCandidate &candidate) {
     for (const SpatialEdgeStrategy &strategy :
-         candidate.mapping.edgeStrategies) {
+         candidate.assignment.mapping.edgeStrategies) {
       const size_t action = static_cast<size_t>(strategy.action);
       if (action < actionWitnesses.size())
         retainActionWitness(actionWitnesses[action], candidate);
@@ -3694,9 +3800,9 @@ static std::vector<WholeCardCandidate> deriveShortlist(
         "search-phase", "whole-card-executable-synthesis",
         "joint-coordinate-search");
     for (WholeCardCandidate &seed : spatialSeeds) {
-      std::optional<WholeCardCandidate> initial =
-          makeTemporalVariant(seed, outputDomains, dag, seed.stableOrdinal,
-                              /*additionalWaveRefinements=*/0);
+      std::optional<WholeCardCandidate> initial = makeTemporalVariant(
+          seed, outputDomains, dag, seed.transition.stableOrdinal,
+          /*additionalWaveRefinements=*/0);
       if (!initial || !evaluateCoordinate(*initial))
         continue;
       WholeCardCandidate incumbent = std::move(*initial);
@@ -3710,13 +3816,14 @@ static std::vector<WholeCardCandidate> deriveShortlist(
       // descent can falsely report that the later axis is absent.
       WholeCardCandidate reductionBoundary = incumbent;
       bool splitMultipleReductionAxes = false;
-      for (auto [node, selected] :
-           llvm::enumerate(reductionBoundary.mapping.operationTemporalTiles)) {
-        if (node >= reductionBoundary.nodePlacements.size())
+      for (auto [node, selected] : llvm::enumerate(
+               reductionBoundary.assignment.mapping.operationTemporalTiles)) {
+        if (node >= reductionBoundary.assignment.nodePlacements.size())
           continue;
         std::optional<llvm::SmallVector<int64_t, 4>> ranges =
             getMaximumSpatialIteratorRanges(
-                selected.operation, reductionBoundary.nodePlacements[node]);
+                selected.operation,
+                reductionBoundary.assignment.nodePlacements[node]);
         auto tiling =
             mlir::dyn_cast_or_null<mlir::TilingInterface>(selected.operation);
         if (!ranges || !tiling ||
@@ -3738,7 +3845,7 @@ static std::vector<WholeCardCandidate> deriveShortlist(
         splitMultipleReductionAxes |= splitAxes > 1;
       }
       if (splitMultipleReductionAxes) {
-        reductionBoundary.stableOrdinal = nextStableOrdinal++;
+        reductionBoundary.transition.stableOrdinal = nextStableOrdinal++;
         if (evaluateCoordinate(reductionBoundary)) {
           retainWitness(multiReductionWitness, reductionBoundary);
           appendUnique(std::move(reductionBoundary));
@@ -3754,24 +3861,25 @@ static std::vector<WholeCardCandidate> deriveShortlist(
         // iterator coordinates because the output store traversal is an
         // actual downstream obligation.
         for (size_t outputIndex = 0;
-             outputIndex < incumbent.mapping.outputs.size(); ++outputIndex) {
+             outputIndex < incumbent.assignment.mapping.outputs.size();
+             ++outputIndex) {
           const unsigned resultIndex =
-              incumbent.mapping.outputs[outputIndex].outputIndex;
+              incumbent.assignment.mapping.outputs[outputIndex].outputIndex;
           llvm::SmallVector<int64_t, 4> shardShape =
               getMaximumSpatialShardShape(
-                  incumbent.mapping.outputs[outputIndex],
+                  incumbent.assignment.mapping.outputs[outputIndex],
                   outputDomains[resultIndex]);
           for (size_t dimension = 0; dimension < shardShape.size();
                ++dimension) {
             WholeCardCandidate best = incumbent;
             std::vector<WholeCardCandidate> candidates;
             for (int64_t value : getWaveBreakpoints(shardShape[dimension])) {
-              if (value == incumbent.mapping.outputs[outputIndex]
+              if (value == incumbent.assignment.mapping.outputs[outputIndex]
                                .temporalTileSizes[dimension])
                 continue;
               WholeCardCandidate candidate = incumbent;
-              candidate.stableOrdinal = nextStableOrdinal++;
-              candidate.mapping.outputs[outputIndex]
+              candidate.transition.stableOrdinal = nextStableOrdinal++;
+              candidate.assignment.mapping.outputs[outputIndex]
                   .temporalTileSizes[dimension] = value;
               candidates.push_back(std::move(candidate));
             }
@@ -3792,27 +3900,30 @@ static std::vector<WholeCardCandidate> deriveShortlist(
         // breakpoint coordinate.  Non-reassociated floating reductions keep
         // their proven lexicographic split order.
         for (size_t node = 0;
-             node < incumbent.mapping.operationTemporalTiles.size(); ++node) {
+             node < incumbent.assignment.mapping.operationTemporalTiles.size();
+             ++node) {
           mlir::Operation *operation =
-              incumbent.mapping.operationTemporalTiles[node].operation;
+              incumbent.assignment.mapping.operationTemporalTiles[node]
+                  .operation;
           std::optional<llvm::SmallVector<int64_t, 4>> ranges =
-              getMaximumSpatialIteratorRanges(operation,
-                                              incumbent.nodePlacements[node]);
-          if (!ranges ||
-              ranges->size() != incumbent.mapping.operationTemporalTiles[node]
-                                    .iteratorTileSizes.size())
+              getMaximumSpatialIteratorRanges(
+                  operation, incumbent.assignment.nodePlacements[node]);
+          if (!ranges || ranges->size() != incumbent.assignment.mapping
+                                               .operationTemporalTiles[node]
+                                               .iteratorTileSizes.size())
             continue;
           for (size_t dimension = 0; dimension < ranges->size(); ++dimension) {
             WholeCardCandidate best = incumbent;
             std::vector<WholeCardCandidate> candidates;
             for (int64_t value : getWaveBreakpoints((*ranges)[dimension])) {
-              if (value == incumbent.mapping.operationTemporalTiles[node]
-                               .iteratorTileSizes[dimension])
+              if (value ==
+                  incumbent.assignment.mapping.operationTemporalTiles[node]
+                      .iteratorTileSizes[dimension])
                 continue;
               WholeCardCandidate candidate = incumbent;
-              candidate.stableOrdinal = nextStableOrdinal++;
+              candidate.transition.stableOrdinal = nextStableOrdinal++;
               StructuredOpTemporalTile &candidateTile =
-                  candidate.mapping.operationTemporalTiles[node];
+                  candidate.assignment.mapping.operationTemporalTiles[node];
               if (value < candidateTile.iteratorTileSizes[dimension] &&
                   !isOrderPreservingReductionRefinement(
                       candidateTile.operation, static_cast<unsigned>(dimension),
@@ -3844,7 +3955,7 @@ static std::vector<WholeCardCandidate> deriveShortlist(
           std::vector<WholeCardCandidate> candidates;
           const bool peer = llvm::any_of(group, [&](size_t index) {
             const SpatialEdgeStrategy &strategy =
-                incumbent.mapping.edgeStrategies[index];
+                incumbent.assignment.mapping.edgeStrategies[index];
             return !strategy.fragments.empty() ||
                    strategy.sourceTile != strategy.destinationTile;
           });
@@ -3900,13 +4011,13 @@ static std::vector<WholeCardCandidate> deriveShortlist(
       llvm::count_if(proposals, hasMultiReductionAxisSplit);
   statistics.multiStagePlacementCandidateProposals =
       llvm::count_if(proposals, [](const WholeCardCandidate &candidate) {
-        return candidate.nodePlacementCandidate &&
-               candidate.distinctTileGroupCount >= 3;
+        return candidate.transition.nodePlacementCandidate &&
+               candidate.evaluation.distinctTileGroupCount >= 3;
       });
   statistics.independentComponentCandidateProposals =
       llvm::count_if(proposals, [](const WholeCardCandidate &candidate) {
-        return candidate.nodePlacementCandidate &&
-               candidate.parallelComponentCount > 1;
+        return candidate.transition.nodePlacementCandidate &&
+               candidate.evaluation.parallelComponentCount > 1;
       });
   statistics.alternativeEdgeActionCandidateProposals =
       llvm::count_if(proposals, hasAlternativeEdgeAction);
@@ -3933,33 +4044,12 @@ static std::vector<WholeCardCandidate> deriveShortlist(
   // footprint as an ordering/diagnostic estimate and let actual Instr-IR
   // lifetime plus fixed-capacity packing own SPM feasibility.
   for (WholeCardCandidate &proposal : proposals)
-    proposal.feedbackRootOrdinal = proposal.stableOrdinal;
+    proposal.transition.feedbackRootOrdinal = proposal.transition.stableOrdinal;
   llvm::sort(proposals, cheapCandidateLess);
   statistics.cheapPrunedCandidates = 0;
   statistics.shortlistedCandidates = proposals.size();
   statistics.feedbackBeamDeferredCandidates = 0;
   return proposals;
-}
-
-template <typename Lineage>
-static bool locationContainsLineage(mlir::Location location,
-                                    const Lineage *expected) {
-  if (auto opaque = mlir::dyn_cast<mlir::OpaqueLoc>(location)) {
-    if (mlir::OpaqueLoc::getUnderlyingLocationOrNull<const Lineage *>(opaque) ==
-        expected)
-      return true;
-    return locationContainsLineage(opaque.getFallbackLocation(), expected);
-  }
-  if (auto fused = mlir::dyn_cast<mlir::FusedLoc>(location))
-    return llvm::any_of(fused.getLocations(), [&](mlir::Location nested) {
-      return locationContainsLineage(nested, expected);
-    });
-  if (auto named = mlir::dyn_cast<mlir::NameLoc>(location))
-    return locationContainsLineage(named.getChildLoc(), expected);
-  if (auto callSite = mlir::dyn_cast<mlir::CallSiteLoc>(location))
-    return locationContainsLineage(callSite.getCallee(), expected) ||
-           locationContainsLineage(callSite.getCaller(), expected);
-  return false;
 }
 
 static bool operationCarriesLayout(mlir::Operation *operation,
@@ -3974,31 +4064,31 @@ static bool operationCarriesLayout(mlir::Operation *operation,
          llvm::any_of(operation->getResultTypes(), hasLayout);
 }
 
-static const CardProgramSourceOperationLineage *
-findLineage(llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
-            mlir::Operation *sourceOperation) {
-  auto found = llvm::find_if(sourceLineage, [&](const auto &lineage) {
-    return lineage.sourceOperation == sourceOperation;
-  });
-  return found == sourceLineage.end() ? nullptr : &*found;
+static std::optional<CardDAGNodeID>
+findStructuredNode(const CardDAGAnalysis &dag,
+                   mlir::Operation *sourceOperation) {
+  for (const CardDAGNode &node : dag.getNodes())
+    if (node.operation == sourceOperation)
+      return node.id;
+  return std::nullopt;
 }
 
 static mlir::FailureOr<llvm::SmallVector<SelectedBufferRequest, 4>>
-buildSelectedBufferRequestsForTile(
-    const WholeCardCandidate &candidate, PhysicalTileId tile,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
-    std::string &failureReason) {
+buildSelectedBufferRequestsForTile(const WholeCardCandidate &candidate,
+                                   PhysicalTileId tile,
+                                   const CardDAGAnalysis &dag,
+                                   std::string &failureReason) {
   llvm::SmallVector<SelectedBufferRequest, 4> requests;
   for (llvm::ArrayRef<size_t> group : getLogicalEdgeStrategyGroups(candidate)) {
     if (group.empty())
       continue;
     const SpatialEdgeStrategy &representative =
-        candidate.mapping.edgeStrategies[group.front()];
+        candidate.assignment.mapping.edgeStrategies[group.front()];
     if (representative.bufferCount <= 1)
       continue;
     if (llvm::any_of(group, [&](size_t index) {
-          return candidate.mapping.edgeStrategies[index].bufferCount !=
-                 representative.bufferCount;
+          return candidate.assignment.mapping.edgeStrategies[index]
+                     .bufferCount != representative.bufferCount;
         })) {
       failureReason =
           "one selected logical edge has inconsistent buffer multiplicity";
@@ -4006,13 +4096,11 @@ buildSelectedBufferRequestsForTile(
     }
 
     SelectedBufferRequest request;
-    request.producerLineage =
-        findLineage(sourceLineage, representative.producer);
-    request.consumerLineage =
-        findLineage(sourceLineage, representative.consumer);
+    request.producerNode = findStructuredNode(dag, representative.producer);
+    request.consumerNode = findStructuredNode(dag, representative.consumer);
     request.bufferCount = representative.bufferCount;
-    if (!request.producerLineage || !request.consumerLineage) {
-      failureReason = "selected buffering lost structured source lineage";
+    if (!request.producerNode || !request.consumerNode) {
+      failureReason = "selected buffering lost its structured DAG nodes";
       return mlir::failure();
     }
 
@@ -4027,7 +4115,7 @@ buildSelectedBufferRequestsForTile(
     };
     for (size_t index : group) {
       const SpatialEdgeStrategy &strategy =
-          candidate.mapping.edgeStrategies[index];
+          candidate.assignment.mapping.edgeStrategies[index];
       if (strategy.fragments.empty()) {
         request.requireLocalDataflow |=
             strategy.sourceTile == tile && strategy.destinationTile == tile;
@@ -4061,13 +4149,14 @@ buildSelectedBufferRequestsForTile(
   return requests;
 }
 
-static bool
-rootContainsLineageLayout(mlir::Operation *root,
-                          const CardProgramSourceOperationLineage *lineage,
-                          MemLayout layout) {
+static bool rootContainsNodeLayout(
+    mlir::Operation *root, CardDAGNodeID node, MemLayout layout,
+    const StructuredMaterializationRelations &materializationRelations) {
   bool found = false;
   root->walk([&](mlir::Operation *operation) {
-    if (!found && locationContainsLineage(operation->getLoc(), lineage) &&
+    if (!found &&
+        operationUsesStructuredNode(operation, node,
+                                    materializationRelations) &&
         operationCarriesLayout(operation, layout))
       found = true;
   });
@@ -4110,21 +4199,21 @@ static bool isSPMValue(mlir::Value value) {
   return memory && memory.getSpace() == MemorySpace::SPM;
 }
 
-/// Proves that source-lineage work for one selected producer/consumer pair is
+/// Proves that work for one selected producer/consumer node pair is
 /// connected inside one actual TileRegion.  A direct/transitive SSA path, a
 /// shared typed SPM value, or one fused-location operation is accepted; a DDR
 /// boundary or mere co-location without dataflow is not.
 static bool rootContainsActualFusedEdge(
-    mlir::Operation *root,
-    const CardProgramSourceOperationLineage *producerLineage,
-    const CardProgramSourceOperationLineage *consumerLineage) {
+    mlir::Operation *root, CardDAGNodeID producerNode,
+    CardDAGNodeID consumerNode,
+    const StructuredMaterializationRelations &materializationRelations) {
   llvm::SmallVector<mlir::Operation *, 16> producers;
   llvm::SmallVector<mlir::Operation *, 16> consumers;
   root->walk([&](mlir::Operation *operation) {
-    const bool producer =
-        locationContainsLineage(operation->getLoc(), producerLineage);
-    const bool consumer =
-        locationContainsLineage(operation->getLoc(), consumerLineage);
+    const bool producer = operationUsesStructuredNode(operation, producerNode,
+                                                      materializationRelations);
+    const bool consumer = operationUsesStructuredNode(operation, consumerNode,
+                                                      materializationRelations);
     if (producer && consumer && operation->getParentOfType<TileRegionOp>())
       producers.push_back(operation), consumers.push_back(operation);
     else {
@@ -4179,28 +4268,30 @@ static bool rootContainsActualFusedEdge(
 
 static mlir::LogicalResult validateSelectedFusion(
     mlir::ModuleOp cardProgram, const WholeCardCandidate &candidate,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
+    const CardDAGAnalysis &dag,
+    const StructuredMaterializationRelations &materializationRelations,
     uint64_t &actualFusedLogicalEdges, std::string &failureReason) {
   actualFusedLogicalEdges = 0;
   for (const llvm::SmallVector<size_t, 16> &group :
        getLogicalEdgeStrategyGroups(candidate)) {
     if (group.empty() || !llvm::all_of(group, [&](size_t index) {
-          return candidate.mapping.edgeStrategies[index].action ==
+          return candidate.assignment.mapping.edgeStrategies[index].action ==
                  SpatialEdgeAction::CoupledFusion;
         }))
       continue;
     const SpatialEdgeStrategy &strategy =
-        candidate.mapping.edgeStrategies[group.front()];
-    const CardProgramSourceOperationLineage *producer =
-        findLineage(sourceLineage, strategy.producer);
-    const CardProgramSourceOperationLineage *consumer =
-        findLineage(sourceLineage, strategy.consumer);
+        candidate.assignment.mapping.edgeStrategies[group.front()];
+    std::optional<CardDAGNodeID> producer =
+        findStructuredNode(dag, strategy.producer);
+    std::optional<CardDAGNodeID> consumer =
+        findStructuredNode(dag, strategy.consumer);
     if (!producer || !consumer) {
-      failureReason = "selected fusion lost structured source lineage";
+      failureReason = "selected fusion lost its structured DAG nodes";
       return mlir::failure();
     }
-    const bool witnessed = rootContainsActualFusedEdge(
-        cardProgram.getOperation(), producer, consumer);
+    const bool witnessed =
+        rootContainsActualFusedEdge(cardProgram.getOperation(), *producer,
+                                    *consumer, materializationRelations);
     if (!witnessed) {
       failureReason =
           "selected coupled fusion has no actual in-region dataflow witness";
@@ -4213,33 +4304,53 @@ static mlir::LogicalResult validateSelectedFusion(
 
 static mlir::LogicalResult validateSelectedTileLayouts(
     mlir::Operation *root, const WholeCardCandidate &candidate,
-    PhysicalTileId tile,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
+    PhysicalTileId tile, const CardDAGAnalysis &dag,
+    const StructuredMaterializationRelations &materializationRelations,
     std::string &failureReason) {
-  for (const SpatialEdgeStrategy &strategy : candidate.mapping.edgeStrategies) {
+  for (const SpatialEdgeStrategy &strategy :
+       candidate.assignment.mapping.edgeStrategies) {
     if (!strategy.hasLayoutAssignment ||
         !isSpatialEdgeStrategyIncidentOnTile(strategy, tile))
       continue;
-    const CardProgramSourceOperationLineage *producer =
-        findLineage(sourceLineage, strategy.producer);
-    const CardProgramSourceOperationLineage *consumer =
-        findLineage(sourceLineage, strategy.consumer);
+    std::optional<CardDAGNodeID> producer =
+        findStructuredNode(dag, strategy.producer);
+    std::optional<CardDAGNodeID> consumer =
+        findStructuredNode(dag, strategy.consumer);
     if (!producer || !consumer) {
-      failureReason = "selected layout lost structured source lineage";
+      failureReason = "selected layout lost its structured DAG nodes";
       return mlir::failure();
     }
     const bool producerWitness =
-        rootContainsLineageLayout(root, producer, strategy.producerLayout) ||
+        rootContainsNodeLayout(root, *producer, strategy.producerLayout,
+                               materializationRelations) ||
         rootContainsLayout(root, strategy.producerLayout);
     const bool consumerWitness =
-        rootContainsLineageLayout(root, consumer, strategy.consumerLayout) ||
+        rootContainsNodeLayout(root, *consumer, strategy.consumerLayout,
+                               materializationRelations) ||
         rootContainsLayout(root, strategy.consumerLayout);
-    if (strategy.sourceTile == tile && !producerWitness) {
-      failureReason = "selected producer layout has no typed actual IR witness";
+    const bool materializesProducer =
+        strategy.action == SpatialEdgeAction::PeerFragments
+            ? llvm::any_of(strategy.fragments,
+                           [&](const SpatialEdgeFragment &fragment) {
+                             return fragment.sourceTile == tile;
+                           })
+            : strategy.sourceTile == tile;
+    if (materializesProducer && !producerWitness) {
+      failureReason =
+          (llvm::Twine("selected producer layout ") +
+           stringifyMemLayout(strategy.producerLayout) + " for structured node " +
+           llvm::Twine(*producer) + " has no typed actual IR witness on Tile " +
+           llvm::Twine(tile.getValue()))
+              .str();
       return mlir::failure();
     }
     if (strategy.destinationTile == tile && !consumerWitness) {
-      failureReason = "selected consumer layout has no typed actual IR witness";
+      failureReason =
+          (llvm::Twine("selected consumer layout ") +
+           stringifyMemLayout(strategy.consumerLayout) + " for structured node " +
+           llvm::Twine(*consumer) + " has no typed actual IR witness on Tile " +
+           llvm::Twine(tile.getValue()))
+              .str();
       return mlir::failure();
     }
     if (strategy.destinationTile == tile &&
@@ -4254,134 +4365,68 @@ static mlir::LogicalResult validateSelectedTileLayouts(
   return mlir::success();
 }
 
-static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
-    mlir::ModuleOp tensorProgram, const WholeCardCandidate &candidate,
-    PhysicalCardId physicalCardId,
-    llvm::ArrayRef<PhysicalTileId> expectedTileIds,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
-    llvm::ArrayRef<SpatialOutputLineage> outputLineage,
-    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage,
-    const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    WholeCardSynthesisStatistics &gateStatistics,
-    WholeCardExecutableSynthesisStatistics *searchStatistics,
-    uint64_t &rotatingSlotAllocationsMaterialized,
-    uint64_t &actualFusedLogicalEdges, unsigned tilePipelineParallelism,
-    std::optional<PhysicalTileId> preferredFailureProbeTileId,
-    std::string &failureGate, std::string &failureReason,
-    SelectedBufferMaterializationFailure &selectedBufferFailure,
-    bool &indeterminateFailure, bool &spmCapacityOverflow,
+static PhysicalTileFinalizationFailure::SPMDemandEvidence makeSPMDemandEvidence(
+    const SPMMemoryPlanningFailure::DemandEvidence &demand,
+    const StructuredMaterializationRelations &materializationRelations) {
+  PhysicalTileFinalizationFailure::SPMDemandEvidence evidence{
+      demand.location, demand.allocation, demand.type, demand.bytes, {}};
+  evidence.userLocations.append(demand.userLocations.begin(),
+                                demand.userLocations.end());
+  auto appendNode = [](auto &nodes, uint32_t node) {
+    if (!llvm::is_contained(nodes, node))
+      nodes.push_back(node);
+  };
+  for (const auto &relation : materializationRelations.operationResultBuffers)
+    if (shareStructuredBufferStorage(demand.allocation, relation.buffer))
+      appendNode(evidence.operationResultNodes, relation.structuredNodeId);
+  for (const auto &relation : materializationRelations.operandBuffers)
+    if (shareStructuredBufferStorage(demand.allocation, relation.buffer))
+      appendNode(evidence.operandDemandNodes, relation.structuredNodeId);
+  for (const auto &relation : materializationRelations.outputBuffers)
+    if (shareStructuredBufferStorage(demand.allocation, relation.buffer) &&
+        !llvm::is_contained(evidence.outputIndices, relation.outputIndex))
+      evidence.outputIndices.push_back(relation.outputIndex);
+  return evidence;
+}
+
+static CardExecutableTileFailure makeTileSPMCapacityFailure(
+    PhysicalTileId tileId, const SPMMemoryPlanningFailure &planningFailure,
+    const StructuredMaterializationRelations &materializationRelations) {
+  CardExecutableTileFailure tileFailure;
+  tileFailure.tileId = tileId;
+  PhysicalTileFinalizationFailure &failure = tileFailure.finalization;
+  failure.kind = PhysicalTileFinalizationFailureKind::SPMAllocation;
+  failure.spmCapacityOverflow =
+      planningFailure.kind == SPMMemoryPlanningFailureKind::CapacityOverflow;
+  failure.spmPlanningFailureKind = planningFailure.kind;
+  failure.spmLargestDemandLocation = planningFailure.largestDemandLocation;
+  failure.spmLargestDemandType = planningFailure.largestDemandType;
+  failure.spmLargestDemandBytes = planningFailure.largestDemandBytes;
+  failure.spmDemandCount = planningFailure.demandCount;
+  auto appendEvidence = [&](const auto &from, auto &to) {
+    to.push_back(makeSPMDemandEvidence(from, materializationRelations));
+  };
+  for (const auto &demand : planningFailure.largestDemands)
+    appendEvidence(demand, failure.spmLargestDemands);
+  for (const auto &demand : planningFailure.capacityConflictDemands)
+    appendEvidence(demand, failure.spmCapacityConflictDemands);
+  for (const auto &demand : planningFailure.individuallyOversizedDemands)
+    appendEvidence(demand, failure.spmIndividuallyOversizedDemands);
+  return tileFailure;
+}
+
+static void collectSPMCapacityDemandEvidence(
+    llvm::ArrayRef<CardExecutableTileFailure> tileFailures,
+    bool composePrimaryAllocationOwner, llvm::raw_ostream &diagnostics,
     llvm::SmallVectorImpl<SPMCapacityDemandEvidence> &spmCapacityDemands) {
-  selectedBufferFailure = {};
-  indeterminateFailure = false;
-  spmCapacityOverflow = false;
-  spmCapacityDemands.clear();
-  (void)preferredFailureProbeTileId;
-  (void)searchStatistics;
-  mlir::OwningOpRef<mlir::ModuleOp> cardProgram;
-  {
-    wafer::support::ScopedCompileTimingSpan timing(
-        "conversion", "whole-card-executable-synthesis",
-        "tensor-program-to-card-program");
-    mlir::LogicalResult loweredCard = lowerTensorProgramToCardProgram(
-        tensorProgram, physicalCardId, candidate.mapping, cardProgram,
-        &failureReason, sourceLineage, outputLineage, operandDemandLineage);
-    if (mlir::failed(loweredCard)) {
-      failureGate = "card-program-materialization";
-      return mlir::failure();
-    }
-  }
-
-  if (mlir::failed(
-          validateSelectedFusion(*cardProgram, candidate, sourceLineage,
-                                 actualFusedLogicalEdges, failureReason))) {
-    failureGate = "selected-fusion-materialization";
-    return mlir::failure();
-  }
-
-  llvm::SmallVector<TileProgramOp, 16> tilePrograms;
-  cardProgram->walk(
-      [&](TileProgramOp tileProgram) { tilePrograms.push_back(tileProgram); });
-  llvm::sort(tilePrograms, [](TileProgramOp lhs, TileProgramOp rhs) {
-    return lhs.getTileIdAttr().getInt() < rhs.getTileIdAttr().getInt();
-  });
-  if (tilePrograms.size() != expectedTileIds.size()) {
-    failureGate = "physical-tile-projection";
-    failureReason = "CardProgram physical Tile domain is incomplete";
-    return mlir::failure();
-  }
-  std::vector<llvm::SmallVector<SelectedBufferRequest, 4>>
-      selectedBufferRequests;
-  selectedBufferRequests.reserve(tilePrograms.size());
-  size_t selectedBufferRequestCount = 0;
-  for (auto [index, tileProgram] : llvm::enumerate(tilePrograms)) {
-    const PhysicalTileId tileId(tileProgram.getTileIdAttr().getInt());
-    if (tileId != expectedTileIds[index]) {
-      failureGate = "physical-tile-projection";
-      failureReason = "CardProgram changed the verified physical Tile domain";
-      return mlir::failure();
-    }
-    if (mlir::failed(validateSelectedTileLayouts(
-            tileProgram.getOperation(), candidate, tileId, sourceLineage,
-            failureReason))) {
-      failureGate = "selected-layout-materialization";
-      return mlir::failure();
-    }
-    mlir::FailureOr<llvm::SmallVector<SelectedBufferRequest, 4>> requests =
-        buildSelectedBufferRequestsForTile(candidate, tileId, sourceLineage,
-                                           failureReason);
-    if (mlir::failed(requests)) {
-      failureGate = "selected-buffer-request";
-      return mlir::failure();
-    }
-    selectedBufferRequestCount += requests->size();
-    selectedBufferRequests.push_back(std::move(*requests));
-  }
-  if (hasBufferedEdge(candidate) && selectedBufferRequestCount == 0) {
-    failureGate = "selected-buffer-request";
-    failureReason =
-        "selected buffering has no incident logical-edge request on any "
-        "physical Tile";
-    return mlir::failure();
-  }
-
-  CardExecutableCompilationResult compilation = compileCardProgramToExecutable(
-      std::move(cardProgram), physicalCardId, expectedTileIds,
-      selectedBufferRequests, program, executionConfig, diagnostics,
-      &gateStatistics, tilePipelineParallelism);
-  rotatingSlotAllocationsMaterialized +=
-      compilation.rotatingSlotAllocationsMaterialized;
-  if (compilation.isAccepted())
-    return compilation.takeExecutable();
-
-  indeterminateFailure = compilation.status ==
-                         CardExecutableCompilationStatus::IndeterminateFailure;
-  failureGate = compilation.gate;
-  failureReason = compilation.detail;
-  for (const CardExecutableTileFailure &failure : compilation.tileFailures)
-    if (failure.selectedBuffer.kind !=
-        SelectedBufferMaterializationFailureKind::None) {
-      selectedBufferFailure = failure.selectedBuffer;
-      break;
-    }
-  spmCapacityOverflow = llvm::any_of(
-      compilation.tileFailures, [](const CardExecutableTileFailure &failure) {
-        return failure.finalization.spmCapacityOverflow;
-      });
   uint64_t largestSPMCapacityDemandBytes = 0;
   bool selectedExactSPMCausalSet = false;
-  for (const CardExecutableTileFailure &tileFailure :
-       compilation.tileFailures) {
+  for (const CardExecutableTileFailure &tileFailure : tileFailures) {
     const PhysicalTileFinalizationFailure &failure = tileFailure.finalization;
     if (!failure.spmCapacityOverflow)
       continue;
     llvm::SmallVector<PhysicalTileFinalizationFailure::SPMDemandEvidence, 4>
         largestDemands = failure.spmLargestDemands;
-    if (largestDemands.empty() && failure.spmLargestDemandLocation)
-      largestDemands.push_back({failure.spmLargestDemandLocation,
-                                failure.spmLargestDemandType,
-                                failure.spmLargestDemandBytes,
-                                {}});
     const bool hasIndividuallyOversizedDemands =
         !failure.spmIndividuallyOversizedDemands.empty();
     const bool hasExactCapacityConflict =
@@ -4425,55 +4470,16 @@ static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
     else if (hasExactCapacityConflict)
       feedbackDemands = failure.spmCapacityConflictDemands;
     for (const auto &demand : feedbackDemands) {
-      mlir::Location demandLocation(demand.location);
-      auto allocationContainsLineage = [&](const auto *lineage) {
-        return locationContainsLineage(demandLocation, lineage);
-      };
-      auto userContainsLineage = [&](const auto *lineage) {
-        return llvm::any_of(demand.userLocations,
-                            [&](mlir::LocationAttr userLocation) {
-                              return locationContainsLineage(
-                                  mlir::Location(userLocation), lineage);
-                            });
-      };
-      llvm::SmallVector<const CardProgramSourceOperationLineage *, 4>
-          localLineages;
-      llvm::SmallVector<const SpatialOutputLineage *, 2> localOutputLineages;
-      llvm::SmallVector<const StructuredOperandDemandLineage *, 4>
-          localOperandDemandLineages;
-      auto collectLineages = [&](auto &source, auto &destination,
-                                 const auto &contains) {
-        for (const auto &lineage : source)
-          if (contains(&lineage))
-            destination.push_back(&lineage);
-      };
-      collectLineages(sourceLineage, localLineages, allocationContainsLineage);
-      collectLineages(outputLineage, localOutputLineages,
-                      allocationContainsLineage);
-      collectLineages(operandDemandLineage, localOperandDemandLineages,
-                      allocationContainsLineage);
-      const bool lineageFromAllocation = !localLineages.empty() ||
-                                         !localOutputLineages.empty() ||
-                                         !localOperandDemandLineages.empty();
-      // The allocation's own location is the causal owner. A user location
-      // is only a fallback when lowering lost that owner: treating an
-      // arbitrary consumer as the allocation lineage repeatedly refined a
-      // downstream tile while the actual full SPM root stayed unchanged.
-      if (!lineageFromAllocation) {
-        collectLineages(sourceLineage, localLineages, userContainsLineage);
-        collectLineages(outputLineage, localOutputLineages,
-                        userContainsLineage);
-        collectLineages(operandDemandLineage, localOperandDemandLineages,
-                        userContainsLineage);
-      }
-      if (localLineages.empty() && localOutputLineages.empty() &&
-          localOperandDemandLineages.empty()) {
+      const bool attributed = !demand.operationResultNodes.empty() ||
+                              !demand.operandDemandNodes.empty() ||
+                              !demand.outputIndices.empty();
+      if (!attributed) {
         diagnostics << "wafer-compile: whole-card-unattributed-spm-demand"
                     << " physical_tile_id=" << tileFailure.tileId.getValue()
                     << " demand_bytes=" << demand.bytes
                     << " demand_count=" << failure.spmDemandCount
                     << " demand_type=" << demand.type
-                    << " demand_location=" << demandLocation << '\n';
+                    << " demand_location=" << demand.location << '\n';
       }
       if (!hasExactCausalSet) {
         if (demand.bytes < largestSPMCapacityDemandBytes)
@@ -4483,38 +4489,724 @@ static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
           spmCapacityDemands.clear();
         }
       }
-      auto appendEvidence = [&](const CardProgramSourceOperationLineage *op,
-                                const SpatialOutputLineage *output,
-                                const StructuredOperandDemandLineage *operand) {
-        spmCapacityDemands.push_back(
-            {tileFailure.tileId, op, output, operand, lineageFromAllocation,
-             demand.type, demand.bytes, failure.spmDemandCount,
-             hasExactCausalSet ? exactConflictBytes : demand.bytes,
-             hasExactCausalSet ? exactConflictDemandCount : uint64_t{1}});
+      auto appendEvidence = [&](std::optional<CardDAGNodeID> operationNode,
+                                std::optional<unsigned> outputIndex,
+                                std::optional<CardDAGNodeID> operandNode) {
+        SPMCapacityDemandEvidence evidence;
+        evidence.physicalTileId = tileFailure.tileId;
+        evidence.operationNode = operationNode;
+        evidence.outputIndex = outputIndex;
+        evidence.operandDemandNode = operandNode;
+        evidence.relationFromAllocation = true;
+        evidence.type = demand.type;
+        evidence.bytes = demand.bytes;
+        evidence.demandCount = failure.spmDemandCount;
+        evidence.exactConflictBytes =
+            hasExactCausalSet ? exactConflictBytes : demand.bytes;
+        evidence.exactConflictDemandCount =
+            hasExactCausalSet ? exactConflictDemandCount : uint64_t{1};
+        if (!llvm::any_of(spmCapacityDemands, [&](const auto &known) {
+              return known.physicalTileId == evidence.physicalTileId &&
+                     known.operationNode == evidence.operationNode &&
+                     known.outputIndex == evidence.outputIndex &&
+                     known.operandDemandNode == evidence.operandDemandNode;
+            }))
+          spmCapacityDemands.push_back(std::move(evidence));
       };
-      // The operand-demand marker was attached at the exact structured input
-      // materialization site. When it survives, producer source locations in
-      // the same FusedLoc are provenance, not additional causal coordinates.
-      // Likewise an explicit output anchor is more specific than generic
-      // source provenance. Fall back to every source lineage only when no
-      // more precise owner survived lowering.
-      if (!localOperandDemandLineages.empty()) {
-        for (const StructuredOperandDemandLineage *lineage :
-             localOperandDemandLineages)
-          appendEvidence(nullptr, nullptr, lineage);
-      } else if (!localOutputLineages.empty()) {
-        for (const SpatialOutputLineage *lineage : localOutputLineages)
-          appendEvidence(nullptr, lineage, nullptr);
-      } else {
-        for (const CardProgramSourceOperationLineage *lineage : localLineages)
-          appendEvidence(lineage, nullptr, nullptr);
+      // Baseline region cuts may expose both the producer result allocation
+      // and the downstream operand demand. Compose both current-IR relations;
+      // search policy may still prioritize one coordinate below.
+      if (composePrimaryAllocationOwner) {
+        for (uint32_t node : demand.operationResultNodes)
+          appendEvidence(node, std::nullopt, std::nullopt);
       }
-      if (localLineages.empty() && localOutputLineages.empty() &&
-          localOperandDemandLineages.empty())
-        appendEvidence(nullptr, nullptr, nullptr);
+      if (!demand.operandDemandNodes.empty()) {
+        for (uint32_t node : demand.operandDemandNodes)
+          appendEvidence(std::nullopt, std::nullopt, node);
+      } else if (!demand.outputIndices.empty()) {
+        for (unsigned output : demand.outputIndices)
+          appendEvidence(std::nullopt, output, std::nullopt);
+      } else {
+        for (uint32_t node : demand.operationResultNodes)
+          appendEvidence(node, std::nullopt, std::nullopt);
+      }
+      if (!attributed)
+        appendEvidence(std::nullopt, std::nullopt, std::nullopt);
     }
   }
+}
+
+static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
+    mlir::ModuleOp tensorProgram, const WholeCardCandidate &candidate,
+    PhysicalCardId physicalCardId,
+    llvm::ArrayRef<PhysicalTileId> expectedTileIds,
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    const CardDAGAnalysis &dag,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    WholeCardSynthesisStatistics &gateStatistics,
+    WholeCardExecutableSynthesisStatistics *searchStatistics,
+    uint64_t &rotatingSlotAllocationsMaterialized,
+    uint64_t &actualFusedLogicalEdges, unsigned tilePipelineParallelism,
+    std::optional<PhysicalTileId> preferredFailureProbeTileId,
+    std::string &failureGate, std::string &failureReason,
+    SelectedBufferMaterializationFailure &selectedBufferFailure,
+    bool &indeterminateFailure, bool &spmCapacityOverflow,
+    llvm::SmallVectorImpl<SPMCapacityDemandEvidence> &spmCapacityDemands,
+    llvm::SmallVectorImpl<AcceptedOperationNodeRelation>
+        &acceptedOperationNodes,
+    std::vector<std::string> &tileDataflowIRTrace) {
+  selectedBufferFailure = {};
+  indeterminateFailure = false;
+  spmCapacityOverflow = false;
+  spmCapacityDemands.clear();
+  acceptedOperationNodes.clear();
+  tileDataflowIRTrace.clear();
+  (void)preferredFailureProbeTileId;
+  (void)searchStatistics;
+  mlir::OwningOpRef<mlir::ModuleOp> cardProgram;
+  StructuredMaterializationRelations materializationRelations;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "conversion", "whole-card-executable-synthesis",
+        "tensor-program-to-card-program");
+    mlir::LogicalResult loweredCard = lowerTensorProgramToCardProgram(
+        tensorProgram, physicalCardId, candidate.assignment.mapping,
+        cardProgram, &failureReason, operationNodes, &materializationRelations);
+    if (mlir::failed(loweredCard)) {
+      failureGate = "card-program-materialization";
+      return mlir::failure();
+    }
+  }
+
+  if (mlir::failed(validateSelectedFusion(
+          *cardProgram, candidate, dag, materializationRelations,
+          actualFusedLogicalEdges, failureReason))) {
+    failureGate = "selected-fusion-materialization";
+    return mlir::failure();
+  }
+
+  llvm::SmallVector<TileProgramOp, 16> tilePrograms;
+  cardProgram->walk(
+      [&](TileProgramOp tileProgram) { tilePrograms.push_back(tileProgram); });
+  llvm::sort(tilePrograms, [](TileProgramOp lhs, TileProgramOp rhs) {
+    return lhs.getTileIdAttr().getInt() < rhs.getTileIdAttr().getInt();
+  });
+  if (tilePrograms.size() != expectedTileIds.size()) {
+    failureGate = "physical-tile-projection";
+    failureReason = "CardProgram physical Tile domain is incomplete";
+    return mlir::failure();
+  }
+  std::vector<llvm::SmallVector<SelectedBufferRequest, 4>>
+      selectedBufferRequests;
+  selectedBufferRequests.reserve(tilePrograms.size());
+  size_t selectedBufferRequestCount = 0;
+  for (auto [index, tileProgram] : llvm::enumerate(tilePrograms)) {
+    const PhysicalTileId tileId(tileProgram.getTileIdAttr().getInt());
+    if (tileId != expectedTileIds[index]) {
+      failureGate = "physical-tile-projection";
+      failureReason = "CardProgram changed the verified physical Tile domain";
+      return mlir::failure();
+    }
+    if (mlir::failed(validateSelectedTileLayouts(
+            tileProgram.getOperation(), candidate, tileId, dag,
+            materializationRelations, failureReason))) {
+      failureGate = "selected-layout-materialization";
+      return mlir::failure();
+    }
+    mlir::FailureOr<llvm::SmallVector<SelectedBufferRequest, 4>> requests =
+        buildSelectedBufferRequestsForTile(candidate, tileId, dag,
+                                           failureReason);
+    if (mlir::failed(requests)) {
+      failureGate = "selected-buffer-request";
+      return mlir::failure();
+    }
+    selectedBufferRequestCount += requests->size();
+    selectedBufferRequests.push_back(std::move(*requests));
+  }
+  if (hasBufferedEdge(candidate) && selectedBufferRequestCount == 0) {
+    failureGate = "selected-buffer-request";
+    failureReason =
+        "selected buffering has no incident logical-edge request on any "
+        "physical Tile";
+    return mlir::failure();
+  }
+
+  CardExecutableCompilationResult compilation = compileCardProgramToExecutable(
+      std::move(cardProgram), physicalCardId, expectedTileIds,
+      selectedBufferRequests, materializationRelations, program,
+      executionConfig, diagnostics, &gateStatistics, tilePipelineParallelism);
+  rotatingSlotAllocationsMaterialized +=
+      compilation.rotatingSlotAllocationsMaterialized;
+  if (compilation.isAccepted()) {
+    acceptedOperationNodes.append(compilation.operationNodeRelations.begin(),
+                                  compilation.operationNodeRelations.end());
+    tileDataflowIRTrace = std::move(compilation.tileDataflowIRTrace);
+    return compilation.takeExecutable();
+  }
+
+  indeterminateFailure = compilation.status ==
+                         CardExecutableCompilationStatus::IndeterminateFailure;
+  failureGate = compilation.gate;
+  failureReason = compilation.detail;
+  for (const CardExecutableTileFailure &failure : compilation.tileFailures)
+    if (failure.selectedBuffer.kind !=
+        SelectedBufferMaterializationFailureKind::None) {
+      selectedBufferFailure = failure.selectedBuffer;
+      break;
+    }
+  spmCapacityOverflow = llvm::any_of(
+      compilation.tileFailures, [](const CardExecutableTileFailure &failure) {
+        return failure.finalization.spmCapacityOverflow;
+      });
+  collectSPMCapacityDemandEvidence(compilation.tileFailures,
+                                   /*composePrimaryAllocationOwner=*/false,
+                                   diagnostics, spmCapacityDemands);
   return mlir::failure();
+}
+
+static bool refineDeterministicBaselineFromSPM(
+    WholeCardCandidate &candidate, const StaticOutputDomains &outputDomains,
+    const CardDAGAnalysis &dag,
+    llvm::ArrayRef<SPMCapacityDemandEvidence> spmCapacityDemands,
+    uint64_t &temporalTransitions, uint64_t &causalOperationCount,
+    uint64_t &causalOutputCount, int64_t &causalNode,
+    unsigned &refinedDimension, int64_t &previousExtent,
+    int64_t &refinedExtent) {
+  struct CausalCoordinate {
+    mlir::Operation *operation = nullptr;
+    std::optional<unsigned> output;
+    uint32_t node = std::numeric_limits<uint32_t>::max();
+    bool operandDemand = false;
+  };
+  llvm::SmallVector<CausalCoordinate, 8> coordinates;
+  for (const SPMCapacityDemandEvidence &demand : spmCapacityDemands) {
+    CausalCoordinate coordinate;
+    if (demand.operandDemandNode) {
+      coordinate.node = *demand.operandDemandNode;
+      if (coordinate.node < dag.getNodes().size())
+        coordinate.operation = dag.getNodes()[coordinate.node].operation;
+      coordinate.operandDemand = true;
+    } else if (demand.outputIndex) {
+      coordinate.output = *demand.outputIndex;
+    } else if (demand.operationNode) {
+      coordinate.node = *demand.operationNode;
+      if (coordinate.node < dag.getNodes().size())
+        coordinate.operation = dag.getNodes()[coordinate.node].operation;
+    }
+    if (!coordinate.operation && !coordinate.output)
+      continue;
+    if (!llvm::any_of(coordinates, [&](const CausalCoordinate &existing) {
+          return existing.operation == coordinate.operation &&
+                 existing.output == coordinate.output &&
+                 existing.operandDemand == coordinate.operandDemand;
+        }))
+      coordinates.push_back(coordinate);
+  }
+  llvm::stable_sort(coordinates, [](const CausalCoordinate &lhs,
+                                    const CausalCoordinate &rhs) {
+    auto priority = [](const CausalCoordinate &coordinate) {
+      return coordinate.operandDemand ? 0 : coordinate.output ? 1 : 2;
+    };
+    return std::tuple(
+               priority(lhs), std::numeric_limits<uint32_t>::max() - lhs.node,
+               lhs.output.value_or(std::numeric_limits<unsigned>::max())) <
+           std::tuple(
+               priority(rhs), std::numeric_limits<uint32_t>::max() - rhs.node,
+               rhs.output.value_or(std::numeric_limits<unsigned>::max()));
+  });
+  temporalTransitions = 0;
+  causalOperationCount = 0;
+  causalOutputCount = 0;
+  causalNode = -1;
+  refinedDimension = 0;
+  previousExtent = 0;
+  refinedExtent = 0;
+  WholeCardCandidate refined = candidate;
+  for (const CausalCoordinate &coordinate : coordinates) {
+    unsigned localDimension = 0;
+    int64_t localPreviousExtent = 0;
+    int64_t localRefinedExtent = 0;
+    bool changed = false;
+    if (coordinate.operation) {
+      size_t refinedNode = 0;
+      changed = refineOperationTemporalVariantOnce(
+          refined, outputDomains, dag, coordinate.operation,
+          // In the independent baseline, a producer-result allocation is an
+          // explicit producer wave streamed to DDR, while an operand relation
+          // is the exact consumer wave that requested it. Both are direct
+          // local coordinates; search uses the more general downstream
+          // fallback in its separate controller.
+          /*preferredIsOperandDemand=*/true,
+          /*refinedOperation=*/nullptr, &refinedNode, &localDimension,
+          &localPreviousExtent, &localRefinedExtent,
+          /*explicitProducerCanStreamToDDR=*/true);
+      if (changed) {
+        ++causalOperationCount;
+        if (temporalTransitions == 0)
+          causalNode = static_cast<int64_t>(refinedNode);
+      }
+    } else {
+      changed = refineOutputTemporalVariantOnce(
+          refined, outputDomains, dag, *coordinate.output, &localDimension,
+          &localPreviousExtent, &localRefinedExtent);
+      if (changed)
+        ++causalOutputCount;
+    }
+    if (!changed)
+      continue;
+    if (temporalTransitions == 0) {
+      refinedDimension = localDimension;
+      previousExtent = localPreviousExtent;
+      refinedExtent = localRefinedExtent;
+    }
+    ++temporalTransitions;
+  }
+  if (temporalTransitions == 0 || sameMapping(refined, candidate))
+    return false;
+  candidate = std::move(refined);
+  return true;
+}
+
+static mlir::FailureOr<WholeCardCompilationResult>
+synthesizeDeterministicBaseline(
+    mlir::ModuleOp tensorProgram, const PhysicalTopology &topology,
+    PhysicalCardId physicalCardId,
+    llvm::ArrayRef<PhysicalTileId> expectedTileIds,
+    const StaticOutputDomains &outputDomains, const CardDAGAnalysis &dag,
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    WholeCardExecutableSynthesisStatistics &statistics,
+    unsigned tilePipelineParallelism) {
+  std::optional<WholeCardCandidate> candidate =
+      deriveDeterministicBaseline(topology, physicalCardId, expectedTileIds,
+                                  outputDomains, dag, statistics, diagnostics);
+  if (!candidate)
+    return mlir::failure();
+
+  uint64_t controllerIterations = 0;
+  std::optional<PhysicalTileId> scopedProbeTileId;
+  while (true) {
+    ++controllerIterations;
+    const bool scopedProbe = scopedProbeTileId.has_value();
+    mlir::OwningOpRef<mlir::ModuleOp> cardProgram;
+    StructuredMaterializationRelations materializationRelations;
+    std::string failureReason;
+    {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "conversion", "deterministic-baseline",
+          "tensor-program-to-card-program");
+      mlir::LogicalResult lowered =
+          scopedProbe
+              ? lowerTensorProgramToCardProgramFailureProbe(
+                    tensorProgram, physicalCardId, *scopedProbeTileId,
+                    candidate->assignment.mapping, cardProgram, &failureReason,
+                    operationNodes, &materializationRelations)
+              : lowerTensorProgramToCardProgram(
+                    tensorProgram, physicalCardId,
+                    candidate->assignment.mapping, cardProgram, &failureReason,
+                    operationNodes, &materializationRelations);
+      if (mlir::failed(lowered)) {
+        diagnostics << "wafer-compile: deterministic whole-card baseline "
+                       "failed "
+                    << (scopedProbe ? "scoped " : "")
+                    << "CardProgram materialization: " << failureReason << '\n';
+        return mlir::failure();
+      }
+    }
+    if (scopedProbe)
+      ++statistics.baselineScopedCardProgramMaterializations;
+    else
+      ++statistics.baselineCardProgramMaterializations;
+
+    uint64_t actualFusedLogicalEdges = 0;
+    if (!scopedProbe &&
+        (mlir::failed(validateSelectedFusion(
+             *cardProgram, *candidate, dag, materializationRelations,
+             actualFusedLogicalEdges, failureReason)) ||
+         actualFusedLogicalEdges != 0)) {
+      diagnostics << "wafer-compile: deterministic whole-card baseline lost "
+                     "its zero-fusion contract: "
+                  << failureReason << '\n';
+      return mlir::failure();
+    }
+
+    llvm::SmallVector<TileProgramOp, 16> tilePrograms;
+    cardProgram->walk([&](TileProgramOp tileProgram) {
+      tilePrograms.push_back(tileProgram);
+    });
+    llvm::sort(tilePrograms, [](TileProgramOp lhs, TileProgramOp rhs) {
+      return lhs.getTileIdAttr().getInt() < rhs.getTileIdAttr().getInt();
+    });
+    if (tilePrograms.size() != expectedTileIds.size()) {
+      diagnostics << "wafer-compile: deterministic whole-card baseline "
+                     "CardProgram has an incomplete physical Tile domain\n";
+      return mlir::failure();
+    }
+
+    struct RegionEvaluation {
+      PhysicalTileId tileId;
+      TileRegionOp region;
+      llvm::SmallVector<CardDAGNodeID, 2> structuredNodes;
+    };
+    llvm::SmallVector<RegionEvaluation, 32> regionEvaluations;
+    for (auto [tileIndex, tileProgram] : llvm::enumerate(tilePrograms)) {
+      const PhysicalTileId tileId(tileProgram.getTileIdAttr().getInt());
+      if (tileId != expectedTileIds[tileIndex]) {
+        diagnostics << "wafer-compile: deterministic whole-card baseline "
+                       "lost its complete physical Tile domain\n";
+        return mlir::failure();
+      }
+      if (scopedProbe && tileId != *scopedProbeTileId)
+        continue;
+      if (mlir::failed(validateSelectedTileLayouts(
+              tileProgram.getOperation(), *candidate, tileId, dag,
+              materializationRelations, failureReason))) {
+        diagnostics << "wafer-compile: deterministic whole-card baseline "
+                       "lost its selected physical assignment: "
+                    << failureReason << '\n';
+        return mlir::failure();
+      }
+      llvm::SmallVector<TileRegionOp, 16> regions;
+      tileProgram.walk([&](TileRegionOp region) {
+        if (!region->getParentOfType<TileRegionOp>())
+          regions.push_back(region);
+      });
+      for (TileRegionOp region : regions) {
+        RegionEvaluation evaluation{tileId, region, {}};
+        region.walk([&](mlir::Operation *operation) {
+          if (!mlir::isa<ComputeFillOp, ComputeConvertOp, ComputeGemmOp,
+                         ComputeConvOp, ComputeElementwiseOp, ComputeReduceOp>(
+                  operation))
+            return;
+          for (uint32_t node : collectStructuredNodesUsedByOperation(
+                   operation, materializationRelations))
+            if (!llvm::is_contained(evaluation.structuredNodes, node))
+              evaluation.structuredNodes.push_back(node);
+        });
+        regionEvaluations.push_back(std::move(evaluation));
+      }
+    }
+
+    std::vector<TileRegionSPMCapacityEvaluation> capacityResults(
+        regionEvaluations.size());
+    std::vector<std::string> capacityDiagnostics(regionEvaluations.size());
+    TileRegionToInstrLoweringSession loweringSession(
+        *cardProgram->getContext());
+    auto evaluateRegionSPM = [&](size_t index) {
+      llvm::raw_string_ostream stream(capacityDiagnostics[index]);
+      capacityResults[index] = evaluateTileRegionSPMCapacity(
+          regionEvaluations[index].region, loweringSession, stream);
+      stream.flush();
+    };
+    const unsigned requestedWorkers = tilePipelineParallelism == 0
+                                          ? kMaximumBoundedTilePipelineWorkers
+                                          : tilePipelineParallelism;
+    const unsigned workers = runBoundedTilePipelines(
+        cardProgram->getContext(), regionEvaluations.size(), evaluateRegionSPM,
+        requestedWorkers);
+    statistics.baselineMaximumRegionSPMQueryWorkers = std::max<uint64_t>(
+        statistics.baselineMaximumRegionSPMQueryWorkers, workers);
+    statistics.baselineRegionSPMCapacityChecks += regionEvaluations.size();
+
+    llvm::SmallVector<size_t, 16> causalFailureIndices;
+    for (auto [index, capacity] : llvm::enumerate(capacityResults)) {
+      diagnostics << capacityDiagnostics[index];
+      if (capacity.fits())
+        continue;
+      if (capacity.requiresFunctionScope()) {
+        ++statistics.baselineRegionSPMChecksRequiringFunctionScope;
+        continue;
+      }
+      if (!capacity.capacityExceeded()) {
+        ++statistics.baselineRegionSPMCapacityAnalysisFailures;
+        diagnostics << "wafer-compile: deterministic whole-card baseline "
+                       "region SPM query is indeterminate phase="
+                    << capacity.getPhaseDiagnosticLabel()
+                    << " detail=" << capacity.detail << '\n';
+        return mlir::failure();
+      }
+      ++statistics.baselineRegionSPMCapacityOverflowProofs;
+      const bool capacityOverflow =
+          capacity.phase == TileRegionSPMCapacityPhase::StaticPacking &&
+          capacity.planningFailure.kind ==
+              SPMMemoryPlanningFailureKind::CapacityOverflow;
+      if (!capacityOverflow) {
+        diagnostics << "wafer-compile: deterministic whole-card baseline "
+                       "received a non-capacity infeasibility proof phase="
+                    << capacity.getPhaseDiagnosticLabel()
+                    << " detail=" << capacity.detail << '\n';
+        return mlir::failure();
+      }
+      causalFailureIndices.push_back(index);
+    }
+    if (!causalFailureIndices.empty()) {
+      bool sawAttributedConflict = false;
+      bool refinedConflict = false;
+      for (size_t causalIndex : causalFailureIndices) {
+        llvm::SmallVector<SPMCapacityDemandEvidence, 8> demands;
+        llvm::SmallVector<CardExecutableTileFailure, 1> localFailures = {
+            makeTileSPMCapacityFailure(
+                regionEvaluations[causalIndex].tileId,
+                capacityResults[causalIndex].planningFailure,
+                materializationRelations)};
+        collectSPMCapacityDemandEvidence(localFailures,
+                                         /*composePrimaryAllocationOwner=*/true,
+                                         diagnostics, demands);
+
+        // Some producer-side allocations are created through a downstream
+        // support/materialization path whose location retains only the
+        // requesting consumer relation. Recover no general semantics from
+        // that location: instead, use the typed CardDAG edge and the exact
+        // failed memref shape/element type to identify direct structured
+        // producers whose result is the allocated DDR-stage wave. Add every
+        // exact match to the same deterministic state. Ambiguous equal-shaped
+        // operands are all refined together; no branch or guessed winner is
+        // introduced.
+        const size_t attributedDemandCount = demands.size();
+        for (const SPMCapacityDemandEvidence &demand :
+             llvm::ArrayRef<SPMCapacityDemandEvidence>(demands).take_front(
+                 attributedDemandCount)) {
+          if (!demand.operandDemandNode || !demand.type)
+            continue;
+          auto failedType = mlir::dyn_cast<mlir::ShapedType>(demand.type);
+          if (!failedType || !failedType.hasRank())
+            continue;
+          if (*demand.operandDemandNode >= dag.getNodes().size())
+            continue;
+          const CardDAGNode &consumerNode =
+              dag.getNodes()[*demand.operandDemandNode];
+          for (CardDAGEdgeID edgeId : consumerNode.incomingEdges) {
+            const CardDAGEdge *edge = dag.getEdge(edgeId);
+            const CardDAGNode *producer =
+                edge ? dag.getNode(edge->producer) : nullptr;
+            if (!edge || !producer || !producer->operation ||
+                edge->producerResult >= producer->operation->getNumResults())
+              continue;
+            auto producerType = mlir::dyn_cast<mlir::ShapedType>(
+                producer->operation->getResult(edge->producerResult).getType());
+            if (!producerType || !producerType.hasRank() ||
+                producerType.getElementType() != failedType.getElementType() ||
+                !llvm::equal(producerType.getShape(), failedType.getShape()))
+              continue;
+            if (llvm::any_of(demands, [&](const auto &known) {
+                  return known.operationNode == producer->id;
+                }))
+              continue;
+            SPMCapacityDemandEvidence producerDemand = demand;
+            producerDemand.operationNode = producer->id;
+            producerDemand.outputIndex.reset();
+            producerDemand.operandDemandNode.reset();
+            demands.push_back(std::move(producerDemand));
+          }
+        }
+
+        // The exact probe covers one materialized TileRegion. RegionCut keeps
+        // dependent structured stages DDR-separated; source owners with no
+        // selected dependency can remain as sequential work in the same
+        // region. The allocator's exact conflict certificate names boundary
+        // values, while every directly inherited compute owner names a
+        // traversal that can contribute an unreported result allocation.
+        // Compose all missing owners in the same deterministic local state;
+        // this remains one actual-region probe, not a candidate family or a
+        // branch.
+        for (CardDAGNodeID node :
+             regionEvaluations[causalIndex].structuredNodes) {
+          if (llvm::any_of(demands, [&](const auto &demand) {
+                return demand.operandDemandNode == node;
+              }))
+            continue;
+          SPMCapacityDemandEvidence regionDemand;
+          regionDemand.physicalTileId = regionEvaluations[causalIndex].tileId;
+          regionDemand.operandDemandNode = node;
+          regionDemand.relationFromAllocation = true;
+          demands.push_back(std::move(regionDemand));
+        }
+        if (demands.empty())
+          continue;
+        sawAttributedConflict = true;
+
+        uint64_t temporalTransitions = 0;
+        uint64_t causalOperationCount = 0;
+        uint64_t causalOutputCount = 0;
+        int64_t causalNode = -1;
+        unsigned refinedDimension = 0;
+        int64_t previousExtent = 0;
+        int64_t refinedExtent = 0;
+        if (!refineDeterministicBaselineFromSPM(
+                *candidate, outputDomains, dag, demands, temporalTransitions,
+                causalOperationCount, causalOutputCount, causalNode,
+                refinedDimension, previousExtent, refinedExtent))
+          continue;
+
+        ++statistics.allocationFeedbackTransitions;
+        diagnostics << "wafer-compile: whole-card-baseline-temporal-refinement"
+                    << " state=single source=tile-region-spm-capacity"
+                    << " scope=" << (scopedProbe ? "physical-tile" : "card")
+                    << " capacity_overflow_regions="
+                    << causalFailureIndices.size()
+                    << " selected_overflow_region=" << causalIndex
+                    << " causal_operations=" << causalOperationCount
+                    << " causal_outputs=" << causalOutputCount
+                    << " temporal_transitions=" << temporalTransitions
+                    << " causal_node=" << causalNode
+                    << " refined_dimension=" << refinedDimension
+                    << " previous_extent=" << previousExtent
+                    << " refined_extent=" << refinedExtent
+                    << " placement_changed=0 edge_action_changed=0"
+                    << " layout_changed=0 buffer_count_changed=0\n";
+        scopedProbeTileId = regionEvaluations[causalIndex].tileId;
+        refinedConflict = true;
+        break;
+      }
+      if (refinedConflict)
+        continue;
+      diagnostics << "wafer-compile: deterministic whole-card baseline "
+                  << (sawAttributedConflict
+                          ? "exhausted its temporal domain for all proven "
+                            "region SPM capacity conflicts\n"
+                          : "cannot refine an unattributed region SPM "
+                            "capacity conflict\n");
+      return mlir::failure();
+    }
+
+    if (scopedProbe) {
+      diagnostics << "wafer-compile: whole-card-baseline-region-capacity-check"
+                  << " physical_tile_id=" << scopedProbeTileId->getValue()
+                  << " outcome=within-capacity"
+                     " full_card_materialization_required=1\n";
+      scopedProbeTileId.reset();
+      continue;
+    }
+
+    // Every independent region is within the local SPM capacity. The baseline
+    // contract (DDR boundaries, zero fusion and one buffer) makes those local
+    // proofs complete for SPM;
+    // run the unique full CardExecutable seam exactly once for DDR,
+    // transport, resource, ABI and publication-facing executable facts.
+    ++statistics.materializedCandidates;
+    CardExecutableCompilationResult compilation =
+        compileCardProgramToExecutable(
+            std::move(cardProgram), physicalCardId, expectedTileIds,
+            /*selectedBufferRequests=*/{}, materializationRelations, program,
+            executionConfig, diagnostics, &statistics.exactGates,
+            tilePipelineParallelism);
+    statistics.rotatingSlotAllocationsMaterialized +=
+        compilation.rotatingSlotAllocationsMaterialized;
+    if (!compilation.isAccepted()) {
+      ++statistics.materializationRejections;
+      if (compilation.status ==
+          CardExecutableCompilationStatus::IndeterminateFailure)
+        ++statistics.indeterminateCompilationFailures;
+      diagnostics << "wafer-compile: deterministic whole-card baseline "
+                     "failed final CardExecutable gate="
+                  << compilation.gate << " detail=" << compilation.detail
+                  << '\n';
+      return mlir::failure();
+    }
+
+    AcceptedWholeCardExecutable executable = compilation.takeExecutable();
+    llvm::SmallVector<analysis::WholeCardInstructionProgramCost, 16> phaseCosts;
+    mlir::FailureOr<analysis::StaticSchedulePlan> plan =
+        buildAcceptedWholeDAGSchedulePlan(
+            dag, candidate->assignment.nodePlacements,
+            compilation.operationNodeRelations, executable, phaseCosts,
+            &failureReason);
+    if (mlir::failed(plan)) {
+      ++statistics.schedulePlanRejections;
+      diagnostics << "wafer-compile: deterministic whole-card baseline "
+                     "failed accepted schedule plan: "
+                  << failureReason << '\n';
+      return mlir::failure();
+    }
+    llvm::SmallVector<const analysis::StaticSchedulePlan *, 1> plans = {&*plan};
+    llvm::SmallVector<analysis::WholeCardResourceDurationEstimate, 16>
+        estimates = analysis::estimateStaticSchedulePlanDurations(
+            plans, analysis::getTargetScheduleCostPolicy());
+    if (estimates.size() != 1) {
+      diagnostics << "wafer-compile: deterministic whole-card baseline "
+                     "duration estimation failed\n";
+      return mlir::failure();
+    }
+
+    statistics.acceptedCandidates = 1;
+    statistics.plannedCandidates = 1;
+    statistics.selectedStableOrdinal = candidate->transition.stableOrdinal;
+    statistics.selectedOutputMappingCount =
+        candidate->assignment.mapping.outputs.size();
+    statistics.selectedUniqueActiveTileCount = getUniqueActiveTileCount(
+        candidate->assignment.mapping, candidate->assignment.nodePlacements);
+    statistics.selectedParallelComponentCount =
+        candidate->evaluation.parallelComponentCount;
+    statistics.selectedTemporalWaveLowerBound =
+        candidate->evaluation.temporalWaveLowerBound;
+    statistics.selectedInstructionExecutionLowerBound =
+        candidate->evaluation.instructionExecutionLowerBound;
+    statistics.selectedPeakOutputTileFootprintEstimate =
+        candidate->evaluation.peakOutputTileFootprintEstimate;
+    statistics.selectedPeakAlignedResidencyEstimate =
+        candidate->evaluation.peakAlignedResidencyEstimate;
+    statistics.selectedPeerTransferCount =
+        getPeerFragmentCount(candidate->assignment.mapping);
+    statistics.selectedPeerBytes = candidate->evaluation.peerBytes;
+    statistics.selectedBufferCount = getMaximumBufferCount(*candidate);
+    statistics.selectedActualFusedLogicalEdges = 0;
+    statistics.selectedSPMMovementWork =
+        candidate->evaluation.scheduledSPMMovementWork;
+    statistics.selectedDDRMovementWork =
+        candidate->evaluation.scheduledDDRMovementWork;
+    statistics.selectedMakespanPicoseconds =
+        estimates.front().makespan.picoseconds;
+    statistics.enabledDurationTerms = estimates.front().enabledTerms;
+
+    diagnostics << "wafer-compile: whole-card-baseline-controller"
+                << " search_states=0 placement_enumeration=0 candidate_family=0"
+                << " controller_iterations=" << controllerIterations
+                << " card_program_materializations="
+                << statistics.baselineCardProgramMaterializations
+                << " scoped_card_program_materializations="
+                << statistics.baselineScopedCardProgramMaterializations
+                << " region_spm_capacity_checks="
+                << statistics.baselineRegionSPMCapacityChecks
+                << " region_spm_capacity_overflow_proofs="
+                << statistics.baselineRegionSPMCapacityOverflowProofs
+                << " region_spm_function_scope_checks="
+                << statistics.baselineRegionSPMChecksRequiringFunctionScope
+                << " region_spm_query_workers="
+                << statistics.baselineMaximumRegionSPMQueryWorkers
+                << " full_compilations="
+                << statistics.exactGates.cardProgramCompilationInvocations
+                << '\n';
+    diagnostics << "wafer-compile: whole-card-selection"
+                << " admitted=1 planned=1 selected_stable_ordinal="
+                << statistics.selectedStableOrdinal
+                << " output_mappings=" << statistics.selectedOutputMappingCount
+                << " active_tiles=" << statistics.selectedUniqueActiveTileCount
+                << " parallel_components="
+                << statistics.selectedParallelComponentCount
+                << " temporal_wave_lb="
+                << statistics.selectedTemporalWaveLowerBound
+                << " instruction_execution_lb="
+                << statistics.selectedInstructionExecutionLowerBound
+                << " output_tile_footprint_estimate="
+                << statistics.selectedPeakOutputTileFootprintEstimate
+                << " aligned_residency_estimate="
+                << statistics.selectedPeakAlignedResidencyEstimate
+                << " peer_transfers=" << statistics.selectedPeerTransferCount
+                << " peer_bytes=" << statistics.selectedPeerBytes
+                << " buffer_count=1 actual_fused_edges=0"
+                << " spm_movement_work=" << statistics.selectedSPMMovementWork
+                << " ddr_movement_work=" << statistics.selectedDDRMovementWork
+                << " makespan_ps=" << statistics.selectedMakespanPicoseconds
+                << " enabled_terms=" << statistics.enabledDurationTerms << '\n';
+    diagnostics
+        << "wafer-compile: selected baseline reuses exact-admitted executable"
+        << " stable_ordinal=" << statistics.selectedStableOrdinal
+        << " selected_executable_rematerializations=0\n";
+    return WholeCardCompilationResult(
+        std::move(executable), std::move(compilation.tileDataflowIRTrace));
+  }
 }
 
 static bool
@@ -4524,21 +5216,24 @@ selectionLess(const AdmittedWholeCardCandidate &lhs,
               const analysis::WholeCardResourceDurationEstimate &rhsEstimate) {
   if (lhsEstimate.makespan.picoseconds != rhsEstimate.makespan.picoseconds)
     return lhsEstimate.makespan.picoseconds < rhsEstimate.makespan.picoseconds;
-  const size_t lhsActive = getUniqueActiveTileCount(
-      lhs.candidate.mapping, lhs.candidate.nodePlacements);
-  const size_t rhsActive = getUniqueActiveTileCount(
-      rhs.candidate.mapping, rhs.candidate.nodePlacements);
+  const size_t lhsActive =
+      getUniqueActiveTileCount(lhs.candidate.assignment.mapping,
+                               lhs.candidate.assignment.nodePlacements);
+  const size_t rhsActive =
+      getUniqueActiveTileCount(rhs.candidate.assignment.mapping,
+                               rhs.candidate.assignment.nodePlacements);
   if (lhsActive != rhsActive)
     return lhsActive > rhsActive;
-  if (lhs.candidate.parallelComponentCount !=
-      rhs.candidate.parallelComponentCount)
-    return lhs.candidate.parallelComponentCount >
-           rhs.candidate.parallelComponentCount;
-  if (lhs.candidate.temporalWaveLowerBound !=
-      rhs.candidate.temporalWaveLowerBound)
-    return lhs.candidate.temporalWaveLowerBound <
-           rhs.candidate.temporalWaveLowerBound;
-  return lhs.candidate.stableOrdinal < rhs.candidate.stableOrdinal;
+  if (lhs.candidate.evaluation.parallelComponentCount !=
+      rhs.candidate.evaluation.parallelComponentCount)
+    return lhs.candidate.evaluation.parallelComponentCount >
+           rhs.candidate.evaluation.parallelComponentCount;
+  if (lhs.candidate.evaluation.temporalWaveLowerBound !=
+      rhs.candidate.evaluation.temporalWaveLowerBound)
+    return lhs.candidate.evaluation.temporalWaveLowerBound <
+           rhs.candidate.evaluation.temporalWaveLowerBound;
+  return lhs.candidate.transition.stableOrdinal <
+         rhs.candidate.transition.stableOrdinal;
 }
 
 } // namespace
@@ -4553,7 +5248,7 @@ deriveCapacityTemporalShape(llvm::ArrayRef<int64_t> maximumShardShape,
                                          additionalWaveRefinements);
 }
 
-mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
+mlir::FailureOr<WholeCardCompilationResult> synthesizeWholeCardExecutable(
     mlir::ModuleOp tensorProgram,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
@@ -4614,21 +5309,10 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
   resultStatistics.independentComponentPlacementProven =
       dag->supportsIndependentComponentPlacement();
 
-  llvm::SmallVector<CardProgramSourceOperationLineage, 16> sourceLineage;
-  sourceLineage.reserve(dag->getNodes().size());
+  llvm::SmallVector<StructuredOperationNodeMapping, 16> operationNodes;
+  operationNodes.reserve(dag->getNodes().size());
   for (const CardDAGNode &node : dag->getNodes())
-    sourceLineage.push_back({node.operation, node.id});
-
-  llvm::SmallVector<SpatialOutputLineage, 4> outputLineage;
-  outputLineage.reserve(structuredProgram->getNumResults());
-  for (unsigned outputIndex = 0;
-       outputIndex < structuredProgram->getNumResults(); ++outputIndex)
-    outputLineage.push_back({outputIndex});
-
-  llvm::SmallVector<StructuredOperandDemandLineage, 16> operandDemandLineage;
-  operandDemandLineage.reserve(dag->getNodes().size());
-  for (const CardDAGNode &node : dag->getNodes())
-    operandDemandLineage.push_back({node.operation, node.id});
+    operationNodes.push_back({node.operation, node.id});
 
   mlir::FailureOr<StaticOutputDomains> outputDomains =
       getStaticOutputDomains(*structuredProgram, failureReason);
@@ -4637,19 +5321,28 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
     return mlir::failure();
   }
 
+  // The deterministic baseline exits before any search memo, shortlist,
+  // placement enumeration, candidate family or admitted cohort is constructed.
+  if (optimizations.isNone())
+    return synthesizeDeterministicBaseline(
+        tensorProgram, *topology, physicalCardId, *availableTileIds,
+        *outputDomains, *dag, operationNodes, program, executionConfig,
+        diagnostics, resultStatistics, tilePipelineParallelism);
+  assert(optimizations.isSearch() &&
+         "non-baseline synthesis must use the search controller");
+
   CandidateResourceScheduleMemo resourceScheduleMemo;
   const TargetMemoryPolicy targetMemory = getDefaultWaferTargetPolicy().memory;
   const uint64_t usableSPMCapacity =
       static_cast<uint64_t>(targetMemory.spmLimit - targetMemory.spmBase);
-  std::vector<WholeCardCandidate> shortlist =
-      deriveShortlist(optimizations, *topology, physicalCardId,
-                      *availableTileIds, *outputDomains, *dag, resultStatistics,
-                      diagnostics, resourceScheduleMemo);
+  std::vector<WholeCardCandidate> shortlist = deriveShortlist(
+      *topology, physicalCardId, *availableTileIds, *outputDomains, *dag,
+      resultStatistics, diagnostics, resourceScheduleMemo);
   std::tie(resultStatistics.resourceScheduleMemoHits,
            resultStatistics.resourceScheduleMemoMisses) =
       resourceScheduleMemo.getCounts();
   diagnostics << "wafer-compile: whole-card-search"
-              << " policy=" << (optimizations.isSearch() ? "search" : "none")
+              << " policy=search"
               << " structured_nodes=" << resultStatistics.structuredNodeCount
               << " structured_edges=" << resultStatistics.structuredEdgeCount
               << " dependency_components="
@@ -4667,8 +5360,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
               << resultStatistics.nodePlacementTransitionsRejected
               << " node_placement_resource_equivalent="
               << resultStatistics.nodePlacementResourceEquivalentStates
-              << " node_placement_frontier_failures="
-              << resultStatistics.nodePlacementFrontierFailures
+              << " node_placement_enumeration_failures="
+              << resultStatistics.nodePlacementEnumerationFailures
               << " node_placement_proposals="
               << resultStatistics.nodePlacementCandidateProposals
               << " multi_stage_placement_proposals="
@@ -4740,8 +5433,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
   std::optional<PhysicalTileId> preferredSPMFailureProbeTileId;
   uint64_t nextFeedbackStableOrdinal = 1;
   for (const WholeCardCandidate &candidate : shortlist)
-    nextFeedbackStableOrdinal =
-        std::max(nextFeedbackStableOrdinal, candidate.stableOrdinal + 1);
+    nextFeedbackStableOrdinal = std::max(
+        nextFeedbackStableOrdinal, candidate.transition.stableOrdinal + 1);
   auto matchesExactState = [&](const WholeCardCandidate &candidate,
                                const WholeCardCandidate &existing) {
     return sameNodePlacements(candidate, existing) &&
@@ -4771,22 +5464,25 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
   };
   auto mergeBetterSPMFeedbackPriority = [](WholeCardCandidate &destination,
                                            const WholeCardCandidate &source) {
-    if (source.parentSPMConflictBytes == 0)
+    if (source.transition.parentSPMConflictBytes == 0)
       return;
-    const auto sourceScore = std::tuple(source.parentSPMConflictBytes,
-                                        source.parentSPMConflictDemandCount,
-                                        source.parentSPMTotalDemandCount);
+    const auto sourceScore =
+        std::tuple(source.transition.parentSPMConflictBytes,
+                   source.transition.parentSPMConflictDemandCount,
+                   source.transition.parentSPMTotalDemandCount);
     const auto destinationScore =
-        std::tuple(destination.parentSPMConflictBytes,
-                   destination.parentSPMConflictDemandCount,
-                   destination.parentSPMTotalDemandCount);
-    if (destination.parentSPMConflictBytes != 0 &&
+        std::tuple(destination.transition.parentSPMConflictBytes,
+                   destination.transition.parentSPMConflictDemandCount,
+                   destination.transition.parentSPMTotalDemandCount);
+    if (destination.transition.parentSPMConflictBytes != 0 &&
         destinationScore <= sourceScore)
       return;
-    destination.parentSPMConflictBytes = source.parentSPMConflictBytes;
-    destination.parentSPMConflictDemandCount =
-        source.parentSPMConflictDemandCount;
-    destination.parentSPMTotalDemandCount = source.parentSPMTotalDemandCount;
+    destination.transition.parentSPMConflictBytes =
+        source.transition.parentSPMConflictBytes;
+    destination.transition.parentSPMConflictDemandCount =
+        source.transition.parentSPMConflictDemandCount;
+    destination.transition.parentSPMTotalDemandCount =
+        source.transition.parentSPMTotalDemandCount;
   };
   auto getFeedbackWaveBreakpoints = [&](int64_t extent) {
     llvm::SmallVector<int64_t, 16> result;
@@ -4801,9 +5497,9 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
     WholeCardCandidate candidate = std::move(shortlist.front());
     shortlist.erase(shortlist.begin());
     // Actual model-scale decode exposed the remaining feedback explosion: one
-    // allocator conflict with several tied lineages can enqueue every
-    // single-coordinate child plus their joint child, even after this exact
-    // initial factorized-search basin already has a verifier-legal actual
+    // allocator conflict with several tied structured relations can enqueue
+    // every single-coordinate child plus their joint child, even after this
+    // exact initial factorized-search basin already has a verifier-legal actual
     // executable. Feedback changes only temporal coordinates or an
     // allocator-proven impossible explicit edge to its coupled neighbor.
     // Close that basin at its first exact-admitted schedule-plan incumbent.
@@ -4815,13 +5511,14 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         hasMultiReductionAxisSplit(candidate) &&
         resultStatistics.multiReductionAxisCandidateMaterializations == 0;
     if (!needsMultiReductionAxisWitness &&
-        llvm::any_of(admittedTemporalRepresentatives,
-                     [&](const WholeCardCandidate &representative) {
-                       return !representative.allocationFeedbackLookahead &&
-                              (candidate.feedbackRootOrdinal ==
-                                   representative.feedbackRootOrdinal ||
-                               sameNonTemporalState(candidate, representative));
-                     })) {
+        llvm::any_of(
+            admittedTemporalRepresentatives,
+            [&](const WholeCardCandidate &representative) {
+              return !representative.transition.allocationFeedbackLookahead &&
+                     (candidate.transition.feedbackRootOrdinal ==
+                          representative.transition.feedbackRootOrdinal ||
+                      sameNonTemporalState(candidate, representative));
+            })) {
       // Remember the retired exact state so another outstanding feedback
       // branch cannot regenerate it before it observes the closed family.
       seenExactStates.push_back(std::move(candidate));
@@ -4850,7 +5547,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         ++resultStatistics.preBufferEquivalentRejections;
         ++resultStatistics.materializationRejections;
         diagnostics << "wafer-compile: whole-card-candidate rejection"
-                    << " stable_ordinal=" << candidate.stableOrdinal
+                    << " stable_ordinal=" << candidate.transition.stableOrdinal
                     << " gate=" << cached->gate << " detail=" << cached->reason
                     << " exact_pre_buffer_equivalent=1\n";
         continue;
@@ -4869,24 +5566,24 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         ++resultStatistics.bufferStructureEquivalentRejections;
         ++resultStatistics.materializationRejections;
         diagnostics << "wafer-compile: whole-card-candidate rejection"
-                    << " stable_ordinal=" << candidate.stableOrdinal
+                    << " stable_ordinal=" << candidate.transition.stableOrdinal
                     << " gate=selected-buffer-materialization"
                     << " detail=" << cached->reason
                     << " exact_buffer_structure_equivalent=1\n";
         continue;
       }
     }
-    ++feedbackRootMaterializations[candidate.feedbackRootOrdinal];
+    ++feedbackRootMaterializations[candidate.transition.feedbackRootOrdinal];
     ++resultStatistics.materializedCandidates;
     if (hasMultiReductionAxisSplit(candidate))
       ++resultStatistics.multiReductionAxisCandidateMaterializations;
-    if (candidate.nodePlacementCandidate)
+    if (candidate.transition.nodePlacementCandidate)
       ++resultStatistics.nodePlacementCandidateMaterializations;
-    if (candidate.nodePlacementCandidate &&
-        candidate.distinctTileGroupCount >= 3)
+    if (candidate.transition.nodePlacementCandidate &&
+        candidate.evaluation.distinctTileGroupCount >= 3)
       ++resultStatistics.multiStagePlacementCandidateMaterializations;
-    if (candidate.nodePlacementCandidate &&
-        candidate.parallelComponentCount > 1)
+    if (candidate.transition.nodePlacementCandidate &&
+        candidate.evaluation.parallelComponentCount > 1)
       ++resultStatistics.independentComponentCandidateMaterializations;
     if (hasAlternativeEdgeAction(candidate))
       ++resultStatistics.alternativeEdgeActionCandidateMaterializations;
@@ -4905,24 +5602,29 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
     bool indeterminateFailure = false;
     bool spmCapacityOverflow = false;
     llvm::SmallVector<SPMCapacityDemandEvidence, 8> spmCapacityDemands;
+    llvm::SmallVector<AcceptedOperationNodeRelation, 64> acceptedOperationNodes;
+    std::vector<std::string> tileDataflowIRTrace;
     mlir::FailureOr<AcceptedWholeCardExecutable> accepted =
         materializeCandidate(
             tensorProgram, candidate, physicalCardId, *availableTileIds,
-            sourceLineage, outputLineage, operandDemandLineage, program,
-            executionConfig, diagnostics, resultStatistics.exactGates,
-            &resultStatistics,
+            operationNodes, *dag, program, executionConfig, diagnostics,
+            resultStatistics.exactGates, &resultStatistics,
             resultStatistics.rotatingSlotAllocationsMaterialized,
             candidateActualFusedLogicalEdges, tilePipelineParallelism,
             preferredSPMFailureProbeTileId, failureGate, failureReason,
             selectedBufferFailure, indeterminateFailure, spmCapacityOverflow,
-            spmCapacityDemands);
+            spmCapacityDemands, acceptedOperationNodes, tileDataflowIRTrace);
     if (mlir::failed(accepted)) {
       if (indeterminateFailure) {
         ++resultStatistics.indeterminateCompilationFailures;
         diagnostics << "wafer-compile: whole-card candidate compilation is "
                        "indeterminate gate="
                     << failureGate << " detail=" << failureReason << '\n';
-        return mlir::failure();
+        // An indeterminate result proves neither feasibility nor
+        // infeasibility. It therefore cannot enter an exact-rejection cache or
+        // prune related states, but it also cannot invalidate independently
+        // admitted candidates in the same finite cohort.
+        continue;
       }
       ++resultStatistics.materializationRejections;
       if (failureGate == "card-program-materialization" ||
@@ -4939,138 +5641,28 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         bufferStructureFailureCache[bufferStructureHash].push_back(
             CachedBufferStructureFailure{candidate, failureReason});
       }
-      diagnostics << "wafer-compile: whole-card-candidate rejection"
-                  << " stable_ordinal=" << candidate.stableOrdinal
-                  << " output_mappings=" << candidate.mapping.outputs.size()
-                  << " active_tiles="
-                  << getUniqueActiveTileCount(candidate.mapping,
-                                              candidate.nodePlacements)
-                  << " tile_groups=" << candidate.distinctTileGroupCount
-                  << " partial_overlap_edges="
-                  << candidate.partialOverlapEdgeCount
-                  << " disjoint_edges=" << candidate.disjointEdgeCount
-                  << " parallel_components=" << candidate.parallelComponentCount
-                  << " peer_fragments="
-                  << getPeerFragmentCount(candidate.mapping)
-                  << " layout_conversion=" << hasLayoutConversion(candidate)
-                  << " buffer_count="
-                  << static_cast<unsigned>(getMaximumBufferCount(candidate))
-                  << " buffered_edges=" << countBufferedLogicalEdges(candidate)
-                  << " temporal_wave_lb=" << candidate.temporalWaveLowerBound
-                  << " output_tile_footprint_estimate="
-                  << candidate.peakOutputTileFootprintEstimate
-                  << " gate=" << failureGate << " detail=" << failureReason
-                  << '\n';
-
-      // `none` is a deterministic compiler baseline, not a one-element seed
-      // for the joint-search frontier.  Keep its fixed 16-Tile placement,
-      // edge actions, layouts and buffer count unchanged.  An exact SPM
-      // conflict may only shrink the operation/output coordinates named by
-      // that allocator certificate, composing all tied coordinates into the
-      // same next baseline state.  Every produced state is rematerialized
-      // through the ordinary CardProgram, Instr, SPM, DDR and admission gates.
-      if (optimizations.isNone()) {
-        if (failureGate != "spm-allocation" || !spmCapacityOverflow) {
-          diagnostics << "wafer-compile: deterministic whole-card baseline "
-                         "failed exact gate="
-                      << failureGate << " detail=" << failureReason << '\n';
-          return mlir::failure();
-        }
-        if (spmCapacityDemands.empty()) {
-          diagnostics << "wafer-compile: deterministic whole-card baseline "
-                         "cannot refine an unattributed SPM conflict\n";
-          return mlir::failure();
-        }
-
-        preferredSPMFailureProbeTileId =
-            spmCapacityDemands.front().physicalTileId;
-        WholeCardCandidate refined = candidate;
-        llvm::DenseSet<mlir::Operation *> refinedOperations;
-        llvm::DenseSet<unsigned> refinedOutputs;
-        uint64_t temporalTransitions = 0;
-        uint64_t causalOperationCount = 0;
-        uint64_t causalOutputCount = 0;
-        for (const SPMCapacityDemandEvidence &demand : spmCapacityDemands) {
-          mlir::Operation *operation =
-              demand.operandDemandLineage
-                  ? demand.operandDemandLineage->sourceOperation
-              : demand.operationLineage
-                  ? demand.operationLineage->sourceOperation
-                  : nullptr;
-          if (operation && refinedOperations.insert(operation).second) {
-            ++causalOperationCount;
-            uint64_t projectedBytes = std::max<uint64_t>(1, demand.bytes);
-            bool requireAdjacentTransition = true;
-            while (requireAdjacentTransition ||
-                   projectedBytes > usableSPMCapacity) {
-              requireAdjacentTransition = false;
-              int64_t previousExtent = 0;
-              int64_t refinedExtent = 0;
-              if (!refineOperationTemporalVariantOnce(
-                      refined, *outputDomains, *dag, operation,
-                      /*preferredIsOperandDemand=*/true,
-                      /*refinedOperation=*/nullptr, /*refinedNode=*/nullptr,
-                      /*refinedDimension=*/nullptr, &previousExtent,
-                      &refinedExtent,
-                      /*explicitProducerCanStreamToDDR=*/true))
-                break;
-              ++temporalTransitions;
-              if (previousExtent <= 0 || refinedExtent <= 0 ||
-                  refinedExtent >= previousExtent)
-                break;
-              projectedBytes = ceilDivide(
-                  saturatingMultiply(projectedBytes,
-                                     static_cast<uint64_t>(refinedExtent)),
-                  static_cast<uint64_t>(previousExtent));
-            }
-            continue;
-          }
-          if (demand.outputLineage &&
-              refinedOutputs.insert(demand.outputLineage->outputIndex).second) {
-            ++causalOutputCount;
-            uint64_t projectedBytes = std::max<uint64_t>(1, demand.bytes);
-            bool requireAdjacentTransition = true;
-            while (requireAdjacentTransition ||
-                   projectedBytes > usableSPMCapacity) {
-              requireAdjacentTransition = false;
-              int64_t previousExtent = 0;
-              int64_t refinedExtent = 0;
-              if (!refineOutputTemporalVariantOnce(
-                      refined, *outputDomains, *dag,
-                      demand.outputLineage->outputIndex,
-                      /*refinedDimension=*/nullptr, &previousExtent,
-                      &refinedExtent))
-                break;
-              ++temporalTransitions;
-              if (previousExtent <= 0 || refinedExtent <= 0 ||
-                  refinedExtent >= previousExtent)
-                break;
-              projectedBytes = ceilDivide(
-                  saturatingMultiply(projectedBytes,
-                                     static_cast<uint64_t>(refinedExtent)),
-                  static_cast<uint64_t>(previousExtent));
-            }
-          }
-        }
-        if (temporalTransitions == 0 || sameMapping(refined, candidate)) {
-          diagnostics << "wafer-compile: deterministic whole-card baseline "
-                         "exhausted the temporal tiling domain for an actual "
-                         "SPM conflict\n";
-          return mlir::failure();
-        }
-        ++resultStatistics.allocationFeedbackTransitions;
-        shortlist.clear();
-        shortlist.push_back(std::move(refined));
-        diagnostics << "wafer-compile: whole-card-baseline-temporal-refinement"
-                    << " state=single"
-                    << " source=actual-spm-conflict"
-                    << " causal_operations=" << causalOperationCount
-                    << " causal_outputs=" << causalOutputCount
-                    << " temporal_transitions=" << temporalTransitions
-                    << " placement_changed=0 edge_action_changed=0"
-                    << " layout_changed=0 buffer_count_changed=0\n";
-        continue;
-      }
+      diagnostics
+          << "wafer-compile: whole-card-candidate rejection"
+          << " stable_ordinal=" << candidate.transition.stableOrdinal
+          << " output_mappings=" << candidate.assignment.mapping.outputs.size()
+          << " active_tiles="
+          << getUniqueActiveTileCount(candidate.assignment.mapping,
+                                      candidate.assignment.nodePlacements)
+          << " tile_groups=" << candidate.evaluation.distinctTileGroupCount
+          << " partial_overlap_edges="
+          << candidate.evaluation.partialOverlapEdgeCount
+          << " disjoint_edges=" << candidate.evaluation.disjointEdgeCount
+          << " parallel_components="
+          << candidate.evaluation.parallelComponentCount << " peer_fragments="
+          << getPeerFragmentCount(candidate.assignment.mapping)
+          << " layout_conversion=" << hasLayoutConversion(candidate)
+          << " buffer_count="
+          << static_cast<unsigned>(getMaximumBufferCount(candidate))
+          << " buffered_edges=" << countBufferedLogicalEdges(candidate)
+          << " temporal_wave_lb=" << candidate.evaluation.temporalWaveLowerBound
+          << " output_tile_footprint_estimate="
+          << candidate.evaluation.peakOutputTileFootprintEstimate
+          << " gate=" << failureGate << " detail=" << failureReason << '\n';
 
       // SPM acceptance is owned exclusively by the fixed-capacity allocator
       // on actual Instr IR.  Its failure creates the next legal temporal
@@ -5100,8 +5692,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         }
         llvm::SmallVector<const SPMCapacityDemandEvidence *, 8> orderedDemands;
         for (const SPMCapacityDemandEvidence &demand : spmCapacityDemands) {
-          if (!demand.operationLineage && !demand.outputLineage &&
-              !demand.operandDemandLineage)
+          if (!demand.operationNode && !demand.outputIndex &&
+              !demand.operandDemandNode)
             continue;
           const bool duplicate = llvm::any_of(
               orderedDemands, [&](const SPMCapacityDemandEvidence *existing) {
@@ -5109,10 +5701,9 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                 // different exact types. It still has only one adjacent
                 // search state; the next allocator run will report whichever
                 // allocation remains limiting.
-                return existing->operationLineage == demand.operationLineage &&
-                       existing->outputLineage == demand.outputLineage &&
-                       existing->operandDemandLineage ==
-                           demand.operandDemandLineage;
+                return existing->operationNode == demand.operationNode &&
+                       existing->outputIndex == demand.outputIndex &&
+                       existing->operandDemandNode == demand.operandDemandNode;
               });
           if (!duplicate)
             orderedDemands.push_back(&demand);
@@ -5123,9 +5714,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         // exact coordinate.
         llvm::stable_sort(orderedDemands, [](const auto *lhs, const auto *rhs) {
           auto priority = [](const SPMCapacityDemandEvidence *demand) {
-            return demand->operandDemandLineage ? 2
-                   : demand->outputLineage      ? 1
-                                                : 0;
+            return demand->operandDemandNode ? 2 : demand->outputIndex ? 1 : 0;
           };
           return priority(lhs) < priority(rhs);
         });
@@ -5137,43 +5726,34 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
           exactConflictDemandCount = std::max(exactConflictDemandCount,
                                               demand->exactConflictDemandCount);
         }
-        // Each allocator-certified causal coordinate remains in the common
-        // feedback frontier for every policy, including the unfused baseline.
-        // The progressive path below composes only coordinates that the next
-        // real packing result still proves necessary, so preserving this set
-        // does not pre-materialize its Cartesian product.
-        if (optimizations.isNone() && orderedDemands.size() > 1)
-          diagnostics
-              << "wafer-compile: whole-card-baseline-allocation-feedback"
-              << " tied_demands=" << orderedDemands.size()
-              << " causal_frontier_preserved=1"
-              << " actual_admission_required=1\n";
         allocationFeedbackEndpointDemands.assign(orderedDemands.begin(),
                                                  orderedDemands.end());
         for (auto [demandIndex, demand] : llvm::enumerate(orderedDemands)) {
           WholeCardCandidate refined = candidate;
-          refined.parentSPMConflictBytes = exactConflictBytes;
-          refined.parentSPMConflictDemandCount = exactConflictDemandCount;
-          refined.parentSPMTotalDemandCount = allocationFeedbackDemandCount;
+          refined.transition.parentSPMConflictBytes = exactConflictBytes;
+          refined.transition.parentSPMConflictDemandCount =
+              exactConflictDemandCount;
+          refined.transition.parentSPMTotalDemandCount =
+              allocationFeedbackDemandCount;
           mlir::Operation *demandOperation =
-              demand->operandDemandLineage
-                  ? demand->operandDemandLineage->sourceOperation
-              : demand->operationLineage
-                  ? demand->operationLineage->sourceOperation
+              demand->operandDemandNode &&
+                      *demand->operandDemandNode < dag->getNodes().size()
+                  ? dag->getNodes()[*demand->operandDemandNode].operation
+              : demand->operationNode &&
+                      *demand->operationNode < dag->getNodes().size()
+                  ? dag->getNodes()[*demand->operationNode].operation
                   : nullptr;
           const bool repeatedUnchangedDemand =
-              demandOperation &&
-              candidate.previousSPMDemandOperation == demandOperation &&
-              candidate.previousSPMDemandType == demand->type &&
-              candidate.previousSPMDemandBytes == demand->bytes;
+              candidate.transition.previousSPMDemand &&
+              candidate.transition.previousSPMDemand->matches(*demand);
           const bool inferredOperandDemand =
-              !demand->operandDemandLineage && !demand->outputLineage &&
+              !demand->operandDemandNode && !demand->outputIndex &&
               isLargerThanKnownOperationResultTile(candidate, demandOperation,
                                                    demand->bytes);
           mlir::Operation *refinementAnchor = demandOperation;
           const bool anchorIsOperandDemand =
-              demand->operandDemandLineage != nullptr ||
-              inferredOperandDemand || repeatedUnchangedDemand;
+              demand->operandDemandNode.has_value() || inferredOperandDemand ||
+              repeatedUnchangedDemand;
           // Each tied maximum is independent allocator evidence.  Generate
           // every distinct adjacent causal state; exact-state memoization
           // merges equal temporal and edge-action transitions.
@@ -5184,18 +5764,6 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
           int64_t refinedExtent = 0;
           unsigned refinedEdgeGroups = 0;
           auto refineActualDemandCoordinate = [&]() {
-            if (optimizations.isNone()) {
-              uint64_t composedTemporalTransitions = 0;
-              uint64_t composedEdgeTransitions = 0;
-              const bool changed = refineAllocationDemandTowardCapacityProbe(
-                  refined, *outputDomains, *dag, *demand,
-                  &composedTemporalTransitions, &composedEdgeTransitions);
-              refinedEdgeGroups = static_cast<unsigned>(std::min<uint64_t>(
-                  std::numeric_limits<unsigned>::max(),
-                  saturatingAdd(refinedEdgeGroups, composedEdgeTransitions)));
-              refinedOperation = demandOperation;
-              return changed;
-            }
             // An explicit producer window larger than the physical capacity
             // is independently impossible: changing the producer op's
             // temporal loop does not change strategy.producerSizes for
@@ -5211,20 +5779,19 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
               return true;
 
             bool refinedCoordinate = false;
-            if (demand->operandDemandLineage) {
+            if (demand->operandDemandNode) {
               refinedCoordinate = refineOperationTemporalVariantOnce(
                   refined, *outputDomains, *dag, refinementAnchor,
                   anchorIsOperandDemand, &refinedOperation, &refinedNode,
                   &refinedDimension, &previousExtent, &refinedExtent);
-            } else if (demand->outputLineage) {
+            } else if (demand->outputIndex) {
               refinedCoordinate = refineOutputTemporalVariantOnce(
-                  refined, *outputDomains, *dag,
-                  demand->outputLineage->outputIndex, &refinedDimension,
-                  &previousExtent, &refinedExtent);
+                  refined, *outputDomains, *dag, *demand->outputIndex,
+                  &refinedDimension, &previousExtent, &refinedExtent);
             } else {
               refinedCoordinate = refineOperationTemporalVariantOnce(
                   refined, *outputDomains, *dag,
-                  demand->operationLineage->sourceOperation,
+                  dag->getNodes()[*demand->operationNode].operation,
                   /*preferredIsOperandDemand=*/anchorIsOperandDemand,
                   &refinedOperation, &refinedNode, &refinedDimension,
                   &previousExtent, &refinedExtent);
@@ -5236,12 +5803,12 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
           while (refinedCausalCoordinate &&
                  containsAttemptedExactState(refined)) {
             auto admittedExact = findAdmittedExactState(refined);
-            if (!candidate.allocationFeedbackLookahead &&
+            if (!candidate.transition.allocationFeedbackLookahead &&
                 orderedDemands.size() == 1 &&
                 admittedExact != admittedTemporalRepresentatives.end() &&
-                admittedExact->allocationFeedbackLookahead &&
-                admittedExact->feedbackRootOrdinal ==
-                    candidate.feedbackRootOrdinal) {
+                admittedExact->transition.allocationFeedbackLookahead &&
+                admittedExact->transition.feedbackRootOrdinal ==
+                    candidate.transition.feedbackRootOrdinal) {
               // A failed coarse state followed immediately by an admitted
               // lookahead is the exact coarsest legal boundary on this
               // recurrence.  The adjacent state was not skipped: it was
@@ -5254,18 +5821,18 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
             refinedCausalCoordinate = refineActualDemandCoordinate();
           }
           if (refinedCausalCoordinate) {
-            refined.previousSPMDemandOperation = demandOperation;
-            refined.previousSPMDemandType = demand->type;
-            refined.previousSPMDemandBytes = demand->bytes;
-            refined.unchangedSPMDemandStreak =
-                repeatedUnchangedDemand ? candidate.unchangedSPMDemandStreak + 1
-                                        : 0;
+            refined.transition.previousSPMDemand =
+                getSPMDemandRelation(*demand);
+            refined.transition.unchangedSPMDemandStreak =
+                repeatedUnchangedDemand
+                    ? candidate.transition.unchangedSPMDemandStreak + 1
+                    : 0;
             const uint64_t refinedUnchangedDemandStreak =
-                refined.unchangedSPMDemandStreak;
+                refined.transition.unchangedSPMDemandStreak;
             // Children of a lookahead probe remain on the fast probe lane;
             // they cannot close the ordinary adjacent family by themselves.
-            refined.allocationFeedbackLookahead =
-                candidate.allocationFeedbackLookahead;
+            refined.transition.allocationFeedbackLookahead =
+                candidate.transition.allocationFeedbackLookahead;
 
             std::optional<WholeCardCandidate> lookahead;
             size_t lookaheadNode = 0;
@@ -5273,8 +5840,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
             int64_t lookaheadPreviousExtent = 0;
             int64_t lookaheadRefinedExtent = 0;
             uint64_t lookaheadBreakpoints = 0;
-            if (optimizations.isSearch() && repeatedUnchangedDemand &&
-                refinedEdgeGroups == 0 && skippedKnownRejectedStates == 0) {
+            if (repeatedUnchangedDemand && refinedEdgeGroups == 0 &&
+                skippedKnownRejectedStates == 0) {
               WholeCardCandidate probe = refined;
               uint64_t probeStride = 1;
               for (uint64_t level = 1; level < refinedUnchangedDemandStreak;
@@ -5287,11 +5854,11 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                 unsigned trialDimension = 0;
                 int64_t trialPreviousExtent = 0;
                 int64_t trialRefinedExtent = 0;
-                if (demand->outputLineage) {
+                if (demand->outputIndex) {
                   advancedSameCoordinate = refineOutputTemporalVariantOnce(
-                      trial, *outputDomains, *dag,
-                      demand->outputLineage->outputIndex, &trialDimension,
-                      &trialPreviousExtent, &trialRefinedExtent);
+                      trial, *outputDomains, *dag, *demand->outputIndex,
+                      &trialDimension, &trialPreviousExtent,
+                      &trialRefinedExtent);
                   advancedSameCoordinate = advancedSameCoordinate &&
                                            trialDimension == refinedDimension;
                 } else if (refinedOperation) {
@@ -5317,15 +5884,15 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                 ++lookaheadBreakpoints;
               }
               if (lookaheadBreakpoints != 0 && !containsExactState(probe)) {
-                probe.previousSPMDemandOperation = demandOperation;
-                probe.previousSPMDemandType = demand->type;
-                probe.previousSPMDemandBytes = demand->bytes;
-                probe.unchangedSPMDemandStreak = refinedUnchangedDemandStreak;
-                probe.allocationFeedbackLookahead = true;
+                probe.transition.previousSPMDemand =
+                    getSPMDemandRelation(*demand);
+                probe.transition.unchangedSPMDemandStreak =
+                    refinedUnchangedDemandStreak;
+                probe.transition.allocationFeedbackLookahead = true;
                 lookahead.emplace(std::move(probe));
               }
             }
-            refined.stableOrdinal = nextFeedbackStableOrdinal++;
+            refined.transition.stableOrdinal = nextFeedbackStableOrdinal++;
             bool promotedPendingState = false;
             auto pending = findPendingExactState(refined);
             if (pending != shortlist.end()) {
@@ -5340,7 +5907,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                 &scheduleFailure, &resourceScheduleMemo);
             const bool duplicateExactState = containsExactState(refined);
             if (refreshedSchedule && !duplicateExactState) {
-              const uint64_t nextOrdinal = refined.stableOrdinal;
+              const uint64_t nextOrdinal = refined.transition.stableOrdinal;
               shortlist.insert(shortlist.begin(), std::move(refined));
               ++resultStatistics.allocationFeedbackCandidates;
               ++resultStatistics.shortlistedCandidates;
@@ -5349,7 +5916,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
               llvm::SmallVector<llvm::StringRef, 4> demandOutgoingActions;
               llvm::SmallVector<llvm::StringRef, 4> demandIncomingActions;
               for (const SpatialEdgeStrategy &strategy :
-                   candidate.mapping.edgeStrategies) {
+                   candidate.assignment.mapping.edgeStrategies) {
                 if (strategy.producer == demandOperation)
                   demandOutgoingActions.push_back(
                       getSpatialEdgeActionName(strategy.action));
@@ -5359,41 +5926,36 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
               }
               diagnostics
                   << "wafer-compile: whole-card-allocation-feedback"
-                  << " from=" << candidate.stableOrdinal
+                  << " from=" << candidate.transition.stableOrdinal
                   << " next=" << nextOrdinal << " source=actual-spm-packing"
                   << " tied_demand=" << demandIndex + 1 << '/'
                   << orderedDemands.size() << " demand_bytes=" << demand->bytes
                   << " demand_count=" << demand->demandCount
                   << " physical_tile_id=" << demand->physicalTileId.getValue()
-                  << " lineage=1 lineage_kind="
-                  << (demand->operandDemandLineage
+                  << " structured_relation=1 relation_kind="
+                  << (demand->operandDemandNode
                           ? "operand-demand"
-                          : (demand->outputLineage ? "output" : "operation"))
-                  << " lineage_source="
-                  << (demand->lineageFromAllocation ? "allocation"
-                                                    : "user-fallback")
-                  << " operation_lineage_node="
-                  << (demand->operationLineage
-                          ? static_cast<int64_t>(
-                                demand->operationLineage->structuredNodeId)
+                          : (demand->outputIndex ? "output" : "operation"))
+                  << " relation_source="
+                  << (demand->relationFromAllocation ? "allocation"
+                                                     : "operation-use")
+                  << " operation_node="
+                  << (demand->operationNode
+                          ? static_cast<int64_t>(*demand->operationNode)
                           : int64_t{-1})
-                  << " operand_demand_lineage_node="
-                  << (demand->operandDemandLineage
-                          ? static_cast<int64_t>(
-                                demand->operandDemandLineage->structuredNodeId)
+                  << " operand_demand_node="
+                  << (demand->operandDemandNode
+                          ? static_cast<int64_t>(*demand->operandDemandNode)
                           : int64_t{-1})
-                  << " lineage_node="
-                  << (demand->operandDemandLineage
-                          ? static_cast<int64_t>(
-                                demand->operandDemandLineage->structuredNodeId)
-                      : demand->operationLineage
-                          ? static_cast<int64_t>(
-                                demand->operationLineage->structuredNodeId)
+                  << " structured_node="
+                  << (demand->operandDemandNode
+                          ? static_cast<int64_t>(*demand->operandDemandNode)
+                      : demand->operationNode
+                          ? static_cast<int64_t>(*demand->operationNode)
                           : int64_t{-1})
                   << " output_index="
-                  << (demand->outputLineage
-                          ? static_cast<int64_t>(
-                                demand->outputLineage->outputIndex)
+                  << (demand->outputIndex
+                          ? static_cast<int64_t>(*demand->outputIndex)
                           : int64_t{-1})
                   << " repeated_unchanged_demand=" << repeatedUnchangedDemand
                   << " inferred_operand_demand=" << inferredOperandDemand
@@ -5402,8 +5964,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                           ? "edge-action"
                           : (anchorIsOperandDemand
                                  ? "direct"
-                                 : (demand->outputLineage ? "output"
-                                                          : "downstream")))
+                                 : (demand->outputIndex ? "output"
+                                                        : "downstream")))
                   << " refined_edge_groups=" << refinedEdgeGroups
                   << " skipped_known_rejected_states="
                   << skippedKnownRejectedStates
@@ -5423,7 +5985,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                           << " refined_extent=" << refinedExtent << '\n';
 
               if (lookahead) {
-                lookahead->stableOrdinal = nextFeedbackStableOrdinal++;
+                lookahead->transition.stableOrdinal =
+                    nextFeedbackStableOrdinal++;
                 std::string lookaheadScheduleFailure;
                 const bool refreshedLookaheadSchedule =
                     refreshCandidateResourceSchedule(
@@ -5433,7 +5996,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                 const bool duplicateLookaheadState =
                     containsExactState(*lookahead);
                 if (refreshedLookaheadSchedule && !duplicateLookaheadState) {
-                  const uint64_t lookaheadOrdinal = lookahead->stableOrdinal;
+                  const uint64_t lookaheadOrdinal =
+                      lookahead->transition.stableOrdinal;
                   shortlist.insert(shortlist.begin(), std::move(*lookahead));
                   ++resultStatistics.allocationFeedbackCandidates;
                   ++resultStatistics.allocationFeedbackLookaheadCandidates;
@@ -5442,7 +6006,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                   diagnostics
                       << "wafer-compile: whole-card-allocation-feedback-"
                          "lookahead"
-                      << " from=" << candidate.stableOrdinal
+                      << " from=" << candidate.transition.stableOrdinal
                       << " next=" << lookaheadOrdinal
                       << " source=actual-unchanged-spm-demand"
                       << " unchanged_streak=" << refinedUnchangedDemandStreak
@@ -5457,7 +6021,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                   diagnostics
                       << "wafer-compile: whole-card-allocation-feedback-"
                          "lookahead-discarded"
-                      << " from=" << candidate.stableOrdinal
+                      << " from=" << candidate.transition.stableOrdinal
                       << " schedule_legal=0 detail="
                       << (lookaheadScheduleFailure.empty()
                               ? "none"
@@ -5470,7 +6034,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                 ++resultStatistics.resourceScheduleRejections;
               diagnostics
                   << "wafer-compile: whole-card-allocation-feedback-discarded"
-                  << " from=" << candidate.stableOrdinal
+                  << " from=" << candidate.transition.stableOrdinal
                   << " tied_demand=" << demandIndex + 1 << '/'
                   << orderedDemands.size()
                   << " schedule_legal=" << refreshedSchedule
@@ -5482,7 +6046,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
           } else {
             diagnostics
                 << "wafer-compile: whole-card-allocation-feedback-exhausted"
-                << " from=" << candidate.stableOrdinal
+                << " from=" << candidate.transition.stableOrdinal
                 << " tied_demand=" << demandIndex + 1 << '/'
                 << orderedDemands.size() << " demand_bytes=" << demand->bytes
                 << " demand_count=" << demand->demandCount
@@ -5493,23 +6057,24 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                         ? refinementAnchor->getName().getStringRef()
                         : llvm::StringRef("none"))
                 << " anchor_is_operand_demand=" << anchorIsOperandDemand;
-            auto anchorTile =
-                llvm::find_if(candidate.mapping.operationTemporalTiles,
-                              [&](const StructuredOpTemporalTile &tile) {
-                                return tile.operation == refinementAnchor;
-                              });
-            if (anchorTile != candidate.mapping.operationTemporalTiles.end()) {
+            auto anchorTile = llvm::find_if(
+                candidate.assignment.mapping.operationTemporalTiles,
+                [&](const StructuredOpTemporalTile &tile) {
+                  return tile.operation == refinementAnchor;
+                });
+            if (anchorTile !=
+                candidate.assignment.mapping.operationTemporalTiles.end()) {
               diagnostics << " anchor_tile=[";
               llvm::interleaveComma(anchorTile->iteratorTileSizes, diagnostics);
               diagnostics << "]";
               const size_t anchorNode = static_cast<size_t>(std::distance(
-                  candidate.mapping.operationTemporalTiles.begin(),
+                  candidate.assignment.mapping.operationTemporalTiles.begin(),
                   anchorTile));
-              if (anchorNode < candidate.nodePlacements.size()) {
+              if (anchorNode < candidate.assignment.nodePlacements.size()) {
                 std::optional<llvm::SmallVector<int64_t, 4>> ranges =
                     getMaximumSpatialIteratorRanges(
                         anchorTile->operation,
-                        candidate.nodePlacements[anchorNode]);
+                        candidate.assignment.nodePlacements[anchorNode]);
                 if (ranges) {
                   diagnostics << " anchor_ranges=[";
                   llvm::interleaveComma(*ranges, diagnostics);
@@ -5529,7 +6094,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
             diagnostics << " anchor_outgoing_actions=[";
             bool firstAction = true;
             for (const SpatialEdgeStrategy &strategy :
-                 candidate.mapping.edgeStrategies) {
+                 candidate.assignment.mapping.edgeStrategies) {
               if (strategy.producer != refinementAnchor)
                 continue;
               if (!firstAction)
@@ -5552,7 +6117,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         if (closedAtAcceptedLookaheadBoundary) {
           size_t retired = 0;
           for (auto pending = shortlist.begin(); pending != shortlist.end();) {
-            if (pending->feedbackRootOrdinal != candidate.feedbackRootOrdinal) {
+            if (pending->transition.feedbackRootOrdinal !=
+                candidate.transition.feedbackRootOrdinal) {
               ++pending;
               continue;
             }
@@ -5565,7 +6131,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
           diagnostics
               << "wafer-compile: whole-card-allocation-feedback-lookahead-"
                  "boundary"
-              << " feedback_root=" << candidate.feedbackRootOrdinal
+              << " feedback_root=" << candidate.transition.feedbackRootOrdinal
               << " retired=" << retired
               << " source=exact-failed-adjacent-plus-admitted-lookahead\n";
         }
@@ -5581,57 +6147,59 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         // sole capacity authority.
         if (orderedDemands.size() > 1) {
           auto getDemandOperation =
-              [](const SPMCapacityDemandEvidence *demand) {
-                return demand->operandDemandLineage
-                           ? demand->operandDemandLineage->sourceOperation
-                       : demand->operationLineage
-                           ? demand->operationLineage->sourceOperation
+              [&](const SPMCapacityDemandEvidence *demand) {
+                std::optional<CardDAGNodeID> node =
+                    demand->operandDemandNode ? demand->operandDemandNode
+                                              : demand->operationNode;
+                return node && *node < dag->getNodes().size()
+                           ? dag->getNodes()[*node].operation
                            : nullptr;
               };
           auto repeatsPreviousDemand = [&](const auto *demand) {
-            return getDemandOperation(demand) &&
-                   candidate.previousSPMDemandOperation ==
-                       getDemandOperation(demand) &&
-                   candidate.previousSPMDemandType == demand->type &&
-                   candidate.previousSPMDemandBytes == demand->bytes;
+            return candidate.transition.previousSPMDemand &&
+                   candidate.transition.previousSPMDemand->matches(*demand);
           };
           auto getDemandKey =
-              [](const SPMCapacityDemandEvidence *demand) -> const void * {
-            if (demand->operandDemandLineage)
-              return demand->operandDemandLineage;
-            if (demand->outputLineage)
-              return demand->outputLineage;
-            return demand->operationLineage;
+              [](const SPMCapacityDemandEvidence *demand) -> uint64_t {
+            if (demand->operandDemandNode)
+              return (uint64_t{1} << 32) | *demand->operandDemandNode;
+            if (demand->outputIndex)
+              return (uint64_t{2} << 32) | *demand->outputIndex;
+            return (uint64_t{3} << 32) |
+                   demand->operationNode.value_or(
+                       std::numeric_limits<uint32_t>::max());
           };
           const bool hasUnseenDemand =
               llvm::any_of(orderedDemands, [&](const auto *demand) {
                 return !llvm::is_contained(
-                    candidate.progressiveSPMDemandHistory,
+                    candidate.transition.progressiveSPMDemandHistory,
                     getDemandKey(demand));
               });
           const SPMCapacityDemandEvidence *progressiveDemand =
-              *llvm::max_element(orderedDemands, [&](const auto *lhs,
-                                                     const auto *rhs) {
-                auto key = [&](const auto *demand) {
-                  const unsigned specificity = demand->operandDemandLineage ? 2
-                                               : demand->outputLineage      ? 1
-                                                                            : 0;
-                  const bool unseen =
-                      !llvm::is_contained(candidate.progressiveSPMDemandHistory,
-                                          getDemandKey(demand));
-                  return std::tuple(!hasUnseenDemand || unseen,
-                                    !repeatsPreviousDemand(demand),
-                                    demand->bytes, specificity);
-                };
-                return key(lhs) < key(rhs);
-              });
+              *llvm::max_element(
+                  orderedDemands, [&](const auto *lhs, const auto *rhs) {
+                    auto key = [&](const auto *demand) {
+                      const unsigned specificity = demand->operandDemandNode ? 2
+                                                   : demand->outputIndex     ? 1
+                                                                         : 0;
+                      const bool unseen = !llvm::is_contained(
+                          candidate.transition.progressiveSPMDemandHistory,
+                          getDemandKey(demand));
+                      return std::tuple(!hasUnseenDemand || unseen,
+                                        !repeatsPreviousDemand(demand),
+                                        demand->bytes, specificity);
+                    };
+                    return key(lhs) < key(rhs);
+                  });
           WholeCardCandidate progressive = candidate;
-          progressive.parentSPMConflictBytes = exactConflictBytes;
-          progressive.parentSPMConflictDemandCount = exactConflictDemandCount;
-          progressive.parentSPMTotalDemandCount = allocationFeedbackDemandCount;
+          progressive.transition.parentSPMConflictBytes = exactConflictBytes;
+          progressive.transition.parentSPMConflictDemandCount =
+              exactConflictDemandCount;
+          progressive.transition.parentSPMTotalDemandCount =
+              allocationFeedbackDemandCount;
           if (!hasUnseenDemand)
-            progressive.progressiveSPMDemandHistory.clear();
-          progressive.progressiveSPMDemandHistory.push_back(
+            progressive.transition.progressiveSPMDemandHistory.clear();
+          progressive.transition.progressiveSPMDemandHistory.push_back(
               getDemandKey(progressiveDemand));
           uint64_t temporalTransitions = 0;
           uint64_t edgeTransitions = 0;
@@ -5639,51 +6207,46 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
               progressive, *outputDomains, *dag, *progressiveDemand,
               &temporalTransitions, &edgeTransitions);
           if (refined) {
-            mlir::Operation *demandOperation =
-                getDemandOperation(progressiveDemand);
             const bool repeated = repeatsPreviousDemand(progressiveDemand);
-            progressive.previousSPMDemandOperation = demandOperation;
-            progressive.previousSPMDemandType = progressiveDemand->type;
-            progressive.previousSPMDemandBytes = progressiveDemand->bytes;
-            progressive.unchangedSPMDemandStreak =
-                repeated ? candidate.unchangedSPMDemandStreak + 1 : 0;
-            progressive.allocationFeedbackLookahead = true;
+            progressive.transition.previousSPMDemand =
+                getSPMDemandRelation(*progressiveDemand);
+            progressive.transition.unchangedSPMDemandStreak =
+                repeated ? candidate.transition.unchangedSPMDemandStreak + 1
+                         : 0;
+            progressive.transition.allocationFeedbackLookahead = true;
 
             // Every causal-set probe also exists as one of the exact
             // single-coordinate children retained above.  Once those states
             // coincide, exact-state deduplication must promote and annotate
             // the already-pending child instead of silently leaving the last
             // (usually smallest) causal demand at the front.  Otherwise the
-            // frontier can walk increasingly expanded temporal compositions
+            // candidate queue can walk increasingly expanded temporal
+            // compositions
             // while its exact packing conflict remains unchanged.  This
-            // changes only common-frontier order and traversal metadata: no
+            // changes only candidate-priority order and traversal metadata: no
             // semantic state is removed, synthesized, or accepted without the
             // fixed-capacity allocator.
             auto pending = findPendingExactState(progressive);
             if (pending != shortlist.end()) {
-              const uint64_t nextOrdinal = pending->stableOrdinal;
+              const uint64_t nextOrdinal = pending->transition.stableOrdinal;
               mergeBetterSPMFeedbackPriority(*pending, progressive);
-              pending->previousSPMDemandOperation =
-                  progressive.previousSPMDemandOperation;
-              pending->previousSPMDemandType =
-                  progressive.previousSPMDemandType;
-              pending->previousSPMDemandBytes =
-                  progressive.previousSPMDemandBytes;
-              pending->unchangedSPMDemandStreak =
-                  progressive.unchangedSPMDemandStreak;
-              pending->progressiveSPMDemandHistory =
-                  progressive.progressiveSPMDemandHistory;
-              pending->allocationFeedbackLookahead = true;
+              pending->transition.previousSPMDemand =
+                  progressive.transition.previousSPMDemand;
+              pending->transition.unchangedSPMDemandStreak =
+                  progressive.transition.unchangedSPMDemandStreak;
+              pending->transition.progressiveSPMDemandHistory =
+                  progressive.transition.progressiveSPMDemandHistory;
+              pending->transition.allocationFeedbackLookahead = true;
               const bool reordered = pending != shortlist.begin();
               if (reordered) {
                 std::rotate(shortlist.begin(), pending, std::next(pending));
-                ++resultStatistics.frontierFeedbackReorders;
+                ++resultStatistics.candidatePriorityReorders;
               }
               ++resultStatistics.allocationFeedbackProgressivePromotions;
               enqueuedAllocationFeedback = true;
               diagnostics << "wafer-compile: whole-card-allocation-feedback-"
                              "progressive-promoted"
-                          << " from=" << candidate.stableOrdinal
+                          << " from=" << candidate.transition.stableOrdinal
                           << " next=" << nextOrdinal
                           << " source=actual-spm-packing-causal-set"
                           << " causal_demands=" << orderedDemands.size()
@@ -5693,16 +6256,18 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                           << " temporal_transitions=" << temporalTransitions
                           << " edge_transitions=" << edgeTransitions
                           << " exact_pending_state=1"
-                          << " frontier_reordered=" << reordered
+                          << " candidate_queue_reordered=" << reordered
                           << " search_domain_preserved=1\n";
             } else if (!containsAttemptedExactState(progressive)) {
-              progressive.stableOrdinal = nextFeedbackStableOrdinal++;
+              progressive.transition.stableOrdinal =
+                  nextFeedbackStableOrdinal++;
               std::string scheduleFailure;
               const bool refreshedSchedule = refreshCandidateResourceSchedule(
                   progressive, *dag, *topology, physicalCardId,
                   *availableTileIds, &scheduleFailure, &resourceScheduleMemo);
               if (refreshedSchedule) {
-                const uint64_t nextOrdinal = progressive.stableOrdinal;
+                const uint64_t nextOrdinal =
+                    progressive.transition.stableOrdinal;
                 shortlist.insert(shortlist.begin(), std::move(progressive));
                 ++resultStatistics.allocationFeedbackCandidates;
                 ++resultStatistics.shortlistedCandidates;
@@ -5711,7 +6276,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                 diagnostics
                     << "wafer-compile: "
                        "whole-card-allocation-feedback-progressive"
-                    << " from=" << candidate.stableOrdinal
+                    << " from=" << candidate.transition.stableOrdinal
                     << " next=" << nextOrdinal
                     << " source=actual-spm-packing-causal-set"
                     << " causal_demands=" << orderedDemands.size()
@@ -5725,7 +6290,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                 diagnostics
                     << "wafer-compile: whole-card-allocation-feedback-"
                        "progressive-discarded"
-                    << " from=" << candidate.stableOrdinal
+                    << " from=" << candidate.transition.stableOrdinal
                     << " schedule_legal=0 detail="
                     << (scheduleFailure.empty() ? "none" : scheduleFailure)
                     << '\n';
@@ -5737,7 +6302,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
       }
       bool enqueuedBufferFeedback = false;
       if (failureGate == "selected-buffer-materialization" &&
-          hasBufferedEdge(candidate) && candidate.bufferFeedbackBoundary &&
+          hasBufferedEdge(candidate) &&
+          candidate.transition.bufferFeedbackBoundary &&
           (selectedBufferFailure.kind ==
                SelectedBufferMaterializationFailureKind::TripCountTooSmall ||
            selectedBufferFailure.kind ==
@@ -5745,8 +6311,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         std::vector<WholeCardCandidate> refinements =
             refineSelectedBufferConsumerWaveOnce(
                 candidate, *dag, *outputDomains,
-                selectedBufferFailure.consumerLineage,
-                nextFeedbackStableOrdinal);
+                selectedBufferFailure.consumerNode, nextFeedbackStableOrdinal);
         for (WholeCardCandidate &refined : llvm::reverse(refinements)) {
           std::string scheduleFailure;
           if (!refreshCandidateResourceSchedule(
@@ -5765,14 +6330,15 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         ++resultStatistics.bufferFeedbackTransitions;
         if (enqueuedBufferFeedback)
           diagnostics << "wafer-compile: whole-card-buffer-feedback"
-                      << " from=" << candidate.stableOrdinal
+                      << " from=" << candidate.transition.stableOrdinal
                       << " generated=" << refinements.size()
                       << " source=exact-edge-temporal-recurrence\n";
       }
       if (closedAtAcceptedLookaheadBoundary)
         continue;
       if (failureGate == "selected-buffer-materialization" &&
-          hasBufferedEdge(candidate) && !candidate.bufferFeedbackBoundary) {
+          hasBufferedEdge(candidate) &&
+          !candidate.transition.bufferFeedbackBoundary) {
         std::vector<WholeCardCandidate> children;
         auto retainChild = [&](WholeCardCandidate child) {
           populateTemporalMetrics(child, *outputDomains, *dag);
@@ -5797,12 +6363,12 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
             /*additionalWaveRefinements=*/0);
         std::vector<WholeCardCandidate> actionBoundaries;
         if (fullTemporal) {
-          fullTemporal->bufferFeedbackBoundary = true;
+          fullTemporal->transition.bufferFeedbackBoundary = true;
           actionBoundaries.push_back(std::move(*fullTemporal));
         } else {
           WholeCardCandidate boundary = candidate;
-          boundary.stableOrdinal = nextFeedbackStableOrdinal++;
-          boundary.bufferFeedbackBoundary = true;
+          boundary.transition.stableOrdinal = nextFeedbackStableOrdinal++;
+          boundary.transition.bufferFeedbackBoundary = true;
           actionBoundaries.push_back(std::move(boundary));
         }
         // The joint coordinate search already retains one exact witness for
@@ -5837,25 +6403,26 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
             return tailBearingFallback;
           };
           for (size_t outputIndex = 0;
-               outputIndex < base.mapping.outputs.size(); ++outputIndex) {
+               outputIndex < base.assignment.mapping.outputs.size();
+               ++outputIndex) {
             const unsigned resultIndex =
-                base.mapping.outputs[outputIndex].outputIndex;
+                base.assignment.mapping.outputs[outputIndex].outputIndex;
             if (!outputContainsBufferedConsumer(
                     base, *dag, resultIndex,
-                    selectedBufferFailure.consumerLineage))
+                    selectedBufferFailure.consumerNode))
               continue;
-            llvm::SmallVector<int64_t, 4> ranges =
-                getMaximumSpatialShardShape(base.mapping.outputs[outputIndex],
-                                            (*outputDomains)[resultIndex]);
+            llvm::SmallVector<int64_t, 4> ranges = getMaximumSpatialShardShape(
+                base.assignment.mapping.outputs[outputIndex],
+                (*outputDomains)[resultIndex]);
             for (size_t dimension = 0; dimension < ranges.size(); ++dimension) {
               std::optional<int64_t> value =
                   getMinimumViableBufferWave(ranges[dimension]);
               if (!value)
                 continue;
               WholeCardCandidate child = base;
-              child.stableOrdinal = nextFeedbackStableOrdinal++;
-              child.mapping.outputs[outputIndex].temporalTileSizes[dimension] =
-                  *value;
+              child.transition.stableOrdinal = nextFeedbackStableOrdinal++;
+              child.assignment.mapping.outputs[outputIndex]
+                  .temporalTileSizes[dimension] = *value;
               retainChild(std::move(child));
             }
           }
@@ -5863,7 +6430,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         auto actionPriority = [](const WholeCardCandidate &child) {
           if (hasLayoutConversion(child))
             return 0;
-          if (llvm::any_of(child.mapping.edgeStrategies,
+          if (llvm::any_of(child.assignment.mapping.edgeStrategies,
                            [](const SpatialEdgeStrategy &strategy) {
                              return strategy.action ==
                                     SpatialEdgeAction::LocalShardResidency;
@@ -5891,25 +6458,25 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         ++resultStatistics.bufferFeedbackTransitions;
         if (enqueuedBufferFeedback)
           diagnostics << "wafer-compile: whole-card-buffer-feedback"
-                      << " from=" << candidate.stableOrdinal
+                      << " from=" << candidate.transition.stableOrdinal
                       << " generated=" << children.size()
                       << " source=actual-buffer-materialization\n";
       }
       // A single-causal-coordinate recurrence may use measured lookahead and
       // root closure: all of its finite states are linearly ordered.  A
-      // multi-coordinate conflict must stay in the common frontier instead;
+      // multi-coordinate conflict must stay in the common candidate queue;
       // dropping siblings or replacing them with one simultaneous endpoint
       // would remove legal compositions, and model-scale IR showed that the
       // simultaneous endpoint can construct the full temporal cross product
       // before the allocator observes it.
-      if (optimizations.isSearch() && enqueuedAllocationFeedback &&
-          allocationFeedbackNeighborCount != 0 &&
+      if (enqueuedAllocationFeedback && allocationFeedbackNeighborCount != 0 &&
           allocationFeedbackEndpointDemands.size() == 1) {
         size_t &beamWidth =
-            allocationFeedbackBeamWidths[candidate.feedbackRootOrdinal];
+            allocationFeedbackBeamWidths[candidate.transition
+                                             .feedbackRootOrdinal];
         beamWidth = std::max(beamWidth, allocationFeedbackNeighborCount);
         FeedbackRootDemandWork &demandWork =
-            feedbackRootDemandWork[candidate.feedbackRootOrdinal];
+            feedbackRootDemandWork[candidate.transition.feedbackRootOrdinal];
         if (demandWork.initialNeighborCount == 0) {
           demandWork.initialNeighborCount = allocationFeedbackNeighborCount;
           demandWork.initialDemandCount = allocationFeedbackDemandCount;
@@ -5917,7 +6484,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         size_t retained = 0;
         size_t deferred = 0;
         for (auto pending = shortlist.begin(); pending != shortlist.end();) {
-          if (pending->feedbackRootOrdinal != candidate.feedbackRootOrdinal) {
+          if (pending->transition.feedbackRootOrdinal !=
+              candidate.transition.feedbackRootOrdinal) {
             ++pending;
             continue;
           }
@@ -5931,20 +6499,19 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         }
         if (deferred != 0) {
           resultStatistics.feedbackBeamDeferredCandidates += deferred;
-          diagnostics << "wafer-compile: whole-card-frontier"
-                      << " feedback_root=" << candidate.feedbackRootOrdinal
-                      << " adaptive_conflict_beam=" << beamWidth
-                      << " exact_neighbors=" << allocationFeedbackNeighborCount
-                      << " current_exact_demand_count="
-                      << allocationFeedbackDemandCount
-                      << " initial_exact_demand_count="
-                      << demandWork.initialDemandCount
-                      << " retained=" << std::min(retained, beamWidth)
-                      << " deferred=" << deferred
-                      << " source=actual-spm-conflict\n";
+          diagnostics
+              << "wafer-compile: whole-card-candidate-priority"
+              << " feedback_root=" << candidate.transition.feedbackRootOrdinal
+              << " adaptive_conflict_beam=" << beamWidth
+              << " exact_neighbors=" << allocationFeedbackNeighborCount
+              << " current_exact_demand_count=" << allocationFeedbackDemandCount
+              << " initial_exact_demand_count=" << demandWork.initialDemandCount
+              << " retained=" << std::min(retained, beamWidth)
+              << " deferred=" << deferred << " source=actual-spm-conflict\n";
         }
         const uint64_t expanded =
-            feedbackRootMaterializations[candidate.feedbackRootOrdinal];
+            feedbackRootMaterializations[candidate.transition
+                                             .feedbackRootOrdinal];
         const uint64_t rootWorkBudget = std::max<uint64_t>(
             saturatingMultiply(demandWork.initialNeighborCount, 2),
             availableTileIds->size());
@@ -5983,12 +6550,13 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
           uint64_t endpointTransitions = 0;
           uint64_t endpointEdgeTransitions = 0;
           WholeCardCandidate endpoint = candidate;
-          endpoint.parentSPMConflictBytes =
+          endpoint.transition.parentSPMConflictBytes =
               allocationFeedbackEndpointDemands.front()->exactConflictBytes;
-          endpoint.parentSPMConflictDemandCount =
+          endpoint.transition.parentSPMConflictDemandCount =
               allocationFeedbackEndpointDemands.front()
                   ->exactConflictDemandCount;
-          endpoint.parentSPMTotalDemandCount = allocationFeedbackDemandCount;
+          endpoint.transition.parentSPMTotalDemandCount =
+              allocationFeedbackDemandCount;
           for (const SPMCapacityDemandEvidence *demand :
                allocationFeedbackEndpointDemands) {
             refineAllocationDemandTowardCapacityProbe(
@@ -6003,32 +6571,21 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
             if (allocationFeedbackEndpointDemands.size() == 1) {
               const SPMCapacityDemandEvidence &demand =
                   *allocationFeedbackEndpointDemands.front();
-              mlir::Operation *demandOperation =
-                  demand.operandDemandLineage
-                      ? demand.operandDemandLineage->sourceOperation
-                  : demand.operationLineage
-                      ? demand.operationLineage->sourceOperation
-                      : nullptr;
               const bool repeatedUnchangedDemand =
-                  demandOperation &&
-                  candidate.previousSPMDemandOperation == demandOperation &&
-                  candidate.previousSPMDemandType == demand.type &&
-                  candidate.previousSPMDemandBytes == demand.bytes;
-              endpoint.previousSPMDemandOperation = demandOperation;
-              endpoint.previousSPMDemandType = demand.type;
-              endpoint.previousSPMDemandBytes = demand.bytes;
-              endpoint.unchangedSPMDemandStreak =
+                  candidate.transition.previousSPMDemand &&
+                  candidate.transition.previousSPMDemand->matches(demand);
+              endpoint.transition.previousSPMDemand =
+                  getSPMDemandRelation(demand);
+              endpoint.transition.unchangedSPMDemandStreak =
                   repeatedUnchangedDemand
-                      ? candidate.unchangedSPMDemandStreak + 1
+                      ? candidate.transition.unchangedSPMDemandStreak + 1
                       : 0;
             } else {
-              endpoint.previousSPMDemandOperation = nullptr;
-              endpoint.previousSPMDemandType = {};
-              endpoint.previousSPMDemandBytes = 0;
-              endpoint.unchangedSPMDemandStreak = 0;
+              endpoint.transition.previousSPMDemand.reset();
+              endpoint.transition.unchangedSPMDemandStreak = 0;
             }
-            endpoint.allocationFeedbackLookahead = true;
-            endpoint.stableOrdinal = nextFeedbackStableOrdinal++;
+            endpoint.transition.allocationFeedbackLookahead = true;
+            endpoint.transition.stableOrdinal = nextFeedbackStableOrdinal++;
             std::string endpointScheduleFailure;
             if (refreshCandidateResourceSchedule(
                     endpoint, *dag, *topology, physicalCardId,
@@ -6040,7 +6597,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
               diagnostics
                   << "wafer-compile: whole-card-allocation-feedback-endpoint-"
                      "discarded"
-                  << " feedback_root=" << candidate.feedbackRootOrdinal
+                  << " feedback_root="
+                  << candidate.transition.feedbackRootOrdinal
                   << " temporal_transitions=" << endpointTransitions
                   << " schedule_legal=0 detail="
                   << (endpointScheduleFailure.empty() ? "none"
@@ -6050,7 +6608,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
           }
           size_t budgetDeferred = 0;
           for (auto pending = shortlist.begin(); pending != shortlist.end();) {
-            if (pending->feedbackRootOrdinal != candidate.feedbackRootOrdinal) {
+            if (pending->transition.feedbackRootOrdinal !=
+                candidate.transition.feedbackRootOrdinal) {
               ++pending;
               continue;
             }
@@ -6059,19 +6618,20 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
             ++budgetDeferred;
           }
           if (temporalEndpoint) {
-            const uint64_t endpointOrdinal = temporalEndpoint->stableOrdinal;
+            const uint64_t endpointOrdinal =
+                temporalEndpoint->transition.stableOrdinal;
             shortlist.insert(shortlist.begin(), std::move(*temporalEndpoint));
             ++resultStatistics.allocationFeedbackCandidates;
             ++resultStatistics.allocationFeedbackEndpointCandidates;
             ++resultStatistics.shortlistedCandidates;
             diagnostics
                 << "wafer-compile: whole-card-allocation-feedback-endpoint"
-                << " feedback_root=" << candidate.feedbackRootOrdinal
+                << " feedback_root=" << candidate.transition.feedbackRootOrdinal
                 << " next=" << endpointOrdinal
                 << " temporal_transitions=" << endpointTransitions
                 << " edge_transitions=" << endpointEdgeTransitions
                 << " conflict_temporal_endpoint=1"
-                << " conflict_lineages="
+                << " conflict_relations="
                 << allocationFeedbackEndpointDemands.size()
                 << " non_temporal_state_preserved=1"
                 << " exact_admission_required=1"
@@ -6080,8 +6640,9 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
           if (budgetDeferred != 0 || temporalEndpoint) {
             resultStatistics.feedbackBeamDeferredCandidates += budgetDeferred;
             ++resultStatistics.feedbackRootBudgetClosures;
-            diagnostics << "wafer-compile: whole-card-frontier"
-                        << " feedback_root=" << candidate.feedbackRootOrdinal
+            diagnostics << "wafer-compile: whole-card-candidate-priority"
+                        << " feedback_root="
+                        << candidate.transition.feedbackRootOrdinal
                         << " adaptive_root_work_budget=" << rootWorkBudget
                         << " expanded=" << expanded
                         << " exact_demand_amplification_limit="
@@ -6111,15 +6672,17 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         // avoids trading a tiny byte improvement for thousands of repeated
         // loop demands. Stable sort preserves order for equal evidence.
         // Unknown initial states remain after measured feedback states, but
-        // every state stays in the same common frontier.
-        const uint64_t previousFront = shortlist.front().stableOrdinal;
+        // every state stays in the same common candidate queue.
+        const uint64_t previousFront =
+            shortlist.front().transition.stableOrdinal;
         auto getCapacityUnits = [&](const WholeCardCandidate &state) {
-          return ceilDivide(state.parentSPMConflictBytes, usableSPMCapacity);
+          return ceilDivide(state.transition.parentSPMConflictBytes,
+                            usableSPMCapacity);
         };
         llvm::stable_sort(shortlist, [&](const WholeCardCandidate &lhs,
                                          const WholeCardCandidate &rhs) {
-          const bool lhsMeasured = lhs.parentSPMConflictBytes != 0;
-          const bool rhsMeasured = rhs.parentSPMConflictBytes != 0;
+          const bool lhsMeasured = lhs.transition.parentSPMConflictBytes != 0;
+          const bool rhsMeasured = rhs.transition.parentSPMConflictBytes != 0;
           if (lhsMeasured != rhsMeasured)
             return lhsMeasured;
           if (!lhsMeasured)
@@ -6129,65 +6692,55 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
           if (lhsUnits != rhsUnits)
             return lhsUnits < rhsUnits;
           if (lhsUnits > 2) {
-            if (lhs.allocationFeedbackLookahead !=
-                rhs.allocationFeedbackLookahead)
-              return lhs.allocationFeedbackLookahead;
-            return std::tuple(lhs.parentSPMConflictBytes,
-                              lhs.parentSPMTotalDemandCount,
-                              lhs.parentSPMConflictDemandCount) <
-                   std::tuple(rhs.parentSPMConflictBytes,
-                              rhs.parentSPMTotalDemandCount,
-                              rhs.parentSPMConflictDemandCount);
+            if (lhs.transition.allocationFeedbackLookahead !=
+                rhs.transition.allocationFeedbackLookahead)
+              return lhs.transition.allocationFeedbackLookahead;
+            return std::tuple(lhs.transition.parentSPMConflictBytes,
+                              lhs.transition.parentSPMTotalDemandCount,
+                              lhs.transition.parentSPMConflictDemandCount) <
+                   std::tuple(rhs.transition.parentSPMConflictBytes,
+                              rhs.transition.parentSPMTotalDemandCount,
+                              rhs.transition.parentSPMConflictDemandCount);
           }
-          return std::tuple(lhs.parentSPMTotalDemandCount,
-                            !lhs.allocationFeedbackLookahead,
-                            lhs.parentSPMConflictBytes,
-                            lhs.parentSPMConflictDemandCount) <
-                 std::tuple(rhs.parentSPMTotalDemandCount,
-                            !rhs.allocationFeedbackLookahead,
-                            rhs.parentSPMConflictBytes,
-                            rhs.parentSPMConflictDemandCount);
+          return std::tuple(lhs.transition.parentSPMTotalDemandCount,
+                            !lhs.transition.allocationFeedbackLookahead,
+                            lhs.transition.parentSPMConflictBytes,
+                            lhs.transition.parentSPMConflictDemandCount) <
+                 std::tuple(rhs.transition.parentSPMTotalDemandCount,
+                            !rhs.transition.allocationFeedbackLookahead,
+                            rhs.transition.parentSPMConflictBytes,
+                            rhs.transition.parentSPMConflictDemandCount);
         });
-        const bool reordered = shortlist.front().stableOrdinal != previousFront;
+        const bool reordered =
+            shortlist.front().transition.stableOrdinal != previousFront;
         if (reordered)
-          ++resultStatistics.frontierFeedbackReorders;
+          ++resultStatistics.candidatePriorityReorders;
         ++resultStatistics.allocationFeedbackPrioritySelections;
         diagnostics << "wafer-compile: whole-card-allocation-feedback-priority"
-                    << " from=" << candidate.stableOrdinal
-                    << " next=" << shortlist.front().stableOrdinal
+                    << " from=" << candidate.transition.stableOrdinal
+                    << " next=" << shortlist.front().transition.stableOrdinal
                     << " exact_conflict_bytes="
-                    << shortlist.front().parentSPMConflictBytes
+                    << shortlist.front().transition.parentSPMConflictBytes
                     << " capacity_units=" << getCapacityUnits(shortlist.front())
                     << " priority_mode="
                     << (getCapacityUnits(shortlist.front()) > 2
                             ? "progressive-gap"
                             : "near-capacity-work")
                     << " exact_conflict_demands="
-                    << shortlist.front().parentSPMConflictDemandCount
+                    << shortlist.front().transition.parentSPMConflictDemandCount
                     << " total_demands="
-                    << shortlist.front().parentSPMTotalDemandCount
-                    << " frontier_reordered=" << reordered
+                    << shortlist.front().transition.parentSPMTotalDemandCount
+                    << " candidate_queue_reordered=" << reordered
                     << " search_domain_preserved=1\n";
-      }
-      if (optimizations.isNone()) {
-        // `none` chooses no numeric winner, but it must still finish the
-        // finite exact legality traversal.  One exhausted conflict child is
-        // not proof that its siblings are illegal: allocator and selected-
-        // buffer feedback insert those siblings into the common frontier.
-        // Stop only after that frontier is empty, or accept the first exact
-        // incumbent above.
-        if (!shortlist.empty())
-          continue;
-        return mlir::failure();
       }
       if (!enqueuedAllocationFeedback && !enqueuedBufferFeedback &&
           shortlist.size() > 1) {
         const bool preserveMultiStageAxis =
-            candidate.nodePlacementCandidate &&
-            candidate.distinctTileGroupCount >= 3;
+            candidate.transition.nodePlacementCandidate &&
+            candidate.evaluation.distinctTileGroupCount >= 3;
         const bool preserveIndependentAxis =
-            candidate.nodePlacementCandidate &&
-            candidate.parallelComponentCount > 1;
+            candidate.transition.nodePlacementCandidate &&
+            candidate.evaluation.parallelComponentCount > 1;
         const bool preserveLayoutAxis =
             hasLayoutConversion(candidate) &&
             failureGate != "selected-layout-materialization";
@@ -6198,42 +6751,42 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         // actual-work budget on buffer-count variants of one placement.
         const bool preserveBufferAxis = false;
         auto sameSpatialState = [&](const WholeCardCandidate &alternative) {
-          if (alternative.nodePlacements.size() !=
-                  candidate.nodePlacements.size() ||
-              alternative.mapping.outputs.size() !=
-                  candidate.mapping.outputs.size())
+          if (alternative.assignment.nodePlacements.size() !=
+                  candidate.assignment.nodePlacements.size() ||
+              alternative.assignment.mapping.outputs.size() !=
+                  candidate.assignment.mapping.outputs.size())
             return false;
-          const bool sameNodes =
-              llvm::all_of(llvm::zip_equal(alternative.nodePlacements,
-                                           candidate.nodePlacements),
-                           [](auto values) {
-                             const auto &[lhs, rhs] = values;
-                             return lhs.node == rhs.node &&
-                                    lhs.shardDimension == rhs.shardDimension &&
-                                    lhs.tiles == rhs.tiles &&
-                                    lhs.spatialIteratorDimension ==
-                                        rhs.spatialIteratorDimension &&
-                                    lhs.iteratorPartitionFactors ==
-                                        rhs.iteratorPartitionFactors;
-                           });
-          const bool sameOutputs =
-              llvm::all_of(llvm::zip_equal(alternative.mapping.outputs,
-                                           candidate.mapping.outputs),
-                           [](auto values) {
-                             const auto &[lhs, rhs] = values;
-                             return lhs.outputIndex == rhs.outputIndex &&
-                                    lhs.shardDimension == rhs.shardDimension &&
-                                    lhs.activeTileIds == rhs.activeTileIds;
-                           });
+          const bool sameNodes = llvm::all_of(
+              llvm::zip_equal(alternative.assignment.nodePlacements,
+                              candidate.assignment.nodePlacements),
+              [](auto values) {
+                const auto &[lhs, rhs] = values;
+                return lhs.node == rhs.node &&
+                       lhs.shardDimension == rhs.shardDimension &&
+                       lhs.tiles == rhs.tiles &&
+                       lhs.spatialIteratorDimension ==
+                           rhs.spatialIteratorDimension &&
+                       lhs.iteratorPartitionFactors ==
+                           rhs.iteratorPartitionFactors;
+              });
+          const bool sameOutputs = llvm::all_of(
+              llvm::zip_equal(alternative.assignment.mapping.outputs,
+                              candidate.assignment.mapping.outputs),
+              [](auto values) {
+                const auto &[lhs, rhs] = values;
+                return lhs.outputIndex == rhs.outputIndex &&
+                       lhs.shardDimension == rhs.shardDimension &&
+                       lhs.activeTileIds == rhs.activeTileIds;
+              });
           return sameNodes && sameOutputs;
         };
         auto sameFailedAxes = [&](const WholeCardCandidate &alternative) {
           return (!preserveMultiStageAxis ||
-                  (alternative.nodePlacementCandidate &&
-                   alternative.distinctTileGroupCount >= 3)) &&
+                  (alternative.transition.nodePlacementCandidate &&
+                   alternative.evaluation.distinctTileGroupCount >= 3)) &&
                  (!preserveIndependentAxis ||
-                  (alternative.nodePlacementCandidate &&
-                   alternative.parallelComponentCount > 1)) &&
+                  (alternative.transition.nodePlacementCandidate &&
+                   alternative.evaluation.parallelComponentCount > 1)) &&
                  (!preserveLayoutAxis || hasLayoutConversion(alternative)) &&
                  (!preserveBufferAxis || hasBufferedEdge(alternative));
         };
@@ -6264,11 +6817,13 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
           });
         }
         auto sameTemporalState = [&](const WholeCardCandidate &alternative) {
-          return alternative.mapping.operationTemporalTiles.size() ==
-                     candidate.mapping.operationTemporalTiles.size() &&
+          return alternative.assignment.mapping.operationTemporalTiles.size() ==
+                     candidate.assignment.mapping.operationTemporalTiles
+                         .size() &&
                  llvm::all_of(
-                     llvm::zip_equal(alternative.mapping.operationTemporalTiles,
-                                     candidate.mapping.operationTemporalTiles),
+                     llvm::zip_equal(
+                         alternative.assignment.mapping.operationTemporalTiles,
+                         candidate.assignment.mapping.operationTemporalTiles),
                      [](auto values) {
                        const auto &[lhs, rhs] = values;
                        return lhs.operation == rhs.operation &&
@@ -6289,14 +6844,14 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                 !sameFailedAxes(*alternative) ||
                 getMaximumBufferCount(*alternative) !=
                     getMaximumBufferCount(candidate) ||
-                alternative->temporalWaveLowerBound <=
-                    candidate.temporalWaveLowerBound)
+                alternative->evaluation.temporalWaveLowerBound <=
+                    candidate.evaluation.temporalWaveLowerBound)
               continue;
             if (deeper == shortlist.end() ||
-                std::tuple(alternative->temporalWaveLowerBound,
-                           alternative->stableOrdinal) <
-                    std::tuple(deeper->temporalWaveLowerBound,
-                               deeper->stableOrdinal))
+                std::tuple(alternative->evaluation.temporalWaveLowerBound,
+                           alternative->transition.stableOrdinal) <
+                    std::tuple(deeper->evaluation.temporalWaveLowerBound,
+                               deeper->transition.stableOrdinal))
               deeper = alternative;
           }
           if (deeper != shortlist.end()) {
@@ -6327,21 +6882,22 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                         std::next(singleBufferSibling));
         }
         if (!shortlist.empty())
-          diagnostics << "wafer-compile: whole-card-frontier feedback_from="
-                      << candidate.stableOrdinal
-                      << " next=" << shortlist.front().stableOrdinal
-                      << " preserve_layout=" << preserveLayoutAxis << '\n';
-        ++resultStatistics.frontierFeedbackReorders;
+          diagnostics
+              << "wafer-compile: whole-card-candidate-priority feedback_from="
+              << candidate.transition.stableOrdinal
+              << " next=" << shortlist.front().transition.stableOrdinal
+              << " preserve_layout=" << preserveLayoutAxis << '\n';
+        ++resultStatistics.candidatePriorityReorders;
       }
       continue;
     }
-    if (candidate.nodePlacementCandidate)
+    if (candidate.transition.nodePlacementCandidate)
       ++resultStatistics.nodePlacementCandidateAcceptances;
-    if (candidate.nodePlacementCandidate &&
-        candidate.distinctTileGroupCount >= 3)
+    if (candidate.transition.nodePlacementCandidate &&
+        candidate.evaluation.distinctTileGroupCount >= 3)
       ++resultStatistics.multiStagePlacementCandidateAcceptances;
-    if (candidate.nodePlacementCandidate &&
-        candidate.parallelComponentCount > 1)
+    if (candidate.transition.nodePlacementCandidate &&
+        candidate.evaluation.parallelComponentCount > 1)
       ++resultStatistics.independentComponentCandidateAcceptances;
     if (hasAlternativeEdgeAction(candidate))
       ++resultStatistics.alternativeEdgeActionCandidateAcceptances;
@@ -6357,25 +6913,25 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
       ++resultStatistics.actualFusionCandidateAcceptances;
     auto admittedCandidate = std::make_unique<AdmittedWholeCardCandidate>(
         std::move(candidate), std::move(*accepted),
-        candidateActualFusedLogicalEdges);
+        std::move(acceptedOperationNodes), candidateActualFusedLogicalEdges);
     failureReason.clear();
     mlir::FailureOr<analysis::StaticSchedulePlan> plan =
         buildAcceptedWholeDAGSchedulePlan(
-            *dag, admittedCandidate->candidate.nodePlacements, sourceLineage,
-            admittedCandidate->executable, admittedCandidate->phaseCosts,
-            &failureReason);
+            *dag, admittedCandidate->candidate.assignment.nodePlacements,
+            admittedCandidate->operationNodes, admittedCandidate->executable,
+            admittedCandidate->phaseCosts, &failureReason);
     if (mlir::failed(plan)) {
       ++resultStatistics.schedulePlanRejections;
       diagnostics << "wafer-compile: whole-card-candidate rejection"
                   << " stable_ordinal="
-                  << admittedCandidate->candidate.stableOrdinal
+                  << admittedCandidate->candidate.transition.stableOrdinal
                   << " gate=accepted-static-schedule-plan"
                   << " detail=" << failureReason << '\n';
     } else {
       admittedCandidate->schedulePlan.emplace(std::move(*plan));
       ++resultStatistics.plannedCandidates;
       admittedTemporalRepresentatives.push_back(admittedCandidate->candidate);
-      if (admittedCandidate->candidate.allocationFeedbackLookahead) {
+      if (admittedCandidate->candidate.transition.allocationFeedbackLookahead) {
         // The lookahead established a legal lower endpoint.  Test the
         // retained ordinary adjacent state next instead of draining deeper
         // speculative probes.  If that adjacent state fails, the exact-state
@@ -6384,64 +6940,41 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
         // ordinary incumbent.
         auto adjacent =
             llvm::find_if(shortlist, [&](const WholeCardCandidate &pending) {
-              return pending.feedbackRootOrdinal ==
-                         admittedCandidate->candidate.feedbackRootOrdinal &&
-                     !pending.allocationFeedbackLookahead;
+              return pending.transition.feedbackRootOrdinal ==
+                         admittedCandidate->candidate.transition
+                             .feedbackRootOrdinal &&
+                     !pending.transition.allocationFeedbackLookahead;
             });
         if (adjacent != shortlist.end()) {
           if (adjacent != shortlist.begin())
             std::rotate(shortlist.begin(), adjacent, std::next(adjacent));
-          ++resultStatistics.frontierFeedbackReorders;
-          diagnostics << "wafer-compile: whole-card-frontier feedback_root="
-                      << admittedCandidate->candidate.feedbackRootOrdinal
-                      << " next=" << shortlist.front().stableOrdinal
-                      << " source=admitted-lookahead-adjacent-boundary\n";
+          ++resultStatistics.candidatePriorityReorders;
+          diagnostics
+              << "wafer-compile: whole-card-candidate-priority feedback_root="
+              << admittedCandidate->candidate.transition.feedbackRootOrdinal
+              << " next=" << shortlist.front().transition.stableOrdinal
+              << " source=admitted-lookahead-adjacent-boundary\n";
         }
       }
-      diagnostics << "wafer-compile: whole-card-candidate admitted"
-                  << " stable_ordinal="
-                  << admittedCandidate->candidate.stableOrdinal
-                  << " feedback_root="
-                  << admittedCandidate->candidate.feedbackRootOrdinal
-                  << " actual_fused_edges="
-                  << admittedCandidate->actualFusedLogicalEdges
-                  << " temporal_wave_lb="
-                  << admittedCandidate->candidate.temporalWaveLowerBound
-                  << " allocation_feedback_lookahead="
-                  << admittedCandidate->candidate.allocationFeedbackLookahead
-                  << " non_temporal_family_closed="
-                  << !admittedCandidate->candidate.allocationFeedbackLookahead
-                  << '\n';
+      diagnostics
+          << "wafer-compile: whole-card-candidate admitted"
+          << " stable_ordinal="
+          << admittedCandidate->candidate.transition.stableOrdinal
+          << " feedback_root="
+          << admittedCandidate->candidate.transition.feedbackRootOrdinal
+          << " actual_fused_edges="
+          << admittedCandidate->actualFusedLogicalEdges << " temporal_wave_lb="
+          << admittedCandidate->candidate.evaluation.temporalWaveLowerBound
+          << " allocation_feedback_lookahead="
+          << admittedCandidate->candidate.transition.allocationFeedbackLookahead
+          << " non_temporal_family_closed="
+          << !admittedCandidate->candidate.transition
+                  .allocationFeedbackLookahead
+          << '\n';
     }
-    if (mlir::failed(stripCardProgramSourceOperationLineage(
-            admittedCandidate->executable, sourceLineage, &failureReason))) {
-      diagnostics << "wafer-compile: accepted candidate retained private "
-                     "schedule lineage: "
-                  << failureReason << '\n';
-      return mlir::failure();
-    }
-    if (mlir::failed(stripSpatialOutputLineage(
-            admittedCandidate->executable, outputLineage, &failureReason))) {
-      diagnostics << "wafer-compile: accepted candidate retained private "
-                     "output lineage: "
-                  << failureReason << '\n';
-      return mlir::failure();
-    }
-    if (mlir::failed(stripStructuredOperandDemandLineage(
-            admittedCandidate->executable, operandDemandLineage,
-            &failureReason))) {
-      diagnostics << "wafer-compile: accepted candidate retained private "
-                     "operand-demand lineage: "
-                  << failureReason << '\n';
-      return mlir::failure();
-    }
-    // Search may retain several accepted comparison summaries, so release
-    // their large Tile modules and rematerialize only the selected state
-    // below.  The deterministic baseline admits exactly one semantic state;
-    // retaining that already-verified executable avoids running the complete
-    // CardProgram -> Instr -> SPM -> DDR admission pipeline a second time.
-    if (optimizations.isSearch())
-      admittedCandidate->executable.tiles.clear();
+    // Search retains several comparison summaries, so release their large
+    // Tile modules and rematerialize only the selected state below.
+    admittedCandidate->executable.tiles.clear();
     admitted.push_back(std::move(admittedCandidate));
   }
   resultStatistics.acceptedCandidates = admitted.size();
@@ -6485,34 +7018,37 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
       selectedEstimateIndex = index;
   const size_t selectedIndex = selectableIndices[selectedEstimateIndex];
   resultStatistics.selectedStableOrdinal =
-      admitted[selectedIndex]->candidate.stableOrdinal;
+      admitted[selectedIndex]->candidate.transition.stableOrdinal;
   resultStatistics.selectedOutputMappingCount =
-      admitted[selectedIndex]->candidate.mapping.outputs.size();
+      admitted[selectedIndex]->candidate.assignment.mapping.outputs.size();
   resultStatistics.selectedUniqueActiveTileCount = getUniqueActiveTileCount(
-      admitted[selectedIndex]->candidate.mapping,
-      admitted[selectedIndex]->candidate.nodePlacements);
+      admitted[selectedIndex]->candidate.assignment.mapping,
+      admitted[selectedIndex]->candidate.assignment.nodePlacements);
   resultStatistics.selectedParallelComponentCount =
-      admitted[selectedIndex]->candidate.parallelComponentCount;
+      admitted[selectedIndex]->candidate.evaluation.parallelComponentCount;
   resultStatistics.selectedTemporalWaveLowerBound =
-      admitted[selectedIndex]->candidate.temporalWaveLowerBound;
+      admitted[selectedIndex]->candidate.evaluation.temporalWaveLowerBound;
   resultStatistics.selectedInstructionExecutionLowerBound =
-      admitted[selectedIndex]->candidate.instructionExecutionLowerBound;
+      admitted[selectedIndex]
+          ->candidate.evaluation.instructionExecutionLowerBound;
   resultStatistics.selectedPeakOutputTileFootprintEstimate =
-      admitted[selectedIndex]->candidate.peakOutputTileFootprintEstimate;
+      admitted[selectedIndex]
+          ->candidate.evaluation.peakOutputTileFootprintEstimate;
   resultStatistics.selectedPeakAlignedResidencyEstimate =
-      admitted[selectedIndex]->candidate.peakAlignedResidencyEstimate;
-  resultStatistics.selectedPeerTransferCount =
-      getPeerFragmentCount(admitted[selectedIndex]->candidate.mapping);
+      admitted[selectedIndex]
+          ->candidate.evaluation.peakAlignedResidencyEstimate;
+  resultStatistics.selectedPeerTransferCount = getPeerFragmentCount(
+      admitted[selectedIndex]->candidate.assignment.mapping);
   resultStatistics.selectedPeerBytes =
-      admitted[selectedIndex]->candidate.peerBytes;
+      admitted[selectedIndex]->candidate.evaluation.peerBytes;
   resultStatistics.selectedBufferCount =
       getMaximumBufferCount(admitted[selectedIndex]->candidate);
   resultStatistics.selectedActualFusedLogicalEdges =
       admitted[selectedIndex]->actualFusedLogicalEdges;
   resultStatistics.selectedSPMMovementWork =
-      admitted[selectedIndex]->candidate.scheduledSPMMovementWork;
+      admitted[selectedIndex]->candidate.evaluation.scheduledSPMMovementWork;
   resultStatistics.selectedDDRMovementWork =
-      admitted[selectedIndex]->candidate.scheduledDDRMovementWork;
+      admitted[selectedIndex]->candidate.evaluation.scheduledDDRMovementWork;
   resultStatistics.selectedMakespanPicoseconds =
       estimates[selectedEstimateIndex].makespan.picoseconds;
   resultStatistics.enabledDurationTerms =
@@ -6546,7 +7082,7 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
       << " spm_probe_tiles_skipped="
       << resultStatistics.spmFailureProbeTilesSkipped
       << " exact_feedback_reorders="
-      << resultStatistics.frontierFeedbackReorders
+      << resultStatistics.candidatePriorityReorders
       << " resource_schedule_memo_hits="
       << resultStatistics.resourceScheduleMemoHits
       << " resource_schedule_memo_misses="
@@ -6593,13 +7129,6 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
       << " ddr_movement_work=" << resultStatistics.selectedDDRMovementWork
       << " makespan_ps=" << resultStatistics.selectedMakespanPicoseconds
       << " enabled_terms=" << resultStatistics.enabledDurationTerms << '\n';
-  if (optimizations.isNone()) {
-    diagnostics
-        << "wafer-compile: selected baseline reuses exact-admitted executable"
-        << " stable_ordinal=" << resultStatistics.selectedStableOrdinal
-        << " selected_executable_rematerializations=0\n";
-    return std::move(admitted[selectedIndex]->executable);
-  }
   // The comparison summaries intentionally own no actual Tile modules.  Run
   // the exact pipeline once more for the selected semantic state and publish
   // only that fresh executable.  This is an equivalence-preserving memory
@@ -6612,17 +7141,20 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
   bool selectedIndeterminateFailure = false;
   bool selectedSPMCapacityOverflow = false;
   llvm::SmallVector<SPMCapacityDemandEvidence, 8> selectedSPMCapacityDemands;
+  llvm::SmallVector<AcceptedOperationNodeRelation, 64> selectedOperationNodes;
+  std::vector<std::string> selectedTileDataflowIRTrace;
   mlir::FailureOr<AcceptedWholeCardExecutable> selectedExecutable =
       materializeCandidate(
           tensorProgram, admitted[selectedIndex]->candidate, physicalCardId,
-          *availableTileIds, sourceLineage, outputLineage, operandDemandLineage,
-          program, executionConfig, diagnostics,
+          *availableTileIds, operationNodes, *dag, program, executionConfig,
+          diagnostics,
           resultStatistics.selectedExecutableRematerializationGates,
           /*searchStatistics=*/nullptr, selectedRotatingSlots,
           selectedActualFusedLogicalEdges, tilePipelineParallelism,
           /*preferredFailureProbeTileId=*/std::nullopt, selectedFailureGate,
           failureReason, selectedBufferFailure, selectedIndeterminateFailure,
-          selectedSPMCapacityOverflow, selectedSPMCapacityDemands);
+          selectedSPMCapacityOverflow, selectedSPMCapacityDemands,
+          selectedOperationNodes, selectedTileDataflowIRTrace);
   ++resultStatistics.selectedExecutableRematerializations;
   if (mlir::failed(selectedExecutable)) {
     diagnostics << "wafer-compile: selected whole-card state failed exact "
@@ -6636,28 +7168,8 @@ mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
                    "fusion witness count during rematerialization\n";
     return mlir::failure();
   }
-  if (mlir::failed(stripCardProgramSourceOperationLineage(
-          *selectedExecutable, sourceLineage, &failureReason))) {
-    diagnostics << "wafer-compile: selected executable retained private "
-                   "schedule lineage after rematerialization: "
-                << failureReason << '\n';
-    return mlir::failure();
-  }
-  if (mlir::failed(stripSpatialOutputLineage(*selectedExecutable, outputLineage,
-                                             &failureReason))) {
-    diagnostics << "wafer-compile: selected executable retained private "
-                   "output lineage after rematerialization: "
-                << failureReason << '\n';
-    return mlir::failure();
-  }
-  if (mlir::failed(stripStructuredOperandDemandLineage(
-          *selectedExecutable, operandDemandLineage, &failureReason))) {
-    diagnostics << "wafer-compile: selected executable retained private "
-                   "operand-demand lineage after rematerialization: "
-                << failureReason << '\n';
-    return mlir::failure();
-  }
-  return std::move(*selectedExecutable);
+  return WholeCardCompilationResult(std::move(*selectedExecutable),
+                                    std::move(selectedTileDataflowIRTrace));
 }
 
 } // namespace wafer::compiler::detail

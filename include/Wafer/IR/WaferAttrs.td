@@ -20,44 +20,6 @@ def Wafer_TargetAttr : EnumAttr<Wafer_Dialect, Wafer_Target, "target"> {
   let assemblyFormat = "`<` $value `>`";
 }
 
-def Wafer_CompilationLineageSourceOperation
-    : I32EnumAttrCase<"SourceOperation", 0, "source_operation">;
-def Wafer_CompilationLineageSpatialOutput
-    : I32EnumAttrCase<"SpatialOutput", 1, "spatial_output">;
-def Wafer_CompilationLineageStructuredOperandDemand
-    : I32EnumAttrCase<"StructuredOperandDemand", 2,
-                      "structured_operand_demand">;
-def Wafer_CompilationLineageKind
-    : I32EnumAttr<"CompilationLineageKind",
-                  "Kind of transient, serializable compiler lineage", [
-  Wafer_CompilationLineageSourceOperation,
-  Wafer_CompilationLineageSpatialOutput,
-  Wafer_CompilationLineageStructuredOperandDemand
-]> {
-  let cppNamespace = "::wafer";
-  let genSpecializedAttr = 0;
-}
-
-def Wafer_CompilationLineageAttr
-    : AttrDef<Wafer_Dialect, "CompilationLineage"> {
-  let mnemonic = "compilation_lineage";
-  let summary = "Transient, self-contained compiler lineage identity";
-  let description = [{
-    Identifies one compiler-local source, output, or operand-demand coordinate
-    with a stable integer identity.  Operations may carry an array of these
-    attributes under the discardable `wafer.compilation.lineages` key while a
-    private candidate is evaluated.  The attribute is serializable and never
-    contains an Operation pointer.  It is removed before an accepted artifact
-    is published and is not an executable semantic fact.
-  }];
-  let parameters = (ins
-    "wafer::CompilationLineageKind":$kind,
-    "int64_t":$identity
-  );
-  let assemblyFormat = "`<` $kind `,` $identity `>`";
-  let genVerifyDecl = 1;
-}
-
 def Wafer_MemorySpaceSPM : I32EnumAttrCase<"SPM", 0, "spm">;
 def Wafer_MemorySpaceDDR : I32EnumAttrCase<"DDR", 1, "ddr">;
 def Wafer_MemorySpace : I32EnumAttr<"MemorySpace", "Wafer addressable storage space", [

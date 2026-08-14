@@ -1,7 +1,7 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/Internal.h"
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -16,7 +16,7 @@ namespace {
 class CommunicationAlternativesTest : public ::testing::Test {
 protected:
   CommunicationAlternativesTest() {
-    wafer::registerAllDialects(registry);
+    wafer::registerWaferCoreDialects(registry);
     registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();

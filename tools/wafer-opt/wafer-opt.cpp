@@ -1,6 +1,6 @@
 //===- wafer-opt.cpp - Wafer optimizer driver ----------------------------===//
 
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Transforms/Passes.h"
 
@@ -48,7 +48,7 @@ void registerWaferOptDialects(mlir::DialectRegistry &registry) {
                   mlir::LLVM::LLVMDialect, mlir::linalg::LinalgDialect,
                   mlir::math::MathDialect, mlir::memref::MemRefDialect,
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
 #ifdef WAFER_ENABLE_STABLEHLO
   mlir::stablehlo::registerAllDialects(registry);
 #endif

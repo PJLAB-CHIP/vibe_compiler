@@ -51,8 +51,7 @@ public:
 } // namespace
 
 void wafer::tile_region_to_instr::populatePeerLoweringPatterns(
-    mlir::RewritePatternSet &patterns, std::string *failureReason) {
-  (void)failureReason;
+    mlir::RewritePatternSet &patterns) {
   patterns.add<PeerLowering<CommPeerSendOp, InstrDTESendOp>,
                PeerLowering<CommPeerRecvOp, InstrDTERecvOp>, PeerAwaitLowering>(
       patterns.getContext());

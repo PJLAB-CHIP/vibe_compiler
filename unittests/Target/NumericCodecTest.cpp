@@ -2,7 +2,7 @@
 
 #include "Wafer/Target/NumericCodec.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/NumericSemantics.h"
 
 #include "mlir/IR/BuiltinTypes.h"
@@ -194,7 +194,7 @@ TEST(NumericCodecTest, BooleanIsBitAddressableAndPreservesNeighbors) {
 
 TEST(NumericCodecTest, LayoutBitOffsetsDriveBooleanCodecWithoutGeometryCopy) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadDialect<wafer::WaferDialect>();
 

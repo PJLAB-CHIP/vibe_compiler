@@ -16,4 +16,4 @@ module {
     into memref<4x8xf16, #wafer.memory<spm, tensor>>
 }
 
-// CHECK: error: 'wafer.instr.elementwise' op terminal elementwise does not accept indexing_maps
+// CHECK: error: 'wafer.instr.elementwise' op does not accept schema-free semantic attribute 'indexing_maps'

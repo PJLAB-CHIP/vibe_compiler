@@ -26,14 +26,15 @@
 # TIMING-DAG: wafer-compile: | stage | source-to-package | source-to-tensor-program | 1 |
 # TIMING-DAG: wafer-compile: | stage | tensor-program-to-executable | whole-card-executable-synthesis | 1 |
 # TIMING-DAG: wafer-compile: | conversion | whole-card-executable-synthesis | tensor-program-to-card-program | {{[1-9][0-9]*}} |
-# TIMING-DAG: wafer-compile: | conversion | whole-card-executable-synthesis | card-program-to-physical-tiles | {{[1-9][0-9]*}} |
+# TIMING-DAG: wafer-compile: | conversion | card-program-to-executable | card-program-to-physical-tiles | {{[1-9][0-9]*}} |
 # TIMING-DAG: wafer-compile: | lowering-phase | tile-region-to-instr | full-conversion |
 # TIMING-DAG: wafer-compile: | lowering-pattern | tile-region-to-instr | wafer.tile.load |
 # TIMING-DAG: wafer-compile: | conversion | convertTensorProgramToTileRegionModuleInPlace | total |
-# TIMING-DAG: wafer-compile: | conversion | tile-region-to-instr | module-conversion |
+# TIMING-DAG: wafer-compile: | conversion | tile-region-to-instr | region-conversion |
 # TIMING-DAG: wafer-compile: | transformation | planSPMMemoryModule | total |
 # TIMING-DAG: wafer-compile: | transformation | planDDRMemoryModule | total |
-# TIMING-DAG: wafer-compile: | analysis-phase | planFunction(SPM) | StructuredTimeline::build |
+# TIMING-DAG: wafer-compile: | analysis | physical-tile-spm-planning | wafer::memory_planning::detail::StructuredTimelineAnalysis |
+# TIMING-DAG: wafer-compile: | analysis | accepted-tile-ddr-planning | wafer::analysis::DirectCallGraphAnalysis |
 # TIMING-DAG: wafer-compile: | conversion-phase | rewriteTensorProgramInPlace | TileRegionBodyEmitter::emit |
 # TIMING-DAG: wafer-compile: | external-pipeline | source-to-tensor-program | xla-spmd-partitioning |
 # TIMING-DAG: wafer-compile: | pass | stablehlo-to-linalg |

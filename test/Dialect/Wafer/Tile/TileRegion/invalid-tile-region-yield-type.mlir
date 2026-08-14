@@ -16,4 +16,5 @@ module {
   }
 }
 
-// CHECK: tile.yield type 'memref<8xf32, #wafer.memory<ddr, tensor>>' does not match wafer.tile.region result type 'memref<4xf32, #wafer.memory<ddr, tensor>>' at index 0
+// CHECK: along control flow edge from Region #0 to parent results: source type #0
+// CHECK-SAME: should match input type #0

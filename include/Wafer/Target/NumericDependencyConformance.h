@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -47,6 +48,26 @@ enum class NumericDependencyConformanceErrorCode {
 
 llvm::StringRef stringifyNumericDependencyConformanceErrorCode(
     NumericDependencyConformanceErrorCode code);
+
+class NumericDependencyConformanceError final
+    : public llvm::ErrorInfo<NumericDependencyConformanceError> {
+public:
+  static char ID;
+
+  NumericDependencyConformanceError(NumericDependencyConformanceErrorCode code,
+                                    std::string detail)
+      : code(code), detail(std::move(detail)) {}
+
+  NumericDependencyConformanceErrorCode getCode() const { return code; }
+  llvm::StringRef getDetail() const { return detail; }
+
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  NumericDependencyConformanceErrorCode code;
+  std::string detail;
+};
 
 struct NumericDependencyELFIdentity {
   std::string elfClass;

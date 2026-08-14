@@ -13,6 +13,11 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #endif
 
+namespace wafer {
+
+#define GEN_PASS_DEF_LOWERSTATICSTABLEHLOCONCATENATEPASS
+#include "Wafer/Transforms/WaferPasses.h.inc"
+
 namespace {
 
 #ifdef WAFER_ENABLE_STABLEHLO
@@ -81,18 +86,11 @@ struct LowerStaticConcatenate final
 #endif
 
 struct LowerStaticStablehloConcatenatePass final
-    : mlir::PassWrapper<LowerStaticStablehloConcatenatePass,
-                        mlir::OperationPass<mlir::ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
-      LowerStaticStablehloConcatenatePass)
-
-  llvm::StringRef getArgument() const final {
-    return "wafer-lower-static-stablehlo-concatenate";
-  }
-
-  llvm::StringRef getDescription() const final {
-    return "Lower static StableHLO concatenate to canonical tensor insertion";
-  }
+    : impl::LowerStaticStablehloConcatenatePassBase<
+          LowerStaticStablehloConcatenatePass> {
+  using impl::LowerStaticStablehloConcatenatePassBase<
+      LowerStaticStablehloConcatenatePass>::
+      LowerStaticStablehloConcatenatePassBase;
 
   void runOnOperation() final {
 #ifdef WAFER_ENABLE_STABLEHLO
@@ -117,6 +115,4 @@ struct LowerStaticStablehloConcatenatePass final
 
 } // namespace
 
-std::unique_ptr<mlir::Pass> wafer::createLowerStaticStablehloConcatenatePass() {
-  return std::make_unique<LowerStaticStablehloConcatenatePass>();
-}
+} // namespace wafer

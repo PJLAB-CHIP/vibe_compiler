@@ -12,6 +12,7 @@
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/MemoryPlanning.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
 #include "Wafer/Transforms/SoftwarePipelining.h"
 

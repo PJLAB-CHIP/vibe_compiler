@@ -11,6 +11,7 @@
 #include "mlir/Pass/PassManager.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
@@ -81,19 +82,20 @@ materializeOrVerifyExactExecutionConfig(mlir::ModuleOp module,
                                         const ExecutionConfig &config);
 void eraseTargetTopologyAndExecutionMesh(mlir::ModuleOp module);
 void registerCompilationDialects(mlir::DialectRegistry &registry);
-bool runPassPipeline(mlir::ModuleOp module,
-                     void (*builder)(mlir::OpPassManager &));
+mlir::LogicalResult
+runPassPipeline(mlir::ModuleOp module, llvm::StringRef pipelineLabel,
+                llvm::function_ref<void(mlir::OpPassManager &)> builder);
 
-bool runSpmdHelper(llvm::StringRef helper,
-                   llvm::StringRef inputProgramDirectory,
-                   llvm::StringRef outputProgramDirectory,
-                   const ExecutionConfig &config,
-                   llvm::raw_ostream &diagnostics);
+mlir::LogicalResult runSpmdHelper(llvm::StringRef helper,
+                                  llvm::StringRef inputProgramDirectory,
+                                  llvm::StringRef outputProgramDirectory,
+                                  const ExecutionConfig &config,
+                                  llvm::raw_ostream &diagnostics);
 
 llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLaunchSlot);
+    std::optional<int64_t> failAfterLaunchSlot, CompilationIRTrace &irTrace);
 
 mlir::LogicalResult stageTargetPackage(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -103,7 +105,8 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<ExecutableBundle> &executableBundle,
-    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle);
+    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle,
+    CompilationIRTrace &irTrace);
 
 mlir::LogicalResult stageProfileTargetPackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -113,7 +116,8 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<ExecutableBundle> &executableBundle,
-    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle);
+    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle,
+    CompilationIRTrace &irTrace);
 
 mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
@@ -123,7 +127,8 @@ mlir::LogicalResult runCompilationTransaction(
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<ExecutableBundle> *retainedExecutableBundle,
-    std::optional<TargetLLVMModuleBundle> *retainedTargetLLVMModuleBundle);
+    std::optional<TargetLLVMModuleBundle> *retainedTargetLLVMModuleBundle,
+    std::optional<CompilationIRTrace> *retainedIRTrace = nullptr);
 
 } // namespace wafer::compiler::detail
 

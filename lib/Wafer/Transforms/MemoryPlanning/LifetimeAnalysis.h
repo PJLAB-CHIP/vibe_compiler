@@ -236,8 +236,8 @@ private:
   void mapForRegionIterArgs(mlir::Operation *op);
   mlir::LogicalResult mapForResultsAndBackedge(mlir::Operation *op,
                                                LifetimeFailure *failure);
-  void mapTileRegionBlockArgs(mlir::Operation *op);
-  void mapTileRegionResults(mlir::Operation *op);
+  void mapSingleExecutionRegionBlockArgs(mlir::Operation *op);
+  void mapSingleExecutionRegionResults(mlir::Operation *op);
   mlir::Value normalize(mlir::Value value) const;
   void recordUse(RootRef ref, int64_t event);
   llvm::SmallVector<AsyncTaskRef, 2> asyncTasksAt(mlir::Value handle,
@@ -272,7 +272,7 @@ private:
 
 /// Extends tracked local-engine accesses through path-covering completion
 /// barriers. An asynchronous issue is tracked only when its centralized local
-/// completion contract is OrderedPending and it has a value-associated
+/// completion contract is OrderedAsynchronousIssue and it has a value-associated
 /// storage effect on a tracked root. While such an access is pending,
 /// deallocation and operations without a complete effect contract fail closed.
 class LocalCompletionTracker {
@@ -316,7 +316,7 @@ private:
                                    LifetimeDataflow &dataflow) const;
   mlir::LogicalResult
   verifyPendingObservers(mlir::Operation *op, ProgramPoint point,
-                         const NCCCompletionContract &contract,
+                         const NCCSynchronizationContract &contract,
                          const AccessCollection &current,
                          LifetimeFailure *failure) const;
   bool provesLoopBackedgeOrder(const PendingIssue &issue, mlir::Operation *loop,

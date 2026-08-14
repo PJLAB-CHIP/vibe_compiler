@@ -6,105 +6,67 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 
-OP_FAMILIES = {
-    "Program": {
-        "layer": "Program",
-        "td": "ProgramOps.td",
-        "cpp": "ProgramOps.cpp",
-        "mnemonics": ["card.program", "tile.program"],
+OP_FAMILY_LAYOUT = {
+    "Program/ProgramOps.td": {
+        "cpp": ("Program/ProgramOps.cpp",),
         "tests": "Program/Program",
     },
-    "TargetTopology": {
-        "layer": "Target",
-        "td": "TopologyOps.td",
-        "cpp": "TopologyOps.cpp",
-        "mnemonics": ["target.topology"],
+    "Target/TopologyOps.td": {
+        "cpp": ("Target/TopologyOps.cpp",),
         "tests": "Target/Topology",
     },
-    "TileRegion": {
-        "layer": "Tile",
-        "td": "TileRegionOps.td",
-        "cpp": "TileRegionOps.cpp",
-        "mnemonics": ["tile.region", "tile.yield"],
-        "tests": "Tile/TileRegion",
-    },
-    "Layout": {
-        "layer": "Tile",
-        "td": "LayoutOps.td",
-        "cpp": "LayoutOps.cpp",
-        "mnemonics": ["tile.materialize_layout"],
-        "tests": "Tile/Layout",
-    },
-    "SPM": {
-        "layer": "Resource",
-        "td": "SPMOps.td",
-        "cpp": "SPMOps.cpp",
-        "mnemonics": ["tile.load", "tile.store"],
-        "tests": "Resource/SPM",
-    },
-    "Move": {
-        "layer": "Tile",
-        "td": "MoveOps.td",
-        "cpp": "MoveOps.cpp",
-        "mnemonics": [
-            "tile.extract_slice",
-            "tile.insert_slice",
-            "tile.copy",
-            "tile.transpose",
-            "tile.broadcast",
-        ],
-        "tests": "Tile/Move",
-    },
-    "View": {
-        "layer": "Tile",
-        "td": "ViewOps.td",
-        "cpp": "ViewOps.cpp",
-        "mnemonics": ["tile.reshape"],
-        "tests": "Tile/View",
-    },
-    "Compute": {
-        "layer": "Tile",
-        "td": "ComputeOps.td",
-        "cpp": "ComputeOps.cpp",
-        "mnemonics": ["tile.fill", "tile.gemm", "tile.elementwise", "tile.reduce"],
-        "tests": "Tile/Compute",
-    },
-    "Comm": {
-        "layer": "Tile",
-        "td": "CommOps.td",
-        "cpp": "CommOps.cpp",
-        "mnemonics": ["tile.peer_send", "tile.peer_recv"],
-        "tests": "Tile/Comm",
-    },
-    "LinalgExtCollective": {
-        "layer": "LinalgExt",
-        "td": "CollectiveOps.td",
-        "cpp": "CollectiveOps.cpp",
-        "mnemonics": [
-            "linalg_ext.collective.all_gather",
-            "linalg_ext.collective.all_reduce",
-            "linalg_ext.collective.reduce_scatter",
-            "linalg_ext.collective.all_to_all",
-            "linalg_ext.collective.collective_permute",
-            "linalg_ext.collective.yield",
-        ],
+    "LinalgExt/CollectiveOps.td": {
+        "cpp": ("LinalgExt/CollectiveOps.cpp",),
         "tests": "LinalgExt/Collective",
     },
-    "DTE": {
-        "layer": "Instr",
-        "td": "DTEOps.td",
-        "cpp": "DTEOps.cpp",
-        "mnemonics": ["instr.dte_send", "instr.dte_recv", "instr.dte_wait"],
+    "Tile/TileRegionOps.td": {
+        "cpp": ("Tile/TileRegionOps.cpp",),
+        "tests": "Tile/TileRegion",
+    },
+    "Tile/LayoutOps.td": {
+        "cpp": ("Tile/LayoutOps.cpp",),
+        "tests": "Tile/Layout",
+    },
+    "Tile/ComputeOps.td": {
+        "cpp": ("Tile/ComputeOps.cpp",),
+        "tests": "Tile/Compute",
+    },
+    "Tile/MoveOps.td": {
+        "cpp": ("Tile/MoveOps.cpp",),
+        "tests": "Tile/Move",
+    },
+    "Tile/ViewOps.td": {
+        "cpp": ("Tile/ViewOps.cpp",),
+        "tests": "Tile/View",
+    },
+    "Tile/CommOps.td": {
+        "cpp": ("Tile/CommOps.cpp",),
+        "tests": "Tile/Comm",
+    },
+    "Resource/SPMOps.td": {
+        "cpp": ("Resource/SPMOps.cpp",),
+        "tests": "Resource/SPM",
+    },
+    # InstructionOps.td deliberately splits verifier implementations by
+    # instruction family. The ODS include remains the schema truth.
+    "Instr/InstructionOps.td": {
+        "cpp": (
+            "Instr/ComputeOps.cpp",
+            "Instr/MovementOps.cpp",
+            "Instr/PeripheralOps.cpp",
+        ),
+        "tests": "Instr/Instruction",
+    },
+    "Instr/DTEOps.td": {
+        "cpp": ("Instr/DTEOps.cpp",),
         "tests": "Instr/DTE",
     },
-    "Sync": {
-        "layer": "Instr",
-        "td": "SyncOps.td",
-        "cpp": "SyncOps.cpp",
-        "mnemonics": ["instr.ncc_join"],
+    "Instr/SyncOps.td": {
+        "cpp": ("Instr/SyncOps.cpp",),
         "tests": "Instr/Sync",
     },
 }
@@ -199,25 +161,50 @@ def check_file(path: Path, errors: list[str]) -> str:
     return path.read_text()
 
 
+def get_aggregated_op_td_files(root: Path, errors: list[str]) -> set[str]:
+    path = root / "include/Wafer/IR/WaferOps.td"
+    text = check_file(path, errors)
+    if re.search(r"^def Wafer_", text, flags=re.MULTILINE):
+        fail(errors, "WaferOps.td must aggregate op-family files, not define ops")
+    return {
+        match
+        for match in re.findall(
+            r'^include "Wafer/IR/([^\"]+Ops\.td)"', text, flags=re.MULTILINE
+        )
+        if match != "WaferOps.td"
+    }
+
+
+def get_defined_op_mnemonics(td_text: str) -> set[str]:
+    definition = re.compile(
+        r"^def\s+Wafer_[A-Za-z0-9_]+Op\b"
+        r"(?:(?!^def\s).)*?"
+        r":\s*Wafer_[A-Za-z0-9_]*Op<\s*\"([^\"]+)\"",
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    return set(definition.findall(td_text))
+
+
+def get_mlir_library_sources(cmake_text: str, target: str) -> set[str]:
+    block = re.search(
+        rf"add_mlir_library\(\s*{re.escape(target)}\s+(.*?)(?:\n\s*LINK_LIBS|\n\s*DEPENDS)",
+        cmake_text,
+        flags=re.DOTALL,
+    )
+    if not block:
+        return set()
+    return set(
+        re.findall(r"^\s*([A-Za-z0-9_./+-]+\.cpp)\s*$", block.group(1), re.MULTILINE)
+    )
+
+
 def check_main_ops_td(root: Path, errors: list[str]) -> None:
-    aggregator_texts: dict[str, str] = {}
-    for filename in ("WaferOps.td",):
-        path = root / "include/Wafer/IR" / filename
-        text = check_file(path, errors)
-        if not text:
-            continue
-        aggregator_texts[filename] = text
-
-        direct_defs = re.findall(r"^def Wafer_", text, flags=re.MULTILINE)
-        if direct_defs:
-            fail(errors, f"{filename} must aggregate op-family files, not define ops")
-
-    for spec in OP_FAMILIES.values():
-        aggregator = spec.get("aggregator", "WaferOps.td")
-        text = aggregator_texts.get(aggregator, "")
-        include = f'include "Wafer/IR/{spec["layer"]}/{spec["td"]}"'
-        if include not in text:
-            fail(errors, f"{aggregator} missing {include}")
+    included = get_aggregated_op_td_files(root, errors)
+    expected = set(OP_FAMILY_LAYOUT)
+    for missing in sorted(expected - included):
+        fail(errors, f"WaferOps.td missing op-family include Wafer/IR/{missing}")
+    for unowned in sorted(included - expected):
+        fail(errors, f"WaferOps.td op-family include has no organization owner: {unowned}")
 
 
 def check_op_family_files(root: Path, errors: list[str]) -> None:
@@ -225,15 +212,20 @@ def check_op_family_files(root: Path, errors: list[str]) -> None:
     cpp_root = root / "lib/Wafer/IR"
     dialect_cpp = check_file(root / "lib/Wafer/IR/WaferDialect.cpp", errors)
 
-    for name, spec in OP_FAMILIES.items():
-        td_text = check_file(td_root / spec["layer"] / spec["td"], errors)
-        cpp_text = check_file(cpp_root / spec["layer"] / spec["cpp"], errors)
-        for mnemonic in spec["mnemonics"]:
-            if mnemonic not in td_text:
-                fail(errors, f"{spec['td']} missing op mnemonic {mnemonic}")
+    discovered_mnemonics: set[str] = set()
+    for td_relative, spec in OP_FAMILY_LAYOUT.items():
+        td_text = check_file(td_root / td_relative, errors)
+        mnemonics = get_defined_op_mnemonics(td_text)
+        if not mnemonics:
+            fail(errors, f"{td_relative} defines no Wafer operations")
+        duplicates = discovered_mnemonics & mnemonics
+        for mnemonic in sorted(duplicates):
+            fail(errors, f"duplicate Wafer operation mnemonic: {mnemonic}")
+        discovered_mnemonics.update(mnemonics)
 
-        if name != "Sync" and "::verify()" not in cpp_text:
-            fail(errors, f"{spec['cpp']} must own {name} verifier definitions")
+        cpp_texts = [check_file(cpp_root / path, errors) for path in spec["cpp"]]
+        if not any("::verify()" in text for text in cpp_texts):
+            fail(errors, f"{td_relative} has no verifier implementation owner")
 
     if "::verify()" in dialect_cpp:
         fail(errors, "WaferDialect.cpp must not own op verifier definitions")
@@ -255,7 +247,9 @@ def check_tests(root: Path, errors: list[str]) -> None:
         fail(errors, f"missing Wafer dialect test root: {test_root}")
         return
 
-    allowed_dirs = {spec["tests"] for spec in OP_FAMILIES.values()} | SUPPORT_TEST_DIRS
+    allowed_dirs = {
+        spec["tests"] for spec in OP_FAMILY_LAYOUT.values()
+    } | SUPPORT_TEST_DIRS
     for directory in allowed_dirs:
         path = test_root / directory
         if not path.is_dir():
@@ -269,6 +263,109 @@ def check_tests(root: Path, errors: list[str]) -> None:
     for path in test_root.iterdir():
         if path.is_dir() and path.name not in IR_LAYERS:
             fail(errors, f"unexpected Wafer dialect test layer directory: {path}")
+    actual_dirs = {
+        str(path.relative_to(test_root))
+        for layer in test_root.iterdir()
+        if layer.is_dir()
+        for path in layer.iterdir()
+        if path.is_dir()
+    }
+    for directory in sorted(actual_dirs - allowed_dirs):
+        fail(errors, f"unowned Wafer dialect test directory: {directory}")
+
+
+def run_self_test() -> int:
+    sample = """
+def Wafer_FirstOp : Wafer_Op<"test.first"> { }
+def Wafer_SecondOp
+    : Wafer_InstrOp<"test.second", [Pure]> { }
+"""
+    if get_defined_op_mnemonics(sample) != {"test.first", "test.second"}:
+        print("error: op-definition parser self-test failed", file=sys.stderr)
+        return 1
+    cmake_sample = """
+add_mlir_library(WaferCompiler
+  CompilationStages.cpp
+  Nested/Artifact.cpp
+
+  LINK_LIBS PUBLIC
+  MLIRIR
+)
+"""
+    if get_mlir_library_sources(cmake_sample, "WaferCompiler") != {
+        "CompilationStages.cpp",
+        "Nested/Artifact.cpp",
+    }:
+        print("error: CMake library-source parser self-test failed", file=sys.stderr)
+        return 1
+
+    with tempfile.TemporaryDirectory(prefix="wafer-ir-organization-") as temp:
+        root = Path(temp)
+        aggregator = root / "include/Wafer/IR/WaferOps.td"
+        aggregator.parent.mkdir(parents=True)
+        included = sorted(OP_FAMILY_LAYOUT)
+        aggregator.write_text(
+            "\n".join(f'include "Wafer/IR/{path}"' for path in included)
+            + "\n"
+        )
+        errors: list[str] = []
+        check_main_ops_td(root, errors)
+        if errors:
+            print(
+                "error: complete op-family fixture was rejected: "
+                + "; ".join(errors),
+                file=sys.stderr,
+            )
+            return 1
+
+        aggregator.write_text(
+            "\n".join(f'include "Wafer/IR/{path}"' for path in included[1:])
+            + "\n"
+        )
+        errors = []
+        check_main_ops_td(root, errors)
+        if not any("missing op-family include" in error for error in errors):
+            print("error: missing op-family fixture passed", file=sys.stderr)
+            return 1
+
+        aggregator.write_text(
+            "\n".join(f'include "Wafer/IR/{path}"' for path in included)
+            + '\ninclude "Wafer/IR/Test/UnownedOps.td"\n'
+        )
+        errors = []
+        check_main_ops_td(root, errors)
+        if not any("has no organization owner" in error for error in errors):
+            print("error: unowned op-family fixture passed", file=sys.stderr)
+            return 1
+
+        test_root = root / "test/Dialect/Wafer"
+        allowed_dirs = {
+            spec["tests"] for spec in OP_FAMILY_LAYOUT.values()
+        } | SUPPORT_TEST_DIRS
+        for directory in allowed_dirs:
+            path = test_root / directory
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "contract.mlir").write_text("module {}\n")
+        errors = []
+        check_tests(root, errors)
+        if errors:
+            print(
+                "error: complete test-directory fixture was rejected: "
+                + "; ".join(errors),
+                file=sys.stderr,
+            )
+            return 1
+        unowned = test_root / "Instr/Unowned"
+        unowned.mkdir(parents=True)
+        (unowned / "contract.mlir").write_text("module {}\n")
+        errors = []
+        check_tests(root, errors)
+        if not any("unowned Wafer dialect test directory" in error for error in errors):
+            print("error: unowned test-directory fixture passed", file=sys.stderr)
+            return 1
+
+    print("Wafer IR organization self-test passed")
+    return 0
 
 
 def check_forbidden_ir_specializations(root: Path, errors: list[str]) -> None:
@@ -362,10 +459,38 @@ def check_analysis_organization(root: Path, errors: list[str]) -> None:
         fail(errors, f"old transform-owned analysis include directory must be removed: {old_include}")
 
 
+def check_compiler_pass_manager_ownership(root: Path, errors: list[str]) -> None:
+    """Keep MLIR PassManager construction in the production pipeline runner."""
+    cmake_path = root / "lib/Wafer/Compiler/CMakeLists.txt"
+    cmake_text = check_file(cmake_path, errors)
+    sources = get_mlir_library_sources(cmake_text, "WaferCompiler")
+    if not sources:
+        fail(errors, "could not derive active WaferCompiler sources from CMake")
+        return
+
+    pass_manager_owner = "CompilationStages.cpp"
+    for relative in sorted(sources):
+        text = check_file(root / "lib/Wafer/Compiler" / relative, errors)
+        if "mlir::PassManager" in text and relative != pass_manager_owner:
+            fail(
+                errors,
+                f"active compiler source constructs PassManager outside the central runner: {relative}",
+            )
+        if re.search(r"\b(?:manager|pm)\.addPass\s*\(", text):
+            fail(
+                errors,
+                f"active compiler source assembles atomic passes instead of using a pipeline builder: {relative}",
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+
+    if args.self_test:
+        return run_self_test()
 
     root = args.root.resolve()
     errors: list[str] = []
@@ -375,6 +500,7 @@ def main() -> int:
     check_forbidden_ir_specializations(root, errors)
     check_analysis_organization(root, errors)
     check_conversion_organization(root, errors)
+    check_compiler_pass_manager_ownership(root, errors)
 
     if errors:
         for error in errors:

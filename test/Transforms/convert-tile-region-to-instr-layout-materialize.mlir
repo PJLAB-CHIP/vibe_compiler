@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-convert-tile-region-to-instr %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s | FileCheck %s
 
 func.func @materialize_padded_layout(
     %boundary: memref<4x8xf16, #wafer.memory<ddr, tensor>>) {

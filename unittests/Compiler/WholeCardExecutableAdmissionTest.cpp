@@ -20,6 +20,22 @@
 
 namespace {
 
+TEST(WholeCardAdmissionFailureTest, KeepsClassificationOutOfDiagnosticText) {
+  using wafer::compiler::detail::WholeCardAdmissionFailure;
+  using wafer::compiler::detail::WholeCardAdmissionFailureKind;
+
+  WholeCardAdmissionFailure stageFailure{
+      WholeCardAdmissionFailureKind::PhysicalTileDomain, "arbitrary detail"};
+  EXPECT_FALSE(stageFailure.isProvenExactRejection());
+  EXPECT_EQ(stageFailure.getDiagnosticLabel(), "physical-tile-domain");
+
+  WholeCardAdmissionFailure indeterminate{
+      WholeCardAdmissionFailureKind::TargetABILowering,
+      "physical-tile-domain text must not affect classification"};
+  EXPECT_FALSE(indeterminate.isProvenExactRejection());
+  EXPECT_EQ(indeterminate.getDiagnosticLabel(), "target-abi-lowering");
+}
+
 class WholeCardExecutableAdmissionTest : public ::testing::Test {
 protected:
   WholeCardExecutableAdmissionTest() {
@@ -63,18 +79,11 @@ protected:
     return modules;
   }
 
-  std::vector<std::shared_ptr<const std::string>>
-  makeSelectedTileEvidence() const {
-    return std::vector<std::shared_ptr<const std::string>>(
-        16, std::make_shared<const std::string>("selected tile evidence"));
-  }
-
   mlir::DialectRegistry registry;
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
-TEST_F(WholeCardExecutableAdmissionTest,
-       ConsumesCompletePhysicalTileDomainAndPreservesSelectedTileEvidence) {
+TEST_F(WholeCardExecutableAdmissionTest, ConsumesCompletePhysicalTileDomain) {
   auto module = parseTileModule(R"mlir(
   func.func @main() {
     return
@@ -85,15 +94,13 @@ TEST_F(WholeCardExecutableAdmissionTest,
 
   std::vector<mlir::OwningOpRef<mlir::ModuleOp>> tiles =
       makePhysicalTileModules(*module);
-  std::vector<std::shared_ptr<const std::string>> selectedTileIR =
-      makeSelectedTileEvidence();
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::compiler::detail::WholeCardSynthesisStatistics statistics;
-  std::string failureGate;
+  wafer::compiler::detail::WholeCardAdmissionFailure failure;
   auto accepted = wafer::compiler::detail::admitWholeCardExecutable(
-      std::move(tiles), selectedTileIR, emptyProgram(), *config, diagnostics,
-      &failureGate, &statistics);
+      std::move(tiles), emptyProgram(), *config, diagnostics, failure,
+      &statistics);
 
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_EQ(accepted->tiles.size(), 16u);
@@ -101,11 +108,10 @@ TEST_F(WholeCardExecutableAdmissionTest,
     EXPECT_EQ(tile.getPhysicalCardId(), wafer::PhysicalCardId(0));
     EXPECT_EQ(tile.getPhysicalTileId(),
               wafer::PhysicalTileId(static_cast<int64_t>(expectedTileId)));
-    EXPECT_EQ(tile.getSelectedTileIR(), "selected tile evidence");
     EXPECT_EQ(tile.getEntryLocalCompletionKind(),
               wafer::compiler::EntryLocalCompletionKind::ReturnAfterLocalDrain);
   }
-  EXPECT_TRUE(failureGate.empty());
+  EXPECT_FALSE(failure);
   EXPECT_EQ(statistics.preTargetAttempts, 1u);
   EXPECT_EQ(statistics.preTargetAccepted, 1u);
   EXPECT_EQ(statistics.targetGateInvocations, 1u);
@@ -126,18 +132,20 @@ TEST_F(WholeCardExecutableAdmissionTest,
 
   std::vector<mlir::OwningOpRef<mlir::ModuleOp>> tiles =
       makePhysicalTileModules(*module);
-  std::vector<std::shared_ptr<const std::string>> selectedTileIR =
-      makeSelectedTileEvidence();
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::compiler::detail::WholeCardSynthesisStatistics statistics;
-  std::string failureGate;
+  wafer::compiler::detail::WholeCardAdmissionFailure failure;
   auto accepted = wafer::compiler::detail::admitWholeCardExecutable(
-      std::move(tiles), selectedTileIR, emptyProgram(), *config, diagnostics,
-      &failureGate, &statistics);
+      std::move(tiles), emptyProgram(), *config, diagnostics, failure,
+      &statistics);
 
   EXPECT_TRUE(mlir::failed(accepted));
-  EXPECT_EQ(failureGate, "target-abi-preparation");
+  EXPECT_EQ(failure.kind,
+            wafer::compiler::detail::WholeCardAdmissionFailureKind::
+                TargetABIPreparation);
+  EXPECT_FALSE(failure.isProvenExactRejection());
+  EXPECT_EQ(failure.getDiagnosticLabel(), "target-abi-preparation");
   EXPECT_NE(diagnosticText.find("target-abi-preparation"), std::string::npos)
       << diagnosticText;
   EXPECT_EQ(statistics.preTargetAttempts, 1u);
@@ -160,19 +168,19 @@ TEST_F(WholeCardExecutableAdmissionTest,
   std::vector<mlir::OwningOpRef<mlir::ModuleOp>> tiles =
       makePhysicalTileModules(*module);
   tiles.pop_back();
-  std::vector<std::shared_ptr<const std::string>> selectedTileIR =
-      makeSelectedTileEvidence();
-  selectedTileIR.pop_back();
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::compiler::detail::WholeCardSynthesisStatistics statistics;
-  std::string failureGate;
+  wafer::compiler::detail::WholeCardAdmissionFailure failure;
   auto accepted = wafer::compiler::detail::admitWholeCardExecutable(
-      std::move(tiles), selectedTileIR, emptyProgram(), *config, diagnostics,
-      &failureGate, &statistics);
+      std::move(tiles), emptyProgram(), *config, diagnostics, failure,
+      &statistics);
 
   EXPECT_TRUE(mlir::failed(accepted));
-  EXPECT_EQ(failureGate, "physical-tile-domain");
+  EXPECT_EQ(failure.kind,
+            wafer::compiler::detail::WholeCardAdmissionFailureKind::
+                PhysicalTileDomain);
+  EXPECT_FALSE(failure.isProvenExactRejection());
   EXPECT_EQ(statistics.preTargetAttempts, 1u);
   EXPECT_EQ(statistics.preTargetAccepted, 0u);
   EXPECT_EQ(statistics.targetGateInvocations, 0u);

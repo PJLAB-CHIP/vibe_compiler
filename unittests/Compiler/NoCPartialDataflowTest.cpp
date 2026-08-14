@@ -9,6 +9,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/MemoryPlanning.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -448,7 +449,7 @@ module {
       EXPECT_EQ(wafer::detail::countStaticExecutableOperations(
                     module.getOperation(), executableOperations),
                 wafer::detail::StaticExecutableOperationCountStatus::Counted);
-      ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(module)));
+      ASSERT_TRUE(mlir::succeeded(wafer::placeRequiredNCCJoins(module)));
       ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
       ASSERT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
           module, memory.spmBase, memory.spmLimit, memory.spmAlignment)));

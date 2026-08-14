@@ -5,6 +5,7 @@
 #include "AcceptedCallClosure.h"
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
+#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 
@@ -89,14 +90,11 @@ mlir::Value resolveOutputAllocation(mlir::Value value) {
   llvm::SmallPtrSet<mlir::Operation *, 8> visited;
   while (value) {
     if (auto blockArgument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-      mlir::Block *owner = blockArgument.getOwner();
-      auto tileRegion =
-          owner ? mlir::dyn_cast_or_null<TileRegionOp>(owner->getParentOp())
-                : TileRegionOp{};
-      if (!tileRegion || owner != &tileRegion.getBody().front() ||
-          blockArgument.getArgNumber() >= tileRegion.getInputs().size())
+      mlir::Value entry =
+          analysis::getSingleExecutionRegionEntryOperand(blockArgument);
+      if (!entry)
         return value;
-      value = tileRegion.getInputs()[blockArgument.getArgNumber()];
+      value = entry;
       continue;
     }
 
@@ -105,16 +103,12 @@ mlir::Value resolveOutputAllocation(mlir::Value value) {
       return value;
     if (mlir::isa<mlir::memref::AllocOp>(definition))
       return value;
-    if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(definition)) {
-      auto result = mlir::dyn_cast<mlir::OpResult>(value);
-      auto yield = mlir::dyn_cast<TileYieldOp>(
-          tileRegion.getBody().front().getTerminator());
-      if (!result || !yield ||
-          result.getResultNumber() >= yield.getNumOperands())
-        return value;
-      value = yield.getOperand(result.getResultNumber());
-      continue;
-    }
+    if (auto result = mlir::dyn_cast<mlir::OpResult>(value))
+      if (mlir::Value exit =
+              analysis::getSingleExecutionRegionExitOperand(result)) {
+        value = exit;
+        continue;
+      }
     if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(definition)) {
       value = view.getViewSource();
       continue;

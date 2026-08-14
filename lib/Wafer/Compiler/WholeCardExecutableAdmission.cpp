@@ -4,12 +4,15 @@
 
 #include "AcceptedCallClosure.h"
 #include "BoundedTileExecutor.h"
+#include "CompilationInternal.h"
 #include "DirectDTETransport.h"
 #include "ExecutableBundleInternal.h"
 #include "TargetArtifactInternal.h"
 #include "WholeCardResourceAcceptance.h"
 
+#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/Target/PhysicalTopology.h"
+#include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Transforms/Passes.h"
@@ -20,13 +23,13 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
-#include "mlir/Pass/PassManager.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
 #include <array>
@@ -36,14 +39,71 @@
 #include <vector>
 
 namespace wafer::compiler::detail {
+
+llvm::StringRef WholeCardAdmissionFailure::getDiagnosticLabel() const {
+  switch (kind) {
+  case WholeCardAdmissionFailureKind::None:
+    return "none";
+  case WholeCardAdmissionFailureKind::Contract:
+    return "admission-contract";
+  case WholeCardAdmissionFailureKind::PhysicalTileDomain:
+    return "physical-tile-domain";
+  case WholeCardAdmissionFailureKind::PhysicalTileMaterialization:
+    return "physical-tile-materialization";
+  case WholeCardAdmissionFailureKind::PhysicalTileVerification:
+    return "physical-tile-verifier";
+  case WholeCardAdmissionFailureKind::DDRPlanning:
+    return "whole-card-ddr";
+  case WholeCardAdmissionFailureKind::IndexLowering:
+    return "accepted-index-lowering";
+  case WholeCardAdmissionFailureKind::DirectDTETransport:
+    return "direct-dte";
+  case WholeCardAdmissionFailureKind::WholeCardResources:
+    return "whole-card-resources";
+  case WholeCardAdmissionFailureKind::AcceptedPhysicalTileVerification:
+    return "accepted-physical-tile-verifier";
+  case WholeCardAdmissionFailureKind::AcceptedCallClosure:
+    return "accepted-call-closure";
+  case WholeCardAdmissionFailureKind::PartitionResourceProjection:
+    return "partition-resource-projection";
+  case WholeCardAdmissionFailureKind::RuntimeLaunchContract:
+    return "runtime-launch-contract";
+  case WholeCardAdmissionFailureKind::TargetABIPreparation:
+    return "target-abi-preparation";
+  case WholeCardAdmissionFailureKind::TargetABILowering:
+    return "target-abi-lowering";
+  }
+  llvm_unreachable("unknown whole-card admission failure kind");
+}
+
+bool WholeCardAdmissionFailure::isProvenExactRejection() const {
+  // The current admission kinds identify the stage that failed, not a proof
+  // class. Each stage still combines unsupported IR, verifier/internal errors
+  // and (in some cases) exact resource rejection. Until those producers return
+  // typed proof evidence, none of these coarse kinds may prune search.
+  return false;
+}
+
 namespace {
 
 static mlir::LogicalResult
 lowerAcceptedPhysicalTileIndexExpressions(mlir::ModuleOp module) {
-  mlir::PassManager manager(module.getContext());
-  wafer::support::attachCompileTiming(manager, "accepted-tile-index-lowering");
-  manager.addPass(mlir::createLowerAffinePass());
-  return manager.run(module);
+  return runPassPipeline(module, "accepted-tile-index-lowering",
+                         wafer::addLowerAffineControlAndIndexingPass);
+}
+
+static mlir::LogicalResult
+assignAcceptedPhysicalTileDDROffsets(mlir::ModuleOp module,
+                                     const TargetMemoryPolicy &memory) {
+  PlanDDRMemoryPassOptions options;
+  options.ddrAlignmentBytes = memory.ddrAlignmentBytes;
+  options.ddrCapacityBytes = memory.ddrCapacityBytes;
+  options.ddrLargestContiguousBytes = memory.ddrLargestContiguousBytes;
+  options.ddrBandwidthLimitBytes = memory.ddrBandwidthLimitBytes;
+  return runPassPipeline(module, "accepted-tile-ddr-planning",
+                         [&](mlir::OpPassManager &manager) {
+                           wafer::addAssignDDROffsetsPass(manager, options);
+                         });
 }
 
 static llvm::Expected<RuntimeLaunchContract> formAcceptedRuntimeLaunchContract(
@@ -195,14 +255,9 @@ resolveDDRMovementRootImpl(mlir::Value value,
   if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
     mlir::Block *owner = argument.getOwner();
     mlir::Operation *parent = owner ? owner->getParentOp() : nullptr;
-    if (auto tileRegion = mlir::dyn_cast_or_null<TileRegionOp>(parent)) {
-      if (tileRegion.getBody().empty() ||
-          owner != &tileRegion.getBody().front() ||
-          argument.getArgNumber() >= tileRegion.getInputs().size())
-        return {};
-      return resolveDDRMovementRootImpl(
-          tileRegion.getInputs()[argument.getArgNumber()], std::move(seen));
-    }
+    if (mlir::Value entry =
+            analysis::getSingleExecutionRegionEntryOperand(argument))
+      return resolveDDRMovementRootImpl(entry, std::move(seen));
     if (auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(parent)) {
       if (owner != loop.getBody() || argument.getArgNumber() == 0)
         return {};
@@ -216,16 +271,10 @@ resolveDDRMovementRootImpl(mlir::Value value,
 
   auto result = mlir::dyn_cast<mlir::OpResult>(value);
   mlir::Operation *definition = result ? result.getOwner() : nullptr;
-  if (auto tileRegion = mlir::dyn_cast_or_null<TileRegionOp>(definition)) {
-    if (tileRegion.getBody().empty() ||
-        result.getResultNumber() >=
-            tileRegion.getBody().front().getTerminator()->getNumOperands())
-      return {};
-    return resolveDDRMovementRootImpl(
-        tileRegion.getBody().front().getTerminator()->getOperand(
-            result.getResultNumber()),
-        std::move(seen));
-  }
+  if (result)
+    if (mlir::Value exit =
+            analysis::getSingleExecutionRegionExitOperand(result))
+      return resolveDDRMovementRootImpl(exit, std::move(seen));
   if (auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(definition))
     return resolveLoopCarried(loop, result.getResultNumber());
   if (auto cast = mlir::dyn_cast_or_null<mlir::memref::CastOp>(definition)) {
@@ -548,9 +597,9 @@ struct PreTargetWholeCardExecutable {
 
 static mlir::FailureOr<PreTargetWholeCardExecutable> runPreTargetAdmission(
     std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modules,
-    llvm::ArrayRef<std::shared_ptr<const std::string>> selectedTileIR,
     const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig, std::string &failureGate,
+    const ExecutionConfig &executionConfig,
+    WholeCardAdmissionFailureKind &failureKind,
     unsigned tilePipelineParallelism) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "acceptance", "whole-card-executable-admission", "pre-target");
@@ -559,9 +608,8 @@ static mlir::FailureOr<PreTargetWholeCardExecutable> runPreTargetAdmission(
   if (tileCount == 0 ||
       tileCount !=
           static_cast<size_t>(executionConfig.getPhysicalTileCount()) ||
-      tileCount != selectedTileIR.size() ||
       program.numPartitions != executionConfig.getNumPartitions()) {
-    failureGate = "physical-tile-domain";
+    failureKind = WholeCardAdmissionFailureKind::PhysicalTileDomain;
     return mlir::failure();
   }
   mlir::MLIRContext *ownerContext = nullptr;
@@ -569,7 +617,7 @@ static mlir::FailureOr<PreTargetWholeCardExecutable> runPreTargetAdmission(
   moduleViews.reserve(tileCount);
   for (mlir::OwningOpRef<mlir::ModuleOp> &owned : modules) {
     if (!owned) {
-      failureGate = "physical-tile-materialization";
+      failureKind = WholeCardAdmissionFailureKind::PhysicalTileMaterialization;
       return mlir::failure();
     }
     mlir::ModuleOp module = *owned;
@@ -578,7 +626,7 @@ static mlir::FailureOr<PreTargetWholeCardExecutable> runPreTargetAdmission(
     if (module.getContext() != ownerContext ||
         mlir::failed(verifyExactExecutionConfig(module, executionConfig)) ||
         mlir::failed(mlir::verify(module))) {
-      failureGate = "physical-tile-verifier";
+      failureKind = WholeCardAdmissionFailureKind::PhysicalTileVerification;
       return mlir::failure();
     }
     moduleViews.push_back(module);
@@ -586,7 +634,7 @@ static mlir::FailureOr<PreTargetWholeCardExecutable> runPreTargetAdmission(
   mlir::FailureOr<llvm::SmallVector<PhysicalTileId, 16>> physicalTileIds =
       deriveSingleCardPhysicalTileDomain(moduleViews, executionConfig);
   if (mlir::failed(physicalTileIds)) {
-    failureGate = "physical-tile-domain";
+    failureKind = WholeCardAdmissionFailureKind::PhysicalTileDomain;
     return mlir::failure();
   }
 
@@ -600,17 +648,14 @@ static mlir::FailureOr<PreTargetWholeCardExecutable> runPreTargetAdmission(
         moduleViews,
         [&](size_t tile) {
           mlir::ModuleOp module = moduleViews[tile];
-          failedTiles[tile] =
-              mlir::failed(planDDRMemoryModule(
-                  module, memory.ddrAlignmentBytes, memory.ddrCapacityBytes,
-                  memory.ddrLargestContiguousBytes,
-                  memory.ddrBandwidthLimitBytes)) ||
-              mlir::failed(mlir::verify(module));
+          failedTiles[tile] = mlir::failed(assignAcceptedPhysicalTileDDROffsets(
+                                  module, memory)) ||
+                              mlir::failed(mlir::verify(module));
         },
         tilePipelineParallelism == 0 ? kMaximumBoundedTilePipelineWorkers
                                      : tilePipelineParallelism);
     if (llvm::is_contained(failedTiles, uint8_t{1})) {
-      failureGate = "whole-card-ddr";
+      failureKind = WholeCardAdmissionFailureKind::DDRPlanning;
       return mlir::failure();
     }
   }
@@ -631,7 +676,7 @@ static mlir::FailureOr<PreTargetWholeCardExecutable> runPreTargetAdmission(
         tilePipelineParallelism == 0 ? kMaximumBoundedTilePipelineWorkers
                                      : tilePipelineParallelism);
     if (llvm::is_contained(failedTiles, uint8_t{1})) {
-      failureGate = "accepted-index-lowering";
+      failureKind = WholeCardAdmissionFailureKind::IndexLowering;
       return mlir::failure();
     }
   }
@@ -643,7 +688,7 @@ static mlir::FailureOr<PreTargetWholeCardExecutable> runPreTargetAdmission(
     transport = acceptDirectDTETransport(moduleViews);
   }
   if (mlir::failed(transport)) {
-    failureGate = "direct-dte";
+    failureKind = WholeCardAdmissionFailureKind::DirectDTETransport;
     return mlir::failure();
   }
 
@@ -656,7 +701,7 @@ static mlir::FailureOr<PreTargetWholeCardExecutable> runPreTargetAdmission(
                                             executionConfig);
   }
   if (mlir::failed(resourceCost)) {
-    failureGate = "whole-card-resources";
+    failureKind = WholeCardAdmissionFailureKind::WholeCardResources;
     return mlir::failure();
   }
 
@@ -670,14 +715,15 @@ static mlir::FailureOr<PreTargetWholeCardExecutable> runPreTargetAdmission(
     if (mlir::failed(verifyAcceptedPhysicalTileModule(
             module, executionConfig, physicalCardId, physicalTileId,
             *transport))) {
-      failureGate = "accepted-physical-tile-verifier";
+      failureKind =
+          WholeCardAdmissionFailureKind::AcceptedPhysicalTileVerification;
       return mlir::failure();
     }
     llvm::Expected<AcceptedCallClosure> closure =
         analyzeAcceptedCallClosure(module);
     if (!closure) {
       llvm::consumeError(closure.takeError());
-      failureGate = "accepted-call-closure";
+      failureKind = WholeCardAdmissionFailureKind::AcceptedCallClosure;
       return mlir::failure();
     }
     // Card-level GSPMD has one partition in the current producer. Every
@@ -686,24 +732,21 @@ static mlir::FailureOr<PreTargetWholeCardExecutable> runPreTargetAdmission(
     mlir::FailureOr<std::vector<ProgramResourceBinding>> bindings =
         buildProgramResourceBindings(program, kSingleCardPartitionId, module);
     if (mlir::failed(bindings)) {
-      failureGate = "partition-resource-projection";
+      failureKind = WholeCardAdmissionFailureKind::PartitionResourceProjection;
       return mlir::failure();
     }
-    llvm::StringRef tileEvidence =
-        selectedTileIR[tileIndex] ? llvm::StringRef(*selectedTileIR[tileIndex])
-                                  : llvm::StringRef{};
     tiles.push_back(ExecutableBundleBuilder::makePhysicalTile(
         physicalCardId, physicalTileId,
         LaunchSlotId(static_cast<int64_t>(tileIndex)),
         std::move(modules[tileIndex]), closure->entry.getSymName(),
-        std::move(*bindings), *transport, tileEvidence));
+        std::move(*bindings), *transport));
   }
 
   const uint64_t programSlotCount = tiles.front().getProgramBindings().size();
   if (llvm::any_of(tiles, [&](const PhysicalTileExecutable &tile) {
         return tile.getProgramBindings().size() != programSlotCount;
       })) {
-    failureGate = "runtime-launch-contract";
+    failureKind = WholeCardAdmissionFailureKind::RuntimeLaunchContract;
     return mlir::failure();
   }
   llvm::Expected<RuntimeLaunchContract> runtimeLaunchContract =
@@ -711,7 +754,7 @@ static mlir::FailureOr<PreTargetWholeCardExecutable> runPreTargetAdmission(
                                         programSlotCount);
   if (!runtimeLaunchContract) {
     llvm::consumeError(runtimeLaunchContract.takeError());
-    failureGate = "runtime-launch-contract";
+    failureKind = WholeCardAdmissionFailureKind::RuntimeLaunchContract;
     return mlir::failure();
   }
 
@@ -724,7 +767,8 @@ static mlir::FailureOr<AcceptedWholeCardExecutable>
 runTargetGate(PreTargetWholeCardExecutable candidate,
               const ExecutionConfig &executionConfig,
               WholeCardSynthesisStatistics *statistics,
-              std::string &failureGate, unsigned tilePipelineParallelism) {
+              WholeCardAdmissionFailureKind &failureKind,
+              unsigned tilePipelineParallelism) {
   if (statistics)
     ++statistics->targetGateInvocations;
 
@@ -762,11 +806,11 @@ runTargetGate(PreTargetWholeCardExecutable candidate,
   }
   for (TargetTileFailure failure : tileFailures) {
     if (failure == TargetTileFailure::Preparation) {
-      failureGate = "target-abi-preparation";
+      failureKind = WholeCardAdmissionFailureKind::TargetABIPreparation;
       return mlir::failure();
     }
     if (failure == TargetTileFailure::Lowering) {
-      failureGate = "target-abi-lowering";
+      failureKind = WholeCardAdmissionFailureKind::TargetABILowering;
       return mlir::failure();
     }
   }
@@ -779,52 +823,60 @@ runTargetGate(PreTargetWholeCardExecutable candidate,
 
 mlir::FailureOr<AcceptedWholeCardExecutable> admitWholeCardExecutable(
     std::vector<mlir::OwningOpRef<mlir::ModuleOp>> physicalTileModules,
-    llvm::ArrayRef<std::shared_ptr<const std::string>> selectedTileIR,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    std::string *failureGate, WholeCardSynthesisStatistics *statistics,
+    WholeCardAdmissionFailure &failure,
+    WholeCardSynthesisStatistics *statistics,
     unsigned tilePipelineParallelism) {
-  auto fail = [&](llvm::StringRef gate, llvm::StringRef message) {
-    if (failureGate)
-      *failureGate = gate.str();
+  failure = {};
+  auto fail = [&](WholeCardAdmissionFailureKind kind, llvm::StringRef message) {
+    failure.kind = kind;
+    failure.detail = message.str();
     if (!message.empty())
       diagnostics << "wafer-compile: " << message << '\n';
     return mlir::FailureOr<AcceptedWholeCardExecutable>(mlir::failure());
   };
 
-  std::string gate;
+  WholeCardAdmissionFailureKind failureKind =
+      WholeCardAdmissionFailureKind::None;
   if (statistics)
     ++statistics->preTargetAttempts;
   mlir::FailureOr<PreTargetWholeCardExecutable> preTarget =
-      runPreTargetAdmission(std::move(physicalTileModules), selectedTileIR,
-                            program, executionConfig, gate,
+      runPreTargetAdmission(std::move(physicalTileModules), program,
+                            executionConfig, failureKind,
                             tilePipelineParallelism);
-  if (mlir::failed(preTarget) && gate.empty())
-    return fail("admission-contract",
+  if (mlir::failed(preTarget) &&
+      failureKind == WholeCardAdmissionFailureKind::None)
+    return fail(WholeCardAdmissionFailureKind::Contract,
                 "whole-card pre-target admission failed without identifying "
                 "its rejecting gate");
-  if (mlir::failed(preTarget))
-    return fail(gate,
-                "whole-card executable candidate failed admission gate '" +
-                    gate + "'");
+  if (mlir::failed(preTarget)) {
+    WholeCardAdmissionFailure classified{failureKind, {}};
+    std::string message =
+        "whole-card executable candidate failed admission gate '" +
+        classified.getDiagnosticLabel().str() + "'";
+    return fail(failureKind, message);
+  }
   if (statistics)
     ++statistics->preTargetAccepted;
 
   mlir::FailureOr<AcceptedWholeCardExecutable> accepted =
-      runTargetGate(std::move(*preTarget), executionConfig, statistics, gate,
-                    tilePipelineParallelism);
-  if (mlir::failed(accepted) && gate.empty())
-    return fail("admission-contract",
+      runTargetGate(std::move(*preTarget), executionConfig, statistics,
+                    failureKind, tilePipelineParallelism);
+  if (mlir::failed(accepted) &&
+      failureKind == WholeCardAdmissionFailureKind::None)
+    return fail(WholeCardAdmissionFailureKind::Contract,
                 "whole-card target admission failed without identifying its "
                 "rejecting gate");
-  if (mlir::failed(accepted))
-    return fail(gate,
-                "whole-card executable candidate failed admission gate '" +
-                    gate + "'");
+  if (mlir::failed(accepted)) {
+    WholeCardAdmissionFailure classified{failureKind, {}};
+    std::string message =
+        "whole-card executable candidate failed admission gate '" +
+        classified.getDiagnosticLabel().str() + "'";
+    return fail(failureKind, message);
+  }
   if (statistics)
     ++statistics->admittedExecutableCount;
-  if (failureGate)
-    failureGate->clear();
   return accepted;
 }
 

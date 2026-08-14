@@ -535,18 +535,24 @@ participant、route、join、premature completion、非finite route和跨region�
 
 buffer count 是 op-wave/edge pipeline 的共同候选维度。domain 至少表达 single/double/triple buffering；若 current IR 与硬件
 允许更多 slot，则以并发 wave、lifetime 和 capacity 推导有限上界，不能把 3 作为未证明的永久 cap。每个候选显式携带 slot
-owner、rotation、producer release、最后async consumer和prologue/steady/epilogue phase等typed choices；aligned footprint和actual lifetime
+binding scope、rotation、producer release、最后async consumer和prologue/steady/epilogue phase等typed choices；aligned footprint和actual lifetime
 由current IR epoch与region/representation/movement/order assignment重算。
 
 buffer mechanism 只生成 serialized/overlap-capable actual alternatives；是否真正 overlap 由 Q50.J/K resource schedule 决定。
 无法证明 buffer 独立或无 alias 时不生成对应 transition。
+
+Q54的current-IR gate已经暴露一个必须由本项处理的结构前置：只有producer、consumer及其message endpoint确实位于同一个
+static `scf.for`时，现有rotating-slot materializer才有准确的iteration、release和reuse边界。若producer在逐row循环内、consumer
+在循环外消费完整assembled result，则“逻辑edge相关”不等于“存在可pipeline的共同循环”；此时必须拒绝buffer候选。Q50.I应先
+把共同wave/stage loop物化到actual IR，再在该loop上生成slot rotation，不能恢复Location/provenance或上游op关系作为循环证据。
 
 ### Gate
 
 single、double、triple、tail reuse、capacity failure、alias hazard、issue/wait和premature slot release有显式typed
 assignment与actual Instr正负测试；buffer recipe改变会进入state key，并使SPM/resource analysis cache失效。删除
 buffer feedback family/local buffer winner，保留selected-buffer materializer与verifier。不同buffer与schedule/stage组合是否
-实现重叠及其global winner只在Q51 closure证明。
+实现重叠及其global winner只在Q51 closure证明。正例必须检查所有exact logical-edge endpoint共享actual static loop；
+循环外consumer负例必须稳定报告“no static loop containing every exact logical-edge endpoint”。
 
 ## Q50.J：Ready/Order/Worker/Resource Schedule
 

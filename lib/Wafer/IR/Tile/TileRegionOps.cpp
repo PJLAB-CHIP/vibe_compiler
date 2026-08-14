@@ -294,7 +294,9 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
   }
 
   for (mlir::NamedAttribute attr : getOperation()->getAttrs())
-    return emitOpError("does not accept semantic attributes");
+    if (!wafer::detail::isExternalDiscardableAttribute(getOperation(), attr))
+      return emitOpError("does not accept semantic attribute '")
+             << attr.getName().getValue() << "'";
 
   return mlir::success();
 }

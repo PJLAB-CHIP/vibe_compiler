@@ -83,7 +83,7 @@ module {
   %dest = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
 
-  // expected-error @below {{scalar index attr is not supported; use an index memref operand}}
+  // expected-error @below {{does not accept schema-free semantic attribute 'index'}}
   wafer.instr.unpool #wafer.instr_unpool_kind<avg> %input into %dest
       {source_shape = array<i64: 1, 4, 4, 64>,
        dest_shape = array<i64: 1, 8, 8, 64>,

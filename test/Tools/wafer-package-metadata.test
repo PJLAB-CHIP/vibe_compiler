@@ -2,6 +2,6 @@
 # RUN: rm -rf %t.legacy
 # RUN: mkdir -p %t.legacy/modules
 # RUN: cp %S/valid-model-package.json %t.legacy/manifest.json
-# RUN: not wafer-run --package-dir %t.legacy --entry-id 0 --no-card 2>&1 | FileCheck %s
+# RUN: not wafer-run --package-dir %t.legacy --no-card 2>&1 | FileCheck %s
 
 # CHECK: wafer-run: manifest contains unknown field

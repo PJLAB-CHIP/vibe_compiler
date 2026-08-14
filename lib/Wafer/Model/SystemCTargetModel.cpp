@@ -203,7 +203,7 @@ public:
       std::optional<PendingNCCMemoryEffect> pendingMemoryEffect;
       if (transaction.nccIssueDomain &&
           transaction.nccIssueDomain->completionBehavior ==
-              LocalInstructionCompletion::OrderedPending)
+              TargetNCCCompletionBehavior::OrderedAsynchronousIssue)
         pendingMemoryEffect = summarizePendingNCCMemoryEffect(*effect);
       if (llvm::Error error = commitTargetModelCommandEffect(
               memory, numericContext, std::move(*effect))) {
@@ -248,7 +248,7 @@ public:
         const compiler::TargetNCCIssueDomain &domain =
             *transaction.nccIssueDomain;
         if (domain.completionBehavior ==
-            LocalInstructionCompletion::SynchronousWriteback) {
+            TargetNCCCompletionBehavior::SynchronousWriteback) {
           completeNCCParticipantPending(
               launchSlot, uint32_t{1} << static_cast<uint32_t>(domain.worker));
           if (failure)
@@ -429,8 +429,8 @@ private:
     /// when the transfer becomes visible. A prepared send has no effect
     /// ordinal until its explicit issue transaction executes.
     std::optional<uint64_t> effectOrdinal;
-    std::optional<compiler::TargetDirectDTESendTransaction> send;
-    std::optional<compiler::TargetDirectDTEReceiveTransaction> receive;
+    std::optional<target::TargetDirectDTESendTransaction> send;
+    std::optional<target::TargetDirectDTEReceiveTransaction> receive;
     detail::SystemCEvent *completionEvent = nullptr;
     detail::SystemCEvent *readinessEvent = nullptr;
     bool peerReady = false;
@@ -443,7 +443,7 @@ private:
     uint64_t event = 0;
     int64_t ownerLaunchSlot = -1;
     uint64_t prepareOrdinal = 0;
-    compiler::TargetDirectDTESendTransaction send;
+    target::TargetDirectDTESendTransaction send;
     bool issued = false;
     bool released = false;
   };
@@ -562,7 +562,7 @@ private:
   llvm::Expected<uint64_t>
   processNCCJoin(const compiler::TargetTransaction &transaction) {
     const auto &join =
-        std::get<compiler::TargetNCCJoinTransaction>(transaction.payload);
+        std::get<target::TargetNCCJoinTransaction>(transaction.payload);
     completeNCCParticipantPending(transaction.launchSlotId.getValue(),
                                   join.participantMask);
     if (failure)
@@ -583,7 +583,7 @@ private:
                    "Direct DTE begin is duplicate or follows finish");
       return currentFailureOrLifecycle("Direct DTE begin failed");
     }
-    const auto &begin = std::get<compiler::TargetDirectDTEBeginTransaction>(
+    const auto &begin = std::get<target::TargetDirectDTEBeginTransaction>(
         transaction.payload);
     llvm::Expected<TargetModelResolvedRange> status =
         memory.getAddressPlan().resolve(
@@ -627,7 +627,7 @@ private:
       return currentFailureOrLifecycle("Direct DTE send prepare failed");
     }
     const auto &send =
-        std::get<compiler::TargetDirectDTESendTransaction>(transaction.payload);
+        std::get<target::TargetDirectDTESendTransaction>(transaction.payload);
     if (!validateTransactionTile(transaction, send.localTile,
                                  "dte-send-prepare"))
       return currentFailureOrLifecycle("Direct DTE send prepare failed");
@@ -656,7 +656,7 @@ private:
                    "Direct DTE send issue occurred outside begin/finish");
       return currentFailureOrLifecycle("Direct DTE send issue failed");
     }
-    const auto &issue = std::get<compiler::TargetDirectDTESendIssueTransaction>(
+    const auto &issue = std::get<target::TargetDirectDTESendIssueTransaction>(
         transaction.payload);
     PreparedDTESend *prepared = findPreparedSend(issue.event);
     if (!prepared || prepared->ownerLaunchSlot != launchSlot ||
@@ -721,7 +721,7 @@ private:
                    "Direct DTE receive occurred outside begin/finish");
       return currentFailureOrLifecycle("Direct DTE receive failed");
     }
-    const auto &receive = std::get<compiler::TargetDirectDTEReceiveTransaction>(
+    const auto &receive = std::get<target::TargetDirectDTEReceiveTransaction>(
         transaction.payload);
     if (!validateTransactionTile(transaction, receive.localTile, "dte-receive"))
       return currentFailureOrLifecycle("Direct DTE receive failed");
@@ -747,7 +747,7 @@ private:
   llvm::Expected<uint64_t>
   processDTEWait(const compiler::TargetTransaction &transaction) {
     const auto &wait =
-        std::get<compiler::TargetDirectDTEWaitTransaction>(transaction.payload);
+        std::get<target::TargetDirectDTEWaitTransaction>(transaction.payload);
     PreparedDTESend *prepared = findPreparedSend(wait.event);
     const int64_t launchSlot = transaction.launchSlotId.getValue();
     if (prepared && prepared->ownerLaunchSlot == launchSlot &&

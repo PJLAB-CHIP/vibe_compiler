@@ -83,10 +83,8 @@ mlir::LogicalResult lowerTensorProgramToCardProgram(
     const CardSpatialMapping &mapping,
     mlir::OwningOpRef<mlir::ModuleOp> &cardModule,
     std::string *failureReason = nullptr,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceOperationLineage =
-        {},
-    llvm::ArrayRef<SpatialOutputLineage> outputLineage = {},
-    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage = {});
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
+    StructuredMaterializationRelations *materializationRelations = nullptr);
 
 /// Materializes the exact selected body of one physical Tile while emitting
 /// verifier-legal no-work scaffolding for the other available Tiles.  This is
@@ -99,10 +97,8 @@ mlir::LogicalResult lowerTensorProgramToCardProgramFailureProbe(
     PhysicalTileId probeTileId, const CardSpatialMapping &mapping,
     mlir::OwningOpRef<mlir::ModuleOp> &probeCardModule,
     std::string *failureReason = nullptr,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceOperationLineage =
-        {},
-    llvm::ArrayRef<SpatialOutputLineage> outputLineage = {},
-    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage = {});
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
+    StructuredMaterializationRelations *materializationRelations = nullptr);
 
 } // namespace wafer
 

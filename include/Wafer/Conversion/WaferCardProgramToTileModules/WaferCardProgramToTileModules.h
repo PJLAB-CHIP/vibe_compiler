@@ -4,6 +4,7 @@
 #define WAFER_CONVERSION_WAFERCARDPROGRAMTOTILEMODULES_H
 
 #include "Wafer/Target/PhysicalIds.h"
+#include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/SmallVector.h"
@@ -17,6 +18,7 @@ struct ProjectedPhysicalTileModule {
   PhysicalCardId cardId;
   PhysicalTileId tileId;
   mlir::OwningOpRef<mlir::ModuleOp> module;
+  StructuredMaterializationRelations materializationRelations;
 };
 
 /// Projects the unique verified wafer.card.program in `sourceModule` into one
@@ -31,7 +33,9 @@ struct ProjectedPhysicalTileModule {
 /// copied from the logical mesh.
 mlir::FailureOr<llvm::SmallVector<ProjectedPhysicalTileModule, 16>>
 projectCardProgramToPhysicalTileModules(mlir::ModuleOp sourceModule,
-                                        std::string *failureReason = nullptr);
+                                        std::string *failureReason = nullptr,
+                                        const StructuredMaterializationRelations
+                                            *materializationRelations = nullptr);
 
 } // namespace wafer
 

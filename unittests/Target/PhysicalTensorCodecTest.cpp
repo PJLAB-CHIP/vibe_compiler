@@ -23,14 +23,15 @@ template <typename T> std::string expectError(llvm::Expected<T> value) {
   return llvm::toString(value.takeError());
 }
 
-NumericTensorKey makeTensor(LogicalFormat format, MemLayout layout,
+NumericTensorKey makeTensor(LogicalFormat format, PhysicalTensorLayout layout,
                             std::vector<uint64_t> shape) {
   return llvm::cantFail(
       NumericTensorKey::create(format, layout, std::move(shape)));
 }
 
 TEST(PhysicalTensorCodecTest, CxRoundTripPreservesTemplatePadding) {
-  NumericTensorKey key = makeTensor(LogicalFormat::F16, MemLayout::Cx, {2, 3});
+  NumericTensorKey key =
+      makeTensor(LogicalFormat::F16, PhysicalTensorLayout::Cx, {2, 3});
   std::vector<RawLogicalValue> values{
       {LogicalFormat::F16, UINT64_C(0x3c00)},
       {LogicalFormat::F16, UINT64_C(0x4000)},
@@ -69,7 +70,7 @@ TEST(PhysicalTensorCodecTest, CxRoundTripPreservesTemplatePadding) {
 
 TEST(PhysicalTensorCodecTest, BitpackedBoolUsesSharedPhysicalGeometry) {
   NumericTensorKey key =
-      makeTensor(LogicalFormat::Bool, MemLayout::Tensor, {2, 5});
+      makeTensor(LogicalFormat::Bool, PhysicalTensorLayout::Tensor, {2, 5});
   std::vector<RawLogicalValue> values;
   for (uint64_t index = 0; index < key.getElementCount(); ++index)
     values.push_back({LogicalFormat::Bool, index % 3 == 0});
@@ -87,8 +88,9 @@ TEST(PhysicalTensorCodecTest, BitpackedBoolUsesSharedPhysicalGeometry) {
   }
 
   for (NumericTensorKey blocked :
-       {makeTensor(LogicalFormat::Bool, MemLayout::Cx, {2, 5}),
-        makeTensor(LogicalFormat::Bool, MemLayout::NCx, {1, 2, 5})}) {
+       {makeTensor(LogicalFormat::Bool, PhysicalTensorLayout::Cx, {2, 5}),
+        makeTensor(LogicalFormat::Bool, PhysicalTensorLayout::NCx,
+                   {1, 2, 5})}) {
     llvm::Expected<std::vector<uint8_t>> blockedPacked =
         packPhysicalTensorLogicalValues(blocked, values, UINT8_C(0xa5));
     ASSERT_TRUE(static_cast<bool>(blockedPacked))
@@ -109,7 +111,7 @@ TEST(PhysicalTensorCodecTest, BitpackedBoolUsesSharedPhysicalGeometry) {
 
 TEST(PhysicalTensorCodecTest, RejectsSizeCountAndEncodingMismatch) {
   NumericTensorKey key =
-      makeTensor(LogicalFormat::F32, MemLayout::NCx, {1, 2, 3});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 2, 3});
   uint64_t bytes = llvm::cantFail(getPhysicalTensorStorageBytes(key));
   ASSERT_GT(bytes, 0u);
   std::string error = expectError(unpackPhysicalTensorLogicalValues(

@@ -52,6 +52,28 @@ static bool isCardSharedDeclaration(mlir::Operation &operation) {
                       [](mlir::Region &region) { return region.empty(); });
 }
 
+static bool relationsBelongTo(
+    mlir::Operation *root,
+    const StructuredMaterializationRelations &relations) {
+  llvm::DenseSet<const void *> liveValues;
+  root->walk([&](mlir::Operation *operation) {
+    for (mlir::Value result : operation->getResults())
+      liveValues.insert(result.getAsOpaquePointer());
+    for (mlir::Region &region : operation->getRegions())
+      for (mlir::Block &block : region)
+        for (mlir::BlockArgument argument : block.getArguments())
+          liveValues.insert(argument.getAsOpaquePointer());
+  });
+  auto allLive = [&](const auto &entries) {
+    return llvm::all_of(entries, [&](const auto &entry) {
+      return entry.buffer &&
+             liveValues.contains(entry.buffer.getAsOpaquePointer());
+    });
+  };
+  return allLive(relations.operationResultBuffers) &&
+         allLive(relations.operandBuffers) && allLive(relations.outputBuffers);
+}
+
 static mlir::FailureOr<mlir::func::FuncOp>
 getSourceTensorProgram(mlir::ModuleOp module, std::string *failureReason) {
   mlir::func::FuncOp program;
@@ -191,9 +213,11 @@ takeLoweredTensorProgram(mlir::ModuleOp shardModule,
 static mlir::FailureOr<mlir::func::FuncOp>
 createNoWorkEntry(mlir::func::FuncOp sourceProgram,
                   std::string *failureReason) {
-  auto entry = mlir::cast<mlir::func::FuncOp>(sourceProgram->clone());
-  entry.getBody().dropAllReferences();
-  entry.getBody().getBlocks().clear();
+  // A no-work Tile needs the verified symbol/signature contract, not a copy
+  // of the executable body that is immediately discarded. Preserve the op
+  // shell and construct the only region state this artifact can contain.
+  auto entry = mlir::cast<mlir::func::FuncOp>(
+      sourceProgram->cloneWithoutRegions());
   mlir::Block *block = entry.addEntryBlock();
   mlir::OpBuilder builder(block, block->end());
   mlir::ValueRange outputs(block->getArguments());
@@ -217,6 +241,7 @@ createNoWorkEntry(mlir::func::FuncOp sourceProgram,
 static mlir::LogicalResult
 removeSchedulingOutputDestinations(mlir::func::FuncOp entry,
                                    unsigned sourceArgumentCount,
+                                   StructuredMaterializationRelations &relations,
                                    std::string *failureReason) {
   const unsigned resultCount = entry.getNumResults();
   if (resultCount == 0 ||
@@ -240,6 +265,14 @@ removeSchedulingOutputDestinations(mlir::func::FuncOp entry,
           "physical Tile scheduling destination is not a static tensor");
     auto empty = builder.create<mlir::tensor::EmptyOp>(
         entry.getLoc(), resultType.getShape(), resultType.getElementType());
+    auto retarget = [&](auto &entries) {
+      for (auto &relation : entries)
+        if (relation.buffer == destination)
+          relation.buffer = empty.getResult();
+    };
+    retarget(relations.operationResultBuffers);
+    retarget(relations.operandBuffers);
+    retarget(relations.outputBuffers);
     destination.replaceAllUsesWith(empty.getResult());
     eraseArguments.set(outputBase + index);
   }
@@ -287,9 +320,8 @@ static mlir::LogicalResult lowerTensorProgramToCardProgramImpl(
     mlir::ModuleOp sourceModule, PhysicalCardId cardId,
     const CardSpatialMapping &mapping,
     mlir::OwningOpRef<mlir::ModuleOp> &cardModule, std::string *failureReason,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceOperationLineage,
-    llvm::ArrayRef<SpatialOutputLineage> outputLineage,
-    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage,
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    StructuredMaterializationRelations *materializationRelations,
     std::optional<PhysicalTileId> materializeOnlyTileId) {
   if (failureReason)
     failureReason->clear();
@@ -346,50 +378,24 @@ static mlir::LogicalResult lowerTensorProgramToCardProgramImpl(
           mlir::cast<mlir::func::FuncOp>(schedulingProgram), failureReason)))
     return mlir::failure();
 
-  llvm::DenseSet<mlir::Operation *> lineageSources;
-  llvm::DenseSet<uint32_t> lineageNodeIds;
-  for (const CardProgramSourceOperationLineage &lineage :
-       sourceOperationLineage) {
-    if (!lineage.sourceOperation ||
-        !lineageSources.insert(lineage.sourceOperation).second ||
-        !lineageNodeIds.insert(lineage.structuredNodeId).second)
+  llvm::DenseSet<mlir::Operation *> nodeOperations;
+  llvm::DenseSet<uint32_t> nodeIds;
+  llvm::SmallVector<StructuredOperationNodeMapping, 16>
+      schedulingOperationNodes;
+  schedulingOperationNodes.reserve(operationNodes.size());
+  for (const StructuredOperationNodeMapping &node : operationNodes) {
+    if (!node.operation || !nodeOperations.insert(node.operation).second ||
+        !nodeIds.insert(node.structuredNodeId).second)
       return failCardProgram(
-          failureReason, "card source-operation lineage is null or duplicated");
-    mlir::Operation *cloned =
-        sourceToScheduling.lookupOrNull(lineage.sourceOperation);
+          failureReason,
+          "card structured operation-node mapping is null or duplicated");
+    mlir::Operation *cloned = sourceToScheduling.lookupOrNull(node.operation);
     if (!cloned)
       return failCardProgram(
           failureReason,
-          "card source-operation lineage is outside the tensor program");
-    cloned->setLoc(
-        mlir::OpaqueLoc::get<const CardProgramSourceOperationLineage *>(
-            &lineage, cloned->getLoc()));
-  }
-
-  llvm::DenseSet<mlir::Operation *> operandDemandSources;
-  llvm::DenseSet<uint32_t> operandDemandNodeIds;
-  for (const StructuredOperandDemandLineage &lineage : operandDemandLineage) {
-    if (!lineage.sourceOperation ||
-        !operandDemandSources.insert(lineage.sourceOperation).second ||
-        !operandDemandNodeIds.insert(lineage.structuredNodeId).second)
-      return failCardProgram(
-          failureReason, "card operand-demand lineage is null or duplicated");
-    mlir::Operation *cloned =
-        sourceToScheduling.lookupOrNull(lineage.sourceOperation);
-    if (!cloned)
-      return failCardProgram(
-          failureReason,
-          "card operand-demand lineage is outside the tensor program");
-    auto matchingSource = llvm::find_if(
-        sourceOperationLineage,
-        [&](const CardProgramSourceOperationLineage &sourceLineage) {
-          return sourceLineage.sourceOperation == lineage.sourceOperation &&
-                 sourceLineage.structuredNodeId == lineage.structuredNodeId;
-        });
-    if (matchingSource == sourceOperationLineage.end())
-      return failCardProgram(
-          failureReason,
-          "card operand-demand lineage has no matching source lineage");
+          "card structured operation-node mapping is outside the tensor "
+          "program");
+    schedulingOperationNodes.push_back({cloned, node.structuredNodeId});
   }
 
   llvm::DenseSet<mlir::Operation *> temporalSources;
@@ -543,22 +549,6 @@ static mlir::LogicalResult lowerTensorProgramToCardProgramImpl(
         "card spatial mapping must cover every function result exactly once");
   llvm::SmallVector<const CardOutputSpatialMapping *, 4> outputMappings(
       outputDomains->size(), nullptr);
-  llvm::SmallVector<const SpatialOutputLineage *, 4> outputLineages(
-      outputDomains->size(), nullptr);
-  if (!outputLineage.empty()) {
-    if (outputLineage.size() != outputDomains->size())
-      return failCardProgram(
-          failureReason,
-          "card output lineage must cover every function result exactly once");
-    for (const SpatialOutputLineage &lineage : outputLineage) {
-      if (lineage.outputIndex >= outputLineages.size() ||
-          outputLineages[lineage.outputIndex])
-        return failCardProgram(
-            failureReason,
-            "card output lineage index is outside results or duplicated");
-      outputLineages[lineage.outputIndex] = &lineage;
-    }
-  }
   for (const CardOutputSpatialMapping &output : mapping.outputs) {
     if (output.outputIndex >= outputDomains->size())
       return failCardProgram(
@@ -632,6 +622,7 @@ static mlir::LogicalResult lowerTensorProgramToCardProgramImpl(
   }
 
   llvm::SmallVector<int64_t, 4> coveredShardExtents(outputDomains->size(), 0);
+  StructuredMaterializationRelations resultRelations;
   for (PhysicalTileId tileId : *availableTiles) {
     auto tile = cardBuilder.create<TileProgramOp>(
         sourceModule.getLoc(),
@@ -640,6 +631,7 @@ static mlir::LogicalResult lowerTensorProgramToCardProgramImpl(
     mlir::Block &tileBody = tile.getBody().front();
 
     mlir::func::FuncOp entry;
+    StructuredMaterializationRelations tileRelations;
     llvm::SmallVector<SpatialOutputShard, 4> tileShards;
     for (auto [outputIndex, output] : llvm::enumerate(outputMappings)) {
       auto active = llvm::find(output->activeTileIds, tileId);
@@ -672,7 +664,6 @@ static mlir::LogicalResult lowerTensorProgramToCardProgramImpl(
       for (auto [temporalSize, shardSize] :
            llvm::zip_equal(output->temporalTileSizes, shard.sizes))
         shard.temporalTileSizes.push_back(std::min(temporalSize, shardSize));
-      shard.lineage = outputLineages[outputIndex];
       coveredShardExtents[outputIndex] += size;
       tileShards.push_back(std::move(shard));
     }
@@ -692,7 +683,7 @@ static mlir::LogicalResult lowerTensorProgramToCardProgramImpl(
               mapping.materializationMode, schedulingEdgeStrategies,
               loweredShard, failureReason,
               /*currentLogicalPartition=*/0, schedulingOperationTemporalTiles,
-              sourceOperationLineage, operandDemandLineage)))
+              schedulingOperationNodes, &tileRelations)))
         return mlir::failure();
       mlir::FailureOr<mlir::func::FuncOp> loweredEntry =
           takeLoweredTensorProgram(*loweredShard, failureReason);
@@ -705,7 +696,7 @@ static mlir::LogicalResult lowerTensorProgramToCardProgramImpl(
               *schedulingModule, sourceArgumentCount, tileShards, loweredShard,
               failureReason,
               /*currentLogicalPartition=*/0, schedulingOperationTemporalTiles,
-              sourceOperationLineage, operandDemandLineage)))
+              schedulingOperationNodes, &tileRelations)))
         return mlir::failure();
       mlir::FailureOr<mlir::func::FuncOp> loweredEntry =
           takeLoweredTensorProgram(*loweredShard, failureReason);
@@ -724,9 +715,22 @@ static mlir::LogicalResult lowerTensorProgramToCardProgramImpl(
     // enclosing module topology, so transform and verify the entry only after
     // it has been attached to its final Card/Tile IR scope.
     if (mlir::failed(removeSchedulingOutputDestinations(
-            entry, sourceArgumentCount, failureReason)))
+            entry, sourceArgumentCount, tileRelations, failureReason)))
       return mlir::failure();
+    resultRelations.operationResultBuffers.append(
+        tileRelations.operationResultBuffers.begin(),
+        tileRelations.operationResultBuffers.end());
+    resultRelations.operandBuffers.append(tileRelations.operandBuffers.begin(),
+                                          tileRelations.operandBuffers.end());
+    resultRelations.outputBuffers.append(tileRelations.outputBuffers.begin(),
+                                         tileRelations.outputBuffers.end());
   }
+
+  if (!relationsBelongTo(result->getOperation(), resultRelations))
+    return failCardProgram(
+        failureReason,
+        "CardProgram materialization produced a buffer relation outside the "
+        "current IR");
 
   for (auto [outputIndex, covered] : llvm::enumerate(coveredShardExtents)) {
     const CardOutputSpatialMapping *output = outputMappings[outputIndex];
@@ -744,6 +748,8 @@ static mlir::LogicalResult lowerTensorProgramToCardProgramImpl(
                              "materialized card program is not verifier-legal");
   }
 
+  if (materializationRelations)
+    *materializationRelations = std::move(resultRelations);
   cardModule = std::move(result);
   return mlir::success();
 }
@@ -752,12 +758,11 @@ mlir::LogicalResult lowerTensorProgramToCardProgram(
     mlir::ModuleOp sourceModule, PhysicalCardId cardId,
     const CardSpatialMapping &mapping,
     mlir::OwningOpRef<mlir::ModuleOp> &cardModule, std::string *failureReason,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceOperationLineage,
-    llvm::ArrayRef<SpatialOutputLineage> outputLineage,
-    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage) {
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    StructuredMaterializationRelations *materializationRelations) {
   return lowerTensorProgramToCardProgramImpl(
       sourceModule, cardId, mapping, cardModule, failureReason,
-      sourceOperationLineage, outputLineage, operandDemandLineage,
+      operationNodes, materializationRelations,
       /*materializeOnlyTileId=*/std::nullopt);
 }
 
@@ -766,12 +771,11 @@ mlir::LogicalResult lowerTensorProgramToCardProgramFailureProbe(
     PhysicalTileId probeTileId, const CardSpatialMapping &mapping,
     mlir::OwningOpRef<mlir::ModuleOp> &probeCardModule,
     std::string *failureReason,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceOperationLineage,
-    llvm::ArrayRef<SpatialOutputLineage> outputLineage,
-    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage) {
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    StructuredMaterializationRelations *materializationRelations) {
   return lowerTensorProgramToCardProgramImpl(
       sourceModule, cardId, mapping, probeCardModule, failureReason,
-      sourceOperationLineage, outputLineage, operandDemandLineage, probeTileId);
+      operationNodes, materializationRelations, probeTileId);
 }
 
 } // namespace wafer

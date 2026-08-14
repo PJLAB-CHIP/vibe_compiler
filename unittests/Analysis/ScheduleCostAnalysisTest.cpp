@@ -2,7 +2,7 @@
 
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -37,7 +37,7 @@ protected:
     registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
                     mlir::func::FuncDialect, mlir::memref::MemRefDialect,
                     mlir::scf::SCFDialect>();
-    wafer::registerAllDialects(registry);
+    wafer::registerWaferCoreDialects(registry);
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
   }
@@ -1651,7 +1651,7 @@ TEST_F(ScheduleCostAnalysisTest,
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       DTEPeerVerifierRejectsMissingPhysicalTopology) {
+       DTEPeerLeafVerifierDoesNotRebuildPhysicalTopology) {
   constexpr llvm::StringLiteral send = R"mlir(
     %sent = wafer.instr.dte_send %buffer
         {peer = 1 : i64, bytes = 4 : i64,
@@ -1664,7 +1664,9 @@ TEST_F(ScheduleCostAnalysisTest,
   ASSERT_TRUE(tile1);
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
-  EXPECT_TRUE(mlir::failed(mlir::verify(*tile0)));
+  // Cross-operation topology is checked once by the CardProgram container and
+  // again by executable admission. A leaf DTE verifier owns only local fields.
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*tile0)));
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*tile1)));
 }
 

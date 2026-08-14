@@ -26,6 +26,15 @@ class raw_ostream;
 
 namespace wafer::compiler::detail {
 
+/// Query-local relation from one operation in an accepted Instr module to a
+/// structured DAG node whose materialized buffer it reads, writes or forwards.
+/// The operation pointer is valid only while the returned executable remains
+/// unchanged.
+struct AcceptedOperationNodeRelation {
+  mlir::Operation *operation = nullptr;
+  uint32_t structuredNodeId = 0;
+};
+
 enum class CardExecutableCompilationStatus : uint8_t {
   Accepted,
   ProvenExactRejection,
@@ -40,11 +49,17 @@ struct CardExecutableTileFailure {
   SelectedBufferMaterializationFailure selectedBuffer;
 };
 
+/// Returns true only when physical-Tile finalization carries an explicit SPM
+/// capacity-overflow proof. Verifier, unsupported-lifetime and pipeline
+/// failures remain indeterminate rather than becoming candidate no-goods.
+bool isProvenExactPhysicalTileFinalizationFailure(
+    const PhysicalTileFinalizationFailure &failure);
+
 /// Move-only result of compiling one already selected CardProgram.  An exact
-/// rejection is backed by verifier/unsupported/capacity evidence in the
-/// returned gate and optional per-Tile failures.  Resource exhaustion,
-/// unclassified allocator failure and internal pipeline failure remain
-/// indeterminate and therefore cannot become a search no-good.
+/// rejection is backed by explicit capacity evidence in the returned
+/// per-Tile failures. Unsupported IR, resource exhaustion, unclassified
+/// allocator failure and internal pipeline failure remain indeterminate and
+/// therefore cannot become a search no-good.
 struct CardExecutableCompilationResult {
   CardExecutableCompilationStatus status =
       CardExecutableCompilationStatus::IndeterminateFailure;
@@ -52,6 +67,10 @@ struct CardExecutableCompilationResult {
   std::string gate;
   std::string detail;
   llvm::SmallVector<CardExecutableTileFailure, 4> tileFailures;
+  llvm::SmallVector<AcceptedOperationNodeRelation, 64> operationNodeRelations;
+  /// Same-invocation diagnostic snapshots captured at the Tile dataflow to
+  /// Instr boundary. They are not part of the admitted executable artifact.
+  std::vector<std::string> tileDataflowIRTrace;
   uint64_t rotatingSlotAllocationsMaterialized = 0;
 
   bool isAccepted() const {
@@ -69,7 +88,7 @@ struct CardExecutableCompilationResult {
 /// Compiles exactly one owned, verifier-legal, already selected CardProgram.
 /// The function performs no candidate enumeration and never changes spatial,
 /// temporal, layout, movement or buffering choices.  It projects every
-/// physical Tile, lowers TileRegion to Instr, rebuilds completion, performs
+/// physical Tile, lowers TileRegion to Instr, recomputes required NCC joins,
 /// fixed-capacity SPM/DDR planning and runs transport/resource/ABI admission.
 ///
 /// `selectedBufferRequests`, when nonempty, must have one entry for every
@@ -81,6 +100,7 @@ CardExecutableCompilationResult compileCardProgramToExecutable(
     llvm::ArrayRef<PhysicalTileId> expectedTileIds,
     llvm::ArrayRef<llvm::SmallVector<SelectedBufferRequest, 4>>
         selectedBufferRequests,
+    const StructuredMaterializationRelations &materializationRelations,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     WholeCardSynthesisStatistics *statistics = nullptr,

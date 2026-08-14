@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-normalize-stablehlo-collectives,canonicalize)' %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-fold-static-tensor-ops,canonicalize)' %s | FileCheck %s
 
 #map0 = affine_map<() -> ()>
 #map1 = affine_map<(d0, d1, d2, d3) -> ()>

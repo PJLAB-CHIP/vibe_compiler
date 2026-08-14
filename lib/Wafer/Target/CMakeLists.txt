@@ -25,10 +25,12 @@ add_mlir_library(WaferTarget
   TargetCallDecoder.cpp
   TargetFormat.cpp
   TargetIdentity.cpp
+  TargetOperation.cpp
+  TargetSchedulingCapability.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport
-  WaferIR
+  WaferTargetPhysicalLayout
 )
 
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)

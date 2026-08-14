@@ -63,20 +63,17 @@ std::optional<int64_t>
 getStaticPositiveElementCount(llvm::ArrayRef<int64_t> shape);
 std::optional<int64_t> checkedMulI64(int64_t lhs, int64_t rhs);
 
-void setFailureReason(std::string *failureReason, llvm::StringRef reason);
 mlir::LogicalResult failPattern(mlir::PatternRewriter &rewriter,
-                                mlir::Operation *op, std::string *failureReason,
-                                llvm::StringRef reason);
+                                mlir::Operation *op, llvm::StringRef reason);
 
 inline NCCWorkerAttr getDefaultNCCWorkerAttr(mlir::OpBuilder &builder) {
   return NCCWorkerAttr::get(builder.getContext(), NCCWorker::Worker0);
 }
 
 template <typename T>
-mlir::FailureOr<T>
-failFailureOr(mlir::PatternRewriter &rewriter, mlir::Operation *op,
-              std::string *failureReason, llvm::StringRef reason) {
-  (void)failPattern(rewriter, op, failureReason, reason);
+mlir::FailureOr<T> failFailureOr(mlir::PatternRewriter &rewriter,
+                                 mlir::Operation *op, llvm::StringRef reason) {
+  (void)failPattern(rewriter, op, reason);
   return mlir::failure();
 }
 
@@ -85,16 +82,14 @@ getLogicalTensorTypeFromMemRef(mlir::Type type);
 mlir::FailureOr<mlir::Value> createDestAlloc(mlir::Location loc,
                                              mlir::Type type,
                                              mlir::PatternRewriter &rewriter,
-                                             mlir::Operation *op,
-                                             std::string *failureReason);
+                                             mlir::Operation *op);
 
 mlir::FailureOr<MovementDescriptor>
 getContiguousDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
-                        mlir::Type type, std::string *failureReason);
+                        mlir::Type type);
 mlir::FailureOr<MovementDescriptor>
 getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
-                           mlir::Type type, std::string *failureReason,
-                           llvm::StringRef role);
+                           mlir::Type type, llvm::StringRef role);
 
 void createRDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
                 mlir::Value source, mlir::Value dest,
@@ -113,9 +108,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
                                llvm::ArrayRef<int64_t> iterationShape,
                                const analysis::IndexRelation &iterationToSource,
                                const analysis::IndexRelation &iterationToDest,
-                               MovementEngine engine,
-                               std::string *failureReason,
-                               llvm::StringRef opLabel);
+                               MovementEngine engine, llvm::StringRef opLabel);
 void createGatherScatterDescriptors(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
     mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors);
@@ -128,43 +121,34 @@ void createMappedWDMADescriptors(
 mlir::IntegerAttr getI64Attr(mlir::PatternRewriter &rewriter, int64_t value);
 mlir::FailureOr<int64_t> readRequiredI64Attr(mlir::PatternRewriter &rewriter,
                                              mlir::Operation *op,
-                                             llvm::StringRef name,
-                                             std::string *failureReason);
+                                             llvm::StringRef name);
 mlir::FailureOr<int64_t> getStaticPhysicalBytes(mlir::PatternRewriter &rewriter,
                                                 mlir::Operation *op,
                                                 mlir::Type type,
-                                                std::string *failureReason,
                                                 llvm::StringRef role);
 mlir::FailureOr<llvm::SmallVector<int64_t>>
 getStaticCompactStrides(mlir::PatternRewriter &rewriter, mlir::Operation *op,
-                        mlir::MemRefType type, std::string *failureReason);
+                        mlir::MemRefType type);
 bool isStandardViewCompatibleLayout(MemLayout layout);
 mlir::FailureOr<llvm::SmallVector<int64_t>>
 delinearizeIndex(mlir::PatternRewriter &rewriter, mlir::Operation *op,
                  llvm::ArrayRef<int64_t> shape, int64_t linearIndex,
-                 std::string *failureReason, llvm::StringRef opLabel);
+                 llvm::StringRef opLabel);
 
 bool requiresGatherScatterMaterialization(InstrDataMoveKind kind);
 mlir::LogicalResult verifyStaticShapeAttrMatchesMemRef(
     mlir::PatternRewriter &rewriter, mlir::Operation *op, mlir::MemRefType type,
     mlir::DenseI64ArrayAttr shapeAttr, llvm::StringRef role,
-    std::string *failureReason, llvm::StringRef opLabel);
+    llvm::StringRef opLabel);
 mlir::FailureOr<InstrElementwiseKindAttr> getAccumulationElementwiseKind(
     mlir::PatternRewriter &rewriter, mlir::Operation *op,
-    ComputeReduceKindAttr reduceKind, std::string *failureReason,
-    llvm::StringRef opLabel);
+    ComputeReduceKindAttr reduceKind, llvm::StringRef opLabel);
 
-void populateMovementLoweringPatterns(mlir::RewritePatternSet &patterns,
-                                      std::string *failureReason);
-void populateViewReshapeLoweringPattern(mlir::RewritePatternSet &patterns,
-                                        std::string *failureReason);
-void populateComputeLoweringPatterns(mlir::RewritePatternSet &patterns,
-                                     std::string *failureReason);
+void populateMovementLoweringPatterns(mlir::RewritePatternSet &patterns);
+void populateViewReshapeLoweringPattern(mlir::RewritePatternSet &patterns);
+void populateComputeLoweringPatterns(mlir::RewritePatternSet &patterns);
 void populateFillLoweringPattern(mlir::RewritePatternSet &patterns);
-void populateConstantPredicateSelectCanonicalizationPattern(
-    mlir::RewritePatternSet &patterns);
-void populatePeerLoweringPatterns(mlir::RewritePatternSet &patterns,
-                                  std::string *failureReason);
+void populatePeerLoweringPatterns(mlir::RewritePatternSet &patterns);
 
 } // namespace wafer::tile_region_to_instr
 

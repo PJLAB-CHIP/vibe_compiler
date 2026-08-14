@@ -2,17 +2,18 @@
 
 #include "Wafer/Transforms/Passes.h"
 
-#include "ConstantTensorFoldingInternal.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <optional>
 
@@ -22,6 +23,8 @@
 
 namespace wafer {
 #define GEN_PASS_DEF_NORMALIZESTABLEHLOCOLLECTIVESPASS
+#define GEN_PASS_DEF_FOLDDEFAULTSTABLEHLOEXECUTIONIDSPASS
+#define GEN_PASS_DEF_FOLDCONSTANTINTEGERTENSORCASTSPASS
 #include "Wafer/Transforms/WaferPasses.h.inc"
 
 namespace {
@@ -62,8 +65,8 @@ getReplicaGroups(mlir::DenseIntElementsAttr replicaGroups) {
   return groups;
 }
 
-static mlir::DenseI64ArrayAttr getPartitionGroupAttr(mlir::OpBuilder &builder,
-                                                     const ReplicaGroups &groups) {
+static mlir::DenseI64ArrayAttr
+getPartitionGroupAttr(mlir::OpBuilder &builder, const ReplicaGroups &groups) {
   if (groups.groupCount != 1)
     return {};
   return mlir::DenseI64ArrayAttr::get(builder.getContext(), groups.flattened);
@@ -189,8 +192,7 @@ static mlir::LogicalResult convertCombinerRegion(mlir::Region &sourceRegion,
   llvm::SmallVector<mlir::Type> resultElementTypes;
   resultElementTypes.reserve(results.size());
   for (auto [index, result] : llvm::enumerate(results)) {
-    auto resultType =
-        mlir::dyn_cast<mlir::RankedTensorType>(result.getType());
+    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(result.getType());
     if (!resultType)
       return mlir::failure();
     mlir::Type elementType = resultType.getElementType();
@@ -456,6 +458,98 @@ lowerConstantIntegerTensorCast(mlir::UnrealizedConversionCastOp cast) {
   return true;
 }
 
+enum class StablehloNormalizationAction {
+  Collective,
+  DefaultExecutionId,
+  ConstantIntegerTensorCast,
+};
+
+static bool isSelectedOperation(mlir::Operation *op,
+                                StablehloNormalizationAction action) {
+  switch (action) {
+  case StablehloNormalizationAction::Collective:
+    return mlir::isa<mlir::stablehlo::AllGatherOp,
+                     mlir::stablehlo::AllReduceOp,
+                     mlir::stablehlo::ReduceScatterOp,
+                     mlir::stablehlo::AllToAllOp,
+                     mlir::stablehlo::CollectivePermuteOp>(op);
+  case StablehloNormalizationAction::DefaultExecutionId:
+    return mlir::isa<mlir::stablehlo::PartitionIdOp,
+                     mlir::stablehlo::ReplicaIdOp>(op);
+  case StablehloNormalizationAction::ConstantIntegerTensorCast:
+    return mlir::isa<mlir::UnrealizedConversionCastOp>(op);
+  }
+  llvm_unreachable("unknown StableHLO normalization action");
+}
+
+static bool requiresStablehloNormalizationTransaction(
+    mlir::ModuleOp module, StablehloNormalizationAction action) {
+  bool found = false;
+  module.walk([&](mlir::Operation *op) {
+    if (isSelectedOperation(op, action)) {
+      found = true;
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
+  });
+  return found;
+}
+
+static mlir::LogicalResult
+normalizeStablehloModuleInPlace(mlir::ModuleOp module,
+                                StablehloNormalizationAction action) {
+  llvm::SmallVector<mlir::Operation *> opsToNormalize;
+  module.walk([&](mlir::Operation *op) {
+    if (isSelectedOperation(op, action))
+      opsToNormalize.push_back(op);
+  });
+
+  for (mlir::Operation *op : opsToNormalize) {
+    bool lowered = false;
+    if (auto allGather = mlir::dyn_cast<mlir::stablehlo::AllGatherOp>(op)) {
+      lowered = lowerAllGather(allGather);
+    } else if (auto allReduce =
+                   mlir::dyn_cast<mlir::stablehlo::AllReduceOp>(op)) {
+      lowered = lowerAllReduce(allReduce);
+    } else if (auto reduceScatter =
+                   mlir::dyn_cast<mlir::stablehlo::ReduceScatterOp>(op)) {
+      lowered = lowerReduceScatter(reduceScatter);
+    } else if (auto allToAll =
+                   mlir::dyn_cast<mlir::stablehlo::AllToAllOp>(op)) {
+      lowered = lowerAllToAll(allToAll);
+    } else if (auto collectivePermute =
+                   mlir::dyn_cast<mlir::stablehlo::CollectivePermuteOp>(op)) {
+      lowered = lowerCollectivePermute(collectivePermute);
+    } else if (mlir::isa<mlir::stablehlo::PartitionIdOp,
+                         mlir::stablehlo::ReplicaIdOp>(op)) {
+      lowered = lowerReplicaOrPartitionId(op);
+    } else if (auto cast =
+                   mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(op)) {
+      lowered = lowerConstantIntegerTensorCast(cast);
+    }
+
+    if (!lowered)
+      return op->emitError(
+          "failed to normalize residual StableHLO op before Wafer "
+          "structured tensor-program scheduling");
+  }
+
+  return mlir::success();
+}
+
+static mlir::LogicalResult runAtomicStablehloNormalization(
+    mlir::ModuleOp module, StablehloNormalizationAction action) {
+  if (!requiresStablehloNormalizationTransaction(module, action))
+    return mlir::success();
+  mlir::OwningOpRef<mlir::ModuleOp> transaction =
+      mlir::cast<mlir::ModuleOp>(module->clone());
+  if (mlir::failed(normalizeStablehloModuleInPlace(*transaction, action)) ||
+      mlir::failed(mlir::verify(*transaction)))
+    return mlir::failure();
+  module.getBodyRegion().takeBody(transaction->getBodyRegion());
+  return mlir::success();
+}
+
 #endif
 
 struct NormalizeStablehloCollectivesPass
@@ -474,52 +568,50 @@ struct NormalizeStablehloCollectivesPass
 
   void runOnOperation() final {
 #ifdef WAFER_ENABLE_STABLEHLO
-    llvm::SmallVector<mlir::Operation *> opsToNormalize;
-    getOperation().walk([&](mlir::Operation *op) {
-      if (mlir::isa<
-              mlir::stablehlo::AllGatherOp, mlir::stablehlo::AllReduceOp,
-              mlir::stablehlo::ReduceScatterOp, mlir::stablehlo::AllToAllOp,
-              mlir::stablehlo::CollectivePermuteOp,
-              mlir::stablehlo::PartitionIdOp, mlir::stablehlo::ReplicaIdOp>(
-              op) ||
-          mlir::isa<mlir::UnrealizedConversionCastOp>(op))
-        opsToNormalize.push_back(op);
-    });
+    if (mlir::failed(runAtomicStablehloNormalization(
+            getOperation(), StablehloNormalizationAction::Collective)))
+      signalPassFailure();
+#endif
+  }
+};
 
-    for (mlir::Operation *op : opsToNormalize) {
-      bool lowered = false;
-      if (auto allGather = mlir::dyn_cast<mlir::stablehlo::AllGatherOp>(op)) {
-        lowered = lowerAllGather(allGather);
-      } else if (auto allReduce =
-                     mlir::dyn_cast<mlir::stablehlo::AllReduceOp>(op)) {
-        lowered = lowerAllReduce(allReduce);
-      } else if (auto reduceScatter =
-                     mlir::dyn_cast<mlir::stablehlo::ReduceScatterOp>(op)) {
-        lowered = lowerReduceScatter(reduceScatter);
-      } else if (auto allToAll =
-                     mlir::dyn_cast<mlir::stablehlo::AllToAllOp>(op)) {
-        lowered = lowerAllToAll(allToAll);
-      } else if (auto collectivePermute =
-                     mlir::dyn_cast<mlir::stablehlo::CollectivePermuteOp>(op)) {
-        lowered = lowerCollectivePermute(collectivePermute);
-      } else if (mlir::isa<mlir::stablehlo::PartitionIdOp,
-                           mlir::stablehlo::ReplicaIdOp>(op)) {
-        lowered = lowerReplicaOrPartitionId(op);
-      } else if (auto cast =
-                     mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(op)) {
-        lowered = lowerConstantIntegerTensorCast(cast);
-      }
+struct FoldDefaultStablehloExecutionIdsPass
+    : public impl::FoldDefaultStablehloExecutionIdsPassBase<
+          FoldDefaultStablehloExecutionIdsPass> {
+  using impl::FoldDefaultStablehloExecutionIdsPassBase<
+      FoldDefaultStablehloExecutionIdsPass>::
+      FoldDefaultStablehloExecutionIdsPassBase;
 
-      if (!lowered) {
-        op->emitError("failed to normalize residual StableHLO op before "
-                      "Wafer structured tensor-program scheduling");
-        signalPassFailure();
-        return;
-      }
-    }
+  void getDependentDialects(mlir::DialectRegistry &registry) const final {
+    impl::FoldDefaultStablehloExecutionIdsPassBase<
+        FoldDefaultStablehloExecutionIdsPass>::getDependentDialects(registry);
+#ifdef WAFER_ENABLE_STABLEHLO
+    registry.insert<mlir::stablehlo::StablehloDialect>();
+#endif
+  }
 
-    if (mlir::failed(
-            stablehlo_normalization::foldConstantTensorOps(getOperation())))
+  void runOnOperation() final {
+#ifdef WAFER_ENABLE_STABLEHLO
+    if (mlir::failed(runAtomicStablehloNormalization(
+            getOperation(),
+            StablehloNormalizationAction::DefaultExecutionId)))
+      signalPassFailure();
+#endif
+  }
+};
+
+struct FoldConstantIntegerTensorCastsPass
+    : public impl::FoldConstantIntegerTensorCastsPassBase<
+          FoldConstantIntegerTensorCastsPass> {
+  using impl::FoldConstantIntegerTensorCastsPassBase<
+      FoldConstantIntegerTensorCastsPass>::
+      FoldConstantIntegerTensorCastsPassBase;
+
+  void runOnOperation() final {
+#ifdef WAFER_ENABLE_STABLEHLO
+    if (mlir::failed(runAtomicStablehloNormalization(
+            getOperation(),
+            StablehloNormalizationAction::ConstantIntegerTensorCast)))
       signalPassFailure();
 #endif
   }

@@ -167,7 +167,8 @@ static llvm::Expected<ExecutableBundle> buildWholeCardBundle(
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
-    const detail::CompileClock::time_point &totalStart) {
+    const detail::CompileClock::time_point &totalStart,
+    CompilationIRTrace &irTrace) {
   auto fail = [&](llvm::StringRef message) -> llvm::Error {
     diagnostics << "wafer-compile: " << message << "\n";
     return llvm::createStringError(llvm::errc::invalid_argument, "%s",
@@ -182,19 +183,20 @@ static llvm::Expected<ExecutableBundle> buildWholeCardBundle(
   detail::WholeCardExecutableSynthesisStatistics statistics;
   const detail::CompileClock::time_point synthesisStart =
       detail::CompileClock::now();
-  mlir::FailureOr<detail::AcceptedWholeCardExecutable> accepted =
+  mlir::FailureOr<detail::WholeCardCompilationResult> compiled =
       detail::synthesizeWholeCardExecutable(tensorModule, program,
                                             executionConfig, optimizations,
                                             diagnostics, &statistics);
-  if (mlir::failed(accepted))
+  if (mlir::failed(compiled))
     return fail("whole-card executable synthesis failed");
+  detail::AcceptedWholeCardExecutable &accepted = compiled->executable;
 
   diagnostics
       << "wafer-compile: compile-stats "
          "stage=whole-card-executable-synthesis"
       << " wall_ms=" << detail::elapsedCompileMilliseconds(synthesisStart)
       << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
-      << " physical_tile_count=" << accepted->tiles.size()
+      << " physical_tile_count=" << accepted.tiles.size()
       << " candidate_proposals=" << statistics.candidateProposals
       << " cheap_pruned_candidates=" << statistics.cheapPrunedCandidates
       << " strict_dominated_candidates=" << statistics.strictDominatedCandidates
@@ -206,6 +208,18 @@ static llvm::Expected<ExecutableBundle> buildWholeCardBundle(
       << " materialized_candidates=" << statistics.materializedCandidates
       << " indeterminate_compilation_failures="
       << statistics.indeterminateCompilationFailures
+      << " baseline_card_program_materializations="
+      << statistics.baselineCardProgramMaterializations
+      << " baseline_scoped_card_program_materializations="
+      << statistics.baselineScopedCardProgramMaterializations
+      << " baseline_region_spm_capacity_checks="
+      << statistics.baselineRegionSPMCapacityChecks
+      << " baseline_region_spm_capacity_overflow_proofs="
+      << statistics.baselineRegionSPMCapacityOverflowProofs
+      << " baseline_region_spm_capacity_analysis_failures="
+      << statistics.baselineRegionSPMCapacityAnalysisFailures
+      << " baseline_maximum_region_spm_query_workers="
+      << statistics.baselineMaximumRegionSPMQueryWorkers
       << " materialization_rejections=" << statistics.materializationRejections
       << " accepted_candidates=" << statistics.acceptedCandidates
       << " selected_stable_ordinal=" << statistics.selectedStableOrdinal
@@ -233,9 +247,20 @@ static llvm::Expected<ExecutableBundle> buildWholeCardBundle(
              .cardProgramCompilationInvocations
       << " tile_pipeline_workers="
       << statistics.exactGates.maximumTilePipelineWorkers << '\n';
-  printAcceptedInstructionWork(diagnostics, *accepted);
+  printAcceptedInstructionWork(diagnostics, accepted);
 
-  std::vector<PhysicalTileExecutable> tiles = std::move(accepted->tiles);
+  if (accepted.tiles.size() != compiled->tileDataflowIRTrace.size())
+    return fail("compiler IR trace does not cover the accepted physical Tile "
+                "domain");
+  irTrace.physicalTiles.clear();
+  irTrace.physicalTiles.reserve(accepted.tiles.size());
+  for (auto [index, tile] : llvm::enumerate(accepted.tiles))
+    irTrace.physicalTiles.push_back(
+        {tile.getPhysicalCardId(), tile.getPhysicalTileId(),
+         tile.getLaunchSlotId(),
+         std::move(compiled->tileDataflowIRTrace[index])});
+
+  std::vector<PhysicalTileExecutable> tiles = std::move(accepted.tiles);
   if (tiles.size() !=
       static_cast<size_t>(executionConfig.getPhysicalTileCount()))
     return fail("executable bundle physical Tile domain is incomplete");
@@ -244,7 +269,7 @@ static llvm::Expected<ExecutableBundle> buildWholeCardBundle(
               << " wall_ms=" << detail::elapsedCompileMilliseconds(totalStart)
               << " peak_rss_kib=" << detail::getCompilePeakRSSKiB() << "\n";
   return ExecutableBundleBuilder::makeBundle(
-      executionConfig, std::move(accepted->runtimeLaunchContract), context,
+      executionConfig, std::move(accepted.runtimeLaunchContract), context,
       std::move(tiles));
 }
 
@@ -252,15 +277,15 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
-    llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLaunchSlot) {
+    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
+    CompilationIRTrace &irTrace) {
   const detail::CompileClock::time_point totalStart =
       detail::CompileClock::now();
   wafer::support::ScopedCompileTimingSpan executableBundleTiming(
       "stage", "tensor-program-to-executable", "executable-bundle");
   return buildWholeCardBundle(context, tensorModule, program, executionConfig,
                               optimizations, diagnostics, failAfterLaunchSlot,
-                              totalStart);
+                              totalStart, irTrace);
 }
 
 llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
@@ -269,9 +294,21 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLaunchSlot) {
+  CompilationIRTrace discardedTrace;
   return buildExecutableBundleImpl(context, tensorModule, std::move(program),
                                    executionConfig, optimizations, diagnostics,
-                                   failAfterLaunchSlot);
+                                   failAfterLaunchSlot, discardedTrace);
+}
+
+llvm::Expected<ExecutableBundle> detail::buildExecutableBundleWithIRTrace(
+    std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
+    frontend::FrontendProgramVerificationResult program,
+    ExecutionConfig executionConfig, OptimizationConfig optimizations,
+    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
+    CompilationIRTrace &irTrace) {
+  return buildExecutableBundleImpl(context, tensorModule, std::move(program),
+                                   executionConfig, optimizations, diagnostics,
+                                   failAfterLaunchSlot, irTrace);
 }
 
 } // namespace wafer::compiler

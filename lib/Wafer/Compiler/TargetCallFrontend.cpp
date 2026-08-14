@@ -91,13 +91,14 @@ extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
     return 0;
   }
   llvm::ArrayRef<uint64_t> argumentValues(arguments, argumentCount);
-  llvm::Expected<TargetTransactionPayload> payload = decodeTargetCallPayload(
+  llvm::Expected<target::TargetTransactionPayload> payload =
+      decodeTargetCallPayload(
       descriptor, {context->physicalTileCount}, argumentValues);
   if (!payload) {
     context->invocation->failure = llvm::toString(payload.takeError());
     return 0;
   }
-  llvm::Expected<std::optional<NCCWorker>> worker =
+  llvm::Expected<std::optional<TargetNCCWorker>> worker =
       decodeTargetCallNCCWorker(descriptor, argumentValues);
   if (!worker) {
     context->invocation->failure = llvm::toString(worker.takeError());

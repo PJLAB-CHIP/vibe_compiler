@@ -3,6 +3,7 @@
 #include "Scheduling/RedundantTransferElimination.h"
 
 #include "MemoryPlanning/LifetimeAnalysis.h"
+#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
@@ -127,13 +128,9 @@ static mlir::Value resolveStorageRoot(mlir::Value value,
   };
 
   if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-    mlir::Block *owner = argument.getOwner();
-    auto region = mlir::dyn_cast_or_null<TileRegionOp>(
-        owner ? owner->getParentOp() : nullptr);
-    unsigned index = argument.getArgNumber();
-    if (region && owner == &region.getBody().front() &&
-        index < region.getInputs().size())
-      return finish(resolveStorageRoot(region.getInputs()[index], active));
+    if (mlir::Value entry =
+            analysis::getSingleExecutionRegionEntryOperand(argument))
+      return finish(resolveStorageRoot(entry, active));
     return finish(value);
   }
 
@@ -153,16 +150,9 @@ static mlir::Value resolveStorageRoot(mlir::Value value,
   if (auto toMemref =
           mlir::dyn_cast<mlir::bufferization::ToMemrefOp>(definition))
     return finish(resolveStorageRoot(toMemref.getTensor(), active));
-  if (auto region = mlir::dyn_cast<TileRegionOp>(definition)) {
-    if (region.getBody().empty())
-      return finish({});
-    auto yield =
-        mlir::dyn_cast<TileYieldOp>(region.getBody().front().getTerminator());
-    unsigned index = result.getResultNumber();
-    if (!yield || index >= yield.getValues().size())
-      return finish({});
-    return finish(resolveStorageRoot(yield.getValues()[index], active));
-  }
+  if (mlir::Value exit =
+          analysis::getSingleExecutionRegionExitOperand(result))
+    return finish(resolveStorageRoot(exit, active));
   return finish(value);
 }
 

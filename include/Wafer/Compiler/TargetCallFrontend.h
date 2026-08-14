@@ -20,8 +20,8 @@ namespace wafer::compiler {
 
 struct TargetNCCIssueDomain {
   TargetCallTSMEngine engine;
-  NCCWorker worker;
-  LocalInstructionCompletion completionBehavior;
+  TargetNCCWorker worker;
+  TargetNCCCompletionBehavior completionBehavior;
 };
 
 /// One dynamic call effect. Physical identity and launch slot are explicitly
@@ -33,7 +33,7 @@ struct TargetTransaction {
   PhysicalTileId physicalTileId;
   LaunchSlotId launchSlotId;
   uint64_t issueOrdinal;
-  TargetTransactionPayload payload;
+  target::TargetTransactionPayload payload;
   std::optional<TargetNCCIssueDomain> nccIssueDomain = std::nullopt;
 };
 

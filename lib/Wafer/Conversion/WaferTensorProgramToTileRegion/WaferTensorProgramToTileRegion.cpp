@@ -19,7 +19,9 @@ namespace {
 
 static void
 normalizeMapOps(mlir::func::FuncOp function,
-                llvm::MutableArrayRef<CandidatePeerEndpoint> peerEndpoints) {
+                llvm::MutableArrayRef<CandidatePeerEndpoint> peerEndpoints,
+                llvm::SmallVectorImpl<StructuredOperationNodeMapping>
+                    &operationNodes) {
   llvm::SmallVector<mlir::linalg::MapOp, 8> maps;
   function.walk([&](mlir::linalg::MapOp map) { maps.push_back(map); });
 
@@ -53,6 +55,9 @@ normalizeMapOps(mlir::func::FuncOp function,
            llvm::zip_equal(map->getResults(), generic->getResults()))
         if (endpoint.value == oldResult)
           endpoint.value = newResult;
+    for (StructuredOperationNodeMapping &mapping : operationNodes)
+      if (mapping.operation == map.getOperation())
+        mapping.operation = generic.getOperation();
     rewriter.replaceOp(map, generic->getResults());
   }
 }
@@ -63,8 +68,7 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
     llvm::SmallVector<CandidatePeerEndpoint, 8> peerEndpoints,
     llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages,
     TileRegionEmissionRelations *emissionRelations,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
-    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage) {
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "conversion-phase", "rewriteTensorProgramInPlace", "total");
   auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
@@ -82,7 +86,9 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
 
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "transformation-phase", "rewriteTensorProgramInPlace", "normalizeMapOps");
-  normalizeMapOps(function, peerEndpoints);
+  llvm::SmallVector<StructuredOperationNodeMapping, 16>
+      normalizedOperationNodes(operationNodes.begin(), operationNodes.end());
+  normalizeMapOps(function, peerEndpoints, normalizedOperationNodes);
   TensorProgramScope scope(function, functionalArgumentCount);
   llvm::SmallVector<mlir::Operation *, 16> sourceOperations;
   for (mlir::Operation &operation : scope.getBody().without_terminator())
@@ -93,7 +99,7 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
   rewriter.setInsertionPoint(oldReturn);
   TileRegionBodyEmitter emitter(
       failureReason, currentLogicalPartition, peerEndpoints, selectedDDRStages,
-      emissionRelations, sourceLineage, operandDemandLineage);
+      emissionRelations, normalizedOperationNodes);
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "conversion-phase", "rewriteTensorProgramInPlace",
       "TileRegionBodyEmitter::emit");
@@ -159,16 +165,17 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
         llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints,
         llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages,
         TileRegionEmissionRelations *emissionRelations,
-        llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
-        llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage) {
+        llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes) {
   wafer::support::ScopedCompileTimingSpan timing(
       "conversion", "convertTensorProgramToTileRegionModuleInPlace", "total");
   // The caller owns the already-private candidate and is the sole rollback
   // boundary.  A failed in-place conversion leaves that disposable candidate
   // mutated; adding another whole-module clone here would duplicate the same
   // transaction without strengthening atomic publication.
-  if (emissionRelations)
+  if (emissionRelations) {
     emissionRelations->selectedDDRStages.clear();
+    emissionRelations->materializedBuffers.clear();
+  }
   llvm::SmallVector<CandidatePeerEndpoint, 8> mappedEndpoints(
       peerEndpoints.begin(), peerEndpoints.end());
   mlir::LogicalResult conversionResult = mlir::success();
@@ -182,12 +189,12 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
       conversionResult = rewriteTensorProgramInPlace(
           module, functionalArgumentCount, currentLogicalPartition,
           failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
-          sourceLineage, operandDemandLineage);
+          operationNodes);
     } else {
       conversionResult = rewriteTensorProgramInPlace(
           module, functionalArgumentCount, currentLogicalPartition,
           failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
-          sourceLineage, operandDemandLineage);
+          operationNodes);
     }
   }
 

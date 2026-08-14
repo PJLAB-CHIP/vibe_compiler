@@ -1,16 +1,16 @@
 //===- TargetLLVMTranslation.cpp - Target conversion and translation ----===//
 
 #include "TargetArtifactInternal.h"
+#include "CompilationInternal.h"
 
+#include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Support/CompileTiming.h"
-
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
 
@@ -382,10 +382,11 @@ mlir::LogicalResult lowerToTargetLLVM(PreparedPhysicalTile &prepared) {
   request.transportStatusArgumentIndex = prepared.transportStatusArgumentIndex;
   request.transportPreparedBeforeEntry = prepared.transportPreparedBeforeEntry;
   request.profileRecordArgumentIndex = prepared.profileRecordArgumentIndex;
-  mlir::PassManager manager(prepared.module->getContext());
-  wafer::support::attachCompileTiming(manager, "instr-to-target-llvm");
-  manager.addPass(createLowerInstrToTargetLLVMPass(request));
-  return manager.run(*prepared.module);
+  return runPassPipeline(
+      *prepared.module, "instr-to-target-llvm",
+      [&](mlir::OpPassManager &manager) {
+        wafer::addLowerInstrToTargetLLVMPass(manager, request);
+      });
 }
 
 mlir::LogicalResult verifyLoweredKernelABI(PreparedPhysicalTile &prepared,

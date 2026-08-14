@@ -36,15 +36,15 @@ inline constexpr llvm::StringLiteral kWaferNCCWorkerAttrName = "worker";
 /// externally pending. A typed join completes exactly its participant worker
 /// set. Synchronous writeback operations both issue and drain internally.
 /// `None` covers operations outside NCC completion, including Direct DTE.
-enum class LocalInstructionCompletion : uint32_t {
+enum class NCCSynchronizationBehavior : uint32_t {
   None,
-  OrderedPending,
+  OrderedAsynchronousIssue,
   ParticipantJoin,
   SynchronousWriteback,
 };
 
-struct NCCCompletionContract {
-  LocalInstructionCompletion behavior = LocalInstructionCompletion::None;
+struct NCCSynchronizationContract {
+  NCCSynchronizationBehavior behavior = NCCSynchronizationBehavior::None;
   std::optional<NCCWorker> issueWorker;
   uint32_t participantMask = 0;
 };
@@ -60,7 +60,7 @@ struct NCCWorkerWindowSummary {
 
 /// Derive the complete typed NCC issue/completion contract from one operation.
 /// `participantMask` is nonzero only for a join or synchronous writeback.
-NCCCompletionContract getNCCCompletionContract(mlir::Operation *operation);
+NCCSynchronizationContract getNCCSynchronizationContract(mlir::Operation *operation);
 
 /// Analyze typed issue/join order through func, tile-region, and structured
 /// control-flow regions. The result is derived solely from current IR and may
@@ -70,8 +70,8 @@ NCCWorkerWindowSummary analyzeNCCWorkerWindows(mlir::ModuleOp module);
 /// Derive the local completion contract from the typed operation and its
 /// standard resource effects. This is the shared scheduling/lifetime boundary;
 /// callers must not infer completion from an operation or symbol name.
-LocalInstructionCompletion
-classifyLocalInstructionCompletion(mlir::Operation *operation);
+NCCSynchronizationBehavior
+classifyNCCSynchronizationBehavior(mlir::Operation *operation);
 
 /// Return the typed issue worker for ordinary NCC issue and synchronous
 /// writeback operations.

@@ -1,7 +1,7 @@
 //===- ExecutionTopologyAnalysisTest.cpp --------------------------------===//
 
-#include "Wafer/Analysis/ExecutionTopologyAnalysis.h"
-#include "Wafer/InitAll.h"
+#include "../../lib/Wafer/Analysis/ExecutionTopologyAnalysis.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -16,7 +16,7 @@ namespace {
 class ExecutionTopologyAnalysisTest : public ::testing::Test {
 protected:
   ExecutionTopologyAnalysisTest() {
-    wafer::registerAllDialects(registry);
+    wafer::registerWaferCoreDialects(registry);
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
   }

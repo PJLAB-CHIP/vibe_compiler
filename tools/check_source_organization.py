@@ -17,31 +17,18 @@ INSTRUCTION_FAMILY_SOURCES = (
     "PeripheralOps.cpp",
     "SyncOps.cpp",
 )
-TILE_REGION_TO_INSTR_SOURCES = (
-    "ComputeLowering.cpp",
-    "MovementLowering.cpp",
-    "MovementSupport.cpp",
-    "PeerLowering.cpp",
-    "WaferTileRegionToInstr.cpp",
-)
+TILE_REGION_TO_INSTR_DORMANT_SOURCES = ("CollectiveLowering.cpp",)
 NUMERIC_SEMANTICS_SOURCES = (
     "NumericCapability.cpp",
     "NumericCommand.cpp",
     "NumericProfiles.cpp",
     "NumericSemanticsInternal.cpp",
 )
-TENSOR_PROGRAM_TO_TILE_REGION_SOURCES = (
-    "BidirectionalTiling.cpp",
-    "BodyEmitter.cpp",
-    "CandidateMaterialization.cpp",
-    "CandidateSupport.cpp",
-    "CollectiveLowering.cpp",
-    "DependentDataflow.cpp",
-    "GenericLowering.cpp",
-    "NamedComputeLowering.cpp",
-    "TensorControlFlowLowering.cpp",
-    "TileMaterialization.cpp",
-    "WaferTensorProgramToTileRegion.cpp",
+TENSOR_PROGRAM_TO_TILE_REGION_DORMANT_SOURCES = (
+    "AttentionSemantics.cpp",
+    "CompleteTraversal.cpp",
+    "MaterializeFlashAttention.cpp",
+    "MaterializeFlashDecoding.cpp",
 )
 LEGACY_TASK_LOCAL_SELECTION_PATHS = (
     "CandidateAnalysis.cpp",
@@ -207,11 +194,6 @@ WAFER_RUN_SOURCES = (
     "WaferProfileCampaign.cpp",
     "WaferRunBoardIO.cpp",
     "wafer-run.cpp",
-)
-RETIRED_TILE_COLLECTIVE_PATHS = (
-    "include/Wafer/Analysis/CollectiveTopologyAnalysis.h",
-    "lib/Wafer/Analysis/CollectiveTopologyAnalysis.cpp",
-    "lib/Wafer/Conversion/WaferTileRegionToInstr/CollectiveLowering.cpp",
 )
 RETIRED_PROFILE_SCHEMA_MARKERS = (
     "kProfileCompanionVariantsFileName",
@@ -497,6 +479,56 @@ def cmake_tokens(text: str) -> list[str]:
     ]
 
 
+def cmake_target_cpp_source_names(
+    *,
+    body: str,
+    prefix: str,
+    cmake_path: Path,
+    target: str,
+    errors: list[str],
+) -> tuple[str, ...]:
+    """Return one target directory's active C++ sources from its CMake body."""
+
+    entries = [
+        token
+        for token in cmake_tokens(body)
+        if token.startswith(prefix) and token.endswith(".cpp")
+    ]
+    duplicates = sorted({entry for entry in entries if entries.count(entry) > 1})
+    if duplicates:
+        fail(
+            errors,
+            f"{cmake_path}: {target} lists source more than once: "
+            + ", ".join(duplicates),
+        )
+    return tuple(Path(entry).name for entry in entries)
+
+
+def check_active_and_dormant_directory_sources(
+    *,
+    source_root: Path,
+    active: tuple[str, ...],
+    dormant: tuple[str, ...],
+    label: str,
+    errors: list[str],
+) -> None:
+    """Check filesystem sources against CMake truth plus a policy allowlist."""
+
+    active_set = set(active)
+    dormant_set = set(dormant)
+    overlap = sorted(active_set & dormant_set)
+    if overlap:
+        fail(errors, f"{label} sources are both active and dormant: {', '.join(overlap)}")
+    actual = {path.name for path in source_root.glob("*.cpp") if path.is_file()}
+    expected = active_set | dormant_set
+    missing = sorted(expected - actual)
+    unexpected = sorted(actual - expected)
+    if missing:
+        fail(errors, f"{label} sources missing: {', '.join(missing)}")
+    if unexpected:
+        fail(errors, f"unexpected {label} sources: {', '.join(unexpected)}")
+
+
 def check_cmake_source_ownership(
     *,
     text: str,
@@ -742,24 +774,6 @@ def check_tile_region_to_instr_owners(root: Path, errors: list[str]) -> None:
     cmake_path = root / "lib/Wafer/Conversion/CMakeLists.txt"
     cmake_text = read_required(cmake_path, errors)
 
-    for filename in (*TILE_REGION_TO_INSTR_SOURCES, "Internal.h"):
-        read_required(source_root / filename, errors)
-
-    actual_sources = {
-        path.name for path in source_root.glob("*.cpp") if path.is_file()
-    }
-    expected_sources = set(TILE_REGION_TO_INSTR_SOURCES)
-    if actual_sources != expected_sources:
-        missing = sorted(expected_sources - actual_sources)
-        unexpected = sorted(actual_sources - expected_sources)
-        if missing:
-            fail(errors, f"tile-region-to-instr sources missing: {', '.join(missing)}")
-        if unexpected:
-            fail(
-                errors,
-                "unexpected tile-region-to-instr sources: " + ", ".join(unexpected),
-            )
-
     target_body = cmake_target_body(
         cmake_text,
         "add_mlir_conversion_library",
@@ -767,14 +781,22 @@ def check_tile_region_to_instr_owners(root: Path, errors: list[str]) -> None:
         cmake_path,
         errors,
     )
-    check_cmake_sources(
+    active_sources = cmake_target_cpp_source_names(
         body=target_body,
-        required=TILE_REGION_TO_INSTR_SOURCES,
         prefix="WaferTileRegionToInstr/",
         cmake_path=cmake_path,
         target="WaferTileRegionToInstr",
         errors=errors,
     )
+    check_active_and_dormant_directory_sources(
+        source_root=source_root,
+        active=active_sources,
+        dormant=TILE_REGION_TO_INSTR_DORMANT_SOURCES,
+        label="tile-region-to-instr",
+        errors=errors,
+    )
+    for filename in (*active_sources, *TILE_REGION_TO_INSTR_DORMANT_SOURCES, "Internal.h"):
+        read_required(source_root / filename, errors)
 
     facade_path = source_root / "WaferTileRegionToInstr.cpp"
     facade_text = read_required(facade_path, errors)
@@ -791,14 +813,7 @@ def check_tile_region_to_instr_owners(root: Path, errors: list[str]) -> None:
         )
 
 
-def check_retired_communication_and_profile_surfaces_removed(
-    root: Path, errors: list[str]
-) -> None:
-    for relative in RETIRED_TILE_COLLECTIVE_PATHS:
-        path = root / relative
-        if path.exists():
-            fail(errors, f"retired Tile collective source must not exist: {path}")
-
+def check_retired_profile_surfaces_removed(root: Path, errors: list[str]) -> None:
     retired_markers = ("DTEProtocolPhase", *RETIRED_PROFILE_SCHEMA_MARKERS)
     production_paths = (
         root / "include/Wafer/IR/WaferAttrs.td",
@@ -855,12 +870,6 @@ def check_tensor_program_to_tile_region_owners(
     cmake_path = root / "lib/Wafer/Conversion/CMakeLists.txt"
     cmake_text = read_required(cmake_path, errors)
 
-    check_exact_sources(
-        source_root,
-        TENSOR_PROGRAM_TO_TILE_REGION_SOURCES,
-        "tensor-program-to-tile-region",
-        errors,
-    )
     check_private_header(
         source_root / "Internal.h",
         root
@@ -875,12 +884,18 @@ def check_tensor_program_to_tile_region_owners(
         cmake_path,
         errors,
     )
-    check_cmake_sources(
+    active_sources = cmake_target_cpp_source_names(
         body=target_body,
-        required=TENSOR_PROGRAM_TO_TILE_REGION_SOURCES,
         prefix="WaferTensorProgramToTileRegion/",
         cmake_path=cmake_path,
         target="WaferTensorProgramToTileRegion",
+        errors=errors,
+    )
+    check_active_and_dormant_directory_sources(
+        source_root=source_root,
+        active=active_sources,
+        dormant=TENSOR_PROGRAM_TO_TILE_REGION_DORMANT_SOURCES,
+        label="tensor-program-to-tile-region",
         errors=errors,
     )
     facade = read_required(
@@ -1911,7 +1926,7 @@ def main() -> int:
     check_legacy_group_surfaces_retired(root, errors)
     check_instruction_owners(root, errors)
     check_tile_region_to_instr_owners(root, errors)
-    check_retired_communication_and_profile_surfaces_removed(root, errors)
+    check_retired_profile_surfaces_removed(root, errors)
     check_numeric_semantics_owners(root, errors)
     check_tensor_program_to_tile_region_owners(root, errors)
     check_legacy_task_local_selection_removed(root, errors)

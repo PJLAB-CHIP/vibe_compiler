@@ -1,7 +1,7 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -18,7 +18,7 @@ namespace {
 
 TEST(ReadyOrderTest, RecomputesMinimumCompletionAfterReordering) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
@@ -55,8 +55,8 @@ module {
   EXPECT_NE(wafer::scheduleIndependentInstructionsByReadyOrder(
                 module->getOperation()),
             0u);
-  ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(*module)));
-  ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(*module)));
+  ASSERT_TRUE(mlir::succeeded(wafer::placeRequiredNCCJoins(*module)));
+  ASSERT_TRUE(mlir::succeeded(wafer::placeRequiredNCCJoins(*module)));
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
 
   llvm::SmallVector<wafer::SyncNCCJoinOp, 2> joins;
@@ -69,7 +69,7 @@ module {
 
 TEST(ReadyOrderTest, MovesIndependentDMABeforeComputeAndPreservesFence) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
@@ -126,7 +126,7 @@ module {
 
 TEST(ReadyOrderTest, DifferentWorkerJoinDoesNotBlockReadyWorker) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
@@ -177,7 +177,7 @@ module {
 
 TEST(ReadyOrderTest, MovesDTEAcrossUnrelatedJoinAndSetup) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::async::AsyncDialect, mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
@@ -220,7 +220,7 @@ module {
 
 TEST(ReadyOrderTest, PlacesIndependentGemmInsideDTEIssueWaitWindow) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::async::AsyncDialect, mlir::func::FuncDialect,
                   mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);
@@ -256,11 +256,11 @@ module {
   ASSERT_TRUE(module);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
 
-  ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(*module)));
+  ASSERT_TRUE(mlir::succeeded(wafer::placeRequiredNCCJoins(*module)));
   EXPECT_NE(wafer::scheduleIndependentInstructionsByReadyOrder(
                 module->getOperation()),
             0u);
-  ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(*module)));
+  ASSERT_TRUE(mlir::succeeded(wafer::placeRequiredNCCJoins(*module)));
 
   llvm::SmallVector<mlir::Operation *, 4> ordered;
   module->walk([&](mlir::Operation *operation) {
@@ -278,7 +278,7 @@ module {
 
 TEST(ReadyOrderTest, PreservesSingleSenderReleaseBeforeNextDTEIssue) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::async::AsyncDialect, mlir::func::FuncDialect,
                   mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);
@@ -319,7 +319,7 @@ module {
 )mlir",
                                               mlir::ParserConfig(&context));
   ASSERT_TRUE(module);
-  ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(*module)));
+  ASSERT_TRUE(mlir::succeeded(wafer::placeRequiredNCCJoins(*module)));
   EXPECT_NE(wafer::scheduleIndependentInstructionsByReadyOrder(
                 module->getOperation()),
             0u);
@@ -342,7 +342,7 @@ module {
 
 TEST(ReadyOrderTest, ParticipatingJoinOrdersLaterIssueOnSameWorker) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
@@ -397,7 +397,7 @@ module {
 
 TEST(ReadyOrderTest, RetainsValueHazards) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
@@ -429,7 +429,7 @@ module {
 
 TEST(ReadyOrderTest, DoesNotMoveInstructionsAcrossArgWritebackBarrier) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
@@ -488,7 +488,7 @@ module {
 
 TEST(ReadyOrderTest, RetainsHazardsThroughMemrefViews) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
@@ -527,7 +527,7 @@ module {
 
 TEST(ReadyOrderTest, MovesAcrossIndependentProductionSetupOperations) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
@@ -580,7 +580,7 @@ module {
 
 TEST(ReadyOrderTest, RetainsDTEReceiveWaitBeforeDestinationConsumer) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::async::AsyncDialect, mlir::arith::ArithDialect,
                   mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);
@@ -626,7 +626,7 @@ module {
 
 TEST(ReadyOrderTest, RetainsDTESendWaitBeforeSourceOverwrite) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::async::AsyncDialect, mlir::arith::ArithDialect,
                   mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);
@@ -672,7 +672,7 @@ module {
 
 TEST(ReadyOrderTest, RetainsDTEWaitAcrossStandardBufferEffect) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::async::AsyncDialect, mlir::arith::ArithDialect,
                   mlir::memref::MemRefDialect>();
   mlir::MLIRContext context(registry);

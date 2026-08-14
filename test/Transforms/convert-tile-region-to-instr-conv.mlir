@@ -1,9 +1,14 @@
-// RUN: wafer-opt --wafer-convert-tile-region-to-instr %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s | FileCheck %s
 
-func.func @ordinary_conv(
-    %input: memref<1x7x11x5xf16, #wafer.memory<spm, ncx>>,
-    %weight: memref<3x2x7x5xf16, #wafer.memory<spm, ncx>>) {
-  %result = wafer.tile.conv %input, %weight
+func.func @ordinary_conv() {
+  %token = arith.constant false
+  %unused = wafer.tile.region(%token : i1) -> (i1) {
+  ^bb0(%tile_token: i1):
+  %tile_input = memref.alloc()
+      : memref<1x7x11x5xf16, #wafer.memory<spm, ncx>>
+  %tile_weight = memref.alloc()
+      : memref<3x2x7x5xf16, #wafer.memory<spm, ncx>>
+  %result = wafer.tile.conv %tile_input, %tile_weight
       {pads = array<i64: 1, 0, 2, 1>,
        unpads = array<i64: 0, 0, 0, 0>,
        strides = array<i64: 3, 2>,
@@ -11,6 +16,8 @@ func.func @ordinary_conv(
       : (memref<1x7x11x5xf16, #wafer.memory<spm, ncx>>,
          memref<3x2x7x5xf16, #wafer.memory<spm, ncx>>)
      -> memref<1x3x5x7xf16, #wafer.memory<spm, ncx>>
+    wafer.tile.yield %tile_token : i1
+  }
   return
 }
 

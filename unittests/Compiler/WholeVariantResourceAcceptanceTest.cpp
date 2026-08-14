@@ -2,7 +2,7 @@
 
 #include "Wafer/Compiler/Testing.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -26,7 +26,7 @@ protected:
   WholeVariantResourceAcceptanceTest() {
     registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                     mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
-    wafer::registerAllDialects(registry);
+    wafer::registerWaferCoreDialects(registry);
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
     auto created = wafer::compiler::ExecutionConfig::createForSingleCard(

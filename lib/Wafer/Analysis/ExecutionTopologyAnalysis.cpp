@@ -1,6 +1,6 @@
 //===- ExecutionTopologyAnalysis.cpp - Execution topology facts --------===//
 
-#include "Wafer/Analysis/ExecutionTopologyAnalysis.h"
+#include "ExecutionTopologyAnalysis.h"
 
 #include "Wafer/IR/WaferDialect.h"
 

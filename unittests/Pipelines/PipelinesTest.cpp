@@ -7,8 +7,10 @@
 #include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
 
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Pass/PassRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "gtest/gtest.h"
@@ -21,6 +23,31 @@ template <typename OpT> unsigned countOps(mlir::ModuleOp module) {
   unsigned count = 0;
   module.walk([&](OpT) { ++count; });
   return count;
+}
+
+static std::string printPipeline(mlir::OpPassManager &manager) {
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  manager.printAsTextualPipeline(stream);
+  stream.flush();
+  return text;
+}
+
+TEST(PipelinesTest, NamedTileLoweringExpandsToProductionBuilderStructure) {
+  wafer::registerWaferTransformPasses();
+  wafer::registerWaferPipelines();
+
+  mlir::MLIRContext context;
+  mlir::PassManager production(&context);
+  wafer::buildLowerTileRegionToInstrPipeline(production);
+
+  mlir::PassManager textual(&context);
+  std::string errors;
+  llvm::raw_string_ostream errorStream(errors);
+  ASSERT_TRUE(mlir::succeeded(mlir::parsePassPipeline(
+      "wafer-lower-tile-region-to-instr", textual, errorStream)))
+      << errors;
+  EXPECT_EQ(printPipeline(production), printPipeline(textual));
 }
 
 wafer::frontend::ProgramBoundaryBinding
@@ -44,20 +71,127 @@ replicatedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape,
   return binding;
 }
 
-TEST(PipelinesTest, PhysicalTilePreparationDoesNotAssignMemory) {
+TEST(PipelinesTest, InstrFunctionBufferizationExposesLeafAndAssignsNoOffsets) {
   mlir::MLIRContext context;
   mlir::PassManager manager(&context);
-  wafer::buildPreparePhysicalTileCandidatePipeline(manager);
+  wafer::buildBufferizeInstrFunctionsPipeline(manager);
 
   std::string pipeline;
   llvm::raw_string_ostream os(pipeline);
   manager.printAsTextualPipeline(os);
   os.flush();
 
-  EXPECT_NE(pipeline.find("one-shot-bufferize"), std::string::npos) << pipeline;
+  EXPECT_NE(pipeline.find("wafer-bufferize-instr-function-boundaries"),
+            std::string::npos)
+      << pipeline;
   EXPECT_EQ(pipeline.find("wafer-plan-spm-memory"), std::string::npos)
       << pipeline;
   EXPECT_EQ(pipeline.find("wafer-plan-ddr-memory"), std::string::npos)
+      << pipeline;
+
+  mlir::PassManager leafManager(&context);
+  wafer::addInstrFunctionBoundaryBufferizationPass(leafManager);
+  std::string leafPipeline;
+  llvm::raw_string_ostream leafStream(leafPipeline);
+  leafManager.printAsTextualPipeline(leafStream);
+  leafStream.flush();
+  EXPECT_NE(leafPipeline.find("wafer-bufferize-instr-function-boundaries"),
+            std::string::npos)
+      << leafPipeline;
+  EXPECT_EQ(leafPipeline.find("canonicalize"), std::string::npos)
+      << leafPipeline;
+}
+
+TEST(PipelinesTest, MemoryPlanningPreparationExposesModuleAndFunctionLeaves) {
+  wafer::registerWaferTransformPasses();
+  wafer::registerWaferPipelines();
+
+  mlir::MLIRContext context;
+  mlir::PassManager production(&context);
+  wafer::buildPrepareInstrForMemoryPlanningPipeline(production);
+
+  mlir::PassManager textual(&context);
+  std::string errors;
+  llvm::raw_string_ostream errorStream(errors);
+  ASSERT_TRUE(mlir::succeeded(mlir::parsePassPipeline(
+      "wafer-prepare-instr-for-memory-planning", textual, errorStream)))
+      << errors;
+  const std::string pipeline = printPipeline(production);
+  EXPECT_EQ(pipeline, printPipeline(textual));
+  EXPECT_NE(pipeline.find("wafer-bufferize-instr-function-boundaries"),
+            std::string::npos)
+      << pipeline;
+  EXPECT_NE(pipeline.find("func.func(wafer-rebuild-required-ncc-joins)"),
+            std::string::npos)
+      << pipeline;
+  EXPECT_EQ(pipeline.find("wafer-plan-spm-memory"), std::string::npos)
+      << pipeline;
+}
+
+TEST(PipelinesTest, MemoryAssignmentBuildersExposeAtomicPasses) {
+  mlir::MLIRContext context;
+  mlir::PassManager manager(&context);
+  wafer::PlanSPMMemoryPassOptions spm;
+  wafer::PlanDDRMemoryPassOptions ddr;
+  wafer::addAssignSPMOffsetsPass(manager, spm);
+  wafer::addAssignDDROffsetsPass(manager, ddr);
+
+  std::string pipeline;
+  llvm::raw_string_ostream os(pipeline);
+  manager.printAsTextualPipeline(os);
+  os.flush();
+
+  EXPECT_NE(pipeline.find("wafer-plan-spm-memory"), std::string::npos)
+      << pipeline;
+  EXPECT_NE(pipeline.find("wafer-plan-ddr-memory"), std::string::npos)
+      << pipeline;
+}
+
+TEST(PipelinesTest, ProductionAtomicPassAddersExposeTheirPasses) {
+  mlir::MLIRContext context;
+  mlir::PassManager manager(&context);
+  wafer::MaterializeExecutionMeshPassOptions mesh;
+  mesh.shape = "1";
+  wafer::addMaterializeTargetTopologyPass(manager);
+  wafer::addMaterializeExecutionMeshPass(manager, mesh);
+  wafer::addLowerAffineControlAndIndexingPass(manager);
+  wafer::TargetConversionRequest target;
+  target.profileRecordArgumentIndex = 5;
+  wafer::addLowerInstrToTargetLLVMPass(manager, target);
+
+  std::string pipeline;
+  llvm::raw_string_ostream os(pipeline);
+  manager.printAsTextualPipeline(os);
+  os.flush();
+
+  EXPECT_NE(pipeline.find("wafer-materialize-target-topology"),
+            std::string::npos)
+      << pipeline;
+  EXPECT_NE(pipeline.find("wafer-materialize-execution-mesh"),
+            std::string::npos)
+      << pipeline;
+  EXPECT_NE(pipeline.find("lower-affine"), std::string::npos) << pipeline;
+  EXPECT_NE(pipeline.find("wafer-lower-instr-to-target-llvm"),
+            std::string::npos)
+      << pipeline;
+  EXPECT_NE(pipeline.find("profile-record-argument-index=5"), std::string::npos)
+      << pipeline;
+}
+
+TEST(PipelinesTest, NCCJoinPassesUseFunctionAnchors) {
+  mlir::MLIRContext context;
+  mlir::PassManager manager(&context);
+  mlir::OpPassManager &functionManager =
+      manager.nest<mlir::func::FuncOp>();
+  wafer::addRequiredNCCJoinPlacementPass(functionManager);
+  wafer::addRecomputeRequiredNCCJoinPlacementPass(functionManager);
+
+  std::string pipeline = printPipeline(manager);
+  EXPECT_NE(pipeline.find("func.func(wafer-place-required-ncc-joins,"),
+            std::string::npos)
+      << pipeline;
+  EXPECT_NE(pipeline.find("wafer-rebuild-required-ncc-joins"),
+            std::string::npos)
       << pipeline;
 }
 
@@ -127,7 +261,6 @@ module {
     EXPECT_EQ(tile.getPhysicalCardId(), wafer::PhysicalCardId(0));
     EXPECT_EQ(tile.getPhysicalTileId(),
               wafer::PhysicalTileId(static_cast<int64_t>(index)));
-    EXPECT_FALSE(tile.getSelectedTileIR().empty());
     mlir::ModuleOp instrModule = tile.getModule();
     // TileRegion remains the explicit Tile-local execution container; all
     // dataflow operations inside it have crossed to Instr IR.

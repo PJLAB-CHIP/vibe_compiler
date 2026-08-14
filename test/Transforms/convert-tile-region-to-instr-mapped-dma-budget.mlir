@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-convert-tile-region-to-instr %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s | FileCheck %s
 
 func.func @pack_large_identity_tensor_to_cx_mapping(
     %input: memref<1024x4096xf16, #wafer.memory<ddr, tensor>>) {

@@ -4,7 +4,7 @@
 
 #include "Wafer/Compiler/ExecutableBundleInternal.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -52,6 +52,7 @@ namespace {
 using namespace wafer;
 using namespace wafer::compiler;
 using namespace wafer::model;
+using namespace wafer::target;
 
 constexpr int64_t kElementCount = 8388608;
 constexpr uint64_t kTensorBytes =
@@ -85,7 +86,7 @@ std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
                   mlir::LLVM::LLVMDialect, mlir::linalg::LinalgDialect,
                   mlir::math::MathDialect, mlir::memref::MemRefDialect,
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
-  registerAllDialects(registry);
+  registerWaferCoreDialects(registry);
   mlir::registerBuiltinDialectTranslation(registry);
   mlir::registerLLVMDialectTranslation(registry);
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
@@ -308,7 +309,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
 
   const llvm::Module &llvmModule = targetModule.getModule();
   const size_t targetAddCallCount = countCallsTo(
-      llvmModule, getTargetCallDescriptor(InstrElementwiseKind::Add)
+      llvmModule, getTargetCallDescriptor(NumericElementwiseOperation::Add)
                       .symbol);
   EXPECT_EQ(targetAddCallCount, 3u);
   EXPECT_EQ(countCallsTo(llvmModule,
@@ -345,7 +346,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
         RawLogicalValue{LogicalFormat::F16,
                         inputBits[static_cast<size_t>(slot.resourceIndex)]});
     NumericTensorKey key = llvm::cantFail(NumericTensorKey::create(
-        LogicalFormat::F16, MemLayout::Tensor, {kElementCount}));
+        LogicalFormat::F16, PhysicalTensorLayout::Tensor, {kElementCount}));
     llvm::Expected<std::vector<uint8_t>> bytes =
         packPhysicalTensorLogicalValues(key, values, UINT8_C(0));
     ASSERT_TRUE(static_cast<bool>(bytes)) << llvm::toString(bytes.takeError());
@@ -383,9 +384,10 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
     if (const auto *dma =
             std::get_if<TargetStridedDMATransaction>(&transaction.payload)) {
       ASSERT_TRUE(transaction.nccIssueDomain.has_value());
-      EXPECT_EQ(transaction.nccIssueDomain->worker, NCCWorker::Worker1);
+      EXPECT_EQ(transaction.nccIssueDomain->worker,
+                TargetNCCWorker::Worker1);
       EXPECT_EQ(transaction.nccIssueDomain->completionBehavior,
-                LocalInstructionCompletion::OrderedPending);
+                TargetNCCCompletionBehavior::OrderedAsynchronousIssue);
       if (dma->direction == TargetDMADirection::Read) {
         ++readCount;
         lastRead = index;
@@ -415,10 +417,11 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
             std::get_if<TargetElementwiseTransaction>(&transaction.payload)) {
       ASSERT_TRUE(transaction.nccIssueDomain.has_value());
       EXPECT_EQ(transaction.nccIssueDomain->engine, TargetCallTSMEngine::CT);
-      EXPECT_EQ(transaction.nccIssueDomain->worker, NCCWorker::Worker2);
+      EXPECT_EQ(transaction.nccIssueDomain->worker,
+                TargetNCCWorker::Worker2);
       EXPECT_EQ(transaction.nccIssueDomain->completionBehavior,
-                LocalInstructionCompletion::OrderedPending);
-      EXPECT_EQ(add->kind, InstrElementwiseKind::Add);
+                TargetNCCCompletionBehavior::OrderedAsynchronousIssue);
+      EXPECT_EQ(add->operation, NumericElementwiseOperation::Add);
       ASSERT_TRUE(add->rhs.has_value());
       adds.push_back(*add);
       issueKinds.push_back('A');
@@ -429,8 +432,10 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
       ++joinCount;
       EXPECT_FALSE(transaction.nccIssueDomain.has_value());
       EXPECT_EQ(join->participantMask,
-                (uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker1)) |
-                    (uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker2)));
+                (uint32_t{1}
+                 << static_cast<uint32_t>(TargetNCCWorker::Worker1)) |
+                    (uint32_t{1}
+                     << static_cast<uint32_t>(TargetNCCWorker::Worker2)));
       EXPECT_EQ(index + 1, recording.transactions.size());
       issueKinds.push_back('J');
       continue;
@@ -483,7 +488,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   ASSERT_EQ(result->outputs.size(), 1u);
 
   NumericTensorKey outputKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, MemLayout::Tensor, {kElementCount}));
+      LogicalFormat::F16, PhysicalTensorLayout::Tensor, {kElementCount}));
   llvm::Expected<std::vector<RawLogicalValue>> output =
       unpackPhysicalTensorLogicalValues(outputKey,
                                         result->outputs.front().bytes);

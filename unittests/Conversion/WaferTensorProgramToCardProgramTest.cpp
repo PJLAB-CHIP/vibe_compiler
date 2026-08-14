@@ -1,12 +1,13 @@
 //===- WaferTensorProgramToCardProgramTest.cpp - Card baseline tests -----===//
 
 #include "Wafer/Conversion/WaferTensorProgramToCardProgram/WaferTensorProgramToCardProgram.h"
+#include "../../lib/Wafer/Compiler/StructuredBufferRelations.h"
 #include "../../lib/Wafer/Compiler/WholeDAGEdgeStrategyPlan.h"
 #include "Wafer/Conversion/WaferCardProgramToTileModules/WaferCardProgramToTileModules.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -53,7 +54,7 @@ static std::unique_ptr<mlir::MLIRContext> createContext() {
                   mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
                   mlir::math::MathDialect, mlir::memref::MemRefDialect,
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
       registry);
@@ -81,25 +82,15 @@ template <typename OpT> static unsigned countOps(mlir::Operation *operation) {
   return count;
 }
 
-template <typename LineageT>
-static bool locationContainsLineage(mlir::Location location,
-                                    const LineageT *expected) {
-  if (auto opaque = mlir::dyn_cast<mlir::OpaqueLoc>(location)) {
-    if (mlir::OpaqueLoc::getUnderlyingLocationOrNull<const LineageT *>(
-            opaque) == expected)
-      return true;
-    return locationContainsLineage(opaque.getFallbackLocation(), expected);
-  }
-  if (auto fused = mlir::dyn_cast<mlir::FusedLoc>(location))
-    return llvm::any_of(fused.getLocations(), [&](mlir::Location nested) {
-      return locationContainsLineage(nested, expected);
-    });
-  if (auto named = mlir::dyn_cast<mlir::NameLoc>(location))
-    return locationContainsLineage(named.getChildLoc(), expected);
-  if (auto callSite = mlir::dyn_cast<mlir::CallSiteLoc>(location))
-    return locationContainsLineage(callSite.getCallee(), expected) ||
-           locationContainsLineage(callSite.getCaller(), expected);
-  return false;
+static unsigned countUnreadDirectPrivateLoads(mlir::Operation *operation) {
+  unsigned count = 0;
+  operation->walk([&](wafer::StorageLoadOp load) {
+    auto allocation =
+        load.getDest().getDefiningOp<mlir::memref::AllocOp>();
+    if (allocation && allocation.getResult().hasOneUse())
+      ++count;
+  });
+  return count;
 }
 
 struct StoreShard {
@@ -285,13 +276,12 @@ static mlir::LogicalResult lowerCompleteTensorProgramToCardProgram(
     wafer::CardSpatialMapping mapping,
     mlir::OwningOpRef<mlir::ModuleOp> &cardModule,
     std::string *failureReason = nullptr,
-    llvm::ArrayRef<wafer::CardProgramSourceOperationLineage> sourceLineage = {},
-    llvm::ArrayRef<wafer::StructuredOperandDemandLineage> operandDemandLineage =
-        {}) {
+    llvm::ArrayRef<wafer::StructuredOperationNodeMapping> operationNodes = {},
+    wafer::StructuredMaterializationRelations *materializationRelations =
+        nullptr) {
   return wafer::lowerTensorProgramToCardProgram(
       source, cardId, completeTemporalMapping(source, std::move(mapping)),
-      cardModule, failureReason, sourceLineage,
-      /*outputLineage=*/{}, operandDemandLineage);
+      cardModule, failureReason, operationNodes, materializationRelations);
 }
 
 static wafer::CardSpatialMapping
@@ -472,7 +462,7 @@ module {
 }
 
 TEST(WaferTensorProgramToCardProgramTest,
-     OperandDemandLineageMarksOnlyExplicitStructuredInputs) {
+     OperandBufferRelationsIdentifyExplicitStructuredInputs) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = parseModule(*context, R"mlir(
 module {
@@ -506,48 +496,37 @@ module {
   selected.outputs.front().temporalTileSizes = {4, 1};
   ASSERT_EQ(selected.operationTemporalTiles.size(), 1u);
   selected.operationTemporalTiles.front().iteratorTileSizes = {4, 1};
-  std::array<wafer::CardProgramSourceOperationLineage, 1> sourceLineage = {
-      wafer::CardProgramSourceOperationLineage{generic.getOperation(), 0}};
-  std::array<wafer::SpatialOutputLineage, 1> outputLineage = {
-      wafer::SpatialOutputLineage{0}};
-  std::array<wafer::StructuredOperandDemandLineage, 1> operandLineage = {
-      wafer::StructuredOperandDemandLineage{generic.getOperation(), 0}};
+  std::array<wafer::StructuredOperationNodeMapping, 1> operationNodes = {
+      wafer::StructuredOperationNodeMapping{generic.getOperation(), 0}};
+  wafer::StructuredMaterializationRelations relations;
 
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToCardProgram(
       *source, wafer::PhysicalCardId(0), selected, cardModule, &failureReason,
-      sourceLineage, outputLineage, operandLineage)))
+      operationNodes, &relations)))
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
 
-  unsigned markedLoads = 0;
-  unsigned unmarkedLoads = 0;
-  cardModule->walk([&](wafer::StorageLoadOp load) {
-    if (locationContainsLineage(load.getLoc(), &operandLineage.front())) {
-      ++markedLoads;
-      auto destinationType =
-          mlir::cast<mlir::MemRefType>(load.getDest().getType());
-      EXPECT_LE(destinationType.getNumElements(), 4);
-    } else {
-      ++unmarkedLoads;
-    }
-  });
-  EXPECT_GT(markedLoads, 0u);
-  EXPECT_GT(unmarkedLoads, 0u);
-
-  cardModule->walk([&](wafer::ComputeElementwiseOp compute) {
-    EXPECT_FALSE(
-        locationContainsLineage(compute.getLoc(), &operandLineage.front()));
-  });
-  cardModule->walk([&](wafer::StorageStoreOp store) {
-    EXPECT_FALSE(
-        locationContainsLineage(store.getLoc(), &operandLineage.front()));
-  });
+  ASSERT_FALSE(relations.operandBuffers.empty());
+  for (const wafer::StructuredOperationBufferRelation &relation :
+       relations.operandBuffers) {
+    EXPECT_EQ(relation.structuredNodeId, 0u);
+    auto type = mlir::cast<mlir::MemRefType>(relation.buffer.getType());
+    EXPECT_LE(type.getNumElements(), 4);
+    EXPECT_TRUE(llvm::any_of(cardModule->getOps<wafer::CardProgramOp>(),
+                             [&](wafer::CardProgramOp card) {
+      bool producedByLoad = false;
+      card.walk([&](wafer::StorageLoadOp load) {
+        producedByLoad |= load.getDest() == relation.buffer;
+      });
+      return producedByLoad;
+    }));
+  }
 }
 
 TEST(WaferTensorProgramToCardProgramTest,
-     OutputUpdateTileAllocationRetainsOutputQueryLineage) {
+     OutputUpdateTileAllocationRetainsOutputBufferRelation) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = parseModule(*context, R"mlir(
 module {
@@ -571,39 +550,47 @@ module {
 
   wafer::CardSpatialMapping selected = completeTemporalMapping(
       *source, mapping(/*shardDimension=*/0, {0}, {4, 4}));
-  std::array<wafer::SpatialOutputLineage, 1> outputLineage = {
-      wafer::SpatialOutputLineage{0}};
+  wafer::StructuredMaterializationRelations relations;
 
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToCardProgram(
       *source, wafer::PhysicalCardId(0), selected, cardModule, &failureReason,
-      /*sourceOperationLineage=*/{}, outputLineage,
-      /*operandDemandLineage=*/{})))
+      /*operationNodes=*/{}, &relations)))
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
 
-  unsigned markedTileAllocations = 0;
+  ASSERT_FALSE(relations.outputBuffers.empty());
+  for (const wafer::SpatialOutputBufferRelation &relation :
+       relations.outputBuffers) {
+    EXPECT_EQ(relation.outputIndex, 0u);
+    auto type = mlir::cast<mlir::MemRefType>(relation.buffer.getType());
+    EXPECT_EQ(type.getShape(), llvm::ArrayRef<int64_t>({8, 4}));
+    EXPECT_TRUE(wafer::isWaferDDRMemRefType(type));
+  }
+  unsigned boundedTileAllocations = 0;
   cardModule->walk([&](mlir::memref::AllocOp allocation) {
-    if (!locationContainsLineage(allocation.getLoc(), &outputLineage.front()))
+    if (!wafer::isWaferSPMMemRefType(allocation.getType()))
       return;
-    ++markedTileAllocations;
+    ++boundedTileAllocations;
     EXPECT_LE(allocation.getType().getNumElements(), 16)
         << printOperation(allocation.getOperation());
   });
-  EXPECT_GT(markedTileAllocations, 0u);
+  EXPECT_GT(boundedTileAllocations, 0u);
 
   // The 7-row prefix intersects 4-row traversal waves as the finite static
   // classes {3, 4}. Their mutually exclusive scf.if branches may reuse the
   // same pre-insert destination version, and must remain representable all the
   // way through physical Tile instruction lowering.
   auto projected = wafer::projectCardProgramToPhysicalTileModules(
-      *cardModule, &failureReason);
+      *cardModule, &failureReason, &relations);
   ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
   for (wafer::ProjectedPhysicalTileModule &tile : *projected) {
-    ASSERT_TRUE(mlir::succeeded(
-        wafer::convertTileRegionToInstrModule(*tile.module, &failureReason)))
-        << "Tile " << tile.tileId.getValue() << ": " << failureReason;
+    EXPECT_EQ(tile.materializationRelations.outputBuffers.empty(),
+              tile.tileId != wafer::PhysicalTileId(0));
+    ASSERT_TRUE(
+        mlir::succeeded(wafer::convertTileRegionToInstrModule(*tile.module)))
+        << "Tile " << tile.tileId.getValue();
     ASSERT_TRUE(mlir::succeeded(mlir::verify(*tile.module)));
   }
 }
@@ -648,34 +635,28 @@ module {
   selected.operationTemporalTiles[0].iteratorTileSizes = {8, 2};
   selected.operationTemporalTiles[1].iteratorTileSizes = {1, 2, 8};
 
-  std::array<wafer::CardProgramSourceOperationLineage, 2> sourceLineage = {
-      wafer::CardProgramSourceOperationLineage{structured[0].getOperation(), 0},
-      wafer::CardProgramSourceOperationLineage{structured[1].getOperation(),
-                                               1}};
-  std::array<wafer::SpatialOutputLineage, 1> outputLineage = {
-      wafer::SpatialOutputLineage{0}};
-  std::array<wafer::StructuredOperandDemandLineage, 2> operandLineage = {
-      wafer::StructuredOperandDemandLineage{structured[0].getOperation(), 0},
-      wafer::StructuredOperandDemandLineage{structured[1].getOperation(), 1}};
+  std::array<wafer::StructuredOperationNodeMapping, 2> operationNodes = {
+      wafer::StructuredOperationNodeMapping{structured[0].getOperation(), 0},
+      wafer::StructuredOperationNodeMapping{structured[1].getOperation(), 1}};
+  wafer::StructuredMaterializationRelations relations;
 
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToCardProgram(
       *source, wafer::PhysicalCardId(0), selected, cardModule, &failureReason,
-      sourceLineage, outputLineage, operandLineage)))
+      operationNodes, &relations)))
       << failureReason;
 
-  unsigned producerLoads = 0;
-  cardModule->walk([&](wafer::StorageLoadOp load) {
-    if (!locationContainsLineage(load.getLoc(), &operandLineage[0]))
-      return;
-    ++producerLoads;
-    auto destinationType =
-        mlir::cast<mlir::MemRefType>(load.getDest().getType());
-    EXPECT_LE(destinationType.getNumElements(), 16)
-        << printOperation(load.getOperation());
-  });
-  EXPECT_GT(producerLoads, 0u);
+  unsigned producerBuffers = 0;
+  for (const wafer::StructuredOperationBufferRelation &relation :
+       relations.operandBuffers) {
+    if (relation.structuredNodeId != 0)
+      continue;
+    ++producerBuffers;
+    auto type = mlir::cast<mlir::MemRefType>(relation.buffer.getType());
+    EXPECT_LE(type.getNumElements(), 16);
+  }
+  EXPECT_GT(producerBuffers, 0u);
 
   cardModule->walk([&](mlir::memref::AllocOp allocation) {
     auto type = allocation.getType();
@@ -1919,9 +1900,9 @@ module {
   unsigned receives = 0;
   unsigned waits = 0;
   for (wafer::ProjectedPhysicalTileModule &tile : *projected) {
-    ASSERT_TRUE(mlir::succeeded(
-        wafer::convertTileRegionToInstrModule(*tile.module, &failureReason)))
-        << "Tile " << tile.tileId.getValue() << ": " << failureReason;
+    ASSERT_TRUE(
+        mlir::succeeded(wafer::convertTileRegionToInstrModule(*tile.module)))
+        << "Tile " << tile.tileId.getValue();
     ASSERT_TRUE(mlir::succeeded(mlir::verify(*tile.module)));
     sends += countOps<wafer::InstrDTESendOp>(tile.module->getOperation());
     receives += countOps<wafer::InstrDTERecvOp>(tile.module->getOperation());
@@ -1994,6 +1975,7 @@ module {
   EXPECT_EQ(countOps<wafer::CommPeerSendOp>(cardModule->getOperation()), 3u);
   EXPECT_EQ(countOps<wafer::CommPeerRecvOp>(cardModule->getOperation()), 3u);
   EXPECT_EQ(countOps<mlir::async::AwaitOp>(cardModule->getOperation()), 6u);
+  EXPECT_EQ(countUnreadDirectPrivateLoads(cardModule->getOperation()), 0u);
 
   wafer::CardProgramOp card =
       *cardModule->getOps<wafer::CardProgramOp>().begin();
@@ -2021,17 +2003,28 @@ module {
       EXPECT_GT(stores, 0u);
       unsigned liveReceives = 0;
       unsigned maximumLiveReceives = 0;
+      bool sawReceive = false;
+      bool storedAfterReceive = false;
       tile.walk([&](mlir::Operation *operation) {
         if (mlir::isa<wafer::CommPeerRecvOp>(operation)) {
+          if (sawReceive)
+            EXPECT_TRUE(storedAfterReceive)
+                << "peer fragment was not staged to DDR before the next "
+                   "receive";
+          sawReceive = true;
+          storedAfterReceive = false;
           ++liveReceives;
           maximumLiveReceives = std::max(maximumLiveReceives, liveReceives);
         }
+        if (sawReceive && mlir::isa<wafer::StorageStoreOp>(operation))
+          storedAfterReceive = true;
         if (auto await = mlir::dyn_cast<mlir::async::AwaitOp>(operation))
           if (await.getOperand().getDefiningOp<wafer::CommPeerRecvOp>()) {
             ASSERT_GT(liveReceives, 0u);
             --liveReceives;
           }
       });
+      EXPECT_TRUE(storedAfterReceive);
       EXPECT_EQ(liveReceives, 0u);
       EXPECT_EQ(maximumLiveReceives, 1u);
     }
@@ -2044,9 +2037,9 @@ module {
   unsigned receives = 0;
   unsigned waits = 0;
   for (wafer::ProjectedPhysicalTileModule &tile : *projected) {
-    ASSERT_TRUE(mlir::succeeded(
-        wafer::convertTileRegionToInstrModule(*tile.module, &failureReason)))
-        << "Tile " << tile.tileId.getValue() << ": " << failureReason;
+    ASSERT_TRUE(
+        mlir::succeeded(wafer::convertTileRegionToInstrModule(*tile.module)))
+        << "Tile " << tile.tileId.getValue();
     sends += countOps<wafer::InstrDTESendOp>(tile.module->getOperation());
     receives += countOps<wafer::InstrDTERecvOp>(tile.module->getOperation());
     waits += countOps<wafer::InstrDTEWaitOp>(tile.module->getOperation());
@@ -2380,8 +2373,7 @@ module {
     ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
     ASSERT_EQ(projected->size(), 1u);
     ASSERT_TRUE(mlir::succeeded(wafer::convertTileRegionToInstrModule(
-        *projected->front().module, &failureReason)))
-        << failureReason;
+        *projected->front().module)));
     EXPECT_GT(
         countOps<wafer::InstrRDMAOp>(projected->front().module->getOperation()),
         1u);
@@ -2392,7 +2384,7 @@ module {
 }
 
 TEST(WaferTensorProgramToCardProgramTest,
-     TemporallyFusedProducerRetainsDownstreamScheduleLineage) {
+     TemporallyFusedProducerRetainsCurrentIRNodeRelations) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = parseModule(*context, R"mlir(
 module {
@@ -2424,11 +2416,9 @@ module {
       [&](mlir::linalg::MapOp operation) { structured.push_back(operation); });
   ASSERT_EQ(structured.size(), 2u);
 
-  llvm::SmallVector<wafer::CardProgramSourceOperationLineage, 2> sourceLineage{
+  llvm::SmallVector<wafer::StructuredOperationNodeMapping, 2> operationNodes{
       {structured[0].getOperation(), 0}, {structured[1].getOperation(), 1}};
-  llvm::SmallVector<wafer::StructuredOperandDemandLineage, 2>
-      operandDemandLineage{{structured[0].getOperation(), 0},
-                           {structured[1].getOperation(), 1}};
+  wafer::StructuredMaterializationRelations relations;
   wafer::CardSpatialMapping selected = mapping(/*shardDimension=*/0, {0}, {8});
   selected.operationTemporalTiles.push_back(
       {structured[0].getOperation(), {4}});
@@ -2444,35 +2434,33 @@ module {
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardProgram(
       *source, wafer::PhysicalCardId(0), std::move(selected), fused,
-      &failureReason, sourceLineage, operandDemandLineage)))
+      &failureReason, operationNodes, &relations)))
       << failureReason;
 
-  bool sawFusedProducerConsumerLineage = false;
-  fused->walk([&](mlir::Operation *operation) {
-    sawFusedProducerConsumerLineage |=
-        locationContainsLineage(operation->getLoc(), &sourceLineage[0]) &&
-        locationContainsLineage(operation->getLoc(), &sourceLineage[1]);
-  });
-  EXPECT_TRUE(sawFusedProducerConsumerLineage)
-      << "actual coupled producer work must retain its downstream schedule "
-         "owner lineage";
+  EXPECT_FALSE(relations.operationResultBuffers.empty());
+  EXPECT_FALSE(relations.operandBuffers.empty());
+  bool sawSharedProducerConsumerBuffer = false;
+  for (const wafer::StructuredOperationBufferRelation &producer :
+       relations.operationResultBuffers)
+    for (const wafer::StructuredOperationBufferRelation &consumer :
+         relations.operandBuffers)
+      sawSharedProducerConsumerBuffer |=
+          producer.structuredNodeId == 0 && consumer.structuredNodeId == 1 &&
+          wafer::compiler::detail::shareStructuredBufferStorage(
+              producer.buffer, consumer.buffer);
+  EXPECT_TRUE(sawSharedProducerConsumerBuffer)
+      << "coupled producer/consumer work must remain related by current SSA";
 
-  auto projected =
-      wafer::projectCardProgramToPhysicalTileModules(*fused, &failureReason);
+  auto projected = wafer::projectCardProgramToPhysicalTileModules(
+      *fused, &failureReason, &relations);
   ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
   ASSERT_EQ(projected->size(), 1u);
   ASSERT_TRUE(mlir::succeeded(wafer::convertTileRegionToInstrModule(
-      *projected->front().module, &failureReason)))
-      << failureReason;
-  bool sawFusedSupportAllocation = false;
-  projected->front().module->walk([&](mlir::memref::AllocOp allocation) {
-    sawFusedSupportAllocation |=
-        locationContainsLineage(allocation.getLoc(), &sourceLineage[0]) &&
-        locationContainsLineage(allocation.getLoc(), &sourceLineage[1]);
-  });
-  EXPECT_TRUE(sawFusedSupportAllocation)
-      << "support storage materialized with a coupled producer must retain "
-         "the same downstream schedule owner lineage";
+      *projected->front().module)));
+  EXPECT_FALSE(projected->front()
+                   .materializationRelations.operationResultBuffers.empty());
+  EXPECT_FALSE(
+      projected->front().materializationRelations.operandBuffers.empty());
 }
 
 TEST(WaferTensorProgramToCardProgramTest,

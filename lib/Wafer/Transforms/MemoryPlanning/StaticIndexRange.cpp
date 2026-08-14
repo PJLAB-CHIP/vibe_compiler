@@ -2,6 +2,7 @@
 
 #include "MemoryPlanning/StaticIndexRange.h"
 
+#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -207,22 +208,14 @@ private:
 
     auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value);
     if (blockArg && blockArg.getOwner()) {
-      mlir::Block *owner = blockArg.getOwner();
-      auto tileRegion =
-          mlir::dyn_cast_or_null<TileRegionOp>(owner->getParentOp());
-      unsigned index = blockArg.getArgNumber();
-      if (tileRegion && owner == &tileRegion.getBody().front() &&
-          index < tileRegion.getInputs().size())
-        return evaluate(tileRegion.getInputs()[index]);
+      if (mlir::Value entry =
+              analysis::getSingleExecutionRegionEntryOperand(blockArg))
+        return evaluate(entry);
     }
     if (auto opResult = mlir::dyn_cast<mlir::OpResult>(value)) {
-      if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(opResult.getOwner())) {
-        auto yield = mlir::dyn_cast<TileYieldOp>(
-            tileRegion.getBody().front().getTerminator());
-        unsigned index = opResult.getResultNumber();
-        if (yield && index < yield.getValues().size())
-          return evaluate(yield.getValues()[index]);
-      }
+      if (mlir::Value exit =
+              analysis::getSingleExecutionRegionExitOperand(opResult))
+        return evaluate(exit);
     }
     auto loop = blockArg && blockArg.getOwner()
                     ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(

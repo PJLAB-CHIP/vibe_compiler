@@ -50,7 +50,7 @@ readSnapshot(const InvocationMemoryRegistry &memory, int64_t launchSlot,
 
 llvm::Expected<TargetModelCommandEffect>
 executeMovement(const compiler::TargetTransaction &transaction,
-                const compiler::TargetStridedDMATransaction &value,
+                const target::TargetStridedDMATransaction &value,
                 const InvocationMemoryRegistry &memory,
                 TargetModelKernelBudget budget) {
   if (value.byteCount > budget.getMaximumMovementBytes())
@@ -61,7 +61,7 @@ executeMovement(const compiler::TargetTransaction &transaction,
   TargetModelStridedByteLayout layout =
       makeLayout(value.innerBytes, value.strides, value.iterations);
 
-  if (value.direction == compiler::TargetDMADirection::Read) {
+  if (value.direction == target::TargetDMADirection::Read) {
     llvm::Expected<std::vector<uint8_t>> payload = memory.readStridedSnapshot(
         transaction.launchSlotId.getValue(), TargetModelAddressSpace::CardDDR,
         value.source, layout, 1);
@@ -100,7 +100,7 @@ executeMovement(const compiler::TargetTransaction &transaction,
 
 llvm::Expected<TargetModelCommandEffect>
 executeGatherScatter(const compiler::TargetTransaction &transaction,
-                     const compiler::TargetGatherScatterTransaction &value,
+                     const target::TargetGatherScatterTransaction &value,
                      const InvocationMemoryRegistry &memory,
                      TargetModelKernelBudget budget) {
   if (value.byteCount > budget.getMaximumMovementBytes())

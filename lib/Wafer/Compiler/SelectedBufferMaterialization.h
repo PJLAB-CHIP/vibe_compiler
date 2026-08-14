@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 
 namespace wafer::compiler::detail {
@@ -30,11 +31,11 @@ struct SelectedBufferMessage {
 };
 
 /// Query-local exact-buffer request for one selected logical SSA edge on one
-/// physical Tile. Source lineage and Direct-DTE message identity are both
-/// stripped before artifact publication; neither becomes a second IR plan.
+/// physical Tile. DAG node ids are interpreted only against the current
+/// invocation's materialized-buffer relations; they are not written into IR.
 struct SelectedBufferRequest {
-  const CardProgramSourceOperationLineage *producerLineage = nullptr;
-  const CardProgramSourceOperationLineage *consumerLineage = nullptr;
+  std::optional<uint32_t> producerNode;
+  std::optional<uint32_t> consumerNode;
   uint8_t bufferCount = 1;
   bool requireLocalDataflow = false;
   llvm::SmallVector<SelectedBufferMessage, 2> messages;
@@ -56,8 +57,8 @@ struct SelectedBufferMaterializationFailure {
   SelectedBufferMaterializationFailureKind kind =
       SelectedBufferMaterializationFailureKind::None;
   size_t requestIndex = std::numeric_limits<size_t>::max();
-  const CardProgramSourceOperationLineage *producerLineage = nullptr;
-  const CardProgramSourceOperationLineage *consumerLineage = nullptr;
+  std::optional<uint32_t> producerNode;
+  std::optional<uint32_t> consumerNode;
   uint8_t bufferCount = 1;
   std::string detail;
 };
@@ -81,6 +82,7 @@ mlir::LogicalResult materializeSelectedBuffering(
 mlir::LogicalResult materializeSelectedBuffering(
     mlir::OwningOpRef<mlir::ModuleOp> &module,
     llvm::ArrayRef<SelectedBufferRequest> requests,
+    StructuredMaterializationRelations *materializationRelations,
     unsigned *materializedSlotAllocationCount = nullptr,
     SelectedBufferMaterializationFailure *failure = nullptr);
 

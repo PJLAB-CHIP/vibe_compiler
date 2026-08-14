@@ -1,5 +1,6 @@
 // REQUIRES: stablehlo
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s --check-prefix=IR
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-normalize-imported-stablehlo,wafer-legalize-stablehlo-to-structured-tensor,wafer-simplify-structured-tensor,canonicalize)' %s | FileCheck %s --check-prefix=IR
 
 module {
   func.func @stablehlo_matmul(

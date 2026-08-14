@@ -12,9 +12,7 @@ namespace {
 static mlir::LogicalResult
 verifyPeerTile(mlir::Operation *op, mlir::Value buffer, mlir::IntegerAttr peer,
                mlir::IntegerAttr bytes, mlir::Type tokenType) {
-  if (mlir::failed(verifyDTEP2P(op, buffer, peer, bytes, tokenType)))
-    return mlir::failure();
-  return verifyPhysicalTileIdWithinTopology(op, peer.getInt(), "peer tile_id");
+  return verifyDTEP2P(op, buffer, peer, bytes, tokenType);
 }
 
 } // namespace

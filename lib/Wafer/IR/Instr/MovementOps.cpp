@@ -361,10 +361,6 @@ verifyMovementElementContract(mlir::Operation *op, mlir::Type sourceType,
 } // namespace
 
 mlir::LogicalResult InstrRDMAOp::verify() {
-  if ((*this)->hasAttr("dst_strides") || (*this)->hasAttr("dst_iterations"))
-    return emitOpError(
-        "RDMA destination is sequential and must not carry destination "
-        "stride fields");
   if (mlir::failed(
           verifyDDRMemRef(getOperation(), getSource().getType(), "source")) ||
       mlir::failed(
@@ -402,9 +398,6 @@ mlir::LogicalResult InstrRDMAOp::verify() {
 InstrFamily InstrRDMAOp::getInstructionFamily() { return InstrFamily::RDMA; }
 
 mlir::LogicalResult InstrWDMAOp::verify() {
-  if ((*this)->hasAttr("src_strides") || (*this)->hasAttr("src_iterations"))
-    return emitOpError(
-        "WDMA source is sequential and must not carry source stride fields");
   if (mlir::failed(
           verifySPMMemRef(getOperation(), getSource().getType(), "source")) ||
       mlir::failed(

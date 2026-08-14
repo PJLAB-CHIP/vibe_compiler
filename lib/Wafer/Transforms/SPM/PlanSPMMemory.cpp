@@ -1,9 +1,12 @@
 //===- PlanSPMMemory.cpp - Plan Wafer SPM memory --------------------------===//
 
+#include "Wafer/Transforms/MemoryPlanning.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "MemoryPlanning/LifetimeAnalysis.h"
 #include "MemoryPlanning/StaticMemoryPacking.h"
+#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
+#include "Wafer/Analysis/DirectCallGraphAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Support/CompileWorkStatistics.h"
@@ -36,6 +39,8 @@ namespace wafer {
 namespace {
 
 namespace mp = memory_planning::detail;
+
+using analysis::getSingleExecutionRegionFlow;
 
 using ManagedTimelineMap =
     llvm::DenseMap<mlir::Operation *, const mp::StructuredTimelineAnalysis *>;
@@ -138,9 +143,9 @@ static mlir::LogicalResult verifySPMValueScopes(mlir::ModuleOp moduleOp) {
       return mlir::WalkResult::advance();
 
     bool isSupportedSSAEdge =
-        mlir::isa<TileRegionOp, mlir::scf::IfOp, mlir::scf::ForOp,
-                  mlir::scf::YieldOp>(op) ||
-        mlir::isa<mlir::ViewLikeOpInterface, mlir::SelectLikeOpInterface>(op);
+        mlir::isa<mlir::scf::IfOp, mlir::scf::ForOp, mlir::scf::YieldOp>(op) ||
+        mlir::isa<mlir::ViewLikeOpInterface, mlir::SelectLikeOpInterface>(op) ||
+        getSingleExecutionRegionFlow(op).has_value();
     if (isSupportedSSAEdge)
       return mlir::WalkResult::advance();
     op->emitError()
@@ -167,55 +172,54 @@ static bool isPotentiallyOverlappingSPMCall(mlir::Operation *call) {
 }
 
 static llvm::DenseSet<mlir::Operation *>
-collectFunctionsThatMayClobberSPMArena(mlir::ModuleOp moduleOp) {
+collectFunctionsThatMayClobberSPMArena(
+    mlir::ModuleOp moduleOp,
+    const analysis::DirectCallGraphAnalysis &callGraph) {
   llvm::DenseSet<mlir::Operation *> mayClobberFunctions;
   moduleOp.walk([&](TileRegionOp tileRegion) {
     if (mlir::func::FuncOp owner =
             tileRegion->getParentOfType<mlir::func::FuncOp>())
       mayClobberFunctions.insert(owner.getOperation());
   });
-  moduleOp.walk([&](mlir::func::CallIndirectOp call) {
+  for (mlir::Operation *call : callGraph.getUnsupportedCallOperations())
     if (mlir::func::FuncOp owner = call->getParentOfType<mlir::func::FuncOp>())
       mayClobberFunctions.insert(owner.getOperation());
-  });
-  moduleOp.walk([&](mlir::func::CallOp call) {
+  for (mlir::func::CallOp call : callGraph.getUnresolvedCalls())
+    if (mlir::func::FuncOp caller =
+            call->getParentOfType<mlir::func::FuncOp>())
+      mayClobberFunctions.insert(caller.getOperation());
+  for (mlir::func::FuncOp function : callGraph.getFunctions())
+    for (mlir::func::CallOp call : callGraph.getCalls(function)) {
     mlir::func::FuncOp caller = call->getParentOfType<mlir::func::FuncOp>();
-    mlir::func::FuncOp callee =
-        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::func::FuncOp>(
-            call, call.getCalleeAttr());
+    mlir::func::FuncOp callee = callGraph.getCallee(call);
     if (caller && (!callee || callee.isExternal()))
       mayClobberFunctions.insert(caller.getOperation());
-  });
+    }
 
   bool changed = true;
   while (changed) {
     changed = false;
-    moduleOp.walk([&](mlir::func::CallOp call) {
-      mlir::func::FuncOp caller = call->getParentOfType<mlir::func::FuncOp>();
-      mlir::func::FuncOp callee =
-          mlir::SymbolTable::lookupNearestSymbolFrom<mlir::func::FuncOp>(
-              call, call.getCalleeAttr());
-      if (caller && callee &&
-          mayClobberFunctions.contains(callee.getOperation()) &&
-          mayClobberFunctions.insert(caller.getOperation()).second)
-        changed = true;
-    });
+    for (mlir::func::FuncOp caller : callGraph.getFunctions())
+      for (mlir::func::FuncOp callee : callGraph.getCallees(caller))
+        if (mayClobberFunctions.contains(callee.getOperation()) &&
+            mayClobberFunctions.insert(caller.getOperation()).second)
+          changed = true;
   }
   return mayClobberFunctions;
 }
 
 static bool mayClobberSPMArena(
     mlir::func::CallOp call,
+    const analysis::DirectCallGraphAnalysis &callGraph,
     const llvm::DenseSet<mlir::Operation *> &mayClobberFunctions) {
-  mlir::func::FuncOp callee =
-      mlir::SymbolTable::lookupNearestSymbolFrom<mlir::func::FuncOp>(
-          call, call.getCalleeAttr());
+  mlir::func::FuncOp callee = callGraph.getCallee(call);
   return !callee || callee.isExternal() ||
          mayClobberFunctions.contains(callee.getOperation());
 }
 
 static mlir::LogicalResult verifySPMCallScopes(
     mlir::ModuleOp moduleOp,
+    const analysis::DirectCallGraphAnalysis &callGraph,
     const llvm::DenseSet<mlir::Operation *> &mayClobberFunctions) {
   bool moduleHasTileRegion = false;
   moduleOp.walk([&](TileRegionOp) { moduleHasTileRegion = true; });
@@ -225,7 +229,7 @@ static mlir::LogicalResult verifySPMCallScopes(
           [&](mlir::func::CallOp call) {
             if (!isPotentiallyOverlappingSPMCall(call.getOperation()))
               return mlir::WalkResult::advance();
-            if (!mayClobberSPMArena(call, mayClobberFunctions))
+            if (!mayClobberSPMArena(call, callGraph, mayClobberFunctions))
               return mlir::WalkResult::advance();
             call.emitError()
                 << "unsupported_spm_planning_scope: a call from an active or "
@@ -288,6 +292,7 @@ hasLiveSPMStorageAcrossCall(mlir::Operation *call,
 static mlir::LogicalResult verifyLiveSPMAcrossCalls(
     mlir::func::FuncOp funcOp, const mp::StructuredTimeline &timeline,
     llvm::ArrayRef<mp::LifetimeDemand> demands,
+    const analysis::DirectCallGraphAnalysis &callGraph,
     const llvm::DenseSet<mlir::Operation *> &mayClobberFunctions) {
   mlir::WalkResult result = funcOp.walk([&](mlir::Operation *op) {
     if (!mlir::isa<mlir::func::CallOp, mlir::func::CallIndirectOp>(op))
@@ -297,7 +302,7 @@ static mlir::LogicalResult verifyLiveSPMAcrossCalls(
       return mlir::WalkResult::advance();
 
     if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op)) {
-      if (!mayClobberSPMArena(call, mayClobberFunctions))
+      if (!mayClobberSPMArena(call, callGraph, mayClobberFunctions))
         return mlir::WalkResult::advance();
     } else if (!mlir::isa<mlir::func::CallIndirectOp>(op)) {
       return mlir::WalkResult::advance();
@@ -513,13 +518,14 @@ private:
     return mlir::success();
   }
 
-  void mapTileRegionBlockArgs(TileRegionOp tileRegion) {
-    std::optional<mp::ProgramPoint> point = timeline.lookup(tileRegion);
-    if (!point || tileRegion.getBody().empty())
+  void mapSingleExecutionRegionBlockArgs(mlir::Operation *operation) {
+    std::optional<analysis::SingleExecutionRegionFlow> flow =
+        getSingleExecutionRegionFlow(operation);
+    std::optional<mp::ProgramPoint> point = timeline.lookup(operation);
+    if (!flow || !point)
       return;
     for (auto [input, blockArg] :
-         llvm::zip(tileRegion.getInputs(),
-                   tileRegion.getBody().front().getArguments())) {
+         llvm::zip_equal(flow->entryOperands, flow->entryArguments)) {
       if (!hasAsyncTokenType(input))
         continue;
       llvm::SmallVector<DTECompletionRef, 2> refs =
@@ -529,17 +535,17 @@ private:
     }
   }
 
-  void mapTileRegionResults(TileRegionOp tileRegion) {
-    if (tileRegion.getBody().empty())
+  void mapSingleExecutionRegionResults(mlir::Operation *operation) {
+    std::optional<analysis::SingleExecutionRegionFlow> flow =
+        getSingleExecutionRegionFlow(operation);
+    if (!flow)
       return;
-    auto yield = mlir::dyn_cast<TileYieldOp>(
-        tileRegion.getBody().front().getTerminator());
     std::optional<mp::ProgramPoint> point =
-        yield ? timeline.lookup(yield.getOperation()) : std::nullopt;
-    if (!yield || !point)
+        timeline.lookup(flow->region->front().getTerminator());
+    if (!point)
       return;
     for (auto [yielded, result] :
-         llvm::zip(yield.getValues(), tileRegion.getResults())) {
+         llvm::zip_equal(flow->exitOperands, flow->results)) {
       if (!hasAsyncTokenType(result))
         continue;
       llvm::SmallVector<DTECompletionRef, 2> refs =
@@ -571,11 +577,12 @@ private:
             mlir::failed(processRegion(ifOp.getElseRegion())))
           return mlir::failure();
         mapIfResults(ifOp);
-      } else if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(op)) {
-        mapTileRegionBlockArgs(tileRegion);
-        if (mlir::failed(processRegion(tileRegion.getBody())))
+      } else if (std::optional<analysis::SingleExecutionRegionFlow>
+                     flow = getSingleExecutionRegionFlow(&op)) {
+        mapSingleExecutionRegionBlockArgs(&op);
+        if (mlir::failed(processRegion(*flow->region)))
           return mlir::failure();
-        mapTileRegionResults(tileRegion);
+        mapSingleExecutionRegionResults(&op);
       } else {
         for (mlir::Region &region : op.getRegions())
           if (mlir::failed(processRegion(region)))
@@ -784,16 +791,36 @@ emitAsyncFunctionLifetimeFailure(mlir::async::FuncOp funcOp,
 }
 
 static mlir::LogicalResult
-verifySPMAsyncFunctionClosures(mlir::ModuleOp moduleOp) {
+verifySPMAsyncFunctionClosures(
+    mlir::ModuleOp moduleOp,
+    const ManagedTimelineMap *managedTimelines = nullptr) {
   mlir::LogicalResult result = mlir::success();
   moduleOp.walk([&](mlir::async::FuncOp funcOp) {
     if (mlir::failed(result) || funcOp.isExternal())
       return;
 
     mp::TimelineFailure timelineFailure;
-    mlir::FailureOr<mp::StructuredTimeline> timeline =
-        mp::StructuredTimeline::build(funcOp.getOperation(), &timelineFailure);
-    if (mlir::failed(timeline)) {
+    std::optional<mp::StructuredTimeline> ownedTimeline;
+    const mp::StructuredTimeline *timeline = nullptr;
+    if (managedTimelines) {
+      auto found = managedTimelines->find(funcOp.getOperation());
+      if (found != managedTimelines->end()) {
+        const mp::StructuredTimelineAnalysis &analysis = *found->second;
+        if (analysis.isValid())
+          timeline = &analysis.getTimeline();
+        else
+          timelineFailure = analysis.getFailure();
+      }
+    } else {
+      mlir::FailureOr<mp::StructuredTimeline> built =
+          mp::StructuredTimeline::build(funcOp.getOperation(),
+                                        &timelineFailure);
+      if (mlir::succeeded(built)) {
+        ownedTimeline.emplace(std::move(*built));
+        timeline = &*ownedTimeline;
+      }
+    }
+    if (!timeline) {
       mlir::Operation *origin = timelineFailure.origin ? timelineFailure.origin
                                                        : funcOp.getOperation();
       result = origin->emitError()
@@ -825,6 +852,7 @@ verifySPMAsyncFunctionClosures(mlir::ModuleOp moduleOp) {
 static mlir::LogicalResult
 planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
              int64_t spmAlignment,
+             const analysis::DirectCallGraphAnalysis &callGraph,
              const llvm::DenseSet<mlir::Operation *> &mayClobberFunctions,
              llvm::SmallVectorImpl<PendingSPMPlacement> &pendingPlacements,
              SPMMemoryPlanningFailure *failure,
@@ -904,8 +932,8 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
       failure->kind = SPMMemoryPlanningFailureKind::UnsupportedLifetime;
     return emitLifetimeFailure(funcOp.getOperation(), lifetimeFailure);
   }
-  if (mlir::failed(verifyLiveSPMAcrossCalls(funcOp, *timeline, demands,
-                                            mayClobberFunctions)))
+  if (mlir::failed(verifyLiveSPMAcrossCalls(
+          funcOp, *timeline, demands, callGraph, mayClobberFunctions)))
     return mlir::failure();
 
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
@@ -948,6 +976,7 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
             continue;
           SPMMemoryPlanningFailure::DemandEvidence evidence{
               conflictDemand.allocation.getLoc(),
+              conflictDemand.allocation.getResult(),
               conflictDemand.allocation.getType(),
               bytes,
               {}};
@@ -982,6 +1011,7 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
             continue;
           SPMMemoryPlanningFailure::DemandEvidence evidence{
               oversizedDemand.allocation.getLoc(),
+              oversizedDemand.allocation.getResult(),
               oversizedDemand.allocation.getType(),
               bytes,
               {}};
@@ -1014,6 +1044,7 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
               continue;
             SPMMemoryPlanningFailure::DemandEvidence evidence{
                 candidate.allocation.getLoc(),
+                candidate.allocation.getResult(),
                 candidate.allocation.getType(),
                 static_cast<uint64_t>(candidate.sizeBytes),
                 {}};
@@ -1178,7 +1209,8 @@ mlir::LogicalResult checkTileRegionSPMCapacity(
     failure->kind = SPMMemoryPlanningFailureKind::CapacityOverflow;
   auto appendEvidence = [](mp::LifetimeDemand &demand) {
     SPMMemoryPlanningFailure::DemandEvidence evidence{
-        demand.allocation.getLoc(), demand.allocation.getType(),
+        demand.allocation.getLoc(), demand.allocation.getResult(),
+        demand.allocation.getType(),
         static_cast<uint64_t>(demand.sizeBytes), {}};
     for (mlir::Operation *user : demand.allocation.getResult().getUsers())
       evidence.userLocations.push_back(user->getLoc());
@@ -1218,7 +1250,8 @@ mlir::LogicalResult checkTileRegionSPMCapacity(
 static mlir::LogicalResult planSPMMemoryModuleImpl(
     mlir::ModuleOp moduleOp, int64_t spmBase, int64_t spmLimit,
     int64_t spmAlignment, SPMMemoryPlanningFailure *failure,
-    const ManagedTimelineMap *managedTimelines) {
+    const ManagedTimelineMap *managedTimelines,
+    const analysis::DirectCallGraphAnalysis *managedCallGraph) {
   if (failure)
     *failure = {};
   wafer::support::recordCompileWork(
@@ -1256,16 +1289,23 @@ static mlir::LogicalResult planSPMMemoryModuleImpl(
       failure->kind = SPMMemoryPlanningFailureKind::Other;
     return mlir::failure();
   }
+  std::optional<analysis::DirectCallGraphAnalysis> ownedCallGraph;
+  if (!managedCallGraph) {
+    ownedCallGraph.emplace(moduleOp.getOperation());
+    managedCallGraph = &*ownedCallGraph;
+  }
   llvm::DenseSet<mlir::Operation *> mayClobberFunctions =
-      collectFunctionsThatMayClobberSPMArena(moduleOp);
+      collectFunctionsThatMayClobberSPMArena(moduleOp, *managedCallGraph);
   if (mlir::failed(verifySPMRegionExecutionScopes(moduleOp)) ||
       mlir::failed(verifySPMValueScopes(moduleOp)) ||
-      mlir::failed(verifySPMCallScopes(moduleOp, mayClobberFunctions))) {
+      mlir::failed(verifySPMCallScopes(moduleOp, *managedCallGraph,
+                                       mayClobberFunctions))) {
     if (failure)
       failure->kind = SPMMemoryPlanningFailureKind::Other;
     return mlir::failure();
   }
-  if (mlir::failed(verifySPMAsyncFunctionClosures(moduleOp))) {
+  if (mlir::failed(
+          verifySPMAsyncFunctionClosures(moduleOp, managedTimelines))) {
     if (failure)
       failure->kind = SPMMemoryPlanningFailureKind::Other;
     return mlir::failure();
@@ -1280,6 +1320,7 @@ static mlir::LogicalResult planSPMMemoryModuleImpl(
     if (funcOp.isExternal())
       continue;
     result = planFunction(funcOp, spmBase, spmLimit, spmAlignment,
+                          *managedCallGraph,
                           mayClobberFunctions, pendingPlacements, failure,
                           managedTimelines);
   }
@@ -1303,7 +1344,8 @@ mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t spmAlignment,
                                         SPMMemoryPlanningFailure *failure) {
   return planSPMMemoryModuleImpl(moduleOp, spmBase, spmLimit, spmAlignment,
-                                 failure, /*managedTimelines=*/nullptr);
+                                 failure, /*managedTimelines=*/nullptr,
+                                 /*managedCallGraph=*/nullptr);
 }
 
 namespace {
@@ -1312,7 +1354,17 @@ struct PlanSPMMemoryPass
     : public impl::PlanSPMMemoryPassBase<PlanSPMMemoryPass> {
   using impl::PlanSPMMemoryPassBase<PlanSPMMemoryPass>::PlanSPMMemoryPassBase;
 
+  PlanSPMMemoryPass(const PlanSPMMemoryPassOptions &options,
+                    SPMMemoryPlanningFailure *failure)
+      : impl::PlanSPMMemoryPassBase<PlanSPMMemoryPass>(options),
+        failure(failure) {}
+
   void runOnOperation() final {
+    unsigned assignedBefore = 0;
+    getOperation().walk([&](mlir::memref::AllocOp allocation) {
+      assignedBefore += static_cast<bool>(
+          allocation->getAttrOfType<SPMOffsetAttr>(kWaferSPMOffsetAttrName));
+    });
     ManagedTimelineMap managedTimelines;
     for (mlir::func::FuncOp function :
          getOperation().getOps<mlir::func::FuncOp>()) {
@@ -1323,16 +1375,41 @@ struct PlanSPMMemoryPass
             function.getOperation(),
             &getChildAnalysis<mp::StructuredTimelineAnalysis>(function));
     }
+    getOperation().walk([&](mlir::async::FuncOp function) {
+      if (!function.isExternal())
+        managedTimelines.try_emplace(
+            function.getOperation(),
+            &getChildAnalysis<mp::StructuredTimelineAnalysis>(function));
+    });
     if (mlir::failed(planSPMMemoryModuleImpl(
             getOperation(), spmBase, spmLimit, spmAlignment,
-            /*failure=*/nullptr, &managedTimelines))) {
+            failure, &managedTimelines,
+            &getAnalysis<analysis::DirectCallGraphAnalysis>()))) {
       signalPassFailure();
       return;
     }
+    numTimelineScopes += managedTimelines.size();
+    unsigned assignedAfter = 0;
+    getOperation().walk([&](mlir::memref::AllocOp allocation) {
+      assignedAfter += static_cast<bool>(
+          allocation->getAttrOfType<SPMOffsetAttr>(kWaferSPMOffsetAttrName));
+    });
+    if (assignedAfter > assignedBefore)
+      numAssignedAllocations += assignedAfter - assignedBefore;
     markAnalysesPreserved<mp::StructuredTimelineAnalysis>();
+    markAnalysesPreserved<analysis::DirectCallGraphAnalysis>();
   }
+
+private:
+  SPMMemoryPlanningFailure *failure = nullptr;
 };
 
 } // namespace
+
+std::unique_ptr<mlir::Pass> createPlanSPMMemoryPassWithFailure(
+    const PlanSPMMemoryPassOptions &options,
+    SPMMemoryPlanningFailure *failure) {
+  return std::make_unique<PlanSPMMemoryPass>(options, failure);
+}
 
 } // namespace wafer

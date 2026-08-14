@@ -17,6 +17,7 @@ namespace wafer::support {
 enum class CompileWorkKind : size_t {
   PhysicalTileFinalization,
   TileToInstructionLowering,
+  SelectedBufferArtifactTransaction,
   SPMPlanning,
   DDRPlanning,
   Count,
@@ -25,6 +26,7 @@ enum class CompileWorkKind : size_t {
 struct CompileWorkStatistics {
   uint64_t physicalTileFinalizations = 0;
   uint64_t tileToInstructionLowerings = 0;
+  uint64_t selectedBufferArtifactTransactions = 0;
   uint64_t spmPlanningInvocations = 0;
   uint64_t ddrPlanningInvocations = 0;
 };
@@ -47,6 +49,7 @@ public:
     return {
         read(CompileWorkKind::PhysicalTileFinalization),
         read(CompileWorkKind::TileToInstructionLowering),
+        read(CompileWorkKind::SelectedBufferArtifactTransaction),
         read(CompileWorkKind::SPMPlanning),
         read(CompileWorkKind::DDRPlanning),
     };

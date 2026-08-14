@@ -72,7 +72,7 @@ module {
       : () -> memref<8xf16, #wafer.memory<ddr, tensor>>
   %dst = "builtin.unrealized_conversion_cast"()
       : () -> memref<8xf16, #wafer.memory<spm, tensor>>
-  // expected-error @below {{RDMA destination is sequential and must not carry destination stride fields}}
+  // expected-error @below {{does not accept schema-free semantic attribute 'dst_iterations'}}
   wafer.instr.rdma %src to %dst
       {byte_count = 2 : i64, inner_bytes = 2 : i64,
        src_offset = 0 : i64, dst_offset = 0 : i64,
@@ -445,7 +445,7 @@ module {
 module {
   %buffer = "builtin.unrealized_conversion_cast"()
       : () -> memref<1xf16, #wafer.memory<spm, tensor>>
-  // expected-error @below {{DTE slot must fit uint32_t}}
+  // expected-error @below {{does not accept schema-free semantic attribute 'slot'}}
   %token = wafer.instr.dte_recv %buffer
       {peer = 1 : i64, bytes = 2 : i64, slot = 4294967296 : i64,
        message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}

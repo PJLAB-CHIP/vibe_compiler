@@ -1,7 +1,7 @@
 //===- TargetCallFrontendTest.cpp - Host target-call frontend tests -----===//
 
 #include "Wafer/Compiler/TargetCallFrontend.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/TargetCall.h"
 
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
@@ -300,7 +300,7 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
     }
     return arguments;
   }
-  if (std::holds_alternative<wafer::InstrElementwiseKind>(
+  if (std::holds_alternative<wafer::NumericElementwiseOperation>(
           descriptor.semantic)) {
     const size_t payloadSize =
         arguments.size() -
@@ -312,20 +312,20 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
         supportedF32Code(wafer::TargetFormatEngine::CT);
     return arguments;
   }
-  if (std::holds_alternative<wafer::InstrReduceKind>(descriptor.semantic)) {
+  if (std::holds_alternative<wafer::NumericReduceOperation>(descriptor.semantic)) {
     arguments[7] = supportedF32Code(wafer::TargetFormatEngine::CT);
     return arguments;
   }
   if (const auto *kind =
-          std::get_if<wafer::InstrConvKind>(&descriptor.semantic)) {
+          std::get_if<wafer::TargetConvolutionOperation>(&descriptor.semantic)) {
     arguments[3] = static_cast<uint32_t>(*kind);
     arguments[30] = supportedF32Code(wafer::TargetFormatEngine::NE);
     return arguments;
   }
   if (const auto *kind =
-          std::get_if<wafer::InstrPoolKind>(&descriptor.semantic)) {
-    bool indexed = *kind == wafer::InstrPoolKind::IndexedMax ||
-                   *kind == wafer::InstrPoolKind::IndexedMin;
+          std::get_if<wafer::TargetPoolingOperation>(&descriptor.semantic)) {
+    bool indexed = *kind == wafer::TargetPoolingOperation::IndexedMaximum ||
+                   *kind == wafer::TargetPoolingOperation::IndexedMinimum;
     size_t firstField = indexed ? 3 : 2;
     arguments[firstField] = static_cast<uint32_t>(*kind);
     arguments[firstField + 17] =
@@ -333,30 +333,30 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
     return arguments;
   }
   if (const auto *kind =
-          std::get_if<wafer::InstrUnpoolKind>(&descriptor.semantic)) {
+          std::get_if<wafer::TargetUnpoolingOperation>(&descriptor.semantic)) {
     arguments[2] = static_cast<uint32_t>(*kind);
     arguments[16] = supportedF32Code(wafer::TargetFormatEngine::CT);
     return arguments;
   }
   if (const auto *kind =
-          std::get_if<wafer::InstrPeripheralKind>(&descriptor.semantic)) {
+          std::get_if<wafer::TargetPeripheralOperation>(&descriptor.semantic)) {
     size_t addressCount = 0;
     switch (*kind) {
-    case wafer::InstrPeripheralKind::ArgMax:
-    case wafer::InstrPeripheralKind::ArgMin:
-    case wafer::InstrPeripheralKind::Lut16:
-    case wafer::InstrPeripheralKind::Lut32:
+    case wafer::TargetPeripheralOperation::ArgMaximum:
+    case wafer::TargetPeripheralOperation::ArgMinimum:
+    case wafer::TargetPeripheralOperation::LookupTable16:
+    case wafer::TargetPeripheralOperation::LookupTable32:
       addressCount = 3;
       break;
-    case wafer::InstrPeripheralKind::Bilinear:
-    case wafer::InstrPeripheralKind::ElemMask:
+    case wafer::TargetPeripheralOperation::Bilinear:
+    case wafer::TargetPeripheralOperation::ElementMask:
       addressCount = 2;
       break;
-    case wafer::InstrPeripheralKind::RandGen:
+    case wafer::TargetPeripheralOperation::Random:
       addressCount = 5;
       break;
-    case wafer::InstrPeripheralKind::Count:
-    case wafer::InstrPeripheralKind::Factorize:
+    case wafer::TargetPeripheralOperation::Count:
+    case wafer::TargetPeripheralOperation::Factorize:
       llvm_unreachable("unregistered peripheral kind");
     }
     arguments[addressCount] = static_cast<uint32_t>(*kind);
@@ -378,7 +378,7 @@ std::array<uint32_t, N> expectedArray(llvm::ArrayRef<uint64_t> arguments,
 void expectPayloadFields(
     const wafer::TargetCallDescriptor &descriptor,
     llvm::ArrayRef<uint64_t> arguments,
-    const wafer::compiler::TargetTransactionPayload &payload) {
+    const wafer::target::TargetTransactionPayload &payload) {
   const wafer::TargetCallSemantic &semantic = descriptor.semantic;
   SCOPED_TRACE(descriptor.symbol);
   auto u32 = [&](size_t index) {
@@ -393,14 +393,14 @@ void expectPayloadFields(
     case wafer::TargetCallBuiltin::RDMA:
     case wafer::TargetCallBuiltin::WDMA: {
       ASSERT_TRUE(
-          std::holds_alternative<wafer::compiler::TargetStridedDMATransaction>(
+          std::holds_alternative<wafer::target::TargetStridedDMATransaction>(
               payload));
       const auto &value =
-          std::get<wafer::compiler::TargetStridedDMATransaction>(payload);
+          std::get<wafer::target::TargetStridedDMATransaction>(payload);
       EXPECT_EQ(value.direction,
                 *builtin == wafer::TargetCallBuiltin::RDMA
-                    ? wafer::compiler::TargetDMADirection::Read
-                    : wafer::compiler::TargetDMADirection::Write);
+                    ? wafer::target::TargetDMADirection::Read
+                    : wafer::target::TargetDMADirection::Write);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.destination, arguments[1]);
       EXPECT_EQ(value.byteCount, u32(2));
@@ -412,9 +412,9 @@ void expectPayloadFields(
     }
     case wafer::TargetCallBuiltin::GatherScatter: {
       ASSERT_TRUE(std::holds_alternative<
-                  wafer::compiler::TargetGatherScatterTransaction>(payload));
+                  wafer::target::TargetGatherScatterTransaction>(payload));
       const auto &value =
-          std::get<wafer::compiler::TargetGatherScatterTransaction>(payload);
+          std::get<wafer::target::TargetGatherScatterTransaction>(payload);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.destination, arguments[1]);
       EXPECT_EQ(value.byteCount, u32(2));
@@ -427,10 +427,10 @@ void expectPayloadFields(
     }
     case wafer::TargetCallBuiltin::Memset: {
       ASSERT_TRUE(
-          std::holds_alternative<wafer::compiler::TargetMemsetTransaction>(
+          std::holds_alternative<wafer::target::TargetMemsetTransaction>(
               payload));
       const auto &value =
-          std::get<wafer::compiler::TargetMemsetTransaction>(payload);
+          std::get<wafer::target::TargetMemsetTransaction>(payload);
       EXPECT_EQ(value.destination, arguments[0]);
       EXPECT_EQ(value.value, u32(1));
       EXPECT_EQ(value.elementCount, u32(2));
@@ -439,10 +439,10 @@ void expectPayloadFields(
     }
     case wafer::TargetCallBuiltin::Bit2FP: {
       ASSERT_TRUE(
-          std::holds_alternative<wafer::compiler::TargetBit2FPTransaction>(
+          std::holds_alternative<wafer::target::TargetBit2FPTransaction>(
               payload));
       const auto &value =
-          std::get<wafer::compiler::TargetBit2FPTransaction>(payload);
+          std::get<wafer::target::TargetBit2FPTransaction>(payload);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.destination, arguments[1]);
       EXPECT_EQ(value.elementCount, u32(2));
@@ -451,10 +451,10 @@ void expectPayloadFields(
     }
     case wafer::TargetCallBuiltin::MaskMove: {
       ASSERT_TRUE(
-          std::holds_alternative<wafer::compiler::TargetMaskMoveTransaction>(
+          std::holds_alternative<wafer::target::TargetMaskMoveTransaction>(
               payload));
       const auto &value =
-          std::get<wafer::compiler::TargetMaskMoveTransaction>(payload);
+          std::get<wafer::target::TargetMaskMoveTransaction>(payload);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.mask, u32(1));
       EXPECT_EQ(value.destination, arguments[2]);
@@ -465,10 +465,10 @@ void expectPayloadFields(
     case wafer::TargetCallBuiltin::Gemm:
     case wafer::TargetCallBuiltin::GemmOriented: {
       ASSERT_TRUE(
-          std::holds_alternative<wafer::compiler::TargetGemmTransaction>(
+          std::holds_alternative<wafer::target::TargetGemmTransaction>(
               payload));
       const auto &value =
-          std::get<wafer::compiler::TargetGemmTransaction>(payload);
+          std::get<wafer::target::TargetGemmTransaction>(payload);
       EXPECT_EQ(value.lhs, arguments[0]);
       EXPECT_EQ(value.rhs, arguments[1]);
       EXPECT_EQ(value.destination, arguments[2]);
@@ -479,23 +479,23 @@ void expectPayloadFields(
       expectFormat(value.format);
       EXPECT_EQ(value.lhsOrientation,
                 *builtin == wafer::TargetCallBuiltin::GemmOriented
-                    ? wafer::GemmOrientation::Transpose
-                    : wafer::GemmOrientation::Normal);
-      EXPECT_EQ(value.rhsOrientation, wafer::GemmOrientation::Normal);
+                    ? wafer::TargetGemmOrientation::Transpose
+                    : wafer::TargetGemmOrientation::Normal);
+      EXPECT_EQ(value.rhsOrientation, wafer::TargetGemmOrientation::Normal);
       return;
     }
     case wafer::TargetCallBuiltin::TDMAPad:
     case wafer::TargetCallBuiltin::TDMAImg2Col: {
       ASSERT_TRUE(std::holds_alternative<
-                  wafer::compiler::TargetTDMATransformTransaction>(payload));
+                  wafer::target::TargetTDMATransformTransaction>(payload));
       const auto &value =
-          std::get<wafer::compiler::TargetTDMATransformTransaction>(payload);
+          std::get<wafer::target::TargetTDMATransformTransaction>(payload);
       const bool imageToColumn =
           *builtin == wafer::TargetCallBuiltin::TDMAImg2Col;
       EXPECT_EQ(value.kind,
                 imageToColumn
-                    ? wafer::compiler::TargetTDMATransformKind::ImageToColumn
-                    : wafer::compiler::TargetTDMATransformKind::Pad);
+                    ? wafer::target::TargetTDMATransformKind::ImageToColumn
+                    : wafer::target::TargetTDMATransformKind::Pad);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.destination, arguments[1]);
       EXPECT_EQ(value.sourceShape, expectedArray<4>(arguments, 2));
@@ -512,28 +512,28 @@ void expectPayloadFields(
     }
     case wafer::TargetCallBuiltin::NCCJoin: {
       ASSERT_TRUE(
-          std::holds_alternative<wafer::compiler::TargetNCCJoinTransaction>(
+          std::holds_alternative<wafer::target::TargetNCCJoinTransaction>(
               payload));
       const auto &join =
-          std::get<wafer::compiler::TargetNCCJoinTransaction>(payload);
+          std::get<wafer::target::TargetNCCJoinTransaction>(payload);
       EXPECT_EQ(join.participantMask, u32(0));
       return;
     }
     case wafer::TargetCallBuiltin::DirectDTEBegin:
     case wafer::TargetCallBuiltin::DirectDTEBeginAfterPrepare: {
       ASSERT_TRUE(std::holds_alternative<
-                  wafer::compiler::TargetDirectDTEBeginTransaction>(payload));
+                  wafer::target::TargetDirectDTEBeginTransaction>(payload));
       const auto &value =
-          std::get<wafer::compiler::TargetDirectDTEBeginTransaction>(payload);
+          std::get<wafer::target::TargetDirectDTEBeginTransaction>(payload);
       EXPECT_EQ(value.statusAddress, arguments[0]);
       EXPECT_EQ(value.participantCount, u32(1));
       return;
     }
     case wafer::TargetCallBuiltin::DirectDTESendPrepare: {
       ASSERT_TRUE(std::holds_alternative<
-                  wafer::compiler::TargetDirectDTESendTransaction>(payload));
+                  wafer::target::TargetDirectDTESendTransaction>(payload));
       const auto &value =
-          std::get<wafer::compiler::TargetDirectDTESendTransaction>(payload);
+          std::get<wafer::target::TargetDirectDTESendTransaction>(payload);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.remoteDestination, arguments[1]);
       EXPECT_EQ(value.byteCount, u32(2));
@@ -546,8 +546,8 @@ void expectPayloadFields(
     case wafer::TargetCallBuiltin::DirectDTESendIssue: {
       ASSERT_TRUE(
           std::holds_alternative<
-              wafer::compiler::TargetDirectDTESendIssueTransaction>(payload));
-      EXPECT_EQ(std::get<wafer::compiler::TargetDirectDTESendIssueTransaction>(
+              wafer::target::TargetDirectDTESendIssueTransaction>(payload));
+      EXPECT_EQ(std::get<wafer::target::TargetDirectDTESendIssueTransaction>(
                     payload)
                     .event,
                 arguments[0]);
@@ -555,9 +555,9 @@ void expectPayloadFields(
     }
     case wafer::TargetCallBuiltin::DirectDTERecvPrepare: {
       ASSERT_TRUE(std::holds_alternative<
-                  wafer::compiler::TargetDirectDTEReceiveTransaction>(payload));
+                  wafer::target::TargetDirectDTEReceiveTransaction>(payload));
       const auto &value =
-          std::get<wafer::compiler::TargetDirectDTEReceiveTransaction>(payload);
+          std::get<wafer::target::TargetDirectDTEReceiveTransaction>(payload);
       EXPECT_EQ(value.destination, arguments[0]);
       EXPECT_EQ(value.byteCount, u32(1));
       EXPECT_EQ(value.localTile, u32(2));
@@ -567,26 +567,26 @@ void expectPayloadFields(
     }
     case wafer::TargetCallBuiltin::DirectDTEWait: {
       ASSERT_TRUE(std::holds_alternative<
-                  wafer::compiler::TargetDirectDTEWaitTransaction>(payload));
+                  wafer::target::TargetDirectDTEWaitTransaction>(payload));
       EXPECT_EQ(
-          std::get<wafer::compiler::TargetDirectDTEWaitTransaction>(payload)
+          std::get<wafer::target::TargetDirectDTEWaitTransaction>(payload)
               .event,
           arguments[0]);
       return;
     }
     case wafer::TargetCallBuiltin::DirectDTEFinish:
       EXPECT_TRUE(std::holds_alternative<
-                  wafer::compiler::TargetDirectDTEFinishTransaction>(payload));
+                  wafer::target::TargetDirectDTEFinishTransaction>(payload));
       return;
     }
   }
 
-  if (const auto *kind = std::get_if<wafer::InstrElementwiseKind>(&semantic)) {
+  if (const auto *kind = std::get_if<wafer::NumericElementwiseOperation>(&semantic)) {
     ASSERT_TRUE(
-        std::holds_alternative<wafer::compiler::TargetElementwiseTransaction>(
+        std::holds_alternative<wafer::target::TargetElementwiseTransaction>(
             payload));
     const auto &value =
-        std::get<wafer::compiler::TargetElementwiseTransaction>(payload);
+        std::get<wafer::target::TargetElementwiseTransaction>(payload);
     const size_t payloadSize =
         arguments.size() -
         (descriptor.issueDomain &&
@@ -594,7 +594,7 @@ void expectPayloadFields(
              ? 1
              : 0);
     const bool unary = payloadSize == 4;
-    EXPECT_EQ(value.kind, *kind);
+    EXPECT_EQ(value.operation, *kind);
     EXPECT_EQ(value.lhs, arguments[0]);
     if (unary)
       EXPECT_FALSE(value.rhs.has_value());
@@ -607,13 +607,13 @@ void expectPayloadFields(
     expectFormat(value.format);
     return;
   }
-  if (const auto *kind = std::get_if<wafer::InstrReduceKind>(&semantic)) {
+  if (const auto *kind = std::get_if<wafer::NumericReduceOperation>(&semantic)) {
     ASSERT_TRUE(
-        std::holds_alternative<wafer::compiler::TargetReduceTransaction>(
+        std::holds_alternative<wafer::target::TargetReduceTransaction>(
             payload));
     const auto &value =
-        std::get<wafer::compiler::TargetReduceTransaction>(payload);
-    EXPECT_EQ(value.kind, *kind);
+        std::get<wafer::target::TargetReduceTransaction>(payload);
+    EXPECT_EQ(value.operation, *kind);
     EXPECT_EQ(value.source, arguments[0]);
     EXPECT_EQ(value.destination, arguments[1]);
     EXPECT_EQ(value.dimension, u32(2));
@@ -621,40 +621,43 @@ void expectPayloadFields(
     expectFormat(value.format);
     return;
   }
-  if (const auto *kind = std::get_if<wafer::InstrConvertKind>(&semantic)) {
+  if (const auto *kind = std::get_if<wafer::TargetConvertOperation>(&semantic)) {
     ASSERT_TRUE(
-        std::holds_alternative<wafer::compiler::TargetConvertTransaction>(
+        std::holds_alternative<wafer::target::TargetConvertTransaction>(
             payload));
     const auto &value =
-        std::get<wafer::compiler::TargetConvertTransaction>(payload);
-    EXPECT_EQ(value.kind, *kind);
+        std::get<wafer::target::TargetConvertTransaction>(payload);
+    EXPECT_EQ(value.operation, *kind);
     EXPECT_EQ(value.source, arguments[0]);
     EXPECT_EQ(value.destination, arguments[1]);
     EXPECT_EQ(value.elementCount, u32(2));
-    switch (wafer::getInstrConvertParameterKind(*kind)) {
-    case wafer::InstrConvertParameterKind::ZeroPoint:
+    const wafer::TargetConvertRoute *route =
+        wafer::findTargetConvertRoute(kind->getOpcode());
+    ASSERT_NE(route, nullptr);
+    switch (route->parameterKind) {
+    case wafer::TargetConvertParameterKind::ZeroPoint:
       ASSERT_TRUE(value.zeroPoint.has_value());
       EXPECT_EQ(*value.zeroPoint, u32(3));
       EXPECT_FALSE(value.roundingMode.has_value());
       break;
-    case wafer::InstrConvertParameterKind::RoundingMode:
+    case wafer::TargetConvertParameterKind::RoundingMode:
       EXPECT_FALSE(value.zeroPoint.has_value());
       ASSERT_TRUE(value.roundingMode.has_value());
       EXPECT_EQ(*value.roundingMode, u32(4));
       break;
-    case wafer::InstrConvertParameterKind::None:
+    case wafer::TargetConvertParameterKind::None:
       EXPECT_FALSE(value.zeroPoint.has_value());
       EXPECT_FALSE(value.roundingMode.has_value());
       break;
     }
     return;
   }
-  if (const auto *kind = std::get_if<wafer::InstrConvKind>(&semantic)) {
-    ASSERT_TRUE(std::holds_alternative<wafer::compiler::TargetConvTransaction>(
+  if (const auto *kind = std::get_if<wafer::TargetConvolutionOperation>(&semantic)) {
+    ASSERT_TRUE(std::holds_alternative<wafer::target::TargetConvTransaction>(
         payload));
     const auto &value =
-        std::get<wafer::compiler::TargetConvTransaction>(payload);
-    EXPECT_EQ(value.kind, *kind);
+        std::get<wafer::target::TargetConvTransaction>(payload);
+    EXPECT_EQ(value.operation, *kind);
     EXPECT_EQ(value.input, arguments[0]);
     EXPECT_EQ(value.weight, arguments[1]);
     EXPECT_EQ(value.destination, arguments[2]);
@@ -668,15 +671,15 @@ void expectPayloadFields(
     expectFormat(value.format);
     return;
   }
-  if (const auto *kind = std::get_if<wafer::InstrPoolKind>(&semantic)) {
-    ASSERT_TRUE(std::holds_alternative<wafer::compiler::TargetPoolTransaction>(
+  if (const auto *kind = std::get_if<wafer::TargetPoolingOperation>(&semantic)) {
+    ASSERT_TRUE(std::holds_alternative<wafer::target::TargetPoolTransaction>(
         payload));
     const auto &value =
-        std::get<wafer::compiler::TargetPoolTransaction>(payload);
-    const bool indexed = *kind == wafer::InstrPoolKind::IndexedMax ||
-                         *kind == wafer::InstrPoolKind::IndexedMin;
+        std::get<wafer::target::TargetPoolTransaction>(payload);
+    const bool indexed = *kind == wafer::TargetPoolingOperation::IndexedMaximum ||
+                         *kind == wafer::TargetPoolingOperation::IndexedMinimum;
     const size_t first = indexed ? 3 : 2;
-    EXPECT_EQ(value.kind, *kind);
+    EXPECT_EQ(value.operation, *kind);
     EXPECT_EQ(value.input, arguments[0]);
     EXPECT_EQ(value.valueDestination, arguments[1]);
     if (indexed) {
@@ -692,16 +695,16 @@ void expectPayloadFields(
     expectFormat(value.format);
     return;
   }
-  if (const auto *kind = std::get_if<wafer::InstrUnpoolKind>(&semantic)) {
+  if (const auto *kind = std::get_if<wafer::TargetUnpoolingOperation>(&semantic)) {
     ASSERT_TRUE(
-        std::holds_alternative<wafer::compiler::TargetUnpoolTransaction>(
+        std::holds_alternative<wafer::target::TargetUnpoolTransaction>(
             payload));
     const auto &value =
-        std::get<wafer::compiler::TargetUnpoolTransaction>(payload);
-    EXPECT_EQ(value.kind, *kind);
+        std::get<wafer::target::TargetUnpoolTransaction>(payload);
+    EXPECT_EQ(value.operation, *kind);
     EXPECT_EQ(value.input, arguments[0]);
     EXPECT_EQ(value.destination, arguments[1]);
-    if (*kind == wafer::InstrUnpoolKind::Avg)
+    if (*kind == wafer::TargetUnpoolingOperation::Average)
       EXPECT_FALSE(value.indexAddress.has_value());
     else {
       ASSERT_TRUE(value.indexAddress.has_value());
@@ -713,17 +716,17 @@ void expectPayloadFields(
     expectFormat(value.format);
     return;
   }
-  if (const auto *kind = std::get_if<wafer::InstrPeripheralKind>(&semantic)) {
+  if (const auto *kind = std::get_if<wafer::TargetPeripheralOperation>(&semantic)) {
     switch (*kind) {
-    case wafer::InstrPeripheralKind::ArgMax:
-    case wafer::InstrPeripheralKind::ArgMin: {
+    case wafer::TargetPeripheralOperation::ArgMaximum:
+    case wafer::TargetPeripheralOperation::ArgMinimum: {
       ASSERT_TRUE(
           std::holds_alternative<
-              wafer::compiler::TargetPeripheralArgExtremaTransaction>(payload));
+              wafer::target::TargetPeripheralArgExtremaTransaction>(payload));
       const auto &value =
-          std::get<wafer::compiler::TargetPeripheralArgExtremaTransaction>(
+          std::get<wafer::target::TargetPeripheralArgExtremaTransaction>(
               payload);
-      EXPECT_EQ(value.kind, *kind);
+      EXPECT_EQ(value.operation, *kind);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.valueDestination, arguments[1]);
       EXPECT_EQ(value.indexDestination, arguments[2]);
@@ -731,12 +734,12 @@ void expectPayloadFields(
       expectFormat(value.format);
       return;
     }
-    case wafer::InstrPeripheralKind::Bilinear: {
+    case wafer::TargetPeripheralOperation::Bilinear: {
       ASSERT_TRUE(
           std::holds_alternative<
-              wafer::compiler::TargetPeripheralBilinearTransaction>(payload));
+              wafer::target::TargetPeripheralBilinearTransaction>(payload));
       const auto &value =
-          std::get<wafer::compiler::TargetPeripheralBilinearTransaction>(
+          std::get<wafer::target::TargetPeripheralBilinearTransaction>(
               payload);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.destination, arguments[1]);
@@ -746,13 +749,13 @@ void expectPayloadFields(
       EXPECT_EQ(value.destinationShape, expectedArray<4>(arguments, 9));
       return;
     }
-    case wafer::InstrPeripheralKind::Lut16:
-    case wafer::InstrPeripheralKind::Lut32: {
+    case wafer::TargetPeripheralOperation::LookupTable16:
+    case wafer::TargetPeripheralOperation::LookupTable32: {
       ASSERT_TRUE(std::holds_alternative<
-                  wafer::compiler::TargetPeripheralLUTTransaction>(payload));
+                  wafer::target::TargetPeripheralLUTTransaction>(payload));
       const auto &value =
-          std::get<wafer::compiler::TargetPeripheralLUTTransaction>(payload);
-      EXPECT_EQ(value.kind, *kind);
+          std::get<wafer::target::TargetPeripheralLUTTransaction>(payload);
+      EXPECT_EQ(value.operation, *kind);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.table, arguments[1]);
       EXPECT_EQ(value.destination, arguments[2]);
@@ -761,11 +764,11 @@ void expectPayloadFields(
       EXPECT_EQ(value.tableElementCount, u32(6));
       return;
     }
-    case wafer::InstrPeripheralKind::RandGen: {
+    case wafer::TargetPeripheralOperation::Random: {
       ASSERT_TRUE(std::holds_alternative<
-                  wafer::compiler::TargetPeripheralRandomTransaction>(payload));
+                  wafer::target::TargetPeripheralRandomTransaction>(payload));
       const auto &value =
-          std::get<wafer::compiler::TargetPeripheralRandomTransaction>(payload);
+          std::get<wafer::target::TargetPeripheralRandomTransaction>(payload);
       EXPECT_EQ(value.sources,
                 (std::array<uint64_t, 2>{arguments[0], arguments[1]}));
       EXPECT_EQ(
@@ -775,12 +778,12 @@ void expectPayloadFields(
       expectFormat(value.format);
       return;
     }
-    case wafer::InstrPeripheralKind::ElemMask: {
+    case wafer::TargetPeripheralOperation::ElementMask: {
       ASSERT_TRUE(std::holds_alternative<
-                  wafer::compiler::TargetPeripheralElementMaskTransaction>(
+                  wafer::target::TargetPeripheralElementMaskTransaction>(
           payload));
       const auto &value =
-          std::get<wafer::compiler::TargetPeripheralElementMaskTransaction>(
+          std::get<wafer::target::TargetPeripheralElementMaskTransaction>(
               payload);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.destination, arguments[1]);
@@ -791,8 +794,8 @@ void expectPayloadFields(
       EXPECT_EQ(value.roundingMode, u32(8));
       return;
     }
-    case wafer::InstrPeripheralKind::Count:
-    case wafer::InstrPeripheralKind::Factorize:
+    case wafer::TargetPeripheralOperation::Count:
+    case wafer::TargetPeripheralOperation::Factorize:
       FAIL() << "unregistered peripheral semantic";
       return;
     }
@@ -828,7 +831,7 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
       ++directDTEIssueDomainCount;
       EXPECT_FALSE(descriptor.issueDomain->nccWorkerArgument);
       EXPECT_EQ(descriptor.issueDomain->completionBehavior,
-                wafer::LocalInstructionCompletion::None);
+                wafer::TargetNCCCompletionBehavior::None);
     } else {
       ++nccIssueDomainCount;
       ASSERT_TRUE(descriptor.issueDomain->nccWorkerArgument);
@@ -837,14 +840,14 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
                 descriptor.arguments.size());
       EXPECT_EQ(descriptor.arguments.back(), wafer::TargetCallScalarType::I32);
       const auto *peripheral =
-          std::get_if<wafer::InstrPeripheralKind>(&descriptor.semantic);
+          std::get_if<wafer::TargetPeripheralOperation>(&descriptor.semantic);
       const bool synchronous =
-          peripheral && (*peripheral == wafer::InstrPeripheralKind::ArgMax ||
-                         *peripheral == wafer::InstrPeripheralKind::ArgMin);
+          peripheral && (*peripheral == wafer::TargetPeripheralOperation::ArgMaximum ||
+                         *peripheral == wafer::TargetPeripheralOperation::ArgMinimum);
       EXPECT_EQ(descriptor.issueDomain->completionBehavior,
                 synchronous
-                    ? wafer::LocalInstructionCompletion::SynchronousWriteback
-                    : wafer::LocalInstructionCompletion::OrderedPending);
+                    ? wafer::TargetNCCCompletionBehavior::SynchronousWriteback
+                    : wafer::TargetNCCCompletionBehavior::OrderedAsynchronousIssue);
       synchronousWritebackCount += synchronous;
     }
   }
@@ -867,20 +870,20 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   EXPECT_EQ(send.arguments.size(), 7u);
   EXPECT_EQ(send.arguments[0], wafer::TargetCallScalarType::I64);
   EXPECT_EQ(send.arguments[2], wafer::TargetCallScalarType::I32);
-  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrElementwiseKind::Abs)
+  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::NumericElementwiseOperation::Abs)
                 .arguments.size(),
             5u);
-  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrElementwiseKind::Add)
+  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::NumericElementwiseOperation::Add)
                 .arguments.size(),
             6u);
-  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrConvKind::Conv)
+  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::TargetConvolutionOperation::Convolution)
                 .arguments.size(),
             32u);
-  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::InstrPeripheralKind::Bilinear)
+  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::TargetPeripheralOperation::Bilinear)
                 .arguments.size(),
             18u);
   EXPECT_EQ(
-      wafer::getTargetCallDescriptor(wafer::InstrElementwiseKind::Add).symbol,
+      wafer::getTargetCallDescriptor(wafer::NumericElementwiseOperation::Add).symbol,
       "wafer_tx81_elementwise_add_v3");
   EXPECT_EQ(
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::GemmOriented)
@@ -926,15 +929,15 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
 
 TEST(TargetCallRegistryTest, DecodesExplicitWorkerOneAndTwo) {
   const wafer::TargetCallDescriptor &descriptor =
-      wafer::getTargetCallDescriptor(wafer::InstrElementwiseKind::Add);
+      wafer::getTargetCallDescriptor(wafer::NumericElementwiseOperation::Add);
   ASSERT_TRUE(descriptor.issueDomain.has_value());
   ASSERT_TRUE(descriptor.issueDomain->nccWorkerArgument.has_value());
-  for (wafer::NCCWorker expected :
-       {wafer::NCCWorker::Worker1, wafer::NCCWorker::Worker2}) {
+  for (wafer::TargetNCCWorker expected :
+       {wafer::TargetNCCWorker::Worker1, wafer::TargetNCCWorker::Worker2}) {
     std::vector<uint64_t> arguments = makeDecodableArguments(descriptor);
     arguments[*descriptor.issueDomain->nccWorkerArgument] =
         static_cast<uint32_t>(expected);
-    llvm::Expected<std::optional<wafer::NCCWorker>> worker =
+    llvm::Expected<std::optional<wafer::TargetNCCWorker>> worker =
         wafer::decodeTargetCallNCCWorker(descriptor, arguments);
     ASSERT_TRUE(static_cast<bool>(worker))
         << llvm::toString(worker.takeError());
@@ -951,8 +954,8 @@ TEST(TargetCallRegistryTest, RejectsOutOfRangeExplicitWorker) {
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA);
   std::vector<uint64_t> arguments = makeDecodableArguments(descriptor);
   arguments[*descriptor.issueDomain->nccWorkerArgument] =
-      wafer::kNCCWorkerCount;
-  llvm::Expected<std::optional<wafer::NCCWorker>> worker =
+      wafer::kTargetNCCWorkerCount;
+  llvm::Expected<std::optional<wafer::TargetNCCWorker>> worker =
       wafer::decodeTargetCallNCCWorker(descriptor, arguments);
   ASSERT_FALSE(static_cast<bool>(worker));
   EXPECT_NE(llvm::toString(worker.takeError()).find("worker domain"),
@@ -968,7 +971,7 @@ TEST(TargetCallRegistryTest, NCCJoinDecoderRejectsInvalidParticipantMasks) {
   EXPECT_NE(llvm::toString(empty.takeError()).find("participant mask"),
             std::string::npos);
   const uint64_t outside = uint64_t{1}
-                           << static_cast<uint32_t>(wafer::kNCCWorkerCount);
+                           << static_cast<uint32_t>(wafer::kTargetNCCWorkerCount);
   auto outOfRange =
       wafer::decodeTargetCallPayload(descriptor, context, {outside});
   ASSERT_FALSE(static_cast<bool>(outOfRange));
@@ -1042,18 +1045,19 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
     if (transaction.nccIssueDomain) {
       EXPECT_NE(transaction.nccIssueDomain->engine,
                 wafer::TargetCallTSMEngine::DirectDTE);
-      EXPECT_EQ(transaction.nccIssueDomain->worker, wafer::NCCWorker::Worker0);
+      EXPECT_EQ(transaction.nccIssueDomain->worker, wafer::TargetNCCWorker::Worker0);
       EXPECT_EQ(transaction.nccIssueDomain->completionBehavior,
-                wafer::LocalInstructionCompletion::OrderedPending);
+                wafer::TargetNCCCompletionBehavior::OrderedAsynchronousIssue);
     }
     if (const auto *elementwise =
-            std::get_if<wafer::compiler::TargetElementwiseTransaction>(
+            std::get_if<wafer::target::TargetElementwiseTransaction>(
                 &transaction.payload)) {
       sawAdd = true;
       ASSERT_TRUE(transaction.nccIssueDomain.has_value());
       EXPECT_EQ(transaction.nccIssueDomain->engine,
                 wafer::TargetCallTSMEngine::CT);
-      EXPECT_EQ(elementwise->kind, wafer::InstrElementwiseKind::Add);
+      EXPECT_EQ(elementwise->operation,
+                wafer::NumericElementwiseOperation::Add);
       EXPECT_TRUE(elementwise->rhs.has_value());
       totalAddElements += elementwise->elementCount;
       EXPECT_EQ(elementwise->format, wafer::LogicalFormat::F32);
@@ -1083,10 +1087,10 @@ TEST(TargetCallFrontendTest, CarriesExplicitWorkerOneAndTwoIntoTransactions) {
         if (!descriptor || !descriptor->issueDomain ||
             !descriptor->issueDomain->nccWorkerArgument)
           continue;
-        wafer::NCCWorker worker =
+        wafer::TargetNCCWorker worker =
             descriptor->issueDomain->engine == wafer::TargetCallTSMEngine::CT
-                ? wafer::NCCWorker::Worker2
-                : wafer::NCCWorker::Worker1;
+                ? wafer::TargetNCCWorker::Worker2
+                : wafer::TargetNCCWorker::Worker1;
         call->setArgOperand(
             *descriptor->issueDomain->nccWorkerArgument,
             llvm::ConstantInt::get(llvm::Type::getInt32Ty(module.getContext()),
@@ -1108,9 +1112,9 @@ TEST(TargetCallFrontendTest, CarriesExplicitWorkerOneAndTwoIntoTransactions) {
     if (!transaction.nccIssueDomain)
       continue;
     sawWorker1 |=
-        transaction.nccIssueDomain->worker == wafer::NCCWorker::Worker1;
+        transaction.nccIssueDomain->worker == wafer::TargetNCCWorker::Worker1;
     sawWorker2 |=
-        transaction.nccIssueDomain->worker == wafer::NCCWorker::Worker2;
+        transaction.nccIssueDomain->worker == wafer::TargetNCCWorker::Worker2;
   }
   EXPECT_TRUE(sawWorker1);
   EXPECT_TRUE(sawWorker2);
@@ -1130,8 +1134,8 @@ TEST(TargetCallFrontendTest,
       module.getFunction(bundle->getModules().front().getEntrySymbol());
   ASSERT_NE(entry, nullptr);
   llvm::IRBuilder<> builder(entry->getEntryBlock().getTerminator());
-  for (wafer::InstrPeripheralKind kind : {wafer::InstrPeripheralKind::ArgMax,
-                                          wafer::InstrPeripheralKind::ArgMin}) {
+  for (wafer::TargetPeripheralOperation kind : {wafer::TargetPeripheralOperation::ArgMaximum,
+                                          wafer::TargetPeripheralOperation::ArgMinimum}) {
     const wafer::TargetCallDescriptor &descriptor =
         wafer::getTargetCallDescriptor(kind);
     llvm::SmallVector<llvm::Type *, 10> argumentTypes;
@@ -1167,18 +1171,20 @@ TEST(TargetCallFrontendTest,
   for (const wafer::compiler::TargetTransaction &transaction :
        sink.transactions) {
     const auto *payload =
-        std::get_if<wafer::compiler::TargetPeripheralArgExtremaTransaction>(
+        std::get_if<wafer::target::TargetPeripheralArgExtremaTransaction>(
             &transaction.payload);
     if (!payload)
       continue;
-    sawArgMax |= payload->kind == wafer::InstrPeripheralKind::ArgMax;
-    sawArgMin |= payload->kind == wafer::InstrPeripheralKind::ArgMin;
+    sawArgMax |= payload->operation ==
+                 wafer::TargetPeripheralOperation::ArgMaximum;
+    sawArgMin |= payload->operation ==
+                 wafer::TargetPeripheralOperation::ArgMinimum;
     ASSERT_TRUE(transaction.nccIssueDomain.has_value());
     EXPECT_EQ(transaction.nccIssueDomain->engine,
               wafer::TargetCallTSMEngine::CT);
-    EXPECT_EQ(transaction.nccIssueDomain->worker, wafer::NCCWorker::Worker0);
+    EXPECT_EQ(transaction.nccIssueDomain->worker, wafer::TargetNCCWorker::Worker0);
     EXPECT_EQ(transaction.nccIssueDomain->completionBehavior,
-              wafer::LocalInstructionCompletion::SynchronousWriteback);
+              wafer::TargetNCCCompletionBehavior::SynchronousWriteback);
     ++synchronousArgExtremaCount;
   }
   EXPECT_TRUE(sawArgMax);

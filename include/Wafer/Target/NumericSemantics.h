@@ -3,8 +3,8 @@
 #ifndef WAFER_TARGET_NUMERICSEMANTICS_H
 #define WAFER_TARGET_NUMERICSEMANTICS_H
 
-#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/NumericCodec.h"
+#include "Wafer/Target/PhysicalLayout.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -65,17 +65,18 @@ llvm::StringRef stringifyModelProfileId(ModelProfileId id);
 
 /// Validated logical tensor identity: format, the shared Wafer physical layout
 /// family, complete static shape, checked element count and a digest covering
-/// all four facts. The key carries only the MemLayout enum; physical geometry
-/// remains derived by MemoryAttr from dtype and shape.
+/// all four facts. The key carries only the pure target layout enum; physical
+/// geometry remains derived from dtype and shape by the shared calculator.
 class NumericTensorKey {
 public:
   NumericTensorKey() = delete;
 
-  static llvm::Expected<NumericTensorKey>
-  create(LogicalFormat format, MemLayout layout, std::vector<uint64_t> shape);
+  static llvm::Expected<NumericTensorKey> create(LogicalFormat format,
+                                                 PhysicalTensorLayout layout,
+                                                 std::vector<uint64_t> shape);
 
   LogicalFormat getFormat() const { return format; }
-  MemLayout getLayout() const { return layout; }
+  PhysicalTensorLayout getLayout() const { return layout; }
   llvm::ArrayRef<uint64_t> getShape() const { return shape; }
   uint64_t getElementCount() const { return elementCount; }
   llvm::StringRef getDigest() const { return tensorDigest; }
@@ -92,14 +93,14 @@ public:
   }
 
 private:
-  NumericTensorKey(LogicalFormat format, MemLayout layout,
+  NumericTensorKey(LogicalFormat format, PhysicalTensorLayout layout,
                    std::vector<uint64_t> shape, uint64_t elementCount,
                    std::string tensorDigest)
       : format(format), layout(layout), shape(std::move(shape)),
         elementCount(elementCount), tensorDigest(std::move(tensorDigest)) {}
 
   LogicalFormat format;
-  MemLayout layout;
+  PhysicalTensorLayout layout;
   std::vector<uint64_t> shape;
   uint64_t elementCount;
   std::string tensorDigest;
@@ -304,8 +305,8 @@ struct NumericNEGemmCommand {
   uint16_t n;
   uint16_t batchCount;
   NumericGemmAxes axes;
-  GemmOrientation lhsOrientation;
-  GemmOrientation rhsOrientation;
+  TargetGemmOrientation lhsOrientation;
+  TargetGemmOrientation rhsOrientation;
 
   friend bool operator==(const NumericNEGemmCommand &lhs,
                          const NumericNEGemmCommand &rhs) {
@@ -346,16 +347,16 @@ public:
   createCTConvert(uint16_t opcode, NumericTensorKey source,
                   NumericTensorKey destination,
                   std::optional<NumericConvertParameter> parameter);
-  static llvm::Expected<NumericCommandKey> createCTElementwise(
-      NumericElementwiseOperation operation,
-      std::vector<NumericTensorKey> inputs, NumericTensorKey destination);
+  static llvm::Expected<NumericCommandKey>
+  createCTElementwise(NumericElementwiseOperation operation,
+                      std::vector<NumericTensorKey> inputs,
+                      NumericTensorKey destination);
   static llvm::Expected<NumericCommandKey>
   createNEGemm(NumericTensorKey lhs, NumericTensorKey rhs,
-               NumericTensorKey destination, uint32_t m,
-               uint32_t k, uint32_t n, uint32_t batchCount,
-               NumericGemmAxes axes,
-               GemmOrientation lhsOrientation = GemmOrientation::Normal,
-               GemmOrientation rhsOrientation = GemmOrientation::Normal);
+               NumericTensorKey destination, uint32_t m, uint32_t k, uint32_t n,
+               uint32_t batchCount, NumericGemmAxes axes,
+               TargetGemmOrientation lhsOrientation = TargetGemmOrientation::Normal,
+               TargetGemmOrientation rhsOrientation = TargetGemmOrientation::Normal);
   static llvm::Expected<NumericCommandKey>
   createNativeCTReduce(NumericReduceOperation operation, NumericTensorKey input,
                        NumericTensorKey destination,
@@ -913,8 +914,7 @@ private:
       std::optional<FormalNumericBackendKind> formalBackend,
       std::string patternDigest)
       : modelProfile(modelProfile), family(family),
-        selector(std::move(selector)),
-        modelCapability(modelCapability),
+        selector(std::move(selector)), modelCapability(modelCapability),
         compilerCapability(compilerCapability),
         evidenceCapability(evidenceCapability), semantics(semantics),
         formalKernel(formalKernel), comparator(comparator),

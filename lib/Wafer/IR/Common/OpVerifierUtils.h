@@ -17,6 +17,13 @@
 
 namespace wafer::detail {
 
+/// Returns true for an explicitly namespaced, non-Wafer discardable
+/// attribute. Wafer operation verifiers may accept instrumentation metadata
+/// owned by another dialect while continuing to reject schema-free Wafer
+/// semantics and unnamespaced spelling conventions.
+bool isExternalDiscardableAttribute(mlir::Operation *op,
+                                    mlir::NamedAttribute attribute);
+
 bool isSPMMemRef(mlir::Type type);
 bool isSPMBuffer(mlir::Type type);
 std::optional<wafer::MemLayout> getWaferLayout(mlir::Type type);
@@ -40,12 +47,6 @@ mlir::LogicalResult
 verifyPartitionIdsWithinExecutionMesh(mlir::Operation *op,
                                       llvm::ArrayRef<int64_t> partitionIds,
                                       llvm::StringRef subject);
-mlir::LogicalResult verifyPhysicalTileIdWithinTopology(
-    mlir::Operation *op, int64_t physicalTileId, llvm::StringRef subject);
-mlir::LogicalResult verifyPhysicalTileIdsWithinTopology(
-    mlir::Operation *op, llvm::ArrayRef<int64_t> physicalTileIds,
-    llvm::StringRef subject);
-
 mlir::LogicalResult verifyDTEP2P(mlir::Operation *op, mlir::Value buffer,
                                  mlir::IntegerAttr peer,
                                  mlir::IntegerAttr bytes, mlir::Type tokenType);
@@ -69,11 +70,13 @@ bool hasAnyBatchedGemmAttrs(mlir::Operation *op);
 mlir::LogicalResult verifyBatchedGemmTileContract(
     mlir::Operation *op, mlir::RankedTensorType lhsTensor,
     mlir::RankedTensorType rhsTensor, mlir::RankedTensorType resultTensor,
+    GemmOrientation lhsOrientation, GemmOrientation rhsOrientation,
     BatchedGemmDimAttrs &attrs);
 mlir::LogicalResult
 verifyElementwiseTileContract(mlir::Operation *op,
                               wafer::ComputeElementwiseKind kind,
-                              mlir::ValueRange inputs, mlir::Type resultType);
+                              mlir::ValueRange inputs, mlir::Type resultType,
+                              mlir::ArrayAttr indexingMaps = {});
 mlir::LogicalResult verifyReduceTileContract(mlir::Operation *op,
                                              mlir::Value input,
                                              mlir::Type resultType);

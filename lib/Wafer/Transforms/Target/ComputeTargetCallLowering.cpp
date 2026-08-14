@@ -1,6 +1,7 @@
 //===- Target LLVM lowering implementation -------------------------------===//
 
 #include "Target/LowerInstrToTargetLLVMInternal.h"
+#include "Target/TargetCallIRAdapter.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
@@ -91,10 +92,6 @@ mlir::LogicalResult FunctionLowering::lowerFill(InstrFillOp op) {
 }
 
 mlir::LogicalResult FunctionLowering::lowerElementwise(InstrElementwiseOp op) {
-  if (op->hasAttr("indexing_maps"))
-    return op.emitError()
-           << "unsupported_target_instr: terminal elementwise retains "
-              "indexing_maps after instruction legalization";
   llvm::SmallVector<mlir::Value, 8> args;
   for (mlir::Value input : op.getInputs()) {
     mlir::FailureOr<mlir::Value> address =
@@ -176,10 +173,6 @@ mlir::LogicalResult FunctionLowering::lowerMaskMove(InstrMaskMoveOp op) {
 }
 
 mlir::LogicalResult FunctionLowering::lowerReduce(InstrReduceOp op) {
-  if (op->hasAttr("init_value") || op->hasAttr("init"))
-    return op.emitError()
-           << "unsupported_target_instr: terminal reduce retains source "
-              "initialization after instruction legalization";
   llvm::SmallVector<mlir::Value, 10> args;
   mlir::FailureOr<mlir::Value> input =
       materializeAddress(op, op.getInput(), "reduce input");

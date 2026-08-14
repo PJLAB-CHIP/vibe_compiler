@@ -1,9 +1,10 @@
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/MemoryPlanning.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -47,7 +48,7 @@ void registerConversionDialects(mlir::DialectRegistry &registry) {
                   mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
                   mlir::math::MathDialect, mlir::memref::MemRefDialect,
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
       registry);
@@ -1556,7 +1557,7 @@ module {
   mlir::PassManager preparation(&context);
   wafer::buildPrepareScheduledRankCandidatePipeline(preparation);
   ASSERT_TRUE(mlir::succeeded(preparation.run(*lowered)));
-  ASSERT_TRUE(mlir::succeeded(wafer::rebuildMinimumNCCJoins(*lowered)));
+  ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(*lowered)));
   EXPECT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
       *lowered, /*spmBase=*/65536, /*spmLimit=*/3080192,
       /*spmAlignment=*/256)));

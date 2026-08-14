@@ -11,7 +11,7 @@
 namespace wafer {
 namespace {
 
-using namespace compiler;
+using namespace target;
 
 static uint32_t argument32(llvm::ArrayRef<uint64_t> arguments, size_t index) {
   assert(arguments[index] <= std::numeric_limits<uint32_t>::max());
@@ -115,16 +115,16 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
       return format.takeError();
     uint32_t lhsOrientation = argument32(arguments, 8);
     uint32_t rhsOrientation = argument32(arguments, 9);
-    if (lhsOrientation > static_cast<uint32_t>(GemmOrientation::Transpose) ||
-        rhsOrientation > static_cast<uint32_t>(GemmOrientation::Transpose))
+    if (lhsOrientation > static_cast<uint32_t>(TargetGemmOrientation::Transpose) ||
+        rhsOrientation > static_cast<uint32_t>(TargetGemmOrientation::Transpose))
       return llvm::createStringError(
           "oriented GEMM orientation field is not a closed enum value");
     return TargetTransactionPayload{TargetGemmTransaction{
         arguments[0], arguments[1], arguments[2], argument32(arguments, 3),
         argument32(arguments, 4), argument32(arguments, 5),
         argument32(arguments, 6), *format,
-        static_cast<GemmOrientation>(lhsOrientation),
-        static_cast<GemmOrientation>(rhsOrientation)}};
+        static_cast<TargetGemmOrientation>(lhsOrientation),
+        static_cast<TargetGemmOrientation>(rhsOrientation)}};
   }
   case TargetCallBuiltin::TDMAPad:
   case TargetCallBuiltin::TDMAImg2Col: {
@@ -146,7 +146,7 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
   }
   case TargetCallBuiltin::NCCJoin: {
     uint32_t participants = argument32(arguments, 0);
-    if (participants == 0 || (participants & ~kAllNCCWorkersMask) != 0)
+    if (participants == 0 || (participants & ~kAllTargetNCCWorkersMask) != 0)
       return llvm::createStringError(
           "NCC join participant mask is empty or outside the target worker "
           "domain");
@@ -186,7 +186,7 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
 
 static llvm::Expected<TargetTransactionPayload>
 buildElementwiseTransaction(const TargetCallDecodeContext &context,
-                            InstrElementwiseKind kind,
+                            NumericElementwiseOperation kind,
                             llvm::ArrayRef<uint64_t> arguments) {
   bool unary = arguments.size() == 4;
   size_t destinationIndex = unary ? 1 : 2;
@@ -204,7 +204,7 @@ buildElementwiseTransaction(const TargetCallDecodeContext &context,
 
 static llvm::Expected<TargetTransactionPayload>
 buildReduceTransaction(const TargetCallDecodeContext &context,
-                       InstrReduceKind kind,
+                       NumericReduceOperation kind,
                        llvm::ArrayRef<uint64_t> arguments) {
   llvm::Expected<LogicalFormat> format =
       decodeFormat(TargetFormatEngine::CT, arguments[7]);
@@ -216,18 +216,20 @@ buildReduceTransaction(const TargetCallDecodeContext &context,
 }
 
 static llvm::Expected<TargetTransactionPayload>
-buildConvertTransaction(InstrConvertKind kind,
+buildConvertTransaction(TargetConvertOperation kind,
                         llvm::ArrayRef<uint64_t> arguments) {
   std::optional<uint32_t> zeroPoint;
   std::optional<uint32_t> roundingMode;
-  switch (getInstrConvertParameterKind(kind)) {
-  case InstrConvertParameterKind::ZeroPoint:
+  const TargetConvertRoute *route = findTargetConvertRoute(kind.getOpcode());
+  assert(route && "target-call descriptor must carry a registered convert");
+  switch (route->parameterKind) {
+  case TargetConvertParameterKind::ZeroPoint:
     zeroPoint = argument32(arguments, 3);
     break;
-  case InstrConvertParameterKind::RoundingMode:
+  case TargetConvertParameterKind::RoundingMode:
     roundingMode = argument32(arguments, 4);
     break;
-  case InstrConvertParameterKind::None:
+  case TargetConvertParameterKind::None:
     break;
   }
   return TargetTransactionPayload{TargetConvertTransaction{
@@ -236,7 +238,7 @@ buildConvertTransaction(InstrConvertKind kind,
 }
 
 static llvm::Expected<TargetTransactionPayload>
-buildConvTransaction(const TargetCallDecodeContext &context, InstrConvKind kind,
+buildConvTransaction(const TargetCallDecodeContext &context, TargetConvolutionOperation kind,
                      llvm::ArrayRef<uint64_t> arguments) {
   if (llvm::Error error = verifyStaticKind(
           argument32(arguments, 3), static_cast<uint32_t>(kind), "convolution"))
@@ -254,10 +256,10 @@ buildConvTransaction(const TargetCallDecodeContext &context, InstrConvKind kind,
 }
 
 static llvm::Expected<TargetTransactionPayload>
-buildPoolTransaction(const TargetCallDecodeContext &context, InstrPoolKind kind,
+buildPoolTransaction(const TargetCallDecodeContext &context, TargetPoolingOperation kind,
                      llvm::ArrayRef<uint64_t> arguments) {
-  bool indexed =
-      kind == InstrPoolKind::IndexedMax || kind == InstrPoolKind::IndexedMin;
+  bool indexed = kind == TargetPoolingOperation::IndexedMaximum ||
+                 kind == TargetPoolingOperation::IndexedMinimum;
   size_t firstField = indexed ? 3 : 2;
   if (llvm::Error error = verifyStaticKind(argument32(arguments, firstField),
                                            static_cast<uint32_t>(kind), "pool"))
@@ -277,7 +279,7 @@ buildPoolTransaction(const TargetCallDecodeContext &context, InstrPoolKind kind,
 
 static llvm::Expected<TargetTransactionPayload>
 buildUnpoolTransaction(const TargetCallDecodeContext &context,
-                       InstrUnpoolKind kind,
+                       TargetUnpoolingOperation kind,
                        llvm::ArrayRef<uint64_t> arguments) {
   if (llvm::Error error = verifyStaticKind(
           argument32(arguments, 2), static_cast<uint32_t>(kind), "unpool"))
@@ -288,7 +290,7 @@ buildUnpoolTransaction(const TargetCallDecodeContext &context,
     return format.takeError();
   return TargetTransactionPayload{TargetUnpoolTransaction{
       kind, arguments[0], arguments[1],
-      kind == InstrUnpoolKind::Avg
+      kind == TargetUnpoolingOperation::Average
           ? std::nullopt
           : std::optional<uint32_t>(argument32(arguments, 3)),
       argumentArray32<4>(arguments, 4), argumentArray32<4>(arguments, 8),
@@ -297,25 +299,25 @@ buildUnpoolTransaction(const TargetCallDecodeContext &context,
 
 static llvm::Expected<TargetTransactionPayload>
 buildPeripheralTransaction(const TargetCallDecodeContext &context,
-                           InstrPeripheralKind kind,
+                           TargetPeripheralOperation kind,
                            llvm::ArrayRef<uint64_t> arguments) {
   size_t addressCount = 0;
   switch (kind) {
-  case InstrPeripheralKind::ArgMax:
-  case InstrPeripheralKind::ArgMin:
-  case InstrPeripheralKind::Lut16:
-  case InstrPeripheralKind::Lut32:
+  case TargetPeripheralOperation::ArgMaximum:
+  case TargetPeripheralOperation::ArgMinimum:
+  case TargetPeripheralOperation::LookupTable16:
+  case TargetPeripheralOperation::LookupTable32:
     addressCount = 3;
     break;
-  case InstrPeripheralKind::Bilinear:
-  case InstrPeripheralKind::ElemMask:
+  case TargetPeripheralOperation::Bilinear:
+  case TargetPeripheralOperation::ElementMask:
     addressCount = 2;
     break;
-  case InstrPeripheralKind::RandGen:
+  case TargetPeripheralOperation::Random:
     addressCount = 5;
     break;
-  case InstrPeripheralKind::Count:
-  case InstrPeripheralKind::Factorize:
+  case TargetPeripheralOperation::Count:
+  case TargetPeripheralOperation::Factorize:
     return llvm::createStringError(
         "peripheral kind has no registered target-call ABI");
   }
@@ -331,36 +333,36 @@ buildPeripheralTransaction(const TargetCallDecodeContext &context,
     return format.takeError();
 
   switch (kind) {
-  case InstrPeripheralKind::ArgMax:
-  case InstrPeripheralKind::ArgMin:
+  case TargetPeripheralOperation::ArgMaximum:
+  case TargetPeripheralOperation::ArgMinimum:
     return TargetTransactionPayload{TargetPeripheralArgExtremaTransaction{
         kind, arguments[0], arguments[1], arguments[2],
         argument32(arguments, elementIndex), *format}};
-  case InstrPeripheralKind::Bilinear:
+  case TargetPeripheralOperation::Bilinear:
     return TargetTransactionPayload{TargetPeripheralBilinearTransaction{
         arguments[0], arguments[1], argument32(arguments, elementIndex),
         *format, argumentArray32<4>(arguments, addressCount + 3),
         argumentArray32<4>(arguments, addressCount + 7)}};
-  case InstrPeripheralKind::Lut16:
-  case InstrPeripheralKind::Lut32:
+  case TargetPeripheralOperation::LookupTable16:
+  case TargetPeripheralOperation::LookupTable32:
     return TargetTransactionPayload{TargetPeripheralLUTTransaction{
         kind, arguments[0], arguments[1], arguments[2],
         argument32(arguments, elementIndex), *format,
         argument32(arguments, addressCount + 3)}};
-  case InstrPeripheralKind::RandGen:
+  case TargetPeripheralOperation::Random:
     return TargetTransactionPayload{TargetPeripheralRandomTransaction{
         {arguments[0], arguments[1]},
         {arguments[2], arguments[3], arguments[4]},
         argument32(arguments, elementIndex),
         *format}};
-  case InstrPeripheralKind::ElemMask:
+  case TargetPeripheralOperation::ElementMask:
     return TargetTransactionPayload{TargetPeripheralElementMaskTransaction{
         arguments[0], arguments[1], argument32(arguments, elementIndex),
         *format, argument32(arguments, addressCount + 4),
         argument32(arguments, addressCount + 5),
         argument32(arguments, addressCount + 6)}};
-  case InstrPeripheralKind::Count:
-  case InstrPeripheralKind::Factorize:
+  case TargetPeripheralOperation::Count:
+  case TargetPeripheralOperation::Factorize:
     break;
   }
   llvm_unreachable("unknown peripheral kind");
@@ -368,7 +370,7 @@ buildPeripheralTransaction(const TargetCallDecodeContext &context,
 
 } // namespace
 
-llvm::Expected<compiler::TargetTransactionPayload>
+llvm::Expected<target::TargetTransactionPayload>
 decodeTargetCallPayload(const TargetCallDescriptor &descriptor,
                         const TargetCallDecodeContext &context,
                         llvm::ArrayRef<uint64_t> arguments) {
@@ -381,7 +383,7 @@ decodeTargetCallPayload(const TargetCallDescriptor &descriptor,
       return llvm::createStringError(
           "target-call i32 payload argument does not fit uint32");
 
-  llvm::Expected<std::optional<NCCWorker>> worker =
+  llvm::Expected<std::optional<TargetNCCWorker>> worker =
       decodeTargetCallNCCWorker(descriptor, arguments);
   if (!worker)
     return worker.takeError();
@@ -394,43 +396,43 @@ decodeTargetCallPayload(const TargetCallDescriptor &descriptor,
           std::get_if<TargetCallBuiltin>(&descriptor.semantic))
     return buildBuiltinTransaction(context, *builtin, payloadArguments);
   if (const auto *kind =
-          std::get_if<InstrElementwiseKind>(&descriptor.semantic))
+          std::get_if<NumericElementwiseOperation>(&descriptor.semantic))
     return buildElementwiseTransaction(context, *kind, payloadArguments);
-  if (const auto *kind = std::get_if<InstrReduceKind>(&descriptor.semantic))
+  if (const auto *kind = std::get_if<NumericReduceOperation>(&descriptor.semantic))
     return buildReduceTransaction(context, *kind, payloadArguments);
-  if (const auto *kind = std::get_if<InstrConvertKind>(&descriptor.semantic))
+  if (const auto *kind = std::get_if<TargetConvertOperation>(&descriptor.semantic))
     return buildConvertTransaction(*kind, payloadArguments);
-  if (const auto *kind = std::get_if<InstrConvKind>(&descriptor.semantic))
+  if (const auto *kind = std::get_if<TargetConvolutionOperation>(&descriptor.semantic))
     return buildConvTransaction(context, *kind, payloadArguments);
-  if (const auto *kind = std::get_if<InstrPoolKind>(&descriptor.semantic))
+  if (const auto *kind = std::get_if<TargetPoolingOperation>(&descriptor.semantic))
     return buildPoolTransaction(context, *kind, payloadArguments);
-  if (const auto *kind = std::get_if<InstrUnpoolKind>(&descriptor.semantic))
+  if (const auto *kind = std::get_if<TargetUnpoolingOperation>(&descriptor.semantic))
     return buildUnpoolTransaction(context, *kind, payloadArguments);
-  if (const auto *kind = std::get_if<InstrPeripheralKind>(&descriptor.semantic))
+  if (const auto *kind = std::get_if<TargetPeripheralOperation>(&descriptor.semantic))
     return buildPeripheralTransaction(context, *kind, payloadArguments);
   llvm_unreachable("unknown target-call semantic");
 }
 
-llvm::Expected<std::optional<NCCWorker>>
+llvm::Expected<std::optional<TargetNCCWorker>>
 decodeTargetCallNCCWorker(const TargetCallDescriptor &descriptor,
                           llvm::ArrayRef<uint64_t> arguments) {
   if (arguments.size() != descriptor.arguments.size())
     return llvm::createStringError(
         "target-call worker argument count does not match its descriptor");
   if (!descriptor.issueDomain)
-    return std::optional<NCCWorker>{};
+    return std::optional<TargetNCCWorker>{};
   if (!descriptor.issueDomain->nccWorkerArgument)
-    return std::optional<NCCWorker>{};
+    return std::optional<TargetNCCWorker>{};
   size_t index = *descriptor.issueDomain->nccWorkerArgument;
   if (index >= arguments.size() || index + 1 != arguments.size() ||
       descriptor.arguments[index] != TargetCallScalarType::I32)
     return llvm::createStringError(
         "target-call registry has an invalid trailing NCC worker argument");
   uint64_t worker = arguments[index];
-  if (worker >= kNCCWorkerCount)
+  if (worker >= kTargetNCCWorkerCount)
     return llvm::createStringError(
         "target-call NCC worker is outside the target worker domain");
-  return std::optional<NCCWorker>{static_cast<NCCWorker>(worker)};
+  return std::optional<TargetNCCWorker>{static_cast<TargetNCCWorker>(worker)};
 }
 
 } // namespace wafer

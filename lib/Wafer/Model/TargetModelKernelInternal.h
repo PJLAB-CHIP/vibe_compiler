@@ -28,50 +28,50 @@ readSnapshot(const InvocationMemoryRegistry &memory, int64_t launchSlot,
 
 llvm::Expected<TargetModelCommandEffect>
 executeMovement(const compiler::TargetTransaction &transaction,
-                const compiler::TargetStridedDMATransaction &value,
+                const target::TargetStridedDMATransaction &value,
                 const InvocationMemoryRegistry &memory,
                 TargetModelKernelBudget budget);
 
 llvm::Expected<TargetModelCommandEffect>
 executeGatherScatter(const compiler::TargetTransaction &transaction,
-                     const compiler::TargetGatherScatterTransaction &value,
+                     const target::TargetGatherScatterTransaction &value,
                      const InvocationMemoryRegistry &memory,
                      TargetModelKernelBudget budget);
 
 llvm::Expected<TargetModelCommandEffect>
 executeElementwise(const compiler::TargetTransaction &transaction,
-                   const compiler::TargetElementwiseTransaction &value,
+                   const target::TargetElementwiseTransaction &value,
                    const InvocationMemoryRegistry &memory,
                    TargetModelKernelBudget budget,
                    TargetModelExecutionPolicy policy);
 
 llvm::Expected<TargetModelCommandEffect>
 executeConvert(const compiler::TargetTransaction &transaction,
-               const compiler::TargetConvertTransaction &value,
+               const target::TargetConvertTransaction &value,
                const InvocationMemoryRegistry &memory,
                TargetModelKernelBudget budget,
                TargetModelExecutionPolicy policy);
 
 llvm::Expected<TargetModelCommandEffect>
 executeReduce(const compiler::TargetTransaction &transaction,
-              const compiler::TargetReduceTransaction &value,
+              const target::TargetReduceTransaction &value,
               const InvocationMemoryRegistry &memory,
               TargetModelKernelBudget budget,
               TargetModelExecutionPolicy policy);
 
 llvm::Expected<TargetModelCommandEffect>
 executeGemm(const compiler::TargetTransaction &transaction,
-            const compiler::TargetGemmTransaction &value,
+            const target::TargetGemmTransaction &value,
             const InvocationMemoryRegistry &memory,
             TargetModelKernelBudget budget, TargetModelExecutionPolicy policy);
 
 llvm::Expected<TargetModelCommandEffect>
 executeMemset(const compiler::TargetTransaction &transaction,
-              const compiler::TargetMemsetTransaction &value,
+              const target::TargetMemsetTransaction &value,
               const InvocationMemoryRegistry &memory);
 
 TargetModelControlAction
-getControlAction(const compiler::TargetTransactionPayload &payload);
+getControlAction(const target::TargetTransactionPayload &payload);
 
 llvm::Error
 validateControlAddresses(const compiler::TargetTransaction &transaction,

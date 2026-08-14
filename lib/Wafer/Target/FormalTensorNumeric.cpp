@@ -311,11 +311,11 @@ executeGemm(const ResolvedNumericCommand &command,
         RawLogicalValue accumulator{LogicalFormat::F32, UINT64_C(0)};
         for (uint64_t k = 0; k < gemm.k; ++k) {
           const uint64_t lhsIndex =
-              lhsBatchBase + (gemm.lhsOrientation == GemmOrientation::Normal
+              lhsBatchBase + (gemm.lhsOrientation == TargetGemmOrientation::Normal
                                   ? m * gemm.k + k
                                   : k * gemm.m + m);
           const uint64_t rhsIndex =
-              rhsBatchBase + (gemm.rhsOrientation == GemmOrientation::Normal
+              rhsBatchBase + (gemm.rhsOrientation == TargetGemmOrientation::Normal
                                   ? k * gemm.n + n
                                   : n * gemm.k + k);
           llvm::Expected<FormalNumericResult> step =

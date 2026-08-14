@@ -1,6 +1,6 @@
-#include "Wafer/Analysis/CollectiveTopologyAnalysis.h"
+#include "../../lib/Wafer/Analysis/CollectiveTopologyAnalysis.h"
 #include "Wafer/Frontend/InitImporterDialects.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Parser/Parser.h"
@@ -12,7 +12,7 @@ namespace {
 class CollectiveTopologyTest : public ::testing::Test {
 protected:
   CollectiveTopologyTest() {
-    wafer::registerAllDialects(registry);
+    wafer::registerWaferCoreDialects(registry);
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   }

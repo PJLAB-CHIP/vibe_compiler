@@ -3,7 +3,7 @@
 #include "Wafer/Model/SystemCTargetModel.h"
 
 #include "Wafer/Compiler/TargetCallFrontend.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
 #include "Wafer/Compiler/CompilationInternal.h"
@@ -50,6 +50,7 @@ namespace {
 using namespace wafer;
 using namespace wafer::compiler;
 using namespace wafer::model;
+using namespace wafer::target;
 
 frontend::ProgramBoundaryBinding
 singlePartitionBoundary(int64_t index, llvm::ArrayRef<int64_t> shape) {
@@ -164,11 +165,11 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
   std::vector<TargetCallTileArguments> arguments;
   std::vector<TargetModelInputBinding> inputs;
   NumericTensorKey lhsKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, MemLayout::Tensor, {2, 1, 128}));
+      LogicalFormat::F16, PhysicalTensorLayout::Tensor, {2, 1, 128}));
   NumericTensorKey rhsKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, MemLayout::Tensor, {2, 128, 16}));
+      LogicalFormat::F16, PhysicalTensorLayout::Tensor, {2, 128, 16}));
   NumericTensorKey outputKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, MemLayout::Tensor, {2, 1, 16}));
+      LogicalFormat::F16, PhysicalTensorLayout::Tensor, {2, 1, 16}));
 
   std::vector<RawLogicalValue> lhs(2 * 128, {LogicalFormat::F16, UINT64_C(0)});
   for (size_t k = 0; k < 128; ++k) {

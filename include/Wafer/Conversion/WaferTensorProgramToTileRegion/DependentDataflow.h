@@ -153,8 +153,8 @@ mlir::LogicalResult lowerSpatialEdgeStrategiesToTileRegionModule(
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
     int64_t currentLogicalPartition,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles = {},
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage = {},
-    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage = {});
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
+    StructuredMaterializationRelations *materializationRelations = nullptr);
 
 } // namespace wafer
 

@@ -199,3 +199,13 @@ source program
 - tests按Dialect、Analysis、Conversion、Pipeline/Tool、Runtime、Model、Board边界组织；fixture不能成为第二schema/ABI实现。
 - internal low-level aggregate module或JIT bridge可保留，但长期合同仍由explicit Tile interfaces、typed resources和current ABI定义。
 - 文档先写边界和通用方法，再用case示例；case shape、模型名、参数顺序和某次winner不成为协议。
+
+## Current-IR relation维护
+
+- relation side state只描述当前IR epoch。已知rewrite replacement必须通过`IRMapping`、rewriter listener或显式old→new map
+  同步retarget；普通cleanup若删除dead value，只能从live-value集合中丢弃对应relation，不能根据相邻op、类型或位置猜替代。
+  后续仍要求该witness时继续fail closed。
+- composite transport策略不能用一个representative endpoint代替逐fragment事实；例如PeerFragments的source materialization
+  应从每个fragment的source Tile判断，不能从strategy级默认source反向推断。
+- rotating buffer的iteration/release/reuse证据必须来自actual producer、consumer和message endpoint共享的static loop。
+  logical edge、Location provenance或上游structured relation只能帮助找到候选，不能代签共同loop。

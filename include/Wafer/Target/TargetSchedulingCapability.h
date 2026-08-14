@@ -4,7 +4,6 @@
 #ifndef WAFER_TARGET_TARGETSCHEDULINGCAPABILITY_H
 #define WAFER_TARGET_TARGETSCHEDULINGCAPABILITY_H
 
-#include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
@@ -209,13 +208,6 @@ private:
 /// card state, runtime sample, PMU sample, or local cache is read.
 llvm::Expected<TargetSchedulingCapabilityRegistry>
 getTargetSchedulingCapabilityRegistry();
-
-/// Derives an exact categorical scheduling query from typed instruction IR.
-/// Dynamic/unknown physical geometry is represented as `geometryKnown=false`
-/// and therefore cannot match a supported static row.
-llvm::Expected<TargetSchedulingWindowQuery>
-analyzeTargetSchedulingWindow(mlir::ModuleOp module,
-                              TargetSchedulingMechanism mechanism);
 
 } // namespace wafer
 

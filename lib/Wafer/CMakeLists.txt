@@ -1,3 +1,4 @@
+add_subdirectory(Target/PhysicalLayout)
 add_subdirectory(IR)
 add_subdirectory(Target)
 add_subdirectory(Frontend)

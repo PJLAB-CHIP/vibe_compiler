@@ -15,8 +15,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/ErrorHandling.h"
 
 #ifdef WAFER_ENABLE_SHARDY
 #include "shardy/dialect/sdy/ir/constants.h"
@@ -31,8 +29,12 @@
 
 namespace wafer {
 
-#ifdef WAFER_ENABLE_SHARDY
+#define GEN_PASS_DEF_APPLYDEFAULTSPMDSHARDINGPASS
+#include "Wafer/Transforms/WaferPasses.h.inc"
+
 namespace {
+
+#ifdef WAFER_ENABLE_SHARDY
 
 constexpr llvm::StringLiteral kDefaultMeshName = "wafer_default_card_mesh";
 constexpr llvm::StringLiteral kMhloShardingAttr = "mhlo.sharding";
@@ -59,10 +61,21 @@ static mlir::FailureOr<DefaultMeshSpec>
 getExecutionMeshSpec(mlir::ModuleOp moduleOp, llvm::StringRef meshName) {
   ExecutionMeshOp meshOp = moduleOp.lookupSymbol<ExecutionMeshOp>(meshName);
   if (!meshOp) {
-    moduleOp.walk([&](ExecutionMeshOp candidate) {
-      if (!meshOp)
+    bool multipleMeshes = false;
+    for (ExecutionMeshOp candidate : moduleOp.getOps<ExecutionMeshOp>()) {
+      if (!meshOp) {
         meshOp = candidate;
-    });
+        continue;
+      }
+      multipleMeshes = true;
+      break;
+    }
+    if (multipleMeshes) {
+      moduleOp.emitOpError(
+          "requires an explicit execution-mesh option when multiple direct "
+          "module execution meshes exist");
+      return mlir::failure();
+    }
   }
   if (!meshOp)
     return mlir::failure();
@@ -73,8 +86,7 @@ getExecutionMeshSpec(mlir::ModuleOp moduleOp, llvm::StringRef meshName) {
         mlir::cast<mlir::StringAttr>(axisAttr).getValue().str());
   for (int64_t dim : meshOp.getShapeAttr().asArrayRef()) {
     int64_t partitionCount = 0;
-    if (dim <= 0 ||
-        !checkedMul(spec.partitionCount, dim, partitionCount)) {
+    if (dim <= 0 || !checkedMul(spec.partitionCount, dim, partitionCount)) {
       meshOp.emitOpError("has invalid shape for default SPMD sharding");
       return mlir::failure();
     }
@@ -370,12 +382,19 @@ static void collectFrontendShardingCustomCalls(
   });
 }
 
-static mlir::LogicalResult
-normalizeFrontendShardingCustomCalls(mlir::ModuleOp moduleOp,
-                                     const DefaultMeshSpec &meshSpec) {
+struct FrontendShardingRewrite {
+  mlir::Operation *customCall = nullptr;
+  mlir::sdy::TensorShardingAttr sharding;
+};
+
+static mlir::FailureOr<llvm::SmallVector<FrontendShardingRewrite>>
+buildFrontendShardingRewritePlan(mlir::ModuleOp moduleOp,
+                                 const DefaultMeshSpec &meshSpec) {
   llvm::SmallVector<mlir::Operation *> customCalls;
   collectFrontendShardingCustomCalls(moduleOp, customCalls);
 
+  llvm::SmallVector<FrontendShardingRewrite> plan;
+  plan.reserve(customCalls.size());
   for (mlir::Operation *op : customCalls) {
     if (op->getNumOperands() != 1 || op->getNumResults() != 1)
       return op->emitError("expected frontend sharding custom call with one "
@@ -396,51 +415,43 @@ normalizeFrontendShardingCustomCalls(mlir::ModuleOp moduleOp,
         buildFrontendSharding(op, shardingAttr, resultType, meshSpec);
     if (mlir::failed(sharding))
       return mlir::failure();
-
-    mlir::OpBuilder builder(op);
-    auto constraint = builder.create<mlir::sdy::ShardingConstraintOp>(
-        op->getLoc(), op->getOperand(0), *sharding);
-    op->getResult(0).replaceAllUsesWith(constraint.getResult());
-    op->erase();
+    plan.push_back({op, *sharding});
   }
-  return mlir::success();
+  return plan;
 }
 
+static void
+applyFrontendShardingRewritePlan(llvm::ArrayRef<FrontendShardingRewrite> plan) {
+  for (const FrontendShardingRewrite &rewrite : plan) {
+    mlir::OpBuilder builder(rewrite.customCall);
+    auto constraint = builder.create<mlir::sdy::ShardingConstraintOp>(
+        rewrite.customCall->getLoc(), rewrite.customCall->getOperand(0),
+        rewrite.sharding);
+    rewrite.customCall->getResult(0).replaceAllUsesWith(constraint.getResult());
+    rewrite.customCall->erase();
+  }
+}
+#endif
+
 struct ApplyDefaultSpmdShardingPass
-    : public mlir::PassWrapper<ApplyDefaultSpmdShardingPass,
-                               mlir::OperationPass<mlir::ModuleOp>> {
-  using Base = mlir::PassWrapper<ApplyDefaultSpmdShardingPass,
-                                 mlir::OperationPass<mlir::ModuleOp>>;
-
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ApplyDefaultSpmdShardingPass)
-
-  ApplyDefaultSpmdShardingPass() = default;
-  ApplyDefaultSpmdShardingPass(const ApplyDefaultSpmdShardingPass &pass)
-      : Base(pass) {
-    executionMeshName = pass.executionMeshName;
-  }
-
-  mlir::Pass::Option<std::string> executionMeshName{
-      *this, "execution-mesh",
-      llvm::cl::desc("wafer.execution.mesh symbol used for default SPMD input "
-                     "sharding seeds"),
-      llvm::cl::init("default_mesh")};
-
-  llvm::StringRef getArgument() const final {
-    return "wafer-apply-default-spmd-sharding";
-  }
-
-  llvm::StringRef getDescription() const final {
-    return "apply Wafer default SDY function-input sharding seeds when a "
-           "function has no user sharding seed";
-  }
+    : public impl::ApplyDefaultSpmdShardingPassBase<
+          ApplyDefaultSpmdShardingPass> {
+  using impl::ApplyDefaultSpmdShardingPassBase<
+      ApplyDefaultSpmdShardingPass>::ApplyDefaultSpmdShardingPassBase;
 
   void getDependentDialects(mlir::DialectRegistry &registry) const final {
-    registry
-        .insert<mlir::func::FuncDialect, mlir::sdy::SdyDialect, WaferDialect>();
+    impl::ApplyDefaultSpmdShardingPassBase<
+        ApplyDefaultSpmdShardingPass>::getDependentDialects(registry);
+#ifdef WAFER_ENABLE_SHARDY
+    registry.insert<mlir::sdy::SdyDialect>();
+#endif
   }
 
   void runOnOperation() final {
+#ifndef WAFER_ENABLE_SHARDY
+    getOperation().emitOpError("requires WAFER_ENABLE_SPMD_PARTITIONER_DEPS");
+    signalPassFailure();
+#else
     mlir::ModuleOp moduleOp = getOperation();
     mlir::FailureOr<DefaultMeshSpec> meshSpec =
         getExecutionMeshSpec(moduleOp, executionMeshName);
@@ -464,8 +475,10 @@ struct ApplyDefaultSpmdShardingPass
     if (funcs.empty() && frontendShardingCustomCalls.empty())
       return;
 
-    mlir::sdy::MeshOp meshOp = getOrCreateDefaultMesh(moduleOp, *meshSpec);
-    if (!isCompatibleDefaultMesh(meshOp, *meshSpec)) {
+    mlir::SymbolTable symbolTable(moduleOp);
+    mlir::sdy::MeshOp meshOp =
+        symbolTable.lookup<mlir::sdy::MeshOp>(kDefaultMeshName);
+    if (meshOp && !isCompatibleDefaultMesh(meshOp, *meshSpec)) {
       meshOp.emitOpError()
           << "conflicts with default Wafer SPMD mesh derived from "
              "wafer.execution.mesh";
@@ -473,23 +486,22 @@ struct ApplyDefaultSpmdShardingPass
       return;
     }
 
-    if (mlir::failed(
-            normalizeFrontendShardingCustomCalls(moduleOp, *meshSpec))) {
+    mlir::FailureOr<llvm::SmallVector<FrontendShardingRewrite>> rewritePlan =
+        buildFrontendShardingRewritePlan(moduleOp, *meshSpec);
+    if (mlir::failed(rewritePlan)) {
       signalPassFailure();
       return;
     }
 
+    if (!meshOp)
+      meshOp = getOrCreateDefaultMesh(moduleOp, *meshSpec);
+    applyFrontendShardingRewritePlan(*rewritePlan);
     for (mlir::func::FuncOp funcOp : funcs)
       applyDefaultInputSeeds(funcOp, *meshSpec);
+#endif
   }
 };
 
 } // namespace
-
-std::unique_ptr<mlir::Pass> createApplyDefaultSpmdShardingPass() {
-  return std::make_unique<ApplyDefaultSpmdShardingPass>();
-}
-
-#endif // WAFER_ENABLE_SHARDY
 
 } // namespace wafer

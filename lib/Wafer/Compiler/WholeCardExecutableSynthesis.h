@@ -18,6 +18,9 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace llvm {
 class raw_ostream;
@@ -39,7 +42,7 @@ struct WholeCardExecutableSynthesisStatistics {
   uint64_t nodePlacementStatesExpanded = 0;
   uint64_t nodePlacementTransitionsRejected = 0;
   uint64_t nodePlacementResourceEquivalentStates = 0;
-  uint64_t nodePlacementFrontierFailures = 0;
+  uint64_t nodePlacementEnumerationFailures = 0;
   uint64_t nodePlacementCandidateProposals = 0;
   uint64_t multiStagePlacementCandidateProposals = 0;
   uint64_t independentComponentCandidateProposals = 0;
@@ -63,6 +66,13 @@ struct WholeCardExecutableSynthesisStatistics {
   uint64_t shortlistedCandidates = 0;
   uint64_t materializedCandidates = 0;
   uint64_t indeterminateCompilationFailures = 0;
+  uint64_t baselineCardProgramMaterializations = 0;
+  uint64_t baselineScopedCardProgramMaterializations = 0;
+  uint64_t baselineRegionSPMCapacityChecks = 0;
+  uint64_t baselineRegionSPMCapacityOverflowProofs = 0;
+  uint64_t baselineRegionSPMChecksRequiringFunctionScope = 0;
+  uint64_t baselineRegionSPMCapacityAnalysisFailures = 0;
+  uint64_t baselineMaximumRegionSPMQueryWorkers = 1;
   uint64_t multiReductionAxisCandidateMaterializations = 0;
   uint64_t nodePlacementCandidateMaterializations = 0;
   uint64_t multiStagePlacementCandidateMaterializations = 0;
@@ -85,7 +95,7 @@ struct WholeCardExecutableSynthesisStatistics {
   uint64_t spmFailureProbeTilesSkipped = 0;
   uint64_t bufferFeedbackTransitions = 0;
   uint64_t bufferFeedbackCandidates = 0;
-  uint64_t frontierFeedbackReorders = 0;
+  uint64_t candidatePriorityReorders = 0;
   uint64_t materializationRejections = 0;
   uint64_t acceptedCandidates = 0;
   uint64_t plannedCandidates = 0;
@@ -118,6 +128,20 @@ struct WholeCardExecutableSynthesisStatistics {
   WholeCardSynthesisStatistics exactGates;
   uint64_t selectedExecutableRematerializations = 0;
   WholeCardSynthesisStatistics selectedExecutableRematerializationGates;
+};
+
+/// Query result at the TensorProgram-to-executable boundary. The executable
+/// is the sole semantic artifact. The printed Tile dataflow snapshots are
+/// same-invocation diagnostic trace and are never admitted into the executable
+/// bundle, package or runtime contract.
+struct WholeCardCompilationResult {
+  WholeCardCompilationResult(AcceptedWholeCardExecutable executable,
+                             std::vector<std::string> tileDataflowIRTrace)
+      : executable(std::move(executable)),
+        tileDataflowIRTrace(std::move(tileDataflowIRTrace)) {}
+
+  AcceptedWholeCardExecutable executable;
+  std::vector<std::string> tileDataflowIRTrace;
 };
 
 /// Derives the capacity-respecting temporal tile at canonical ceilDiv wave
@@ -154,9 +178,9 @@ deriveCapacityTemporalShape(llvm::ArrayRef<int64_t> maximumShardShape,
 /// module crosses TileRegion -> Instr, physical-Tile finalization and exact
 /// admission through the same implementation. Physical identities come from
 /// verified topology and CardProgram projection, never from vector position
-/// or logical partition identity. The selected Tile IR snapshots are captured
-/// immediately before TileRegion -> Instr conversion.
-mlir::FailureOr<AcceptedWholeCardExecutable> synthesizeWholeCardExecutable(
+/// or logical partition identity. Optional inspection output is returned as a
+/// separate same-invocation trace rather than stored in the executable.
+mlir::FailureOr<WholeCardCompilationResult> synthesizeWholeCardExecutable(
     mlir::ModuleOp tensorProgram,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,

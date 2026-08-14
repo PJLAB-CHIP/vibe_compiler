@@ -3,7 +3,7 @@
 #ifndef WAFER_MODEL_TARGETMODELCOMPLETION_H
 #define WAFER_MODEL_TARGETMODELCOMPLETION_H
 
-#include "Wafer/IR/WaferInterfaces.h"
+#include "Wafer/Target/TargetOperation.h"
 
 #include "llvm/ADT/SmallVector.h"
 
@@ -36,16 +36,16 @@ public:
     return true;
   }
 
-  bool addNCCPending(NCCWorker worker, uint64_t issueOrdinal) {
+  bool addNCCPending(TargetNCCWorker worker, uint64_t issueOrdinal) {
     const uint32_t workerOrdinal = static_cast<uint32_t>(worker);
-    return workerOrdinal < kNCCWorkerCount &&
+    return workerOrdinal < kTargetNCCWorkerCount &&
            pendingNCCOrdinals[workerOrdinal].insert(issueOrdinal).second;
   }
 
   llvm::SmallVector<uint64_t, 8>
   takeNCCParticipantPending(uint32_t participantMask) {
     llvm::SmallVector<uint64_t, 8> pending;
-    for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
+    for (uint32_t worker = 0; worker < kTargetNCCWorkerCount; ++worker) {
       if ((participantMask & (uint32_t{1} << worker)) == 0)
         continue;
       pending.append(pendingNCCOrdinals[worker].begin(),
@@ -58,15 +58,16 @@ public:
   uint64_t getNextIssuedOrdinal() const { return nextIssuedOrdinal; }
   uint64_t getNextCompletedOrdinal() const { return nextCompletedOrdinal; }
 
-  size_t getPendingNCCCount(NCCWorker worker) const {
+  size_t getPendingNCCCount(TargetNCCWorker worker) const {
     const uint32_t workerOrdinal = static_cast<uint32_t>(worker);
-    return workerOrdinal < kNCCWorkerCount
+    return workerOrdinal < kTargetNCCWorkerCount
                ? pendingNCCOrdinals[workerOrdinal].size()
                : 0;
   }
 
-  bool hasNCCPending(uint32_t participantMask = kAllNCCWorkersMask) const {
-    for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker)
+  bool hasNCCPending(
+      uint32_t participantMask = kAllTargetNCCWorkersMask) const {
+    for (uint32_t worker = 0; worker < kTargetNCCWorkerCount; ++worker)
       if ((participantMask & (uint32_t{1} << worker)) != 0 &&
           !pendingNCCOrdinals[worker].empty())
         return true;
@@ -77,7 +78,7 @@ private:
   uint64_t nextIssuedOrdinal = 0;
   uint64_t nextCompletedOrdinal = 0;
   std::set<uint64_t> completedOutOfOrder;
-  std::array<std::set<uint64_t>, kNCCWorkerCount> pendingNCCOrdinals;
+  std::array<std::set<uint64_t>, kTargetNCCWorkerCount> pendingNCCOrdinals;
 };
 
 } // namespace wafer::model::detail

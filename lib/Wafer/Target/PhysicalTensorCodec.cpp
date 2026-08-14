@@ -2,17 +2,11 @@
 
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
-#include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
-
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #include <limits>
-#include <memory>
 #include <optional>
 
 namespace wafer {
@@ -23,51 +17,16 @@ llvm::Error codecError(PhysicalTensorCodecErrorCode code,
   return llvm::make_error<PhysicalTensorCodecError>(code, detail.str());
 }
 
-std::optional<mlir::Type> getElementType(mlir::MLIRContext &context,
-                                         LogicalFormat format) {
-  switch (format) {
-  case LogicalFormat::I8:
-  case LogicalFormat::U8:
-    return mlir::IntegerType::get(&context, 8);
-  case LogicalFormat::I16:
-  case LogicalFormat::U16:
-    return mlir::IntegerType::get(&context, 16);
-  case LogicalFormat::I32:
-  case LogicalFormat::U32:
-    return mlir::IntegerType::get(&context, 32);
-  case LogicalFormat::I64:
-  case LogicalFormat::U64:
-    return mlir::IntegerType::get(&context, 64);
-  case LogicalFormat::F16:
-    return mlir::Float16Type::get(&context);
-  case LogicalFormat::BF16:
-    return mlir::BFloat16Type::get(&context);
-  case LogicalFormat::F32:
-  case LogicalFormat::TF32:
-    return mlir::Float32Type::get(&context);
-  case LogicalFormat::Bool:
-    return mlir::IntegerType::get(&context, 1);
-  }
-  return std::nullopt;
-}
-
 struct OwnedPhysicalLayout {
-  mlir::DialectRegistry registry;
-  std::unique_ptr<mlir::MLIRContext> context;
-  mlir::MemRefType type;
-  WaferPhysicalTensorInfo info;
-  std::optional<WaferStaticPhysicalOffsetCalculator> byteOffsets;
+  PhysicalTensorGeometry info;
+  StaticPhysicalTensorOffsetCalculator offsets;
 };
 
 llvm::Expected<OwnedPhysicalLayout>
 makePhysicalLayout(const NumericTensorKey &key) {
-  mlir::DialectRegistry registry;
-  registerAllDialects(registry);
-  auto context = std::make_unique<mlir::MLIRContext>(registry);
-  context->loadDialect<WaferDialect>();
-  std::optional<mlir::Type> elementType =
-      getElementType(*context, key.getFormat());
-  if (!elementType)
+  const LogicalFormatDescriptor *format =
+      findLogicalFormatDescriptor(key.getFormat());
+  if (!format)
     return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
                       "tensor has an unknown format or layout");
   std::vector<int64_t> shape;
@@ -79,24 +38,36 @@ makePhysicalLayout(const NumericTensorKey &key) {
           "tensor dimension exceeds the physical layout helper domain");
     shape.push_back(static_cast<int64_t>(dimension));
   }
-  MemoryAttr memory =
-      MemoryAttr::get(context.get(), MemorySpace::SPM, key.getLayout());
-  mlir::MemRefType type = mlir::MemRefType::get(
-      shape, *elementType, mlir::MemRefLayoutAttrInterface{}, memory);
-  std::optional<WaferPhysicalTensorInfo> info =
-      computeWaferPhysicalTensorInfo(type);
-  if (!info || info->physicalBytes < 0)
+  if (key.getElementCount() >
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+    return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
+                      "tensor element count exceeds layout helper domain");
+  std::optional<PhysicalTensorGeometry> info = computePhysicalTensorGeometry(
+      shape, format->storageBits,
+      key.getFormat() == LogicalFormat::I8 ||
+          key.getFormat() == LogicalFormat::U8,
+      key.getLayout(), static_cast<int64_t>(key.getElementCount()));
+  if (!info)
     return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
                       "shared layout helper rejected the static tensor");
-  std::optional<WaferStaticPhysicalOffsetCalculator> byteOffsets;
-  if (!info->bitPackedElement) {
-    byteOffsets = WaferStaticPhysicalOffsetCalculator::create(type);
-    if (!byteOffsets)
+  llvm::SmallVector<int64_t, 4> elementStrides(shape.size(), 1);
+  int64_t stride = 1;
+  for (int64_t dimension = static_cast<int64_t>(shape.size()) - 1;
+       dimension >= 0; --dimension) {
+    elementStrides[dimension] = stride;
+    if (shape[dimension] != 0 &&
+        stride > std::numeric_limits<int64_t>::max() / shape[dimension])
       return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
-                        "static byte-offset calculator rejected the tensor");
+                        "tensor row-major stride overflows int64");
+    stride *= shape[dimension];
   }
-  return OwnedPhysicalLayout{std::move(registry), std::move(context), type,
-                             std::move(*info), std::move(byteOffsets)};
+  std::optional<StaticPhysicalTensorOffsetCalculator> offsets =
+      StaticPhysicalTensorOffsetCalculator::create(*info, shape,
+                                                   elementStrides);
+  if (!offsets)
+    return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
+                      "static offset calculator rejected the tensor");
+  return OwnedPhysicalLayout{std::move(*info), std::move(*offsets)};
 }
 
 template <typename Callback>
@@ -127,39 +98,15 @@ template <typename Callback>
 llvm::Error forEachPhysicalBitOffset(const NumericTensorKey &key,
                                      const OwnedPhysicalLayout &layout,
                                      Callback callback) {
-  if (!layout.info.bitPackedElement &&
-      (layout.info.layout == MemLayout::Tensor ||
-       layout.info.layout == MemLayout::NTensor) &&
-      layout.info.compactBytes == layout.info.physicalBytes) {
-    const uint64_t elementBits =
-        static_cast<uint64_t>(layout.info.elementBytes) * UINT64_C(8);
-    for (uint64_t index = 0; index < key.getElementCount(); ++index)
-      if (llvm::Error error = callback(index * elementBits))
-        return error;
-    return llvm::Error::success();
-  }
   return forEachCoordinate(
       key.getShape(), [&](llvm::ArrayRef<int64_t> coordinate) -> llvm::Error {
-        int64_t bitOffset = -1;
-        if (layout.info.bitPackedElement) {
-          std::optional<int64_t> mapped =
-              computeWaferPhysicalElementBitOffset(layout.type, coordinate);
-          if (mapped)
-            bitOffset = *mapped;
-        } else if (layout.byteOffsets) {
-          int64_t byteOffset =
-              layout.byteOffsets->getByteOffsetForValidIndices(coordinate);
-          if (byteOffset >= 0 &&
-              byteOffset <=
-                  layout.info.physicalBytes - layout.info.elementBytes &&
-              byteOffset <= std::numeric_limits<int64_t>::max() / 8)
-            bitOffset = byteOffset * 8;
-        }
-        if (bitOffset < 0)
+        std::optional<int64_t> bitOffset =
+            layout.offsets.getBitOffset(coordinate);
+        if (!bitOffset || *bitOffset < 0)
           return codecError(
               PhysicalTensorCodecErrorCode::InvalidLayout,
               "shared layout helper could not map a logical coordinate");
-        return callback(static_cast<uint64_t>(bitOffset));
+        return callback(static_cast<uint64_t>(*bitOffset));
       });
 }
 

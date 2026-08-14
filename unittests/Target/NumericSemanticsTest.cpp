@@ -28,7 +28,6 @@ using wafer::FloatingTininessPolicy;
 using wafer::FloatToIntegerPolicy;
 using wafer::FormalKernelKind;
 using wafer::FormalNumericBackendKind;
-using wafer::MemLayout;
 using wafer::ModelProfileId;
 using wafer::NativeCTReduceDimension;
 using wafer::NumericCapabilityParameterPatternKind;
@@ -55,6 +54,7 @@ using wafer::NumericRoundingPointPolicy;
 using wafer::NumericSaturationPolicy;
 using wafer::NumericTensorKey;
 using wafer::NumericTranscendentalEvaluationPolicy;
+using wafer::PhysicalTensorLayout;
 using wafer::ResolvedNumericCommand;
 using wafer::TargetConvertParameterKind;
 
@@ -116,24 +116,24 @@ std::string expectError(llvm::Error error) {
   return llvm::toString(std::move(error));
 }
 
-NumericTensorKey makeTensor(wafer::LogicalFormat format, MemLayout layout,
-                            std::vector<uint64_t> shape = std::vector<uint64_t>{
-                                2, 3}) {
+NumericTensorKey
+makeTensor(wafer::LogicalFormat format, PhysicalTensorLayout layout,
+           std::vector<uint64_t> shape = std::vector<uint64_t>{2, 3}) {
   llvm::Expected<NumericTensorKey> tensor =
       NumericTensorKey::create(format, layout, std::move(shape));
   if (tensor)
     return std::move(*tensor);
   ADD_FAILURE() << llvm::toString(tensor.takeError());
-  return llvm::cantFail(NumericTensorKey::create(wafer::LogicalFormat::F16,
-                                                 MemLayout::Tensor, {1}));
+  return llvm::cantFail(NumericTensorKey::create(
+      wafer::LogicalFormat::F16, PhysicalTensorLayout::Tensor, {1}));
 }
 
 std::optional<NumericCommandKey> expectConvertKey(
     uint16_t opcode,
     std::optional<NumericConvertParameter> parameter = std::nullopt,
     std::vector<uint64_t> shape = {2, 3},
-    MemLayout sourceLayout = MemLayout::Tensor,
-    MemLayout destinationLayout = MemLayout::Tensor) {
+    PhysicalTensorLayout sourceLayout = PhysicalTensorLayout::Tensor,
+    PhysicalTensorLayout destinationLayout = PhysicalTensorLayout::Tensor) {
   const wafer::TargetConvertRoute *route =
       wafer::findTargetConvertRoute(opcode);
   if (!route) {
@@ -144,8 +144,7 @@ std::optional<NumericCommandKey> expectConvertKey(
   NumericTensorKey destination =
       makeTensor(route->destination, destinationLayout, shape);
   llvm::Expected<NumericCommandKey> key = NumericCommandKey::createCTConvert(
-      opcode, std::move(source), std::move(destination),
-      parameter);
+      opcode, std::move(source), std::move(destination), parameter);
   if (!key) {
     ADD_FAILURE() << llvm::toString(key.takeError());
     return std::nullopt;
@@ -246,8 +245,9 @@ TEST(NumericSemanticsTest, ModelProfileOwnsStableCompletePolicyDigest) {
 
 TEST(NumericSemanticsTest, TensorKeyOwnsCheckedStaticShapeLayoutAndDigest) {
   std::set<std::string> digests;
-  for (MemLayout layout :
-       {MemLayout::Tensor, MemLayout::NTensor, MemLayout::Cx, MemLayout::NCx}) {
+  for (PhysicalTensorLayout layout :
+       {PhysicalTensorLayout::Tensor, PhysicalTensorLayout::NTensor,
+        PhysicalTensorLayout::Cx, PhysicalTensorLayout::NCx}) {
     NumericTensorKey tensor =
         makeTensor(wafer::LogicalFormat::BF16, layout, {2, 3, 5});
     EXPECT_EQ(tensor.getFormat(), wafer::LogicalFormat::BF16);
@@ -259,9 +259,9 @@ TEST(NumericSemanticsTest, TensorKeyOwnsCheckedStaticShapeLayoutAndDigest) {
   }
 
   NumericTensorKey scalar =
-      makeTensor(wafer::LogicalFormat::F32, MemLayout::Tensor, {});
-  NumericTensorKey empty =
-      makeTensor(wafer::LogicalFormat::F32, MemLayout::Tensor, {4, 0, 7});
+      makeTensor(wafer::LogicalFormat::F32, PhysicalTensorLayout::Tensor, {});
+  NumericTensorKey empty = makeTensor(wafer::LogicalFormat::F32,
+                                      PhysicalTensorLayout::Tensor, {4, 0, 7});
   EXPECT_TRUE(scalar.getShape().empty());
   EXPECT_EQ(scalar.getElementCount(), 1u);
   EXPECT_EQ(empty.getElementCount(), 0u);
@@ -269,20 +269,21 @@ TEST(NumericSemanticsTest, TensorKeyOwnsCheckedStaticShapeLayoutAndDigest) {
 
   std::vector<uint64_t> highRankShape(UINT32_C(0x10000), 1);
   llvm::Expected<NumericTensorKey> highRank = NumericTensorKey::create(
-      wafer::LogicalFormat::F16, MemLayout::NTensor, highRankShape);
+      wafer::LogicalFormat::F16, PhysicalTensorLayout::NTensor, highRankShape);
   ASSERT_TRUE(static_cast<bool>(highRank))
       << (highRank ? std::string() : llvm::toString(highRank.takeError()));
   EXPECT_EQ(highRank->getShape().size(), UINT32_C(0x10000));
   EXPECT_EQ(highRank->getElementCount(), 1u);
 
-  std::string error = expectError(NumericTensorKey::create(
-      static_cast<wafer::LogicalFormat>(255), MemLayout::Tensor, {1}));
+  std::string error = expectError(
+      NumericTensorKey::create(static_cast<wafer::LogicalFormat>(255),
+                               PhysicalTensorLayout::Tensor, {1}));
   EXPECT_NE(error.find("unknown format"), std::string::npos);
   error = expectError(NumericTensorKey::create(
-      wafer::LogicalFormat::F16, static_cast<MemLayout>(255), {1}));
+      wafer::LogicalFormat::F16, static_cast<PhysicalTensorLayout>(255), {1}));
   EXPECT_NE(error.find("unknown layout"), std::string::npos);
   error = expectError(NumericTensorKey::create(
-      wafer::LogicalFormat::F16, MemLayout::Tensor,
+      wafer::LogicalFormat::F16, PhysicalTensorLayout::Tensor,
       {static_cast<uint64_t>(std::numeric_limits<int64_t>::max()), 3}));
   EXPECT_NE(error.find("overflows uint64"), std::string::npos);
 }
@@ -338,7 +339,8 @@ TEST(NumericSemanticsTest, OperationEnumsClose35ElementwiseAndFourReduceKinds) {
   EXPECT_EQ(
       wafer::stringifyNumericCommandFamily(NumericCommandFamily::CTElementwise),
       "ct-elementwise");
-  EXPECT_EQ(wafer::stringifyMemLayout(MemLayout::NCx), "ncx");
+  EXPECT_EQ(wafer::stringifyPhysicalTensorLayout(PhysicalTensorLayout::NCx),
+            "ncx");
   EXPECT_EQ(wafer::stringifyNativeCTReduceDimension(
                 NativeCTReduceDimension::Trailing2And1And0),
             "trailing-2-and-1-and-0");
@@ -406,34 +408,37 @@ TEST(NumericSemanticsTest, ExactConvertKeysValidateTensorAndParameterFacts) {
   EXPECT_EQ(parameterlessCount, 9u);
   EXPECT_EQ(roundingCount, 23u);
 
-  const wafer::TargetConvertRoute &route =
-      *wafer::findTargetConvertRoute(144);
-  NumericTensorKey source = makeTensor(route.source, MemLayout::Tensor, {2, 3});
+  const wafer::TargetConvertRoute &route = *wafer::findTargetConvertRoute(144);
+  NumericTensorKey source =
+      makeTensor(route.source, PhysicalTensorLayout::Tensor, {2, 3});
   NumericTensorKey destination =
-      makeTensor(route.destination, MemLayout::Tensor, {2, 4});
+      makeTensor(route.destination, PhysicalTensorLayout::Tensor, {2, 4});
   std::string error = expectError(NumericCommandKey::createCTConvert(
       route.opcode, source, destination,
       NumericConvertParameter::roundingMode(NumericRoundingMode::NearestEven)));
   EXPECT_NE(error.find("same static element count"), std::string::npos);
 
-  NumericTensorKey wrongSource =
-      makeTensor(wafer::LogicalFormat::F32, MemLayout::Tensor, {2, 3});
-  destination = makeTensor(route.destination, MemLayout::Tensor, {2, 3});
+  NumericTensorKey wrongSource = makeTensor(
+      wafer::LogicalFormat::F32, PhysicalTensorLayout::Tensor, {2, 3});
+  destination =
+      makeTensor(route.destination, PhysicalTensorLayout::Tensor, {2, 3});
   error = expectError(NumericCommandKey::createCTConvert(
       route.opcode, wrongSource, destination,
       NumericConvertParameter::roundingMode(NumericRoundingMode::NearestEven)));
   EXPECT_NE(error.find("endpoints"), std::string::npos);
 
-  source = makeTensor(route.source, MemLayout::Tensor, {UINT64_C(0x100000000)});
-  destination =
-      makeTensor(route.destination, MemLayout::Tensor, {UINT64_C(0x100000000)});
+  source = makeTensor(route.source, PhysicalTensorLayout::Tensor,
+                      {UINT64_C(0x100000000)});
+  destination = makeTensor(route.destination, PhysicalTensorLayout::Tensor,
+                           {UINT64_C(0x100000000)});
   error = expectError(NumericCommandKey::createCTConvert(
       route.opcode, source, destination,
       NumericConvertParameter::roundingMode(NumericRoundingMode::NearestEven)));
   EXPECT_NE(error.find("fit uint32"), std::string::npos);
 
-  source = makeTensor(route.source, MemLayout::Tensor, {1});
-  destination = makeTensor(route.destination, MemLayout::Tensor, {1});
+  source = makeTensor(route.source, PhysicalTensorLayout::Tensor, {1});
+  destination =
+      makeTensor(route.destination, PhysicalTensorLayout::Tensor, {1});
   error = expectError(NumericCommandKey::createCTConvert(
       route.opcode, source, destination, std::nullopt));
   EXPECT_NE(error.find("requires exactly one rounding-mode"),
@@ -461,14 +466,15 @@ TEST(NumericSemanticsTest, ExactConvertKeysValidateTensorAndParameterFacts) {
   ASSERT_NE(zeroPointRoute, nullptr);
   error = expectError(NumericCommandKey::createCTConvert(
       plainRoute->opcode,
-      makeTensor(plainRoute->source, MemLayout::Tensor, {1}),
-      makeTensor(plainRoute->destination, MemLayout::Tensor, {1}),
+      makeTensor(plainRoute->source, PhysicalTensorLayout::Tensor, {1}),
+      makeTensor(plainRoute->destination, PhysicalTensorLayout::Tensor, {1}),
       NumericConvertParameter::roundingMode(NumericRoundingMode::NearestEven)));
   EXPECT_NE(error.find("parameterless"), std::string::npos);
   error = expectError(NumericCommandKey::createCTConvert(
       zeroPointRoute->opcode,
-      makeTensor(zeroPointRoute->source, MemLayout::Tensor, {1}),
-      makeTensor(zeroPointRoute->destination, MemLayout::Tensor, {1}),
+      makeTensor(zeroPointRoute->source, PhysicalTensorLayout::Tensor, {1}),
+      makeTensor(zeroPointRoute->destination, PhysicalTensorLayout::Tensor,
+                 {1}),
       NumericConvertParameter::roundingMode(NumericRoundingMode::NearestEven)));
   EXPECT_NE(error.find("not a rounding-mode"), std::string::npos);
 }
@@ -915,14 +921,16 @@ TEST(NumericSemanticsTest,
   llvm::Expected<NumericCommandKey> shapeExpected =
       NumericCommandKey::createCTConvert(
           route.opcode,
-          makeTensor(route.source, MemLayout::Tensor, {2, 3}),
-          makeTensor(route.destination, MemLayout::Tensor, {1, 6}), parameter);
+          makeTensor(route.source, PhysicalTensorLayout::Tensor, {2, 3}),
+          makeTensor(route.destination, PhysicalTensorLayout::Tensor, {1, 6}),
+          parameter);
   ASSERT_TRUE(static_cast<bool>(shapeExpected))
       << (shapeExpected ? std::string()
                         : llvm::toString(shapeExpected.takeError()));
   std::optional<NumericCommandKey> shape = std::move(*shapeExpected);
   std::optional<NumericCommandKey> layout = expectConvertKey(
-      /*int16_bf16=*/144, parameter, {2, 3}, MemLayout::NTensor, MemLayout::Cx);
+      /*int16_bf16=*/144, parameter, {2, 3}, PhysicalTensorLayout::NTensor,
+      PhysicalTensorLayout::Cx);
   ASSERT_TRUE(base && shape && layout);
   const wafer::NumericCTConvertCommand *reshapedConvert = shape->getCTConvert();
   ASSERT_NE(reshapedConvert, nullptr);
@@ -973,14 +981,14 @@ TEST(NumericSemanticsTest, ElementwiseClosesAll35ArityAndFormatSelectors) {
           wafer::isNumericElementwiseRelation(operation)
               ? wafer::LogicalFormat::Bool
               : format;
-      NumericTensorKey input = makeTensor(format, MemLayout::Tensor, {2, 3, 5});
+      NumericTensorKey input =
+          makeTensor(format, PhysicalTensorLayout::Tensor, {2, 3, 5});
       std::vector<NumericTensorKey> inputs(
           wafer::getNumericElementwiseArity(operation), input);
-      NumericTensorKey destination =
-          makeTensor(destinationFormat, MemLayout::Tensor, {2, 3, 5});
+      NumericTensorKey destination = makeTensor(
+          destinationFormat, PhysicalTensorLayout::Tensor, {2, 3, 5});
       llvm::Expected<NumericCommandKey> key =
-          NumericCommandKey::createCTElementwise(operation,
-                                                 std::move(inputs),
+          NumericCommandKey::createCTElementwise(operation, std::move(inputs),
                                                  std::move(destination));
       ASSERT_TRUE(static_cast<bool>(key))
           << (key ? std::string() : llvm::toString(key.takeError()));
@@ -1051,22 +1059,21 @@ TEST(NumericSemanticsTest, ElementwiseClosesAll35ArityAndFormatSelectors) {
 }
 
 TEST(NumericSemanticsTest, ElementwiseFactoryValidatesSemanticSurface) {
-  NumericTensorKey f16 =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::Tensor, {2, 3});
+  NumericTensorKey f16 = makeTensor(wafer::LogicalFormat::F16,
+                                    PhysicalTensorLayout::Tensor, {2, 3});
   NumericTensorKey f16Destination = f16;
   std::string error = expectError(NumericCommandKey::createCTElementwise(
       NumericElementwiseOperation::Add, {f16}, f16Destination));
   EXPECT_NE(error.find("expects 2 input"), std::string::npos);
 
-  NumericTensorKey mismatched =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::Tensor, {3, 2});
+  NumericTensorKey mismatched = makeTensor(
+      wafer::LogicalFormat::F16, PhysicalTensorLayout::Tensor, {3, 2});
   error = expectError(NumericCommandKey::createCTElementwise(
-      NumericElementwiseOperation::Add, {f16, f16},
-      mismatched));
+      NumericElementwiseOperation::Add, {f16, f16}, mismatched));
   EXPECT_NE(error.find("shapes must match"), std::string::npos);
 
-  NumericTensorKey ntensor =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::NTensor, {2, 3});
+  NumericTensorKey ntensor = makeTensor(wafer::LogicalFormat::F16,
+                                        PhysicalTensorLayout::NTensor, {2, 3});
   llvm::Expected<NumericCommandKey> layoutVariant =
       NumericCommandKey::createCTElementwise(NumericElementwiseOperation::Neg,
                                              {ntensor}, f16Destination);
@@ -1075,9 +1082,9 @@ TEST(NumericSemanticsTest, ElementwiseFactoryValidatesSemanticSurface) {
                         : llvm::toString(layoutVariant.takeError()));
   ASSERT_NE(layoutVariant->getCTElementwise(), nullptr);
   EXPECT_EQ(layoutVariant->getCTElementwise()->inputs.front().getLayout(),
-            MemLayout::NTensor);
+            PhysicalTensorLayout::NTensor);
   EXPECT_EQ(layoutVariant->getCTElementwise()->destination.getLayout(),
-            MemLayout::Tensor);
+            PhysicalTensorLayout::Tensor);
   llvm::Expected<NumericCommandKey> tensorVariant =
       NumericCommandKey::createCTElementwise(NumericElementwiseOperation::Neg,
                                              {f16}, f16Destination);
@@ -1092,31 +1099,28 @@ TEST(NumericSemanticsTest, ElementwiseFactoryValidatesSemanticSurface) {
   EXPECT_EQ(&layoutResolution->getPattern(), &tensorResolution->getPattern());
   EXPECT_NE(layoutResolution->getDigest(), tensorResolution->getDigest());
 
-  NumericTensorKey boolean =
-      makeTensor(wafer::LogicalFormat::Bool, MemLayout::Tensor, {2, 3});
+  NumericTensorKey boolean = makeTensor(wafer::LogicalFormat::Bool,
+                                        PhysicalTensorLayout::Tensor, {2, 3});
   error = expectError(NumericCommandKey::createCTElementwise(
-      NumericElementwiseOperation::Add, {boolean, boolean},
-      boolean));
+      NumericElementwiseOperation::Add, {boolean, boolean}, boolean));
   EXPECT_NE(error.find("numeric CT elementwise"), std::string::npos);
   error = expectError(NumericCommandKey::createCTElementwise(
-      NumericElementwiseOperation::Eq, {boolean, boolean},
-      boolean));
+      NumericElementwiseOperation::Eq, {boolean, boolean}, boolean));
   EXPECT_NE(error.find("matching numeric inputs"), std::string::npos);
   error = expectError(NumericCommandKey::createCTElementwise(
       NumericElementwiseOperation::LogicAnd, {f16, f16}, f16));
   EXPECT_NE(error.find("BOOL inputs"), std::string::npos);
 
-  NumericTensorKey i16 =
-      makeTensor(wafer::LogicalFormat::I16, MemLayout::Tensor, {2, 3});
+  NumericTensorKey i16 = makeTensor(wafer::LogicalFormat::I16,
+                                    PhysicalTensorLayout::Tensor, {2, 3});
   llvm::Expected<NumericCommandKey> i16Neg =
-      NumericCommandKey::createCTElementwise(
-          NumericElementwiseOperation::Neg, {i16}, i16);
+      NumericCommandKey::createCTElementwise(NumericElementwiseOperation::Neg,
+                                             {i16}, i16);
   EXPECT_TRUE(static_cast<bool>(i16Neg))
       << (i16Neg ? std::string() : llvm::toString(i16Neg.takeError()));
 
   error = expectError(NumericCommandKey::createCTElementwise(
-      static_cast<NumericElementwiseOperation>(255), {f16},
-      f16Destination));
+      static_cast<NumericElementwiseOperation>(255), {f16}, f16Destination));
   EXPECT_NE(error.find("unknown numeric elementwise"), std::string::npos);
 }
 
@@ -1129,9 +1133,11 @@ TEST(NumericSemanticsTest, GemmValidatesFormatsLayoutsShapesBatchAndAxes) {
   size_t supported = 0;
   size_t integerUnsupported = 0;
   for (wafer::LogicalFormat format : kComputeFormats) {
-    NumericTensorKey lhs = makeTensor(format, MemLayout::Cx, {2, 3});
-    NumericTensorKey rhs = makeTensor(format, MemLayout::NCx, {3, 4});
-    NumericTensorKey destination = makeTensor(format, MemLayout::Cx, {2, 4});
+    NumericTensorKey lhs = makeTensor(format, PhysicalTensorLayout::Cx, {2, 3});
+    NumericTensorKey rhs =
+        makeTensor(format, PhysicalTensorLayout::NCx, {3, 4});
+    NumericTensorKey destination =
+        makeTensor(format, PhysicalTensorLayout::Cx, {2, 4});
     llvm::Expected<NumericCommandKey> key = NumericCommandKey::createNEGemm(
         lhs, rhs, destination, 2, 3, 4, 1, canonicalAxes(2));
     ASSERT_TRUE(static_cast<bool>(key))
@@ -1178,12 +1184,12 @@ TEST(NumericSemanticsTest, GemmValidatesFormatsLayoutsShapesBatchAndAxes) {
   EXPECT_EQ(supported, 3u);
   EXPECT_EQ(integerUnsupported, 1u);
 
-  NumericTensorKey lhs3 =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::NCx, {5, 2, 3});
-  NumericTensorKey rhs3 =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::NCx, {5, 3, 4});
-  NumericTensorKey destination3 =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::NCx, {5, 2, 4});
+  NumericTensorKey lhs3 = makeTensor(wafer::LogicalFormat::F16,
+                                     PhysicalTensorLayout::NCx, {5, 2, 3});
+  NumericTensorKey rhs3 = makeTensor(wafer::LogicalFormat::F16,
+                                     PhysicalTensorLayout::NCx, {5, 3, 4});
+  NumericTensorKey destination3 = makeTensor(
+      wafer::LogicalFormat::F16, PhysicalTensorLayout::NCx, {5, 2, 4});
   llvm::Expected<NumericCommandKey> batched = NumericCommandKey::createNEGemm(
       lhs3, rhs3, destination3, 2, 3, 4, 5, canonicalAxes(3));
   ASSERT_TRUE(static_cast<bool>(batched))
@@ -1198,10 +1204,11 @@ TEST(NumericSemanticsTest, GemmValidatesFormatsLayoutsShapesBatchAndAxes) {
   rhs12.insert(rhs12.end(), {3, 4});
   destination12.insert(destination12.end(), {2, 4});
   llvm::Expected<NumericCommandKey> rank12 = NumericCommandKey::createNEGemm(
-      makeTensor(wafer::LogicalFormat::BF16, MemLayout::NCx, lhs12),
-      makeTensor(wafer::LogicalFormat::BF16, MemLayout::NCx, rhs12),
-      makeTensor(wafer::LogicalFormat::BF16, MemLayout::NCx, destination12), 2,
-      3, 4, 1, canonicalAxes(12));
+      makeTensor(wafer::LogicalFormat::BF16, PhysicalTensorLayout::NCx, lhs12),
+      makeTensor(wafer::LogicalFormat::BF16, PhysicalTensorLayout::NCx, rhs12),
+      makeTensor(wafer::LogicalFormat::BF16, PhysicalTensorLayout::NCx,
+                 destination12),
+      2, 3, 4, 1, canonicalAxes(12));
   EXPECT_TRUE(static_cast<bool>(rank12))
       << (rank12 ? std::string() : llvm::toString(rank12.takeError()));
 
@@ -1214,42 +1221,38 @@ TEST(NumericSemanticsTest, GemmValidatesFormatsLayoutsShapesBatchAndAxes) {
       lhs3, rhs3, destination3, 2, 3, 4, 4, canonicalAxes(3)));
   EXPECT_NE(error.find("batch count"), std::string::npos);
   error = expectError(NumericCommandKey::createNEGemm(
-      lhs3, rhs3, destination3, 2, 3, UINT32_C(0x10000), 5,
-      canonicalAxes(3)));
+      lhs3, rhs3, destination3, 2, 3, UINT32_C(0x10000), 5, canonicalAxes(3)));
   EXPECT_NE(error.find("positive uint16"), std::string::npos);
 
-  NumericTensorKey tensorLayout =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::Tensor, {5, 2, 3});
+  NumericTensorKey tensorLayout = makeTensor(
+      wafer::LogicalFormat::F16, PhysicalTensorLayout::Tensor, {5, 2, 3});
   error = expectError(NumericCommandKey::createNEGemm(
-      tensorLayout, rhs3, destination3, 2, 3, 4, 5,
-      canonicalAxes(3)));
+      tensorLayout, rhs3, destination3, 2, 3, 4, 5, canonicalAxes(3)));
   EXPECT_NE(error.find("cx or ncx"), std::string::npos);
-  NumericTensorKey wrongRhs =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::NCx, {5, 2, 4});
+  NumericTensorKey wrongRhs = makeTensor(wafer::LogicalFormat::F16,
+                                         PhysicalTensorLayout::NCx, {5, 2, 4});
   error = expectError(NumericCommandKey::createNEGemm(
-      lhs3, wrongRhs, destination3, 2, 3, 4, 5,
-      canonicalAxes(3)));
+      lhs3, wrongRhs, destination3, 2, 3, 4, 5, canonicalAxes(3)));
   EXPECT_NE(error.find("stored operand shapes"), std::string::npos);
 
-  NumericTensorKey mismatchedFormat =
-      makeTensor(wafer::LogicalFormat::BF16, MemLayout::NCx, {5, 3, 4});
+  NumericTensorKey mismatchedFormat = makeTensor(
+      wafer::LogicalFormat::BF16, PhysicalTensorLayout::NCx, {5, 3, 4});
   error = expectError(NumericCommandKey::createNEGemm(
-      lhs3, mismatchedFormat, destination3, 2, 3, 4, 5,
-      canonicalAxes(3)));
+      lhs3, mismatchedFormat, destination3, 2, 3, 4, 5, canonicalAxes(3)));
   EXPECT_NE(error.find("formats must match"), std::string::npos);
 
   NumericTensorKey rank1 =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::Cx, {2});
-  error = expectError(NumericCommandKey::createNEGemm(
-      rank1, rank1, rank1, 1, 1, 1, 1, NumericGemmAxes{}));
+      makeTensor(wafer::LogicalFormat::F16, PhysicalTensorLayout::Cx, {2});
+  error = expectError(NumericCommandKey::createNEGemm(rank1, rank1, rank1, 1, 1,
+                                                      1, 1, NumericGemmAxes{}));
   EXPECT_NE(error.find("rank of at least 2"), std::string::npos);
 
   std::vector<uint64_t> shape13(13, 1);
   NumericTensorKey rank13 =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::NCx, shape13);
+      makeTensor(wafer::LogicalFormat::F16, PhysicalTensorLayout::NCx, shape13);
   llvm::Expected<NumericCommandKey> rank13Command =
-      NumericCommandKey::createNEGemm(rank13, rank13, rank13, 1,
-                                      1, 1, 1, canonicalAxes(13));
+      NumericCommandKey::createNEGemm(rank13, rank13, rank13, 1, 1, 1, 1,
+                                      canonicalAxes(13));
   EXPECT_TRUE(static_cast<bool>(rank13Command))
       << (rank13Command ? std::string()
                         : llvm::toString(rank13Command.takeError()));
@@ -1262,18 +1265,17 @@ TEST(NumericSemanticsTest, GemmValidatesFormatsLayoutsShapesBatchAndAxes) {
   EXPECT_EQ(rank13Resolution->getPattern().getNEGemmSelector()->format,
             wafer::LogicalFormat::F16);
 
-  NumericTensorKey overflowingBatch =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::NCx, {65536, 1, 1});
+  NumericTensorKey overflowingBatch = makeTensor(
+      wafer::LogicalFormat::F16, PhysicalTensorLayout::NCx, {65536, 1, 1});
   error = expectError(NumericCommandKey::createNEGemm(
-      overflowingBatch, overflowingBatch, overflowingBatch, 1,
-      1, 1, 65535, canonicalAxes(3)));
+      overflowingBatch, overflowingBatch, overflowingBatch, 1, 1, 1, 65535,
+      canonicalAxes(3)));
   EXPECT_NE(error.find("batch product must fit uint16"), std::string::npos);
 
-  NumericTensorKey mismatchedBatch =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::NCx, {6, 3, 4});
+  NumericTensorKey mismatchedBatch = makeTensor(
+      wafer::LogicalFormat::F16, PhysicalTensorLayout::NCx, {6, 3, 4});
   error = expectError(NumericCommandKey::createNEGemm(
-      lhs3, mismatchedBatch, destination3, 2, 3, 4, 5,
-      canonicalAxes(3)));
+      lhs3, mismatchedBatch, destination3, 2, 3, 4, 5, canonicalAxes(3)));
   EXPECT_NE(error.find("leading batch dimensions must match"),
             std::string::npos);
 }
@@ -1283,13 +1285,14 @@ TEST(NumericSemanticsTest, ReduceClosesFourKindsByFourLegalFormats) {
   size_t commands = 0;
   for (NumericReduceOperation operation : wafer::getNumericReduceOperations()) {
     for (wafer::LogicalFormat format : kComputeFormats) {
-      NumericTensorKey input = makeTensor(format, MemLayout::NCx, {2, 3, 4, 5});
+      NumericTensorKey input =
+          makeTensor(format, PhysicalTensorLayout::NCx, {2, 3, 4, 5});
       NumericTensorKey destination =
-          makeTensor(format, MemLayout::NCx, {2, 3, 4});
+          makeTensor(format, PhysicalTensorLayout::NCx, {2, 3, 4});
       llvm::Expected<NumericCommandKey> key =
           NumericCommandKey::createNativeCTReduce(
-              operation, std::move(input),
-              std::move(destination), NativeCTReduceDimension::Trailing0);
+              operation, std::move(input), std::move(destination),
+              NativeCTReduceDimension::Trailing0);
       ASSERT_TRUE(static_cast<bool>(key))
           << (key ? std::string() : llvm::toString(key.takeError()));
       EXPECT_EQ(key->getFamily(), NumericCommandFamily::NativeCTReduce);
@@ -1316,10 +1319,10 @@ TEST(NumericSemanticsTest, ReduceClosesFourKindsByFourLegalFormats) {
   EXPECT_EQ(commands, 16u);
   EXPECT_EQ(patterns.size(), 16u);
 
-  NumericTensorKey rank3 =
-      makeTensor(wafer::LogicalFormat::F32, MemLayout::NCx, {2, 3, 4});
+  NumericTensorKey rank3 = makeTensor(wafer::LogicalFormat::F32,
+                                      PhysicalTensorLayout::NCx, {2, 3, 4});
   NumericTensorKey trailing =
-      makeTensor(wafer::LogicalFormat::F32, MemLayout::Cx, {4});
+      makeTensor(wafer::LogicalFormat::F32, PhysicalTensorLayout::Cx, {4});
   llvm::Expected<NumericCommandKey> combined =
       NumericCommandKey::createNativeCTReduce(
           NumericReduceOperation::Sum, rank3, trailing,
@@ -1328,7 +1331,7 @@ TEST(NumericSemanticsTest, ReduceClosesFourKindsByFourLegalFormats) {
       << (combined ? std::string() : llvm::toString(combined.takeError()));
 
   NumericTensorKey scalar =
-      makeTensor(wafer::LogicalFormat::F32, MemLayout::Cx, {});
+      makeTensor(wafer::LogicalFormat::F32, PhysicalTensorLayout::Cx, {});
   llvm::Expected<NumericCommandKey> all =
       NumericCommandKey::createNativeCTReduce(
           NumericReduceOperation::Sum, rank3, scalar,
@@ -1338,42 +1341,42 @@ TEST(NumericSemanticsTest, ReduceClosesFourKindsByFourLegalFormats) {
 }
 
 TEST(NumericSemanticsTest, ReduceValidatesDimensionShapeAndLayout) {
-  NumericTensorKey input =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::NCx, {2, 3, 4});
+  NumericTensorKey input = makeTensor(wafer::LogicalFormat::F16,
+                                      PhysicalTensorLayout::NCx, {2, 3, 4});
   NumericTensorKey goodDestination =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::Cx, {2, 3});
+      makeTensor(wafer::LogicalFormat::F16, PhysicalTensorLayout::Cx, {2, 3});
   std::string error = expectError(NumericCommandKey::createNativeCTReduce(
       NumericReduceOperation::Sum, input, goodDestination,
       NativeCTReduceDimension::Trailing3));
   EXPECT_NE(error.find("not valid for the input rank"), std::string::npos);
 
-  NumericTensorKey rank5 =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::NCx, {2, 3, 4, 5, 6});
-  NumericTensorKey rank5Destination =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::NCx, {2, 4, 5, 6});
+  NumericTensorKey rank5 = makeTensor(
+      wafer::LogicalFormat::F16, PhysicalTensorLayout::NCx, {2, 3, 4, 5, 6});
+  NumericTensorKey rank5Destination = makeTensor(
+      wafer::LogicalFormat::F16, PhysicalTensorLayout::NCx, {2, 4, 5, 6});
   error = expectError(NumericCommandKey::createNativeCTReduce(
       NumericReduceOperation::Sum, rank5, rank5Destination,
       NativeCTReduceDimension::Trailing3));
   EXPECT_NE(error.find("rank must be in [1, 4]"), std::string::npos);
 
   NumericTensorKey wrongShape =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::Cx, {3, 2});
+      makeTensor(wafer::LogicalFormat::F16, PhysicalTensorLayout::Cx, {3, 2});
   error = expectError(NumericCommandKey::createNativeCTReduce(
       NumericReduceOperation::Sum, input, wrongShape,
       NativeCTReduceDimension::Trailing0));
   EXPECT_NE(error.find("non-reduced"), std::string::npos);
 
-  NumericTensorKey wrongLayout =
-      makeTensor(wafer::LogicalFormat::F16, MemLayout::Cx, {2, 3, 4});
+  NumericTensorKey wrongLayout = makeTensor(
+      wafer::LogicalFormat::F16, PhysicalTensorLayout::Cx, {2, 3, 4});
   error = expectError(NumericCommandKey::createNativeCTReduce(
       NumericReduceOperation::Sum, wrongLayout, goodDestination,
       NativeCTReduceDimension::Trailing0));
   EXPECT_NE(error.find("rank > 2 requires ncx"), std::string::npos);
 
-  NumericTensorKey booleanInput =
-      makeTensor(wafer::LogicalFormat::Bool, MemLayout::NCx, {2, 3, 4});
+  NumericTensorKey booleanInput = makeTensor(
+      wafer::LogicalFormat::Bool, PhysicalTensorLayout::NCx, {2, 3, 4});
   NumericTensorKey booleanDestination =
-      makeTensor(wafer::LogicalFormat::Bool, MemLayout::Cx, {2, 3});
+      makeTensor(wafer::LogicalFormat::Bool, PhysicalTensorLayout::Cx, {2, 3});
   llvm::Expected<NumericCommandKey> booleanReduce =
       NumericCommandKey::createNativeCTReduce(
           NumericReduceOperation::Sum, booleanInput, booleanDestination,
@@ -1382,8 +1385,8 @@ TEST(NumericSemanticsTest, ReduceValidatesDimensionShapeAndLayout) {
       << (booleanReduce ? std::string()
                         : llvm::toString(booleanReduce.takeError()));
   error = expectError(NumericCommandKey::createNativeCTReduce(
-      static_cast<NumericReduceOperation>(255), input,
-      goodDestination, NativeCTReduceDimension::Trailing0));
+      static_cast<NumericReduceOperation>(255), input, goodDestination,
+      NativeCTReduceDimension::Trailing0));
   EXPECT_NE(error.find("unknown numeric reduce"), std::string::npos);
   error = expectError(NumericCommandKey::createNativeCTReduce(
       NumericReduceOperation::Sum, input, goodDestination,
@@ -1393,14 +1396,14 @@ TEST(NumericSemanticsTest, ReduceValidatesDimensionShapeAndLayout) {
 
 TEST(NumericSemanticsTest,
      NewFamilyShapeAndDimensionChangeOnlyExactResolutionIdentity) {
-  NumericTensorKey inputA =
-      makeTensor(wafer::LogicalFormat::F32, MemLayout::NCx, {2, 3, 4});
+  NumericTensorKey inputA = makeTensor(wafer::LogicalFormat::F32,
+                                       PhysicalTensorLayout::NCx, {2, 3, 4});
   NumericTensorKey destinationA =
-      makeTensor(wafer::LogicalFormat::F32, MemLayout::Cx, {2, 3});
-  NumericTensorKey inputB =
-      makeTensor(wafer::LogicalFormat::F32, MemLayout::NCx, {5, 6, 7});
+      makeTensor(wafer::LogicalFormat::F32, PhysicalTensorLayout::Cx, {2, 3});
+  NumericTensorKey inputB = makeTensor(wafer::LogicalFormat::F32,
+                                       PhysicalTensorLayout::NCx, {5, 6, 7});
   NumericTensorKey destinationB =
-      makeTensor(wafer::LogicalFormat::F32, MemLayout::Cx, {5, 7});
+      makeTensor(wafer::LogicalFormat::F32, PhysicalTensorLayout::Cx, {5, 7});
   llvm::Expected<NumericCommandKey> keyA =
       NumericCommandKey::createNativeCTReduce(
           NumericReduceOperation::Max, inputA, destinationA,

@@ -27,6 +27,7 @@ namespace {
 using namespace wafer;
 using namespace wafer::compiler;
 using namespace wafer::model;
+using namespace wafer::target;
 
 constexpr uint64_t kDDRBase = UINT64_C(0x100000);
 
@@ -111,7 +112,7 @@ InvocationMemoryRegistry makeRegistry(size_t tileCount = 1) {
       InvocationAddressPlan::create(makeInvocation(tileCount), inputs))));
 }
 
-NumericTensorKey makeTensor(LogicalFormat format, MemLayout layout,
+NumericTensorKey makeTensor(LogicalFormat format, PhysicalTensorLayout layout,
                             std::vector<uint64_t> shape) {
   return llvm::cantFail(
       NumericTensorKey::create(format, layout, std::move(shape)));
@@ -242,12 +243,9 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
     }
     return arguments;
   }
-  if (const auto *kind =
-          std::get_if<InstrElementwiseKind>(&descriptor.semantic)) {
-    const bool logic = *kind == InstrElementwiseKind::LogicNot ||
-                       *kind == InstrElementwiseKind::LogicAnd ||
-                       *kind == InstrElementwiseKind::LogicOr ||
-                       *kind == InstrElementwiseKind::LogicXor;
+  if (const auto *operation =
+          std::get_if<NumericElementwiseOperation>(&descriptor.semantic)) {
+    const bool logic = isNumericElementwiseLogic(*operation);
     const size_t formatArgument =
         arguments.size() - 1 -
         static_cast<size_t>(descriptor.issueDomain &&
@@ -257,51 +255,55 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
                             logic ? LogicalFormat::Bool : LogicalFormat::F32);
     return arguments;
   }
-  if (std::holds_alternative<InstrReduceKind>(descriptor.semantic)) {
+  if (std::holds_alternative<NumericReduceOperation>(descriptor.semantic)) {
     arguments[2] = 0;
     arguments[7] = supportedF32Code(TargetFormatEngine::CT);
     return arguments;
   }
-  if (const auto *kind = std::get_if<InstrConvKind>(&descriptor.semantic)) {
-    arguments[3] = static_cast<uint32_t>(*kind);
+  if (const auto *operation =
+          std::get_if<TargetConvolutionOperation>(&descriptor.semantic)) {
+    arguments[3] = static_cast<uint32_t>(*operation);
     arguments[30] = supportedF32Code(TargetFormatEngine::NE);
     return arguments;
   }
-  if (const auto *kind = std::get_if<InstrPoolKind>(&descriptor.semantic)) {
-    const bool indexed = *kind == InstrPoolKind::IndexedMax ||
-                         *kind == InstrPoolKind::IndexedMin;
+  if (const auto *operation =
+          std::get_if<TargetPoolingOperation>(&descriptor.semantic)) {
+    const bool indexed =
+        *operation == TargetPoolingOperation::IndexedMaximum ||
+        *operation == TargetPoolingOperation::IndexedMinimum;
     const size_t firstField = indexed ? 3 : 2;
-    arguments[firstField] = static_cast<uint32_t>(*kind);
+    arguments[firstField] = static_cast<uint32_t>(*operation);
     arguments[firstField + 17] = supportedF32Code(TargetFormatEngine::CT);
     return arguments;
   }
-  if (const auto *kind = std::get_if<InstrUnpoolKind>(&descriptor.semantic)) {
-    arguments[2] = static_cast<uint32_t>(*kind);
+  if (const auto *operation =
+          std::get_if<TargetUnpoolingOperation>(&descriptor.semantic)) {
+    arguments[2] = static_cast<uint32_t>(*operation);
     arguments[16] = supportedF32Code(TargetFormatEngine::CT);
     return arguments;
   }
-  if (const auto *kind =
-          std::get_if<InstrPeripheralKind>(&descriptor.semantic)) {
+  if (const auto *operation =
+          std::get_if<TargetPeripheralOperation>(&descriptor.semantic)) {
     size_t addressCount = 0;
-    switch (*kind) {
-    case InstrPeripheralKind::ArgMax:
-    case InstrPeripheralKind::ArgMin:
-    case InstrPeripheralKind::Lut16:
-    case InstrPeripheralKind::Lut32:
+    switch (*operation) {
+    case TargetPeripheralOperation::ArgMaximum:
+    case TargetPeripheralOperation::ArgMinimum:
+    case TargetPeripheralOperation::LookupTable16:
+    case TargetPeripheralOperation::LookupTable32:
       addressCount = 3;
       break;
-    case InstrPeripheralKind::Bilinear:
-    case InstrPeripheralKind::ElemMask:
+    case TargetPeripheralOperation::Bilinear:
+    case TargetPeripheralOperation::ElementMask:
       addressCount = 2;
       break;
-    case InstrPeripheralKind::RandGen:
+    case TargetPeripheralOperation::Random:
       addressCount = 5;
       break;
-    case InstrPeripheralKind::Count:
-    case InstrPeripheralKind::Factorize:
+    case TargetPeripheralOperation::Count:
+    case TargetPeripheralOperation::Factorize:
       llvm_unreachable("unregistered peripheral kind");
     }
-    arguments[addressCount] = static_cast<uint32_t>(*kind);
+    arguments[addressCount] = static_cast<uint32_t>(*operation);
     arguments[addressCount + 2] = supportedF32Code(TargetFormatEngine::CT);
   }
   return arguments;
@@ -330,11 +332,11 @@ TEST(TargetModelCompletionTest,
   wafer::model::detail::TargetModelTileCompletionState state;
   ASSERT_TRUE(state.beginIssue(0)); // Direct-DTE send/event.
   ASSERT_TRUE(state.beginIssue(1)); // Worker-0 NCC issue.
-  ASSERT_TRUE(state.addNCCPending(NCCWorker::Worker0, 1));
+  ASSERT_TRUE(state.addNCCPending(TargetNCCWorker::Worker0, 1));
   ASSERT_TRUE(state.beginIssue(2)); // Worker-0 participant join.
 
   llvm::SmallVector<uint64_t, 8> joined = state.takeNCCParticipantPending(
-      uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0));
+      uint32_t{1} << static_cast<uint32_t>(TargetNCCWorker::Worker0));
   ASSERT_EQ(joined.size(), 1u);
   EXPECT_EQ(joined.front(), 1u);
   ASSERT_TRUE(state.markComplete(joined.front()));
@@ -351,24 +353,24 @@ TEST(TargetModelCompletionTest,
 TEST(TargetModelCompletionTest, NCCJoinCompletesOnlyParticipantWorkers) {
   wafer::model::detail::TargetModelTileCompletionState state;
   ASSERT_TRUE(state.beginIssue(0));
-  ASSERT_TRUE(state.addNCCPending(NCCWorker::Worker0, 0));
+  ASSERT_TRUE(state.addNCCPending(TargetNCCWorker::Worker0, 0));
   ASSERT_TRUE(state.beginIssue(1));
-  ASSERT_TRUE(state.addNCCPending(NCCWorker::Worker1, 1));
+  ASSERT_TRUE(state.addNCCPending(TargetNCCWorker::Worker1, 1));
   ASSERT_TRUE(state.beginIssue(2));
 
   llvm::SmallVector<uint64_t, 8> worker0 = state.takeNCCParticipantPending(
-      uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0));
+      uint32_t{1} << static_cast<uint32_t>(TargetNCCWorker::Worker0));
   ASSERT_EQ(worker0.size(), 1u);
   EXPECT_EQ(worker0.front(), 0u);
   ASSERT_TRUE(state.markComplete(worker0.front()));
   ASSERT_TRUE(state.markComplete(2));
   EXPECT_EQ(state.getNextCompletedOrdinal(), 1u);
-  EXPECT_EQ(state.getPendingNCCCount(NCCWorker::Worker0), 0u);
-  EXPECT_EQ(state.getPendingNCCCount(NCCWorker::Worker1), 1u);
+  EXPECT_EQ(state.getPendingNCCCount(TargetNCCWorker::Worker0), 0u);
+  EXPECT_EQ(state.getPendingNCCCount(TargetNCCWorker::Worker1), 1u);
 
   ASSERT_TRUE(state.beginIssue(3));
   llvm::SmallVector<uint64_t, 8> worker1 = state.takeNCCParticipantPending(
-      uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker1));
+      uint32_t{1} << static_cast<uint32_t>(TargetNCCWorker::Worker1));
   ASSERT_EQ(worker1.size(), 1u);
   EXPECT_EQ(worker1.front(), 1u);
   ASSERT_TRUE(state.markComplete(worker1.front()));
@@ -380,12 +382,12 @@ TEST(TargetModelCompletionTest,
      SynchronousWritebackCompletesParticipantEpochWithoutParkingItself) {
   wafer::model::detail::TargetModelTileCompletionState state;
   ASSERT_TRUE(state.beginIssue(0));
-  ASSERT_TRUE(state.addNCCPending(NCCWorker::Worker0, 0));
+  ASSERT_TRUE(state.addNCCPending(TargetNCCWorker::Worker0, 0));
   ASSERT_TRUE(state.hasNCCPending());
   ASSERT_TRUE(state.beginIssue(1)); // Synchronous worker-0 writeback.
 
   llvm::SmallVector<uint64_t, 8> completed = state.takeNCCParticipantPending(
-      uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0));
+      uint32_t{1} << static_cast<uint32_t>(TargetNCCWorker::Worker0));
   ASSERT_EQ(completed.size(), 1u);
   ASSERT_TRUE(state.markComplete(completed.front()));
   ASSERT_TRUE(state.markComplete(1));
@@ -420,13 +422,13 @@ TEST(TargetModelKernelTest, TargetRegisterBoundsFailClosedAtModelEntry) {
       "GEMM batch_count must be in [1, 4096]");
 
   expectValid(TargetReduceTransaction{
-      InstrReduceKind::Sum,
+      NumericReduceOperation::Sum,
       0,
       0,
       static_cast<uint32_t>(NativeCTReduceDimension::Trailing0),
       {4096, 4096, 4096, 16384},
       LogicalFormat::F32});
-  expectInvalid(TargetReduceTransaction{InstrReduceKind::Sum,
+  expectInvalid(TargetReduceTransaction{NumericReduceOperation::Sum,
                                         0,
                                         0,
                                         static_cast<uint32_t>(
@@ -434,7 +436,7 @@ TEST(TargetModelKernelTest, TargetRegisterBoundsFailClosedAtModelEntry) {
                                         {4097, 1, 1, 1},
                                         LogicalFormat::F32},
                 "reduce shape N dimension must be in [1, 4096]");
-  expectInvalid(TargetReduceTransaction{InstrReduceKind::Sum,
+  expectInvalid(TargetReduceTransaction{NumericReduceOperation::Sum,
                                         0,
                                         0,
                                         static_cast<uint32_t>(
@@ -444,7 +446,7 @@ TEST(TargetModelKernelTest, TargetRegisterBoundsFailClosedAtModelEntry) {
                 "reduce shape C dimension must be in [1, 16384]");
 
   auto makeConv = [] {
-    return TargetConvTransaction{InstrConvKind::Conv,
+    return TargetConvTransaction{TargetConvolutionOperation::Convolution,
                                  0,
                                  0,
                                  0,
@@ -474,7 +476,7 @@ TEST(TargetModelKernelTest, TargetRegisterBoundsFailClosedAtModelEntry) {
 }
 
 TEST(TargetModelKernelTest, ConvolutionWeightShapeIsNotADataShape) {
-  TargetConvTransaction conv{InstrConvKind::Conv,
+  TargetConvTransaction conv{TargetConvolutionOperation::Convolution,
                              0,
                              0,
                              0,
@@ -775,7 +777,8 @@ TEST(TargetModelKernelTest, ElementwiseUsesPhysicalCodecAndFormalNumeric) {
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext context;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  NumericTensorKey key = makeTensor(LogicalFormat::F32, MemLayout::Cx, {4});
+  NumericTensorKey key =
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {4});
   writeTensor(memory, 0, spm, key,
               {{LogicalFormat::F32, UINT64_C(0x3f800000)},
                {LogicalFormat::F32, UINT64_C(0x40000000)},
@@ -789,7 +792,7 @@ TEST(TargetModelKernelTest, ElementwiseUsesPhysicalCodecAndFormalNumeric) {
   TargetTransaction add{
       PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
       TargetElementwiseTransaction{
-          InstrElementwiseKind::Add, spm, spm + UINT64_C(0x1000),
+          NumericElementwiseOperation::Add, spm, spm + UINT64_C(0x1000),
           spm + UINT64_C(0x2000), 4, LogicalFormat::F32}};
   TargetModelCommandEffect effect =
       llvm::cantFail(executeTargetModelCommand(add, memory, makeBudget()));
@@ -812,9 +815,9 @@ TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {
   FormalNumericExecutionContext context;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   NumericTensorKey input =
-      makeTensor(LogicalFormat::F32, MemLayout::NCx, {1, 1, 2, 2});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 1, 2, 2});
   NumericTensorKey destination =
-      makeTensor(LogicalFormat::F32, MemLayout::NCx, {1, 1, 2});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 1, 2});
   writeTensor(memory, 0, spm, input,
               {{LogicalFormat::F32, UINT64_C(0x3f800000)},
                {LogicalFormat::F32, UINT64_C(0x40000000)},
@@ -823,7 +826,7 @@ TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {
   TargetTransaction reduce{
       PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
       TargetReduceTransaction{
-          InstrReduceKind::Sum,
+          NumericReduceOperation::Sum,
           spm,
           spm + UINT64_C(0x1000),
           static_cast<uint32_t>(NativeCTReduceDimension::Trailing0),
@@ -845,8 +848,10 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext context;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  NumericTensorKey f32 = makeTensor(LogicalFormat::F32, MemLayout::Cx, {2});
-  NumericTensorKey f16 = makeTensor(LogicalFormat::F16, MemLayout::Cx, {2});
+  NumericTensorKey f32 =
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2});
+  NumericTensorKey f16 =
+      makeTensor(LogicalFormat::F16, PhysicalTensorLayout::Cx, {2});
   writeTensor(memory, 0, spm, f32,
               {{LogicalFormat::F32, UINT64_C(0x3f800000)},
                {LogicalFormat::F32, UINT64_C(0x40000000)}});
@@ -854,7 +859,11 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
               {{LogicalFormat::F16, 0}, {LogicalFormat::F16, 0}});
   TargetTransaction convert{
       PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
-      TargetConvertTransaction{InstrConvertKind::Fp32Fp16, spm,
+      TargetConvertTransaction{llvm::cantFail(TargetConvertOperation::create(
+                                   findTargetConvertRoute(LogicalFormat::F32,
+                                                          LogicalFormat::F16)
+                                       ->opcode)),
+                               spm,
                                spm + UINT64_C(0x1000), 2, std::nullopt, 0}};
   TargetModelCommandEffect convertEffect =
       llvm::cantFail(executeTargetModelCommand(convert, memory, makeBudget()));
@@ -866,7 +875,7 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
   EXPECT_EQ(converted[1].bits, UINT64_C(0x4000));
 
   NumericTensorKey matrix =
-      makeTensor(LogicalFormat::F16, MemLayout::Cx, {2, 2});
+      makeTensor(LogicalFormat::F16, PhysicalTensorLayout::Cx, {2, 2});
   writeTensor(memory, 0, spm + UINT64_C(0x3000), matrix,
               {{LogicalFormat::F16, UINT64_C(0x3c00)},
                {LogicalFormat::F16, UINT64_C(0)},
@@ -942,7 +951,7 @@ TEST(TargetModelKernelTest, BatchedGemmUsesImplicitNCxStorageContract) {
   FormalNumericExecutionContext context;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   NumericTensorKey batchMatrices =
-      makeTensor(LogicalFormat::F32, MemLayout::NCx, {2, 2, 2});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {2, 2, 2});
   writeTensor(memory, 0, spm, batchMatrices,
               {{LogicalFormat::F32, UINT64_C(0x3f800000)},
                {LogicalFormat::F32, UINT64_C(0x40000000)},
@@ -986,7 +995,7 @@ TEST(TargetModelKernelTest,
   InvocationMemoryRegistry memory = makeRegistry();
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   NumericTensorKey matrix =
-      makeTensor(LogicalFormat::F32, MemLayout::Cx, {4, 4});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {4, 4});
   std::vector<RawLogicalValue> values(
       16, {LogicalFormat::F32, UINT64_C(0x3f800000)});
   writeTensor(memory, 0, spm, matrix, values);

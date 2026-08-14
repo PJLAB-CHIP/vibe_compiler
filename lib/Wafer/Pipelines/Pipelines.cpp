@@ -4,9 +4,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Passes.h"
-#include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
-#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
-#include "mlir/Dialect/Bufferization/Transforms/Passes.h"
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
@@ -18,91 +16,94 @@
 #endif
 
 namespace wafer {
-namespace {
 
-static void addStablehloToLinalgBody(mlir::OpPassManager &pm) {
+void buildNormalizeImportedStablehloPipeline(mlir::OpPassManager &pm) {
   pm.addPass(createNormalizeStablehloCollectivesPass());
+  pm.addPass(createFoldDefaultStablehloExecutionIdsPass());
+  pm.addPass(createFoldConstantIntegerTensorCastsPass());
   pm.addPass(createLowerStaticStablehloConcatenatePass());
+}
+
+void buildLegalizeStablehloToStructuredTensorPipeline(
+    mlir::OpPassManager &pm) {
   pm.addPass(createLegalizeStablehloToLinalgPass());
-  pm.addPass(createNormalizeStablehloCollectivesPass());
-  pm.addPass(mlir::createCanonicalizerPass());
-  pm.addPass(createNormalizeStablehloCollectivesPass());
-  pm.addPass(mlir::createCanonicalizerPass());
 }
 
-static mlir::bufferization::OneShotBufferizationOptions
-getFunctionBoundaryBufferizationOptions() {
-  mlir::bufferization::OneShotBufferizationOptions options;
-  options.bufferizeFunctionBoundaries = true;
-  options.allowReturnAllocsFromLoops = true;
-  options.inferFunctionResultLayout = true;
-  options.bufferAlignment = 64;
-  options.defaultMemorySpaceFn =
-      [](mlir::TensorType tensorType) -> std::optional<mlir::Attribute> {
-    return MemoryAttr::get(tensorType.getContext(), MemorySpace::DDR,
-                           MemLayout::Tensor);
-  };
-  options.unknownTypeConverterFn =
-      [](mlir::Value value, mlir::Attribute memorySpace,
-         const mlir::bufferization::BufferizationOptions &options)
-      -> mlir::BaseMemRefType {
-    (void)options;
-    return mlir::bufferization::getMemRefTypeWithStaticIdentityLayout(
-        mlir::cast<mlir::TensorType>(value.getType()), memorySpace);
-  };
-  options.functionArgTypeConverterFn =
-      [](mlir::TensorType tensorType, mlir::Attribute memorySpace,
-         mlir::func::FuncOp funcOp,
-         const mlir::bufferization::BufferizationOptions &options)
-      -> mlir::BaseMemRefType {
-    (void)memorySpace;
-    (void)funcOp;
-    (void)options;
-    if (auto ranked = mlir::dyn_cast<mlir::RankedTensorType>(tensorType)) {
-      return mlir::MemRefType::get(ranked.getShape(), ranked.getElementType(),
-                                   mlir::MemRefLayoutAttrInterface{},
-                                   MemoryAttr::get(ranked.getContext(),
-                                                   MemorySpace::DDR,
-                                                   MemLayout::Tensor));
-    }
-    return mlir::UnrankedMemRefType::get(
-        tensorType.getElementType(),
-        MemoryAttr::get(tensorType.getContext(), MemorySpace::DDR,
-                        MemLayout::Tensor));
-  };
-  return options;
+void buildSimplifyStructuredTensorPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(createFoldStaticTensorOpsPass());
 }
 
-static void addFunctionBoundaryBufferization(mlir::OpPassManager &pm) {
-  pm.addPass(mlir::bufferization::createOneShotBufferizePass(
-      getFunctionBoundaryBufferizationOptions()));
+void addInstrFunctionBoundaryBufferizationPass(mlir::OpPassManager &pm) {
+  pm.addPass(createBufferizeInstrFunctionBoundariesPass());
 }
-
-} // namespace
 
 void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
-  addStablehloToLinalgBody(pm);
+  buildNormalizeImportedStablehloPipeline(pm);
+  buildLegalizeStablehloToStructuredTensorPipeline(pm);
+  buildSimplifyStructuredTensorPipeline(pm);
+  pm.addPass(mlir::createCanonicalizerPass());
 }
 
-void buildPreparePhysicalTileCandidatePipeline(mlir::OpPassManager &pm) {
+void buildBufferizeInstrFunctionsPipeline(mlir::OpPassManager &pm) {
   pm.addPass(mlir::createCanonicalizerPass());
-  addFunctionBoundaryBufferization(pm);
+  addInstrFunctionBoundaryBufferizationPass(pm);
   pm.addPass(mlir::createCanonicalizerPass());
+}
+
+void buildPrepareInstrForMemoryPlanningPipeline(mlir::OpPassManager &pm) {
+  buildBufferizeInstrFunctionsPipeline(pm);
+  addRecomputeRequiredNCCJoinPlacementPass(
+      pm.nest<mlir::func::FuncOp>());
+}
+
+void addMaterializeTargetTopologyPass(
+    mlir::OpPassManager &pm,
+    const MaterializeTargetTopologyPassOptions &options) {
+  pm.addPass(createMaterializeTargetTopologyPass(options));
+}
+
+void addMaterializeExecutionMeshPass(
+    mlir::OpPassManager &pm,
+    const MaterializeExecutionMeshPassOptions &options) {
+  pm.addPass(createMaterializeExecutionMeshPass(options));
+}
+
+void addTileRegionToInstrConversionPass(mlir::OpPassManager &pm) {
+  pm.addPass(createConvertTileRegionToInstrPass());
+}
+
+void addRequiredNCCJoinPlacementPass(mlir::OpPassManager &pm) {
+  pm.addPass(createPlaceRequiredNCCJoinsPass());
+}
+
+void addRecomputeRequiredNCCJoinPlacementPass(mlir::OpPassManager &pm) {
+  pm.addPass(createRebuildRequiredNCCJoinsPass());
 }
 
 void buildLowerTileRegionToInstrPipeline(mlir::OpPassManager &pm) {
   mlir::OpPassManager &functionPM = pm.nest<mlir::func::FuncOp>();
-  functionPM.nest<TileRegionOp>().addPass(
-      createConvertTileRegionToInstrPass());
-  functionPM.addPass(createNormalizeNCCCompletionPass());
+  addTileRegionToInstrConversionPass(functionPM.nest<TileRegionOp>());
+  addRequiredNCCJoinPlacementPass(functionPM);
 }
 
-void buildPlanSPMMemoryPipeline(mlir::OpPassManager &pm) {
-  pm.addPass(createPlanSPMMemoryPass());
+void addAssignSPMOffsetsPass(mlir::OpPassManager &pm,
+                             const PlanSPMMemoryPassOptions &options,
+                             SPMMemoryPlanningFailure *failure) {
+  pm.addPass(createPlanSPMMemoryPassWithFailure(options, failure));
 }
 
-void buildPlanDDRMemoryPipeline(mlir::OpPassManager &pm) {
-  pm.addPass(createPlanDDRMemoryPass());
+void addAssignDDROffsetsPass(mlir::OpPassManager &pm,
+                             const PlanDDRMemoryPassOptions &options) {
+  pm.addPass(createPlanDDRMemoryPass(options));
+}
+
+void addLowerAffineControlAndIndexingPass(mlir::OpPassManager &pm) {
+  pm.addPass(mlir::createLowerAffinePass());
+}
+
+void addLowerInstrToTargetLLVMPass(
+    mlir::OpPassManager &pm, const TargetConversionRequest &request) {
+  pm.addPass(createLowerInstrToTargetLLVMPass(request));
 }
 
 #ifdef WAFER_ENABLE_SHARDY
@@ -115,15 +116,47 @@ void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm) {
 void registerWaferPipelines() {
   static bool registered = [] {
     mlir::PassPipelineRegistration<>(
+        "wafer-normalize-imported-stablehlo",
+        "Normalize imported StableHLO without crossing its legality boundary",
+        [](mlir::OpPassManager &pm) {
+          buildNormalizeImportedStablehloPipeline(pm);
+        });
+    mlir::PassPipelineRegistration<>(
+        "wafer-legalize-stablehlo-to-structured-tensor",
+        "Legalize supported StableHLO to structured tensor IR",
+        [](mlir::OpPassManager &pm) {
+          buildLegalizeStablehloToStructuredTensorPipeline(pm);
+        });
+    mlir::PassPipelineRegistration<>(
+        "wafer-simplify-structured-tensor",
+        "Apply bounded Wafer simplification to structured tensor IR",
+        [](mlir::OpPassManager &pm) {
+          buildSimplifyStructuredTensorPipeline(pm);
+        });
+    mlir::PassPipelineRegistration<>(
         "wafer-lower-stablehlo-to-linalg",
         "Lower StableHLO tensor IR to structured Linalg/Tensor IR",
         [](mlir::OpPassManager &pm) { buildStablehloToLinalgPipeline(pm); });
     mlir::PassPipelineRegistration<>(
         "wafer-lower-tile-region-to-instr",
-        "Debug-only lowering of executable wafer.tile.region ops to "
-        "wafer.instr IR",
+        "Lower executable wafer.tile.region ops to wafer.instr IR and "
+        "place function-required NCC joins",
         [](mlir::OpPassManager &pm) {
           buildLowerTileRegionToInstrPipeline(pm);
+        });
+    mlir::PassPipelineRegistration<>(
+        "wafer-bufferize-instr-functions",
+        "Canonicalize and function-boundary bufferize Instr functions without "
+        "assigning memory offsets",
+        [](mlir::OpPassManager &pm) {
+          buildBufferizeInstrFunctionsPipeline(pm);
+        });
+    mlir::PassPipelineRegistration<>(
+        "wafer-prepare-instr-for-memory-planning",
+        "Bufferize Instr function boundaries and recompute function-required "
+        "NCC joins before memory planning",
+        [](mlir::OpPassManager &pm) {
+          buildPrepareInstrForMemoryPlanningPipeline(pm);
         });
 #ifdef WAFER_ENABLE_SHARDY
     mlir::PassPipelineRegistration<>(

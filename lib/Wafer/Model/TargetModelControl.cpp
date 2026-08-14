@@ -11,23 +11,23 @@
 namespace wafer::model::kernel_detail {
 
 TargetModelControlAction
-getControlAction(const compiler::TargetTransactionPayload &payload) {
-  if (std::holds_alternative<compiler::TargetNCCJoinTransaction>(payload))
+getControlAction(const target::TargetTransactionPayload &payload) {
+  if (std::holds_alternative<target::TargetNCCJoinTransaction>(payload))
     return TargetModelControlAction::NCCJoin;
-  if (std::holds_alternative<compiler::TargetDirectDTEBeginTransaction>(
+  if (std::holds_alternative<target::TargetDirectDTEBeginTransaction>(
           payload))
     return TargetModelControlAction::DirectDTEBegin;
-  if (std::holds_alternative<compiler::TargetDirectDTESendTransaction>(payload))
+  if (std::holds_alternative<target::TargetDirectDTESendTransaction>(payload))
     return TargetModelControlAction::DirectDTESendPrepare;
-  if (std::holds_alternative<compiler::TargetDirectDTESendIssueTransaction>(
+  if (std::holds_alternative<target::TargetDirectDTESendIssueTransaction>(
           payload))
     return TargetModelControlAction::DirectDTESendIssue;
-  if (std::holds_alternative<compiler::TargetDirectDTEReceiveTransaction>(
+  if (std::holds_alternative<target::TargetDirectDTEReceiveTransaction>(
           payload))
     return TargetModelControlAction::DirectDTEReceive;
-  if (std::holds_alternative<compiler::TargetDirectDTEWaitTransaction>(payload))
+  if (std::holds_alternative<target::TargetDirectDTEWaitTransaction>(payload))
     return TargetModelControlAction::DirectDTEWait;
-  if (std::holds_alternative<compiler::TargetDirectDTEFinishTransaction>(
+  if (std::holds_alternative<target::TargetDirectDTEFinishTransaction>(
           payload))
     return TargetModelControlAction::DirectDTEFinish;
   return TargetModelControlAction::None;
@@ -37,7 +37,7 @@ llvm::Error
 validateControlAddresses(const compiler::TargetTransaction &transaction,
                          const InvocationAddressPlan &plan) {
   if (const auto *begin =
-          std::get_if<compiler::TargetDirectDTEBeginTransaction>(
+          std::get_if<target::TargetDirectDTEBeginTransaction>(
               &transaction.payload)) {
     if (begin->participantCount != plan.getLaunchSlots().size())
       return kernelError(
@@ -52,7 +52,7 @@ validateControlAddresses(const compiler::TargetTransaction &transaction,
       return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
                          llvm::toString(status.takeError()));
   } else if (const auto *send =
-                 std::get_if<compiler::TargetDirectDTESendTransaction>(
+                 std::get_if<target::TargetDirectDTESendTransaction>(
                      &transaction.payload)) {
     if (send->localTile > std::numeric_limits<uint16_t>::max() ||
         send->remoteTile > std::numeric_limits<uint16_t>::max() ||
@@ -81,7 +81,7 @@ validateControlAddresses(const compiler::TargetTransaction &transaction,
                          llvm::toString(std::move(errors)));
     }
   } else if (const auto *receive =
-                 std::get_if<compiler::TargetDirectDTEReceiveTransaction>(
+                 std::get_if<target::TargetDirectDTEReceiveTransaction>(
                      &transaction.payload)) {
     if (receive->localTile > std::numeric_limits<uint16_t>::max() ||
         receive->remoteTile > std::numeric_limits<uint16_t>::max() ||

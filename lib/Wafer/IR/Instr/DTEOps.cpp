@@ -12,16 +12,6 @@
 using namespace wafer;
 using namespace wafer::detail;
 
-namespace {
-
-static mlir::LogicalResult verifyDTEPeer(mlir::Operation *op,
-                                         mlir::IntegerAttr peerAttr) {
-  return verifyPhysicalTileIdWithinTopology(op, peerAttr.getInt(),
-                                            "DTE peer tile_id");
-}
-
-} // namespace
-
 mlir::LogicalResult InstrDTERecvOp::verify() {
   if (mlir::failed(verifyDTEP2P(getOperation(), getBuffer(), getPeerAttr(),
                                 getBytesAttr(), getToken().getType())))
@@ -29,7 +19,7 @@ mlir::LogicalResult InstrDTERecvOp::verify() {
   if (getBindingSelector())
     return emitOpError(
         "Direct DTE receive cannot carry a sender route selector");
-  return verifyDTEPeer(getOperation(), getPeerAttr());
+  return mlir::success();
 }
 
 InstrFamily InstrDTERecvOp::getInstructionFamily() { return InstrFamily::DTE; }
@@ -50,7 +40,7 @@ mlir::LogicalResult InstrDTESendOp::verify() {
     return emitOpError(
         "Direct DTE selector-table binding requires route selector operand");
   }
-  return verifyDTEPeer(getOperation(), getPeerAttr());
+  return mlir::success();
 }
 
 InstrFamily InstrDTESendOp::getInstructionFamily() { return InstrFamily::DTE; }

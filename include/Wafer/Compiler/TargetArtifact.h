@@ -73,9 +73,8 @@ public:
 private:
   friend struct TargetLLVMModuleBundleBuilder;
 
-  TargetLLVMModule(PhysicalCardId physicalCardId,
-                   PhysicalTileId physicalTileId, LaunchSlotId launchSlotId,
-                   llvm::StringRef entrySymbol,
+  TargetLLVMModule(PhysicalCardId physicalCardId, PhysicalTileId physicalTileId,
+                   LaunchSlotId launchSlotId, llvm::StringRef entrySymbol,
                    TargetIdentityId targetIdentity,
                    KernelRuntimeABIId kernelRuntimeABI,
                    llvm::StringRef moduleFormat,
@@ -171,6 +170,7 @@ public:
   const TargetLLVMModuleBundle &getTargetLLVMModuleBundle() const {
     return targetLLVMModuleBundle;
   }
+  const CompilationIRTrace &getIRTrace() const { return irTrace; }
 
 private:
   friend mlir::FailureOr<TargetCompilationProduct>
@@ -182,12 +182,15 @@ private:
                                      llvm::raw_ostream &diagnostics);
 
   TargetCompilationProduct(ExecutableBundle executableBundle,
-                           TargetLLVMModuleBundle targetLLVMModuleBundle)
+                           TargetLLVMModuleBundle targetLLVMModuleBundle,
+                           CompilationIRTrace irTrace)
       : executableBundle(std::move(executableBundle)),
-        targetLLVMModuleBundle(std::move(targetLLVMModuleBundle)) {}
+        targetLLVMModuleBundle(std::move(targetLLVMModuleBundle)),
+        irTrace(std::move(irTrace)) {}
 
   ExecutableBundle executableBundle;
   TargetLLVMModuleBundle targetLLVMModuleBundle;
+  CompilationIRTrace irTrace;
 };
 
 /// Runs the same production publication transaction as compileProgram while
@@ -201,8 +204,9 @@ mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
     llvm::raw_ostream &diagnostics);
 
 /// Prepares the fixed Kernel Runtime ABI, lowers, translates, and verifies
-/// every accepted physical Tile before atomically returning an owner-backed LLVM
-/// module bundle. No file or package artifact is produced by this boundary.
+/// every accepted physical Tile before atomically returning an owner-backed
+/// LLVM module bundle. No file or package artifact is produced by this
+/// boundary.
 llvm::Expected<TargetLLVMModuleBundle>
 compileExecutableBundleToTargetLLVMModules(
     const ExecutableBundle &executableBundle, llvm::raw_ostream &diagnostics);
@@ -277,8 +281,8 @@ private:
                        std::vector<VerifiedTargetExport> exports)
       : id(id), relativePath(relativePath.str()),
         contentDigest(contentDigest.str()), targetIdentity(targetIdentity),
-        kernelRuntimeABI(kernelRuntimeABI),
-        moduleFormat(moduleFormat.str()), exports(std::move(exports)) {}
+        kernelRuntimeABI(kernelRuntimeABI), moduleFormat(moduleFormat.str()),
+        exports(std::move(exports)) {}
 
   TargetArtifactModuleId id;
   std::string relativePath;
@@ -358,8 +362,8 @@ private:
 };
 
 /// Materializes the runtime-launch module topology from the exact verified
-/// LLVM physical-Tile domain and publishes it atomically. This consumer never re-runs
-/// ABI preparation, target lowering, or LLVM translation.
+/// LLVM physical-Tile domain and publishes it atomically. This consumer never
+/// re-runs ABI preparation, target lowering, or LLVM translation.
 llvm::Expected<TargetArtifactBundle>
 compileTargetLLVMModuleBundleToTargetArtifacts(
     const TargetLLVMModuleBundle &targetLLVMModules,

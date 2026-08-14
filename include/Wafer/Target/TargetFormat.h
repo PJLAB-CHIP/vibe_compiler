@@ -87,6 +87,11 @@ findTargetDataFormatCode(LogicalFormat format);
 /// movement and DTE transport are outside this enum.
 enum class TargetFormatEngine : uint8_t { RDMA, WDMA, TDMA, CT, NE };
 
+/// Operand orientation encoded by the target GEMM call ABI. MLIR lowering
+/// maps its dialect enum to this target protocol type explicitly.
+enum class TargetGemmOrientation : uint8_t { Normal = 0, Transpose = 1 };
+llvm::StringRef stringifyTargetGemmOrientation(TargetGemmOrientation value);
+
 llvm::ArrayRef<TargetFormatEngine> getTargetFormatEngines();
 llvm::Expected<TargetFormatEngine>
 parseTargetFormatEngine(llvm::StringRef canonicalSpelling);

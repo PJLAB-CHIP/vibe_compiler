@@ -778,16 +778,11 @@ mlir::LogicalResult NoCCommunicationActionPoint::materialize(
           isolatedCanonicalInstrModules, failureReason)))
     return mlir::failure();
   for (mlir::ModuleOp module : isolatedCanonicalInstrModules) {
-    std::string conversionFailure;
     if (wafer::containsTileDataflowOperations(module.getOperation()) &&
-        mlir::failed(
-            wafer::convertTileRegionToInstrModule(module, &conversionFailure)))
-      return fail(failureReason,
-                  conversionFailure.empty()
-                      ? llvm::StringRef("NoC peer lowering failed")
-                      : llvm::StringRef(conversionFailure));
+        mlir::failed(wafer::convertTileRegionToInstrModule(module)))
+      return fail(failureReason, "NoC peer lowering failed");
     if (wafer::containsTileDataflowOperations(module.getOperation()) ||
-        mlir::failed(wafer::normalizeMinimumNCCJoins(module)) ||
+        mlir::failed(wafer::placeRequiredNCCJoins(module)) ||
         mlir::failed(mlir::verify(module)))
       return fail(failureReason,
                   "NoC action did not produce normalized canonical Instr IR");

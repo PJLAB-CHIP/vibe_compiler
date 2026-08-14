@@ -53,15 +53,8 @@ std::optional<int64_t> checkedMulI64(int64_t lhs, int64_t rhs) {
 
 namespace {} // namespace
 
-void setFailureReason(std::string *failureReason, llvm::StringRef reason) {
-  if (failureReason)
-    *failureReason = reason.str();
-}
-
 mlir::LogicalResult failPattern(mlir::PatternRewriter &rewriter,
-                                mlir::Operation *op, std::string *failureReason,
-                                llvm::StringRef reason) {
-  setFailureReason(failureReason, reason);
+                                mlir::Operation *op, llvm::StringRef reason) {
   return rewriter.notifyMatchFailure(op, reason);
 }
 
@@ -77,30 +70,28 @@ getLogicalTensorTypeFromMemRef(mlir::Type type) {
 mlir::FailureOr<mlir::Value> createDestAlloc(mlir::Location loc,
                                              mlir::Type type,
                                              mlir::PatternRewriter &rewriter,
-                                             mlir::Operation *op,
-                                             std::string *failureReason) {
+                                             mlir::Operation *op) {
   auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
   if (!memrefType)
     return failFailureOr<mlir::Value>(
-        rewriter, op, failureReason,
+        rewriter, op,
         "tile-region to instr lowering requires memref result storage");
   return rewriter.create<mlir::memref::AllocOp>(loc, memrefType).getResult();
 }
 
 mlir::FailureOr<MovementDescriptor>
 getContiguousDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
-                        mlir::Type type, std::string *failureReason) {
+                        mlir::Type type) {
   auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
   if (!memrefType)
     return failFailureOr<MovementDescriptor>(
-        rewriter, op, failureReason,
-        "instruction descriptor requires a Wafer memref type");
+        rewriter, op, "instruction descriptor requires a Wafer memref type");
 
   std::optional<WaferPhysicalTensorInfo> info =
       wafer::computeWaferPhysicalTensorInfo(memrefType);
   if (!info || info->physicalBytes <= 0)
     return failFailureOr<MovementDescriptor>(
-        rewriter, op, failureReason,
+        rewriter, op,
         "instruction descriptor requires static positive physical byte size");
 
   MovementDescriptor descriptor;
@@ -113,19 +104,18 @@ getContiguousDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
 
 mlir::FailureOr<MovementDescriptor>
 getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
-                           mlir::Type type, std::string *failureReason,
-                           llvm::StringRef role) {
+                           mlir::Type type, llvm::StringRef role) {
   auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
   if (!memrefType)
     return failFailureOr<MovementDescriptor>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(role).concat(" requires a Wafer memref type").str());
 
   std::optional<WaferPhysicalTensorInfo> info =
       wafer::computeWaferPhysicalTensorInfo(memrefType);
   if (!info)
     return failFailureOr<MovementDescriptor>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(role)
             .concat(" requires static byte-addressable tensor")
             .str());
@@ -133,7 +123,7 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
   if (info->bitPackedElement) {
     if (info->compactBytes <= 0 || info->physicalBytes != info->compactBytes)
       return failFailureOr<MovementDescriptor>(
-          rewriter, op, failureReason,
+          rewriter, op,
           llvm::Twine(role)
               .concat(" requires contiguous bitpacked tensor")
               .str());
@@ -147,7 +137,7 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
 
   if (info->compactBytes <= 0 || info->elementBytes <= 0)
     return failFailureOr<MovementDescriptor>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(role)
             .concat(" requires static byte-addressable tensor")
             .str());
@@ -158,7 +148,7 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
           mlir::getStridesAndOffset(memrefType, memrefStrides, memrefOffset)) ||
       static_cast<int64_t>(memrefStrides.size()) != memrefType.getRank())
     return failFailureOr<MovementDescriptor>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(role)
             .concat(" requires static strided memref layout")
             .str());
@@ -171,7 +161,7 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
     if (dimSize == mlir::ShapedType::kDynamic || dimSize <= 0 ||
         dimStride == mlir::ShapedType::kDynamic || dimStride < 0)
       return failFailureOr<MovementDescriptor>(
-          rewriter, op, failureReason,
+          rewriter, op,
           llvm::Twine(role)
               .concat(" requires static positive shape and non-negative "
                       "strides")
@@ -184,7 +174,7 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
       std::optional<int64_t> nextInner = checkedMulI64(innerElements, dimSize);
       if (!nextInner)
         return failFailureOr<MovementDescriptor>(
-            rewriter, op, failureReason,
+            rewriter, op,
             llvm::Twine(role).concat(" descriptor inner span overflows").str());
       innerElements = *nextInner;
       continue;
@@ -194,7 +184,7 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
         checkedMulI64(dimStride, info->elementBytes);
     if (!strideBytes)
       return failFailureOr<MovementDescriptor>(
-          rewriter, op, failureReason,
+          rewriter, op,
           llvm::Twine(role).concat(" descriptor stride overflows").str());
 
     if (!loops.empty()) {
@@ -205,7 +195,7 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
             checkedMulI64(loops.back().iterations, dimSize);
         if (!collapsedIterations)
           return failFailureOr<MovementDescriptor>(
-              rewriter, op, failureReason,
+              rewriter, op,
               llvm::Twine(role)
                   .concat(" descriptor iteration overflows")
                   .str());
@@ -216,7 +206,7 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
 
     if (loops.size() == 3)
       return failFailureOr<MovementDescriptor>(
-          rewriter, op, failureReason,
+          rewriter, op,
           llvm::Twine(role)
               .concat(" requires at most three strided descriptor levels")
               .str());
@@ -227,7 +217,7 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
       checkedMulI64(innerElements, info->elementBytes);
   if (!innerBytes)
     return failFailureOr<MovementDescriptor>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(role)
             .concat(" descriptor inner byte count overflows")
             .str());
@@ -545,9 +535,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
                                llvm::ArrayRef<int64_t> iterationShape,
                                const analysis::IndexRelation &iterationToSource,
                                const analysis::IndexRelation &iterationToDest,
-                               MovementEngine engine,
-                               std::string *failureReason,
-                               llvm::StringRef opLabel) {
+                               MovementEngine engine, llvm::StringRef opLabel) {
   wafer::support::ScopedCompileTimingSpan timing(
       "lowering-algorithm", "tile-region-to-instr",
       "relation-descriptor-planning", op->getName().getStringRef());
@@ -568,7 +556,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
                           destMemory.getSpace() == MemorySpace::SPM));
   if (!acceptedEngine)
     return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(opLabel).concat(" has an invalid movement engine").str());
 
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
@@ -585,7 +573,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
       sourceInfoStorage->elementBytes != destInfoStorage->elementBytes ||
       sourceInfoStorage->bitPackedElement || destInfoStorage->bitPackedElement)
     return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(opLabel)
             .concat(" requires byte-addressable elements in static physical "
                     "layouts")
@@ -609,7 +597,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
       sourceAccess->getPhysicalLayoutRelation().getElementBitWidth() !=
           destAccess->getPhysicalLayoutRelation().getElementBitWidth())
     return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(opLabel)
             .concat(" index relation is not an exact mapped transfer")
             .str());
@@ -627,7 +615,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
                               iterationShape, destType);
   if (!elementCount || !sourceMap || !destMap)
     return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(opLabel)
             .concat(" requires a static projected-affine IndexRelation")
             .str());
@@ -642,7 +630,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
   for (auto [dim, size] : llvm::enumerate(iterationShape)) {
     if (size <= 0)
       return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
-          rewriter, op, failureReason,
+          rewriter, op,
           llvm::Twine(opLabel)
               .concat(" requires a static positive iteration domain")
               .str());
@@ -743,7 +731,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
   if (!collectLayoutConstraints(*sourceAccess, *sourceMap) ||
       !collectLayoutConstraints(*destAccess, *destMap))
     return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(opLabel)
             .concat(" cannot partition physical-layout relation pieces")
             .str());
@@ -788,7 +776,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
     }
     if (choices[dim].empty())
       return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
-          rewriter, op, failureReason,
+          rewriter, op,
           llvm::Twine(opLabel)
               .concat(" produced an empty symbolic domain partition")
               .str());
@@ -1085,7 +1073,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
     typeStream << ", destination=";
     destType.print(typeStream);
     return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine("movement_descriptor_materialization_limit_exceeded: ")
             .concat(opLabel)
             .concat(" IndexRelation descriptor plan is not target-encodable "
@@ -1101,7 +1089,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
       checkedMulI64(*elementCount, elementBytes);
   if (!expectedBytes || descriptors.empty() || coveredBytes != *expectedBytes)
     return failFailureOr<llvm::SmallVector<MovementDescriptorPair>>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(opLabel)
             .concat(" IndexRelation descriptor coverage is not exact: ")
             .concat(llvm::Twine(coveredBytes))
@@ -1150,12 +1138,11 @@ mlir::IntegerAttr getI64Attr(mlir::PatternRewriter &rewriter, int64_t value) {
 
 mlir::FailureOr<int64_t> readRequiredI64Attr(mlir::PatternRewriter &rewriter,
                                              mlir::Operation *op,
-                                             llvm::StringRef name,
-                                             std::string *failureReason) {
+                                             llvm::StringRef name) {
   auto attr = op->getAttrOfType<mlir::IntegerAttr>(name);
   if (!attr)
     return failFailureOr<int64_t>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine("batched tile.gemm lowering requires ")
             .concat(name)
             .concat(" attr")
@@ -1166,18 +1153,17 @@ mlir::FailureOr<int64_t> readRequiredI64Attr(mlir::PatternRewriter &rewriter,
 mlir::FailureOr<int64_t> getStaticPhysicalBytes(mlir::PatternRewriter &rewriter,
                                                 mlir::Operation *op,
                                                 mlir::Type type,
-                                                std::string *failureReason,
                                                 llvm::StringRef role) {
   auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
   if (!memrefType)
     return failFailureOr<int64_t>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(role).concat(" must be a Wafer memref").str());
   std::optional<WaferPhysicalTensorInfo> info =
       wafer::computeWaferPhysicalTensorInfo(memrefType);
   if (!info || info->physicalBytes <= 0)
     return failFailureOr<int64_t>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(role)
             .concat(" requires static positive physical byte size")
             .str());
@@ -1186,7 +1172,7 @@ mlir::FailureOr<int64_t> getStaticPhysicalBytes(mlir::PatternRewriter &rewriter,
 
 mlir::FailureOr<llvm::SmallVector<int64_t>>
 getStaticCompactStrides(mlir::PatternRewriter &rewriter, mlir::Operation *op,
-                        mlir::MemRefType type, std::string *failureReason) {
+                        mlir::MemRefType type) {
   llvm::SmallVector<int64_t> strides(type.getRank(), 1);
   int64_t runningStride = 1;
   for (int64_t dim = type.getRank() - 1; dim >= 0; --dim) {
@@ -1194,8 +1180,7 @@ getStaticCompactStrides(mlir::PatternRewriter &rewriter, mlir::Operation *op,
     int64_t size = type.getDimSize(dim);
     if (size == mlir::ShapedType::kDynamic)
       return failFailureOr<llvm::SmallVector<int64_t>>(
-          rewriter, op, failureReason,
-          "tile.reshape lowering requires static result shape");
+          rewriter, op, "tile.reshape lowering requires static result shape");
     runningStride *= size;
   }
   return strides;
@@ -1208,20 +1193,20 @@ bool isStandardViewCompatibleLayout(MemLayout layout) {
 mlir::FailureOr<llvm::SmallVector<int64_t>>
 delinearizeIndex(mlir::PatternRewriter &rewriter, mlir::Operation *op,
                  llvm::ArrayRef<int64_t> shape, int64_t linearIndex,
-                 std::string *failureReason, llvm::StringRef opLabel) {
+                 llvm::StringRef opLabel) {
   llvm::SmallVector<int64_t> indices(shape.size(), 0);
   for (int64_t dim = static_cast<int64_t>(shape.size()) - 1; dim >= 0; --dim) {
     int64_t size = shape[dim];
     if (size == mlir::ShapedType::kDynamic || size <= 0)
       return failFailureOr<llvm::SmallVector<int64_t>>(
-          rewriter, op, failureReason,
+          rewriter, op,
           llvm::Twine(opLabel).concat(" requires static positive shape").str());
     indices[dim] = linearIndex % size;
     linearIndex /= size;
   }
   if (linearIndex != 0)
     return failFailureOr<llvm::SmallVector<int64_t>>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(opLabel).concat(" cannot delinearize logical index").str());
   return indices;
 }
@@ -1247,9 +1232,9 @@ bool requiresGatherScatterMaterialization(InstrDataMoveKind kind) {
 mlir::LogicalResult verifyStaticShapeAttrMatchesMemRef(
     mlir::PatternRewriter &rewriter, mlir::Operation *op, mlir::MemRefType type,
     mlir::DenseI64ArrayAttr shapeAttr, llvm::StringRef role,
-    std::string *failureReason, llvm::StringRef opLabel) {
+    llvm::StringRef opLabel) {
   if (type.getRank() != static_cast<int64_t>(shapeAttr.size()))
-    return failPattern(rewriter, op, failureReason,
+    return failPattern(rewriter, op,
                        llvm::Twine(opLabel)
                            .concat(" requires ")
                            .concat(role)
@@ -1260,7 +1245,7 @@ mlir::LogicalResult verifyStaticShapeAttrMatchesMemRef(
   for (auto [dim, attrSize] : llvm::enumerate(shapeAttr.asArrayRef())) {
     int64_t memrefSize = type.getDimSize(dim);
     if (memrefSize == mlir::ShapedType::kDynamic || memrefSize != attrSize)
-      return failPattern(rewriter, op, failureReason,
+      return failPattern(rewriter, op,
                          llvm::Twine(opLabel)
                              .concat(" requires static ")
                              .concat(role)

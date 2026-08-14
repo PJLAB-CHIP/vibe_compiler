@@ -1,6 +1,6 @@
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Pipelines/Pipelines.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -40,7 +40,7 @@ TEST(WaferInterfacesTest,
      VerifiesLongDDRRegionChainWithoutRepeatedProvenanceTraversal) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
@@ -83,7 +83,7 @@ TEST(WaferInterfacesTest,
 TEST(WaferInterfacesTest, TileRegionExposesStandardRegionBranchFlow) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
@@ -149,7 +149,7 @@ module {
 TEST(WaferInterfacesTest, TileAliasesUseStandardViewAndDestinationContracts) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
@@ -365,7 +365,7 @@ void expectTiledImplementationFailure(OpT op, mlir::MLIRContext &context,
 
 TEST(WaferInterfacesTest, LayoutResourceAndMemoryEffectsAreQueryable) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
 
   mlir::MLIRContext context(registry);
   context.loadDialect<wafer::WaferDialect, mlir::async::AsyncDialect,
@@ -462,7 +462,7 @@ module {
 
 TEST(WaferInterfacesTest, InstructionInterfacesExposeFamilyAndEffects) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::arith::ArithDialect>();
 
   mlir::MLIRContext context(registry);
@@ -578,8 +578,8 @@ module {
       mlir::dyn_cast<wafer::WaferInstructionOpInterface>(fill.getOperation());
   ASSERT_TRUE(fillInstruction);
   EXPECT_EQ(fillInstruction.getInstructionFamily(), wafer::InstrFamily::TDMA);
-  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(fill),
-            wafer::LocalInstructionCompletion::OrderedPending);
+  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(fill),
+            wafer::NCCSynchronizationBehavior::OrderedAsynchronousIssue);
   auto fillIssue =
       mlir::dyn_cast<wafer::WaferNCCIssueOpInterface>(fill.getOperation());
   ASSERT_TRUE(fillIssue);
@@ -602,8 +602,8 @@ module {
       maskMove.getOperation());
   ASSERT_TRUE(maskMoveInstruction);
   EXPECT_EQ(maskMoveInstruction.getInstructionFamily(), wafer::InstrFamily::CT);
-  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(maskMove),
-            wafer::LocalInstructionCompletion::OrderedPending);
+  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(maskMove),
+            wafer::NCCSynchronizationBehavior::OrderedAsynchronousIssue);
   auto maskMoveIssue =
       mlir::dyn_cast<wafer::WaferNCCIssueOpInterface>(maskMove.getOperation());
   ASSERT_TRUE(maskMoveIssue);
@@ -648,9 +648,9 @@ module {
   EXPECT_EQ(wdmaInstruction.getInstructionFamily(), wafer::InstrFamily::WDMA);
 }
 
-TEST(WaferInterfacesTest, TypedNCCCompletionContractsSeparateIssueAndJoin) {
+TEST(WaferInterfacesTest, TypedNCCSynchronizationContractsSeparateIssueAndJoin) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadDialect<wafer::WaferDialect>();
 
@@ -717,38 +717,38 @@ module {
   wafer::SyncNCCJoinOp multiWorkerJoin = joins[0];
   wafer::SyncNCCJoinOp workerZeroJoin = joins[1];
 
-  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(argmax),
-            wafer::LocalInstructionCompletion::SynchronousWriteback);
-  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(argmin),
-            wafer::LocalInstructionCompletion::SynchronousWriteback);
-  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(bilinear),
-            wafer::LocalInstructionCompletion::OrderedPending);
-  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(multiWorkerJoin),
-            wafer::LocalInstructionCompletion::ParticipantJoin);
-  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(workerZeroJoin),
-            wafer::LocalInstructionCompletion::ParticipantJoin);
+  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(argmax),
+            wafer::NCCSynchronizationBehavior::SynchronousWriteback);
+  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(argmin),
+            wafer::NCCSynchronizationBehavior::SynchronousWriteback);
+  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(bilinear),
+            wafer::NCCSynchronizationBehavior::OrderedAsynchronousIssue);
+  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(multiWorkerJoin),
+            wafer::NCCSynchronizationBehavior::ParticipantJoin);
+  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(workerZeroJoin),
+            wafer::NCCSynchronizationBehavior::ParticipantJoin);
 
-  wafer::NCCCompletionContract argmaxContract =
-      wafer::getNCCCompletionContract(argmax);
+  wafer::NCCSynchronizationContract argmaxContract =
+      wafer::getNCCSynchronizationContract(argmax);
   ASSERT_TRUE(argmaxContract.issueWorker);
   EXPECT_EQ(*argmaxContract.issueWorker, wafer::NCCWorker::Worker0);
   EXPECT_EQ(argmaxContract.participantMask, uint32_t{1});
 
-  wafer::NCCCompletionContract joinContract =
-      wafer::getNCCCompletionContract(multiWorkerJoin);
+  wafer::NCCSynchronizationContract joinContract =
+      wafer::getNCCSynchronizationContract(multiWorkerJoin);
   EXPECT_FALSE(joinContract.issueWorker);
   EXPECT_EQ(joinContract.participantMask,
             (uint32_t{1} << 0) | (uint32_t{1} << 2));
 
-  wafer::NCCCompletionContract workerZeroContract =
-      wafer::getNCCCompletionContract(workerZeroJoin);
+  wafer::NCCSynchronizationContract workerZeroContract =
+      wafer::getNCCSynchronizationContract(workerZeroJoin);
   EXPECT_FALSE(workerZeroContract.issueWorker);
   EXPECT_EQ(workerZeroContract.participantMask, uint32_t{1});
 }
 
 TEST(WaferInterfacesTest, LinalgExtCollectivesExposeLinalgExtStyleContracts) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::tensor::TensorDialect>();
 
   mlir::MLIRContext context(registry);
@@ -949,7 +949,7 @@ module {
 
 TEST(WaferInterfacesTest, LinalgExtCollectiveTilingHandlesNonTrivialShapes) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::tensor::TensorDialect>();
 
   mlir::MLIRContext context(registry);
@@ -1092,7 +1092,7 @@ module {
 TEST(WaferInterfacesTest,
      LinalgExtCollectiveTilingHandlesDynamicNonAxisShapes) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::tensor::TensorDialect>();
 
   mlir::MLIRContext context(registry);
@@ -1156,7 +1156,7 @@ TEST(WaferInterfacesTest, StablehloPipelineProducedCollectiveCanBeTiled) {
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                   mlir::linalg::LinalgDialect, mlir::math::MathDialect,
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   wafer::registerImporterDialects(registry);
 
   mlir::MLIRContext context(registry);

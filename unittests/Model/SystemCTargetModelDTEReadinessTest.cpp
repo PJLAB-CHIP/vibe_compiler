@@ -49,7 +49,7 @@ cloneIndependentNCCAfterSendIssue(TargetLLVMModuleBundle &bundle) {
               findTargetCallDescriptor(callee->getName());
           if (!nccTemplate && descriptor && descriptor->issueDomain &&
               descriptor->issueDomain->completionBehavior ==
-                  LocalInstructionCompletion::OrderedPending)
+                  TargetNCCCompletionBehavior::OrderedAsynchronousIssue)
             nccTemplate = call;
         }
     if (sendIssues.empty())

@@ -1,6 +1,6 @@
 #include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -25,7 +25,7 @@ namespace {
 void registerTargetConversionDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                   mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
 }
 
 template <typename OpT> unsigned countOps(mlir::ModuleOp module) {
@@ -85,10 +85,9 @@ module {
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
 
   EXPECT_TRUE(mlir::failed(manager.run(*source)));
-  EXPECT_NE(
-      diagnostics.find("unsupported_target_instr: terminal elementwise retains "
-                       "indexing_maps after instruction legalization"),
-      std::string::npos)
+  EXPECT_NE(diagnostics.find("does not accept schema-free semantic attribute "
+                             "'indexing_maps'"),
+            std::string::npos)
       << diagnostics;
   EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*source), 1u);
   EXPECT_TRUE(elementwise->hasAttr("indexing_maps"));

@@ -1,6 +1,6 @@
 //===- WorkerPlacementTest.cpp - Typed NCC worker alternatives ----------===//
 
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Transforms/WorkerPlacement.h"
 
 #include "Wafer/IR/WaferDialect.h"
@@ -24,7 +24,7 @@ namespace {
 class WorkerPlacementTest : public testing::Test {
 protected:
   WorkerPlacementTest() {
-    wafer::registerAllDialects(registry);
+    wafer::registerWaferCoreDialects(registry);
     registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                     mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
     context.appendDialectRegistry(registry);

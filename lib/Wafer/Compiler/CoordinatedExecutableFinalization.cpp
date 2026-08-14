@@ -13,6 +13,7 @@
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetSchedulingCapability.h"
+#include "Wafer/Analysis/TargetSchedulingAnalysis.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
 #include "Wafer/Transforms/SoftwarePipelining.h"
 #include "Wafer/Transforms/WorkerPlacement.h"
@@ -185,7 +186,7 @@ static bool isSupportedSchedulingAction(
     mlir::ModuleOp module, TargetSchedulingMechanism mechanism,
     const TargetSchedulingCapabilityRegistry &registry) {
   llvm::Expected<TargetSchedulingWindowQuery> query =
-      analyzeTargetSchedulingWindow(module, mechanism);
+      analysis::analyzeTargetSchedulingWindow(module, mechanism);
   if (!query) {
     llvm::consumeError(query.takeError());
     return false;
@@ -211,7 +212,7 @@ deriveReadyOrderAction(llvm::ArrayRef<mlir::ModuleOp> parents) {
   for (mlir::OwningOpRef<mlir::ModuleOp> &clone : *clones) {
     anyMoved |=
         scheduleIndependentInstructionsByReadyOrder(clone->getOperation()) != 0;
-    if (mlir::failed(normalizeMinimumNCCJoins(*clone)) ||
+    if (mlir::failed(placeRequiredNCCJoins(*clone)) ||
         mlir::failed(mlir::verify(*clone)))
       return mlir::failure();
   }

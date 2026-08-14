@@ -2,6 +2,7 @@
 
 #include "MemoryPlanning/StaticIndexRange.h"
 #include "Target/LowerInstrToTargetLLVMInternal.h"
+#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
@@ -70,17 +71,11 @@ bool isWaferInstruction(mlir::Operation *op) {
 
 mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
   while (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-    mlir::Block *owner = blockArg.getOwner();
-    if (!owner)
+    mlir::Value entry =
+        analysis::getSingleExecutionRegionEntryOperand(blockArg);
+    if (!entry)
       return value;
-    auto tileRegion =
-        mlir::dyn_cast_or_null<TileRegionOp>(owner->getParentOp());
-    if (!tileRegion || tileRegion.getBody().empty() ||
-        owner != &tileRegion.getBody().front())
-      return value;
-    if (blockArg.getArgNumber() >= tileRegion.getInputs().size())
-      return value;
-    value = tileRegion.getInputs()[blockArg.getArgNumber()];
+    value = entry;
   }
   return value;
 }
@@ -105,17 +100,11 @@ mlir::Value resolveReturnedMemRefRoot(mlir::Value value) {
     value = resolveTileRegionBoundaryValue(value);
 
     if (auto result = mlir::dyn_cast<mlir::OpResult>(value)) {
-      if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(result.getOwner())) {
-        if (tileRegion.getBody().empty())
+      if (mlir::Value exit =
+              analysis::getSingleExecutionRegionExitOperand(result)) {
+        if (exit == value)
           return value;
-        auto yield = mlir::dyn_cast<TileYieldOp>(
-            tileRegion.getBody().front().getTerminator());
-        if (!yield || result.getResultNumber() >= yield.getValues().size())
-          return value;
-        mlir::Value yielded = yield.getValues()[result.getResultNumber()];
-        if (yielded == value)
-          return value;
-        value = yielded;
+        value = exit;
         continue;
       }
     }
@@ -915,12 +904,6 @@ static mlir::LogicalResult verifyTargetInstructionFormat(mlir::Operation *op) {
         return verify(typedOp.getDest(), "mask_move dest");
       })
       .Case<InstrReduceOp>([&](auto typedOp) -> mlir::LogicalResult {
-        if (typedOp->hasAttr("init_value") || typedOp->hasAttr("init")) {
-          typedOp.emitError()
-              << "unsupported_target_instr: terminal reduce retains source "
-                 "initialization after instruction legalization";
-          return mlir::failure();
-        }
         return verify(typedOp.getInput(), "reduce input");
       })
       .Case<InstrConvertOp>(
@@ -961,7 +944,8 @@ mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp) {
   moduleOp.walk([&](mlir::Operation *op) {
     if (!isWaferInstruction(op))
       return mlir::WalkResult::advance();
-    if (mlir::failed(verifyTargetInstructionFormat(op))) {
+    if (mlir::failed(verifyNoSchemaFreeSemanticAttributes(op)) ||
+        mlir::failed(verifyTargetInstructionFormat(op))) {
       failed = true;
       return mlir::WalkResult::interrupt();
     }

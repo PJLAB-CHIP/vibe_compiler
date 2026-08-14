@@ -352,12 +352,12 @@ static void collectNCCDrainWork(mlir::Operation *op,
                                 InstructionProgramWork &work,
                                 ExecutionMultiplicity multiplicity,
                                 bool countStaticSite) {
-  NCCCompletionContract contract = getNCCCompletionContract(op);
+  NCCSynchronizationContract contract = getNCCSynchronizationContract(op);
   bool isSteadyState =
       static_cast<bool>(op->getParentOfType<mlir::scf::ForOp>());
   bool isNonTerminal = hasFollowingExecutableWork(op);
   uint64_t participantWaits = countParticipants(contract.participantMask);
-  if (contract.behavior == LocalInstructionCompletion::ParticipantJoin) {
+  if (contract.behavior == NCCSynchronizationBehavior::ParticipantJoin) {
     addExecutionCount(work.nccJoins, multiplicity, 1, countStaticSite);
     if (isSteadyState)
       addExecutionCount(work.steadyStateNCCJoins, multiplicity, 1,
@@ -375,7 +375,7 @@ static void collectNCCDrainWork(mlir::Operation *op,
                         participantWaits, countStaticSite);
     return;
   }
-  if (contract.behavior != LocalInstructionCompletion::SynchronousWriteback)
+  if (contract.behavior != NCCSynchronizationBehavior::SynchronousWriteback)
     return;
   addExecutionCount(work.intrinsicNCCDrains, multiplicity, 1, countStaticSite);
   addExecutionCount(work.nccParticipantWaits, multiplicity, participantWaits,

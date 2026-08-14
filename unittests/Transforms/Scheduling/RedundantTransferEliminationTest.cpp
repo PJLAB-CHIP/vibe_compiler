@@ -2,7 +2,7 @@
 
 #include "Scheduling/RedundantTransferElimination.h"
 
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -49,7 +49,7 @@ protected:
     registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
                     mlir::func::FuncDialect, mlir::memref::MemRefDialect,
                     mlir::scf::SCFDialect>();
-    wafer::registerAllDialects(registry);
+    wafer::registerWaferCoreDialects(registry);
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
   }

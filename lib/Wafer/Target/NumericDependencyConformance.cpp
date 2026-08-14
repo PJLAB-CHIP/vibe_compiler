@@ -7,7 +7,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSet.h"
-#include "llvm/Support/Errc.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/Path.h"
@@ -24,10 +23,8 @@ using namespace numeric_dependency_conformance_internal;
 llvm::Error
 numeric_dependency_conformance_internal::invalid(ErrorCode code,
                                                  const llvm::Twine &detail) {
-  return llvm::createStringError(
-      llvm::errc::invalid_argument, "numeric dependency conformance %s: %s",
-      stringifyNumericDependencyConformanceErrorCode(code).str().c_str(),
-      detail.str().c_str());
+  return llvm::make_error<NumericDependencyConformanceError>(code,
+                                                             detail.str());
 }
 
 llvm::StringRef stringifyNumericDependencyConformanceErrorCode(
@@ -77,6 +74,18 @@ llvm::StringRef stringifyNumericDependencyConformanceErrorCode(
     return "loaded-object-mismatch";
   }
   llvm_unreachable("unknown numeric dependency conformance error code");
+}
+
+char NumericDependencyConformanceError::ID;
+
+void NumericDependencyConformanceError::log(llvm::raw_ostream &stream) const {
+  stream << "numeric dependency conformance "
+         << stringifyNumericDependencyConformanceErrorCode(code) << ": "
+         << detail;
+}
+
+std::error_code NumericDependencyConformanceError::convertToErrorCode() const {
+  return llvm::inconvertibleErrorCode();
 }
 
 const NumericDependencySourceIdentity *
@@ -142,11 +151,20 @@ readNumericDependencyConformanceRecord(
       readRegularFile(resolvedRecord->resolved, limits.maxRecordBytes,
                       "numeric dependency record", /*captureContents=*/true);
   if (!recordReadback) {
-    std::string message = llvm::toString(recordReadback.takeError());
-    if (message.find("resource-limit") != std::string::npos)
+    std::optional<ErrorCode> readErrorCode;
+    std::string readErrorDetail;
+    llvm::Error unhandled =
+        llvm::handleErrors(recordReadback.takeError(),
+                           [&](const NumericDependencyConformanceError &error) {
+                             readErrorCode = error.getCode();
+                             readErrorDetail = error.getDetail().str();
+                           });
+    if (unhandled)
+      return std::move(unhandled);
+    if (readErrorCode == ErrorCode::ResourceLimit)
       return invalid(ErrorCode::RecordTooLarge,
                      "numeric dependency record exceeds byte limit");
-    return invalid(ErrorCode::IO, message);
+    return invalid(ErrorCode::IO, readErrorDetail);
   }
   if (recordReadback->digest != expectedRecordSHA256)
     return invalid(ErrorCode::RecordDigestMismatch,

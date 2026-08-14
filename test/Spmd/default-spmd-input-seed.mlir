@@ -8,7 +8,9 @@ module {
        tile_grid = array<i64: 4, 4>,
        unavailable_tiles = array<i64>}
 
-  wafer.execution.mesh @default_mesh
+  // The pass derives the unique execution mesh by typed module membership;
+  // its symbol spelling is not part of the sharding contract.
+  wafer.execution.mesh @logical_card_partitions
       {axes = ["card"],
        shape = array<i64: 1>}
 

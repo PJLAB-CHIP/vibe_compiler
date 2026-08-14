@@ -417,3 +417,31 @@
   容器；不能依赖函数实参求值顺序同时引用元素和转移其owner。
 - 防复发：无策略CardExecutable seam直接测试同一CardProgram的可重复exact rejection，并单测不完整/内部调用保持indeterminate；
   caller遇到indeterminate必须终止当前编译，不能生成no-good或repair candidate。
+
+## 跨region替换后保留旧Value relation会造成悬空引用
+
+- 现象：region cut、suffix region重建或function output-destination argument删除后，current-IR relation仍保存旧`Value`；后续
+  verifier/capacity feedback解引用时可能SIGSEGV，或者把合法候选误判为relation缺失。
+- 根因：IR rewrite完成了SSA替换，但编译器侧typed relation没有沿同一`IRMapping`/replacement map重绑；仅检查pointer非空
+  不能证明handle仍属于current IR。
+- 修复模式：所有已知replacement在mutation transaction内显式retarget；cleanup结束用opaque `Value` live-set删除dead relation，
+  不解引用可能失效的handle，也不推断新关系。required relation缺失仍按typed failure fail closed。
+- 防复发：测试覆盖region replacement、function argument erase、dead cleanup与current-relation verifier；ASan/普通构建都不得
+  依赖地址仍可读的偶然性。
+
+## Canonicalization删除dead buffer后旧relation不等于编译失败
+
+- 现象：bufferization/canonicalization合法删除无user的temporary buffer，但capacity gate在cleanup后仍要求其旧relation存在，
+  将可接受candidate标成indeterminate。
+- 根因：query evidence的lifetime跨越了会删除IR的cleanup，却没有在stage postcondition处按current IR收缩。
+- 修复模式：cleanup完成后先以live `Value`集合retain current relations，再执行required-witness assertion；只删除dead evidence，
+  不把dead entry重定向到同类型buffer。
+- 防复发：构造dead relation负例，断言retain后current检查通过；真实required relation被删时仍必须失败。
+
+## PeerFragments的代表source不能代替逐fragment ownership
+
+- 现象：receive-only Tile被layout gate要求物化producer layout，导致已合法actualized的布局候选被错误拒绝。
+- 根因：gate读取strategy级`sourceTile`，但PeerFragments真正的producer分布在每个fragment的source endpoint；representative字段
+  不是ownership proof。
+- 修复模式：PeerFragments逐fragment检查当前Tile是否materialize producer；非fragment策略才使用strategy级source。
+- 防复发：覆盖receive-only Tile、multi-source fragments和非fragment策略，并在diagnostic中输出expected layout、structured node与Tile。

@@ -5,7 +5,8 @@
 
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
+#include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Passes.h"
 
@@ -269,18 +270,14 @@ namespace {
 bool hasExactSingleCardTopology(wafer::TargetTopologyOp topology) {
   llvm::ArrayRef<int64_t> cardGrid = topology.getCardGridAttr().asArrayRef();
   llvm::ArrayRef<int64_t> tileGrid = topology.getTileGridAttr().asArrayRef();
-  return topology.getSymName() == "default" && cardGrid.size() == 2 &&
-         cardGrid[0] == 1 && cardGrid[1] == 1 && tileGrid.size() == 2 &&
-         tileGrid[0] == 4 && tileGrid[1] == 4 &&
+  return cardGrid.size() == 2 && cardGrid[0] == 1 && cardGrid[1] == 1 &&
+         tileGrid.size() == 2 && tileGrid[0] == 4 && tileGrid[1] == 4 &&
          topology.getCardInterconnectAttr().getValue() == "mesh" &&
          topology.getUnavailableTilesAttr().empty();
 }
 
 bool hasExactLogicalExecutionMesh(wafer::ExecutionMeshOp mesh,
                                   const ExecutionConfig &config) {
-  if (mesh.getSymName() != "default_mesh")
-    return false;
-
   mlir::ArrayAttr axes = mesh.getAxesAttr();
   llvm::ArrayRef<int64_t> shape = mesh.getShapeAttr().asArrayRef();
   if (axes.empty() || axes.size() != shape.size())
@@ -364,21 +361,16 @@ materializeOrVerifyExactExecutionConfig(mlir::ModuleOp module,
   if (meshes.size() > 1)
     return module.emitOpError(
         "typed compilation requires exactly one execution mesh");
-  if (topologies.empty()) {
-    mlir::PassManager manager(module.getContext());
-    wafer::support::attachCompileTiming(manager, "execution-config");
-    manager.addPass(wafer::createMaterializeTargetTopologyPass());
-    if (mlir::failed(manager.run(module)))
-      return mlir::failure();
-  }
-
-  if (meshes.empty()) {
-    wafer::MaterializeExecutionMeshPassOptions options;
-    options.shape = std::to_string(config.getNumPartitions());
-    mlir::PassManager manager(module.getContext());
-    wafer::support::attachCompileTiming(manager, "execution-config");
-    manager.addPass(wafer::createMaterializeExecutionMeshPass(options));
-    if (mlir::failed(manager.run(module)))
+  if (topologies.empty() || meshes.empty()) {
+    wafer::MaterializeExecutionMeshPassOptions meshOptions;
+    meshOptions.shape = std::to_string(config.getNumPartitions());
+    if (mlir::failed(runPassPipeline(
+            module, "execution-config", [&](mlir::OpPassManager &manager) {
+              if (topologies.empty())
+                wafer::addMaterializeTargetTopologyPass(manager);
+              if (meshes.empty())
+                wafer::addMaterializeExecutionMeshPass(manager, meshOptions);
+            })))
       return mlir::failure();
   }
   return verifyExactExecutionConfigInternal(module, config);
@@ -402,7 +394,7 @@ void registerCompilationDialects(mlir::DialectRegistry &registry) {
                   mlir::math::MathDialect, mlir::memref::MemRefDialect,
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
                   mlir::vector::VectorDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   wafer::registerImporterDialects(registry);
   mlir::registerBuiltinDialectTranslation(registry);
   mlir::registerLLVMDialectTranslation(registry);
@@ -421,12 +413,15 @@ void registerCompilationDialects(mlir::DialectRegistry &registry) {
   mlir::LLVM::registerInlinerInterface(registry);
 }
 
-bool runPassPipeline(mlir::ModuleOp module,
-                     void (*builder)(mlir::OpPassManager &)) {
+mlir::LogicalResult runPassPipeline(mlir::ModuleOp module,
+                                    llvm::StringRef pipelineLabel,
+                                    llvm::function_ref<void(
+                                        mlir::OpPassManager &)> builder) {
   mlir::PassManager manager(module.getContext());
-  wafer::support::attachCompileTiming(manager, "stablehlo-to-linalg");
+  manager.enableVerifier(true);
+  wafer::support::attachCompileTiming(manager, pipelineLabel);
   builder(manager);
-  return mlir::failed(manager.run(module));
+  return manager.run(module);
 }
 
 mlir::LogicalResult

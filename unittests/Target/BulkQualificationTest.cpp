@@ -96,7 +96,8 @@ qualify(const BulkExecutionEnvironment &environment, TemporaryDirectory &files,
         LogicalFormat format, uint64_t m, uint64_t k, uint64_t n,
         uint64_t batchCount = 1,
         FormalNumericWorkBudget formalBudget = kSmallFormalBudget) {
-  const MemLayout layout = batchCount == 1 ? MemLayout::Cx : MemLayout::NCx;
+  const PhysicalTensorLayout layout =
+      batchCount == 1 ? PhysicalTensorLayout::Cx : PhysicalTensorLayout::NCx;
   llvm::Expected<BulkQualificationSpec> calibrationSpec =
       BulkQualificationSpec::create(format, m, k, n, batchCount, layout, layout,
                                     layout, /*seed=*/11);
@@ -200,8 +201,8 @@ TEST(BulkQualificationTest,
 }
 
 TEST(BulkQualificationTest, PhysicalCodecPreservesCxTailAndRejectsWrongSize) {
-  llvm::Expected<NumericTensorKey> key =
-      NumericTensorKey::create(LogicalFormat::F16, MemLayout::Cx, {2, 3});
+  llvm::Expected<NumericTensorKey> key = NumericTensorKey::create(
+      LogicalFormat::F16, PhysicalTensorLayout::Cx, {2, 3});
   ASSERT_TRUE(static_cast<bool>(key))
       << (key ? std::string() : llvm::toString(key.takeError()));
   llvm::Expected<uint64_t> physicalBytes = getBulkTensorPhysicalBytes(*key);
@@ -288,8 +289,7 @@ TEST(BulkQualificationTest,
   // may write that padding even when every logical result bit is exact.
   QualifiedRow qualified = llvm::cantFail(
       qualify(environment, files, LogicalFormat::F16, 4, 16, 16));
-  EXPECT_EQ(qualified.record.getKind(),
-            BulkQualificationKind::ProfileBounded);
+  EXPECT_EQ(qualified.record.getKind(), BulkQualificationKind::ProfileBounded);
 }
 
 TEST(BulkQualificationTest,
@@ -338,8 +338,8 @@ TEST(BulkQualificationTest,
   BulkExecutionEnvironment environment =
       llvm::cantFail(createManagedBulkExecutionEnvironment());
   BulkQualificationSpec spec = llvm::cantFail(BulkQualificationSpec::create(
-      LogicalFormat::F32, 16, 128, 32, 1, MemLayout::Cx, MemLayout::Cx,
-      MemLayout::Cx, /*seed=*/41));
+      LogicalFormat::F32, 16, 128, 32, 1, PhysicalTensorLayout::Cx,
+      PhysicalTensorLayout::Cx, PhysicalTensorLayout::Cx, /*seed=*/41));
   BulkQualificationCase row = llvm::cantFail(
       materializeBulkQualificationCase(std::move(spec), kBulkBudget));
   llvm::Expected<BulkTensorNumericResult> result =
@@ -372,7 +372,8 @@ TEST(BulkQualificationTest, BatchedNCxRowUsesOneMatmulAndPreservesAdmission) {
       llvm::cantFail(createManagedBulkExecutionEnvironment());
   QualifiedRow qualified = llvm::cantFail(
       qualify(environment, files, LogicalFormat::F32, 3, 4, 5, 2));
-  EXPECT_EQ(qualified.row.getInputs()[0].getKey().getLayout(), MemLayout::NCx);
+  EXPECT_EQ(qualified.row.getInputs()[0].getKey().getLayout(),
+            PhysicalTensorLayout::NCx);
   llvm::Expected<BulkTensorNumericResult> result =
       executeAdmittedBulkTensorNumeric(
           environment, qualified.admission, qualified.row.getCommand(),
@@ -425,8 +426,8 @@ TEST(BulkQualificationTest,
      SpecAndPublicationSchemasAreClosedCanonicalAndNoReplace) {
   TemporaryDirectory files;
   BulkQualificationSpec spec = llvm::cantFail(BulkQualificationSpec::create(
-      LogicalFormat::F32, 2, 3, 4, 1, MemLayout::Cx, MemLayout::Cx,
-      MemLayout::Cx, 7));
+      LogicalFormat::F32, 2, 3, 4, 1, PhysicalTensorLayout::Cx,
+      PhysicalTensorLayout::Cx, PhysicalTensorLayout::Cx, 7));
   const std::string goodPath = files.getPath("good.json");
   ASSERT_FALSE(static_cast<bool>(writeBulkQualificationSpec(spec, goodPath)));
   llvm::Expected<BulkQualificationSpec> loaded =
@@ -496,8 +497,8 @@ TEST(BulkQualificationTest,
   TemporaryDirectory files;
   BulkQualificationSpec generated =
       llvm::cantFail(BulkQualificationSpec::create(
-          LogicalFormat::F32, 2, 3, 4, 1, MemLayout::Cx, MemLayout::Cx,
-          MemLayout::Cx, 29));
+          LogicalFormat::F32, 2, 3, 4, 1, PhysicalTensorLayout::Cx,
+          PhysicalTensorLayout::Cx, PhysicalTensorLayout::Cx, 29));
   BulkQualificationCase generatedCase = llvm::cantFail(
       materializeBulkQualificationCase(std::move(generated), kBulkBudget));
   std::vector<uint8_t> lhs(generatedCase.getInputs()[0].getStorage().begin(),
@@ -509,8 +510,9 @@ TEST(BulkQualificationTest,
       generatedCase.getDestinationTemplate().getStorage().end());
   BulkQualificationSpec explicitSpec =
       llvm::cantFail(BulkQualificationSpec::createWithPhysicalPayload(
-          LogicalFormat::F32, 2, 3, 4, 1, MemLayout::Cx, MemLayout::Cx,
-          MemLayout::Cx, 31, lhs, rhs, destination));
+          LogicalFormat::F32, 2, 3, 4, 1, PhysicalTensorLayout::Cx,
+          PhysicalTensorLayout::Cx, PhysicalTensorLayout::Cx, 31, lhs, rhs,
+          destination));
   EXPECT_TRUE(explicitSpec.hasExplicitPhysicalPayload());
   const std::string path = files.getPath("explicit-spec.json");
   ASSERT_FALSE(
@@ -528,12 +530,13 @@ TEST(BulkQualificationTest,
       computeBulkTensorStorageDigest(generatedCase.getDestinationTemplate()));
 
   lhs.pop_back();
-  EXPECT_NE(expectError(BulkQualificationSpec::createWithPhysicalPayload(
-                            LogicalFormat::F32, 2, 3, 4, 1, MemLayout::Cx,
-                            MemLayout::Cx, MemLayout::Cx, 31, std::move(lhs),
-                            std::move(rhs), std::move(destination)))
-                .find("byte geometry differs"),
-            std::string::npos);
+  EXPECT_NE(
+      expectError(BulkQualificationSpec::createWithPhysicalPayload(
+                      LogicalFormat::F32, 2, 3, 4, 1, PhysicalTensorLayout::Cx,
+                      PhysicalTensorLayout::Cx, PhysicalTensorLayout::Cx, 31,
+                      std::move(lhs), std::move(rhs), std::move(destination)))
+          .find("byte geometry differs"),
+      std::string::npos);
 }
 
 TEST(BulkQualificationTest, FinalRecordReadbackRejectsEvidenceTampering) {
@@ -613,8 +616,8 @@ TEST(BulkQualificationTest, FreezeRequiresARegisteredDisjointHeldOutSeed) {
   BulkExecutionEnvironment environment =
       llvm::cantFail(createManagedBulkExecutionEnvironment());
   BulkQualificationSpec spec = llvm::cantFail(BulkQualificationSpec::create(
-      LogicalFormat::F32, 2, 3, 4, 1, MemLayout::Cx, MemLayout::Cx,
-      MemLayout::Cx, 17));
+      LogicalFormat::F32, 2, 3, 4, 1, PhysicalTensorLayout::Cx,
+      PhysicalTensorLayout::Cx, PhysicalTensorLayout::Cx, 17));
   const std::string specPath = files.getPath("spec.json");
   const std::string calibrationPath = files.getPath("calibration.json");
   ASSERT_FALSE(static_cast<bool>(writeBulkQualificationSpec(spec, specPath)));

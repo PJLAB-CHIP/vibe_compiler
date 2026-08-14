@@ -2,7 +2,7 @@
 
 #include "Wafer/Compiler/Compilation.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
 #include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"

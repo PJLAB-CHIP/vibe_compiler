@@ -67,7 +67,8 @@ mlir::LogicalResult runCompilationTransaction(
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<ExecutableBundle> *retainedExecutableBundle,
-    std::optional<TargetLLVMModuleBundle> *retainedTargetLLVMModuleBundle) {
+    std::optional<TargetLLVMModuleBundle> *retainedTargetLLVMModuleBundle,
+    std::optional<CompilationIRTrace> *retainedIRTrace) {
 #if !defined(WAFER_ENABLE_STABLEHLO) || !defined(WAFER_ENABLE_SHARDY)
   (void)request;
   (void)outputProgramDirectory;
@@ -79,6 +80,7 @@ mlir::LogicalResult runCompilationTransaction(
   (void)failAfterPackageLaunchSlot;
   (void)retainedExecutableBundle;
   (void)retainedTargetLLVMModuleBundle;
+  (void)retainedIRTrace;
   reject(diagnostics,
          "StableHLO and SPMD partitioner dependencies are required");
   return mlir::failure();
@@ -103,6 +105,8 @@ mlir::LogicalResult runCompilationTransaction(
                 << " physical_tile_finalizations="
                 << work.physicalTileFinalizations << " tile_to_instr_lowerings="
                 << work.tileToInstructionLowerings
+                << " selected_buffer_artifact_transactions="
+                << work.selectedBufferArtifactTransactions
                 << " spm_planning_invocations=" << work.spmPlanningInvocations
                 << " ddr_planning_invocations=" << work.ddrPlanningInvocations
                 << "\n";
@@ -276,8 +280,9 @@ mlir::LogicalResult runCompilationTransaction(
 
   llvm::SmallString<256> tensorProgram(transactionRoot);
   llvm::sys::path::append(tensorProgram, "tensor-program");
-  if (runSpmdHelper(xlaSpmdPartitionerHelper, propagatedProgram, tensorProgram,
-                    request.getExecutionConfig(), diagnostics))
+  if (mlir::failed(runSpmdHelper(xlaSpmdPartitionerHelper, propagatedProgram,
+                                 tensorProgram, request.getExecutionConfig(),
+                                 diagnostics)))
     return mlir::failure();
 
   if (validateRegularDirectoryTree(tensorProgram, diagnostics))
@@ -326,7 +331,8 @@ mlir::LogicalResult runCompilationTransaction(
   if (mlir::failed(verifyProgramDirectoryMetadata(*tensorModule, tensorProgram,
                                                   diagnostics)))
     return mlir::failure();
-  if (runPassPipeline(*tensorModule, wafer::buildStablehloToLinalgPipeline))
+  if (mlir::failed(runPassPipeline(*tensorModule, "stablehlo-to-linalg",
+                                   wafer::buildStablehloToLinalgPipeline)))
     return mlir::failure();
   if (containsDialectSemantics(*tensorModule, "stablehlo") ||
       containsDialectSemantics(*tensorModule, "sdy")) {
@@ -373,19 +379,21 @@ mlir::LogicalResult runCompilationTransaction(
           "stage", "source-to-package", "target-product");
   std::optional<ExecutableBundle> executableBundle;
   std::optional<TargetLLVMModuleBundle> targetLLVMModules;
+  CompilationIRTrace irTrace;
   if (options.shouldProduceProfileCompanion()) {
     if (mlir::failed(stageProfileTargetPackages(
             tensorProgram, transactionRoot, request.getExecutionConfig(),
             options.getOptimizationConfig(), targetToolchain, diagnostics,
             failAfterLaunchSlot, failAfterTargetLaunchSlot,
-            failAfterPackageLaunchSlot, executableBundle, targetLLVMModules)))
+            failAfterPackageLaunchSlot, executableBundle, targetLLVMModules,
+            irTrace)))
       return mlir::failure();
   } else if (mlir::failed(stageTargetPackage(
                  tensorProgram, transactionRoot, request.getExecutionConfig(),
                  options.getOptimizationConfig(), targetToolchain, diagnostics,
                  failAfterLaunchSlot, failAfterTargetLaunchSlot,
                  failAfterPackageLaunchSlot, executableBundle,
-                 targetLLVMModules))) {
+                 targetLLVMModules, irTrace))) {
     return mlir::failure();
   }
   targetProductTiming.reset();
@@ -415,6 +423,8 @@ mlir::LogicalResult runCompilationTransaction(
     retainedExecutableBundle->emplace(std::move(*executableBundle));
   if (retainedTargetLLVMModuleBundle)
     retainedTargetLLVMModuleBundle->emplace(std::move(*targetLLVMModules));
+  if (retainedIRTrace)
+    retainedIRTrace->emplace(std::move(irTrace));
   publicationTiming.reset();
   diagnostics << "wafer-compile: compile-stats stage=publication"
               << " wall_ms=" << elapsedCompileMilliseconds(publicationStart)

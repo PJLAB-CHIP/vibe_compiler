@@ -300,9 +300,9 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
     auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(operation);
     hasDTE |=
         instruction && instruction.getInstructionFamily() == InstrFamily::DTE;
-    NCCCompletionContract completion = getNCCCompletionContract(operation);
+    NCCSynchronizationContract completion = getNCCSynchronizationContract(operation);
     hasUnsupportedObserver |=
-        completion.behavior == LocalInstructionCompletion::SynchronousWriteback;
+        completion.behavior == NCCSynchronizationBehavior::SynchronousWriteback;
     hasNonzeroWorker |=
         completion.issueWorker && *completion.issueWorker != NCCWorker::Worker0;
   });
@@ -458,7 +458,7 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "analysis-phase", "deriveDisjointNCCWorkerPlacementCandidate",
       "normalize-verify-and-analyze-windows");
-  if (mlir::failed(normalizeMinimumNCCJoins(*candidate)) ||
+  if (mlir::failed(placeRequiredNCCJoins(*candidate)) ||
       mlir::failed(mlir::verify(*candidate))) {
     fail(failureReason,
          "worker placement failed exact completion or IR verification");

@@ -5,7 +5,7 @@
 
 #include "SelectedBufferMaterialization.h"
 
-#include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/MemoryPlanning.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -19,10 +19,9 @@ namespace wafer::compiler::detail {
 enum class PhysicalTileFinalizationFailureKind : uint8_t {
   None,
   Contract,
-  PrematureWholeCardFacts,
-  Completion,
+  PreexistingPhysicalAssignments,
   Verification,
-  FunctionBoundaryBufferization,
+  InstrMemoryPlanningPreparation,
   SelectedBufferMaterialization,
   SPMAllocation,
 };
@@ -41,9 +40,13 @@ struct PhysicalTileFinalizationFailure {
   uint64_t spmDemandCount = 0;
   struct SPMDemandEvidence {
     mlir::LocationAttr location;
+    mlir::Value allocation;
     mlir::Type type;
     uint64_t bytes = 0;
     llvm::SmallVector<mlir::LocationAttr, 4> userLocations;
+    llvm::SmallVector<uint32_t, 2> operationResultNodes;
+    llvm::SmallVector<uint32_t, 2> operandDemandNodes;
+    llvm::SmallVector<unsigned, 2> outputIndices;
   };
   llvm::SmallVector<SPMDemandEvidence, 4> spmLargestDemands;
   /// Exact over-capacity clique certificate propagated from the final SPM
@@ -56,14 +59,16 @@ struct PhysicalTileFinalizationFailure {
 };
 
 /// Consumes one physical Tile's owned canonical Instr module and runs the
-/// complete current hard-gate sequence: function-boundary bufferization,
-/// completion rebuilt from current effects, SPM replanning and verification.
+/// complete current hard-gate sequence: prepare Instr IR for memory planning,
+/// materialize requested rotating buffers, assign SPM offsets and verify the
+/// resulting artifact.
 /// Tile-to-Instr conversion belongs to the caller and must already be complete.
 /// Performance-cost availability is not a legality or finalization gate.
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> finalizePhysicalTileModule(
     mlir::OwningOpRef<mlir::ModuleOp> module,
     PhysicalTileFinalizationFailure *failure = nullptr,
     llvm::ArrayRef<SelectedBufferRequest> selectedBufferRequests = {},
+    StructuredMaterializationRelations *materializationRelations = nullptr,
     unsigned *materializedSlotAllocationCount = nullptr,
     SelectedBufferMaterializationFailure *selectedBufferFailure = nullptr);
 

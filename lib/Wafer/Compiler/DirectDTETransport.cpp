@@ -3,6 +3,7 @@
 #include "DirectDTETransport.h"
 
 #include "AcceptedCallClosure.h"
+#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Transforms/MemoryPlanning/StaticIndexRange.h"
@@ -127,6 +128,27 @@ struct StructuredTransportTrace {
       receiverConflicts;
 };
 
+static bool
+haveSameDynamicOccurrencePath(llvm::ArrayRef<StructuredExecutionFrame> lhs,
+                              llvm::ArrayRef<StructuredExecutionFrame> rhs) {
+  auto lhsIt = lhs.begin();
+  auto rhsIt = rhs.begin();
+  while (true) {
+    while (lhsIt != lhs.end() &&
+           lhsIt->kind == StructuredExecutionFrameKind::TileRegion)
+      ++lhsIt;
+    while (rhsIt != rhs.end() &&
+           rhsIt->kind == StructuredExecutionFrameKind::TileRegion)
+      ++rhsIt;
+    if (lhsIt == lhs.end() || rhsIt == rhs.end())
+      return lhsIt == lhs.end() && rhsIt == rhs.end();
+    if (!(*lhsIt == *rhsIt))
+      return false;
+    ++lhsIt;
+    ++rhsIt;
+  }
+}
+
 static bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
   if (lhs < 0 || rhs < 0 || rhs > std::numeric_limits<int64_t>::max() - lhs)
     return false;
@@ -144,15 +166,11 @@ static bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
 
 static mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
   while (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-    mlir::Block *owner = blockArg.getOwner();
-    auto tileRegion =
-        owner ? mlir::dyn_cast_or_null<TileRegionOp>(owner->getParentOp())
-              : TileRegionOp();
-    if (!tileRegion || tileRegion.getBody().empty() ||
-        owner != &tileRegion.getBody().front() ||
-        blockArg.getArgNumber() >= tileRegion.getInputs().size())
+    mlir::Value entry =
+        analysis::getSingleExecutionRegionEntryOperand(blockArg);
+    if (!entry)
       return value;
-    value = tileRegion.getInputs()[blockArg.getArgNumber()];
+    value = entry;
   }
   return value;
 }
@@ -613,7 +631,7 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
       auto recv = mlir::dyn_cast<InstrDTERecvOp>(operation);
       if (!send && !recv)
         return mlir::WalkResult::advance();
-      if (operation->getAttr("binding")) {
+      if ((send && send.getBindingAttr()) || (recv && recv.getBindingAttr())) {
         operation->emitError(
             "direct_dte_acceptance: candidate issue already has a physical "
             "binding");
@@ -1430,6 +1448,7 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
           "occurrence; zero-trip or unreachable transport is unsupported");
 
   llvm::DenseMap<unsigned, unsigned> matchingSend;
+  llvm::DenseMap<unsigned, unsigned> matchingReceive;
   llvm::DenseMap<IssueRecord *, IssueRecord *> matchedPeer;
   for (auto &[message, occurrences] : dynamicMessages) {
     (void)message;
@@ -1442,24 +1461,27 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
     }
     llvm::SmallVector<bool, 4> matchedReceives(occurrences.receives.size(),
                                                false);
+    llvm::SmallVector<std::pair<unsigned, unsigned>, 4> matchedOccurrences;
+    matchedOccurrences.reserve(occurrences.sends.size());
     for (unsigned sendIndex : occurrences.sends) {
       auto indexedReceives = llvm::enumerate(occurrences.receives);
       auto recvPosition =
           llvm::find_if(indexedReceives, [&](auto indexedReceive) {
             return !matchedReceives[indexedReceive.index()] &&
-                   trace.actions[sendIndex].occurrencePath ==
-                       trace.actions[indexedReceive.value()].occurrencePath;
+                   haveSameDynamicOccurrencePath(
+                       trace.actions[sendIndex].occurrencePath,
+                       trace.actions[indexedReceive.value()].occurrencePath);
           });
       if (recvPosition == indexedReceives.end())
         return trace.actions[sendIndex].operation->emitError(
-            "direct_dte_acceptance: matched message call/region/loop "
+            "direct_dte_acceptance: matched message call/loop "
             "occurrence paths are not structurally identical across physical "
-            "Tiles");
+          "Tiles");
       auto indexedReceive = *recvPosition;
       matchedReceives[indexedReceive.index()] = true;
+      matchedOccurrences.emplace_back(sendIndex, indexedReceive.value());
     }
-    for (auto [sendIndex, recvIndex] :
-         llvm::zip_equal(occurrences.sends, occurrences.receives)) {
+    for (auto [sendIndex, recvIndex] : matchedOccurrences) {
       TransportAction &send = trace.actions[sendIndex];
       TransportAction &recv = trace.actions[recvIndex];
       if (send.issue->bytes != recv.issue->bytes)
@@ -1478,9 +1500,10 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
             "direct_dte_acceptance: one static DTE site would require "
             "different physical bindings across call occurrences");
       matchedPeer.try_emplace(recv.issue, send.issue);
-      addDependency(trace, sendIndex, recvIndex);
       matchingSend[sendIndex] = sendIndex;
       matchingSend[recvIndex] = sendIndex;
+      matchingReceive[sendIndex] = recvIndex;
+      matchingReceive[recvIndex] = recvIndex;
     }
   }
 
@@ -1505,6 +1528,19 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
             "direct_dte_acceptance: wait occurrence has no matched dynamic "
             "message issue");
       addDependency(trace, static_cast<unsigned>(actionIndex), sendIt->second);
+      auto receiveIt = matchingReceive.find(waitedIssue);
+      if (receiveIt == matchingReceive.end())
+        return action.operation->emitError(
+            "direct_dte_acceptance: wait occurrence has no matched receive "
+            "preparation");
+      // Programming a sender does not require the remote receiver FSM to have
+      // executed already; completion does. Keep the issue independently
+      // schedulable, then prove every send/receive wait occurs after both the
+      // local issue and the matched receive preparation. This distinction is
+      // essential when exact DDR cuts place the two endpoint preparations in
+      // different sequential TileRegions.
+      addDependency(trace, static_cast<unsigned>(actionIndex),
+                    receiveIt->second);
     }
   }
   return verifyAcyclicWaitGraph(trace);
@@ -1618,8 +1654,13 @@ acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules) {
       acceptedBindings;
   if (mlir::failed(matchDynamicMessages(issues, streams, acceptedBindings)))
     return mlir::failure();
-  for (auto &[operation, binding] : acceptedBindings)
-    operation->setAttr("binding", binding);
+  for (auto &[operation, binding] : acceptedBindings) {
+    if (auto send = mlir::dyn_cast<InstrDTESendOp>(operation)) {
+      send.setBindingAttr(binding);
+      continue;
+    }
+    mlir::cast<InstrDTERecvOp>(operation).setBindingAttr(binding);
+  }
   return TransportContract::DirectDTE;
 }
 

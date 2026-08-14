@@ -3,7 +3,7 @@
 #ifdef WAFER_ENABLE_STABLEHLO
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/Frontend/Program.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
@@ -58,7 +58,7 @@ void registerToolDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                   mlir::linalg::LinalgDialect, mlir::math::MathDialect,
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   wafer::registerImporterDialects(registry);
   mlir::func::registerInlinerExtension(registry);
 }

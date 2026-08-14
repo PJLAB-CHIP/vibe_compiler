@@ -19,17 +19,16 @@ namespace wafer::compiler {
 /// Internal construction seam shared by the current coordinator and
 /// final bundle owner.  Construction remains unavailable to public callers.
 struct ExecutableBundleBuilder {
-  static PhysicalTileExecutable makePhysicalTile(
-      PhysicalCardId physicalCardId, PhysicalTileId physicalTileId,
-      LaunchSlotId launchSlotId,
-      mlir::OwningOpRef<mlir::ModuleOp> module, llvm::StringRef entrySymbol,
-      std::vector<ProgramResourceBinding> programBindings,
-      TransportContract transportContract,
-      llvm::StringRef selectedTileIR = {}) {
+  static PhysicalTileExecutable
+  makePhysicalTile(PhysicalCardId physicalCardId, PhysicalTileId physicalTileId,
+                   LaunchSlotId launchSlotId,
+                   mlir::OwningOpRef<mlir::ModuleOp> module,
+                   llvm::StringRef entrySymbol,
+                   std::vector<ProgramResourceBinding> programBindings,
+                   TransportContract transportContract) {
     return PhysicalTileExecutable(
         physicalCardId, physicalTileId, launchSlotId, std::move(module),
-        entrySymbol,
-        std::move(programBindings), transportContract, selectedTileIR);
+        entrySymbol, std::move(programBindings), transportContract);
   }
 
   static ExecutableBundle
@@ -52,8 +51,14 @@ llvm::Expected<ExecutableBundle> buildExecutableBundle(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
-    llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLaunchSlot);
+    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot);
+
+llvm::Expected<ExecutableBundle> buildExecutableBundleWithIRTrace(
+    std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
+    frontend::FrontendProgramVerificationResult program,
+    ExecutionConfig executionConfig, OptimizationConfig optimizations,
+    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
+    CompilationIRTrace &irTrace);
 
 } // namespace detail
 } // namespace wafer::compiler

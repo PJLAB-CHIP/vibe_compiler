@@ -2,7 +2,7 @@
 
 #include "Internal.h"
 
-#include "Wafer/Analysis/CollectiveTopologyAnalysis.h"
+#include "../../Analysis/CollectiveTopologyAnalysis.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"

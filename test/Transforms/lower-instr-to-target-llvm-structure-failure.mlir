@@ -252,7 +252,7 @@ func.func @reject_recursive() {
   return
 }
 
-// RECURSIVE: unsupported_target_call: recursive call to @reject_recursive is not supported
+// RECURSIVE: unsupported_target_call: recursive direct call graph is not supported
 
 //--- external.mlir
 

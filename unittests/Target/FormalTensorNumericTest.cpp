@@ -32,15 +32,15 @@ template <typename T> std::string expectError(llvm::Expected<T> value) {
   return llvm::toString(value.takeError());
 }
 
-NumericTensorKey makeTensor(LogicalFormat format, MemLayout layout,
+NumericTensorKey makeTensor(LogicalFormat format, PhysicalTensorLayout layout,
                             std::vector<uint64_t> shape) {
   llvm::Expected<NumericTensorKey> key =
       NumericTensorKey::create(format, layout, std::move(shape));
   if (key)
     return std::move(*key);
   ADD_FAILURE() << llvm::toString(key.takeError());
-  return llvm::cantFail(
-      NumericTensorKey::create(LogicalFormat::F32, MemLayout::Tensor, {1}));
+  return llvm::cantFail(NumericTensorKey::create(
+      LogicalFormat::F32, PhysicalTensorLayout::Tensor, {1}));
 }
 
 ResolvedNumericCommand resolve(NumericCommandKey key) {
@@ -67,9 +67,10 @@ ResolvedNumericCommand makeConvert(LogicalFormat source,
                                    std::vector<uint64_t> shape) {
   const uint16_t opcode = findConvertOpcode(
       source, destination, TargetConvertParameterKind::RoundingMode);
-  NumericTensorKey sourceKey = makeTensor(source, MemLayout::Tensor, shape);
+  NumericTensorKey sourceKey =
+      makeTensor(source, PhysicalTensorLayout::Tensor, shape);
   NumericTensorKey destinationKey =
-      makeTensor(destination, MemLayout::Tensor, std::move(shape));
+      makeTensor(destination, PhysicalTensorLayout::Tensor, std::move(shape));
   return resolve(llvm::cantFail(NumericCommandKey::createCTConvert(
       opcode, std::move(sourceKey), std::move(destinationKey),
       NumericConvertParameter::roundingMode(
@@ -81,12 +82,12 @@ ResolvedNumericCommand makePlainConvert(LogicalFormat source,
                                         std::vector<uint64_t> shape) {
   const uint16_t opcode =
       findConvertOpcode(source, destination, TargetConvertParameterKind::None);
-  NumericTensorKey sourceKey = makeTensor(source, MemLayout::Tensor, shape);
+  NumericTensorKey sourceKey =
+      makeTensor(source, PhysicalTensorLayout::Tensor, shape);
   NumericTensorKey destinationKey =
-      makeTensor(destination, MemLayout::Tensor, std::move(shape));
+      makeTensor(destination, PhysicalTensorLayout::Tensor, std::move(shape));
   return resolve(llvm::cantFail(NumericCommandKey::createCTConvert(
-      opcode, std::move(sourceKey), std::move(destinationKey),
-      std::nullopt)));
+      opcode, std::move(sourceKey), std::move(destinationKey), std::nullopt)));
 }
 
 ResolvedNumericCommand makeElementwise(NumericElementwiseOperation operation,
@@ -96,10 +97,11 @@ ResolvedNumericCommand makeElementwise(NumericElementwiseOperation operation,
   const unsigned arity = getNumericElementwiseArity(operation);
   std::vector<NumericTensorKey> inputs;
   for (unsigned index = 0; index < arity; ++index)
-    inputs.push_back(makeTensor(input, MemLayout::Tensor, shape));
+    inputs.push_back(makeTensor(input, PhysicalTensorLayout::Tensor, shape));
   return resolve(llvm::cantFail(NumericCommandKey::createCTElementwise(
       operation, std::move(inputs),
-      makeTensor(destination, MemLayout::Tensor, std::move(shape)))));
+      makeTensor(destination, PhysicalTensorLayout::Tensor,
+                 std::move(shape)))));
 }
 
 ResolvedNumericCommand makeGemm(LogicalFormat format, uint32_t batch,
@@ -108,26 +110,30 @@ ResolvedNumericCommand makeGemm(LogicalFormat format, uint32_t batch,
   std::vector<uint64_t> rhsShape{batch, k, n};
   std::vector<uint64_t> destinationShape{batch, m, n};
   return resolve(llvm::cantFail(NumericCommandKey::createNEGemm(
-      makeTensor(format, MemLayout::NCx, std::move(lhsShape)),
-      makeTensor(format, MemLayout::NCx, std::move(rhsShape)),
-      makeTensor(format, MemLayout::NCx, std::move(destinationShape)), m, k, n,
-      batch, llvm::cantFail(getCanonicalNumericGemmAxes(/*rank=*/3)))));
+      makeTensor(format, PhysicalTensorLayout::NCx, std::move(lhsShape)),
+      makeTensor(format, PhysicalTensorLayout::NCx, std::move(rhsShape)),
+      makeTensor(format, PhysicalTensorLayout::NCx,
+                 std::move(destinationShape)),
+      m, k, n, batch,
+      llvm::cantFail(getCanonicalNumericGemmAxes(/*rank=*/3)))));
 }
 
 ResolvedNumericCommand makeOrientedGemm(LogicalFormat format, uint32_t m,
                                         uint32_t k, uint32_t n,
-                                        GemmOrientation lhsOrientation,
-                                        GemmOrientation rhsOrientation) {
-  std::vector<uint64_t> lhsShape = lhsOrientation == GemmOrientation::Normal
-                                       ? std::vector<uint64_t>{m, k}
-                                       : std::vector<uint64_t>{k, m};
-  std::vector<uint64_t> rhsShape = rhsOrientation == GemmOrientation::Normal
-                                       ? std::vector<uint64_t>{k, n}
-                                       : std::vector<uint64_t>{n, k};
+                                        TargetGemmOrientation lhsOrientation,
+                                        TargetGemmOrientation rhsOrientation) {
+  std::vector<uint64_t> lhsShape =
+      lhsOrientation == TargetGemmOrientation::Normal
+          ? std::vector<uint64_t>{m, k}
+          : std::vector<uint64_t>{k, m};
+  std::vector<uint64_t> rhsShape =
+      rhsOrientation == TargetGemmOrientation::Normal
+          ? std::vector<uint64_t>{k, n}
+          : std::vector<uint64_t>{n, k};
   return resolve(llvm::cantFail(NumericCommandKey::createNEGemm(
-      makeTensor(format, MemLayout::Cx, std::move(lhsShape)),
-      makeTensor(format, MemLayout::Cx, std::move(rhsShape)),
-      makeTensor(format, MemLayout::Cx, {m, n}), m, k, n,
+      makeTensor(format, PhysicalTensorLayout::Cx, std::move(lhsShape)),
+      makeTensor(format, PhysicalTensorLayout::Cx, std::move(rhsShape)),
+      makeTensor(format, PhysicalTensorLayout::Cx, {m, n}), m, k, n,
       /*batchCount=*/1, llvm::cantFail(getCanonicalNumericGemmAxes(/*rank=*/2)),
       lhsOrientation, rhsOrientation)));
 }
@@ -329,17 +335,19 @@ TEST(FormalTensorNumericTest,
       UINT64_C(0x40c00000), UINT64_C(0x40800000), UINT64_C(0x40a00000),
       UINT64_C(0x40c00000), UINT64_C(0x41700000)};
 
-  for (GemmOrientation lhsOrientation :
-       {GemmOrientation::Normal, GemmOrientation::Transpose}) {
-    for (GemmOrientation rhsOrientation :
-         {GemmOrientation::Normal, GemmOrientation::Transpose}) {
+  for (TargetGemmOrientation lhsOrientation :
+       {TargetGemmOrientation::Normal, TargetGemmOrientation::Transpose}) {
+    for (TargetGemmOrientation rhsOrientation :
+         {TargetGemmOrientation::Normal, TargetGemmOrientation::Transpose}) {
       ResolvedNumericCommand command =
           makeOrientedGemm(LogicalFormat::F32, /*m=*/2, /*k=*/3, /*n=*/4,
                            lhsOrientation, rhsOrientation);
       const std::vector<RawLogicalValue> &lhs =
-          lhsOrientation == GemmOrientation::Normal ? normalLhs : transposedLhs;
+          lhsOrientation == TargetGemmOrientation::Normal ? normalLhs
+                                                          : transposedLhs;
       const std::vector<RawLogicalValue> &rhs =
-          rhsOrientation == GemmOrientation::Normal ? normalRhs : transposedRhs;
+          rhsOrientation == TargetGemmOrientation::Normal ? normalRhs
+                                                          : transposedRhs;
       FormalNumericExecutionContext context;
       FormalTensorNumericResult result = execute(context, command, {lhs, rhs});
       ASSERT_EQ(result.values.size(), expected.size());
@@ -415,9 +423,9 @@ TEST(FormalTensorNumericTest,
   EXPECT_FALSE(context.getAggregateFlags().any());
 
   NumericTensorKey reduceInput =
-      makeTensor(LogicalFormat::F32, MemLayout::Cx, {2, 2});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2, 2});
   NumericTensorKey reduceDestination =
-      makeTensor(LogicalFormat::F32, MemLayout::Cx, {2});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2});
   ResolvedNumericCommand reduce =
       resolve(llvm::cantFail(NumericCommandKey::createNativeCTReduce(
           NumericReduceOperation::Sum, std::move(reduceInput),

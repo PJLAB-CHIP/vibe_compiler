@@ -769,10 +769,6 @@ mlir::LogicalResult InstrFillOp::verify() {
 InstrFamily InstrFillOp::getInstructionFamily() { return InstrFamily::TDMA; }
 
 mlir::LogicalResult InstrElementwiseOp::verify() {
-  if ((*this)->hasAttr("indexing_maps"))
-    return emitOpError(
-        "terminal elementwise does not accept indexing_maps; tile-level maps "
-        "must be materialized as movement before instruction lowering");
   if (mlir::failed(verifyNoEmptyVariadicInputs(getOperation(), getInputs(),
                                                "elementwise")))
     return mlir::failure();
@@ -876,9 +872,6 @@ mlir::LogicalResult InstrMaskMoveOp::verify() {
 InstrFamily InstrMaskMoveOp::getInstructionFamily() { return InstrFamily::CT; }
 
 mlir::LogicalResult InstrReduceOp::verify() {
-  if ((*this)->hasAttr("init_value") || (*this)->hasAttr("init"))
-    return emitOpError(
-        "terminal reduce must not retain source initialization state");
   if (mlir::failed(
           verifySPMMemRef(getOperation(), getInput().getType(), "input")) ||
       mlir::failed(
@@ -913,10 +906,8 @@ mlir::LogicalResult InstrConvertOp::verify() {
     return emitOpError(
         "convert kind destination type does not match dest element type");
   InstrConvertKind kind = getKindAttr().getValue();
-  mlir::IntegerAttr zeroPoint =
-      getOperation()->getAttrOfType<mlir::IntegerAttr>("zero_point");
-  mlir::IntegerAttr roundingMode =
-      getOperation()->getAttrOfType<mlir::IntegerAttr>("rounding_mode");
+  mlir::IntegerAttr zeroPoint = getZeroPointAttr();
+  mlir::IntegerAttr roundingMode = getRoundingModeAttr();
   switch (getInstrConvertParameterKind(kind)) {
   case InstrConvertParameterKind::ZeroPoint:
     if (!zeroPoint)
@@ -1015,7 +1006,8 @@ mlir::LogicalResult InstrGemmOp::verify() {
 
   BatchedGemmDimAttrs attrs;
   if (mlir::failed(verifyBatchedGemmTileContract(
-          getOperation(), *lhsTensor, *rhsTensor, *destTensor, attrs)))
+          getOperation(), *lhsTensor, *rhsTensor, *destTensor, lhsOrientation,
+          rhsOrientation, attrs)))
     return mlir::failure();
   if (hasStaticMismatch(attrs.lhsMDim >= 0
                             ? lhsTensor->getDimSize(attrs.lhsMDim)
@@ -1193,10 +1185,6 @@ mlir::LogicalResult InstrPoolOp::verify() {
 InstrFamily InstrPoolOp::getInstructionFamily() { return InstrFamily::CT; }
 
 mlir::LogicalResult InstrUnpoolOp::verify() {
-  if ((*this)->hasAttr("index"))
-    return emitOpError(
-        "scalar index attr is not supported; use an index memref operand");
-
   if (mlir::failed(
           verifyNCxSPMMemRef(getOperation(), getInput().getType(), "input")) ||
       mlir::failed(

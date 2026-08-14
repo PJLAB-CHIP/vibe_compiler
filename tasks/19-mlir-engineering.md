@@ -10,9 +10,9 @@ IR 语义、memory、target、verification 和源码组织；本文不复制这�
 Pipeline position:
 - Upstream artifact / IR:
   verified StableHLO/Linalg/TensorProgram，以及已经选择并物化的 CardProgram、TileProgram、TileRegion、Instr；
-  target topology、mesh、symbol/call relation 均由对应上游 owner 显式提供。
+  target topology、mesh、symbol/call relation 均由对应上游 artifact contract显式提供。
 - Current stage responsibility:
-  让 operation hierarchy 成为真实的 pass、analysis 和 rewrite ownership hierarchy；用 ODS、SSA、标准 interface、
+  让operation hierarchy成为真实的pass、analysis和rewrite作用域；用ODS、SSA、标准interface、
   SymbolRef 和 verifier 表达稳定语义；用 named nested pipeline、AnalysisManager、DialectConversion 和
   PatternRewriter 实现可验证、可插桩、可复用的 lowering，不以 whole-module wrapper、Location 指针、结构序号或
   pass 外 mutable side state 代替 MLIR 合同。
@@ -20,11 +20,13 @@ Pipeline position:
   与 01–18 定义相同的 TensorProgram、CardProgram/TileRegion、Instr、CardExecutable 和 target artifact；每层 IR
   自包含、可 roundtrip、可由 verifier 判定，pass pipeline 可打印并在相同输入上确定性重放。
 - Downstream consumer:
-  physical-dataflow mechanism/search、SPM/DDR/completion、CardExecutable admission、target conversion、package
+  frontend/StableHLO/SPMD、physical-dataflow mechanism/search、SPM/DDR、NCC required-join placement、
+  CardExecutable admission、target conversion、package
   publication，以及 wafer-opt focused testing 和 wafer-compile production driver。
 - User-level driver / named pipeline:
-  wafer-compile 仍是 source-to-package 唯一 production 入口；wafer-opt 注册按稳定 IR 边界命名的
-  wafer-tile-region-to-instr、wafer-physical-tile-finalization 等 named subpipeline，production driver 复用同一
+  wafer-compile仍是source-to-package唯一production入口；wafer-opt注册按输入/输出IR或稳定动作命名的
+  StableHLO normalization、tile-region-to-instr、function synchronization、memory planning与target lowering subpipeline，
+  production driver复用同一
   pipeline builder/transform implementation，不维护手写平行流程。
 - Explicit non-goals:
   不改变 physical-dataflow 合法域、搜索策略、target ABI 或 runtime schema；不把所有阶段机械地下沉到
@@ -32,43 +34,57 @@ Pipeline position:
   强行替代 compiler 所需的 typed accepted/exact-rejection/indeterminate 结果。
 - Completion gate:
   semantic Location 和 schema 外 semantic attr 清零；标准 interface 与 alias/effect 合同闭合；local、function、
-  module/card scope 各自只有一个实现 owner；production 与 named pipeline 复用同一 lowering；analysis 可重算且
+  module/card scope各自只有一个实现事实源；production与named pipeline复用同一lowering；analysis可重算且
   invalidation 正确；rewrite failure 原子；fresh build、unit/lit、IR/source organization、代表 source-to-package
   digest/oracle/no-card 和 compile-stage 计数/耗时门禁通过。
 ```
 
 本任务是 compiler 工程化重构，不包含板端行为或性能结论。若实现改变 target artifact 或 runtime ABI，必须由对应
-14–17 owner 另行扩大验证；否则 Q54 的完成证据停在 fresh host、artifact readback 和 no-card。
+14–17对应合同另行扩大验证；否则Q54的完成证据停在fresh host、artifact readback和no-card。
 
-## 2. 审计结论与优先级
+## 2. 审计结论与落地状态
 
-当前 IR schema 已经具备多项正确基础：`wafer.card.program`、`wafer.tile.program` 和 `wafer.tile.region` 使用
-`IsolatedFromAbove`，TileRegion 具有显式 SSA boundary、region verifier 和 recursive effects；Target LLVM full
-conversion 的 legality 集合闭合；SPM/DDR planner 先形成 pending placement、全部成功后再提交；One-Shot
-Bufferization 已注册必要 external models；部分局部 rewrite 已使用 scoped candidate list。
+Q54 已把首轮全仓审计发现的 MLIR 基础设施问题收敛到下列稳定边界。这里记录的是当前合同与完成证据，
+不是继续扩张任务范围的待办清单；source/build 的逐文件归属仍只由 18 号合同拥有。
 
-主要问题不是“项目没有 MLIR IR”，而是 **IR 已经分层，pass、analysis 和 transaction 仍按 procedural
-whole-module 风格组织**。结果是局部 region 被包装成临时 module/function，重复执行整套后端；query identity 和
-feedback 因果进入 `OpaqueLoc`、裸指针或结构序号；analysis lifecycle、symbol lookup、dataflow 和 rewrite worklist
-在项目内重复实现。
+| 领域 | Q54 已落地边界 |
+| --- | --- |
+| IR 自包含性与 ODS | active source 不再用 `OpaqueLoc`、裸指针、结构序号或打印文本恢复编译语义；GEMM batch、elementwise maps、reduce init 等稳定字段进入 ODS/generated accessor，discardable instrumentation attr 可组合 |
+| alias/effect/dataflow | alias-only view 与 materializing reshape 分离；TileRegion 提供 RegionBranch/terminator 合同，通用 flow 使用 RegionBranch、Call、ViewLike、MemoryEffect 与指令语义 interface，目标特有异步约束保留窄分析 |
+| pass hierarchy | TileRegion lowering 运行在真实 `TileRegionOp` anchor，required NCC join 运行在 `func.func`，call/shared arena、DDR、whole-card admission 与 closed target conversion 保持真实全局边界；不再构造 synthetic Module/Func local wrapper |
+| analysis | timeline、direct call graph 与 target scheduling facts进入 operation-anchored AnalysisManager seam，并按 mutation 明确 preserve/invalidate；一次性 candidate/cost value 仍是 query-local typed value，不机械 analysis 化 |
+| pipeline | active compiler 只由统一 runner 构造 production PassManager；16 个 atomic pass 组成 7 条常驻 named semantic pipeline，另有 1 条 Shardy 条件 pipeline；textual pipeline、production builder、nested anchor 与 statistics 共享事实源 |
+| rewrite/conversion | active pattern 不持有 rollback 外 mutable failure state；preflight 先于 mutation，greedy rewrite 限定 affected roots，Tile dataflow marker 使新增 source op fail closed，简单 Fill rewrite 使用 DRR，复杂 layout/index/resource lowering保留 C++ |
+| transaction/error | required-join、StableHLO/SPMD rewrite、Tile conversion、memory placement 与 target lowering具备 failure atomicity；IR 侧使用 MLIR result/diagnostic，host/artifact 侧使用 typed result/error，不解析诊断字符串控制流程 |
+| search/materialization relation | candidate assignment、current-IR evaluation 与 controller transition 已拆分；跨 clone 关系使用 `IRMapping`/typed current-IR relation，dead relation只丢弃而不猜测替代，required witness继续 fail closed |
+| target/runtime/model layering | pure physical layout、target operation/transaction 与 numeric protocol不依赖 MLIR；MLIR adapter、host frontend和model consumer按 artifact 单向分层，public-header/link-closure在 feature on/off 均受测 |
+| source/build/test truth | active/dormant source由18号CMake政策和organization checker唯一判定；fresh generated/build、public link smoke、unit/lit、IR/source checker和受影响模型测试共同防止 stale build 假通过 |
 
-| 优先级 | 领域 | 当前风险 | 终态 |
-| --- | --- | --- | --- |
-| P0 | IR 自包含性 | `OpaqueLoc`/外部指针参与 rewiring、candidate feedback 和 lineage；clone 只复制裸指针，文本/bytecode roundtrip 不保语义 | Location 只作诊断 provenance；关系由 SSA、typed op/attr/interface 或 query-local `IRMapping` 表达 |
-| P0 | ODS schema | GEMM batch、elementwise indexing maps、reduce init 等稳定语义通过字符串 attr 读写 | 所有 inherent semantic field 进入 ODS typed argument/property，并由 generated accessor/builder/verifier 消费 |
-| P0 | alias/effect | reshape、insert-slice、elementwise lowering 的 alias/in-place 行为会随 lowering 决策改变 | op 的 alias、allocation 与 memory effect 是稳定合同；in-place/out-of-place 通过 DPS/Bufferizable 或不同 op 显式表达 |
-| P0 | conversion legality | TileRegion→Instr 只列 source denylist，同时把 unknown op 设为 legal；新增 source op 可静默穿透 | 同一Wafer dialect内以统一Tile-dataflow marker interface/trait动态判source op illegal，结构/metadata/Instr显式legal；full/partial conversion名实相符并有stage verifier |
-| P1 | pass hierarchy | 自研 pass 基本都以 ModuleOp 为 anchor，未使用 nested pass；local-fit 每 region 重建 module/function 和完整 pipeline | Module/Card/Func/TileRegion 按真实作用域分层，局部阶段直接 anchor 最近的 `IsolatedFromAbove` op |
-| P1 | analysis | topology、timeline、lifetime、call/symbol facts 手工创建和失效；没有 AnalysisManager/preservation | 可由 operation 重算且多次消费的只读事实进入 MLIR analysis；mutation 明确 preserve/invalidate |
-| P1 | region/dataflow | TileRegion operand/yield/result forwarding 被 verifier、lifetime、SPM、flattening 多处手写识别 | 实现 `RegionBranchOpInterface`/terminator contract；通用 flow 由 interface/dataflow infrastructure 消费 |
-| P1 | rewrite transaction | conversion pattern 依赖 rollback，failure reason/used callee 等外部 mutable state 不随 rollback | mutation 前完成 preflight；pattern immutable；诊断用 `notifyMatchFailure`/conversion callback；成功后从 IR 导出结果 |
-| P1 | pipeline owner | compiler 反复建立短 PassManager 并穿插 direct mutation，production 主线不可完整打印/插桩 | named subpipeline 与 production driver 共享 builder；artifact fan-out 和 rich result 留在 typed driver 边界 |
-| P2 | rewrite scope | whole-module greedy、手写全树 fixed point、match-any conversion pattern 增加无关扫描 | affected-root/worklist scoped rewrite；interface/typed pattern；昂贵 folding 设显式预算 |
-| P2 | 声明式机制 | 项目没有 DRR/PDLL/Transform dialect | 简单局部一对一 rewrite 优先 DRR；复杂 C++ 保留；PDLL/Transform 只在出现明确 consumer 时引入 |
-| P2 | source/build conformance | active CMake、dormant source 和 stale generated artifact 可形成多个事实源 | 按18的唯一source/build合同同批增删source、CMake、generated declarations与tests；Q54只增加MLIR conformance gate |
+Q54 不把性能搜索本身改写成 PassManager。`none` 控制流中剩余的 whole-card 重物化由 Q49.P 消费这些
+scope/pipeline seam 后删除；rotating buffer 必须先有真实共同 wave/stage loop 的要求由 Q50.I 实现；全仓更广的术语润色由
+Q45 继续，但 Q54 引入或迁移的 active API 已无 `Lineage`、`local-fit` 和 `Frontier` 旧抽象。
 
-P0/P1 是 correctness、可维护性或后续扩展的前置，不按“当前是否热路径”降级。P2 同样必须闭合，但可以在不扩大
-错误接口的前提下后置施工。
+### 2.1 全工程覆盖矩阵
+
+Q54的审计与完成门禁覆盖全部active compiler source，而不是只覆盖PhysicalTile。下表区分“本任务必须整改”与“确认边界正确、
+禁止为了统一而改坏”；具体source/CMake增删仍由18号合同执行。
+
+| 子系统 | Q54 落地结果 | 保留边界 / 后续 owner |
+| --- | --- | --- |
+| IR/ODS | typed physical encoding、Tile marker、RegionBranch、DPS/Tiling、typed attrs和discardable attr合同闭合 | 新字段继续按 ODS/interface/verifier 顺序扩展 |
+| Frontend | parse schema、metadata、typed compile result和IR验证边界分离 | 外部字符串只允许停在解析边界 |
+| StableHLO/Linalg | normalization、legalization、bounded simplification拆成语义stage；scoped pattern/fold带预算且失败原子 | canonicalizer只优化，不承担 correctness |
+| SPMD/Sharding | TableGen声明、全量preflight、module级mesh/signature边界和feature-off gate闭合 | 外部 XLA helper保持其原生 pass/status 边界 |
+| Card/Tile materialization | semantic Location和synthetic wrapper移除；同次clone以`IRMapping`维护关系 | Q49.P继续删除 baseline 控制流的重复 whole-card materialization |
+| TileRegion→Instr | region-anchored conversion、frozen patterns、marker fail-closed legality、DRR和function NCC join pipeline闭合 | function outstanding access保持 Func scope |
+| Memory planning | SPM/DDR plan-then-commit、timeline/call analysis与preservation闭合 | shared arena与DDR仍是 function/module 合同 |
+| Search/scheduling | assignment/evaluation/transition拆分，current-IR relation替代pointer/print identity，enumeration名称说明真实动作 | Q50/Q51拥有候选域和选择语义，不由Q54另建selector |
+| Target LLVM | interface pattern、converted adaptor、closed full conversion和postcheck复用同一production builder | closed conversion保持 Module 原子事务 |
+| Compiler orchestration | 统一pipeline runner；artifact fan-out、RAII staging和atomic publication保持driver边界 | 不把filesystem/artifact transaction伪装成MLIR pass |
+| Analysis/cost | 可复用IR事实进入AnalysisManager；一次性cost/query对象保持typed local value | Q52只优化经测量确认的热点 |
+| Target/runtime/model | pure target protocol/layout与MLIR adapter分层，SystemC/oneDNN exception/RTTI隔离保留 | runtime/model不机械改造成pass |
+| Tools/build/test | CMake-derived organization checker、fresh build、public link smoke、feature on/off和lit闭合 | 保持Q42快速默认面，长搜索由对应任务点名 |
+| 命名 | Q54迁移对象按scope、property、action和artifact命名，旧`Lineage`/`local-fit`/`Frontier`清零 | Q45继续全仓非阻塞术语治理，不回滚本合同 |
 
 ## 3. IR 与 ODS 合同
 
@@ -78,10 +94,10 @@ P0/P1 是 correctness、可维护性或后续扩展的前置，不按“当前�
 
 - producer/consumer、peer endpoint、region cut 或 physical edge identity；
 - candidate attribution、temporal refinement、allocator failure no-good；
-- buffer owner、selected loop、symbol binding 或跨 clone correspondence。
+- buffer allocation/use关系、selected loop、symbol binding或跨clone correspondence。
 
-同一 transformation transaction 内的原 op/clone 对应使用 `IRMapping` 或局部 typed map；能从 current IR 重算的
-lineage保持为 analysis；确需跨 stage 且不能重算的事实必须成为 SSA relation、typed op/type/attr 或标准/自定义
+同一transformation transaction内的原op/clone对应使用`IRMapping`或局部typed map；能从current IR重算的
+source attribution保持为analysis；确需跨stage且不能重算的事实必须成为SSA relation、typed op/type/attr或标准/自定义
 interface。清理 OpaqueLoc、递归处理 FusedLoc、扫描 block argument location 和发布前 absence verifier 只能作为迁移
 止血，不能算完成。
 
@@ -133,9 +149,9 @@ call interface 解析。CLI 可以提供默认 symbol 名，IR 合同不能依�
 | Anchor | 应负责 | 不应负责 |
 | --- | --- | --- |
 | `ModuleOp` / card root | topology/mesh 与 symbol/call closure、function-boundary bufferization、whole-card DDR/transport/resource/ABI admission、artifact fan-out、closed target conversion | 为每个 TileRegion 重跑 local conversion、local lifetime 或 local canonicalization |
-| `CardProgramOp` / `TileProgramOp` | card/tile ownership、all-and-only coverage、tile-level symbol boundary、独立 physical-Tile artifact preparation | 以全 module walk 恢复局部 region identity |
-| `func::FuncOp` | 会跨 TileRegion/loop 的 completion、call-site boundary、function-local control/dataflow summary | 每个 region 建 synthetic function 再执行同一 func pipeline |
-| `TileRegionOp` | Tile→Instr local conversion、region canonicalization、local lifetime/completion summary、SPM root conflicts/packing query | call graph、跨 region pending state、function-boundary bufferization、card admission |
+| `CardProgramOp` / `TileProgramOp` | card/tile all-and-only coverage、tile-level symbol boundary、独立physical-Tile artifact preparation | 以全module walk恢复局部region对应 |
+| `func::FuncOp` | 跨TileRegion/loop的outstanding NCC access与required join、call-site boundary、function-local control/dataflow summary | 每个region建synthetic function再执行同一func pipeline |
+| `TileRegionOp` | Tile→Instr conversion、region canonicalization、local lifetime与SPM root conflicts/packing query | call graph、跨region pending state、function-boundary bufferization、card admission |
 
 Module scope 本身不是问题。One-Shot function-boundary bufferization、whole-card DDR 与 transport admission、跨函数 shared-arena
 legality、artifact publication 和 Target LLVM full conversion确实需要全局视图，必须保留。问题是把局部工作揉进这些
@@ -163,21 +179,28 @@ RegionBranch contract完成原子替换。不能为了“region-local”破坏 p
 
 ### 4.3 Named pipeline 与 typed compiler result
 
-production driver 仍负责 source snapshot、candidate ownership、artifact multiplicity、atomic publication 和 rich failure
+production driver 仍负责 source snapshot、candidate artifact lifetime、artifact multiplicity、atomic publication 和 rich failure
 taxonomy；这些不适合硬塞进普通 MLIR pass。每个稳定 IR→IR substage则必须有唯一 pipeline builder，供：
 
 1. `wafer-opt --pass-pipeline` focused replay；
 2. `wafer-compile` production invocation；
 3. unit/lit instrumentation 和 verify-each。
 
+工程上区分三个层级：atomic pass/kernel在最窄合法anchor完成一个可验证postcondition；semantic subpipeline在一个稳定、
+verifier-legal的IR边界内组合这些pass并提供唯一builder；artifact driver管理搜索、artifact fan-out、外部工具和publication，
+只调用前两层而不复制IR变换。顶层aggregate pipeline可以包含多个stage，MLIR upstream也普遍如此；判断粒度是否合适的标准
+不是pass数量，而是leaf stage能否独立重放、production是否复用同一builder、analysis/diagnostic是否保留真实anchor，以及
+中间IR是否有合法合同。不能为了“细粒度”拆出verifier-invalid中间态，或破坏memory/target conversion所需的原子提交。
+
 非平凡 transformation kernel按四层组织：只读preflight/query、typed plan/outcome、对明确root的apply、thin pass wrapper或
 compiler adapter。pass wrapper把普通失败映射为diagnostic/signal pass failure；compiler adapter保留
 accepted/exact-rejection/indeterminate等rich result。两者消费同一query/apply实现，而不是共享名字但各写一套逻辑。
 
-`wafer-tile-region-to-instr` 只做 region-local lowering；`wafer-physical-tile-finalization` 组合 function completion、
-function-boundary bufferization、Tile-local SPM planning 和必要的 tile-level verification。调用者需要 typed
-`accepted`、`proven exact rejection`、`indeterminate` 时，使用包裹同一 pipeline implementation 的 compiler API，不能维护
-另一套 direct mutation 流程。
+named subpipeline按稳定语义层命名并覆盖前后半程：StableHLO normalization/legalization、TileRegion→Instr、function级
+outstanding NCC access/required join、function-boundary bufferization、SPM/DDR planning与Instr→target LLVM。调用者需要typed
+`accepted`、`proven exact rejection`、`indeterminate`时，使用包裹同一pipeline implementation的compiler API，不能维护
+另一套direct mutation流程。名称必须描述输入/输出IR或执行动作，不能以`physical-tile-finalization`、`local-fit`等阶段历史
+代替实际合同。
 
 ## 5. Analysis、DataFlow 与 verifier
 
@@ -196,7 +219,7 @@ object；不要为“使用 AnalysisManager”把所有 helper 变成 analysis�
 ### 5.2 DataFlow 与 interface-driven traversal
 
 RegionBranch、Call、MemoryEffect、ViewLike/alias 和 structured op interface 提供通用 flow edge。MLIR DataFlowSolver 可以
-承担可组合的 SSA/control-flow fixed point；Wafer custom lattice 只保留 path-sensitive async completion、target resource 和
+承担可组合的 SSA/control-flow fixed point；Wafer custom lattice 只保留 path-sensitive异步命令完成条件、target resource 和
 SPM boundary 等标准 interface 无法表达的部分。
 
 现有 fail-closed verifier/lifetime 行为必须保留：未知 region/control-flow op 不得被静默当成顺序执行。迁移完成后，
@@ -251,28 +274,33 @@ verifier，不能把unknown全legal的`applyFullConversion`当作闭合证明。
   index-relation、multi-root ordering、region inline 等复杂逻辑继续使用 C++ pattern。迁移收益是 typed boilerplate 和审查
   清晰度，不作为性能或完成数量指标。
 - 多 op 声明式规则形成重复族后才引入 PDLL。Transform dialect只在未来出现外部 schedule/control-plane consumer 时作为
-  handle-based 控制层；它不替代 pass、pattern 或 physical-dataflow candidate owner。
+  handle-based 控制层；它不替代 pass、pattern 或 physical-dataflow candidate selection。
 
-## 7. Clone、transaction 与 identity
+## 7. Clone、transaction 与跨artifact对应
 
 - 同一 source/clone transaction 使用 `IRMapping`，不得按 top-level region ordinal、block operation index 或 walk 顺序找回
   clone op。
-- 失败即丢弃的 private candidate只有一个 outer transaction owner；callee 提供 in-place-on-private-IR API，不再嵌套
+- 失败即丢弃的private candidate只有一个最外层rollback边界；callee提供in-place-on-private-IR API，不再嵌套
   clone whole module后 `takeBody`。
 - local query克隆最近的 `IsolatedFromAbove` ancestor；若所需 symbol/call closure确实越界，再提升 anchor并在 API 中写明。
-- 每 physical Tile投影成独立 output module、accepted artifact→ABI prepared artifact、跨 module atomic tuple等真实 ownership
-  变化可以 clone whole artifact；这些不能因“减少 clone”被错误删除。
+- 每physical Tile投影成独立output module、accepted artifact→ABI prepared artifact、跨module atomic tuple等真实所有权变化
+  可以 clone whole artifact；这些不能因“减少 clone”被错误删除。
 - 跨独立 materialization 的 global correspondence通过共同上游 SSA/typed stable relation表达，不用 op print digest、
   sibling ordinal、pointer location 或默认 symbol 名。
 
 ## 8. Source 与测试组织
 
-具体source/build ownership、CMake增删和test mirror合同仍只由18拥有；本文不建立第二份source map。Q54只在该合同上增加
+具体source/build职责、CMake增删和test mirror合同仍只由18拥有；本文不建立第二份source map。Q54只在该合同上增加
 MLIR conformance gate：active build、ODS/generated declarations、source list和test list必须一致。source未进入CMake
 只证明它不属于active build，不证明其中算法、proof、diagnostic或测试资产已经失去价值。每个dormant source必须先分类为
-`reactivate/refactor`、`extract-then-delete`或`delete`并指定新owner；当前或后续合同仍需要的独有能力与测试先迁入active
-source并通过compile/test gate，随后才删除旧owner。只有已被现行IR/API明确淘汰且没有独有能力的source可以直接按18
+`reactivate/refactor`、`extract-then-delete`或`delete`并指定替代实现；当前或后续合同仍需要的独有能力与测试先迁入active
+source并通过compile/test gate，随后才删除旧实现。只有已被现行IR/API明确淘汰且没有独有能力的source可以直接按18
 清理。stale build生成头不能作为fresh source compatibility证据。
+
+library依赖同样属于artifact合同。pure target transaction/format/numeric protocol不得依赖MLIR dialect；MLIR target analysis
+与lowering adapter单独依赖WaferIR；host JIT frontend、runtime和model只链接其实际消费的下层库。runtime/model不因为一个
+transaction enum或invocation descriptor依赖整个`WaferCompiler`，`WaferRuntime`也不因target协议传递获得不必要的WaferIR
+依赖。具体target拆分和CMake cutover仍由18执行，Q54验证依赖方向、public header自包含与feature-on/off link closure。
 
 测试按基础设施合同分层：
 
@@ -283,6 +311,10 @@ source并通过compile/test gate，随后才删除旧owner。只有已被现行I
 - Integration：代表 TensorProgram→CardProgram/TileRegion→Instr→CardExecutable→package digest/oracle/no-card；
 - Performance：统计 clone/materialization/pass invocation 数和各 stage wall time，证明 local probe work随受影响 scope增长，
   不再是 region 数乘完整 module pipeline。
+
+Q54不得回退Q42已经闭合的默认测试减负边界：默认lit继续只覆盖直接IR合同，Runtime由直接CTest/unit覆盖，Tools中的完整
+source-to-package、qualification和model case由对应任务点名。Q54自己的完成证据必须显式运行IR/source organization、受影响的
+Runtime/Tools case、analysis unit和parser/verifier gate；“不进入默认lit”不等于可以跳过本任务直接合同。
 
 ## 9. 保留的正面实践
 
@@ -311,6 +343,16 @@ source并通过compile/test gate，随后才删除旧owner。只有已被现行I
 - [Symbols and Symbol Tables](https://mlir.llvm.org/docs/SymbolsAndSymbolTables/)
 - [Builtin Location](https://mlir.llvm.org/docs/Dialects/Builtin/)
 - [Transform Dialect](https://mlir.llvm.org/docs/Dialects/Transform/)
+- [MLIR Developer Guide](https://mlir.llvm.org/getting_started/DeveloperGuide/)
+- [MLIR Testing Guide](https://mlir.llvm.org/getting_started/TestingGuide/)
+- [MLIR Rationale](https://mlir.llvm.org/docs/Rationale/Rationale/)
+- [LLVM Coding Standards](https://llvm.org/docs/CodingStandards.html)
+- [LLVM Programmer's Manual](https://llvm.org/docs/ProgrammersManual.html)
+- [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines)
 
 采用上述基础设施的标准是：它能让 IR 语义更显式、scope 更准确、analysis 可重算、rewrite 可验证，或删除重复
-owner/旁路；“MLIR 提供了该功能”本身不构成采用理由。
+实现/旁路；“MLIR 提供了该功能”本身不构成采用理由。
+
+C++ Core Guidelines只提供通用设计判据；与本仓库pinned MLIR/LLVM惯例冲突时，以pinned API、LLVM no-exception/no-RTTI
+错误模型和现有MLIR接口约定为准。例如，多结果优先named typed result，但MLIR惯用的非空caller-owned输出引用不是违规；
+raw pointer/reference可以表示当前IR owner/epoch内的non-owning handle，但不能跨clone、erase、异步或长期cache充当稳定身份。

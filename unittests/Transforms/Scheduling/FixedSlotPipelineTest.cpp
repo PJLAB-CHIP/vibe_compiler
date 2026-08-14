@@ -4,8 +4,9 @@
 
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/MemoryPlanning.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -33,7 +34,7 @@ protected:
                     mlir::bufferization::BufferizationDialect,
                     mlir::func::FuncDialect, mlir::memref::MemRefDialect,
                     mlir::scf::SCFDialect>();
-    wafer::registerAllDialects(registry);
+    wafer::registerWaferCoreDialects(registry);
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
   }
@@ -1311,7 +1312,7 @@ module {
   unsigned steadyJoins = 0;
   kernel.walk([&](wafer::SyncNCCJoinOp) { ++steadyJoins; });
   // Slot rotation delays the overwrite but does not prove that an
-  // OrderedPending NCC reader has completed by the time the slot recurs. The
+  // OrderedAsynchronousIssue NCC reader has completed by the time the slot recurs. The
   // minimum-completion normalizer must therefore rebuild this exact cut.
   EXPECT_EQ(steadyJoins, 1u) << print(candidate->module->getOperation());
 }

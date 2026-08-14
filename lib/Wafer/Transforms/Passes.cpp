@@ -13,9 +13,6 @@ namespace wafer {
 void registerWaferTransformPasses() {
   static bool registered = [] {
     registerWaferTransformsPasses();
-#ifdef WAFER_ENABLE_SHARDY
-    mlir::registerPass([] { return createApplyDefaultSpmdShardingPass(); });
-#endif
     return true;
   }();
   (void)registered;

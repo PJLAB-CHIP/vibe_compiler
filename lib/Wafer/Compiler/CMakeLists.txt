@@ -45,6 +45,7 @@ add_mlir_library(WaferCompiler
   ProgramTensorComparison.cpp
   PhysicalTileFinalization.cpp
   SpmdCompilationBridge.cpp
+  StructuredBufferRelations.cpp
   TargetABIPreparation.cpp
   TargetArtifact.cpp
   TargetArtifactPublication.cpp
@@ -54,12 +55,12 @@ add_mlir_library(WaferCompiler
   TargetModuleReadback.cpp
   TargetPackagePublication.cpp
   TargetInstrumentation.cpp
-  TileRegionLocalFit.cpp
+  TileRegionSPMCapacityEvaluation.cpp
   PhysicalTilePreflight.cpp
   SelectedBufferMaterialization.cpp
   TargetCallFrontend.cpp
   WholeDAGCandidateSchedule.cpp
-  WholeDAGPlacementFrontier.cpp
+  WholeDAGPlacementEnumeration.cpp
   WholeDAGEdgeDemandPlan.cpp
   WholeDAGEdgeStrategyPlan.cpp
   WholeDAGSchedule.cpp

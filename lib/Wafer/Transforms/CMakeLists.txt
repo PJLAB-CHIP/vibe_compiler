@@ -1,5 +1,5 @@
 add_mlir_library(WaferTransforms
-  PhysicalDataflow/CandidateRewrites.cpp
+  Bufferization/BufferizeInstrFunctionBoundaries.cpp
   Scheduling/RedundantTransferElimination.cpp
   DDR/PlanDDRMemory.cpp
   MemoryPlanning/LifetimeAnalysis.cpp
@@ -12,6 +12,7 @@ add_mlir_library(WaferTransforms
   Target/MaterializeTargetTopology.cpp
   Target/LowerInstrToTargetLLVM.cpp
   Target/TargetCallPreflight.cpp
+  Target/TargetCallIRAdapter.cpp
   Target/TargetCallLoweringSupport.cpp
   Target/MovementTargetCallLowering.cpp
   Target/ComputeTargetCallLowering.cpp
@@ -39,6 +40,7 @@ add_mlir_library(WaferTransforms
   MLIRArithDialect
   MLIRAsyncDialect
   MLIRBufferizationDialect
+  MLIRBufferizationTransforms
   MLIRControlFlowDialect
   MLIRControlFlowToLLVM
   MLIRFuncDialect

@@ -4,7 +4,7 @@
 #include "Wafer/Analysis/PhysicalDataflow/PhysicalAccessRelation.h"
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Builders.h"
@@ -59,7 +59,7 @@ TEST(IndexRelationTest, RepresentsIdentityPermutationAndBroadcastExactly) {
 TEST(PhysicalAccessRelationTest,
      ComposesEveryLayoutPairAcrossDtypesBlocksAndTails) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadDialect<wafer::WaferDialect>();
 
@@ -123,7 +123,7 @@ TEST(PhysicalAccessRelationTest,
 TEST(PhysicalAccessRelationTest,
      NormalizesDtypeSpecificBitOffsetsToPhysicalTraversal) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadDialect<wafer::WaferDialect>();
 
@@ -187,7 +187,7 @@ TEST(PhysicalAccessRelationTest,
 TEST(PhysicalAccessRelationTest,
      ComposesPermutationAndEnforcesWriterInjectivity) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadDialect<wafer::WaferDialect>();
   mlir::Type f16 = mlir::Float16Type::get(&context);
@@ -227,7 +227,7 @@ TEST(PhysicalAccessRelationTest,
 TEST(PhysicalLayoutRelationTest,
      NormalizesBlockedEncodingPiecesIntoExactPresburgerMap) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadDialect<wafer::WaferDialect>();
   auto memory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
@@ -620,7 +620,7 @@ TEST(IndexRelationTest, ProvesCurrentViewDmaGatherScatterAndStagedRoutes) {
 TEST(PhysicalAccessRelationTest,
      ProvesBlockedReshapeEquivalenceWithoutElementEnumeration) {
   mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
+  wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
   context.loadDialect<wafer::WaferDialect>();
   mlir::Type f16 = mlir::Float16Type::get(&context);

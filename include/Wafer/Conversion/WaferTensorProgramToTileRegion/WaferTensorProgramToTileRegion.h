@@ -20,35 +20,42 @@ class Value;
 
 namespace wafer {
 
-/// Typed query-local provenance for one direct structured source operation.
-/// CardProgram materialization attaches an OpaqueLoc referencing this record
-/// only to the corresponding operation in its private scheduling clone.
-/// Generated Tile/Instr operations may inherit that location so the caller can
-/// partition exact accepted cost by source DAG node. The record must outlive
-/// materialization and any accepted-cost query; it is never serialized and
-/// must be stripped before publishing the winning executable.
-struct CardProgramSourceOperationLineage {
-  mlir::Operation *sourceOperation = nullptr;
+/// Query-local relation between a current structured operation and its DAG
+/// node.  Callers remap `operation` with IRMapping whenever they clone an IR
+/// scope; the relation is never encoded in Location or persisted in IR.
+struct StructuredOperationNodeMapping {
+  mlir::Operation *operation = nullptr;
   uint32_t structuredNodeId = 0;
 };
 
-/// Query-local provenance for one observable output traversal.  Candidate
-/// materialization may attach an OpaqueLoc referencing this record to the
-/// private output anchor so an actual downstream allocation failure can
-/// advance that exact output coordinate.  It is never serialized and must
-/// outlive candidate materialization.
-struct SpatialOutputLineage {
+/// One materialized buffer associated with a structured DAG node.  The buffer
+/// is current-IR SSA and must be remapped or discarded with its owning IR.
+struct StructuredOperationBufferRelation {
+  uint32_t structuredNodeId = 0;
+  mlir::Value buffer;
+};
+
+/// One materialized buffer associated with an observable function result.
+struct SpatialOutputBufferRelation {
   unsigned outputIndex = 0;
+  mlir::Value buffer;
 };
 
-/// Query-local provenance for SPM materialization caused by one structured
-/// operation's operand demand.  This is deliberately distinct from source-op
-/// result lineage: an input allocation must refine the requesting operation,
-/// while an assembled result may need refinement through a downstream fused
-/// relation.  The record is never serialized.
-struct StructuredOperandDemandLineage {
-  mlir::Operation *sourceOperation = nullptr;
-  uint32_t structuredNodeId = 0;
+/// Exact current-IR relations emitted while lowering one or more TileRegions.
+/// Result and operand buffers remain separate because allocation feedback for
+/// an input demand refines the consumer node, while a result buffer describes
+/// the producing node. No entry outlives or identifies a different IR epoch.
+struct StructuredMaterializationRelations {
+  llvm::SmallVector<StructuredOperationBufferRelation, 16>
+      operationResultBuffers;
+  llvm::SmallVector<StructuredOperationBufferRelation, 16> operandBuffers;
+  llvm::SmallVector<SpatialOutputBufferRelation, 4> outputBuffers;
+
+  void clear() {
+    operationResultBuffers.clear();
+    operandBuffers.clear();
+    outputBuffers.clear();
+  }
 };
 
 /// The iteration-domain tile corresponding to one operand tile. This is a
@@ -109,7 +116,6 @@ struct SpatialOutputShard {
   /// The lowering materializes steady scf.for traversal and finite static tail
   /// classes instead of expanding one operation per temporal wave.
   llvm::SmallVector<int64_t, 4> temporalTileSizes;
-  const SpatialOutputLineage *lineage = nullptr;
 };
 
 /// Query-local temporal tile selected for one current structured operation.
@@ -165,8 +171,8 @@ mlir::LogicalResult lowerSpatialOutputShardsToTileRegionModule(
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
     int64_t currentLogicalPartition,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles = {},
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage = {},
-    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage = {});
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
+    StructuredMaterializationRelations *materializationRelations = nullptr);
 
 } // namespace wafer
 

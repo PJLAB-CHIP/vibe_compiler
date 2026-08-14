@@ -309,8 +309,9 @@ llvm::Error writeSourceSpec(const Options &options) {
       wafer::parseLogicalFormat(options.format);
   if (!format)
     return format.takeError();
-  const wafer::MemLayout layout =
-      *options.batchCount == 1 ? wafer::MemLayout::Cx : wafer::MemLayout::NCx;
+  const wafer::PhysicalTensorLayout layout =
+      *options.batchCount == 1 ? wafer::PhysicalTensorLayout::Cx
+                               : wafer::PhysicalTensorLayout::NCx;
   std::vector<int64_t> lhsShape;
   std::vector<int64_t> rhsShape;
   std::vector<int64_t> destinationShape;

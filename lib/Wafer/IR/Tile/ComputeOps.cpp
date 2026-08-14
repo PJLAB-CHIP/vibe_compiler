@@ -114,7 +114,8 @@ mlir::LogicalResult ComputeGemmOp::verify() {
       resultTensor->getRank() != 2) {
     BatchedGemmDimAttrs attrs;
     return verifyBatchedGemmTileContract(getOperation(), *lhsTensor, *rhsTensor,
-                                         *resultTensor, attrs);
+                                         *resultTensor, lhsOrientation,
+                                         rhsOrientation, attrs);
   }
 
   if (hasAnyBatchedGemmAttrs(getOperation()))
@@ -165,7 +166,8 @@ mlir::LogicalResult ComputeConvOp::verify() {
 
 mlir::LogicalResult ComputeElementwiseOp::verify() {
   return verifyElementwiseTileContract(getOperation(), getKindAttr().getValue(),
-                                       getInputs(), getResult().getType());
+                                       getInputs(), getResult().getType(),
+                                       getIndexingMapsAttr());
 }
 
 mlir::LogicalResult ComputeReduceOp::verify() {

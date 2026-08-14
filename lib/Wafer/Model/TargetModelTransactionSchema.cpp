@@ -111,43 +111,20 @@ llvm::Error validateDescriptor(uint32_t byteCount, uint32_t innerBytes,
 }
 
 template <typename Enum>
-std::optional<Enum> symbolizeKnownEnum(uint32_t value) {
-  if constexpr (std::is_same_v<Enum, InstrElementwiseKind>)
-    return static_cast<std::optional<InstrElementwiseKind> (*)(uint32_t)>(
-        symbolizeInstrElementwiseKind)(value);
-  if constexpr (std::is_same_v<Enum, InstrReduceKind>)
-    return static_cast<std::optional<InstrReduceKind> (*)(uint32_t)>(
-        symbolizeInstrReduceKind)(value);
-  if constexpr (std::is_same_v<Enum, InstrConvKind>)
-    return static_cast<std::optional<InstrConvKind> (*)(uint32_t)>(
-        symbolizeInstrConvKind)(value);
-  if constexpr (std::is_same_v<Enum, InstrPoolKind>)
-    return static_cast<std::optional<InstrPoolKind> (*)(uint32_t)>(
-        symbolizeInstrPoolKind)(value);
-  if constexpr (std::is_same_v<Enum, InstrUnpoolKind>)
-    return static_cast<std::optional<InstrUnpoolKind> (*)(uint32_t)>(
-        symbolizeInstrUnpoolKind)(value);
-  llvm_unreachable("unsupported model enum symbolizer");
-}
-
-template <typename Enum>
-llvm::Error requireKnownEnum(Enum value, llvm::StringRef role) {
-  if (!symbolizeKnownEnum<Enum>(static_cast<uint32_t>(value)))
+llvm::Error requireRegisteredOperation(Enum value, llvm::ArrayRef<Enum> values,
+                                       llvm::StringRef role) {
+  if (!llvm::is_contained(values, value))
     return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
-                       llvm::Twine(role) + " has an unknown enum value");
+                       llvm::Twine(role) + " is not registered");
   return llvm::Error::success();
 }
 
-llvm::Error validateConvert(const compiler::TargetConvertTransaction &value) {
+llvm::Error validateConvert(const target::TargetConvertTransaction &value) {
   if (value.elementCount == 0)
     return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
                        "convert element_count must be positive");
-  const uint32_t opcode = static_cast<uint32_t>(value.kind);
-  if (!symbolizeInstrConvertKind(opcode))
-    return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
-                       "convert has an unknown kind");
-  const TargetConvertRoute *route =
-      findTargetConvertRoute(static_cast<uint16_t>(opcode));
+  const uint16_t opcode = value.operation.getOpcode();
+  const TargetConvertRoute *route = findTargetConvertRoute(opcode);
   if (!route)
     return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
                        "convert kind has no exact target route");
@@ -183,69 +160,23 @@ llvm::Error validateConvert(const compiler::TargetConvertTransaction &value) {
 }
 
 llvm::Error
-validateElementwise(const compiler::TargetElementwiseTransaction &value) {
+validateElementwise(const target::TargetElementwiseTransaction &value) {
   if (value.elementCount == 0)
     return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
                        "elementwise element_count must be positive");
-  if (llvm::Error error = requireKnownEnum(value.kind, "elementwise kind"))
+  if (llvm::Error error = requireRegisteredOperation(
+          value.operation, getNumericElementwiseOperations(),
+          "elementwise operation"))
     return error;
   if (llvm::Error error = requireEngineFormat(
           value.format, TargetFormatEngine::CT, "elementwise"))
     return error;
-  bool binary = false;
-  switch (value.kind) {
-  case InstrElementwiseKind::Max:
-  case InstrElementwiseKind::Min:
-  case InstrElementwiseKind::Add:
-  case InstrElementwiseKind::Sub:
-  case InstrElementwiseKind::Mul:
-  case InstrElementwiseKind::Div:
-  case InstrElementwiseKind::Eq:
-  case InstrElementwiseKind::Ne:
-  case InstrElementwiseKind::Ge:
-  case InstrElementwiseKind::Gt:
-  case InstrElementwiseKind::Le:
-  case InstrElementwiseKind::Lt:
-  case InstrElementwiseKind::LogicAnd:
-  case InstrElementwiseKind::LogicOr:
-  case InstrElementwiseKind::LogicXor:
-    binary = true;
-    break;
-  case InstrElementwiseKind::Abs:
-  case InstrElementwiseKind::Recip:
-  case InstrElementwiseKind::Square:
-  case InstrElementwiseKind::Sqrt:
-  case InstrElementwiseKind::Rsqrt:
-  case InstrElementwiseKind::Neg:
-  case InstrElementwiseKind::LogicNot:
-  case InstrElementwiseKind::Log2:
-  case InstrElementwiseKind::Ln:
-  case InstrElementwiseKind::Pow2:
-  case InstrElementwiseKind::Exp:
-  case InstrElementwiseKind::ExpLp:
-  case InstrElementwiseKind::Sin:
-  case InstrElementwiseKind::Cos:
-  case InstrElementwiseKind::Tanh:
-  case InstrElementwiseKind::Sigmoid:
-  case InstrElementwiseKind::Relu:
-  case InstrElementwiseKind::SatRelu:
-  case InstrElementwiseKind::LeakyRelu:
-  case InstrElementwiseKind::Softplus:
-    break;
-  }
+  const bool binary = getNumericElementwiseArity(value.operation) == 2;
   if (value.rhs.has_value() != binary)
     return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
                        "elementwise rhs presence differs from operation arity");
-  const bool logic = value.kind == InstrElementwiseKind::LogicNot ||
-                     value.kind == InstrElementwiseKind::LogicAnd ||
-                     value.kind == InstrElementwiseKind::LogicOr ||
-                     value.kind == InstrElementwiseKind::LogicXor;
-  const bool relation = value.kind == InstrElementwiseKind::Eq ||
-                        value.kind == InstrElementwiseKind::Ne ||
-                        value.kind == InstrElementwiseKind::Ge ||
-                        value.kind == InstrElementwiseKind::Gt ||
-                        value.kind == InstrElementwiseKind::Le ||
-                        value.kind == InstrElementwiseKind::Lt;
+  const bool logic = isNumericElementwiseLogic(value.operation);
+  const bool relation = isNumericElementwiseRelation(value.operation);
   if (logic != (value.format == LogicalFormat::Bool) ||
       (relation && value.format == LogicalFormat::Bool))
     return kernelError(
@@ -336,20 +267,20 @@ llvm::Error validateDilations(llvm::ArrayRef<uint32_t> values,
                                 Tx81InstructionLimits::dilationMax);
 }
 
-llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
+llvm::Error validatePayload(const target::TargetTransactionPayload &payload) {
   return std::visit(
       [](const auto &value) -> llvm::Error {
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T,
-                                     compiler::TargetStridedDMATransaction>) {
-          if (value.direction != compiler::TargetDMADirection::Read &&
-              value.direction != compiler::TargetDMADirection::Write)
+                                     target::TargetStridedDMATransaction>) {
+          if (value.direction != target::TargetDMADirection::Read &&
+              value.direction != target::TargetDMADirection::Write)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "DMA has an unknown direction");
           if (llvm::Error error = requireEngineFormat(
                   value.format,
-                  value.direction == compiler::TargetDMADirection::Read
+                  value.direction == target::TargetDMADirection::Read
                       ? TargetFormatEngine::RDMA
                       : TargetFormatEngine::WDMA,
                   "DMA"))
@@ -357,7 +288,7 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           return validateDescriptor(value.byteCount, value.innerBytes,
                                     value.iterations, std::nullopt);
         } else if constexpr (std::is_same_v<
-                                 T, compiler::TargetGatherScatterTransaction>) {
+                                 T, target::TargetGatherScatterTransaction>) {
           if (llvm::Error error =
                   validateDescriptor(value.byteCount, value.innerBytes,
                                      value.sourceIterations, std::nullopt))
@@ -365,7 +296,7 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           return validateDescriptor(value.byteCount, value.innerBytes,
                                     value.destinationIterations, std::nullopt);
         } else if constexpr (std::is_same_v<
-                                 T, compiler::TargetMemsetTransaction>) {
+                                 T, target::TargetMemsetTransaction>) {
           if (value.elementCount == 0)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
@@ -381,9 +312,9 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
                 "multiple of 8 for byte granularity");
           return llvm::Error::success();
         } else if constexpr (std::is_same_v<
-                                 T, compiler::TargetBit2FPTransaction> ||
+                                 T, target::TargetBit2FPTransaction> ||
                              std::is_same_v<
-                                 T, compiler::TargetMaskMoveTransaction>) {
+                                 T, target::TargetMaskMoveTransaction>) {
           if (value.elementCount == 0)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
@@ -391,7 +322,7 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "CT movement");
         } else if constexpr (std::is_same_v<T,
-                                            compiler::TargetGemmTransaction>) {
+                                            target::TargetGemmTransaction>) {
           if (value.m == 0 || value.m > std::numeric_limits<uint16_t>::max() ||
               value.n == 0 || value.n > std::numeric_limits<uint16_t>::max())
             return kernelError(
@@ -408,21 +339,23 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 llvm::Twine("GEMM batch_count must be in [1, ") +
                     llvm::Twine(Tx81InstructionLimits::gemmBatchMax) + "]");
-          if ((value.lhsOrientation != GemmOrientation::Normal &&
-               value.lhsOrientation != GemmOrientation::Transpose) ||
-              (value.rhsOrientation != GemmOrientation::Normal &&
-               value.rhsOrientation != GemmOrientation::Transpose))
+          if ((value.lhsOrientation != TargetGemmOrientation::Normal &&
+               value.lhsOrientation != TargetGemmOrientation::Transpose) ||
+              (value.rhsOrientation != TargetGemmOrientation::Normal &&
+               value.rhsOrientation != TargetGemmOrientation::Transpose))
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "GEMM orientation is not a closed enum value");
           return requireEngineFormat(value.format, TargetFormatEngine::NE,
                                      "GEMM");
         } else if constexpr (std::is_same_v<
-                                 T, compiler::TargetElementwiseTransaction>) {
+                                 T, target::TargetElementwiseTransaction>) {
           return validateElementwise(value);
         } else if constexpr (std::is_same_v<
-                                 T, compiler::TargetReduceTransaction>) {
-          if (llvm::Error error = requireKnownEnum(value.kind, "reduce kind"))
+                                 T, target::TargetReduceTransaction>) {
+          if (llvm::Error error = requireRegisteredOperation(
+                  value.operation, getNumericReduceOperations(),
+                  "reduce operation"))
             return error;
           if (value.dimension >
               static_cast<uint32_t>(NativeCTReduceDimension::Trailing2And1And0))
@@ -434,12 +367,13 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "reduce");
         } else if constexpr (std::is_same_v<
-                                 T, compiler::TargetConvertTransaction>) {
+                                 T, target::TargetConvertTransaction>) {
           return validateConvert(value);
         } else if constexpr (std::is_same_v<T,
-                                            compiler::TargetConvTransaction>) {
-          if (llvm::Error error =
-                  requireKnownEnum(value.kind, "convolution kind"))
+                                            target::TargetConvTransaction>) {
+          if (llvm::Error error = requireRegisteredOperation(
+                  value.operation, getTargetConvolutionOperations(),
+                  "convolution operation"))
             return error;
           if (llvm::Error error = validateDataShape(value.inputShape,
                                                     "convolution input shape"))
@@ -465,11 +399,14 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           return requireEngineFormat(value.format, TargetFormatEngine::NE,
                                      "convolution");
         } else if constexpr (std::is_same_v<T,
-                                            compiler::TargetPoolTransaction>) {
-          if (llvm::Error error = requireKnownEnum(value.kind, "pool kind"))
+                                            target::TargetPoolTransaction>) {
+          if (llvm::Error error = requireRegisteredOperation(
+                  value.operation, getTargetPoolingOperations(),
+                  "pool operation"))
             return error;
-          const bool indexed = value.kind == InstrPoolKind::IndexedMax ||
-                               value.kind == InstrPoolKind::IndexedMin;
+          const bool indexed =
+              value.operation == TargetPoolingOperation::IndexedMaximum ||
+              value.operation == TargetPoolingOperation::IndexedMinimum;
           if (value.indexDestination.has_value() != indexed)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
@@ -488,11 +425,13 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "pool");
         } else if constexpr (std::is_same_v<
-                                 T, compiler::TargetUnpoolTransaction>) {
-          if (llvm::Error error = requireKnownEnum(value.kind, "unpool kind"))
+                                 T, target::TargetUnpoolTransaction>) {
+          if (llvm::Error error = requireRegisteredOperation(
+                  value.operation, getTargetUnpoolingOperations(),
+                  "unpool operation"))
             return error;
           if (value.indexAddress.has_value() ==
-              (value.kind == InstrUnpoolKind::Avg))
+              (value.operation == TargetUnpoolingOperation::Average))
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "unpool index presence differs from unpool kind");
@@ -508,14 +447,14 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "unpool");
         } else if constexpr (std::is_same_v<
-                                 T, compiler::TargetTDMATransformTransaction>) {
-          if (value.kind != compiler::TargetTDMATransformKind::Pad &&
-              value.kind != compiler::TargetTDMATransformKind::ImageToColumn)
+                                 T, target::TargetTDMATransformTransaction>) {
+          if (value.kind != target::TargetTDMATransformKind::Pad &&
+              value.kind != target::TargetTDMATransformKind::ImageToColumn)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "TDMA transform has an unknown kind");
           if (value.kernelStrides.has_value() !=
-              (value.kind == compiler::TargetTDMATransformKind::ImageToColumn))
+              (value.kind == target::TargetTDMATransformKind::ImageToColumn))
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "TDMA kernel strides presence differs from transform kind");
@@ -535,9 +474,9 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
                                      "TDMA transform");
         } else if constexpr (
             std::is_same_v<T,
-                           compiler::TargetPeripheralArgExtremaTransaction>) {
-          if (value.kind != InstrPeripheralKind::ArgMax &&
-              value.kind != InstrPeripheralKind::ArgMin)
+                           target::TargetPeripheralArgExtremaTransaction>) {
+          if (value.operation != TargetPeripheralOperation::ArgMaximum &&
+              value.operation != TargetPeripheralOperation::ArgMinimum)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "arg-extrema payload carries a different peripheral kind");
@@ -548,7 +487,7 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "arg-extrema");
         } else if constexpr (
-            std::is_same_v<T, compiler::TargetPeripheralBilinearTransaction>) {
+            std::is_same_v<T, target::TargetPeripheralBilinearTransaction>) {
           if (value.elementCount == 0)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
@@ -562,9 +501,9 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "bilinear");
         } else if constexpr (std::is_same_v<
-                                 T, compiler::TargetPeripheralLUTTransaction>) {
-          if (value.kind != InstrPeripheralKind::Lut16 &&
-              value.kind != InstrPeripheralKind::Lut32)
+                                 T, target::TargetPeripheralLUTTransaction>) {
+          if (value.operation != TargetPeripheralOperation::LookupTable16 &&
+              value.operation != TargetPeripheralOperation::LookupTable32)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "LUT payload carries a different peripheral kind");
@@ -575,9 +514,9 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "LUT");
         } else if constexpr (
-            std::is_same_v<T, compiler::TargetPeripheralRandomTransaction> ||
+            std::is_same_v<T, target::TargetPeripheralRandomTransaction> ||
             std::is_same_v<T,
-                           compiler::TargetPeripheralElementMaskTransaction>) {
+                           target::TargetPeripheralElementMaskTransaction>) {
           if (value.elementCount == 0)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
@@ -585,9 +524,9 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "peripheral");
         } else if constexpr (std::is_same_v<
-                                 T, compiler::TargetNCCJoinTransaction>) {
+                                 T, target::TargetNCCJoinTransaction>) {
           if (value.participantMask == 0 ||
-              (value.participantMask & ~kAllNCCWorkersMask) != 0)
+              (value.participantMask & ~kAllTargetNCCWorkersMask) != 0)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "NCC join participant mask is empty or outside the target "
@@ -595,23 +534,23 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           return llvm::Error::success();
         } else if constexpr (std::is_same_v<
                                  T,
-                                 compiler::TargetDirectDTEBeginTransaction>) {
+                                 target::TargetDirectDTEBeginTransaction>) {
           if (value.participantCount == 0)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "Direct DTE begin participant_count must be positive");
           return llvm::Error::success();
         } else if constexpr (
-            std::is_same_v<T, compiler::TargetDirectDTESendTransaction> ||
-            std::is_same_v<T, compiler::TargetDirectDTEReceiveTransaction>) {
+            std::is_same_v<T, target::TargetDirectDTESendTransaction> ||
+            std::is_same_v<T, target::TargetDirectDTEReceiveTransaction>) {
           if (value.byteCount == 0)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "Direct DTE byte_count must be positive");
           return llvm::Error::success();
         } else if constexpr (
-            std::is_same_v<T, compiler::TargetDirectDTESendIssueTransaction> ||
-            std::is_same_v<T, compiler::TargetDirectDTEWaitTransaction>) {
+            std::is_same_v<T, target::TargetDirectDTESendIssueTransaction> ||
+            std::is_same_v<T, target::TargetDirectDTEWaitTransaction>) {
           if (value.event == 0)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
@@ -678,15 +617,15 @@ llvm::Error validateTargetModelTransactionFields(
                        "non-negative");
   if (transaction.nccIssueDomain) {
     uint32_t worker = static_cast<uint32_t>(transaction.nccIssueDomain->worker);
-    if (worker >= kNCCWorkerCount ||
+    if (worker >= kTargetNCCWorkerCount ||
         transaction.nccIssueDomain->engine == TargetCallTSMEngine::DirectDTE)
       return kernelError(
           TargetModelKernelErrorCode::InvalidTransactionField,
           "NCC issue domain is outside the target worker/engine domain");
     if (transaction.nccIssueDomain->completionBehavior !=
-            LocalInstructionCompletion::OrderedPending &&
+            TargetNCCCompletionBehavior::OrderedAsynchronousIssue &&
         transaction.nccIssueDomain->completionBehavior !=
-            LocalInstructionCompletion::SynchronousWriteback)
+            TargetNCCCompletionBehavior::SynchronousWriteback)
       return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
                          "NCC issue domain has an invalid completion behavior");
   }

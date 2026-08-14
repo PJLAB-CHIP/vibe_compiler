@@ -1,7 +1,7 @@
 //===- StaticBufferRangeTest.cpp - Static buffer range tests ------------===//
 
 #include "Wafer/Analysis/StaticBufferRange.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -14,7 +14,7 @@ namespace {
 class StaticBufferRangeTest : public testing::Test {
 protected:
   StaticBufferRangeTest() {
-    wafer::registerAllDialects(registry);
+    wafer::registerWaferCoreDialects(registry);
     registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();

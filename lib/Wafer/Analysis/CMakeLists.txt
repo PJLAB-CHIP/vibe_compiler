@@ -4,6 +4,7 @@ set(LLVM_OPTIONAL_SOURCES
 )
 
 add_mlir_library(WaferAnalysis
+  DirectCallGraphAnalysis.cpp
   PhysicalDataflow/IndexRelation.cpp
   PhysicalDataflow/PhysicalAccessRelation.cpp
   PhysicalDataflow/PhysicalLayoutRelation.cpp
@@ -14,9 +15,11 @@ add_mlir_library(WaferAnalysis
   ScheduleCost/SPMHighWater.cpp
   ScheduleCostAnalysis.cpp
   StaticBufferRange.cpp
+  TargetSchedulingAnalysis.cpp
 
   LINK_LIBS PUBLIC
   WaferIR
+  WaferTarget
   MLIRArithDialect
   MLIRAffineAnalysis
   MLIRAsyncDialect

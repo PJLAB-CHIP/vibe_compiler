@@ -14,71 +14,9 @@
 namespace wafer::model::kernel_detail {
 namespace {
 
-llvm::Expected<NumericElementwiseOperation>
-getNumericOperation(InstrElementwiseKind kind) {
-#define WAFER_ELEMENTWISE_CASE(NAME)                                           \
-  case InstrElementwiseKind::NAME:                                             \
-    return NumericElementwiseOperation::NAME
-  switch (kind) {
-    WAFER_ELEMENTWISE_CASE(Abs);
-    WAFER_ELEMENTWISE_CASE(Recip);
-    WAFER_ELEMENTWISE_CASE(Square);
-    WAFER_ELEMENTWISE_CASE(Sqrt);
-    WAFER_ELEMENTWISE_CASE(Rsqrt);
-    WAFER_ELEMENTWISE_CASE(Neg);
-    WAFER_ELEMENTWISE_CASE(Max);
-    WAFER_ELEMENTWISE_CASE(Min);
-    WAFER_ELEMENTWISE_CASE(Add);
-    WAFER_ELEMENTWISE_CASE(Sub);
-    WAFER_ELEMENTWISE_CASE(Mul);
-    WAFER_ELEMENTWISE_CASE(Div);
-    WAFER_ELEMENTWISE_CASE(Eq);
-    WAFER_ELEMENTWISE_CASE(Ne);
-    WAFER_ELEMENTWISE_CASE(Ge);
-    WAFER_ELEMENTWISE_CASE(Gt);
-    WAFER_ELEMENTWISE_CASE(Le);
-    WAFER_ELEMENTWISE_CASE(Lt);
-    WAFER_ELEMENTWISE_CASE(LogicNot);
-    WAFER_ELEMENTWISE_CASE(LogicAnd);
-    WAFER_ELEMENTWISE_CASE(LogicOr);
-    WAFER_ELEMENTWISE_CASE(LogicXor);
-    WAFER_ELEMENTWISE_CASE(Log2);
-    WAFER_ELEMENTWISE_CASE(Ln);
-    WAFER_ELEMENTWISE_CASE(Pow2);
-    WAFER_ELEMENTWISE_CASE(Exp);
-    WAFER_ELEMENTWISE_CASE(ExpLp);
-    WAFER_ELEMENTWISE_CASE(Sin);
-    WAFER_ELEMENTWISE_CASE(Cos);
-    WAFER_ELEMENTWISE_CASE(Tanh);
-    WAFER_ELEMENTWISE_CASE(Sigmoid);
-    WAFER_ELEMENTWISE_CASE(Relu);
-    WAFER_ELEMENTWISE_CASE(SatRelu);
-    WAFER_ELEMENTWISE_CASE(LeakyRelu);
-    WAFER_ELEMENTWISE_CASE(Softplus);
-  }
-#undef WAFER_ELEMENTWISE_CASE
-  return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
-                     "elementwise kind has no numeric operation mapping");
-}
-
-llvm::Expected<NumericReduceOperation>
-getNumericOperation(InstrReduceKind kind) {
-  switch (kind) {
-  case InstrReduceKind::Sum:
-    return NumericReduceOperation::Sum;
-  case InstrReduceKind::Max:
-    return NumericReduceOperation::Max;
-  case InstrReduceKind::Min:
-    return NumericReduceOperation::Min;
-  case InstrReduceKind::Avg:
-    return NumericReduceOperation::Avg;
-  }
-  return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
-                     "reduce kind has no numeric operation mapping");
-}
-
-MemLayout getCountLayout(LogicalFormat format) {
-  return format == LogicalFormat::Bool ? MemLayout::Tensor : MemLayout::Cx;
+PhysicalTensorLayout getCountLayout(LogicalFormat format) {
+  return format == LogicalFormat::Bool ? PhysicalTensorLayout::Tensor
+                                       : PhysicalTensorLayout::Cx;
 }
 
 llvm::Expected<NumericTensorKey> makeTensor(LogicalFormat format,
@@ -261,17 +199,13 @@ tryExecuteManagedReference(
 
 llvm::Expected<TargetModelCommandEffect>
 executeElementwise(const compiler::TargetTransaction &transaction,
-                   const compiler::TargetElementwiseTransaction &value,
+                   const target::TargetElementwiseTransaction &value,
                    const InvocationMemoryRegistry &memory,
                    TargetModelKernelBudget budget,
                    TargetModelExecutionPolicy policy) {
-  llvm::Expected<NumericElementwiseOperation> operation =
-      getNumericOperation(value.kind);
-  if (!operation)
-    return operation.takeError();
   const LogicalFormat destinationFormat =
-      isNumericElementwiseRelation(*operation) ? LogicalFormat::Bool
-                                               : value.format;
+      isNumericElementwiseRelation(value.operation) ? LogicalFormat::Bool
+                                                    : value.format;
   llvm::Expected<NumericTensorKey> inputKey =
       makeTensor(value.format, {value.elementCount});
   llvm::Expected<NumericTensorKey> destinationKey =
@@ -285,7 +219,8 @@ executeElementwise(const compiler::TargetTransaction &transaction,
   if (value.rhs)
     inputKeys.push_back(*inputKey);
   llvm::Expected<NumericCommandKey> command =
-      NumericCommandKey::createCTElementwise(*operation, std::move(inputKeys),
+      NumericCommandKey::createCTElementwise(value.operation,
+                                             std::move(inputKeys),
                                              *destinationKey);
   if (!command)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
@@ -352,11 +287,11 @@ executeElementwise(const compiler::TargetTransaction &transaction,
 
 llvm::Expected<TargetModelCommandEffect>
 executeConvert(const compiler::TargetTransaction &transaction,
-               const compiler::TargetConvertTransaction &value,
+               const target::TargetConvertTransaction &value,
                const InvocationMemoryRegistry &memory,
                TargetModelKernelBudget budget,
                TargetModelExecutionPolicy policy) {
-  const uint16_t opcode = static_cast<uint16_t>(value.kind);
+  const uint16_t opcode = value.operation.getOpcode();
   const TargetConvertRoute *route = findTargetConvertRoute(opcode);
   if (!route)
     return kernelError(
@@ -430,14 +365,10 @@ executeConvert(const compiler::TargetTransaction &transaction,
 
 llvm::Expected<TargetModelCommandEffect>
 executeReduce(const compiler::TargetTransaction &transaction,
-              const compiler::TargetReduceTransaction &value,
+              const target::TargetReduceTransaction &value,
               const InvocationMemoryRegistry &memory,
               TargetModelKernelBudget budget,
               TargetModelExecutionPolicy policy) {
-  llvm::Expected<NumericReduceOperation> operation =
-      getNumericOperation(value.kind);
-  if (!operation)
-    return operation.takeError();
   const auto dimension = static_cast<NativeCTReduceDimension>(value.dimension);
   std::vector<uint64_t> inputShape(value.nhwc.begin(), value.nhwc.end());
   const std::vector<size_t> reducedDimensions =
@@ -449,10 +380,11 @@ executeReduce(const compiler::TargetTransaction &transaction,
   for (size_t index = 0; index < inputShape.size(); ++index)
     if (!llvm::is_contained(reducedDimensions, index))
       destinationShape.push_back(inputShape[index]);
-  const MemLayout destinationLayout =
-      destinationShape.size() > 2 ? MemLayout::NCx : MemLayout::Cx;
+  const PhysicalTensorLayout destinationLayout = destinationShape.size() > 2
+                                                     ? PhysicalTensorLayout::NCx
+                                                     : PhysicalTensorLayout::Cx;
   llvm::Expected<NumericTensorKey> inputKey = NumericTensorKey::create(
-      value.format, MemLayout::NCx, std::move(inputShape));
+      value.format, PhysicalTensorLayout::NCx, std::move(inputShape));
   llvm::Expected<NumericTensorKey> destinationKey = NumericTensorKey::create(
       value.format, destinationLayout, std::move(destinationShape));
   if (!inputKey || !destinationKey) {
@@ -465,7 +397,7 @@ executeReduce(const compiler::TargetTransaction &transaction,
                        llvm::toString(std::move(errors)));
   }
   llvm::Expected<NumericCommandKey> command =
-      NumericCommandKey::createNativeCTReduce(*operation, *inputKey,
+      NumericCommandKey::createNativeCTReduce(value.operation, *inputKey,
                                               *destinationKey, dimension);
   if (!command)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
@@ -513,27 +445,28 @@ executeReduce(const compiler::TargetTransaction &transaction,
 
 llvm::Expected<TargetModelCommandEffect>
 executeGemm(const compiler::TargetTransaction &transaction,
-            const compiler::TargetGemmTransaction &value,
+            const target::TargetGemmTransaction &value,
             const InvocationMemoryRegistry &memory,
             TargetModelKernelBudget budget, TargetModelExecutionPolicy policy) {
   const bool batched = value.batchCount > 1;
   // The target call has no free layout field. Its storage contract is Cx for
   // rank-2 GEMM and NCx (including per-batch bank alignment) for batched GEMM.
-  const MemLayout layout = batched ? MemLayout::NCx : MemLayout::Cx;
+  const PhysicalTensorLayout layout =
+      batched ? PhysicalTensorLayout::NCx : PhysicalTensorLayout::Cx;
   std::vector<uint64_t> lhsShape =
       batched
-          ? (value.lhsOrientation == GemmOrientation::Normal
+          ? (value.lhsOrientation == TargetGemmOrientation::Normal
                  ? std::vector<uint64_t>{value.batchCount, value.m, value.k}
                  : std::vector<uint64_t>{value.batchCount, value.k, value.m})
-          : (value.lhsOrientation == GemmOrientation::Normal
+          : (value.lhsOrientation == TargetGemmOrientation::Normal
                  ? std::vector<uint64_t>{value.m, value.k}
                  : std::vector<uint64_t>{value.k, value.m});
   std::vector<uint64_t> rhsShape =
       batched
-          ? (value.rhsOrientation == GemmOrientation::Normal
+          ? (value.rhsOrientation == TargetGemmOrientation::Normal
                  ? std::vector<uint64_t>{value.batchCount, value.k, value.n}
                  : std::vector<uint64_t>{value.batchCount, value.n, value.k})
-          : (value.rhsOrientation == GemmOrientation::Normal
+          : (value.rhsOrientation == TargetGemmOrientation::Normal
                  ? std::vector<uint64_t>{value.k, value.n}
                  : std::vector<uint64_t>{value.n, value.k});
   std::vector<uint64_t> destinationShape =
@@ -574,8 +507,8 @@ executeGemm(const compiler::TargetTransaction &transaction,
 
   if (policy.getGemmDispatchPolicy() ==
           TargetModelGemmDispatchPolicy::PreferAdmitted &&
-      value.lhsOrientation == GemmOrientation::Normal &&
-      value.rhsOrientation == GemmOrientation::Normal) {
+      value.lhsOrientation == TargetGemmOrientation::Normal &&
+      value.rhsOrientation == TargetGemmOrientation::Normal) {
     const TargetModelBulkBackend *backend = policy.getBulkBackend();
     if (!backend)
       return kernelError(TargetModelKernelErrorCode::BulkBackendUnavailable,
@@ -687,7 +620,7 @@ executeGemm(const compiler::TargetTransaction &transaction,
 
 llvm::Expected<TargetModelCommandEffect>
 executeMemset(const compiler::TargetTransaction &transaction,
-              const compiler::TargetMemsetTransaction &value,
+              const target::TargetMemsetTransaction &value,
               const InvocationMemoryRegistry &memory) {
   llvm::Expected<NumericTensorKey> key =
       makeTensor(value.format, {value.elementCount});

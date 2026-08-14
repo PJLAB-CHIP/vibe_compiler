@@ -20,7 +20,6 @@
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -37,7 +36,8 @@ using namespace wafer::tile_region_to_instr;
 
 namespace wafer {
 #define GEN_PASS_DEF_CONVERTTILEREGIONTOINSTRPASS
-#define GEN_PASS_DEF_NORMALIZENCCCOMPLETIONPASS
+#define GEN_PASS_DEF_PLACEREQUIREDNCCJOINSPASS
+#define GEN_PASS_DEF_REBUILDREQUIREDNCCJOINSPASS
 #include "Wafer/Transforms/WaferPasses.h.inc"
 } // namespace wafer
 
@@ -74,11 +74,11 @@ populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns) {
   // compiler adapter reports a deterministic stage-level failure after the
   // conversion driver returns; it does not expose the last attempted pattern
   // through rollback-external mutable state.
-  populateMovementLoweringPatterns(patterns, /*failureReason=*/nullptr);
-  populateComputeLoweringPatterns(patterns, /*failureReason=*/nullptr);
-  populateViewReshapeLoweringPattern(patterns, /*failureReason=*/nullptr);
+  populateMovementLoweringPatterns(patterns);
+  populateComputeLoweringPatterns(patterns);
+  populateViewReshapeLoweringPattern(patterns);
   populateFillLoweringPattern(patterns);
-  populatePeerLoweringPatterns(patterns, /*failureReason=*/nullptr);
+  populatePeerLoweringPatterns(patterns);
 }
 
 /// Remove a private fill whose destination has no reader.  Constant folding
@@ -86,26 +86,39 @@ populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns) {
 /// after the tile body has already materialized its splat.  Keeping that
 /// write would turn a dead i1 value into a real target TDMA command, where the
 /// hardware profile correctly rejects the unproven BOOL encoding.
-static void eraseDeadPrivateFills(mlir::Operation *root) {
+static void eraseDeadPrivateFillArtifacts(mlir::Operation *root) {
   llvm::SmallVector<InstrFillOp, 4> deadFills;
   root->walk([&](InstrFillOp fill) {
     mlir::Value dest = fill.getDest();
     if (dest.hasOneUse() && dest.getDefiningOp<mlir::memref::AllocOp>())
       deadFills.push_back(fill);
   });
+  mlir::IRRewriter rewriter(root->getContext());
   for (InstrFillOp fill : deadFills) {
     mlir::Value dest = fill.getDest();
     mlir::Value scalar = fill.getValue();
     auto alloc = dest.getDefiningOp<mlir::memref::AllocOp>();
-    fill->erase();
-    alloc->erase();
+    rewriter.eraseOp(fill);
+    rewriter.eraseOp(alloc);
     if (auto constant = scalar.getDefiningOp<mlir::arith::ConstantOp>();
         constant && constant->use_empty())
-      constant->erase();
+      rewriter.eraseOp(constant);
   }
+
+  // Constant-predicate select conversion can retire the source fill only when
+  // the dialect-conversion transaction commits. Its scalar therefore becomes
+  // dead after the select pattern has returned. Remove that exact local
+  // artifact explicitly instead of relying on a later generic canonicalizer.
+  llvm::SmallVector<mlir::arith::ConstantOp, 4> deadConstants;
+  root->walk([&](mlir::arith::ConstantOp constant) {
+    if (constant->use_empty())
+      deadConstants.push_back(constant);
+  });
+  for (mlir::arith::ConstantOp constant : deadConstants)
+    rewriter.eraseOp(constant);
 }
 
-struct PendingNCCState {
+struct NCCOutstandingAccessSummary {
   uint32_t workers = 0;
   llvm::DenseMap<mlir::Value, uint32_t> readers;
   llvm::DenseMap<mlir::Value, uint32_t> writers;
@@ -131,7 +144,8 @@ static void clearMask(llvm::DenseMap<mlir::Value, uint32_t> &masks,
   }
 }
 
-static void clearCompletedWorkers(PendingNCCState &state, uint32_t completed) {
+static void clearSynchronizedWorkers(NCCOutstandingAccessSummary &state,
+                                     uint32_t completed) {
   state.workers &= ~completed;
   clearMask(state.readers, completed);
   clearMask(state.writers, completed);
@@ -140,8 +154,9 @@ static void clearCompletedWorkers(PendingNCCState &state, uint32_t completed) {
       state.latestIssues[worker] = nullptr;
 }
 
-static void mergePendingState(PendingNCCState &destination,
-                              const PendingNCCState &source) {
+static void
+mergeOutstandingAccessSummaries(NCCOutstandingAccessSummary &destination,
+                                const NCCOutstandingAccessSummary &source) {
   uint32_t destinationWorkers = destination.workers;
   for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
     uint32_t mask = uint32_t{1} << worker;
@@ -176,8 +191,9 @@ static bool haveEqualMasks(const llvm::DenseMap<mlir::Value, uint32_t> &lhs,
   });
 }
 
-static bool haveEqualPendingState(const PendingNCCState &lhs,
-                                  const PendingNCCState &rhs) {
+static bool
+haveEqualOutstandingAccessSummaries(const NCCOutstandingAccessSummary &lhs,
+                                    const NCCOutstandingAccessSummary &rhs) {
   return lhs.workers == rhs.workers &&
          haveEqualMasks(lhs.readers, rhs.readers) &&
          haveEqualMasks(lhs.writers, rhs.writers) &&
@@ -422,7 +438,7 @@ static bool isManagedMaterializationStore(
 
 static mlir::Operation *
 getManagedReloadCompletionAnchor(mlir::Operation *operation,
-                                 const PendingNCCState &state,
+                                 const NCCOutstandingAccessSummary &state,
                                  uint32_t workerMask) {
   auto rdma = mlir::dyn_cast<InstrRDMAOp>(operation);
   if (!rdma || llvm::popcount(workerMask) != 1)
@@ -456,28 +472,28 @@ getParticipants(uint32_t mask) {
 }
 
 static void insertNCCJoinBefore(mlir::Operation *operation, uint32_t mask,
-                                PendingNCCState &state) {
+                                NCCOutstandingAccessSummary &state) {
   mask &= state.workers;
   if (mask == 0)
     return;
   mlir::OpBuilder builder(operation);
   builder.create<SyncNCCJoinOp>(operation->getLoc(), getParticipants(mask));
-  clearCompletedWorkers(state, mask);
+  clearSynchronizedWorkers(state, mask);
 }
 
 static void insertNCCJoinAfter(mlir::Operation *operation, uint32_t mask,
-                               PendingNCCState &state) {
+                               NCCOutstandingAccessSummary &state) {
   mask &= state.workers;
   if (mask == 0)
     return;
   mlir::OpBuilder builder(operation);
   builder.setInsertionPointAfter(operation);
   builder.create<SyncNCCJoinOp>(operation->getLoc(), getParticipants(mask));
-  clearCompletedWorkers(state, mask);
+  clearSynchronizedWorkers(state, mask);
 }
 
 static void recordNCCIssue(mlir::Operation *operation, uint32_t workerMask,
-                           PendingNCCState &state) {
+                           NCCOutstandingAccessSummary &state) {
   state.workers |= workerMask;
   for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker)
     if ((workerMask & (uint32_t{1} << worker)) != 0)
@@ -507,7 +523,7 @@ static void recordNCCIssue(mlir::Operation *operation, uint32_t workerMask,
 
 static uint32_t
 getExternalConflictMask(mlir::Operation *operation,
-                        const PendingNCCState &state,
+                        const NCCOutstandingAccessSummary &state,
                         bool ignoreTypedIssueResources = false) {
   auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
   if (!effects)
@@ -581,8 +597,9 @@ static mlir::Value resolveTileRegionScalarForwarding(mlir::Value value) {
   return value;
 }
 
-static uint32_t getRegionLocalPendingWorkerMask(TileRegionOp region,
-                                                const PendingNCCState &state) {
+static uint32_t
+getRegionLocalPendingWorkerMask(TileRegionOp region,
+                                const NCCOutstandingAccessSummary &state) {
   auto isRegionLocalRoot = [&](mlir::Value root) {
     auto allocation = root.getDefiningOp<mlir::memref::AllocOp>();
     return allocation && allocation->getParentOfType<TileRegionOp>() == region;
@@ -597,20 +614,10 @@ static uint32_t getRegionLocalPendingWorkerMask(TileRegionOp region,
   return workers;
 }
 
-class NCCJoinPlacement {
+class RequiredNCCJoinPlacement {
 public:
   mlir::LogicalResult run(mlir::func::FuncOp function) {
-    materializationRoots.clear();
-    function.walk([&](InstrRDMAOp rdma) {
-      llvm::SmallVector<mlir::Value, 4> sourceRoots =
-          getAccessRoots(rdma.getSource());
-      llvm::SmallVector<mlir::Value, 4> destinationRoots =
-          getAccessRoots(rdma.getDest());
-      if (!isLocalManagedMaterializationReload(rdma, sourceRoots,
-                                               destinationRoots))
-        return;
-      materializationRoots.insert(sourceRoots.begin(), sourceRoots.end());
-    });
+    collectMaterializationRoots(function.getOperation());
 
     if (function.isExternal())
       return mlir::success();
@@ -620,15 +627,36 @@ public:
       if (!hasIssue)
         return mlir::success();
       return function.emitError()
-             << "instruction_completion_failure: exact NCC completion "
+             << "required_ncc_join_failure: exact NCC synchronization "
                 "placement requires structured single-block function IR";
     }
-    PendingNCCState state;
+    NCCOutstandingAccessSummary state;
     return processBlock(function.getBody().front(), state);
   }
 
+  mlir::LogicalResult run(TileRegionOp tileRegion) {
+    collectMaterializationRoots(tileRegion.getOperation());
+    NCCOutstandingAccessSummary state;
+    return processOperation(tileRegion.getOperation(), state);
+  }
+
 private:
-  mlir::LogicalResult processBlock(mlir::Block &block, PendingNCCState &state) {
+  void collectMaterializationRoots(mlir::Operation *root) {
+    materializationRoots.clear();
+    root->walk([&](InstrRDMAOp rdma) {
+      llvm::SmallVector<mlir::Value, 4> sourceRoots =
+          getAccessRoots(rdma.getSource());
+      llvm::SmallVector<mlir::Value, 4> destinationRoots =
+          getAccessRoots(rdma.getDest());
+      if (!isLocalManagedMaterializationReload(rdma, sourceRoots,
+                                               destinationRoots))
+        return;
+      materializationRoots.insert(sourceRoots.begin(), sourceRoots.end());
+    });
+  }
+
+  mlir::LogicalResult processBlock(mlir::Block &block,
+                                   NCCOutstandingAccessSummary &state) {
     for (auto iterator = block.begin(); iterator != block.end();) {
       mlir::Operation *operation = &*iterator++;
       if (mlir::failed(processOperation(operation, state)))
@@ -638,16 +666,16 @@ private:
   }
 
   mlir::LogicalResult processOperation(mlir::Operation *operation,
-                                       PendingNCCState &state) {
+                                       NCCOutstandingAccessSummary &state) {
     if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(operation)) {
       if (!tileRegion.getBody().hasOneBlock())
         return tileRegion.emitError()
-               << "instruction_completion_failure: NCC pending-frontier "
+               << "required_ncc_join_failure: outstanding NCC access "
                   "placement requires a single-block wafer.tile.region";
       if (mlir::failed(processBlock(tileRegion.getBody().front(), state)))
         return mlir::failure();
       // Region partitioning is a selected residency cut, but the structural
-      // boundary alone is not a completion event. Complete exactly those
+      // boundary alone is not a synchronization event. Join exactly those
       // participant domains that still access roots owned by this region;
       // unrelated pending work remains live across the boundary.
       insertNCCJoinBefore(tileRegion.getBody().front().getTerminator(),
@@ -657,15 +685,15 @@ private:
     }
 
     if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(operation)) {
-      PendingNCCState thenState = state;
+      NCCOutstandingAccessSummary thenState = state;
       if (mlir::failed(processBlock(ifOp.getThenRegion().front(), thenState)))
         return mlir::failure();
-      PendingNCCState elseState = state;
+      NCCOutstandingAccessSummary elseState = state;
       if (!ifOp.getElseRegion().empty() &&
           mlir::failed(processBlock(ifOp.getElseRegion().front(), elseState)))
         return mlir::failure();
       state = std::move(thenState);
-      mergePendingState(state, elseState);
+      mergeOutstandingAccessSummaries(state, elseState);
       return mlir::success();
     }
 
@@ -689,17 +717,17 @@ private:
       if (lower && upper && step && *step > 0 && *lower >= *upper)
         return mlir::success();
 
-      PendingNCCState bodyState = state;
+      NCCOutstandingAccessSummary bodyState = state;
       if (mlir::failed(processBlock(*forOp.getBody(), bodyState)))
         return mlir::failure();
       bool guaranteedToExecute =
           lower && upper && step && *step > 0 && *lower < *upper;
       if (!guaranteedToExecute && (bodyState.workers & ~state.workers) != 0)
         return forOp.emitError()
-               << "instruction_completion_failure: dynamic or optional loop "
+               << "required_ncc_join_failure: dynamic or optional loop "
                   "would require a potentially empty NCC terminal join";
       if (!guaranteedToExecute) {
-        mergePendingState(state, bodyState);
+        mergeOutstandingAccessSummaries(state, bodyState);
         return mlir::success();
       }
 
@@ -724,11 +752,11 @@ private:
           1;
       bool converged = false;
       for (unsigned iteration = 0; iteration < convergenceLimit; ++iteration) {
-        PendingNCCState nextState = state;
-        mergePendingState(nextState, bodyState);
+        NCCOutstandingAccessSummary nextState = state;
+        mergeOutstandingAccessSummaries(nextState, bodyState);
         if (mlir::failed(processBlock(*forOp.getBody(), nextState)))
           return mlir::failure();
-        if (haveEqualPendingState(nextState, bodyState)) {
+        if (haveEqualOutstandingAccessSummaries(nextState, bodyState)) {
           converged = true;
           bodyState = std::move(nextState);
           break;
@@ -737,7 +765,7 @@ private:
       }
       if (!converged)
         return forOp.emitError()
-               << "instruction_completion_failure: NCC loop backedge "
+               << "required_ncc_join_failure: NCC loop backedge "
                   "frontier did not reach a finite fixed point";
       // A pending worker with no unique latest issue came from alternative
       // paths where an NCC issue is optional or differs by branch.  The next
@@ -764,12 +792,13 @@ private:
     if (mlir::isa<TileYieldOp, mlir::scf::YieldOp>(operation))
       return mlir::success();
 
-    NCCCompletionContract contract = getNCCCompletionContract(operation);
+    NCCSynchronizationContract contract =
+        getNCCSynchronizationContract(operation);
     if (contract.issueWorker) {
       uint32_t worker = static_cast<uint32_t>(*contract.issueWorker);
       if (worker >= kNCCWorkerCount)
         return operation->emitError()
-               << "instruction_completion_failure: NCC issue worker is "
+               << "required_ncc_join_failure: NCC issue worker is "
                   "outside the typed worker domain";
       uint32_t workerMask = uint32_t{1} << worker;
       // The target busytable orders an NCC worker's own RAW/WAR/WAW chain,
@@ -795,7 +824,7 @@ private:
         insertNCCJoinAfter(operation, workerMask, state);
     }
 
-    if (contract.behavior == LocalInstructionCompletion::ParticipantJoin) {
+    if (contract.behavior == NCCSynchronizationBehavior::ParticipantJoin) {
       uint32_t requested = contract.participantMask & kAllNCCWorkersMask;
       if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(operation)) {
         uint32_t effective = requested & state.workers;
@@ -805,17 +834,18 @@ private:
         }
         if (effective != requested)
           join.setParticipants(getParticipants(effective));
-        clearCompletedWorkers(state, effective);
+        clearSynchronizedWorkers(state, effective);
         return mlir::success();
       }
-      clearCompletedWorkers(state, requested);
+      clearSynchronizedWorkers(state, requested);
       return mlir::success();
     }
-    if (contract.behavior == LocalInstructionCompletion::SynchronousWriteback) {
-      clearCompletedWorkers(state, contract.participantMask);
+    if (contract.behavior == NCCSynchronizationBehavior::SynchronousWriteback) {
+      clearSynchronizedWorkers(state, contract.participantMask);
       return mlir::success();
     }
-    if (contract.behavior == LocalInstructionCompletion::OrderedPending)
+    if (contract.behavior ==
+        NCCSynchronizationBehavior::OrderedAsynchronousIssue)
       return mlir::success();
 
     // Direct DTE completion observes only its own typed event. It neither
@@ -844,7 +874,7 @@ private:
       if (state.workers == 0)
         return mlir::success();
       return operation->emitError()
-             << "instruction_completion_failure: operation without a typed "
+             << "required_ncc_join_failure: operation without a typed "
                 "memory-effect contract may observe pending NCC work";
     }
 
@@ -856,6 +886,45 @@ private:
   llvm::DenseSet<mlir::Value> materializationRoots;
 };
 
+static void eraseDerivedNCCJoins(mlir::Operation *root) {
+  llvm::SmallVector<SyncNCCJoinOp, 16> joins;
+  root->walk([&](SyncNCCJoinOp join) { joins.push_back(join); });
+  for (SyncNCCJoinOp join : llvm::reverse(joins))
+    join.erase();
+}
+
+static mlir::LogicalResult
+normalizeRequiredNCCJoinsInPlace(mlir::func::FuncOp function,
+                                 bool rebuildDerivedJoins) {
+  if (rebuildDerivedJoins)
+    eraseDerivedNCCJoins(function.getOperation());
+  return RequiredNCCJoinPlacement().run(function);
+}
+
+static mlir::LogicalResult
+normalizeRequiredNCCJoinsInPlace(mlir::ModuleOp module,
+                                 bool rebuildDerivedJoins) {
+  for (mlir::func::FuncOp function : module.getOps<mlir::func::FuncOp>())
+    if (mlir::failed(
+            normalizeRequiredNCCJoinsInPlace(function, rebuildDerivedJoins)))
+      return mlir::failure();
+  return mlir::success();
+}
+
+/// Prove that the complete function rewrite can commit before touching the
+/// pass root. Required-join placement is a multi-operation rewrite whose
+/// structured-loop fixed point may discover an unsupported control-flow case
+/// after earlier joins have already been inserted or narrowed. MLIR's pass
+/// manager does not roll back an arbitrary failed pass, so validate on the
+/// nearest isolated operation and only then replay the deterministic rewrite
+/// on the current function.
+static mlir::LogicalResult
+validateRequiredNCCJoinRewrite(mlir::func::FuncOp function,
+                               bool rebuildDerivedJoins) {
+  mlir::OwningOpRef<mlir::func::FuncOp> validation = function.clone();
+  return normalizeRequiredNCCJoinsInPlace(*validation, rebuildDerivedJoins);
+}
+
 struct ConvertTileRegionToInstrPass
     : public wafer::impl::ConvertTileRegionToInstrPassBase<
           ConvertTileRegionToInstrPass> {
@@ -863,28 +932,62 @@ struct ConvertTileRegionToInstrPass
       ConvertTileRegionToInstrPass>::ConvertTileRegionToInstrPassBase;
 
   void runOnOperation() final {
-    std::string failureReason;
-    if (mlir::succeeded(
-            wafer::convertTileRegionToInstr(getOperation(), &failureReason)))
+    unsigned sourceOperationCount = 0;
+    getOperation().walk([&](WaferTileDataflowOpInterface) {
+      ++sourceOperationCount;
+    });
+    if (mlir::succeeded(wafer::convertTileRegionToInstr(getOperation()))) {
+      numDataflowOperationsLowered += sourceOperationCount;
       return;
+    }
 
-    if (!failureReason.empty())
-      getOperation().emitError(failureReason);
-    else
-      getOperation().emitError("tile-region to instruction conversion failed");
+    getOperation().emitError("tile-region to instruction conversion failed");
     signalPassFailure();
   }
 };
 
-struct NormalizeNCCCompletionPass
-    : public wafer::impl::NormalizeNCCCompletionPassBase<
-          NormalizeNCCCompletionPass> {
-  using wafer::impl::NormalizeNCCCompletionPassBase<
-      NormalizeNCCCompletionPass>::NormalizeNCCCompletionPassBase;
+struct PlaceRequiredNCCJoinsPass
+    : public wafer::impl::PlaceRequiredNCCJoinsPassBase<
+          PlaceRequiredNCCJoinsPass> {
+  using wafer::impl::PlaceRequiredNCCJoinsPassBase<
+      PlaceRequiredNCCJoinsPass>::PlaceRequiredNCCJoinsPassBase;
 
   void runOnOperation() final {
-    if (mlir::succeeded(wafer::normalizeMinimumNCCJoins(getOperation())))
+    unsigned before = 0;
+    getOperation().walk([&](SyncNCCJoinOp) { ++before; });
+    if (mlir::succeeded(validateRequiredNCCJoinRewrite(
+            getOperation(), /*rebuildDerivedJoins=*/false)) &&
+        mlir::succeeded(normalizeRequiredNCCJoinsInPlace(
+            getOperation(), /*rebuildDerivedJoins=*/false))) {
+      unsigned after = 0;
+      getOperation().walk([&](SyncNCCJoinOp) { ++after; });
+      if (after > before)
+        numRequiredJoinsInserted += after - before;
       return;
+    }
+    signalPassFailure();
+  }
+};
+
+struct RebuildRequiredNCCJoinsPass
+    : public wafer::impl::RebuildRequiredNCCJoinsPassBase<
+          RebuildRequiredNCCJoinsPass> {
+  using wafer::impl::RebuildRequiredNCCJoinsPassBase<
+      RebuildRequiredNCCJoinsPass>::RebuildRequiredNCCJoinsPassBase;
+
+  void runOnOperation() final {
+    unsigned before = 0;
+    getOperation().walk([&](SyncNCCJoinOp) { ++before; });
+    if (mlir::succeeded(validateRequiredNCCJoinRewrite(
+            getOperation(), /*rebuildDerivedJoins=*/true)) &&
+        mlir::succeeded(normalizeRequiredNCCJoinsInPlace(
+            getOperation(), /*rebuildDerivedJoins=*/true))) {
+      unsigned after = 0;
+      getOperation().walk([&](SyncNCCJoinOp) { ++after; });
+      numDerivedJoinsRemoved += before;
+      numRequiredJoinsInserted += after;
+      return;
+    }
     signalPassFailure();
   }
 };
@@ -895,17 +998,12 @@ struct wafer::TileRegionToInstrLoweringSession::Impl {
   explicit Impl(mlir::MLIRContext &context) : target(context) {
     configureTileRegionToInstrTarget(target);
 
-    mlir::RewritePatternSet select(&context);
-    populateConstantPredicateSelectCanonicalizationPattern(select);
-    selectPatterns = mlir::FrozenRewritePatternSet(std::move(select));
-
     mlir::RewritePatternSet lowering(&context);
     populateTileRegionToInstrPatterns(lowering);
     loweringPatterns = mlir::FrozenRewritePatternSet(std::move(lowering));
   }
 
   mlir::ConversionTarget target;
-  mlir::FrozenRewritePatternSet selectPatterns;
   mlir::FrozenRewritePatternSet loweringPatterns;
 };
 
@@ -916,49 +1014,70 @@ wafer::TileRegionToInstrLoweringSession::TileRegionToInstrLoweringSession(
 wafer::TileRegionToInstrLoweringSession::~TileRegionToInstrLoweringSession() =
     default;
 
-mlir::LogicalResult
-wafer::normalizeMinimumNCCJoins(mlir::func::FuncOp function) {
+mlir::LogicalResult wafer::placeRequiredNCCJoins(mlir::func::FuncOp function) {
   if (!function)
     return mlir::failure();
   wafer::support::ScopedCompileTimingSpan timing(
-      "lowering-phase", "tile-region-to-instr",
-      "minimum-ncc-join-normalization");
-  mlir::LogicalResult result = NCCJoinPlacement().run(function);
-  if (mlir::failed(result))
+      "lowering-phase", "tile-region-to-instr", "required-ncc-join-placement");
+  mlir::OwningOpRef<mlir::func::FuncOp> transaction = function.clone();
+  if (mlir::failed(
+          normalizeRequiredNCCJoinsInPlace(*transaction,
+                                           /*rebuildDerivedJoins=*/false))) {
     timing.markFailed();
-  return result;
-}
-
-mlir::LogicalResult wafer::normalizeMinimumNCCJoins(mlir::ModuleOp module) {
-  if (!module)
     return mlir::failure();
-  for (mlir::func::FuncOp function : module.getOps<mlir::func::FuncOp>())
-    if (mlir::failed(wafer::normalizeMinimumNCCJoins(function)))
-      return mlir::failure();
+  }
+  function.getBody().takeBody(transaction->getBody());
   return mlir::success();
 }
 
-mlir::LogicalResult wafer::rebuildMinimumNCCJoins(mlir::func::FuncOp function) {
+mlir::LogicalResult wafer::placeRequiredNCCJoins(mlir::ModuleOp module) {
+  if (!module)
+    return mlir::failure();
+  mlir::OwningOpRef<mlir::ModuleOp> transaction = module.clone();
+  if (mlir::failed(normalizeRequiredNCCJoinsInPlace(
+          *transaction, /*rebuildDerivedJoins=*/false)))
+    return mlir::failure();
+  module.getBodyRegion().takeBody(transaction->getBodyRegion());
+  return mlir::success();
+}
+
+mlir::LogicalResult
+wafer::rebuildRequiredNCCJoins(mlir::func::FuncOp function) {
   if (!function)
     return mlir::failure();
   wafer::support::ScopedCompileTimingSpan timing(
       "lowering-phase", "tile-region-to-instr", "fresh-ncc-join-rebuild");
-  llvm::SmallVector<SyncNCCJoinOp, 16> staleJoins;
-  function.walk([&](SyncNCCJoinOp join) { staleJoins.push_back(join); });
-  for (SyncNCCJoinOp join : llvm::reverse(staleJoins))
-    join.erase();
-  mlir::LogicalResult result = NCCJoinPlacement().run(function);
-  if (mlir::failed(result))
+  mlir::OwningOpRef<mlir::func::FuncOp> transaction = function.clone();
+  if (mlir::failed(
+          normalizeRequiredNCCJoinsInPlace(*transaction,
+                                           /*rebuildDerivedJoins=*/true))) {
     timing.markFailed();
-  return result;
+    return mlir::failure();
+  }
+  function.getBody().takeBody(transaction->getBody());
+  return mlir::success();
 }
 
-mlir::LogicalResult wafer::rebuildMinimumNCCJoins(mlir::ModuleOp module) {
+mlir::LogicalResult wafer::rebuildRequiredNCCJoins(mlir::ModuleOp module) {
   if (!module)
     return mlir::failure();
-  for (mlir::func::FuncOp function : module.getOps<mlir::func::FuncOp>())
-    if (mlir::failed(wafer::rebuildMinimumNCCJoins(function)))
-      return mlir::failure();
+  mlir::OwningOpRef<mlir::ModuleOp> transaction = module.clone();
+  if (mlir::failed(normalizeRequiredNCCJoinsInPlace(
+          *transaction, /*rebuildDerivedJoins=*/true)))
+    return mlir::failure();
+  module.getBodyRegion().takeBody(transaction->getBodyRegion());
+  return mlir::success();
+}
+
+mlir::LogicalResult
+wafer::rebuildRequiredNCCJoinsForIsolatedTileRegion(TileRegionOp tileRegion) {
+  if (!tileRegion)
+    return mlir::failure();
+  mlir::OwningOpRef<TileRegionOp> transaction = tileRegion.clone();
+  eraseDerivedNCCJoins(transaction->getOperation());
+  if (mlir::failed(RequiredNCCJoinPlacement().run(*transaction)))
+    return mlir::failure();
+  tileRegion.getBody().takeBody(transaction->getBody());
   return mlir::success();
 }
 
@@ -995,91 +1114,68 @@ wafer::detail::countStaticExecutableOperations(mlir::Operation *root,
   return StaticExecutableOperationCountStatus::Counted;
 }
 
-mlir::LogicalResult
-wafer::convertTileRegionToInstr(TileRegionOp region,
-                                TileRegionToInstrLoweringSession &session,
-                                std::string *failureReason) {
+mlir::LogicalResult wafer::convertTileRegionToInstr(
+    TileRegionOp region, TileRegionToInstrLoweringSession &session,
+    mlir::RewriterBase::Listener *listener) {
   if (!region)
     return mlir::failure();
   wafer::support::recordCompileWork(
       wafer::support::CompileWorkKind::TileToInstructionLowering);
   wafer::support::ScopedCompileTimingSpan conversionTiming(
       "conversion", "tile-region-to-instr", "region-conversion");
-  if (failureReason)
-    failureReason->clear();
-
-  mlir::MLIRContext *context = region.getContext();
-  llvm::SmallVector<mlir::Operation *, 4> selectCandidates;
-  {
-    wafer::support::ScopedCompileTimingSpan timing(
-        "lowering-phase", "tile-region-to-instr", "select-discovery");
-    region.walk([&](ComputeElementwiseOp op) {
-      if (op.getKind() == ComputeElementwiseKind::Select)
-        selectCandidates.push_back(op);
-    });
-  }
-  if (!selectCandidates.empty()) {
-    wafer::support::ScopedCompileTimingSpan timing(
-        "lowering-phase", "tile-region-to-instr",
-        "constant-select-canonicalization");
-    mlir::GreedyRewriteConfig config;
-    config.strictMode = mlir::GreedyRewriteStrictness::ExistingOps;
-    if (mlir::failed(mlir::applyOpPatternsAndFold(
-            selectCandidates, session.impl->selectPatterns, config))) {
-      timing.markFailed();
-      setFailureReason(
-          failureReason,
-          "tile constant-predicate select canonicalization failed");
-      return mlir::failure();
-    }
-  }
-
   bool conversionSucceeded = false;
   {
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering-phase", "tile-region-to-instr", "full-conversion");
     mlir::ScopedDiagnosticHandler handler(
-        context, [](mlir::Diagnostic &) { return mlir::success(); });
+        region.getContext(),
+        [](mlir::Diagnostic &) { return mlir::success(); });
+    mlir::ConversionConfig config;
+    config.listener = listener;
     conversionSucceeded = mlir::succeeded(
         mlir::applyFullConversion(region.getOperation(), session.impl->target,
-                                  session.impl->loweringPatterns));
+                                  session.impl->loweringPatterns, config));
     if (!conversionSucceeded)
       timing.markFailed();
   }
 
   if (!conversionSucceeded) {
     conversionTiming.markFailed();
-    if (!failureReason || failureReason->empty())
-      setFailureReason(failureReason,
-                       "tile-region to instruction conversion failed");
     return mlir::failure();
   }
   {
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering-phase", "tile-region-to-instr", "dead-private-fill-erasure");
-    eraseDeadPrivateFills(region.getOperation());
+    eraseDeadPrivateFillArtifacts(region.getOperation());
   }
   return mlir::success();
 }
 
-mlir::LogicalResult
-wafer::convertTileRegionToInstr(TileRegionOp region,
-                                std::string *failureReason) {
+mlir::LogicalResult wafer::convertTileRegionToInstr(TileRegionOp region) {
   if (!region)
     return mlir::failure();
   TileRegionToInstrLoweringSession session(*region.getContext());
-  return wafer::convertTileRegionToInstr(region, session, failureReason);
+  return wafer::convertTileRegionToInstr(region, session,
+                                         /*listener=*/nullptr);
 }
 
-mlir::LogicalResult
-wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
-                                      std::string *failureReason) {
+mlir::LogicalResult wafer::convertTileRegionToInstrModule(
+    mlir::ModuleOp module) {
   if (!module)
     return mlir::failure();
   llvm::SmallVector<TileRegionOp, 4> regions;
   module.walk([&](TileRegionOp region) { regions.push_back(region); });
+  TileRegionToInstrLoweringSession session(*module.getContext());
   for (TileRegionOp region : regions)
-    if (mlir::failed(wafer::convertTileRegionToInstr(region, failureReason)))
+    if (mlir::failed(wafer::convertTileRegionToInstr(region, session)))
       return mlir::failure();
-  return wafer::normalizeMinimumNCCJoins(module);
+  return wafer::placeRequiredNCCJoins(module);
+}
+
+mlir::LogicalResult wafer::detail::placeRequiredNCCJoinsInPrivateFunction(
+    mlir::func::FuncOp function) {
+  if (!function)
+    return mlir::failure();
+  return normalizeRequiredNCCJoinsInPlace(function,
+                                          /*rebuildDerivedJoins=*/false);
 }

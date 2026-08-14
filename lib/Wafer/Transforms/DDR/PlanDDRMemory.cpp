@@ -1,11 +1,14 @@
 //===- PlanDDRMemory.cpp - Plan Wafer DDR memory ------------===//
 
+#include "Wafer/Transforms/MemoryPlanning.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "MemoryPlanning/LifetimeAnalysis.h"
 #include "MemoryPlanning/StaticIndexRange.h"
 #include "MemoryPlanning/StaticMemoryPacking.h"
+#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
 
+#include "Wafer/Analysis/DirectCallGraphAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Support/CompileWorkStatistics.h"
@@ -39,6 +42,9 @@ namespace {
 
 namespace memory_planning = wafer::memory_planning::detail;
 using StaticIndexRange = memory_planning::StaticIndexRange;
+using ManagedTimelineMap =
+    llvm::DenseMap<mlir::Operation *,
+                   const memory_planning::StructuredTimelineAnalysis *>;
 
 struct MovementDescriptor {
   int64_t byteCount = 0;
@@ -114,29 +120,21 @@ combinePhysicalAlignment(mlir::MemRefType type, int64_t requestedAlignment,
 static mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
   while (true) {
     if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-      mlir::Block *owner = blockArg.getOwner();
-      auto tileRegion =
-          owner ? mlir::dyn_cast_or_null<TileRegionOp>(owner->getParentOp())
-                : TileRegionOp{};
-      if (!tileRegion || tileRegion.getBody().empty() ||
-          owner != &tileRegion.getBody().front() ||
-          blockArg.getArgNumber() >= tileRegion.getInputs().size())
+      mlir::Value entry =
+          analysis::getSingleExecutionRegionEntryOperand(blockArg);
+      if (!entry)
         return value;
-      value = tileRegion.getInputs()[blockArg.getArgNumber()];
+      value = entry;
       continue;
     }
 
     auto result = mlir::dyn_cast<mlir::OpResult>(value);
-    auto tileRegion =
-        result ? mlir::dyn_cast_or_null<TileRegionOp>(result.getOwner())
-               : TileRegionOp{};
-    if (!tileRegion || tileRegion.getBody().empty())
+    mlir::Value exit = result ? analysis::getSingleExecutionRegionExitOperand(
+                                    result)
+                              : mlir::Value{};
+    if (!exit)
       return value;
-    auto yield = mlir::dyn_cast<TileYieldOp>(
-        tileRegion.getBody().front().getTerminator());
-    if (!yield || result.getResultNumber() >= yield.getValues().size())
-      return value;
-    value = yield.getValues()[result.getResultNumber()];
+    value = exit;
   }
 }
 
@@ -202,13 +200,13 @@ static bool functionTouchesDDR(mlir::Operation *functionLike) {
   return touchesDDR;
 }
 
-static bool isSupportedDDRAliasCall(mlir::func::CallOp call) {
+static bool isSupportedDDRAliasCall(
+    mlir::func::CallOp call,
+    const analysis::DirectCallGraphAnalysis &callGraph) {
   if (!memory_planning::isSupportedDirectAliasCall(
           call, [](mlir::Type type) { return isWaferDDRMemRefType(type); }))
     return false;
-  mlir::func::FuncOp callee =
-      mlir::SymbolTable::lookupNearestSymbolFrom<mlir::func::FuncOp>(
-          call, call.getCalleeAttr());
+  mlir::func::FuncOp callee = callGraph.getCallee(call);
   if (!callee)
     return false;
   bool hasDDRResourceEffect = false;
@@ -220,7 +218,9 @@ static bool isSupportedDDRAliasCall(mlir::func::CallOp call) {
   return !hasDDRResourceEffect;
 }
 
-static mlir::LogicalResult verifyDDRCallScopes(mlir::ModuleOp moduleOp) {
+static mlir::LogicalResult verifyDDRCallScopes(
+    mlir::ModuleOp moduleOp,
+    const analysis::DirectCallGraphAnalysis &callGraph) {
   bool moduleTouchesDDR = functionTouchesDDR(moduleOp.getOperation());
   llvm::DenseSet<mlir::Operation *> mayTouchDDR;
   moduleOp.walk([&](mlir::func::FuncOp funcOp) {
@@ -238,9 +238,7 @@ static mlir::LogicalResult verifyDDRCallScopes(mlir::ModuleOp moduleOp) {
       mlir::Operation *caller = call->getParentOfType<mlir::func::FuncOp>();
       if (!caller)
         caller = call->getParentOfType<mlir::async::FuncOp>();
-      mlir::func::FuncOp callee =
-          mlir::SymbolTable::lookupNearestSymbolFrom<mlir::func::FuncOp>(
-              call, call.getCalleeAttr());
+      mlir::func::FuncOp callee = callGraph.getCallee(call);
       if (caller && callee && mayTouchDDR.contains(callee.getOperation()) &&
           mayTouchDDR.insert(caller).second)
         changed = true;
@@ -248,9 +246,7 @@ static mlir::LogicalResult verifyDDRCallScopes(mlir::ModuleOp moduleOp) {
   }
 
   mlir::WalkResult result = moduleOp.walk([&](mlir::func::CallOp call) {
-    mlir::func::FuncOp callee =
-        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::func::FuncOp>(
-            call, call.getCalleeAttr());
+    mlir::func::FuncOp callee = callGraph.getCallee(call);
     bool carriesDDR = llvm::any_of(call->getOperandTypes(),
                                    [](mlir::Type type) {
                                      return isWaferDDRMemRefType(type);
@@ -258,7 +254,7 @@ static mlir::LogicalResult verifyDDRCallScopes(mlir::ModuleOp moduleOp) {
                       llvm::any_of(call->getResultTypes(), [](mlir::Type type) {
                         return isWaferDDRMemRefType(type);
                       });
-    if (isSupportedDDRAliasCall(call))
+    if (isSupportedDDRAliasCall(call, callGraph))
       return mlir::WalkResult::advance();
     bool lacksResourceSummary =
         moduleTouchesDDR && (!callee || callee.isExternal());
@@ -962,17 +958,37 @@ emitLifetimeFailure(mlir::Operation *scope,
 }
 
 static mlir::LogicalResult
-verifyDDRAsyncFunctionClosures(mlir::ModuleOp moduleOp) {
+verifyDDRAsyncFunctionClosures(
+    mlir::ModuleOp moduleOp,
+    const ManagedTimelineMap *managedTimelines = nullptr) {
   mlir::LogicalResult result = mlir::success();
   moduleOp.walk([&](mlir::async::FuncOp funcOp) {
     if (mlir::failed(result) || funcOp.isExternal())
       return;
 
     memory_planning::TimelineFailure timelineFailure;
-    mlir::FailureOr<memory_planning::StructuredTimeline> timeline =
-        memory_planning::StructuredTimeline::build(funcOp.getOperation(),
-                                                   &timelineFailure);
-    if (mlir::failed(timeline)) {
+    std::optional<memory_planning::StructuredTimeline> ownedTimeline;
+    const memory_planning::StructuredTimeline *timeline = nullptr;
+    if (managedTimelines) {
+      auto found = managedTimelines->find(funcOp.getOperation());
+      if (found != managedTimelines->end()) {
+        const memory_planning::StructuredTimelineAnalysis &analysis =
+            *found->second;
+        if (analysis.isValid())
+          timeline = &analysis.getTimeline();
+        else
+          timelineFailure = analysis.getFailure();
+      }
+    } else {
+      mlir::FailureOr<memory_planning::StructuredTimeline> built =
+          memory_planning::StructuredTimeline::build(funcOp.getOperation(),
+                                                     &timelineFailure);
+      if (mlir::succeeded(built)) {
+        ownedTimeline.emplace(std::move(*built));
+        timeline = &*ownedTimeline;
+      }
+    }
+    if (!timeline) {
       mlir::Operation *origin = timelineFailure.origin ? timelineFailure.origin
                                                        : funcOp.getOperation();
       result = origin->emitError()
@@ -1220,15 +1236,34 @@ static mlir::LogicalResult verifyResourceLimits(mlir::Operation *op,
 static mlir::LogicalResult planScopeDDRMemory(
     mlir::Operation *scope, int64_t defaultAlignment, int64_t capacityBytes,
     int64_t largestContiguousBytes, int64_t bandwidthLimitBytes,
-    llvm::SmallVectorImpl<PendingDDRPlacement> &pendingPlacements) {
+    llvm::SmallVectorImpl<PendingDDRPlacement> &pendingPlacements,
+    const ManagedTimelineMap *managedTimelines = nullptr) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "transformation-phase", "planScopeDDRMemory", "total");
   auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "analysis-phase", "planScopeDDRMemory", "StructuredTimeline::build");
   memory_planning::TimelineFailure timelineFailure;
-  mlir::FailureOr<memory_planning::StructuredTimeline> timeline =
-      memory_planning::StructuredTimeline::build(scope, &timelineFailure);
-  if (mlir::failed(timeline)) {
+  std::optional<memory_planning::StructuredTimeline> ownedTimeline;
+  const memory_planning::StructuredTimeline *timeline = nullptr;
+  if (managedTimelines) {
+    auto found = managedTimelines->find(scope);
+    if (found != managedTimelines->end()) {
+      const memory_planning::StructuredTimelineAnalysis &analysis =
+          *found->second;
+      if (analysis.isValid())
+        timeline = &analysis.getTimeline();
+      else
+        timelineFailure = analysis.getFailure();
+    }
+  } else {
+    mlir::FailureOr<memory_planning::StructuredTimeline> built =
+        memory_planning::StructuredTimeline::build(scope, &timelineFailure);
+    if (mlir::succeeded(built)) {
+      ownedTimeline.emplace(std::move(*built));
+      timeline = &*ownedTimeline;
+    }
+  }
+  if (!timeline) {
     mlir::Operation *origin =
         timelineFailure.origin ? timelineFailure.origin : scope;
     if (timelineFailure.kind ==
@@ -1288,11 +1323,11 @@ static mlir::LogicalResult planScopeDDRMemory(
   return mlir::success();
 }
 
-static mlir::LogicalResult planModuleDDRMemory(mlir::ModuleOp moduleOp,
-                                               int64_t defaultAlignment,
-                                               int64_t capacityBytes,
-                                               int64_t largestContiguousBytes,
-                                               int64_t bandwidthLimitBytes) {
+static mlir::LogicalResult planModuleDDRMemory(
+    mlir::ModuleOp moduleOp, int64_t defaultAlignment, int64_t capacityBytes,
+    int64_t largestContiguousBytes, int64_t bandwidthLimitBytes,
+    const ManagedTimelineMap *managedTimelines,
+    const analysis::DirectCallGraphAnalysis *managedCallGraph) {
   llvm::SmallVector<mlir::func::FuncOp, 4> functions;
   moduleOp.walk(
       [&](mlir::func::FuncOp funcOp) { functions.push_back(funcOp); });
@@ -1317,9 +1352,15 @@ static mlir::LogicalResult planModuleDDRMemory(mlir::ModuleOp moduleOp,
     if (mixedScope.wasInterrupted())
       return mlir::failure();
   }
-  if (mlir::failed(verifyDDRCallScopes(moduleOp)))
+  std::optional<analysis::DirectCallGraphAnalysis> ownedCallGraph;
+  if (!managedCallGraph) {
+    ownedCallGraph.emplace(moduleOp.getOperation());
+    managedCallGraph = &*ownedCallGraph;
+  }
+  if (mlir::failed(verifyDDRCallScopes(moduleOp, *managedCallGraph)))
     return mlir::failure();
-  if (mlir::failed(verifyDDRAsyncFunctionClosures(moduleOp)))
+  if (mlir::failed(
+          verifyDDRAsyncFunctionClosures(moduleOp, managedTimelines)))
     return mlir::failure();
 
   mlir::LogicalResult result = mlir::success();
@@ -1329,14 +1370,16 @@ static mlir::LogicalResult planModuleDDRMemory(mlir::ModuleOp moduleOp,
       break;
     result = planScopeDDRMemory(funcOp.getOperation(), defaultAlignment,
                                 capacityBytes, largestContiguousBytes,
-                                bandwidthLimitBytes, pendingPlacements);
+                                bandwidthLimitBytes, pendingPlacements,
+                                managedTimelines);
   }
   if (mlir::failed(result))
     return result;
   if (functions.empty() &&
       mlir::failed(planScopeDDRMemory(moduleOp.getOperation(), defaultAlignment,
                                       capacityBytes, largestContiguousBytes,
-                                      bandwidthLimitBytes, pendingPlacements)))
+                                      bandwidthLimitBytes, pendingPlacements,
+                                      managedTimelines)))
     return mlir::failure();
 
   for (PendingDDRPlacement placement : pendingPlacements) {
@@ -1348,13 +1391,12 @@ static mlir::LogicalResult planModuleDDRMemory(mlir::ModuleOp moduleOp,
   return mlir::success();
 }
 
-} // namespace
-
-mlir::LogicalResult planDDRMemoryModule(mlir::ModuleOp moduleOp,
-                                        int64_t ddrAlignmentBytes,
-                                        int64_t ddrCapacityBytes,
-                                        int64_t ddrLargestContiguousBytes,
-                                        int64_t ddrBandwidthLimitBytes) {
+static mlir::LogicalResult planDDRMemoryModuleImpl(
+    mlir::ModuleOp moduleOp, int64_t ddrAlignmentBytes,
+    int64_t ddrCapacityBytes, int64_t ddrLargestContiguousBytes,
+    int64_t ddrBandwidthLimitBytes,
+    const ManagedTimelineMap *managedTimelines,
+    const analysis::DirectCallGraphAnalysis *managedCallGraph) {
   wafer::support::recordCompileWork(
       wafer::support::CompileWorkKind::DDRPlanning);
   wafer::support::ScopedCompileTimingSpan timing(
@@ -1366,7 +1408,21 @@ mlir::LogicalResult planDDRMemoryModule(mlir::ModuleOp moduleOp,
               "non-negative and DDR alignment must be positive";
 
   return planModuleDDRMemory(moduleOp, ddrAlignmentBytes, ddrCapacityBytes,
-                             ddrLargestContiguousBytes, ddrBandwidthLimitBytes);
+                             ddrLargestContiguousBytes, ddrBandwidthLimitBytes,
+                             managedTimelines, managedCallGraph);
+}
+
+} // namespace
+
+mlir::LogicalResult planDDRMemoryModule(mlir::ModuleOp moduleOp,
+                                        int64_t ddrAlignmentBytes,
+                                        int64_t ddrCapacityBytes,
+                                        int64_t ddrLargestContiguousBytes,
+                                        int64_t ddrBandwidthLimitBytes) {
+  return planDDRMemoryModuleImpl(
+      moduleOp, ddrAlignmentBytes, ddrCapacityBytes,
+      ddrLargestContiguousBytes, ddrBandwidthLimitBytes,
+      /*managedTimelines=*/nullptr, /*managedCallGraph=*/nullptr);
 }
 
 namespace {
@@ -1376,10 +1432,51 @@ struct PlanDDRMemoryPass
   using impl::PlanDDRMemoryPassBase<PlanDDRMemoryPass>::PlanDDRMemoryPassBase;
 
   void runOnOperation() final {
-    if (mlir::failed(planDDRMemoryModule(
+    unsigned assignedBefore = 0;
+    getOperation().walk([&](mlir::memref::AllocOp allocation) {
+      assignedBefore += static_cast<bool>(
+          allocation->getAttrOfType<DDROffsetAttr>(kWaferDDROffsetAttrName));
+    });
+    ManagedTimelineMap managedTimelines;
+    bool hasFunction = false;
+    for (mlir::func::FuncOp function :
+         getOperation().getOps<mlir::func::FuncOp>()) {
+      hasFunction = true;
+      managedTimelines.try_emplace(
+          function.getOperation(),
+          &getChildAnalysis<memory_planning::StructuredTimelineAnalysis>(
+              function));
+    }
+    getOperation().walk([&](mlir::async::FuncOp function) {
+      if (!function.isExternal())
+        managedTimelines.try_emplace(
+            function.getOperation(),
+            &getChildAnalysis<memory_planning::StructuredTimelineAnalysis>(
+                function));
+    });
+    if (!hasFunction)
+      managedTimelines.try_emplace(
+          getOperation().getOperation(),
+          &getAnalysis<memory_planning::StructuredTimelineAnalysis>());
+
+    if (mlir::failed(planDDRMemoryModuleImpl(
             getOperation(), ddrAlignmentBytes, ddrCapacityBytes,
-            ddrLargestContiguousBytes, ddrBandwidthLimitBytes)))
+            ddrLargestContiguousBytes, ddrBandwidthLimitBytes,
+            &managedTimelines,
+            &getAnalysis<analysis::DirectCallGraphAnalysis>()))) {
       signalPassFailure();
+      return;
+    }
+    numTimelineScopes += managedTimelines.size();
+    unsigned assignedAfter = 0;
+    getOperation().walk([&](mlir::memref::AllocOp allocation) {
+      assignedAfter += static_cast<bool>(
+          allocation->getAttrOfType<DDROffsetAttr>(kWaferDDROffsetAttrName));
+    });
+    if (assignedAfter > assignedBefore)
+      numAssignedAllocations += assignedAfter - assignedBefore;
+    markAnalysesPreserved<memory_planning::StructuredTimelineAnalysis>();
+    markAnalysesPreserved<analysis::DirectCallGraphAnalysis>();
   }
 };
 

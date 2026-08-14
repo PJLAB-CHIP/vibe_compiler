@@ -17,10 +17,13 @@ def Wafer_Dialect : Dialect {
   }];
   let useDefaultAttributePrinterParser = 1;
   let useDefaultTypePrinterParser = 0;
-  let hasOperationAttrVerify = 1;
 }
 
+def Wafer_NoSchemaFreeSemanticAttrs
+    : NativeOpTrait<"wafer::NoSchemaFreeSemanticAttrs">;
+
 class Wafer_Op<string mnemonic, list<Trait> traits = []>
-    : Op<Wafer_Dialect, mnemonic, traits>;
+    : Op<Wafer_Dialect, mnemonic,
+         !listconcat(traits, [Wafer_NoSchemaFreeSemanticAttrs])>;
 
 #endif // WAFER_IR_WAFERBASE_TD

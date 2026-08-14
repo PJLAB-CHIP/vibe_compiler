@@ -54,12 +54,14 @@ void expectError(llvm::Expected<T> result,
     ADD_FAILURE() << "expected numeric dependency conformance failure";
     return;
   }
-  const std::string message = llvm::toString(result.takeError());
-  EXPECT_NE(
-      message.find(
-          wafer::stringifyNumericDependencyConformanceErrorCode(code).str()),
-      std::string::npos)
-      << message;
+  bool handled = false;
+  llvm::handleAllErrors(
+      result.takeError(),
+      [&](const wafer::NumericDependencyConformanceError &error) {
+        handled = true;
+        EXPECT_EQ(error.getCode(), code) << error.getDetail().str();
+      });
+  EXPECT_TRUE(handled);
 }
 
 class StaticLoadedObjectProvider final

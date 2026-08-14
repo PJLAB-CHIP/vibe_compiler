@@ -2,7 +2,7 @@
 
 #include "Wafer/Compiler/Testing.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/PhysicalIds.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -28,7 +28,7 @@ protected:
   DirectDTETransportTest() {
     registry.insert<mlir::async::AsyncDialect, mlir::func::FuncDialect,
                     mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
-    wafer::registerAllDialects(registry);
+    wafer::registerWaferCoreDialects(registry);
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
   }
@@ -385,6 +385,45 @@ makeTileRegionSiblingTileProgram(wafer::PhysicalTileId tileId) {
   else
     emitRegion(os, 1, "%tile0", /*hasTransport=*/false, /*isSend=*/false,
                /*peer=*/-1, /*offset=*/-1, /*communication=*/-1);
+  os << "    return\n"
+        "  }\n"
+        "}\n";
+  return source;
+}
+
+static std::string makeShiftedTileRegionTransportProgram(bool isSend,
+                                                         unsigned region) {
+  auto emitRegion = [&](llvm::raw_ostream &os, unsigned index,
+                        llvm::StringRef input) {
+    os << "    %tile" << index << " = wafer.tile.region(\n"
+       << "        " << input
+       << " : memref<4xf32, #wafer.memory<ddr, tensor>>)\n"
+          "        -> (memref<4xf32, #wafer.memory<ddr, tensor>>) {\n"
+          "    ^bb0(%source: memref<4xf32, #wafer.memory<ddr, tensor>>):\n";
+    if (index == region)
+      os << "      %buffer = memref.alloc() {wafer.spm.offset = "
+            "#wafer.spm_offset<"
+         << (isSend ? 65536 : 65792)
+         << ">} : memref<4xf32, #wafer.memory<spm, tensor>>\n"
+            "      %token = wafer.instr.dte_"
+         << (isSend ? "send" : "recv")
+         << " %buffer {peer = " << (isSend ? 1 : 0)
+         << " : i64, bytes = 16 : i64, message = "
+            "#wafer.dte_message<communication = 92, round = 0, slice = 0>} "
+            ": memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token\n"
+            "      wafer.instr.dte_wait %token : !async.token\n";
+    os << "      wafer.tile.yield %source "
+          ": memref<4xf32, #wafer.memory<ddr, tensor>>\n"
+          "    }\n";
+  };
+
+  std::string source;
+  llvm::raw_string_ostream os(source);
+  os << "module {\n"
+        "  func.func @main("
+        "%input: memref<4xf32, #wafer.memory<ddr, tensor>>) {\n";
+  emitRegion(os, 0, "%input");
+  emitRegion(os, 1, "%tile0");
   os << "    return\n"
         "  }\n"
         "}\n";
@@ -857,6 +896,23 @@ TEST_F(DirectDTETransportTest,
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
 }
 
+TEST_F(DirectDTETransportTest,
+       MatchesMessagesAcrossDifferentSequentialTileRegionOrdinals) {
+  auto sendModule = parse(makeShiftedTileRegionTransportProgram(
+      /*isSend=*/true, /*region=*/0));
+  auto recvModule = parse(makeShiftedTileRegionTransportProgram(
+      /*isSend=*/false, /*region=*/1));
+  ASSERT_TRUE(sendModule);
+  ASSERT_TRUE(recvModule);
+  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+                                                           *recvModule};
+
+  auto contract =
+      wafer::compiler::testing::acceptDirectDTETransport(physicalTileModules);
+  ASSERT_TRUE(mlir::succeeded(contract));
+  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+}
+
 TEST_F(DirectDTETransportTest, CrossBlockWaitCycleFailsClosed) {
   auto tile0Module = parse(
       makeCrossBlockCycleTileProgram(/*firstTile=*/true, /*baseOffset=*/65536));
@@ -1093,9 +1149,20 @@ TEST_F(DirectDTETransportTest,
   });
   ASSERT_TRUE(outerLoop);
   ASSERT_TRUE(staticTail);
-  mlir::Operation *tailWait = staticTail.getToken().use_begin()->getOwner();
+  // Move only the receive preparation.  Its wait remains after the loop, so
+  // the two Tiles keep an acyclic completion order while the matching logic
+  // must still pair equivalent dynamic occurrences rather than vector order.
+  // Give that preparation its own range so keeping it live across the loop is
+  // also a valid Direct-DTE buffer-isolation scenario.
+  mlir::OpBuilder builder(outerLoop);
+  auto tailBuffer = builder.create<mlir::memref::AllocOp>(
+      staticTail.getLoc(),
+      mlir::cast<mlir::MemRefType>(staticTail.getBuffer().getType()));
+  tailBuffer->setAttr(
+      wafer::kWaferSPMOffsetAttrName,
+      wafer::SPMOffsetAttr::get(staticTail.getContext(), /*offset=*/66048));
+  staticTail->setOperand(0, tailBuffer);
   staticTail->moveBefore(outerLoop);
-  tailWait->moveBefore(outerLoop);
 
   llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
                                                            *recvModule};

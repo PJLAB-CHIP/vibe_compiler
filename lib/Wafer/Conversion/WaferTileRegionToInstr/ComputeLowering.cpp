@@ -20,19 +20,17 @@ namespace {
 
 static mlir::FailureOr<int64_t>
 getStaticDim(mlir::PatternRewriter &rewriter, mlir::Operation *op,
-             mlir::RankedTensorType type, int64_t dim,
-             std::string *failureReason, llvm::StringRef role) {
+             mlir::RankedTensorType type, int64_t dim, llvm::StringRef role) {
   int64_t value = type.getDimSize(dim);
   if (value == mlir::ShapedType::kDynamic)
     return failFailureOr<int64_t>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(role).concat(" requires static GEMM dimensions").str());
   return value;
 }
 
 static mlir::FailureOr<llvm::SmallVector<int64_t, 3>>
-inferGemmMKN(ComputeGemmOp op, mlir::PatternRewriter &rewriter,
-             std::string *failureReason) {
+inferGemmMKN(ComputeGemmOp op, mlir::PatternRewriter &rewriter) {
   std::optional<mlir::RankedTensorType> lhs =
       getLogicalTensorTypeFromMemRef(op.getLhs().getType());
   std::optional<mlir::RankedTensorType> rhs =
@@ -41,8 +39,7 @@ inferGemmMKN(ComputeGemmOp op, mlir::PatternRewriter &rewriter,
       getLogicalTensorTypeFromMemRef(op.getResult().getType());
   if (!lhs || !rhs || !result)
     return failFailureOr<llvm::SmallVector<int64_t, 3>>(
-        rewriter, op, failureReason,
-        "tile.gemm lowering requires Wafer memref operands");
+        rewriter, op, "tile.gemm lowering requires Wafer memref operands");
 
   if (lhs->getRank() != 2 || rhs->getRank() != 2 || result->getRank() != 2) {
     mlir::IntegerAttr lhsMDimAttr = op.getLhsMDimAttr();
@@ -50,17 +47,17 @@ inferGemmMKN(ComputeGemmOp op, mlir::PatternRewriter &rewriter,
     mlir::IntegerAttr rhsNDimAttr = op.getRhsNDimAttr();
     if (!lhsMDimAttr || !lhsKDimAttr || !rhsNDimAttr)
       return failFailureOr<llvm::SmallVector<int64_t, 3>>(
-          rewriter, op, failureReason,
+          rewriter, op,
           "batched tile.gemm requires typed dimension attributes");
     int64_t lhsMDim = lhsMDimAttr.getInt();
     int64_t lhsKDim = lhsKDimAttr.getInt();
     int64_t rhsNDim = rhsNDimAttr.getInt();
-    mlir::FailureOr<int64_t> m = getStaticDim(
-        rewriter, op, *lhs, lhsMDim, failureReason, "batched tile.gemm");
-    mlir::FailureOr<int64_t> k = getStaticDim(
-        rewriter, op, *lhs, lhsKDim, failureReason, "batched tile.gemm");
-    mlir::FailureOr<int64_t> n = getStaticDim(
-        rewriter, op, *rhs, rhsNDim, failureReason, "batched tile.gemm");
+    mlir::FailureOr<int64_t> m =
+        getStaticDim(rewriter, op, *lhs, lhsMDim, "batched tile.gemm");
+    mlir::FailureOr<int64_t> k =
+        getStaticDim(rewriter, op, *lhs, lhsKDim, "batched tile.gemm");
+    mlir::FailureOr<int64_t> n =
+        getStaticDim(rewriter, op, *rhs, rhsNDim, "batched tile.gemm");
     if (mlir::failed(m) || mlir::failed(k) || mlir::failed(n))
       return mlir::failure();
     return llvm::SmallVector<int64_t, 3>{*m, *k, *n};
@@ -73,27 +70,29 @@ inferGemmMKN(ComputeGemmOp op, mlir::PatternRewriter &rewriter,
   int64_t lhsMDim = lhsOrientation == GemmOrientation::Normal ? 0 : 1;
   int64_t lhsKDim = lhsOrientation == GemmOrientation::Normal ? 1 : 0;
   int64_t rhsNDim = rhsOrientation == GemmOrientation::Normal ? 1 : 0;
-  mlir::FailureOr<int64_t> m = getStaticDim(rewriter, op, *lhs, lhsMDim,
-                                            failureReason, "rank-2 tile.gemm");
-  mlir::FailureOr<int64_t> k = getStaticDim(rewriter, op, *lhs, lhsKDim,
-                                            failureReason, "rank-2 tile.gemm");
-  mlir::FailureOr<int64_t> n = getStaticDim(rewriter, op, *rhs, rhsNDim,
-                                            failureReason, "rank-2 tile.gemm");
+  mlir::FailureOr<int64_t> m =
+      getStaticDim(rewriter, op, *lhs, lhsMDim, "rank-2 tile.gemm");
+  mlir::FailureOr<int64_t> k =
+      getStaticDim(rewriter, op, *lhs, lhsKDim, "rank-2 tile.gemm");
+  mlir::FailureOr<int64_t> n =
+      getStaticDim(rewriter, op, *rhs, rhsNDim, "rank-2 tile.gemm");
   if (mlir::failed(m) || mlir::failed(k) || mlir::failed(n))
     return mlir::failure();
   return llvm::SmallVector<int64_t, 3>{*m, *k, *n};
 }
 
-static mlir::FailureOr<InstrElementwiseKindAttr> getInstrElementwiseKindAttr(
-    mlir::PatternRewriter &rewriter, mlir::Operation *op,
-    ComputeElementwiseKindAttr computeKind, std::string *failureReason);
+static mlir::FailureOr<InstrElementwiseKindAttr>
+getInstrElementwiseKindAttr(mlir::PatternRewriter &rewriter,
+                            mlir::Operation *op,
+                            ComputeElementwiseKindAttr computeKind);
 
-static mlir::LogicalResult proveIdentityPhysicalTraversal(
-    mlir::PatternRewriter &rewriter, mlir::Operation *op,
-    mlir::MemRefType sourceType, mlir::MemRefType destType,
-    std::string *failureReason, llvm::StringRef subject) {
+static mlir::LogicalResult
+proveIdentityPhysicalTraversal(mlir::PatternRewriter &rewriter,
+                               mlir::Operation *op, mlir::MemRefType sourceType,
+                               mlir::MemRefType destType,
+                               llvm::StringRef subject) {
   if (sourceType.getShape() != destType.getShape())
-    return failPattern(rewriter, op, failureReason,
+    return failPattern(rewriter, op,
                        (subject + " requires equal logical shapes").str());
   analysis::IndexRelationResult identity =
       analysis::IndexRelation::identity(destType.getShape());
@@ -102,7 +101,7 @@ static mlir::LogicalResult proveIdentityPhysicalTraversal(
           sourceType, destType, destType.getShape(), *identity.get(),
           *identity.get())))
     return failPattern(
-        rewriter, op, failureReason,
+        rewriter, op,
         (subject + " has incompatible physical element traversal").str());
   return mlir::success();
 }
@@ -125,9 +124,8 @@ resolveInstrConvertKind(mlir::Type sourceType, mlir::Type resultType) {
 
 class ConvertLowering : public mlir::OpRewritePattern<ComputeConvertOp> {
 public:
-  ConvertLowering(mlir::MLIRContext *context, std::string *failureReason)
-      : mlir::OpRewritePattern<ComputeConvertOp>(context),
-        failureReason(failureReason) {}
+  ConvertLowering(mlir::MLIRContext *context)
+      : mlir::OpRewritePattern<ComputeConvertOp>(context) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeConvertOp op,
@@ -138,18 +136,16 @@ public:
     auto resultType =
         mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
     if (!sourceType || !resultType)
-      return failPattern(rewriter, op, failureReason,
+      return failPattern(rewriter, op,
                          "tile.compute.convert requires memref storage");
-    if (mlir::failed(proveIdentityPhysicalTraversal(rewriter, op, sourceType,
-                                                    resultType, failureReason,
-                                                    "tile.compute.convert")))
+    if (mlir::failed(proveIdentityPhysicalTraversal(
+            rewriter, op, sourceType, resultType, "tile.compute.convert")))
       return mlir::failure();
     std::optional<InstrConvertKind> kind = resolveInstrConvertKind(
         sourceType.getElementType(), resultType.getElementType());
     if (!kind)
       return failPattern(
-          rewriter, op, failureReason,
-          "tile.compute.convert has no target instruction route");
+          rewriter, op, "tile.compute.convert has no target instruction route");
 
     mlir::IntegerAttr zeroPoint;
     mlir::IntegerAttr roundingMode;
@@ -163,7 +159,7 @@ public:
       roundingMode = rewriter.getI64IntegerAttr(0);
       break;
     case InstrConvertParameterKind::ZeroPoint:
-      return failPattern(rewriter, op, failureReason,
+      return failPattern(rewriter, op,
                          "tile.compute.convert floating route unexpectedly "
                          "requires zero_point");
     }
@@ -178,64 +174,82 @@ public:
     rewriter.replaceOp(op, dest);
     return mlir::success();
   }
-
-private:
-  std::string *failureReason;
 };
 
-// A select fed by a private, constant-filled predicate does not require a
-// target boolean fill or mask operation.  Canonicalize that exact tile-level
-// dataflow to an explicit fresh copy before conversion patterns can lower the
-// fill independently.  Keeping this as a separate typed prepass makes the
-// rewrite independent of cross-root dialect-conversion pattern ordering.
-class ConstantPredicateSelectToCopy
-    : public mlir::OpRewritePattern<ComputeElementwiseOp> {
-public:
-  using mlir::OpRewritePattern<ComputeElementwiseOp>::OpRewritePattern;
+struct ConstantPredicateSelectPlan {
+  mlir::memref::AllocOp predicateAllocation;
+  ComputeFillOp sourcePredicateFill;
+  InstrFillOp loweredPredicateFill;
+  mlir::arith::ConstantOp predicateConstant;
+  mlir::Value selectedInput;
+};
 
-  mlir::LogicalResult
-  matchAndRewrite(ComputeElementwiseOp op,
-                  mlir::PatternRewriter &rewriter) const final {
-    ScopedLoweringPatternTiming timing(op.getOperation());
+// Return a direct-copy plan when a select is controlled by a private constant
+// predicate. Dialect conversion may visit the producer fill before the select
+// root, so accept both the source ComputeFillOp and its legal InstrFillOp
+// replacement. The caller emits the complete replacement from the select's
+// own conversion pattern, making the result independent of worklist order.
+static std::optional<ConstantPredicateSelectPlan>
+getConstantPredicateSelectPlan(ComputeElementwiseOp op) {
     if (op.getKind() != ComputeElementwiseKind::Select ||
         op.getInputs().size() != 3)
-      return mlir::failure();
+      return std::nullopt;
 
     mlir::Value predicate = op.getInputs().front();
     auto predicateAlloc = predicate.getDefiningOp<mlir::memref::AllocOp>();
     if (!predicateAlloc)
-      return mlir::failure();
+      return std::nullopt;
 
     mlir::OpOperand *selectPredicateUse = &op->getOpOperand(0);
-    ComputeFillOp predicateFill;
+    ComputeFillOp sourcePredicateFill;
+    InstrFillOp loweredPredicateFill;
+    mlir::Value predicateValue;
     unsigned selectUseCount = 0;
-    unsigned fillUseCount = 0;
     for (mlir::OpOperand &use : predicate.getUses()) {
       if (&use == selectPredicateUse) {
         ++selectUseCount;
         continue;
       }
-      auto fill = mlir::dyn_cast<ComputeFillOp>(use.getOwner());
-      if (!fill || &use != &fill.getDestMutable())
-        return mlir::failure();
-      predicateFill = fill;
-      ++fillUseCount;
+      mlir::Value fillValue;
+      if (auto fill = mlir::dyn_cast<ComputeFillOp>(use.getOwner())) {
+        if (&use != &fill.getDestMutable() || sourcePredicateFill)
+          return std::nullopt;
+        sourcePredicateFill = fill;
+        fillValue = fill.getValue();
+      } else if (auto fill = mlir::dyn_cast<InstrFillOp>(use.getOwner())) {
+        if (&use != &fill.getDestMutable() || loweredPredicateFill)
+          return std::nullopt;
+        loweredPredicateFill = fill;
+        fillValue = fill.getValue();
+      } else {
+        return std::nullopt;
+      }
+      if (predicateValue && predicateValue != fillValue)
+        return std::nullopt;
+      predicateValue = fillValue;
     }
-    if (selectUseCount != 1 || fillUseCount != 1 || !predicateFill)
-      return mlir::failure();
+    if (selectUseCount != 1 ||
+        (!sourcePredicateFill && !loweredPredicateFill))
+      return std::nullopt;
 
-    if (predicateFill->getBlock() != op->getBlock() ||
-        !predicateFill->isBeforeInBlock(op))
-      return mlir::failure();
+    for (mlir::Operation *predicateFill :
+         {sourcePredicateFill.getOperation(),
+          loweredPredicateFill.getOperation()}) {
+      if (!predicateFill)
+        continue;
+      if (predicateFill->getBlock() != op->getBlock() ||
+          !predicateFill->isBeforeInBlock(op))
+        return std::nullopt;
+    }
 
     auto constant =
-        predicateFill.getValue().getDefiningOp<mlir::arith::ConstantOp>();
+        predicateValue.getDefiningOp<mlir::arith::ConstantOp>();
     auto valueAttr =
         constant ? mlir::dyn_cast<mlir::IntegerAttr>(constant.getValue())
                  : mlir::IntegerAttr{};
     if (!constant || !constant.getType().isInteger(1) || !valueAttr ||
         !valueAttr.getType().isInteger(1))
-      return mlir::failure();
+      return std::nullopt;
 
     unsigned selectedInputIndex = valueAttr.getValue().isZero() ? 2 : 1;
     mlir::Value selected = op.getInputs()[selectedInputIndex];
@@ -243,11 +257,11 @@ public:
         mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
     auto selectedType = mlir::dyn_cast<mlir::MemRefType>(selected.getType());
     if (!resultType || !selectedType || selectedType != resultType)
-      return mlir::failure();
+      return std::nullopt;
 
     if (mlir::ArrayAttr maps = op.getIndexingMapsAttr()) {
       if (maps.size() != op.getInputs().size() + 1)
-        return mlir::failure();
+        return std::nullopt;
       auto hasIdentityMap = [&](unsigned mapIndex) {
         auto mapAttr = mlir::dyn_cast<mlir::AffineMapAttr>(maps[mapIndex]);
         if (!mapAttr)
@@ -259,18 +273,12 @@ public:
       };
       if (!hasIdentityMap(selectedInputIndex) ||
           !hasIdentityMap(maps.size() - 1))
-        return mlir::failure();
+        return std::nullopt;
     }
-
-    auto copy = rewriter.create<MoveCopyOp>(op.getLoc(), resultType, selected);
-    rewriter.replaceOp(op, copy.getResult());
-    rewriter.eraseOp(predicateFill);
-    rewriter.eraseOp(predicateAlloc);
-    if (constant->use_empty())
-      rewriter.eraseOp(constant);
-    return mlir::success();
-  }
-};
+    return ConstantPredicateSelectPlan{predicateAlloc, sourcePredicateFill,
+                                       loweredPredicateFill, constant,
+                                       selected};
+}
 
 class ElementwiseLowering
     : public mlir::OpRewritePattern<ComputeElementwiseOp> {
@@ -281,9 +289,8 @@ public:
     llvm::SmallVector<MovementDescriptorPair> descriptors;
   };
 
-  ElementwiseLowering(mlir::MLIRContext *context, std::string *failureReason)
-      : mlir::OpRewritePattern<ComputeElementwiseOp>(context),
-        failureReason(failureReason) {}
+  ElementwiseLowering(mlir::MLIRContext *context)
+      : mlir::OpRewritePattern<ComputeElementwiseOp>(context) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeElementwiseOp op,
@@ -292,22 +299,60 @@ public:
     if (op.getKind() == ComputeElementwiseKind::Select) {
       if (op.getInputs().size() != 3)
         return failPattern(
-            rewriter, op, failureReason,
+            rewriter, op,
             "target select lowering requires predicate, true and false "
             "operands");
       auto destType =
           mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
       if (!destType || !mlir::isa<mlir::FloatType>(destType.getElementType()))
         return failPattern(
-            rewriter, op, failureReason,
+            rewriter, op,
             "target select lowering currently requires floating-point values");
     }
 
     auto resultType =
         mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
     if (!resultType)
-      return failPattern(rewriter, op, failureReason,
+      return failPattern(rewriter, op,
                          "tile.elementwise lowering requires a memref result");
+
+    if (std::optional<ConstantPredicateSelectPlan> constantSelect =
+            getConstantPredicateSelectPlan(op)) {
+      analysis::IndexRelationResult relation =
+          analysis::IndexRelation::identity(resultType.getShape());
+      if (!relation.isExact())
+        return failPattern(rewriter, op,
+                           "constant select copy relation is not exact");
+      auto selectedType =
+          mlir::cast<mlir::MemRefType>(constantSelect->selectedInput.getType());
+      mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
+          getRelationMovementDescriptors(
+              rewriter, op, selectedType, resultType, resultType.getShape(),
+              *relation.get(), *relation.get(), MovementEngine::GatherScatter,
+              "constant select copy");
+      if (mlir::failed(descriptors))
+        return mlir::failure();
+
+      mlir::Value dest =
+          rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
+              .getResult();
+      createGatherScatterDescriptors(rewriter, op.getLoc(),
+                                     constantSelect->selectedInput, dest,
+                                     *descriptors);
+      rewriter.replaceOp(op, dest);
+      // In rollback-enabled dialect conversion, a source fill and its legal
+      // replacement can temporarily coexist. Erase the replacement and let
+      // the conversion driver retire its already-scheduled source root. If the
+      // fill has not been legalized yet, erase the source root directly.
+      if (constantSelect->loweredPredicateFill)
+        rewriter.eraseOp(constantSelect->loweredPredicateFill);
+      else
+        rewriter.eraseOp(constantSelect->sourcePredicateFill);
+      rewriter.eraseOp(constantSelect->predicateAllocation);
+      if (constantSelect->predicateConstant->use_empty())
+        rewriter.eraseOp(constantSelect->predicateConstant);
+      return mlir::success();
+    }
 
     // Preflight every map before creating an allocation or an instruction.
     // A failed conversion therefore cannot leave a partially materialized
@@ -318,7 +363,7 @@ public:
     if (indexingMaps) {
       if (indexingMaps.size() != op.getInputs().size() + 1)
         return failPattern(
-            rewriter, op, failureReason,
+            rewriter, op,
             "tile.elementwise indexing map count must match inputs plus "
             "result");
 
@@ -329,7 +374,7 @@ public:
           resultMapAttr.getValue().getNumSymbols() != 0 ||
           !resultMapAttr.getValue().isIdentity())
         return failPattern(
-            rewriter, op, failureReason,
+            rewriter, op,
             "tile.elementwise result indexing map must be identity");
     }
 
@@ -338,11 +383,11 @@ public:
       plan.source = input;
       auto sourceType = mlir::dyn_cast<mlir::MemRefType>(input.getType());
       if (!sourceType)
-        return failPattern(rewriter, op, failureReason,
+        return failPattern(rewriter, op,
                            "tile.elementwise requires memref inputs");
       if (!indexingMaps) {
         if (mlir::failed(proveIdentityPhysicalTraversal(
-                rewriter, op, sourceType, resultType, failureReason,
+                rewriter, op, sourceType, resultType,
                 "map-free tile.elementwise")))
           return mlir::failure();
         movementPlans.push_back(std::move(plan));
@@ -353,7 +398,7 @@ public:
           mlir::dyn_cast<mlir::AffineMapAttr>(indexingMaps[index]);
       if (!inputMapAttr)
         return failPattern(
-            rewriter, op, failureReason,
+            rewriter, op,
             "tile.elementwise indexing map materialization requires memref "
             "inputs and affine maps");
 
@@ -363,7 +408,7 @@ public:
           inputMap.getNumResults() != sourceType.getRank() ||
           !inputMap.isProjectedPermutation())
         return failPattern(
-            rewriter, op, failureReason,
+            rewriter, op,
             "tile.elementwise input indexing map must be a projected "
             "permutation of result dimensions");
 
@@ -390,19 +435,19 @@ public:
       analysis::IndexRelationResult destRelation =
           analysis::IndexRelation::identity(resultType.getShape());
       if (!sourceRelation.isExact() || !destRelation.isExact())
-        return failPattern(rewriter, op, failureReason,
+        return failPattern(rewriter, op,
                            "tile.elementwise indexing relation is not exact");
       mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
           getRelationMovementDescriptors(
               rewriter, op, sourceType, plan.materializedType,
               resultType.getShape(), *sourceRelation.get(), *destRelation.get(),
-              MovementEngine::GatherScatter, failureReason,
+              MovementEngine::GatherScatter,
               "tile.elementwise indexing map materialization");
       if (mlir::failed(descriptors))
         return mlir::failure();
       plan.descriptors = std::move(*descriptors);
       if (mlir::failed(proveIdentityPhysicalTraversal(
-              rewriter, op, plan.materializedType, resultType, failureReason,
+              rewriter, op, plan.materializedType, resultType,
               "materialized tile.elementwise operand")))
         return mlir::failure();
       movementPlans.push_back(std::move(plan));
@@ -411,8 +456,7 @@ public:
     InstrElementwiseKindAttr instrKind;
     if (op.getKind() != ComputeElementwiseKind::Select) {
       mlir::FailureOr<InstrElementwiseKindAttr> resolvedInstrKind =
-          getInstrElementwiseKindAttr(rewriter, op, op.getKindAttr(),
-                                      failureReason);
+          getInstrElementwiseKindAttr(rewriter, op, op.getKindAttr());
       if (mlir::failed(resolvedInstrKind))
         return mlir::failure();
       instrKind = *resolvedInstrKind;
@@ -429,13 +473,13 @@ public:
       analysis::IndexRelationResult relation =
           analysis::IndexRelation::identity(resultType.getShape());
       if (!falseMemRef || !relation.isExact())
-        return failPattern(rewriter, op, failureReason,
+        return failPattern(rewriter, op,
                            "target select copy relation is not exact");
       mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
           getRelationMovementDescriptors(
               rewriter, op, falseMemRef, resultType, resultType.getShape(),
               *relation.get(), *relation.get(), MovementEngine::GatherScatter,
-              failureReason, "target select false-value copy");
+              "target select false-value copy");
       if (mlir::failed(descriptors))
         return mlir::failure();
       selectCopyDescriptors = std::move(*descriptors);
@@ -479,16 +523,12 @@ public:
     rewriter.replaceOp(op, dest);
     return mlir::success();
   }
-
-private:
-  std::string *failureReason;
 };
 
 class ReduceLowering : public mlir::OpRewritePattern<ComputeReduceOp> {
 public:
-  ReduceLowering(mlir::MLIRContext *context, std::string *failureReason)
-      : mlir::OpRewritePattern<ComputeReduceOp>(context),
-        failureReason(failureReason) {}
+  ReduceLowering(mlir::MLIRContext *context)
+      : mlir::OpRewritePattern<ComputeReduceOp>(context) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeReduceOp op,
@@ -498,12 +538,11 @@ public:
     auto resultType =
         mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
     if (!inputType || !resultType)
-      return failPattern(rewriter, op, failureReason,
+      return failPattern(rewriter, op,
                          "tile.reduce lowering requires memref operands");
     if (inputType.getElementType() != resultType.getElementType())
       return failPattern(
-          rewriter, op, failureReason,
-          "tile.reduce lowering requires matching element types");
+          rewriter, op, "tile.reduce lowering requires matching element types");
 
     std::optional<int64_t> inputElementCount =
         getStaticPositiveElementCount(inputType.getShape());
@@ -511,12 +550,12 @@ public:
         getStaticPositiveElementCount(resultType.getShape());
     if (!inputElementCount || !resultElementCount)
       return failPattern(
-          rewriter, op, failureReason,
+          rewriter, op,
           "tile.reduce lowering requires static positive input/result shapes");
     if (static_cast<uint64_t>(*resultElementCount) >
         std::numeric_limits<uint32_t>::max())
       return failPattern(
-          rewriter, op, failureReason,
+          rewriter, op,
           "tile.reduce lowering result element count exceeds uint32 target "
           "field");
 
@@ -528,12 +567,12 @@ public:
       scalarWidth = floatType.getWidth();
     else
       return failPattern(
-          rewriter, op, failureReason,
+          rewriter, op,
           "tile.reduce lowering requires target-encodable integer or float "
           "elements");
     if (scalarWidth > 32)
       return failPattern(
-          rewriter, op, failureReason,
+          rewriter, op,
           "tile.reduce lowering element width exceeds uint32 scalar ABI");
     std::optional<WaferPhysicalTensorInfo> inputPhysical =
         wafer::computeWaferPhysicalTensorInfo(inputType);
@@ -543,7 +582,7 @@ public:
         resultPhysical->bitPackedElement || inputPhysical->elementBytes <= 0 ||
         resultPhysical->elementBytes <= 0)
       return failPattern(
-          rewriter, op, failureReason,
+          rewriter, op,
           "tile.reduce lowering requires byte-addressable elements");
 
     bool targetEncodableElement =
@@ -553,13 +592,13 @@ public:
             elementType);
     if (!targetEncodableElement)
       return failPattern(
-          rewriter, op, failureReason,
+          rewriter, op,
           "tile.reduce element type is not encodable by the target "
           "data-format ABI");
 
     mlir::FailureOr<InstrElementwiseKindAttr> accumulationKind =
         getAccumulationElementwiseKind(rewriter, op, op.getKindAttr(),
-                                       failureReason, "tile.reduce");
+                                       "tile.reduce");
     if (mlir::failed(accumulationKind))
       return mlir::failure();
 
@@ -567,14 +606,14 @@ public:
     bool hasInitOperand = static_cast<bool>(op.getInit());
     if (hasInitOperand == static_cast<bool>(initValue))
       return failPattern(
-          rewriter, op, failureReason,
+          rewriter, op,
           "tile.reduce lowering requires exactly one constant init source");
     mlir::TypedAttr typedInit;
     if (initValue) {
       typedInit = initValue;
       if (typedInit.getType() != elementType)
         return failPattern(
-            rewriter, op, failureReason,
+            rewriter, op,
             "tile.reduce init_value type must match input element type");
     } else {
       auto constant = op.getInit().getDefiningOp<mlir::arith::ConstantOp>();
@@ -583,7 +622,7 @@ public:
                       : mlir::TypedAttr{};
       if (!constant || !typedInit || typedInit.getType() != elementType)
         return failPattern(
-            rewriter, op, failureReason,
+            rewriter, op,
             "tile.reduce init operand must be a matching arith.constant");
     }
 
@@ -592,17 +631,17 @@ public:
     llvm::SmallVector<int64_t, 4> reducedDims(
         dimensionsAttr.asArrayRef().begin(), dimensionsAttr.asArrayRef().end());
     if (reducedDims.empty())
-      return failPattern(rewriter, op, failureReason,
+      return failPattern(rewriter, op,
                          "tile.reduce lowering requires non-empty dimensions");
     llvm::sort(reducedDims);
     if (std::adjacent_find(reducedDims.begin(), reducedDims.end()) !=
         reducedDims.end())
-      return failPattern(rewriter, op, failureReason,
+      return failPattern(rewriter, op,
                          "tile.reduce lowering dimensions must be unique");
     for (int64_t dim : reducedDims)
       if (dim < 0 || dim >= inputType.getRank())
         return failPattern(
-            rewriter, op, failureReason,
+            rewriter, op,
             "tile.reduce lowering dimension is outside input rank");
 
     llvm::SmallVector<int64_t, 4> nonReducedDims;
@@ -615,19 +654,19 @@ public:
     }
     if (static_cast<int64_t>(nonReducedDims.size()) != resultType.getRank())
       return failPattern(
-          rewriter, op, failureReason,
+          rewriter, op,
           "tile.reduce result rank does not match non-reduced dimensions");
     for (auto [resultDim, inputDim] : llvm::enumerate(nonReducedDims))
       if (resultType.getDimSize(resultDim) != inputType.getDimSize(inputDim))
         return failPattern(
-            rewriter, op, failureReason,
+            rewriter, op,
             "tile.reduce result shape does not match non-reduced dimensions");
 
     std::optional<int64_t> reductionTupleCount =
         getStaticPositiveElementCount(reductionShape);
     if (!reductionTupleCount)
       return failPattern(
-          rewriter, op, failureReason,
+          rewriter, op,
           "tile.reduce reduction tuple count overflows or is not positive");
     // This is a profitability/materialization preference, not a legality
     // limit. The exact final instruction count is fed to schedule cost; a
@@ -718,8 +757,8 @@ public:
           targetAllowsNativeReduce && inputMemory &&
           inputMemory.getLayout() == expectedInputLayout && resultMemory &&
           resultMemory.getLayout() == expectedResultLayout) {
-        mlir::FailureOr<mlir::Value> dest = createDestAlloc(
-            op.getLoc(), resultType, rewriter, op, failureReason);
+        mlir::FailureOr<mlir::Value> dest =
+            createDestAlloc(op.getLoc(), resultType, rewriter, op);
         if (mlir::failed(dest))
           return mlir::failure();
         auto kind =
@@ -746,7 +785,7 @@ public:
          ++linearTuple) {
       mlir::FailureOr<llvm::SmallVector<int64_t>> tuple =
           delinearizeIndex(rewriter, op, reductionShape, linearTuple,
-                           failureReason, "tile.reduce ordered tuple");
+                           "tile.reduce ordered tuple");
       if (mlir::failed(tuple))
         return mlir::failure();
       SlicePlan plan;
@@ -771,13 +810,13 @@ public:
       analysis::IndexRelationResult destRelation =
           analysis::IndexRelation::identity(resultType.getShape());
       if (!sourceRelation.isExact() || !destRelation.isExact())
-        return failPattern(rewriter, op, failureReason,
+        return failPattern(rewriter, op,
                            "tile.reduce slice relation is not exact");
       mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
           relationDescriptors = getRelationMovementDescriptors(
               rewriter, op, inputType, tensorType, resultType.getShape(),
               *sourceRelation.get(), *destRelation.get(),
-              MovementEngine::GatherScatter, failureReason,
+              MovementEngine::GatherScatter,
               "tile.reduce ordered slice movement");
       if (mlir::failed(relationDescriptors))
         return mlir::failure();
@@ -788,13 +827,13 @@ public:
     analysis::IndexRelationResult finalRelation =
         analysis::IndexRelation::identity(resultType.getShape());
     if (!finalRelation.isExact())
-      return failPattern(rewriter, op, failureReason,
+      return failPattern(rewriter, op,
                          "tile.reduce final relation is not exact");
     mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
         finalDescriptors = getRelationMovementDescriptors(
             rewriter, op, tensorType, resultType, resultType.getShape(),
             *finalRelation.get(), *finalRelation.get(),
-            MovementEngine::GatherScatter, failureReason,
+            MovementEngine::GatherScatter,
             "tile.reduce final logical movement");
     if (mlir::failed(finalDescriptors))
       return mlir::failure();
@@ -813,7 +852,7 @@ public:
     mlir::Value slice =
         rewriter.create<mlir::memref::AllocOp>(op.getLoc(), tensorType);
     mlir::FailureOr<mlir::Value> dest =
-        createDestAlloc(op.getLoc(), resultType, rewriter, op, failureReason);
+        createDestAlloc(op.getLoc(), resultType, rewriter, op);
     if (mlir::failed(dest))
       return mlir::failure();
 
@@ -836,27 +875,23 @@ public:
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
-
-private:
-  std::string *failureReason;
 };
 
 class GemmLowering : public mlir::OpRewritePattern<ComputeGemmOp> {
 public:
-  GemmLowering(mlir::MLIRContext *context, std::string *failureReason)
-      : mlir::OpRewritePattern<ComputeGemmOp>(context),
-        failureReason(failureReason) {}
+  GemmLowering(mlir::MLIRContext *context)
+      : mlir::OpRewritePattern<ComputeGemmOp>(context) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeGemmOp op,
                   mlir::PatternRewriter &rewriter) const final {
     ScopedLoweringPatternTiming timing(op.getOperation());
     mlir::FailureOr<llvm::SmallVector<int64_t, 3>> mkn =
-        inferGemmMKN(op, rewriter, failureReason);
+        inferGemmMKN(op, rewriter);
     if (mlir::failed(mkn))
       return mlir::failure();
-    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
-        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    mlir::FailureOr<mlir::Value> dest =
+        createDestAlloc(op.getLoc(), op.getResult().getType(), rewriter, op);
     if (mlir::failed(dest))
       return mlir::failure();
 
@@ -864,26 +899,21 @@ public:
         op.getLoc(), op.getLhs(), op.getRhs(), *dest,
         getI64Attr(rewriter, (*mkn)[0]), getI64Attr(rewriter, (*mkn)[1]),
         getI64Attr(rewriter, (*mkn)[2]), op.getLhsOrientationAttr(),
-        op.getRhsOrientationAttr(),
-        op.getBatchCountAttr(), op.getLhsBatchDimsAttr(), op.getLhsMDimAttr(),
+        op.getRhsOrientationAttr(), op.getBatchCountAttr(),
+        op.getLhsBatchDimsAttr(), op.getLhsMDimAttr(),
         op.getLhsContractingDimAttr(), op.getRhsBatchDimsAttr(),
         op.getRhsContractingDimAttr(), op.getRhsNDimAttr(),
         op.getResultBatchDimsAttr(), op.getResultMDimAttr(),
-        op.getResultNDimAttr(),
-        getDefaultNCCWorkerAttr(rewriter));
+        op.getResultNDimAttr(), getDefaultNCCWorkerAttr(rewriter));
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
-
-private:
-  std::string *failureReason;
 };
 
 class ConvLowering : public mlir::OpRewritePattern<ComputeConvOp> {
 public:
-  ConvLowering(mlir::MLIRContext *context, std::string *failureReason)
-      : mlir::OpRewritePattern<ComputeConvOp>(context),
-        failureReason(failureReason) {}
+  ConvLowering(mlir::MLIRContext *context)
+      : mlir::OpRewritePattern<ComputeConvOp>(context) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeConvOp op,
@@ -900,17 +930,17 @@ public:
         !input->hasStaticShape() || !weight->hasStaticShape() ||
         !output->hasStaticShape())
       return failPattern(
-          rewriter, op, failureReason,
+          rewriter, op,
           "tile.conv lowering requires static rank-4 Wafer memrefs");
     llvm::ArrayRef<int64_t> strides = op.getStrides();
     llvm::ArrayRef<int64_t> dilations = op.getDilations();
     if (strides.size() != 2 || dilations.size() != 2)
-      return failPattern(rewriter, op, failureReason,
+      return failPattern(rewriter, op,
                          "tile.conv lowering requires two spatial strides and "
                          "dilations");
 
-    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
-        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    mlir::FailureOr<mlir::Value> dest =
+        createDestAlloc(op.getLoc(), op.getResult().getType(), rewriter, op);
     if (mlir::failed(dest))
       return mlir::failure();
     auto kind =
@@ -931,14 +961,12 @@ public:
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
-
-private:
-  std::string *failureReason;
 };
 
-static mlir::FailureOr<InstrElementwiseKindAttr> getInstrElementwiseKindAttr(
-    mlir::PatternRewriter &rewriter, mlir::Operation *op,
-    ComputeElementwiseKindAttr computeKind, std::string *failureReason) {
+static mlir::FailureOr<InstrElementwiseKindAttr>
+getInstrElementwiseKindAttr(mlir::PatternRewriter &rewriter,
+                            mlir::Operation *op,
+                            ComputeElementwiseKindAttr computeKind) {
   InstrElementwiseKind instrKind;
   switch (computeKind.getValue()) {
   case ComputeElementwiseKind::Add:
@@ -1000,7 +1028,7 @@ static mlir::FailureOr<InstrElementwiseKindAttr> getInstrElementwiseKindAttr(
     break;
   case ComputeElementwiseKind::Select:
     return failFailureOr<InstrElementwiseKindAttr>(
-        rewriter, op, failureReason,
+        rewriter, op,
         "tile.elementwise select must lower to target movement sequence before "
         "instruction elementwise");
   }
@@ -1012,8 +1040,7 @@ static mlir::FailureOr<InstrElementwiseKindAttr> getInstrElementwiseKindAttr(
 mlir::FailureOr<InstrElementwiseKindAttr>
 wafer::tile_region_to_instr::getAccumulationElementwiseKind(
     mlir::PatternRewriter &rewriter, mlir::Operation *op,
-    ComputeReduceKindAttr reduceKind, std::string *failureReason,
-    llvm::StringRef opLabel) {
+    ComputeReduceKindAttr reduceKind, llvm::StringRef opLabel) {
   InstrElementwiseKind elementwiseKind;
   switch (reduceKind.getValue()) {
   case ComputeReduceKind::Sum:
@@ -1027,7 +1054,7 @@ wafer::tile_region_to_instr::getAccumulationElementwiseKind(
     break;
   case ComputeReduceKind::Avg:
     return failFailureOr<InstrElementwiseKindAttr>(
-        rewriter, op, failureReason,
+        rewriter, op,
         llvm::Twine(opLabel)
             .concat(" lowering does not support avg accumulation")
             .str());
@@ -1037,21 +1064,15 @@ wafer::tile_region_to_instr::getAccumulationElementwiseKind(
 }
 
 void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
-    mlir::RewritePatternSet &patterns, std::string *failureReason) {
+    mlir::RewritePatternSet &patterns) {
   mlir::MLIRContext *context = patterns.getContext();
   patterns
       .add<ConvertLowering, ElementwiseLowering, GemmLowering, ConvLowering>(
-          context, failureReason);
-  patterns.add<ReduceLowering>(context, failureReason);
+          context);
+  patterns.add<ReduceLowering>(context);
 }
 
 void wafer::tile_region_to_instr::populateFillLoweringPattern(
     mlir::RewritePatternSet &patterns) {
   populateWithGenerated(patterns);
-}
-
-void wafer::tile_region_to_instr::
-    populateConstantPredicateSelectCanonicalizationPattern(
-        mlir::RewritePatternSet &patterns) {
-  patterns.add<ConstantPredicateSelectToCopy>(patterns.getContext());
 }

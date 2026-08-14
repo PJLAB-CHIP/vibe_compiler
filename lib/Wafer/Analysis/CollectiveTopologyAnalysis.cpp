@@ -1,7 +1,7 @@
 //===- CollectiveTopologyAnalysis.cpp - Collective topology facts -------===//
 
-#include "Wafer/Analysis/CollectiveTopologyAnalysis.h"
-#include "Wafer/Analysis/ExecutionTopologyAnalysis.h"
+#include "CollectiveTopologyAnalysis.h"
+#include "ExecutionTopologyAnalysis.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/STLExtras.h"

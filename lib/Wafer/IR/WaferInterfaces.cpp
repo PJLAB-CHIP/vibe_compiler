@@ -40,8 +40,8 @@ static void analyzeNCCWorkerOperation(mlir::Operation *operation,
     return;
   }
 
-  wafer::NCCCompletionContract contract =
-      wafer::getNCCCompletionContract(operation);
+  wafer::NCCSynchronizationContract contract =
+      wafer::getNCCSynchronizationContract(operation);
   if (contract.issueWorker) {
     uint32_t worker = static_cast<uint32_t>(*contract.issueWorker);
     if (worker < wafer::kNCCWorkerCount) {
@@ -51,9 +51,9 @@ static void analyzeNCCWorkerOperation(mlir::Operation *operation,
       summary.hasCrossWorkerWindow |= llvm::popcount(pendingWorkers) >= 2;
     }
   }
-  if (contract.behavior == wafer::LocalInstructionCompletion::ParticipantJoin ||
+  if (contract.behavior == wafer::NCCSynchronizationBehavior::ParticipantJoin ||
       contract.behavior ==
-          wafer::LocalInstructionCompletion::SynchronousWriteback)
+          wafer::NCCSynchronizationBehavior::SynchronousWriteback)
     pendingWorkers &= ~(contract.participantMask & wafer::kAllNCCWorkersMask);
 }
 
@@ -65,18 +65,18 @@ static void analyzeNCCWorkerBlock(mlir::Block &block, uint32_t &pendingWorkers,
 
 } // namespace
 
-wafer::NCCCompletionContract
-wafer::getNCCCompletionContract(mlir::Operation *operation) {
+wafer::NCCSynchronizationContract
+wafer::getNCCSynchronizationContract(mlir::Operation *operation) {
   if (!operation)
     return {};
   if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(operation)) {
     uint32_t participants = 0;
     for (int64_t worker : join.getParticipants()) {
       if (worker < 0 || worker >= static_cast<int64_t>(kNCCWorkerCount))
-        return {LocalInstructionCompletion::ParticipantJoin, std::nullopt, 0};
+        return {NCCSynchronizationBehavior::ParticipantJoin, std::nullopt, 0};
       participants |= uint32_t{1} << static_cast<uint32_t>(worker);
     }
-    return {LocalInstructionCompletion::ParticipantJoin, std::nullopt,
+    return {NCCSynchronizationBehavior::ParticipantJoin, std::nullopt,
             participants};
   }
 
@@ -87,7 +87,7 @@ wafer::getNCCCompletionContract(mlir::Operation *operation) {
       // The production target wrapper issues CT, drains the default worker's
       // local queues, then writes both scalar results to SPM.
       return {
-          LocalInstructionCompletion::SynchronousWriteback,
+          NCCSynchronizationBehavior::SynchronousWriteback,
           peripheral.getIssueWorker(),
           uint32_t{1} << static_cast<uint32_t>(peripheral.getIssueWorker())};
     default:
@@ -96,7 +96,7 @@ wafer::getNCCCompletionContract(mlir::Operation *operation) {
   }
 
   if (auto issue = mlir::dyn_cast<WaferNCCIssueOpInterface>(operation))
-    return {LocalInstructionCompletion::OrderedPending, issue.getIssueWorker(),
+    return {NCCSynchronizationBehavior::OrderedAsynchronousIssue, issue.getIssueWorker(),
             0};
   return {};
 }
@@ -117,14 +117,14 @@ wafer::analyzeNCCWorkerWindows(mlir::ModuleOp module) {
   return summary;
 }
 
-wafer::LocalInstructionCompletion
-wafer::classifyLocalInstructionCompletion(mlir::Operation *operation) {
-  return getNCCCompletionContract(operation).behavior;
+wafer::NCCSynchronizationBehavior
+wafer::classifyNCCSynchronizationBehavior(mlir::Operation *operation) {
+  return getNCCSynchronizationContract(operation).behavior;
 }
 
 std::optional<wafer::NCCWorker>
 wafer::getNCCIssueWorker(mlir::Operation *operation) {
-  return getNCCCompletionContract(operation).issueWorker;
+  return getNCCSynchronizationContract(operation).issueWorker;
 }
 
 mlir::LogicalResult wafer::setNCCIssueWorker(mlir::Operation *operation,

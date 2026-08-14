@@ -1,6 +1,7 @@
 //===- Target LLVM lowering implementation -------------------------------===//
 
 #include "Target/LowerInstrToTargetLLVMInternal.h"
+#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
@@ -56,57 +57,57 @@ mlir::LogicalResult flattenTileRegions(mlir::ModuleOp moduleOp) {
 
   mlir::IRRewriter rewriter(moduleOp.getContext());
   for (TileRegionOp tileRegion : llvm::reverse(tileRegions)) {
-    if (!tileRegion.getBody().hasOneBlock())
+    std::optional<analysis::SingleExecutionRegionFlow> flow =
+        analysis::getSingleExecutionRegionFlow(tileRegion);
+    if (!flow)
       return tileRegion.emitError()
-             << "unsupported_target_structure: wafer.tile.region must have "
-                "exactly one block";
-    mlir::Block &body = tileRegion.getBody().front();
-    auto yield = mlir::dyn_cast<TileYieldOp>(body.getTerminator());
-    if (!yield)
-      return tileRegion.emitError()
-             << "unsupported_target_structure: wafer.tile.region must end "
-                "with wafer.tile.yield";
+             << "unsupported_target_structure: wafer.tile.region must expose "
+                "one exact parent-to-region-to-parent control-flow edge";
+    mlir::Block &body = flow->region->front();
 
     llvm::SmallVector<mlir::Value, 4> yieldedValues;
-    for (mlir::Value value : yield.getValues()) {
+    for (mlir::Value value : flow->exitOperands) {
       auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value);
       if (blockArg && blockArg.getOwner() == &body) {
-        if (blockArg.getArgNumber() >= tileRegion.getInputs().size())
+        auto entryArgument = llvm::find(flow->entryArguments, blockArg);
+        if (entryArgument == flow->entryArguments.end())
           return tileRegion.emitError()
                  << "unsupported_target_structure: tile yield block argument "
                     "has no matching boundary input";
-        value = tileRegion.getInputs()[blockArg.getArgNumber()];
+        value =
+            flow->entryOperands[entryArgument - flow->entryArguments.begin()];
       }
       yieldedValues.push_back(value);
     }
-    if (yieldedValues.size() != tileRegion.getNumResults())
+    if (yieldedValues.size() != flow->results.size())
       return tileRegion.emitError()
              << "unsupported_target_structure: tile yield/result count "
                 "mismatch";
 
+    mlir::Operation *terminator = body.getTerminator();
     rewriter.inlineBlockBefore(&body, tileRegion.getOperation(),
-                               tileRegion.getInputs());
-    rewriter.eraseOp(yield);
+                               flow->entryOperands);
+    rewriter.eraseOp(terminator);
     for (auto [result, replacement] :
-         llvm::zip_equal(tileRegion.getResults(), yieldedValues))
-      result.replaceAllUsesWith(replacement);
+         llvm::zip_equal(flow->results, yieldedValues))
+      rewriter.replaceAllUsesWith(result, replacement);
     rewriter.eraseOp(tileRegion);
   }
   return mlir::success();
 }
-mlir::LogicalResult analyzeDirectCallGraph(mlir::ModuleOp moduleOp,
-                                           DirectCallGraph &graph,
-                                           int64_t defaultDDRArenaArgumentIndex,
-                                           int64_t transportStatusArgumentIndex,
-                                           int64_t profileRecordArgumentIndex) {
-  llvm::SmallVector<mlir::func::FuncOp, 8> functions;
-  for (mlir::func::FuncOp funcOp : moduleOp.getOps<mlir::func::FuncOp>()) {
+mlir::LogicalResult
+validateDirectCallsForTarget(const analysis::DirectCallGraphAnalysis &graph,
+                             int64_t defaultDDRArenaArgumentIndex,
+                             int64_t transportStatusArgumentIndex,
+                             int64_t profileRecordArgumentIndex) {
+  mlir::ModuleOp moduleOp = graph.getModule();
+  if (!moduleOp)
+    return mlir::failure();
+  for (mlir::func::FuncOp funcOp : graph.getFunctions()) {
     if (funcOp.isDeclaration())
       return funcOp.emitError()
              << "unsupported_target_call: external func.func declarations "
                 "are not accepted by target LLVM lowering";
-    functions.push_back(funcOp);
-
     for (auto [index, type] :
          llvm::enumerate(funcOp.getFunctionType().getInputs()))
       if (!isWaferDDRMemRefType(type) &&
@@ -119,88 +120,44 @@ mlir::LogicalResult analyzeDirectCallGraph(mlir::ModuleOp moduleOp,
         return funcOp.emitError()
                << "unsupported_target_function: argument #" << index
                << " must be a Wafer DDR memref target binding";
-
-    mlir::WalkResult result =
-        funcOp.walk([&](mlir::Operation *op) -> mlir::WalkResult {
-          if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op)) {
-            mlir::func::FuncOp callee =
-                moduleOp.lookupSymbol<mlir::func::FuncOp>(call.getCallee());
-            if (!callee) {
-              call.emitError()
-                  << "unsupported_target_call: unresolved direct callee @"
-                  << call.getCallee();
-              return mlir::WalkResult::interrupt();
-            }
-            graph.calls[funcOp.getOperation()].push_back(call);
-            graph.calledFunctions.insert(callee.getOperation());
-            return mlir::WalkResult::advance();
-          }
-          if (mlir::isa<mlir::CallOpInterface>(op)) {
-            op->emitError()
-                << "unsupported_target_call: indirect or unknown call-like "
-                   "operation '"
-                << op->getName() << "' is not supported";
-            return mlir::WalkResult::interrupt();
-          }
-          return mlir::WalkResult::advance();
-        });
-    if (result.wasInterrupted())
-      return mlir::failure();
   }
-
-  llvm::DenseMap<mlir::Operation *, unsigned> state;
-  auto visit = [&](auto &&self,
-                   mlir::func::FuncOp funcOp) -> mlir::LogicalResult {
-    unsigned &currentState = state[funcOp.getOperation()];
-    if (currentState == 2)
-      return mlir::success();
-    if (currentState == 1)
-      return funcOp.emitError()
-             << "unsupported_target_call: recursive direct call graph is not "
-                "supported";
-    currentState = 1;
-    for (mlir::func::CallOp call : graph.calls[funcOp.getOperation()]) {
-      mlir::func::FuncOp callee =
-          moduleOp.lookupSymbol<mlir::func::FuncOp>(call.getCallee());
-      if (state[callee.getOperation()] == 1)
-        return call.emitError()
-               << "unsupported_target_call: recursive call to @"
-               << call.getCallee() << " is not supported";
-      if (mlir::failed(self(self, callee)))
-        return mlir::failure();
-    }
-    currentState = 2;
-    graph.calleeFirstOrder.push_back(funcOp);
-    return mlir::success();
-  };
-
-  for (mlir::func::FuncOp funcOp : functions)
-    if (mlir::failed(visit(visit, funcOp)))
-      return mlir::failure();
+  if (!graph.getUnresolvedCalls().empty()) {
+    mlir::func::CallOp call = graph.getUnresolvedCalls().front();
+    return call.emitError()
+           << "unsupported_target_call: unresolved direct callee @"
+           << call.getCallee();
+  }
+  if (!graph.getUnsupportedCallOperations().empty()) {
+    mlir::Operation *operation = graph.getUnsupportedCallOperations().front();
+    return operation->emitError()
+           << "unsupported_target_call: indirect or unknown call-like "
+              "operation '"
+           << operation->getName() << "' is not supported";
+  }
+  if (graph.hasRecursiveCycle())
+    return graph.getRecursiveCycleOrigin()->emitError()
+           << "unsupported_target_call: recursive direct call graph is not "
+              "supported";
   return mlir::success();
 }
 
 mlir::FailureOr<mlir::func::FuncOp>
-findUniqueRootFunction(mlir::ModuleOp moduleOp, const DirectCallGraph &graph) {
-  mlir::func::FuncOp root;
-  for (mlir::func::FuncOp function : moduleOp.getOps<mlir::func::FuncOp>()) {
-    if (graph.calledFunctions.contains(function.getOperation()))
-      continue;
-    if (root)
-      return function.emitError()
-             << "unsupported_target_transport: compiler-managed entry "
-                "arguments require one unique entry function";
-    root = function;
-  }
-  if (!root)
-    return moduleOp.emitError()
+findUniqueRootFunction(const analysis::DirectCallGraphAnalysis &graph) {
+  llvm::SmallVector<mlir::func::FuncOp, 2> roots = graph.getRootFunctions();
+  if (roots.size() > 1)
+    return roots[1].emitError()
+           << "unsupported_target_transport: compiler-managed entry "
+              "arguments require one unique entry function";
+  if (roots.empty())
+    return graph.getModule().emitError()
            << "unsupported_target_transport: compiler-managed entry "
               "arguments have no entry function";
-  return root;
+  return roots.front();
 }
 
 static mlir::FailureOr<unsigned> resolveDDRAliasToFunctionArgument(
-    mlir::Value value, mlir::func::FuncOp funcOp, mlir::ModuleOp moduleOp,
+    mlir::Value value, mlir::func::FuncOp funcOp,
+    const analysis::DirectCallGraphAnalysis &graph,
     const llvm::DenseMap<mlir::Operation *, AliasSummary> &summaries,
     llvm::DenseSet<mlir::Value> &visiting) {
   while (true) {
@@ -253,7 +210,7 @@ static mlir::FailureOr<unsigned> resolveDDRAliasToFunctionArgument(
         }
         llvm::DenseSet<mlir::Value> branchVisiting = visiting;
         mlir::FailureOr<unsigned> alias = resolveDDRAliasToFunctionArgument(
-            incoming, funcOp, moduleOp, summaries, branchVisiting);
+            incoming, funcOp, graph, summaries, branchVisiting);
         if (mlir::failed(alias) || (commonAlias && *commonAlias != *alias))
           return mlir::failure();
         commonAlias = *alias;
@@ -271,8 +228,7 @@ static mlir::FailureOr<unsigned> resolveDDRAliasToFunctionArgument(
   auto call = mlir::dyn_cast<mlir::func::CallOp>(result.getOwner());
   if (!call)
     return mlir::failure();
-  mlir::func::FuncOp callee =
-      moduleOp.lookupSymbol<mlir::func::FuncOp>(call.getCallee());
+  mlir::func::FuncOp callee = graph.getCallee(call);
   if (!callee)
     return mlir::failure();
   auto summaryIt = summaries.find(callee.getOperation());
@@ -283,13 +239,13 @@ static mlir::FailureOr<unsigned> resolveDDRAliasToFunctionArgument(
   if (calleeArg >= call.getNumOperands())
     return mlir::failure();
   return resolveDDRAliasToFunctionArgument(call.getOperand(calleeArg), funcOp,
-                                           moduleOp, summaries, visiting);
+                                           graph, summaries, visiting);
 }
 
 mlir::LogicalResult analyzeDDRAliasContracts(
-    mlir::ModuleOp moduleOp, const DirectCallGraph &graph,
+    mlir::ModuleOp moduleOp, const analysis::DirectCallGraphAnalysis &graph,
     llvm::DenseMap<mlir::Operation *, AliasSummary> &summaries) {
-  for (mlir::func::FuncOp funcOp : graph.calleeFirstOrder) {
+  for (mlir::func::FuncOp funcOp : graph.getCalleeFirstOrder()) {
     unsigned resultCount = funcOp.getFunctionType().getNumResults();
     AliasSummary summary(resultCount);
     if (resultCount == 0) {
@@ -321,7 +277,7 @@ mlir::LogicalResult analyzeDDRAliasContracts(
       for (auto [index, operand] : llvm::enumerate(returnOp.getOperands())) {
         llvm::DenseSet<mlir::Value> visiting;
         mlir::FailureOr<unsigned> alias = resolveDDRAliasToFunctionArgument(
-            operand, funcOp, moduleOp, summaries, visiting);
+            operand, funcOp, graph, summaries, visiting);
         if (mlir::failed(alias)) {
           valid = returnOp.emitError()
                   << "unsupported_target_alias: DDR result #" << index
@@ -358,10 +314,9 @@ mlir::LogicalResult analyzeDDRAliasContracts(
 }
 
 void dropRootAliasResults(mlir::ModuleOp moduleOp,
-                          const DirectCallGraph &graph) {
+                          const analysis::DirectCallGraphAnalysis &graph) {
   for (mlir::func::FuncOp funcOp : moduleOp.getOps<mlir::func::FuncOp>()) {
-    if (graph.calledFunctions.contains(funcOp.getOperation()) ||
-        funcOp.getFunctionType().getNumResults() == 0)
+    if (graph.isCalled(funcOp) || funcOp.getFunctionType().getNumResults() == 0)
       continue;
     funcOp.setFunctionType(mlir::FunctionType::get(
         moduleOp.getContext(), funcOp.getFunctionType().getInputs(), {}));

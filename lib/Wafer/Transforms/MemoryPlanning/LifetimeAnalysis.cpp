@@ -1,6 +1,7 @@
 //===- LifetimeAnalysis.cpp - Structured memory lifetime analysis --------===//
 
 #include "MemoryPlanning/LifetimeAnalysis.h"
+#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
@@ -25,6 +26,10 @@
 #include <utility>
 
 namespace wafer::memory_planning::detail {
+
+using analysis::getSingleExecutionRegionEntryOperand;
+using analysis::getSingleExecutionRegionExitOperand;
+using analysis::getSingleExecutionRegionFlow;
 
 namespace {
 
@@ -135,7 +140,7 @@ static bool isUnconditionallyNestedInStaticFor(mlir::Operation *operation,
   return false;
 }
 
-static uint32_t getNCCIssueWorkerMask(const NCCCompletionContract &completion) {
+static uint32_t getNCCIssueWorkerMask(const NCCSynchronizationContract &completion) {
   if (!completion.issueWorker)
     return 0;
   uint32_t worker = static_cast<uint32_t>(*completion.issueWorker);
@@ -685,8 +690,9 @@ StructuredTimeline::build(mlir::Operation *scope, TimelineFailure *failure) {
           return;
         }
         assignRegion(forOp.getRegion(), *bodyPath, loopDepth + 1);
-      } else if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(op)) {
-        assignRegion(tileRegion.getBody(), path, loopDepth);
+      } else if (std::optional<analysis::SingleExecutionRegionFlow>
+                     flow = getSingleExecutionRegionFlow(&op)) {
+        assignRegion(*flow->region, path, loopDepth);
       } else {
         if (op.getNumRegions() != 0) {
           failed = true;
@@ -853,17 +859,13 @@ LifetimeDataflow::rootsAt(mlir::Value value, PathCondition usePath) const {
             forOp.getBody()->getTerminator());
         if (yield && index < yield.getResults().size())
           appendAt(yield.getResults()[index], timeline.lookup(yield));
-      } else if (auto tileRegion = mlir::dyn_cast_or_null<TileRegionOp>(
-                     blockArg.getOwner() ? blockArg.getOwner()->getParentOp()
-                                         : nullptr)) {
-        unsigned index = blockArg.getArgNumber();
-        if (blockArg.getOwner() == &tileRegion.getBody().front() &&
-            index < tileRegion.getInputs().size()) {
-          if (std::optional<ProgramPoint> point = timeline.lookup(tileRegion))
-            appendAt(tileRegion.getInputs()[index], point);
-          else
-            appendValue(tileRegion.getInputs()[index], queryPath);
-        }
+      } else if (mlir::Value entry =
+                     getSingleExecutionRegionEntryOperand(blockArg)) {
+        mlir::Operation *parent = blockArg.getOwner()->getParentOp();
+        if (std::optional<ProgramPoint> point = timeline.lookup(parent))
+          appendAt(entry, point);
+        else
+          appendValue(entry, queryPath);
       }
     } else if (auto result = mlir::dyn_cast<mlir::OpResult>(current)) {
       mlir::Operation *def = result.getOwner();
@@ -895,12 +897,9 @@ LifetimeDataflow::rootsAt(mlir::Value value, PathCondition usePath) const {
             forOp.getBody()->getTerminator());
         if (yield && index < yield.getResults().size())
           appendAt(yield.getResults()[index], timeline.lookup(yield));
-      } else if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(def)) {
-        unsigned index = result.getResultNumber();
-        auto yield = mlir::dyn_cast<TileYieldOp>(
-            tileRegion.getBody().front().getTerminator());
-        if (yield && index < yield.getValues().size())
-          appendAt(yield.getValues()[index], timeline.lookup(yield));
+      } else if (mlir::Value exit =
+                     getSingleExecutionRegionExitOperand(result)) {
+        appendAt(exit, timeline.lookup(exit.getParentBlock()->getTerminator()));
       }
     }
 
@@ -964,18 +963,14 @@ LifetimeDataflow::originsAt(mlir::Value value, PathCondition usePath) const {
             forOp.getBody()->getTerminator());
         if (yield && index < yield.getResults().size())
           appendAt(yield.getResults()[index], timeline.lookup(yield));
-      } else if (auto tileRegion = mlir::dyn_cast_or_null<TileRegionOp>(
-                     blockArg.getOwner() ? blockArg.getOwner()->getParentOp()
-                                         : nullptr)) {
+      } else if (mlir::Value entry =
+                     getSingleExecutionRegionEntryOperand(blockArg)) {
         hasAliasSemantics = true;
-        unsigned index = blockArg.getArgNumber();
-        if (blockArg.getOwner() == &tileRegion.getBody().front() &&
-            index < tileRegion.getInputs().size()) {
-          if (std::optional<ProgramPoint> point = timeline.lookup(tileRegion))
-            appendAt(tileRegion.getInputs()[index], point);
-          else
-            appendValue(tileRegion.getInputs()[index], queryPath);
-        }
+        mlir::Operation *parent = blockArg.getOwner()->getParentOp();
+        if (std::optional<ProgramPoint> point = timeline.lookup(parent))
+          appendAt(entry, point);
+        else
+          appendValue(entry, queryPath);
       }
     } else if (auto result = mlir::dyn_cast<mlir::OpResult>(current)) {
       mlir::Operation *def = result.getOwner();
@@ -1016,15 +1011,13 @@ LifetimeDataflow::originsAt(mlir::Value value, PathCondition usePath) const {
             forOp.getBody()->getTerminator());
         if (yield && index < yield.getResults().size())
           appendAt(yield.getResults()[index], timeline.lookup(yield));
-      } else if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(def)) {
-        unsigned index = result.getResultNumber();
-        auto yield = mlir::dyn_cast<TileYieldOp>(
-            tileRegion.getBody().front().getTerminator());
+      } else if (mlir::Value exit =
+                     getSingleExecutionRegionExitOperand(result)) {
         std::optional<ProgramPoint> point =
-            yield ? timeline.lookup(yield.getOperation()) : std::nullopt;
+            timeline.lookup(exit.getParentBlock()->getTerminator());
         hasAliasSemantics = point.has_value();
-        if (yield && point && index < yield.getValues().size())
-          appendAt(yield.getValues()[index], point);
+        if (point)
+          appendAt(exit, point);
       }
     }
 
@@ -1271,8 +1264,9 @@ LifetimeDataflow::mapAsyncDependencyResults(mlir::Operation *op,
   std::optional<ProgramPoint> point = timeline.lookup(op);
   if (!point)
     return mlir::success();
-  if (mlir::isa<mlir::scf::IfOp, mlir::scf::ForOp, TileRegionOp>(op) ||
-      mlir::isa<mlir::SelectLikeOpInterface>(op))
+  if (mlir::isa<mlir::scf::IfOp, mlir::scf::ForOp>(op) ||
+      mlir::isa<mlir::SelectLikeOpInterface>(op) ||
+      getSingleExecutionRegionFlow(op).has_value())
     return mlir::success();
 
   // async.group is a mutable completion handle: add_to_group does not return
@@ -1540,15 +1534,15 @@ void LifetimeDataflow::mapForRegionIterArgs(mlir::Operation *op) {
   }
 }
 
-void LifetimeDataflow::mapTileRegionBlockArgs(mlir::Operation *op) {
-  auto tileRegion = mlir::cast<TileRegionOp>(op);
+void LifetimeDataflow::mapSingleExecutionRegionBlockArgs(mlir::Operation *op) {
+  std::optional<analysis::SingleExecutionRegionFlow> flow =
+      getSingleExecutionRegionFlow(op);
   std::optional<ProgramPoint> point = timeline.lookup(op);
-  if (!point || tileRegion.getBody().empty())
+  if (!flow || !point)
     return;
 
   for (auto [input, blockArg] :
-       llvm::zip(tileRegion.getInputs(),
-                 tileRegion.getBody().front().getArguments())) {
+       llvm::zip_equal(flow->entryOperands, flow->entryArguments)) {
     if (hasAsyncDependencyType(input)) {
       llvm::SmallVector<RootRef, 2> roots = asyncRootsAt(input, point->path);
       if (!roots.empty())
@@ -1575,19 +1569,18 @@ void LifetimeDataflow::mapTileRegionBlockArgs(mlir::Operation *op) {
   }
 }
 
-void LifetimeDataflow::mapTileRegionResults(mlir::Operation *op) {
-  auto tileRegion = mlir::cast<TileRegionOp>(op);
-  if (tileRegion.getBody().empty())
+void LifetimeDataflow::mapSingleExecutionRegionResults(mlir::Operation *op) {
+  std::optional<analysis::SingleExecutionRegionFlow> flow =
+      getSingleExecutionRegionFlow(op);
+  if (!flow)
     return;
-  auto yield =
-      mlir::dyn_cast<TileYieldOp>(tileRegion.getBody().front().getTerminator());
   std::optional<ProgramPoint> point =
-      yield ? timeline.lookup(yield.getOperation()) : std::nullopt;
-  if (!yield || !point)
+      timeline.lookup(flow->region->front().getTerminator());
+  if (!point)
     return;
 
   for (auto [yielded, result] :
-       llvm::zip(yield.getValues(), tileRegion.getResults())) {
+       llvm::zip_equal(flow->exitOperands, flow->results)) {
     if (hasAsyncDependencyType(result)) {
       llvm::SmallVector<RootRef, 2> roots = asyncRootsAt(yielded, point->path);
       if (!roots.empty())
@@ -1873,12 +1866,12 @@ LifetimeDataflow::processBlock(mlir::Block &block,
               processRegion(ifOp.getElseRegion(), localCompletion, failure)))
         return mlir::failure();
       mapIfResults(&op);
-    } else if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(op)) {
-      mapTileRegionBlockArgs(&op);
-      if (mlir::failed(
-              processRegion(tileRegion.getBody(), localCompletion, failure)))
+    } else if (std::optional<analysis::SingleExecutionRegionFlow>
+                   flow = getSingleExecutionRegionFlow(&op)) {
+      mapSingleExecutionRegionBlockArgs(&op);
+      if (mlir::failed(processRegion(*flow->region, localCompletion, failure)))
         return mlir::failure();
-      mapTileRegionResults(&op);
+      mapSingleExecutionRegionResults(&op);
     } else {
       for (mlir::Region &region : op.getRegions())
         if (mlir::failed(processRegion(region, localCompletion, failure)))
@@ -1912,9 +1905,10 @@ LifetimeDataflow::processBlock(mlir::Block &block,
             mlir::memref::PrefetchOp, mlir::memref::AssumeAlignmentOp,
             mlir::memref::AtomicRMWOp, mlir::async::CallOp,
             mlir::bufferization::ToMemrefOp, mlir::bufferization::ToTensorOp,
-            mlir::scf::IfOp, mlir::scf::ForOp, TileRegionOp>(op) ||
+            mlir::scf::IfOp, mlir::scf::ForOp>(op) ||
         mlir::isa<mlir::ViewLikeOpInterface, mlir::SelectLikeOpInterface,
                   mlir::MemoryEffectOpInterface>(op) ||
+        getSingleExecutionRegionFlow(&op).has_value() ||
         op.hasTrait<mlir::OpTrait::IsTerminator>();
     if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op))
       hasSupportedTrackedUse = hasSupportedTrackedUse ||
@@ -1952,9 +1946,10 @@ LifetimeDataflow::processBlock(mlir::Block &block,
         isTrackedType && llvm::any_of(op.getResultTypes(), isTrackedType);
     bool hasKnownTrackedSemantics = mlir::isa<mlir::memref::AllocOp>(op);
     bool hasAliasProducerSemantics =
-        mlir::isa<mlir::scf::IfOp, mlir::scf::ForOp, TileRegionOp,
+        mlir::isa<mlir::scf::IfOp, mlir::scf::ForOp,
                   mlir::bufferization::ToMemrefOp>(op) ||
-        mlir::isa<mlir::ViewLikeOpInterface, mlir::SelectLikeOpInterface>(op);
+        mlir::isa<mlir::ViewLikeOpInterface, mlir::SelectLikeOpInterface>(op) ||
+        getSingleExecutionRegionFlow(&op).has_value();
     if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op))
       hasAliasProducerSemantics =
           hasAliasProducerSemantics ||
@@ -2058,12 +2053,9 @@ LocalCompletionTracker::collectAccesses(mlir::Operation *op, ProgramPoint point,
     if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
       mlir::Block *owner = blockArg.getOwner();
       mlir::Operation *parent = owner ? owner->getParentOp() : nullptr;
-      if (auto tileRegion = mlir::dyn_cast_or_null<TileRegionOp>(parent)) {
-        unsigned index = blockArg.getArgNumber();
-        if (owner == &tileRegion.getBody().front() &&
-            index < tileRegion.getInputs().size())
-          return finish(resolveIdentity(tileRegion.getInputs()[index]));
-      }
+      if (mlir::Value entry =
+              getSingleExecutionRegionEntryOperand(blockArg))
+        return finish(resolveIdentity(entry));
       if (auto forOp = mlir::dyn_cast_or_null<mlir::scf::ForOp>(parent)) {
         if (owner == forOp.getBody() && blockArg.getArgNumber() > 0) {
           unsigned index = blockArg.getArgNumber() - 1;
@@ -2124,16 +2116,8 @@ LocalCompletionTracker::collectAccesses(mlir::Operation *op, ProgramPoint point,
         return finish(initialIdentity);
       return finish({});
     }
-    if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(def)) {
-      unsigned index = result.getResultNumber();
-      if (tileRegion.getBody().empty())
-        return finish({});
-      auto yield = mlir::dyn_cast<TileYieldOp>(
-          tileRegion.getBody().front().getTerminator());
-      if (!yield || index >= yield.getValues().size())
-        return finish({});
-      return finish(resolveIdentity(yield.getValues()[index]));
-    }
+    if (mlir::Value exit = getSingleExecutionRegionExitOperand(result))
+      return finish(resolveIdentity(exit));
     return finish(value);
   };
 
@@ -2201,7 +2185,7 @@ LocalCompletionTracker::collectAccesses(mlir::Operation *op, ProgramPoint point,
 
 mlir::LogicalResult LocalCompletionTracker::verifyPendingObservers(
     mlir::Operation *op, ProgramPoint point,
-    const NCCCompletionContract &contract, const AccessCollection &current,
+    const NCCSynchronizationContract &contract, const AccessCollection &current,
     LifetimeFailure *failure) const {
   auto reachablePending =
       llvm::find_if(pendingAccesses, [&](const PendingAccess &pending) {
@@ -2231,7 +2215,7 @@ mlir::LogicalResult LocalCompletionTracker::verifyPendingObservers(
   // pairwise path below for mixed workers or unresolved address domains, but
   // avoid rescanning a long linear instruction chain when all pairs satisfy
   // the same proof.
-  if (contract.behavior == LocalInstructionCompletion::OrderedPending &&
+  if (contract.behavior == NCCSynchronizationBehavior::OrderedAsynchronousIssue &&
       commonPendingWorkerMask != 0 && pendingWorkerMasksAgree &&
       commonPendingWorkerMask == getNCCIssueWorkerMask(contract) &&
       ((pendingAllHaveResolvedRoots && currentAllHaveResolvedRoots) ||
@@ -2272,7 +2256,7 @@ mlir::LogicalResult LocalCompletionTracker::verifyPendingObservers(
           (pending.logicalRoot && access.logicalRoot);
       bool sameWorkerOrdered =
           hasKnownAddressDomain &&
-          contract.behavior == LocalInstructionCompletion::OrderedPending &&
+          contract.behavior == NCCSynchronizationBehavior::OrderedAsynchronousIssue &&
           pending.workerMask != 0 && pending.workerMask == access.workerMask;
       if (sameWorkerOrdered)
         continue;
@@ -2364,8 +2348,8 @@ mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
   if (!point)
     return mlir::success();
 
-  NCCCompletionContract contract = getNCCCompletionContract(op);
-  if (contract.behavior == LocalInstructionCompletion::ParticipantJoin) {
+  NCCSynchronizationContract contract = getNCCSynchronizationContract(op);
+  if (contract.behavior == NCCSynchronizationBehavior::ParticipantJoin) {
     ProgramPoint completionPoint =
         getGuaranteedCompletionPoint(op, dataflow.timeline, *point);
     processFence(completionPoint, contract.participantMask, dataflow);
@@ -2375,7 +2359,7 @@ mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
     // incorrectly require every partial join to serialize all NCC workers.
     return mlir::success();
   }
-  if (contract.behavior == LocalInstructionCompletion::SynchronousWriteback) {
+  if (contract.behavior == NCCSynchronizationBehavior::SynchronousWriteback) {
     ProgramPoint completionPoint =
         getGuaranteedCompletionPoint(op, dataflow.timeline, *point);
     processFence(completionPoint, contract.participantMask, dataflow);
@@ -2386,7 +2370,7 @@ mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
   if (mlir::failed(
           verifyPendingObservers(op, *point, contract, current, failure)))
     return mlir::failure();
-  if (contract.behavior != LocalInstructionCompletion::OrderedPending ||
+  if (contract.behavior != NCCSynchronizationBehavior::OrderedAsynchronousIssue ||
       !current.hasTrackedEffect)
     return mlir::success();
 
@@ -2487,15 +2471,15 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
       if (!hasOnlyWitnessedRootlessStorageEffects(&candidate))
         return false;
 
-      NCCCompletionContract candidateContract =
-          getNCCCompletionContract(&candidate);
+      NCCSynchronizationContract candidateContract =
+          getNCCSynchronizationContract(&candidate);
       uint32_t candidateWorkerMask = getNCCIssueWorkerMask(candidateContract);
       AccessCollection current = collectAccesses(&candidate, *candidatePoint,
                                                  candidateWorkerMask, dataflow);
       if (!candidatePoint->path.implies(bodyPoint->path) ||
           !mlir::isa<WaferNCCIssueOpInterface>(&candidate) ||
           candidateContract.behavior !=
-              LocalInstructionCompletion::OrderedPending ||
+              NCCSynchronizationBehavior::OrderedAsynchronousIssue ||
           candidateWorkerMask == 0)
         return false;
       if (!current.hasTrackedEffect) {
@@ -2531,6 +2515,16 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
            dataflow.timeline.lookup(rhs)->event;
   });
 
+  llvm::SmallVector<bool, 4> exactlyOrderedAccesses;
+  exactlyOrderedAccesses.reserve(issueAccesses.size());
+  for (const PendingAccess *pending : issueAccesses) {
+    // A read that remains in flight across the backedge is harmless until a
+    // later operation writes the same address. The scan below still rejects
+    // every such write unless it is a typed same-worker successor; no RAR
+    // completion edge is required. Writes must be covered by an exact
+    // unconditional successor or an explicit participant join.
+    exactlyOrderedAccesses.push_back(!pending->write);
+  }
   for (mlir::Operation *candidate : nextIteration) {
     std::optional<ProgramPoint> candidatePoint =
         dataflow.timeline.lookup(candidate);
@@ -2540,13 +2534,13 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
     bool unconditionalInBody =
         candidatePoint->path.implies(bodyPoint->path) &&
         isUnconditionallyNestedInStaticFor(candidate, forOp);
-    NCCCompletionContract candidateContract =
-        getNCCCompletionContract(candidate);
+    NCCSynchronizationContract candidateContract =
+        getNCCSynchronizationContract(candidate);
     bool coversIssue =
         (candidateContract.behavior ==
-             LocalInstructionCompletion::ParticipantJoin ||
+             NCCSynchronizationBehavior::ParticipantJoin ||
          candidateContract.behavior ==
-             LocalInstructionCompletion::SynchronousWriteback) &&
+             NCCSynchronizationBehavior::SynchronousWriteback) &&
         (candidateContract.participantMask & issue.workerMask) != 0;
     if (coversIssue) {
       if (unconditionalInBody)
@@ -2562,6 +2556,12 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
         continue;
       return false;
     }
+    // Structured region containers do not independently observe memory. Their
+    // nested operations are present in `nextIteration` with exact path
+    // conditions and are checked below; treating the recursive effect summary
+    // on the container as another observer would discard that path proof.
+    if (candidate->getNumRegions() != 0)
+      continue;
     if (mlir::isMemoryEffectFree(candidate))
       continue;
     if (auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(candidate)) {
@@ -2582,28 +2582,38 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
                                                candidateWorkerMask, dataflow);
     if (!current.hasTrackedEffect)
       continue;
-    for (const PendingAccess *pending : issueAccesses) {
+    for (auto [pendingIndex, pending] : llvm::enumerate(issueAccesses)) {
       for (const PendingAccess &access : current.accesses) {
         if (!accessesMayConflict(*pending, access))
           continue;
 
-        // A typed same-worker successor is itself ordered for every overlapping
+        // A typed same-worker successor is ordered for every overlapping
         // range, so it is not an observer that forces a host-side completion.
-        // It does not by itself complete a multi-access predecessor: keep
-        // scanning until an unconditional participant join covers all
-        // remaining accesses. DTE, cross-worker and conditional successors
-        // still fail closed here.
-        bool orderedSuccessor =
-            unconditionalInBody &&
+        // Accumulate only exact SSA access identities: one successor may cover
+        // one range of a multi-access predecessor and a later successor may
+        // cover another. DTE, cross-worker and conditional successors still
+        // fail closed at the first conflicting access.
+        bool sameWorkerOrderedSuccessor =
             mlir::isa<WaferNCCIssueOpInterface>(candidate) &&
             candidateContract.behavior ==
-                LocalInstructionCompletion::OrderedPending &&
+                NCCSynchronizationBehavior::OrderedAsynchronousIssue &&
             candidateWorkerMask == issue.workerMask && current.allResolved &&
             !current.accesses.empty();
-        if (!orderedSuccessor)
+        if (!sameWorkerOrderedSuccessor)
           return false;
+        // A conditional same-worker issue is safe on paths where it executes,
+        // but cannot by itself prove the other paths. Only an unconditional
+        // exact identity contributes to full backedge coverage.
+        if (unconditionalInBody && pending->accessIdentity &&
+            access.accessIdentity &&
+            pending->accessIdentity == access.accessIdentity)
+          exactlyOrderedAccesses[pendingIndex] = true;
       }
     }
+    if (llvm::all_of(exactlyOrderedAccesses, [](bool ordered) {
+          return ordered;
+        }))
+      return true;
   }
   return false;
 }
@@ -2651,9 +2661,9 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
     std::function<bool(mlir::Block &)> guaranteesUniformIssueOnEveryPath;
     guaranteesUniformIssueOnEveryPath = [&](mlir::Block &block) {
       for (mlir::Operation &candidate : block.without_terminator()) {
-        NCCCompletionContract contract = getNCCCompletionContract(&candidate);
+        NCCSynchronizationContract contract = getNCCSynchronizationContract(&candidate);
         if (mlir::isa<WaferNCCIssueOpInterface>(candidate) &&
-            contract.behavior == LocalInstructionCompletion::OrderedPending &&
+            contract.behavior == NCCSynchronizationBehavior::OrderedAsynchronousIssue &&
             getNCCIssueWorkerMask(contract) == uniformWorkerMask)
           return true;
         if (auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(candidate)) {
@@ -2719,13 +2729,13 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
         if (!hasOnlyWitnessedRootlessStorageEffects(&candidate))
           return false;
 
-        NCCCompletionContract contract = getNCCCompletionContract(&candidate);
+        NCCSynchronizationContract contract = getNCCSynchronizationContract(&candidate);
         uint32_t candidateWorkerMask = getNCCIssueWorkerMask(contract);
         AccessCollection current = collectAccesses(
             &candidate, *candidatePoint, candidateWorkerMask, dataflow);
         if (!candidatePoint->path.implies(bodyPoint->path) ||
             !mlir::isa<WaferNCCIssueOpInterface>(&candidate) ||
-            contract.behavior != LocalInstructionCompletion::OrderedPending ||
+            contract.behavior != NCCSynchronizationBehavior::OrderedAsynchronousIssue ||
             candidateWorkerMask == 0)
           return false;
         if (!current.hasTrackedEffect)
@@ -2859,15 +2869,15 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
           return;
         }
 
-        NCCCompletionContract candidateContract =
-            getNCCCompletionContract(&candidate);
+        NCCSynchronizationContract candidateContract =
+            getNCCSynchronizationContract(&candidate);
         uint32_t candidateWorkerMask = getNCCIssueWorkerMask(candidateContract);
         AccessCollection current = collectAccesses(
             &candidate, *candidatePoint, candidateWorkerMask, dataflow);
         if (!candidatePoint->path.implies(bodyPoint->path) ||
             !mlir::isa<WaferNCCIssueOpInterface>(&candidate) ||
             candidateContract.behavior !=
-                LocalInstructionCompletion::OrderedPending ||
+                NCCSynchronizationBehavior::OrderedAsynchronousIssue ||
             candidateWorkerMask == 0) {
           invalidateStructured();
           return;
@@ -2921,8 +2931,8 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
         bool unconditionalInBody =
             candidatePoint->path.implies(bodyPoint->path) &&
             isUnconditionallyNestedInStaticFor(candidate, forOp);
-        NCCCompletionContract candidateContract =
-            getNCCCompletionContract(candidate);
+        NCCSynchronizationContract candidateContract =
+            getNCCSynchronizationContract(candidate);
 
         llvm::SmallVector<unsigned, 16> activeStates;
         for (auto [stateIndex, state] : llvm::enumerate(batchedIssues)) {
@@ -2930,9 +2940,9 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
             continue;
           bool coversIssue =
               (candidateContract.behavior ==
-                   LocalInstructionCompletion::ParticipantJoin ||
+                   NCCSynchronizationBehavior::ParticipantJoin ||
                candidateContract.behavior ==
-                   LocalInstructionCompletion::SynchronousWriteback) &&
+                   NCCSynchronizationBehavior::SynchronousWriteback) &&
               (candidateContract.participantMask & state.issue->workerMask) !=
                   0;
           if (coversIssue) {
@@ -2952,6 +2962,10 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
             invalidateFallback(activeStates);
           continue;
         }
+        // Region bodies are scanned separately with their timeline paths; the
+        // containing op's recursive effect summary is not an extra observer.
+        if (candidate->getNumRegions() != 0)
+          continue;
         if (mlir::isMemoryEffectFree(candidate))
           continue;
         if (auto allocation =
@@ -2984,14 +2998,13 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
               });
           if (!conflicts)
             continue;
-          bool orderedSuccessor =
-              unconditionalInBody &&
+          bool sameWorkerOrderedSuccessor =
               mlir::isa<WaferNCCIssueOpInterface>(candidate) &&
               candidateContract.behavior ==
-                  LocalInstructionCompletion::OrderedPending &&
+                  NCCSynchronizationBehavior::OrderedAsynchronousIssue &&
               candidateWorkerMask == state.issue->workerMask &&
               current.allResolved && !current.accesses.empty();
-          if (!orderedSuccessor)
+          if (!sameWorkerOrderedSuccessor)
             state.fallbackAlive = false;
         }
       }

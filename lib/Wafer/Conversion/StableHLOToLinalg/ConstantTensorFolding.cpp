@@ -1,11 +1,16 @@
 //===- ConstantTensorFolding.cpp - Static tensor residual cleanup -------===//
 
 #include "ConstantTensorFoldingInternal.h"
+#include "Wafer/Transforms/Passes.h"
 
-#ifdef WAFER_ENABLE_STABLEHLO
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Verifier.h"
+#include "mlir/Pass/Pass.h"
+
+#ifdef WAFER_ENABLE_STABLEHLO
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -602,3 +607,33 @@ mlir::LogicalResult foldConstantTensorOps(mlir::Operation *root) {
 
 } // namespace wafer::stablehlo_normalization
 #endif
+
+namespace wafer {
+#define GEN_PASS_DEF_FOLDSTATICTENSOROPSPASS
+#include "Wafer/Transforms/WaferPasses.h.inc"
+
+namespace {
+
+struct FoldStaticTensorOpsPass
+    : public impl::FoldStaticTensorOpsPassBase<FoldStaticTensorOpsPass> {
+  using impl::FoldStaticTensorOpsPassBase<
+      FoldStaticTensorOpsPass>::FoldStaticTensorOpsPassBase;
+
+  void runOnOperation() final {
+#ifdef WAFER_ENABLE_STABLEHLO
+    mlir::ModuleOp module = getOperation();
+    mlir::OwningOpRef<mlir::ModuleOp> transaction =
+        mlir::cast<mlir::ModuleOp>(module->clone());
+    if (mlir::failed(
+            stablehlo_normalization::foldConstantTensorOps(*transaction)) ||
+        mlir::failed(mlir::verify(*transaction))) {
+      signalPassFailure();
+      return;
+    }
+    module.getBodyRegion().takeBody(transaction->getBodyRegion());
+#endif
+  }
+};
+
+} // namespace
+} // namespace wafer

@@ -27,21 +27,19 @@ constexpr ModelProfileId kModelProfile =
 
 ResolvedNumericCommand resolveConvert(uint16_t opcode,
                                       NumericRoundingMode rounding) {
-  const TargetConvertRoute *route =
-      findTargetConvertRoute(opcode);
+  const TargetConvertRoute *route = findTargetConvertRoute(opcode);
   EXPECT_NE(route, nullptr);
   std::optional<NumericConvertParameter> parameter;
   if (route && route->parameterKind == TargetConvertParameterKind::RoundingMode)
     parameter = NumericConvertParameter::roundingMode(rounding);
   if (!route)
     llvm::report_fatal_error("test failed to find a convert route");
-  NumericTensorKey source = llvm::cantFail(
-      NumericTensorKey::create(route->source, MemLayout::Tensor, {1}));
-  NumericTensorKey destination = llvm::cantFail(
-      NumericTensorKey::create(route->destination, MemLayout::Tensor, {1}));
+  NumericTensorKey source = llvm::cantFail(NumericTensorKey::create(
+      route->source, PhysicalTensorLayout::Tensor, {1}));
+  NumericTensorKey destination = llvm::cantFail(NumericTensorKey::create(
+      route->destination, PhysicalTensorLayout::Tensor, {1}));
   llvm::Expected<NumericCommandKey> key = NumericCommandKey::createCTConvert(
-      opcode, std::move(source), std::move(destination),
-      parameter);
+      opcode, std::move(source), std::move(destination), parameter);
   EXPECT_TRUE(static_cast<bool>(key))
       << (key ? std::string() : llvm::toString(key.takeError()));
   if (!key)

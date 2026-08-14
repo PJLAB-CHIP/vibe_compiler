@@ -658,14 +658,15 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<ExecutableBundle> &executableBundle,
-    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle) {
+    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle,
+    CompilationIRTrace &irTrace) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-product", "ordinary-product");
   llvm::Expected<ExecutableBundle> compiledExecutableBundle =
       compileTensorProgramToExecutableBundleImpl(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
-          failAfterLaunchSlot);
+          failAfterLaunchSlot, irTrace);
   if (!compiledExecutableBundle) {
     llvm::consumeError(compiledExecutableBundle.takeError());
     return mlir::failure();
@@ -698,14 +699,15 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<ExecutableBundle> &executableBundle,
-    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle) {
+    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle,
+    CompilationIRTrace &irTrace) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-product", "profile-product");
   llvm::Expected<ExecutableBundle> compiled =
       compileTensorProgramToExecutableBundleImpl(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
-          failAfterLaunchSlot);
+          failAfterLaunchSlot, irTrace);
   if (!compiled) {
     llvm::consumeError(compiled.takeError());
     return mlir::failure();

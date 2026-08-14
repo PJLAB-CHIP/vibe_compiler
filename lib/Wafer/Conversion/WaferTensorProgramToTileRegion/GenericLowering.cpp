@@ -206,8 +206,9 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
   // Scalar operations are nested implementation details of one structured
   // generic.  Preserve both locations on every Tile operation emitted for
   // that scalar expression: the scalar location remains useful diagnostics,
-  // while the generic location is the stable structured-DAG lineage needed
-  // to prove actual producer/consumer dataflow after bufferization.
+  // while the generic location keeps diagnostic context for the containing
+  // structured operation. Executable producer/consumer relations are carried
+  // separately by typed current-IR mappings.
   mlir::Location loc = mlir::FusedLoc::get(generic.getContext(),
                                            {generic.getLoc(), op->getLoc()});
   auto lookup = [&](mlir::Value value) {

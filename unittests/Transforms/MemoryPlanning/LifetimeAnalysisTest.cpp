@@ -1,7 +1,7 @@
 #include "MemoryPlanning/LifetimeAnalysis.h"
 
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -51,7 +51,7 @@ protected:
     registry.insert<mlir::arith::ArithDialect, mlir::cf::ControlFlowDialect,
                     mlir::func::FuncDialect, mlir::memref::MemRefDialect,
                     mlir::scf::SCFDialect>();
-    wafer::registerAllDialects(registry);
+    wafer::registerWaferCoreDialects(registry);
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   }
@@ -1692,6 +1692,108 @@ module {
   llvm::SmallVector<LifetimeDemand, 2> demands{
       LifetimeDemand{allocations[0], 256, 256, 0},
       LifetimeDemand{allocations[1], 256, 256, 1}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+}
+
+TEST_F(LifetimeAnalysisTest,
+       JoinedConditionalPrefixPreservesExactSingleAccessBackedgeOrder) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(%condition: i1) {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %conditional = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %tail = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      scf.if %condition {
+        wafer.instr.fill %conditional, %zero
+            : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+        wafer.instr.ncc_join [0]
+      }
+      wafer.instr.fill %tail, %zero
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  llvm::SmallVector<mlir::memref::AllocOp, 2> allocations;
+  function.walk(
+      [&](mlir::memref::AllocOp allocation) { allocations.push_back(allocation); });
+  ASSERT_EQ(allocations.size(), 2u);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 2> demands{
+      LifetimeDemand{allocations[0], 256, 256, 0},
+      LifetimeDemand{allocations[1], 256, 256, 1}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+}
+
+TEST_F(LifetimeAnalysisTest,
+       JoinedConditionalPrefixAccumulatesExactMultiAccessBackedgeOrder) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(%condition: i1) {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %source = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %destination = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      scf.if %condition {
+        wafer.instr.fill %source, %zero
+            : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+        wafer.instr.ncc_join [0]
+      }
+      wafer.instr.fill %source, %zero
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.instr.elementwise #wafer.instr_elementwise_kind<add>
+          %source, %destination into %destination
+          : memref<128xf16, #wafer.memory<spm, tensor>>,
+            memref<128xf16, #wafer.memory<spm, tensor>>
+        into memref<128xf16, #wafer.memory<spm, tensor>>
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  llvm::SmallVector<mlir::memref::AllocOp, 2> allocations;
+  function.walk(
+      [&](mlir::memref::AllocOp allocation) { allocations.push_back(allocation); });
+  ASSERT_EQ(allocations.size(), 2u);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 2> demands;
+  for (auto [ordinal, allocation] : llvm::enumerate(allocations))
+    demands.push_back(
+        LifetimeDemand{allocation, 256, 256, static_cast<unsigned>(ordinal)});
   LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
     return wafer::isWaferSPMMemRefType(type);
   });

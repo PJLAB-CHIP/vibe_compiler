@@ -121,21 +121,14 @@ collectDirectCalleeSignatures(mlir::ModuleOp moduleOp,
 }
 
 static mlir::FailureOr<int64_t>
-resolveDirectDTEContractParticipantCount(mlir::ModuleOp moduleOp,
+resolveDirectDTEContractParticipantCount(const PhysicalTopology &topology,
+                                         mlir::ModuleOp diagnosticModule,
                                          PhysicalCardId physicalCardId) {
-  std::string reason;
-  mlir::FailureOr<PhysicalTopology> topology =
-      PhysicalTopology::create(moduleOp, &reason);
-  if (mlir::failed(topology))
-    return moduleOp.emitError()
-           << "unsupported_target_transport: Direct DTE status contract "
-              "requires a valid physical topology: "
-           << reason;
   std::optional<llvm::ArrayRef<PhysicalTileId>> available =
-      topology->getAvailableTileIds(physicalCardId);
+      topology.getAvailableTileIds(physicalCardId);
   if (!available || available->empty() ||
       available->size() > std::numeric_limits<uint32_t>::max())
-    return moduleOp.emitError()
+    return diagnosticModule.emitError()
            << "target_abi_narrowing: Direct DTE participant count must fit "
               "a positive uint32_t";
   return static_cast<int64_t>(available->size());
@@ -161,11 +154,24 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
            << "unsupported_target_transport: Direct DTE requires a "
               "launch-observable status argument";
 
+  std::optional<PhysicalTopology> physicalTopology;
+  if (hasDirectDTEContract || hasDirectDTEOps) {
+    std::string reason;
+    mlir::FailureOr<PhysicalTopology> resolved =
+        PhysicalTopology::create(moduleOp, &reason);
+    if (mlir::failed(resolved))
+      return moduleOp.emitError()
+             << "unsupported_target_transport: Direct DTE requires a valid "
+                "physical topology: "
+             << reason;
+    physicalTopology.emplace(std::move(*resolved));
+  }
+
   std::optional<int64_t> dteParticipantCount;
   if (hasDirectDTEContract) {
     mlir::FailureOr<int64_t> resolved =
         resolveDirectDTEContractParticipantCount(
-            moduleOp, PhysicalCardId(physicalCardId));
+            *physicalTopology, moduleOp, PhysicalCardId(physicalCardId));
     if (mlir::failed(resolved))
       return mlir::failure();
     dteParticipantCount = *resolved;
@@ -174,7 +180,8 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
   std::optional<DirectDTEEndpointDomain> dteDomain;
   if (hasDirectDTEOps) {
     mlir::FailureOr<DirectDTEEndpointDomain> resolved =
-        resolveDirectDTEEndpointDomain(moduleOp, PhysicalCardId(physicalCardId),
+        resolveDirectDTEEndpointDomain(*physicalTopology, moduleOp,
+                                       PhysicalCardId(physicalCardId),
                                        PhysicalTileId(physicalTileId));
     if (mlir::failed(resolved))
       return mlir::failure();
@@ -186,15 +193,15 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
                 "does not match the physical Tile participant count";
   }
 
-  DirectCallGraph callGraph;
-  if (mlir::failed(analyzeDirectCallGraph(
-          moduleOp, callGraph, defaultDDRArenaArgumentIndex,
+  analysis::DirectCallGraphAnalysis callGraph(moduleOp.getOperation());
+  if (mlir::failed(validateDirectCallsForTarget(
+          callGraph, defaultDDRArenaArgumentIndex,
           transportStatusArgumentIndex, profileRecordArgumentIndex)))
     return mlir::failure();
   std::string dteEntrySymbol;
   if (hasDirectDTEContract) {
     mlir::FailureOr<mlir::func::FuncOp> entry =
-        findUniqueRootFunction(moduleOp, callGraph);
+        findUniqueRootFunction(callGraph);
     if (mlir::failed(entry))
       return mlir::failure();
     if (transportStatusArgumentIndex >=
@@ -210,7 +217,7 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
   }
   if (profileRecordArgumentIndex >= 0) {
     mlir::FailureOr<mlir::func::FuncOp> entry =
-        findUniqueRootFunction(moduleOp, callGraph);
+        findUniqueRootFunction(callGraph);
     if (mlir::failed(entry))
       return mlir::failure();
     if (profileRecordArgumentIndex !=

@@ -44,21 +44,14 @@
 namespace wafer::target_llvm_detail {
 
 mlir::FailureOr<DirectDTEEndpointDomain>
-resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp,
+resolveDirectDTEEndpointDomain(const PhysicalTopology &topology,
+                               mlir::ModuleOp diagnosticModule,
                                PhysicalCardId physicalCardId,
                                PhysicalTileId physicalTileId) {
-  std::string reason;
-  mlir::FailureOr<PhysicalTopology> topology =
-      PhysicalTopology::create(moduleOp, &reason);
-  if (mlir::failed(topology))
-    return moduleOp.emitError()
-           << "unsupported_target_transport: cannot resolve physical Tile "
-              "topology: "
-           << reason;
   std::optional<llvm::ArrayRef<PhysicalTileId>> available =
-      topology->getAvailableTileIds(physicalCardId);
+      topology.getAvailableTileIds(physicalCardId);
   if (!available || !llvm::is_contained(*available, physicalTileId))
-    return moduleOp.emitError()
+    return diagnosticModule.emitError()
            << "unsupported_target_transport: current physical Tile is not "
               "available in the selected card topology";
   DirectDTEEndpointDomain domain;

@@ -3,9 +3,10 @@
 #ifndef WAFER_TARGET_TARGETCALL_H
 #define WAFER_TARGET_TARGETCALL_H
 
-#include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Target/NumericSemantics.h"
 #include "Wafer/Target/TargetFormat.h"
 #include "Wafer/Target/TargetIdentity.h"
+#include "Wafer/Target/TargetOperation.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -21,7 +22,7 @@
 
 namespace wafer {
 
-namespace compiler {
+namespace target {
 
 enum class TargetDMADirection : uint8_t { Read, Write };
 
@@ -78,12 +79,12 @@ struct TargetGemmTransaction {
   uint32_t n;
   uint32_t batchCount;
   LogicalFormat format;
-  GemmOrientation lhsOrientation = GemmOrientation::Normal;
-  GemmOrientation rhsOrientation = GemmOrientation::Normal;
+  TargetGemmOrientation lhsOrientation = TargetGemmOrientation::Normal;
+  TargetGemmOrientation rhsOrientation = TargetGemmOrientation::Normal;
 };
 
 struct TargetElementwiseTransaction {
-  InstrElementwiseKind kind;
+  NumericElementwiseOperation operation;
   uint64_t lhs;
   std::optional<uint64_t> rhs;
   uint64_t destination;
@@ -92,7 +93,7 @@ struct TargetElementwiseTransaction {
 };
 
 struct TargetReduceTransaction {
-  InstrReduceKind kind;
+  NumericReduceOperation operation;
   uint64_t source;
   uint64_t destination;
   uint32_t dimension;
@@ -101,7 +102,7 @@ struct TargetReduceTransaction {
 };
 
 struct TargetConvertTransaction {
-  InstrConvertKind kind;
+  TargetConvertOperation operation;
   uint64_t source;
   uint64_t destination;
   uint32_t elementCount;
@@ -110,7 +111,7 @@ struct TargetConvertTransaction {
 };
 
 struct TargetConvTransaction {
-  InstrConvKind kind;
+  TargetConvolutionOperation operation;
   uint64_t input;
   uint64_t weight;
   uint64_t destination;
@@ -125,7 +126,7 @@ struct TargetConvTransaction {
 };
 
 struct TargetPoolTransaction {
-  InstrPoolKind kind;
+  TargetPoolingOperation operation;
   uint64_t input;
   uint64_t valueDestination;
   std::optional<uint64_t> indexDestination;
@@ -137,7 +138,7 @@ struct TargetPoolTransaction {
 };
 
 struct TargetUnpoolTransaction {
-  InstrUnpoolKind kind;
+  TargetUnpoolingOperation operation;
   uint64_t input;
   uint64_t destination;
   std::optional<uint32_t> indexAddress;
@@ -161,7 +162,7 @@ struct TargetTDMATransformTransaction {
 };
 
 struct TargetPeripheralArgExtremaTransaction {
-  InstrPeripheralKind kind;
+  TargetPeripheralOperation operation;
   uint64_t source;
   uint64_t valueDestination;
   uint64_t indexDestination;
@@ -179,7 +180,7 @@ struct TargetPeripheralBilinearTransaction {
 };
 
 struct TargetPeripheralLUTTransaction {
-  InstrPeripheralKind kind;
+  TargetPeripheralOperation operation;
   uint64_t source;
   uint64_t table;
   uint64_t destination;
@@ -250,7 +251,7 @@ using TargetTransactionPayload = std::variant<
     TargetDirectDTEReceiveTransaction, TargetDirectDTEWaitTransaction,
     TargetDirectDTEFinishTransaction>;
 
-} // namespace compiler
+} // namespace target
 
 /// Fixed target calls that are not selected by an instruction-kind enum.
 enum class TargetCallBuiltin : uint8_t {
@@ -297,16 +298,17 @@ enum class TargetCallTSMEngine : uint8_t {
 struct TargetCallIssueDomain {
   TargetCallTSMEngine engine;
   std::optional<size_t> nccWorkerArgument;
-  LocalInstructionCompletion completionBehavior =
-      LocalInstructionCompletion::None;
+  TargetNCCCompletionBehavior completionBehavior =
+      TargetNCCCompletionBehavior::None;
 };
 
 /// A semantic identity owned by typed compiler enums, never reconstructed
 /// from a symbol spelling by a consumer.
 using TargetCallSemantic =
-    std::variant<TargetCallBuiltin, InstrElementwiseKind, InstrReduceKind,
-                 InstrConvertKind, InstrConvKind, InstrPoolKind,
-                 InstrUnpoolKind, InstrPeripheralKind>;
+    std::variant<TargetCallBuiltin, NumericElementwiseOperation,
+                 NumericReduceOperation, TargetConvertOperation,
+                 TargetConvolutionOperation, TargetPoolingOperation,
+                 TargetUnpoolingOperation, TargetPeripheralOperation>;
 
 /// Exact public target-call ABI. The strings and signature widths are a
 /// compiler registry, not a serialized artifact or a packet description.
@@ -339,32 +341,32 @@ llvm::StringRef stringifyTargetCallTSMEngine(TargetCallTSMEngine engine);
 const TargetCallDescriptor &
 getTargetCallDescriptor(TargetCallBuiltin call);
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrElementwiseKind kind);
+getTargetCallDescriptor(NumericElementwiseOperation operation);
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrReduceKind kind);
+getTargetCallDescriptor(NumericReduceOperation operation);
 
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrConvertKind kind);
+getTargetCallDescriptor(TargetConvertOperation operation);
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrConvKind kind);
+getTargetCallDescriptor(TargetConvolutionOperation operation);
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrPoolKind kind);
+getTargetCallDescriptor(TargetPoolingOperation operation);
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrUnpoolKind kind);
+getTargetCallDescriptor(TargetUnpoolingOperation operation);
 const TargetCallDescriptor &
-getTargetCallDescriptor(InstrPeripheralKind kind);
+getTargetCallDescriptor(TargetPeripheralOperation operation);
 
 /// Decodes one exact ABI argument vector into the descriptor's typed payload.
 /// This is the only field-position factory shared by the JIT frontend and
 /// downstream functional models.
-llvm::Expected<compiler::TargetTransactionPayload>
+llvm::Expected<target::TargetTransactionPayload>
 decodeTargetCallPayload(const TargetCallDescriptor &descriptor,
                         const TargetCallDecodeContext &context,
                         llvm::ArrayRef<uint64_t> arguments);
 
 /// Decodes the exact NCC worker carried by a registered issue call. Absence
 /// means that the call does not issue an NCC command.
-llvm::Expected<std::optional<NCCWorker>>
+llvm::Expected<std::optional<TargetNCCWorker>>
 decodeTargetCallNCCWorker(const TargetCallDescriptor &descriptor,
                           llvm::ArrayRef<uint64_t> arguments);
 

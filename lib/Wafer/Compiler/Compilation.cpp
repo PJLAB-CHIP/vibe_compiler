@@ -72,8 +72,8 @@ compileProgram(CompilationRequest request,
   std::optional<ExecutableBundle> retainedExecutableBundle;
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
-          targetToolchain, diagnostics, options, std::nullopt,
-          std::nullopt, std::nullopt, &retainedExecutableBundle, nullptr)))
+          targetToolchain, diagnostics, options, std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle, nullptr)))
     return mlir::failure();
   if (!retainedExecutableBundle) {
     detail::reject(
@@ -91,20 +91,23 @@ mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
     llvm::raw_ostream &diagnostics) {
   std::optional<ExecutableBundle> retainedExecutableBundle;
   std::optional<TargetLLVMModuleBundle> retainedTargetLLVMModuleBundle;
+  std::optional<CompilationIRTrace> retainedIRTrace;
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
-          targetToolchain, diagnostics, options, std::nullopt,
-          std::nullopt, std::nullopt, &retainedExecutableBundle,
-          &retainedTargetLLVMModuleBundle)))
+          targetToolchain, diagnostics, options, std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle,
+          &retainedTargetLLVMModuleBundle, &retainedIRTrace)))
     return mlir::failure();
-  if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle) {
+  if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle ||
+      !retainedIRTrace) {
     detail::reject(diagnostics,
                    "successful compilation did not retain its complete target "
                    "compilation product");
     return mlir::failure();
   }
   return TargetCompilationProduct(std::move(*retainedExecutableBundle),
-                                  std::move(*retainedTargetLLVMModuleBundle));
+                                  std::move(*retainedTargetLLVMModuleBundle),
+                                  std::move(*retainedIRTrace));
 }
 
 mlir::LogicalResult testing::compileProgramWithExecutableLaunchSlotFailure(
@@ -115,16 +118,14 @@ mlir::LogicalResult testing::compileProgramWithExecutableLaunchSlotFailure(
   if (failAfterLaunchSlot < 0 ||
       failAfterLaunchSlot >=
           request.getExecutionConfig().getPhysicalTileCount()) {
-    detail::reject(diagnostics,
-                   "test-only executable launch slot is outside "
-                   "ExecutionConfig");
+    detail::reject(diagnostics, "test-only executable launch slot is outside "
+                                "ExecutionConfig");
     return mlir::failure();
   }
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics, CompilationOptions::standard(),
-      failAfterLaunchSlot, std::nullopt,
-      std::nullopt, nullptr, nullptr);
+      failAfterLaunchSlot, std::nullopt, std::nullopt, nullptr, nullptr);
 }
 
 mlir::LogicalResult testing::compileProgramWithTargetLaunchSlotFailure(
@@ -142,8 +143,7 @@ mlir::LogicalResult testing::compileProgramWithTargetLaunchSlotFailure(
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics, CompilationOptions::standard(),
-      std::nullopt, failAfterLaunchSlot,
-      std::nullopt, nullptr, nullptr);
+      std::nullopt, failAfterLaunchSlot, std::nullopt, nullptr, nullptr);
 }
 
 mlir::LogicalResult testing::compileProgramWithPackageLaunchSlotFailure(
@@ -161,9 +161,7 @@ mlir::LogicalResult testing::compileProgramWithPackageLaunchSlotFailure(
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics, CompilationOptions::standard(),
-      std::nullopt, std::nullopt,
-      failAfterLaunchSlot, nullptr, nullptr);
+      std::nullopt, std::nullopt, failAfterLaunchSlot, nullptr, nullptr);
 }
-
 
 } // namespace wafer::compiler

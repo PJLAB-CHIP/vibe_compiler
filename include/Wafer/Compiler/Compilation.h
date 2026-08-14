@@ -162,6 +162,20 @@ struct ProgramResourceBinding {
   frontend::ProgramPartitionSlice slice;
 };
 
+/// Optional same-invocation compiler inspection output. It is deliberately
+/// separate from executable, package and runtime artifacts and must never be
+/// used to recover compilation semantics.
+struct PhysicalTileIRTrace {
+  PhysicalCardId physicalCardId{0};
+  PhysicalTileId physicalTileId{0};
+  LaunchSlotId launchSlotId{0};
+  std::string tileDataflowIR;
+};
+
+struct CompilationIRTrace {
+  std::vector<PhysicalTileIRTrace> physicalTiles;
+};
+
 /// One independently lowered and accepted physical Tile program. Its producer
 /// assigns identity from the verified physical topology; downstream consumers
 /// never recover it from a symbol or module name. This type is move-only so an
@@ -179,7 +193,6 @@ public:
   LaunchSlotId getLaunchSlotId() const { return launchSlotId; }
   llvm::StringRef getEntrySymbol() const { return entrySymbol; }
   mlir::ModuleOp getModule() const { return *module; }
-  llvm::StringRef getSelectedTileIR() const { return selectedTileIR; }
   const std::vector<ProgramResourceBinding> &getProgramBindings() const {
     return programBindings;
   }
@@ -200,8 +213,7 @@ private:
                          mlir::OwningOpRef<mlir::ModuleOp> module,
                          llvm::StringRef entrySymbol,
                          std::vector<ProgramResourceBinding> programBindings,
-                         TransportContract transportContract,
-                         llvm::StringRef selectedTileIR = {})
+                         TransportContract transportContract)
       : physicalCardId(physicalCardId), physicalTileId(physicalTileId),
         launchSlotId(launchSlotId), module(std::move(module)),
         entrySymbol(entrySymbol.str()),
@@ -210,8 +222,7 @@ private:
             EntryLocalCompletionKind::ReturnAfterLocalDrain),
         transportContract(transportContract),
         ddrAllocationContract(
-            DDRAllocationContract::DefaultArenaRelativeOffsets),
-        selectedTileIR(selectedTileIR.str()) {}
+            DDRAllocationContract::DefaultArenaRelativeOffsets) {}
 
   PhysicalCardId physicalCardId;
   PhysicalTileId physicalTileId;
@@ -222,10 +233,6 @@ private:
   EntryLocalCompletionKind entryLocalCompletionKind;
   TransportContract transportContract;
   DDRAllocationContract ddrAllocationContract;
-  /// Same-invocation snapshot printed at the selected physical Tile
-  /// decision boundary before executable finalization. It is inspection
-  /// evidence, not a package member or a semantic side channel.
-  std::string selectedTileIR;
 };
 
 /// Atomic owner of the all-and-only available physical Tile domain for one

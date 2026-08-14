@@ -182,10 +182,7 @@ mlir::LogicalResult InstrPeripheralOp::verify() {
             "LUT dest")) ||
         mlir::failed(verifyStaticElementCountMatches(
             getOperation(), getInputs()[1].getType(),
-            getOperation()
-                ->getAttrOfType<mlir::IntegerAttr>("lut_elem_count")
-                .getInt(),
-            "LUT table")))
+            getLutElemCountAttr().getInt(), "LUT table")))
       return mlir::failure();
     return verifyForbiddenPeripheralAttrs(
         getOperation(), {"source_shape", "dest_shape", "scale", "probability",
@@ -194,11 +191,9 @@ mlir::LogicalResult InstrPeripheralOp::verify() {
     if (mlir::failed(verifyRequiredUInt32Attr(getOperation(), "scale")) ||
         mlir::failed(verifyRequiredUInt32Attr(getOperation(), "probability")) ||
         mlir::failed(verifyOptionalRoundingMode(
-            getOperation(),
-            getOperation()->getAttrOfType<mlir::IntegerAttr>("rounding_mode"),
-            "rounding_mode")))
+            getOperation(), getRoundingModeAttr(), "rounding_mode")))
       return mlir::failure();
-    if (!getOperation()->hasAttr("rounding_mode"))
+    if (!getRoundingModeAttr())
       return emitOpError("peripheral kind requires rounding_mode attr");
     if (mlir::failed(verifyStaticElementCountMatches(
             getOperation(), getDests().front().getType(), elemCount,

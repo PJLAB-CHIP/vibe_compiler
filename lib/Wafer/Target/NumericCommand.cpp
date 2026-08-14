@@ -71,12 +71,12 @@ constexpr NumericReduceOperation kReduceOperations[] = {
     NumericReduceOperation::Avg,
 };
 
-bool isKnownLayout(MemLayout layout) {
+bool isKnownLayout(PhysicalTensorLayout layout) {
   switch (layout) {
-  case MemLayout::Tensor:
-  case MemLayout::NTensor:
-  case MemLayout::Cx:
-  case MemLayout::NCx:
+  case PhysicalTensorLayout::Tensor:
+  case PhysicalTensorLayout::NTensor:
+  case PhysicalTensorLayout::Cx:
+  case PhysicalTensorLayout::NCx:
     return true;
   }
   return false;
@@ -118,8 +118,9 @@ bool isKnownReduceDimension(NativeCTReduceDimension dimension) {
   return false;
 }
 
-bool isAlignedLayout(MemLayout layout) {
-  return layout == MemLayout::Cx || layout == MemLayout::NCx;
+bool isAlignedLayout(PhysicalTensorLayout layout) {
+  return layout == PhysicalTensorLayout::Cx ||
+         layout == PhysicalTensorLayout::NCx;
 }
 
 bool checkedMultiply(uint64_t lhs, uint64_t rhs, uint64_t &result) {
@@ -129,14 +130,14 @@ bool checkedMultiply(uint64_t lhs, uint64_t rhs, uint64_t &result) {
   return true;
 }
 
-std::string makeTensorDigest(LogicalFormat format, MemLayout layout,
+std::string makeTensorDigest(LogicalFormat format, PhysicalTensorLayout layout,
                              llvm::ArrayRef<uint64_t> shape,
                              uint64_t elementCount) {
   std::string canonical;
   llvm::raw_string_ostream stream(canonical);
   stream << "wafer-numeric-tensor-key-v1\n"
          << "format=" << stringifyLogicalFormat(format) << '\n'
-         << "layout=" << stringifyMemLayout(layout) << '\n'
+         << "layout=" << stringifyPhysicalTensorLayout(layout) << '\n'
          << "rank=" << shape.size() << '\n';
   for (auto [index, dimension] : llvm::enumerate(shape))
     stream << "dim-" << index << '=' << dimension << '\n';
@@ -218,9 +219,11 @@ std::string makeCommandKeyDigest(const NumericCommandPayload &payload) {
                  << '\n'
                  << "destination-n-dim=" << command.axes.destinationNDimension
                  << '\n'
-                 << "lhs-orientation=" << stringifyEnum(command.lhsOrientation)
+                 << "lhs-orientation="
+                 << stringifyTargetGemmOrientation(command.lhsOrientation)
                  << '\n'
-                 << "rhs-orientation=" << stringifyEnum(command.rhsOrientation)
+                 << "rhs-orientation="
+                 << stringifyTargetGemmOrientation(command.rhsOrientation)
                  << '\n';
         } else if constexpr (std::is_same_v<Command,
                                             NumericNativeCTReduceCommand>) {
@@ -304,7 +307,7 @@ getNativeCTReduceLogicalDimensions(NativeCTReduceDimension dimension,
 }
 
 llvm::Expected<NumericTensorKey>
-NumericTensorKey::create(LogicalFormat format, MemLayout layout,
+NumericTensorKey::create(LogicalFormat format, PhysicalTensorLayout layout,
                          std::vector<uint64_t> shape) {
   if (!findLogicalFormatDescriptor(format))
     return llvm::createStringError(llvm::errc::invalid_argument,
@@ -618,12 +621,11 @@ NumericCommandKey::getNativeCTReduce() const {
 llvm::Expected<NumericCommandKey> NumericCommandKey::createCTConvert(
     uint16_t opcode, NumericTensorKey source, NumericTensorKey destination,
     std::optional<NumericConvertParameter> parameter) {
-  const TargetConvertRoute *route =
-      findTargetConvertRoute(opcode);
+  const TargetConvertRoute *route = findTargetConvertRoute(opcode);
   if (!route)
-    return llvm::createStringError(
-        llvm::errc::invalid_argument, "unknown CT convert opcode %u",
-        static_cast<unsigned>(opcode));
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "unknown CT convert opcode %u",
+                                   static_cast<unsigned>(opcode));
   if (source.getFormat() != route->source ||
       destination.getFormat() != route->destination)
     return llvm::createStringError(
@@ -688,9 +690,10 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createCTConvert(
   return NumericCommandKey(std::move(payload), std::move(digest));
 }
 
-llvm::Expected<NumericCommandKey> NumericCommandKey::createCTElementwise(
-    NumericElementwiseOperation operation,
-    std::vector<NumericTensorKey> inputs, NumericTensorKey destination) {
+llvm::Expected<NumericCommandKey>
+NumericCommandKey::createCTElementwise(NumericElementwiseOperation operation,
+                                       std::vector<NumericTensorKey> inputs,
+                                       NumericTensorKey destination) {
   if (!isKnownElementwiseOperation(operation))
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "unknown numeric elementwise operation");
@@ -704,9 +707,9 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createCTElementwise(
     return llvm::createStringError(
         llvm::errc::result_out_of_range,
         "CT elementwise destination element count must fit uint32_t");
-  if (llvm::Error error = requireEngineFormat(
-          TargetFormatEngine::CT, destination.getFormat(),
-          "CT elementwise destination"))
+  if (llvm::Error error =
+          requireEngineFormat(TargetFormatEngine::CT, destination.getFormat(),
+                              "CT elementwise destination"))
     return std::move(error);
 
   for (const NumericTensorKey &input : inputs) {
@@ -715,9 +718,8 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createCTElementwise(
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "CT elementwise input shapes must match destination shape");
-    if (llvm::Error error =
-            requireEngineFormat(TargetFormatEngine::CT,
-                                input.getFormat(), "CT elementwise input"))
+    if (llvm::Error error = requireEngineFormat(
+            TargetFormatEngine::CT, input.getFormat(), "CT elementwise input"))
       return std::move(error);
   }
 
@@ -759,16 +761,16 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createCTElementwise(
 
 llvm::Expected<NumericCommandKey> NumericCommandKey::createNEGemm(
     NumericTensorKey lhs, NumericTensorKey rhs, NumericTensorKey destination,
-    uint32_t m, uint32_t k, uint32_t n,
-    uint32_t batchCount, NumericGemmAxes axes, GemmOrientation lhsOrientation,
-    GemmOrientation rhsOrientation) {
+    uint32_t m, uint32_t k, uint32_t n, uint32_t batchCount,
+    NumericGemmAxes axes, TargetGemmOrientation lhsOrientation,
+    TargetGemmOrientation rhsOrientation) {
   if (lhs.getFormat() != rhs.getFormat() ||
       lhs.getFormat() != destination.getFormat())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "NE GEMM lhs, rhs and destination formats must match");
-  if (llvm::Error error = requireEngineFormat(
-          TargetFormatEngine::NE, lhs.getFormat(), "NE GEMM"))
+  if (llvm::Error error = requireEngineFormat(TargetFormatEngine::NE,
+                                              lhs.getFormat(), "NE GEMM"))
     return std::move(error);
   if (!isAlignedLayout(lhs.getLayout()) || !isAlignedLayout(rhs.getLayout()) ||
       !isAlignedLayout(destination.getLayout()))
@@ -822,14 +824,18 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createNEGemm(
           llvm::errc::result_out_of_range,
           "NE GEMM canonical batch product must fit uint16_t");
   }
-  size_t lhsMDim =
-      lhsOrientation == GemmOrientation::Normal ? matrixBase : matrixBase + 1;
-  size_t lhsKDim =
-      lhsOrientation == GemmOrientation::Normal ? matrixBase + 1 : matrixBase;
-  size_t rhsKDim =
-      rhsOrientation == GemmOrientation::Normal ? matrixBase : matrixBase + 1;
-  size_t rhsNDim =
-      rhsOrientation == GemmOrientation::Normal ? matrixBase + 1 : matrixBase;
+  size_t lhsMDim = lhsOrientation == TargetGemmOrientation::Normal
+                       ? matrixBase
+                       : matrixBase + 1;
+  size_t lhsKDim = lhsOrientation == TargetGemmOrientation::Normal
+                       ? matrixBase + 1
+                       : matrixBase;
+  size_t rhsKDim = rhsOrientation == TargetGemmOrientation::Normal
+                       ? matrixBase
+                       : matrixBase + 1;
+  size_t rhsNDim = rhsOrientation == TargetGemmOrientation::Normal
+                       ? matrixBase + 1
+                       : matrixBase;
   if (lhs.getShape()[lhsMDim] != m || lhs.getShape()[lhsKDim] != k ||
       rhs.getShape()[rhsKDim] != k || rhs.getShape()[rhsNDim] != n ||
       destination.getShape()[matrixBase] != m ||
@@ -860,8 +866,7 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createNEGemm(
 
 llvm::Expected<NumericCommandKey> NumericCommandKey::createNativeCTReduce(
     NumericReduceOperation operation, NumericTensorKey input,
-    NumericTensorKey destination,
-    NativeCTReduceDimension dimension) {
+    NumericTensorKey destination, NativeCTReduceDimension dimension) {
   if (!isKnownReduceOperation(operation))
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "unknown numeric reduce operation");
@@ -872,9 +877,8 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createNativeCTReduce(
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "native CT reduce input and destination formats must match");
-  if (llvm::Error error =
-          requireEngineFormat(TargetFormatEngine::CT,
-                              input.getFormat(), "native CT reduce"))
+  if (llvm::Error error = requireEngineFormat(
+          TargetFormatEngine::CT, input.getFormat(), "native CT reduce"))
     return std::move(error);
 
   const size_t rank = input.getShape().size();
@@ -882,9 +886,11 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createNativeCTReduce(
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "native CT reduce input rank must be in [1, 4]");
-  MemLayout expectedInputLayout = rank > 2 ? MemLayout::NCx : MemLayout::Cx;
-  MemLayout expectedDestinationLayout =
-      destination.getShape().size() > 2 ? MemLayout::NCx : MemLayout::Cx;
+  PhysicalTensorLayout expectedInputLayout =
+      rank > 2 ? PhysicalTensorLayout::NCx : PhysicalTensorLayout::Cx;
+  PhysicalTensorLayout expectedDestinationLayout =
+      destination.getShape().size() > 2 ? PhysicalTensorLayout::NCx
+                                        : PhysicalTensorLayout::Cx;
   if (input.getLayout() != expectedInputLayout ||
       destination.getLayout() != expectedDestinationLayout)
     return llvm::createStringError(

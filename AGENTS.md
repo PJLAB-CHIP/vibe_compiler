@@ -180,24 +180,53 @@ Pipeline position:
   headers、实现和测试为准；不得假设 newer upstream 选项、interface 或 driver 行为已经存在。
 - **IR 必须自包含。** 影响 legality、rewiring、lowering 或 candidate 结果的事实用 SSA、region、type、effect、
   typed op/attr/interface 表达；`Location`只作诊断 provenance，不承载指针、identity 或跨 pass 语义。
+- **抽象和命名必须对应具体 compiler contract。** 不以 `lineage`、`owner`、`identity`、`state`、`context`、
+  `metadata`、`plan`、`mapping` 等词建立黑名单；任何非平凡对象都要能说明它表示哪项 IR / artifact 关系、由谁创建和
+  消费、在哪个 scope 和 IR epoch 有效、何时失效，以及为何不能直接使用 SSA、region、type、effect、interface 或
+  query-local `IRMapping`。名称描述可验证关系和作用域，不能靠换成更宽泛或更“专业”的词保留未建模的 side channel；
+  identity、反馈、派生缓存和 publication 状态若有效期或事实源不同，必须拆开。
+- **C++ API 用类型表达合同。** public/跨 stage API 使用窄而强类型的输入；一组字段共同构成一个结果时优先返回 named
+  typed result，MLIR 惯用的非空 caller-owned 输出引用可以保留。`bool` 适合 predicate 和二态 option，但不得与字符串
+  标签、多个 nullable 输出参数或隐式全局状态拼成状态机协议。只读 query 与 IR mutation/apply 分开，使 query 可测试、
+  apply 可原子提交；mutable global、singleton 和无失效边界 cache 禁止进入编译语义。
+- **ownership 与 lifetime 进入类型和接口。** `OwningOpRef`、`unique_ptr`、move-only artifact 表示所有权转移；引用和普通
+  裸指针只表示当前 owner/IR epoch 内的 non-owning handle。地址可以作局部查找键，但不能跨 clone、erase、会失效的
+  mutation、异步任务或长期 cache 充当稳定 identity；同次 clone 对应用 `IRMapping`，跨 stage 语义进入 IR 自身。
+  listener、insertion point、临时 mutation 和 rollback guard 使用 RAII。
+- **失败必须可分类且保持有效状态。** 本仓库按LLVM惯例不使用C++ exception/RTTI：IR transformation内部使用
+  `LogicalResult`、`FailureOr`和diagnostic，文件/runtime/library边界使用`llvm::Error`/`Expected`，candidate边界使用能区分
+  accepted、exact rejection、indeterminate与compiler bug的typed result。`assert`/`llvm_unreachable`只表示verifier-valid
+  输入下不可能发生的内部错误；用户输入、unsupported、容量和环境失败必须可恢复传播。不得解析diagnostic字符串决定控制流。
+- **确定性和性能都是编译器合同。** DenseMap/DenseSet 和指针键可用于局部 lookup/visited set，但 candidate 顺序、winner、
+  diagnostic、IR 和 artifact 不得依赖地址、hash-table 遍历、等价元素的不稳定排序或并行完成顺序；可观察边界使用完整
+  semantic tie-break。性能判断先记录 work count、pass/analysis timing、wall time 和 RSS，优先修正 scope、重复
+  traversal/materialization 和算法复杂度，再做有测量依据的低层优化。
+- **遵守LLVM式库边界。** public header自包含，implementation的main header优先include，`Internal.h`留在`lib/`私有目录，
+  CMake显式声明实际library依赖；不把compiler driver、IR schema、analysis、transform和runtime helper揉成循环依赖，也不在
+  功能改动中夹带全树格式化或无关rename。
 - **ODS 和标准 interface 优先。** 稳定 semantic field 进入 ODS typed argument/property并使用 generated accessor；
   优先复用 RegionBranch、Call、MemoryEffect、ViewLike、DPS/Bufferizable、Tiling 等标准 interface。只有标准机制
   无法稳定表达且已有 verifier/lowering consumer 时才新增 Wafer-specific interface。
-- **operation scope 就是 ownership。** pass/analysis锚定包含所需事实的最窄合法 operation；可独立处理的
-  `IsolatedFromAbove` op使用 nested pass。call/symbol closure、function-boundary bufferization、跨region completion、
+- **operation hierarchy 决定 pass/analysis scope。** pass/analysis锚定包含所需事实的最窄合法 operation；可独立处理的
+  `IsolatedFromAbove` op使用 nested pass。call/symbol closure、function-boundary bufferization、跨region outstanding access、
   card级resource/admission等真实全局阶段保留在 func/module/card scope，不机械地下沉。operation pass不得替换自己的root；
   删除wrapper或重接parent SSA由父operation transformation负责。
 - **pipeline 只有一个实现。** 一个pass只做一个可命名的IR变换，声明dependent dialect、typed option和analysis
   preservation；production driver与`wafer-opt` named pipeline复用同一query/apply和pipeline builder，不维护direct
   mutation平行实现，也不长期手工拼pass。
+- **区分pass、subpipeline与driver。** atomic pass/kernel在最窄合法anchor只建立一个可验证postcondition；semantic
+  subpipeline组合一个稳定且verifier-legal的IR边界并可打印、独立重放；artifact driver拥有搜索、fan-out、外部工具和原子
+  publication，只调用前两层。顶层composite可以较长，但必须暴露可测试leaf stage；不得机械拆出非法中间IR或破坏原子提交。
+  仅把一个既有atomic pass加入`OpPassManager`的helper使用`add...Pass`；`build...Pipeline`只用于拥有稳定语义边界和组合合同的
+  builder（即使该边界当前恰由一个pass实现），不能用单pass别名伪装新的pipeline层级。
 - **analysis 可重算、可失效。** 只由current IR和显式immutable target facts派生且会重复消费的事实进入
   `AnalysisManager`；mutation明确preserve/invalidate。query-local candidate assignment、一次性preflight和跨clone memo
   不硬塞成MLIR analysis，也不写回IR。跨全局关系在最近container一次验证，不在每个leaf verifier重复walk module。
 - **rewrite 必须事务安全。** pattern callback中的IR修改全部通过`PatternRewriter`；尽量在首次mutation前完成preflight，
   failed match使用`notifyMatchFailure`，不得更新rollback之外的`failureReason`、callee set或其它mutable side state。
   clone对应使用`IRMapping`，不用pointer、walk顺序、ordinal、打印字符串或symbol拼写恢复identity。
-- **隔离变换事务只clone最小真实owner。** 只有查询必须消费实际改写后的IR且不得修改原artifact时，才clone最近的
-  `IsolatedFromAbove` operation；普通lowering直接使用nested pass，不clone。带外部operands的owner必须用`IRMapping`
+- **隔离变换事务只clone最小真实scope。** 只有查询必须消费实际改写后的IR且不得修改原artifact时，才clone最近的
+  `IsolatedFromAbove` operation；普通lowering直接使用nested pass，不clone。带外部operands的operation必须用`IRMapping`
   映射到scratch-owned SSA，不能让clone交叉引用或新增原IR的use；事务结束只返回typed结果并销毁scratch IR，不为取得
   module anchor构造synthetic Module/Func。
 - **conversion legality 要 fail closed。** source op类别使用稳定marker interface/trait或等价单一分类；所有source实现者
@@ -211,9 +240,9 @@ Pipeline position:
 - **按MLIR合同验证。** 至少覆盖custom/generic form roundtrip、verifier正负例、conversion failure atomicity、analysis
   invalidation、named/production pipeline parity和`verify-each`；局部pass成功、canonicalizer恰好清掉残留或旧generated
   build能编译，都不能代替fresh source/build和下游artifact gate。
-- **退役owner前先迁移能力。** source未进入CMake只说明它不属于active build，不能据此推断其中算法、proof、diagnostic或
-  测试资产已经无用。先逐项确定新owner；仍被当前或后续合同需要的能力必须迁入active source并受测，之后才能删除旧
-  owner。只有已被现行IR/API明确淘汰且没有独有能力的源码可以直接清理。
+- **退役实现前先迁移能力。** source未进入CMake只说明它不属于active build，不能据此推断其中算法、proof、diagnostic或
+  测试资产已经无用。先逐项确定承接实现；仍被当前或后续合同需要的能力必须迁入active source并受测，之后才能删除旧
+  实现。只有已被现行IR/API明确淘汰且没有独有能力的源码可以直接清理。
 
 ### 协议和语义恢复
 

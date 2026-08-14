@@ -1,14 +1,19 @@
-// RUN: wafer-opt --wafer-convert-tile-region-to-instr %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s | FileCheck %s
 
-func.func @transpose_transpose(
-    %lhs: memref<3x2xf16, #wafer.memory<spm, cx>>,
-    %rhs: memref<4x3xf16, #wafer.memory<spm, cx>>) {
-  %result = wafer.tile.gemm %lhs, %rhs
+func.func @transpose_transpose() {
+  %token = arith.constant false
+  %unused = wafer.tile.region(%token : i1) -> (i1) {
+  ^bb0(%tile_token: i1):
+  %tile_lhs = memref.alloc() : memref<3x2xf16, #wafer.memory<spm, cx>>
+  %tile_rhs = memref.alloc() : memref<4x3xf16, #wafer.memory<spm, cx>>
+  %result = wafer.tile.gemm %tile_lhs, %tile_rhs
       {lhs_orientation = #wafer.gemm_orientation<transpose>,
        rhs_orientation = #wafer.gemm_orientation<transpose>}
       : (memref<3x2xf16, #wafer.memory<spm, cx>>,
          memref<4x3xf16, #wafer.memory<spm, cx>>)
      -> memref<2x4xf16, #wafer.memory<spm, cx>>
+    wafer.tile.yield %tile_token : i1
+  }
   return
 }
 

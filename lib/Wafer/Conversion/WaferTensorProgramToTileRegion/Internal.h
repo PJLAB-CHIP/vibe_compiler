@@ -181,6 +181,7 @@ struct MaterializedSelectedDDRStage {
 
 struct TileRegionEmissionRelations {
   llvm::SmallVector<MaterializedSelectedDDRStage, 8> selectedDDRStages;
+  StructuredMaterializationRelations materializedBuffers;
 };
 
 struct SelectedCollectivePartitionGroup {
@@ -230,7 +231,9 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    std::string *failureReason);
+    std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes =
+        nullptr);
 
 mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
@@ -239,7 +242,9 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    std::string *failureReason);
+    std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes =
+        nullptr);
 
 mlir::FailureOr<mlir::Value> materializeCandidateOperandConsumerTileValue(
     mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
@@ -256,7 +261,9 @@ mlir::LogicalResult fuseCandidateProducerSlices(
     TensorProgramScope scope,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    mlir::OpBuilder::Listener *insertionListener, std::string *failureReason);
+    mlir::OpBuilder::Listener *insertionListener, std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes =
+        nullptr);
 
 mlir::FailureOr<mlir::Value>
 getCandidateOutputBoundary(TensorProgramScope scope, unsigned outputIndex,
@@ -283,7 +290,9 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileIntoDestination(
     llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    mlir::Value destination, std::string *failureReason);
+    mlir::Value destination, std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes =
+        nullptr);
 
 mlir::FailureOr<llvm::SmallVector<mlir::Operation *, 4>>
 collectCandidateRoots(TensorProgramScope scope, bool rejectProducerChains,
@@ -293,6 +302,8 @@ mlir::LogicalResult materializeCandidateOutputTileSlices(
     TensorProgramScope scope, llvm::ArrayRef<SpatialOutputShard> outputShards,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes =
+        nullptr,
     llvm::ArrayRef<mlir::Operation *> preservedOperations = {});
 
 /// Erases only the dead pure tensor producer/view closure left after candidate
@@ -316,8 +327,7 @@ public:
       llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints = {},
       llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages = {},
       TileRegionEmissionRelations *emissionRelations = nullptr,
-      llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage = {},
-      llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage = {});
+      llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {});
 
   mlir::FailureOr<TileRegionOp> emit(TensorProgramScope scope,
                                      mlir::RewriterBase &rewriter);
@@ -328,8 +338,9 @@ private:
   llvm::SmallVector<CandidatePeerEndpoint, 8> peerEndpoints;
   llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages;
   TileRegionEmissionRelations *emissionRelations = nullptr;
-  llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage;
-  llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<uint32_t, 2>>
+      structuredNodeIds;
+  llvm::SmallVector<uint32_t, 2> activeStructuredNodes;
   llvm::DenseMap<mlir::Value, BufferVersions> buffers;
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
   llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
@@ -342,16 +353,6 @@ private:
   llvm::DenseMap<mlir::Value, mlir::Value> directYieldBuffers;
   llvm::DenseMap<mlir::Value, mlir::Value> fillInitScalars;
   llvm::DenseMap<mlir::Value, mlir::Attribute> fillInitAttrs;
-  /// Location of the structured operation whose current operand request is
-  /// causing a value to enter SPM. It is transient conversion context, not a
-  /// schedule side channel, and is fused into allocation locations solely so
-  /// an actual packing failure can identify the responsible coordinate.
-  mlir::LocationAttr currentMaterializationConsumerLoc;
-  /// Demand marker available while lowering one structured operation. It is
-  /// activated only by the explicit data-input helper, never for DPS init or
-  /// result storage.
-  mlir::LocationAttr availableStructuredOperandDemandLoc;
-
   mlir::LogicalResult fail(llvm::StringRef reason);
 
   mlir::FailureOr<TileRegionOp> failAndReturn(llvm::StringRef reason);
@@ -422,6 +423,10 @@ private:
   mlir::FailureOr<mlir::Value>
   getOrMaterializeStructuredInput(mlir::Value original, MemLayout targetLayout,
                                   mlir::OpBuilder &builder);
+  void recordOperationResultBuffer(uint32_t structuredNodeId,
+                                   mlir::Value buffer);
+  void recordOperandBuffer(uint32_t structuredNodeId, mlir::Value buffer);
+  void recordOutputBuffer(unsigned outputIndex, mlir::Value buffer);
 
   mlir::FailureOr<SelectedCollectivePartitionGroup>
   getCollectivePartitionGroup(mlir::DenseI64ArrayAttr partitionGroup,
@@ -678,7 +683,6 @@ mlir::LogicalResult convertTensorProgramToTileRegionModuleInPlace(
     llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints = {},
     llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages = {},
     TileRegionEmissionRelations *emissionRelations = nullptr,
-    llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage = {},
-    llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage = {});
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {});
 
 } // namespace wafer::tensor_program_to_tile_region

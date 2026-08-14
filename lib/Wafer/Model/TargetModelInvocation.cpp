@@ -80,8 +80,23 @@ makeTensorKey(const compiler::KernelABISlot &slot) {
           "Kernel ABI slot has a dynamic or negative dimension");
     shape.push_back(static_cast<uint64_t>(dimension));
   }
+  PhysicalTensorLayout layout;
+  switch (slot.layout) {
+  case MemLayout::Tensor:
+    layout = PhysicalTensorLayout::Tensor;
+    break;
+  case MemLayout::NTensor:
+    layout = PhysicalTensorLayout::NTensor;
+    break;
+  case MemLayout::Cx:
+    layout = PhysicalTensorLayout::Cx;
+    break;
+  case MemLayout::NCx:
+    layout = PhysicalTensorLayout::NCx;
+    break;
+  }
   llvm::Expected<NumericTensorKey> key =
-      NumericTensorKey::create(*format, slot.layout, std::move(shape));
+      NumericTensorKey::create(*format, layout, std::move(shape));
   if (!key)
     return invocationError(TargetModelInvocationErrorCode::InvalidKernelABISlot,
                            llvm::toString(key.takeError()));
