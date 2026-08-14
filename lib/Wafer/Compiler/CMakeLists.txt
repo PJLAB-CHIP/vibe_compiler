@@ -54,6 +54,7 @@ add_mlir_library(WaferCompiler
   TargetModuleReadback.cpp
   TargetPackagePublication.cpp
   TargetInstrumentation.cpp
+  TileRegionLocalFit.cpp
   PhysicalTilePreflight.cpp
   SelectedBufferMaterialization.cpp
   TargetCallFrontend.cpp

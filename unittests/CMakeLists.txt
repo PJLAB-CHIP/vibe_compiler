@@ -16,6 +16,7 @@ add_executable(WaferUnitTests
   Compiler/TargetArtifactTest.cpp
   Compiler/TargetCallFrontendTest.cpp
   Compiler/TargetIdentityTest.cpp
+  Compiler/TileRegionLocalFitTest.cpp
   Compiler/WholeDAGScheduleTest.cpp
   Compiler/WholeDAGEdgeStrategyPlanTest.cpp
   Compiler/WholeDAGPlacementFrontierTest.cpp

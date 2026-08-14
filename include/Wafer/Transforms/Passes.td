@@ -94,8 +94,21 @@ def NormalizeStablehloCollectivesPass
 }
 
 def ConvertTileRegionToInstrPass
-    : Pass<"wafer-convert-tile-region-to-instr", "mlir::ModuleOp"> {
-  let summary = "Convert executable wafer.tile.region ops to wafer.instr IR";
+    : Pass<"wafer-convert-tile-region-to-instr", "wafer::TileRegionOp"> {
+  let summary = "Convert one executable wafer.tile.region to wafer.instr IR";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::async::AsyncDialect",
+                           "mlir::func::FuncDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect",
+                           "wafer::WaferDialect"
+  ];
+}
+
+def NormalizeNCCCompletionPass
+    : Pass<"wafer-normalize-ncc-completion", "mlir::func::FuncOp"> {
+  let summary =
+      "Recompute minimum NCC completion for one instruction-level function";
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::async::AsyncDialect",
                            "mlir::func::FuncDialect",

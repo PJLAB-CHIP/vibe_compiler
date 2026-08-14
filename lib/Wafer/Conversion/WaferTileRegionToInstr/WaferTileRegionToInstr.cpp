@@ -37,6 +37,7 @@ using namespace wafer::tile_region_to_instr;
 
 namespace wafer {
 #define GEN_PASS_DEF_CONVERTTILEREGIONTOINSTRPASS
+#define GEN_PASS_DEF_NORMALIZENCCCOMPLETIONPASS
 #include "Wafer/Transforms/WaferPasses.h.inc"
 } // namespace wafer
 
@@ -67,8 +68,8 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   });
 }
 
-static void populateTileRegionToInstrPatterns(
-    mlir::RewritePatternSet &patterns) {
+static void
+populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns) {
   // Match failures stay inside the PatternRewriter transaction. The public
   // compiler adapter reports a deterministic stage-level failure after the
   // conversion driver returns; it does not expose the last attempted pattern
@@ -85,9 +86,9 @@ static void populateTileRegionToInstrPatterns(
 /// after the tile body has already materialized its splat.  Keeping that
 /// write would turn a dead i1 value into a real target TDMA command, where the
 /// hardware profile correctly rejects the unproven BOOL encoding.
-static void eraseDeadPrivateFills(mlir::ModuleOp module) {
+static void eraseDeadPrivateFills(mlir::Operation *root) {
   llvm::SmallVector<InstrFillOp, 4> deadFills;
-  module.walk([&](InstrFillOp fill) {
+  root->walk([&](InstrFillOp fill) {
     mlir::Value dest = fill.getDest();
     if (dest.hasOneUse() && dest.getDefiningOp<mlir::memref::AllocOp>())
       deadFills.push_back(fill);
@@ -598,9 +599,9 @@ static uint32_t getRegionLocalPendingWorkerMask(TileRegionOp region,
 
 class NCCJoinPlacement {
 public:
-  mlir::LogicalResult run(mlir::ModuleOp module) {
+  mlir::LogicalResult run(mlir::func::FuncOp function) {
     materializationRoots.clear();
-    module.walk([&](InstrRDMAOp rdma) {
+    function.walk([&](InstrRDMAOp rdma) {
       llvm::SmallVector<mlir::Value, 4> sourceRoots =
           getAccessRoots(rdma.getSource());
       llvm::SmallVector<mlir::Value, 4> destinationRoots =
@@ -611,26 +612,19 @@ public:
       materializationRoots.insert(sourceRoots.begin(), sourceRoots.end());
     });
 
-    mlir::WalkResult result = module.walk([&](mlir::func::FuncOp function) {
-      if (function.isExternal())
-        return mlir::WalkResult::skip();
-      if (!function.getBody().hasOneBlock()) {
-        bool hasIssue = false;
-        function.walk([&](WaferNCCIssueOpInterface) { hasIssue = true; });
-        if (hasIssue) {
-          function.emitError()
-              << "instruction_completion_failure: exact NCC completion "
-                 "placement requires structured single-block function IR";
-          return mlir::WalkResult::interrupt();
-        }
-        return mlir::WalkResult::skip();
-      }
-      PendingNCCState state;
-      if (mlir::failed(processBlock(function.getBody().front(), state)))
-        return mlir::WalkResult::interrupt();
-      return mlir::WalkResult::skip();
-    });
-    return result.wasInterrupted() ? mlir::failure() : mlir::success();
+    if (function.isExternal())
+      return mlir::success();
+    if (!function.getBody().hasOneBlock()) {
+      bool hasIssue = false;
+      function.walk([&](WaferNCCIssueOpInterface) { hasIssue = true; });
+      if (!hasIssue)
+        return mlir::success();
+      return function.emitError()
+             << "instruction_completion_failure: exact NCC completion "
+                "placement requires structured single-block function IR";
+    }
+    PendingNCCState state;
+    return processBlock(function.getBody().front(), state);
   }
 
 private:
@@ -870,8 +864,8 @@ struct ConvertTileRegionToInstrPass
 
   void runOnOperation() final {
     std::string failureReason;
-    if (mlir::succeeded(wafer::convertTileRegionToInstrModule(getOperation(),
-                                                              &failureReason)))
+    if (mlir::succeeded(
+            wafer::convertTileRegionToInstr(getOperation(), &failureReason)))
       return;
 
     if (!failureReason.empty())
@@ -882,15 +876,78 @@ struct ConvertTileRegionToInstrPass
   }
 };
 
+struct NormalizeNCCCompletionPass
+    : public wafer::impl::NormalizeNCCCompletionPassBase<
+          NormalizeNCCCompletionPass> {
+  using wafer::impl::NormalizeNCCCompletionPassBase<
+      NormalizeNCCCompletionPass>::NormalizeNCCCompletionPassBase;
+
+  void runOnOperation() final {
+    if (mlir::succeeded(wafer::normalizeMinimumNCCJoins(getOperation())))
+      return;
+    signalPassFailure();
+  }
+};
+
 } // namespace
 
-mlir::LogicalResult wafer::normalizeMinimumNCCJoins(mlir::ModuleOp module) {
-  if (!module)
+struct wafer::TileRegionToInstrLoweringSession::Impl {
+  explicit Impl(mlir::MLIRContext &context) : target(context) {
+    configureTileRegionToInstrTarget(target);
+
+    mlir::RewritePatternSet select(&context);
+    populateConstantPredicateSelectCanonicalizationPattern(select);
+    selectPatterns = mlir::FrozenRewritePatternSet(std::move(select));
+
+    mlir::RewritePatternSet lowering(&context);
+    populateTileRegionToInstrPatterns(lowering);
+    loweringPatterns = mlir::FrozenRewritePatternSet(std::move(lowering));
+  }
+
+  mlir::ConversionTarget target;
+  mlir::FrozenRewritePatternSet selectPatterns;
+  mlir::FrozenRewritePatternSet loweringPatterns;
+};
+
+wafer::TileRegionToInstrLoweringSession::TileRegionToInstrLoweringSession(
+    mlir::MLIRContext &context)
+    : impl(std::make_unique<Impl>(context)) {}
+
+wafer::TileRegionToInstrLoweringSession::~TileRegionToInstrLoweringSession() =
+    default;
+
+mlir::LogicalResult
+wafer::normalizeMinimumNCCJoins(mlir::func::FuncOp function) {
+  if (!function)
     return mlir::failure();
   wafer::support::ScopedCompileTimingSpan timing(
       "lowering-phase", "tile-region-to-instr",
       "minimum-ncc-join-normalization");
-  mlir::LogicalResult result = NCCJoinPlacement().run(module);
+  mlir::LogicalResult result = NCCJoinPlacement().run(function);
+  if (mlir::failed(result))
+    timing.markFailed();
+  return result;
+}
+
+mlir::LogicalResult wafer::normalizeMinimumNCCJoins(mlir::ModuleOp module) {
+  if (!module)
+    return mlir::failure();
+  for (mlir::func::FuncOp function : module.getOps<mlir::func::FuncOp>())
+    if (mlir::failed(wafer::normalizeMinimumNCCJoins(function)))
+      return mlir::failure();
+  return mlir::success();
+}
+
+mlir::LogicalResult wafer::rebuildMinimumNCCJoins(mlir::func::FuncOp function) {
+  if (!function)
+    return mlir::failure();
+  wafer::support::ScopedCompileTimingSpan timing(
+      "lowering-phase", "tile-region-to-instr", "fresh-ncc-join-rebuild");
+  llvm::SmallVector<SyncNCCJoinOp, 16> staleJoins;
+  function.walk([&](SyncNCCJoinOp join) { staleJoins.push_back(join); });
+  for (SyncNCCJoinOp join : llvm::reverse(staleJoins))
+    join.erase();
+  mlir::LogicalResult result = NCCJoinPlacement().run(function);
   if (mlir::failed(result))
     timing.markFailed();
   return result;
@@ -899,16 +956,10 @@ mlir::LogicalResult wafer::normalizeMinimumNCCJoins(mlir::ModuleOp module) {
 mlir::LogicalResult wafer::rebuildMinimumNCCJoins(mlir::ModuleOp module) {
   if (!module)
     return mlir::failure();
-  wafer::support::ScopedCompileTimingSpan timing(
-      "lowering-phase", "tile-region-to-instr", "fresh-ncc-join-rebuild");
-  llvm::SmallVector<SyncNCCJoinOp, 16> staleJoins;
-  module.walk([&](SyncNCCJoinOp join) { staleJoins.push_back(join); });
-  for (SyncNCCJoinOp join : llvm::reverse(staleJoins))
-    join.erase();
-  mlir::LogicalResult result = NCCJoinPlacement().run(module);
-  if (mlir::failed(result))
-    timing.markFailed();
-  return result;
+  for (mlir::func::FuncOp function : module.getOps<mlir::func::FuncOp>())
+    if (mlir::failed(wafer::rebuildMinimumNCCJoins(function)))
+      return mlir::failure();
+  return mlir::success();
 }
 
 bool wafer::containsTileDataflowOperations(mlir::Operation *root) {
@@ -945,21 +996,24 @@ wafer::detail::countStaticExecutableOperations(mlir::Operation *root,
 }
 
 mlir::LogicalResult
-wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
-                                      std::string *failureReason) {
+wafer::convertTileRegionToInstr(TileRegionOp region,
+                                TileRegionToInstrLoweringSession &session,
+                                std::string *failureReason) {
+  if (!region)
+    return mlir::failure();
   wafer::support::recordCompileWork(
       wafer::support::CompileWorkKind::TileToInstructionLowering);
   wafer::support::ScopedCompileTimingSpan conversionTiming(
-      "conversion", "tile-region-to-instr", "module-conversion");
+      "conversion", "tile-region-to-instr", "region-conversion");
   if (failureReason)
     failureReason->clear();
 
-  mlir::MLIRContext *context = module.getContext();
+  mlir::MLIRContext *context = region.getContext();
   llvm::SmallVector<mlir::Operation *, 4> selectCandidates;
   {
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering-phase", "tile-region-to-instr", "select-discovery");
-    module.walk([&](ComputeElementwiseOp op) {
+    region.walk([&](ComputeElementwiseOp op) {
       if (op.getKind() == ComputeElementwiseKind::Select)
         selectCandidates.push_back(op);
     });
@@ -968,36 +1022,16 @@ wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering-phase", "tile-region-to-instr",
         "constant-select-canonicalization");
-    mlir::RewritePatternSet canonicalizationPatterns(context);
-    populateConstantPredicateSelectCanonicalizationPattern(
-        canonicalizationPatterns);
-    mlir::FrozenRewritePatternSet frozenPatterns(
-        std::move(canonicalizationPatterns));
     mlir::GreedyRewriteConfig config;
     config.strictMode = mlir::GreedyRewriteStrictness::ExistingOps;
-    if (mlir::failed(mlir::applyOpPatternsAndFold(selectCandidates,
-                                                  frozenPatterns, config))) {
+    if (mlir::failed(mlir::applyOpPatternsAndFold(
+            selectCandidates, session.impl->selectPatterns, config))) {
       timing.markFailed();
       setFailureReason(
           failureReason,
           "tile constant-predicate select canonicalization failed");
       return mlir::failure();
     }
-  }
-
-  mlir::ConversionTarget target(*context);
-  {
-    wafer::support::ScopedCompileTimingSpan timing(
-        "lowering-phase", "tile-region-to-instr",
-        "conversion-target-configuration");
-    configureTileRegionToInstrTarget(target);
-  }
-
-  mlir::RewritePatternSet patterns(context);
-  {
-    wafer::support::ScopedCompileTimingSpan timing(
-        "lowering-phase", "tile-region-to-instr", "pattern-population");
-    populateTileRegionToInstrPatterns(patterns);
   }
 
   bool conversionSucceeded = false;
@@ -1007,7 +1041,8 @@ wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
     mlir::ScopedDiagnosticHandler handler(
         context, [](mlir::Diagnostic &) { return mlir::success(); });
     conversionSucceeded = mlir::succeeded(
-        mlir::applyFullConversion(module, target, std::move(patterns)));
+        mlir::applyFullConversion(region.getOperation(), session.impl->target,
+                                  session.impl->loweringPatterns));
     if (!conversionSucceeded)
       timing.markFailed();
   }
@@ -1022,10 +1057,29 @@ wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
   {
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering-phase", "tile-region-to-instr", "dead-private-fill-erasure");
-    eraseDeadPrivateFills(module);
+    eraseDeadPrivateFills(region.getOperation());
   }
-  mlir::LogicalResult result = wafer::normalizeMinimumNCCJoins(module);
-  if (mlir::failed(result))
-    conversionTiming.markFailed();
-  return result;
+  return mlir::success();
+}
+
+mlir::LogicalResult
+wafer::convertTileRegionToInstr(TileRegionOp region,
+                                std::string *failureReason) {
+  if (!region)
+    return mlir::failure();
+  TileRegionToInstrLoweringSession session(*region.getContext());
+  return wafer::convertTileRegionToInstr(region, session, failureReason);
+}
+
+mlir::LogicalResult
+wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
+                                      std::string *failureReason) {
+  if (!module)
+    return mlir::failure();
+  llvm::SmallVector<TileRegionOp, 4> regions;
+  module.walk([&](TileRegionOp region) { regions.push_back(region); });
+  for (TileRegionOp region : regions)
+    if (mlir::failed(wafer::convertTileRegionToInstr(region, failureReason)))
+      return mlir::failure();
+  return wafer::normalizeMinimumNCCJoins(module);
 }

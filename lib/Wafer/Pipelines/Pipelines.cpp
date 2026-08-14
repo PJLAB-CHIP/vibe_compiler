@@ -91,7 +91,10 @@ void buildPreparePhysicalTileCandidatePipeline(mlir::OpPassManager &pm) {
 }
 
 void buildLowerTileRegionToInstrPipeline(mlir::OpPassManager &pm) {
-  pm.addPass(createConvertTileRegionToInstrPass());
+  mlir::OpPassManager &functionPM = pm.nest<mlir::func::FuncOp>();
+  functionPM.nest<TileRegionOp>().addPass(
+      createConvertTileRegionToInstrPass());
+  functionPM.addPass(createNormalizeNCCCompletionPass());
 }
 
 void buildPlanSPMMemoryPipeline(mlir::OpPassManager &pm) {
