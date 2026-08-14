@@ -1144,12 +1144,6 @@ void createMappedWDMADescriptors(
         descriptor.dest.strides, descriptor.dest.iterations);
 }
 
-void copyOptionalAttr(mlir::Operation *from, mlir::Operation *to,
-                      llvm::StringRef name) {
-  if (mlir::Attribute attr = from->getAttr(name))
-    to->setAttr(name, attr);
-}
-
 mlir::IntegerAttr getI64Attr(mlir::PatternRewriter &rewriter, int64_t value) {
   return rewriter.getI64IntegerAttr(value);
 }

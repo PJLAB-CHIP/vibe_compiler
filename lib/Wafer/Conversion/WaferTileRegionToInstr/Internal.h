@@ -125,8 +125,6 @@ void createMappedRDMADescriptors(
 void createMappedWDMADescriptors(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
     mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors);
-void copyOptionalAttr(mlir::Operation *from, mlir::Operation *to,
-                      llvm::StringRef name);
 mlir::IntegerAttr getI64Attr(mlir::PatternRewriter &rewriter, int64_t value);
 mlir::FailureOr<int64_t> readRequiredI64Attr(mlir::PatternRewriter &rewriter,
                                              mlir::Operation *op,

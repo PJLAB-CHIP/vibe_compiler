@@ -142,17 +142,17 @@ public:
           rewriter, op, failureReason,
           "layout materialization gather/scatter is not exactly realizable");
 
-    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
-        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
-    if (mlir::failed(dest))
-      return mlir::failure();
-
     mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
         getRelationMovementDescriptors(
             rewriter, op, sourceType, resultType, resultType.getShape(),
             *relation.get(), *relation.get(), MovementEngine::GatherScatter,
             failureReason, "layout materialize lowering");
     if (mlir::failed(descriptors))
+      return mlir::failure();
+
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    if (mlir::failed(dest))
       return mlir::failure();
 
     createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(), *dest,
@@ -186,17 +186,17 @@ public:
     if (!relation.isExact())
       return failPattern(rewriter, op, failureReason,
                          "tile.copy identity relation is not exact");
-    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
-        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
-    if (mlir::failed(dest))
-      return mlir::failure();
-
     mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
         getRelationMovementDescriptors(
             rewriter, op, sourceType, resultType, resultType.getShape(),
             *relation.get(), *relation.get(), MovementEngine::GatherScatter,
             failureReason, "tile.copy lowering");
     if (mlir::failed(descriptors))
+      return mlir::failure();
+
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    if (mlir::failed(dest))
       return mlir::failure();
 
     createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(), *dest,

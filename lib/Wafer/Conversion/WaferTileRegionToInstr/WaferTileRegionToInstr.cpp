@@ -67,13 +67,17 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   });
 }
 
-static void populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
-                                              std::string *failureReason) {
-  populateMovementLoweringPatterns(patterns, failureReason);
-  populateComputeLoweringPatterns(patterns, failureReason);
-  populateViewReshapeLoweringPattern(patterns, failureReason);
+static void populateTileRegionToInstrPatterns(
+    mlir::RewritePatternSet &patterns) {
+  // Match failures stay inside the PatternRewriter transaction. The public
+  // compiler adapter reports a deterministic stage-level failure after the
+  // conversion driver returns; it does not expose the last attempted pattern
+  // through rollback-external mutable state.
+  populateMovementLoweringPatterns(patterns, /*failureReason=*/nullptr);
+  populateComputeLoweringPatterns(patterns, /*failureReason=*/nullptr);
+  populateViewReshapeLoweringPattern(patterns, /*failureReason=*/nullptr);
   populateFillLoweringPattern(patterns);
-  populatePeerLoweringPatterns(patterns, failureReason);
+  populatePeerLoweringPatterns(patterns, /*failureReason=*/nullptr);
 }
 
 /// Remove a private fill whose destination has no reader.  Constant folding
@@ -993,7 +997,7 @@ wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
   {
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering-phase", "tile-region-to-instr", "pattern-population");
-    populateTileRegionToInstrPatterns(patterns, failureReason);
+    populateTileRegionToInstrPatterns(patterns);
   }
 
   bool conversionSucceeded = false;
