@@ -107,19 +107,7 @@ static mlir::LogicalResult proveIdentityPhysicalTraversal(
   return mlir::success();
 }
 
-class FillLowering : public mlir::OpRewritePattern<ComputeFillOp> {
-public:
-  using mlir::OpRewritePattern<ComputeFillOp>::OpRewritePattern;
-
-  mlir::LogicalResult
-  matchAndRewrite(ComputeFillOp op,
-                  mlir::PatternRewriter &rewriter) const final {
-    ScopedLoweringPatternTiming timing(op.getOperation());
-    rewriter.replaceOpWithNewOp<InstrFillOp>(op, op.getDest(), op.getValue(),
-                                             op.getFillDomainAttr());
-    return mlir::success();
-  }
-};
+#include "WaferTileRegionToInstr/Patterns.inc"
 
 static std::optional<InstrConvertKind>
 resolveInstrConvertKind(mlir::Type sourceType, mlir::Type resultType) {
@@ -1059,7 +1047,7 @@ void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
 
 void wafer::tile_region_to_instr::populateFillLoweringPattern(
     mlir::RewritePatternSet &patterns) {
-  patterns.add<FillLowering>(patterns.getContext());
+  populateWithGenerated(patterns);
 }
 
 void wafer::tile_region_to_instr::

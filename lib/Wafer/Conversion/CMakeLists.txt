@@ -66,6 +66,10 @@ add_mlir_conversion_library(WaferTensorProgramToTileRegion
   MLIRDialectUtils
 )
 
+set(LLVM_TARGET_DEFINITIONS WaferTileRegionToInstr/Patterns.td)
+mlir_tablegen(WaferTileRegionToInstr/Patterns.inc -gen-rewriters)
+add_public_tablegen_target(WaferTileRegionToInstrPatternsIncGen)
+
 add_mlir_conversion_library(WaferTileRegionToInstr
   WaferTileRegionToInstr/ComputeLowering.cpp
   WaferTileRegionToInstr/MovementLowering.cpp
@@ -78,6 +82,7 @@ add_mlir_conversion_library(WaferTileRegionToInstr
 
   DEPENDS
   WaferPassesIncGen
+  WaferTileRegionToInstrPatternsIncGen
 
   LINK_LIBS PUBLIC
   WaferAnalysis
@@ -91,6 +96,9 @@ add_mlir_conversion_library(WaferTileRegionToInstr
   MLIRSupport
   MLIRTransforms
 )
+
+target_include_directories(obj.WaferTileRegionToInstr PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR})
 
 add_mlir_conversion_library(WaferStableHLOToLinalg
   StableHLOToLinalg/ConstantTensorFolding.cpp
