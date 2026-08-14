@@ -288,6 +288,7 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | 跨stage verification contract与evidence口径 | 16 |
 | target execution model、numeric/bulk/SystemC与board correlation | 17 |
 | source/build ownership、依赖与测试镜像 | 18 |
+| 跨IR层的ODS、interface、operation-scoped pass/analysis、rewrite/conversion与named pipeline工程合同 | 19 |
 | profile-scoped compiler-hardware行为与外推边界 | `docs/tx81-compiler-hardware-calibration.md` |
 
 编号是owner导航，不表示transform顺序或任务优先级。专题文件路径只从`tasks/README.md`读取，动态前置只从

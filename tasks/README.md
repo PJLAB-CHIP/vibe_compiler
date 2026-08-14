@@ -29,6 +29,7 @@
 | 16 | `tasks/16-verification-contract.md` | `TensorProgram -> CardProgram/TileRegion/Instr -> CardExecutable -> ExecutablePackage`的target correctness、CPU oracle、target-model、scale、no-card和board分层gate |
 | 17 | `tasks/17-target-execution-model.md` | `CardExecutable`及其same-invocation target LLVM owner消费、multi-dtype numeric、oneDNN bulk、target-call/SystemC untimed CModel与板端numeric correlation边界 |
 | 18 | `tasks/18-source-organization.md` | 跨pipeline的源码ownership、translation unit、内部接口、构建依赖和测试镜像组织合同；不改变IR/artifact语义 |
+| 19 | `tasks/19-mlir-engineering.md` | 跨IR层的ODS、standard interface、operation-scoped pass/analysis、rewrite/conversion和named nested pipeline工程合同；不重定义01–18语义 |
 
 ### Pipeline Owner 索引
 
@@ -51,6 +52,7 @@
 | 横跨上述边界的completion evidence | 16 |
 | target execution model、multi-dtype numeric/bulk、same-invocation target module消费、SystemC/CModel capability、板端numeric correlation和deferred timing | 17；target module形成与publication合同由14拥有，target/runtime/verification consumer由14、15、16约束 |
 | 跨上述边界的源码与构建模块化 | 18；各IR/artifact语义仍由01-17拥有 |
+| 跨上述IR层的MLIR operation scope、pass/analysis manager、interface和rewrite工程合同 | 19；各层具体语义仍由01-18拥有 |
 
 ## 实施计划导航
 
@@ -64,6 +66,11 @@ spatial、TileRegion/temporal/fusion、physical representation/movement、buffer
 Q51.Core尽早建立唯一search owner，Q51随后闭合联合选择，Q52按实际负载优化scalability，Q53形成production
 `board-ready`与真实板端证据。06仍是唯一联合决策设计owner；任务拆分只提供可验证接入checkpoint，不产生独立layout、
 fusion、buffering、communication或worker selector。动态状态、依赖和完成门禁只看`tasks/progress.md`。
+
+Q54 MLIR工程化整改计划见`tasks/plans/mlir-engineering-remediation.md`。19是横向工程合同owner：让现有operation/region
+层级成为真实pass与analysis层级，收口typed ODS、standard interface、named nested pipeline和transactional rewrite，并
+通过18定义的source truth gate；它不产生新IR stage或第二production driver。Q54优先于Q49.P、Q50.A/Q51继续施工，避免把semantic
+Location、whole-module local wrapper和手工analysis lifecycle固化进baseline probe或新的candidate/search实现。
 
 Q48语义驱动superoptimizer计划见`tasks/plans/semantic-superoptimization.md`。它必须在Q53按card-local multi-Tile新合同
 重新达到`board-ready`、Q47 current ABI可消费final Instr/TargetCall后启动，
@@ -98,7 +105,8 @@ Q6.B board runtime完成计划已归档为
 `tasks/archive/physical-dataflow-synthesis-completion-audit.md`，完成后的实施计划归档为
 `tasks/archive/physical-dataflow-synthesis.md`；Q32.G/S/M/V/B/R/I各checkpoint仍由对应独立归档记录保存详细变更和
 验证证据。Q34 static memory packing已归档为`tasks/archive/static-memory-packing.md`。这些计划和记录只保存施工checkpoint、
-验证/删除门槛与历史证据；动态blocked-by只看progress，算法与IR合同仍由01、05、06-18编号设计文档拥有。
+验证/删除门槛与历史证据；动态blocked-by只看progress，算法与IR合同仍由01、05、06-18编号设计文档拥有，
+横向MLIR工程合同由19拥有。
 
 已完成Q31标准7B单block多seed数值表征和source/model gate收紧归档为
 `tasks/archive/llama-block-numeric-characterization.md`；Q30标准7B单block production vertical性能收口归档为

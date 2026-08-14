@@ -1,8 +1,9 @@
 # Physical Dataflow Synthesis 实施计划
 
 状态：Q49 deterministic `none` baseline 已于 2026-08-11 达到 `board-ready`，但其控制流隔离和编译耗时不属于已签发的
-正确性证据。Q50.0无策略CardExecutable编译/准入边界已闭合；当前先隔离Q49.P baseline控制流，再修复Q50.A production demand boundary并建立
-Q51.Core共同状态、transition和actual-probe seam；随后让Q50.S与Q50.B–Q50.K逐轴接入同一个owner，最后闭合Q51。
+正确性证据。Q50.0无策略CardExecutable编译/准入边界已闭合；当前优先按Q54收口MLIR infrastructure，再以该基础隔离
+Q49.P baseline控制流，并修复Q50.A production demand boundary、建立Q51.Core共同状态、transition和actual-probe seam；随后让
+Q50.S与Q50.B–Q50.K逐轴接入同一个owner，最后闭合Q51。
 算法、IR和长期pipeline contract仍只由
 `tasks/06-physical-dataflow-synthesis.md` 拥有；本文件只规定施工依赖、现有代码处置和独立 checkpoint。
 
@@ -36,8 +37,8 @@ Pipeline position:
   不把 query-local frontier、solver state、estimated allocation 或 board 结果写入 IR；不由本计划拥有 Q48 semantic
   superoptimization。
 - Completion gate:
-  Q50.0先建立共同CardExecutable compile/admission seam；Q49.P隔离baseline控制流；Q50.A修复production exact-demand
-  boundary；Q51.Core建立共同search kernel；Q50.S与Q50.B–Q50.K逐轴交付
+  Q50.0先建立共同CardExecutable compile/admission seam；Q54按19号合同收口MLIR infrastructure；Q49.P基于该基础隔离
+  baseline控制流；Q50.A修复production exact-demand boundary；Q51.Core建立共同search kernel；Q50.S与Q50.B–Q50.K逐轴交付
   mechanism 且移除对应旧 owner；Q51 通过two-layer small exhaustive oracle、complete CardExecutable gates 和有效 fusion 闭合；
   Q52 在真实 workload 上形成可复现的 10/30 分钟 anytime 质量与吞吐结论；Q53 生成 fresh package、oracle、runner
   并通过 no-card 达到 board-ready，真实 matched 板端 A/B 后才 done。
@@ -106,24 +107,25 @@ candidate”不等于搜索失败。若baseline本身无法通过exact gate，�
 
 | 顺序 | Checkpoint | 施工责任 | 完成后才能开始 |
 | --- | --- | --- | --- |
-| 0 | Q50.0 CardExecutable compilation boundary | 抽出无策略的actual compile/admission seam，不允许lowering修候选 | Q49.P、Q50.A |
-| 1 | Q49.P baseline control-flow isolation | `none`不构造search对象；scoped probe后只完整编译一次 | baseline性能复核 |
-| 2 | Q50.A placement-demand repair | `IndexRelation.image()` exact demand不被carrier/layout/route反写 | Q51.Core |
-| 3 | Q51.Core | 共同state、transition、frontier、incumbent、ledger、budget与oracle harness | Q50.S、Q50.B |
-| 4 | Q50.S structured semantic alternatives | typed proof与actual TensorProgram roots接入共同owner | Q51 closure |
-| 5 | Q50.B spatial partition + placement | 完整spatial domain接入共同owner | Q50.C |
-| 6 | Q50.C maximal single-op TileRegion | 单op local work的完整actual region materialization | Q50.D |
-| 7 | Q50.D coupled traversal / region fusion | 多op boundary、coupled traversal和合法cut进入同一state | Q50.E |
-| 8 | Q50.E complete temporal tiling | 全iterator finite breakpoint domain | Q50.F |
-| 9 | Q50.F actual region probe | actual lowering/lifetime/SPM反馈回共同frontier | Q50.G |
-| 10 | Q50.G layout / representation | layout、encoding、version与conversion transition | Q50.H |
-| 11 | Q50.H explicit movement | local、NoC、DDR、collective、spill/recompute action | Q50.I |
-| 12 | Q50.I rotating buffers | rotating slots与multi-buffer lifetime | Q50.J |
-| 13 | Q50.J event/resource schedule | ready/order/worker/completion/resource calendars | Q50.K |
-| 14 | Q50.K conditional stage pipeline | 在已证明条件下组合跨op wave pipeline | Q51 closure |
-| 15 | Q51 closure | 全轴联合正确性、small oracle、旧owner清理和policy cutover | Q52 |
-| 16 | Q52 profile-driven anytime / LNS | 10–30分钟内高质量actual winner与可解释trade-off | Q53 |
-| 17 | Q53 production | representative workload package/no-card/board A/B | Q48后续工作 |
+| 0 | Q50.0 CardExecutable compilation boundary | 抽出无策略的actual compile/admission seam，不允许lowering修候选 | Q54 |
+| 1 | Q54 MLIR infrastructure conformance | typed IR/interface、scoped pass/analysis、named pipeline与rewrite transaction收口 | Q49.P、Q50.A |
+| 2 | Q49.P baseline control-flow isolation | `none`不构造search对象；scoped probe后只完整编译一次 | baseline性能复核 |
+| 3 | Q50.A placement-demand repair | `IndexRelation.image()` exact demand不被carrier/layout/route反写 | Q51.Core |
+| 4 | Q51.Core | 共同state、transition、frontier、incumbent、ledger、budget与oracle harness | Q50.S、Q50.B |
+| 5 | Q50.S structured semantic alternatives | typed proof与actual TensorProgram roots接入共同owner | Q51 closure |
+| 6 | Q50.B spatial partition + placement | 完整spatial domain接入共同owner | Q50.C |
+| 7 | Q50.C maximal single-op TileRegion | 单op local work的完整actual region materialization | Q50.D |
+| 8 | Q50.D coupled traversal / region fusion | 多op boundary、coupled traversal和合法cut进入同一state | Q50.E |
+| 9 | Q50.E complete temporal tiling | 全iterator finite breakpoint domain | Q50.F |
+| 10 | Q50.F actual region probe | actual lowering/lifetime/SPM反馈回共同frontier | Q50.G |
+| 11 | Q50.G layout / representation | layout、encoding、version与conversion transition | Q50.H |
+| 12 | Q50.H explicit movement | local、NoC、DDR、collective、spill/recompute action | Q50.I |
+| 13 | Q50.I rotating buffers | rotating slots与multi-buffer lifetime | Q50.J |
+| 14 | Q50.J event/resource schedule | ready/order/worker/completion/resource calendars | Q50.K |
+| 15 | Q50.K conditional stage pipeline | 在已证明条件下组合跨op wave pipeline | Q51 closure |
+| 16 | Q51 closure | 全轴联合正确性、small oracle、旧owner清理和policy cutover | Q52 |
+| 17 | Q52 profile-driven anytime / LNS | 10–30分钟内高质量actual winner与可解释trade-off | Q53 |
+| 18 | Q53 production | representative workload package/no-card/board A/B | Q48后续工作 |
 
 Q51.Core是Q51的提前施工checkpoint，不等于Q51已完成。Q50.S与Q50.B–Q50.K必须在core上逐轴交付；Q51只有在全部
 轴组合、small exhaustive oracle、actual fusion 和旧 owner 删除门禁都满足后才能整体完成。
@@ -217,6 +219,9 @@ tile vector以及baseline已固定的spatial、DDR-boundary、representation和s
 region所需的lowering、fresh lifetime和fixed-capacity SPM packing，返回fit、带conflict witness的proven infeasible/unsupported，
 或indeterminate。只有第二类的proven failure才允许baseline controller前进到下一确定性breakpoint；indeterminate必须
 终止并报告，不能冒充“当前tile放不下”。
+`local-fit`直接以真实TileRegion或能提供必要call/symbol closure的最近`IsolatedFromAbove` ancestor为scope；不得为每个region
+构造synthetic Module/Func并运行完整physical-Tile finalization。region-local lowering/lifetime/packing与必要的Func/Module
+summary边界遵循19号合同；需要全局事实却无法形成exact summary时返回indeterminate，不扩大局部结论。
 `local-fit`不生成下一tile，baseline controller才按唯一确定性breakpoint顺序前进。它的安全性仅来自“每op独立
 TileRegion + op边界DDR + 无fusion”；该合同改变后必须返回完整CardExecutable gate，不得复用局部成功。
 
@@ -435,6 +440,7 @@ cheap footprint只能返回proven must-coexist lower bound、non-binding ranking
 coexistence的估算超限也不能exact reject。近似或未经boundary-faithful proof的solver/constraint结果只可排序；exact局部
 solver可对准确建模的子问题返回proof/proposal，但selected offset/choice仍须物化并通过typed gate。Q51可对受影响TileRegion
 请求isolated actual region probe；
+该probe复用Q54形成的region-local conversion/lifetime/packing seam，不建立第二套local wrapper或pipeline。
 probe先从lowering/packing contract求出结论依赖的causal coordinates。只有traversal、temporal以及实际会影响该
 region的representation、movement/staging、buffer/slot、order/completion等坐标全部显式赋值后，才实际物化并执行
 lowering、fresh lifetime/completion和fixed-capacity SPM packing，返回：
@@ -812,7 +818,7 @@ size、选择策略和 repair budget 必须由 profile 与 small oracle regret �
 
 ## 提交与收尾
 
-1. Q50.0、Q49.P、Q50.A、Q51.Core、Q50.S、Q50.B–Q50.K、Q51 closure、Q52、Q53分别形成独立可评审提交；不得把全部迁移积累成一个dirty diff。
+1. Q50.0、Q54、Q49.P、Q50.A、Q51.Core、Q50.S、Q50.B–Q50.K、Q51 closure、Q52、Q53分别形成独立可评审提交；不得把全部迁移积累成一个dirty diff。
 2. 每个 checkpoint 开始前记录将替换的旧 owner 调用链；提交前证明新调用链唯一，并只删除当前轴满足三项门禁的旧入口。
 3. 状态转换以 `tasks/progress.md` 为准；本计划不单独维护第二份动态状态表。
 4. 每项提交前运行 fresh 定向 build/test；端到端或主线 gate 还需确认 relevant lit/CTest 实际执行而非 skip/unsupported。
