@@ -7,6 +7,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 
 #ifdef WAFER_ENABLE_STABLEHLO
 #include "stablehlo/dialect/StablehloOps.h"
@@ -95,10 +96,20 @@ struct LowerStaticStablehloConcatenatePass final
 
   void runOnOperation() final {
 #ifdef WAFER_ENABLE_STABLEHLO
+    llvm::SmallVector<mlir::Operation *, 8> candidates;
+    getOperation().walk([&](mlir::stablehlo::ConcatenateOp concatenate) {
+      candidates.push_back(concatenate.getOperation());
+    });
+    if (candidates.empty())
+      return;
+
     mlir::RewritePatternSet patterns(&getContext());
     patterns.add<LowerStaticConcatenate>(&getContext());
-    if (mlir::failed(mlir::applyPatternsAndFoldGreedily(getOperation(),
-                                                        std::move(patterns))))
+    mlir::FrozenRewritePatternSet frozenPatterns(std::move(patterns));
+    mlir::GreedyRewriteConfig config;
+    config.strictMode = mlir::GreedyRewriteStrictness::ExistingOps;
+    if (mlir::failed(
+            mlir::applyOpPatternsAndFold(candidates, frozenPatterns, config)))
       signalPassFailure();
 #endif
   }
