@@ -153,6 +153,7 @@ struct MaterializedRegionCutSpill {
   llvm::SmallVector<int64_t, 4> offsets;
   llvm::SmallVector<int64_t, 4> sizes;
   mlir::Value value;
+  mlir::Value buffer;
 };
 
 mlir::LogicalResult validateEdge(mlir::Operation *producer,
@@ -991,6 +992,7 @@ mlir::LogicalResult materializeSpill(
     llvm::DenseSet<mlir::Operation *> &preserved,
     llvm::SmallVectorImpl<MaterializedRegionCutSpill>
         &materializedRegionCutSpills,
+    llvm::SmallVectorImpl<CandidateSelectedDDRStage> &selectedDDRStages,
     bool &createdRegionCut,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     std::string *failureReason) {
@@ -1026,9 +1028,6 @@ mlir::LogicalResult materializeSpill(
   auto producerType = mlir::cast<mlir::RankedTensorType>(
       mapped.producer->getResult(strategy.producerResult).getType());
   mlir::Location loc = mapped.consumer->getLoc();
-  if (strategy.action == SpatialEdgeAction::RegionCut)
-    loc = mlir::OpaqueLoc::get<const SpatialEdgeStrategy *>(&mapped.strategy,
-                                                            loc);
   auto ddrType = mlir::MemRefType::get(
       producerType.getShape(), producerType.getElementType(),
       mlir::MemRefLayoutAttrInterface{},
@@ -1148,7 +1147,9 @@ mlir::LogicalResult materializeSpill(
     stored = sealed.getResult();
     materializedRegionCutSpills.push_back(MaterializedRegionCutSpill{
         mapped.producer, strategy.producerResult, strategy.producerOffsets,
-        strategy.producerSizes, stored});
+        strategy.producerSizes, stored, allocation.getResult()});
+    selectedDDRStages.push_back(
+        CandidateSelectedDDRStage{allocation.getResult(), &mapped.strategy});
     createdRegionCut = true;
   }
   if (mlir::failed(wireStoredProducerToConsumer(stored)))
@@ -1199,26 +1200,6 @@ mlir::Value getViewRoot(mlir::Value value) {
   return value;
 }
 
-const SpatialEdgeStrategy *getRegionCutMarker(mlir::Location location) {
-  auto opaque = mlir::dyn_cast<mlir::OpaqueLoc>(location);
-  if (opaque)
-    return mlir::OpaqueLoc::getUnderlyingLocationOrNull<
-        const SpatialEdgeStrategy *>(opaque);
-  auto fused = mlir::dyn_cast<mlir::FusedLoc>(location);
-  if (!fused)
-    return nullptr;
-  const SpatialEdgeStrategy *result = nullptr;
-  for (mlir::Location nested : fused.getLocations()) {
-    const SpatialEdgeStrategy *candidate = getRegionCutMarker(nested);
-    if (!candidate)
-      continue;
-    if (result && result != candidate)
-      return nullptr;
-    result = candidate;
-  }
-  return result;
-}
-
 const CardProgramSourceOperationLineage *
 getSourceLineageMarker(mlir::Location location) {
   if (auto opaque = mlir::dyn_cast<mlir::OpaqueLoc>(location)) {
@@ -1234,36 +1215,31 @@ getSourceLineageMarker(mlir::Location location) {
   return nullptr;
 }
 
-mlir::Location stripRegionCutMarker(mlir::Location location,
-                                    const SpatialEdgeStrategy *marker) {
-  auto opaque = mlir::dyn_cast<mlir::OpaqueLoc>(location);
-  if (!opaque)
-    return location;
-  if (mlir::OpaqueLoc::getUnderlyingLocationOrNull<const SpatialEdgeStrategy *>(
-          opaque) == marker)
-    return opaque.getFallbackLocation();
-  return location;
-}
-
-const SpatialEdgeFragment *getPeerFragmentMarker(mlir::Location location) {
-  auto opaque = mlir::dyn_cast<mlir::OpaqueLoc>(location);
-  return opaque ? mlir::OpaqueLoc::getUnderlyingLocationOrNull<
-                      const SpatialEdgeFragment *>(opaque)
-                : nullptr;
-}
-
-mlir::Location stripPeerFragmentMarker(mlir::Location location,
-                                       const SpatialEdgeFragment *marker) {
-  auto opaque = mlir::dyn_cast<mlir::OpaqueLoc>(location);
-  if (opaque &&
-      mlir::OpaqueLoc::getUnderlyingLocationOrNull<const SpatialEdgeFragment *>(
-          opaque) == marker)
-    return opaque.getFallbackLocation();
-  return location;
+bool isPeerEndpointForStrategy(mlir::Operation *operation,
+                               const SpatialEdgeStrategy &strategy) {
+  auto matches = [&](int64_t peer, uint64_t bytes, DTEMessageAttr message,
+                     bool receive) {
+    return llvm::any_of(
+        strategy.fragments, [&](const SpatialEdgeFragment &fragment) {
+          if (fragment.kind != SpatialEdgeFragmentKind::Peer ||
+              fragment.bytes != bytes ||
+              fragment.communicationId != message.getCommunicationId() ||
+              fragment.payloadSlice != message.getPayloadSlice())
+            return false;
+          return receive ? fragment.sourceTile.getValue() == peer
+                         : strategy.destinationTile.getValue() == peer;
+        });
+  };
+  if (auto receive = mlir::dyn_cast<CommPeerRecvOp>(operation))
+    return matches(receive.getPeer(), receive.getBytes(), receive.getMessage(),
+                   /*receive=*/true);
+  if (auto send = mlir::dyn_cast<CommPeerSendOp>(operation))
+    return matches(send.getPeer(), send.getBytes(), send.getMessage(),
+                   /*receive=*/false);
+  return false;
 }
 
 mlir::LogicalResult rebindSelectedReceiveEndpoints(
-    mlir::ModuleOp module,
     llvm::MutableArrayRef<CandidatePeerEndpoint> endpoints,
     llvm::ArrayRef<MappedStrategy> mappedStrategies,
     std::string *failureReason) {
@@ -1272,10 +1248,13 @@ mlir::LogicalResult rebindSelectedReceiveEndpoints(
         !endpoint.selectedFragment)
       continue;
     llvm::SmallVector<mlir::bufferization::ToTensorOp, 2> matches;
-    module.walk([&](mlir::bufferization::ToTensorOp toTensor) {
-      if (getPeerFragmentMarker(toTensor.getLoc()) == endpoint.selectedFragment)
-        matches.push_back(toTensor);
-    });
+    if (endpoint.carrierBuffer)
+      for (mlir::Operation *user : endpoint.carrierBuffer.getUsers())
+        if (auto toTensor =
+                mlir::dyn_cast<mlir::bufferization::ToTensorOp>(user);
+            toTensor && toTensor.getMemref() == endpoint.carrierBuffer &&
+            !toTensor.getResult().use_empty())
+          matches.push_back(toTensor);
     if (matches.size() != 1 || matches.front().getResult().use_empty()) {
       std::string detail;
       llvm::raw_string_ostream diagnostic(detail);
@@ -1336,10 +1315,7 @@ mlir::LogicalResult rebindSelectedReceiveEndpoints(
       diagnostic << ')';
       return failResult(failureReason, diagnostic.str());
     }
-    mlir::bufferization::ToTensorOp toTensor = matches.front();
-    toTensor->setLoc(
-        stripPeerFragmentMarker(toTensor.getLoc(), endpoint.selectedFragment));
-    endpoint.value = toTensor.getResult();
+    endpoint.value = matches.front().getResult();
   }
   return mlir::success();
 }
@@ -1347,17 +1323,16 @@ mlir::LogicalResult rebindSelectedReceiveEndpoints(
 /// Split the one ordinary TileRegion at the store/reload associated with a
 /// selected RegionCut.  The prefix yields only compiler-owned DDR; the suffix
 /// reloads it through a new region argument.  No SPM value is allowed to cross.
-mlir::LogicalResult splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
-                                     const SpatialEdgeStrategy *marker,
-                                     std::string *failureReason) {
+mlir::LogicalResult
+splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
+                 const SpatialEdgeStrategy *marker,
+                 llvm::ArrayRef<mlir::Value> selectedDDRStageBuffers,
+                 std::string *failureReason) {
   TileRegionOp region = spillAllocation
                             ? spillAllocation->getParentOfType<TileRegionOp>()
                             : TileRegionOp{};
-  llvm::SmallVector<std::pair<TileRegionOp, mlir::memref::AllocOp>, 4>
-      markedAllocations{{region, spillAllocation}};
   if (!region || !spillAllocation || !region.getBody().hasOneBlock() ||
-      getRegionCutMarker(spillAllocation.getLoc()) != marker ||
-      !isWaferDDRMemRefType(spillAllocation.getType()))
+      !marker || !isWaferDDRMemRefType(spillAllocation.getType()))
     return failResult(failureReason,
                       "region cut did not materialize its compiler-owned DDR");
 
@@ -1371,8 +1346,7 @@ mlir::LogicalResult splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
   llvm::SmallVector<mlir::Operation *, 4> storeRoots;
   llvm::SmallVector<mlir::Operation *, 4> reloadRoots;
   region.walk([&](StorageStoreOp candidate) {
-    if (getViewRoot(candidate.getDest()) != spillAllocation.getResult() &&
-        getRegionCutMarker(candidate.getLoc()) != marker)
+    if (getViewRoot(candidate.getDest()) != spillAllocation.getResult())
       return;
     mlir::Operation *root = getTopLevelOperation(candidate);
     if (root && !llvm::is_contained(storeRoots, root))
@@ -1398,20 +1372,18 @@ mlir::LogicalResult splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
   if (!lastStoreRoot || !hasReloadAfterStore) {
     std::string allocationDetails;
     llvm::raw_string_ostream details(allocationDetails);
-    for (auto [index, marked] : llvm::enumerate(markedAllocations)) {
-      size_t stores = 0;
-      size_t loads = 0;
-      marked.first.walk([&](StorageStoreOp candidate) {
-        if (getViewRoot(candidate.getDest()) == marked.second.getResult())
-          ++stores;
-      });
-      marked.first.walk([&](StorageLoadOp candidate) {
-        if (getViewRoot(candidate.getSource()) == marked.second.getResult())
-          ++loads;
-      });
-      details << (index == 0 ? "" : ",") << index << ":stores=" << stores
-              << "/loads=" << loads << "/type=" << marked.second.getType();
-    }
+    size_t allocationStores = 0;
+    size_t allocationLoads = 0;
+    region.walk([&](StorageStoreOp candidate) {
+      if (getViewRoot(candidate.getDest()) == spillAllocation.getResult())
+        ++allocationStores;
+    });
+    region.walk([&](StorageLoadOp candidate) {
+      if (getViewRoot(candidate.getSource()) == spillAllocation.getResult())
+        ++allocationLoads;
+    });
+    details << "stores=" << allocationStores << "/loads=" << allocationLoads
+            << "/type=" << spillAllocation.getType();
     std::string storeDetails;
     llvm::raw_string_ostream stores(storeDetails);
     size_t totalStores = 0;
@@ -1422,8 +1394,7 @@ mlir::LogicalResult splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
       mlir::Value root = getViewRoot(candidate.getDest());
       stores << (totalStores == 1 ? "" : ",")
              << "dest=" << candidate.getDest().getType()
-             << "/root=" << root.getType() << "/marked="
-             << (getRegionCutMarker(candidate.getLoc()) == marker);
+             << "/root=" << root.getType();
     });
     std::string orderDetails;
     llvm::raw_string_ostream order(orderDetails);
@@ -1516,7 +1487,7 @@ mlir::LogicalResult splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
         !isWaferDDRMemRefType(allocation.getType()) ||
         !allocation.getDynamicSizes().empty() ||
         !allocation.getSymbolOperands().empty() ||
-        getRegionCutMarker(allocation.getLoc()))
+        llvm::is_contained(selectedDDRStageBuffers, allocation.getResult()))
       continue;
     eligibleSharedDDRIndices.try_emplace(allocation.getResult(),
                                          eligibleSharedDDRAllocations.size());
@@ -1617,8 +1588,7 @@ mlir::LogicalResult splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
 
   mlir::OpBuilder outer(region);
   auto externalSpill = outer.create<mlir::memref::AllocOp>(
-      stripRegionCutMarker(spillAllocation.getLoc(), marker),
-      spillAllocation.getType());
+      spillAllocation.getLoc(), spillAllocation.getType());
   llvm::SmallVector<mlir::Value, 4> externalSharedDDR;
   for (mlir::memref::AllocOp allocation : sharedDDRAllocations)
     externalSharedDDR.push_back(
@@ -1634,9 +1604,8 @@ mlir::LogicalResult splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
   llvm::SmallVector<mlir::Type, 8> prefixResultTypes{spillAllocation.getType()};
   for (mlir::Value value : carriedDDRValues)
     prefixResultTypes.push_back(value.getType());
-  auto prefixRegion =
-      outer.create<TileRegionOp>(stripRegionCutMarker(region.getLoc(), marker),
-                                 prefixResultTypes, prefixInputs);
+  auto prefixRegion = outer.create<TileRegionOp>(
+      region.getLoc(), prefixResultTypes, prefixInputs);
   prefixRegion.getBody().push_back(new mlir::Block());
   mlir::Block &prefixBody = prefixRegion.getBody().front();
   for (mlir::Value input : prefixRegion.getInputs())
@@ -1647,9 +1616,8 @@ mlir::LogicalResult splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
   suffixInputs.append(prefixRegion.getResults().begin(),
                       prefixRegion.getResults().end());
   suffixInputs.append(externalSharedDDR);
-  auto suffixRegion =
-      outer.create<TileRegionOp>(stripRegionCutMarker(region.getLoc(), marker),
-                                 region.getResultTypes(), suffixInputs);
+  auto suffixRegion = outer.create<TileRegionOp>(
+      region.getLoc(), region.getResultTypes(), suffixInputs);
   suffixRegion.getBody().push_back(new mlir::Block());
   mlir::Block &suffixBody = suffixRegion.getBody().front();
   for (mlir::Value input : suffixRegion.getInputs())
@@ -1718,8 +1686,7 @@ mlir::LogicalResult splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
               "region input view has an uncloneable suffix dependency");
       }
     }
-    mlir::Operation *cloned = suffixBuilder.clone(*operation, suffixMapping);
-    cloned->setLoc(stripRegionCutMarker(cloned->getLoc(), marker));
+    suffixBuilder.clone(*operation, suffixMapping);
     return mlir::success();
   };
 
@@ -1769,12 +1736,10 @@ mlir::LogicalResult splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
       continue;
     if (prefix.contains(operation)) {
       remapOperationTree(operation, prefixMapping);
-      operation->setLoc(stripRegionCutMarker(operation->getLoc(), marker));
       operation->moveBefore(&prefixBody, prefixBody.end());
       continue;
     }
     remapOperationTree(operation, suffixMapping);
-    operation->setLoc(stripRegionCutMarker(operation->getLoc(), marker));
     operation->moveBefore(&suffixBody, suffixBody.end());
   }
 
@@ -2026,6 +1991,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
   llvm::SmallVector<CandidatePeerEndpoint, 8> endpoints;
   llvm::SmallVector<MaterializedSource, 8> materialized;
   llvm::SmallVector<MaterializedRegionCutSpill, 8> materializedRegionCutSpills;
+  llvm::SmallVector<CandidateSelectedDDRStage, 8> selectedDDRStages;
   llvm::DenseSet<mlir::Operation *> preserved;
   llvm::SmallVector<const SpatialEdgeStrategy *, 2> regionCuts;
 
@@ -2092,10 +2058,10 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
       if (independentDDRStages)
         break;
       bool ignoredCreatedRegionCut = false;
-      if (mlir::failed(materializeSpill(scope, mapped, materialized, preserved,
-                                        materializedRegionCutSpills,
-                                        ignoredCreatedRegionCut,
-                                        mappedTemporalTiles, failureReason)))
+      if (mlir::failed(materializeSpill(
+              scope, mapped, materialized, preserved,
+              materializedRegionCutSpills, selectedDDRStages,
+              ignoredCreatedRegionCut, mappedTemporalTiles, failureReason)))
         return mlir::failure();
     } break;
     case SpatialEdgeAction::RegionCut: {
@@ -2104,8 +2070,8 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
       bool createdRegionCut = false;
       if (mlir::failed(materializeSpill(scope, mapped, materialized, preserved,
                                         materializedRegionCutSpills,
-                                        createdRegionCut, mappedTemporalTiles,
-                                        failureReason)))
+                                        selectedDDRStages, createdRegionCut,
+                                        mappedTemporalTiles, failureReason)))
         return mlir::failure();
       if (createdRegionCut)
         regionCuts.push_back(&mapped.strategy);
@@ -2411,11 +2377,11 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
               mlir::MemRefLayoutAttrInterface{},
               MemoryAttr::get(mapped.consumer->getContext(), MemorySpace::DDR,
                               MemLayout::Tensor));
-          assemblyLoc = mlir::OpaqueLoc::get<const SpatialEdgeStrategy *>(
-              &mapped.strategy, mapped.consumer->getLoc());
           auto allocation =
               builder.create<mlir::memref::AllocOp>(assemblyLoc, ddrType);
           independentAssemblyAllocation = allocation;
+          selectedDDRStages.push_back(CandidateSelectedDDRStage{
+              allocation.getResult(), &mapped.strategy});
           auto destination = builder.create<mlir::bufferization::ToTensorOp>(
               assemblyLoc, allocation.getResult(),
               /*restrict=*/true, /*writable=*/true);
@@ -2465,9 +2431,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
               value = *local;
             }
           } else {
-            mlir::Location receiveLoc =
-                mlir::OpaqueLoc::get<const SpatialEdgeFragment *>(
-                    fragment, mapped.consumer->getLoc());
+            mlir::Location receiveLoc = mapped.consumer->getLoc();
             auto receiveType = mlir::MemRefType::get(
                 fragment->sizes, producerType.getElementType(),
                 mlir::MemRefLayoutAttrInterface{},
@@ -2482,7 +2446,8 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
             preserved.insert(received.getOperation());
             value = received.getResult();
             endpoints.push_back(CandidatePeerEndpoint{
-                value, CandidatePeerEndpointKind::Receive, fragment->sourceTile,
+                value, allocation.getResult(),
+                CandidatePeerEndpointKind::Receive, fragment->sourceTile,
                 fragment->bytes, fragment->communicationId,
                 fragment->payloadSlice, mapped.consumerScheduleOrdinal,
                 strategy.consumerOperand, fragment});
@@ -2595,6 +2560,9 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
     }
     return mlir::success();
   };
+  llvm::DenseSet<mlir::Value> selectedBuffers;
+  for (const CandidateSelectedDDRStage &stage : selectedDDRStages)
+    selectedBuffers.insert(stage.buffer);
   auto reachesSelectedDDRStage = [&](mlir::Operation *source) {
     bool reachesStage = false;
     candidate->walk([&](mlir::tensor::InsertSliceOp insert) {
@@ -2609,7 +2577,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
       auto allocation =
           toTensor ? toTensor.getMemref().getDefiningOp<mlir::memref::AllocOp>()
                    : mlir::memref::AllocOp{};
-      if (!allocation || !getRegionCutMarker(allocation.getLoc()))
+      if (!allocation || !selectedBuffers.contains(allocation.getResult()))
         return;
       llvm::DenseSet<mlir::Value> visited;
       reachesStage = isInBackwardClosure(insert.getSource(), source, visited);
@@ -2802,10 +2770,10 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
             llvm::is_contained(deferredRegionCuts, &incoming))
           continue;
         bool createdRegionCut = false;
-        if (mlir::failed(
-                materializeSpill(scope, incoming, materialized, preserved,
-                                 materializedRegionCutSpills, createdRegionCut,
-                                 mappedTemporalTiles, failureReason)))
+        if (mlir::failed(materializeSpill(
+                scope, incoming, materialized, preserved,
+                materializedRegionCutSpills, selectedDDRStages,
+                createdRegionCut, mappedTemporalTiles, failureReason)))
           return mlir::failure();
         deferredRegionCuts.push_back(&incoming);
         if (createdRegionCut)
@@ -2940,9 +2908,10 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
       if (mlir::failed(value))
         return mlir::failure();
       endpoints.push_back(CandidatePeerEndpoint{
-          *value, CandidatePeerEndpointKind::Send, strategy.destinationTile,
-          fragment.bytes, fragment.communicationId, fragment.payloadSlice,
-          mapped.consumerScheduleOrdinal, strategy.consumerOperand, &fragment});
+          *value, /*carrierBuffer=*/{}, CandidatePeerEndpointKind::Send,
+          strategy.destinationTile, fragment.bytes, fragment.communicationId,
+          fragment.payloadSlice, mapped.consumerScheduleOrdinal,
+          strategy.consumerOperand, &fragment});
     }
   }
   if (mlir::failed(requireLiveReceive("outgoing peer materialization")))
@@ -3059,8 +3028,8 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
   if (!endpoints.empty() || !materialized.empty())
     eraseDeadExcept(scope, preserved);
 
-  if (mlir::failed(rebindSelectedReceiveEndpoints(
-          *candidate, endpoints, mappedStrategies, failureReason)))
+  if (mlir::failed(rebindSelectedReceiveEndpoints(endpoints, mappedStrategies,
+                                                  failureReason)))
     return mlir::failure();
 
   for (const CandidatePeerEndpoint &endpoint : endpoints) {
@@ -3074,12 +3043,14 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
           "selected consumer traversal does not use an exact receive fragment");
   }
 
+  TileRegionEmissionRelations emissionRelations;
   if (mlir::failed(convertTensorProgramToTileRegionModuleInPlace(
           *candidate, sourceModule.getContext(), functionalArgumentCount,
           currentLogicalPartition, failureReason,
           /*suppressDiagnostics=*/true,
           /*verifyResult=*/true, /*populateFallbackFailureReason=*/true,
-          endpoints, sourceLineage, operandDemandLineage))) {
+          endpoints, selectedDDRStages, &emissionRelations, sourceLineage,
+          operandDemandLineage))) {
     return mlir::failure();
   }
   // Split boundaries in their actual materialized store order. Original DAG
@@ -3093,6 +3064,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
     TileRegionOp region;
     mlir::memref::AllocOp spillAllocation;
     mlir::Operation *lastStoreRoot = nullptr;
+    mlir::Operation *firstPeerActionRoot = nullptr;
   };
   llvm::SmallVector<MaterializedRegionCut, 8> orderedRegionCuts;
   llvm::DenseMap<const SpatialEdgeStrategy *, size_t> regionCutIndices;
@@ -3100,33 +3072,33 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
     regionCutIndices.try_emplace(regionCut, orderedRegionCuts.size());
     orderedRegionCuts.push_back(MaterializedRegionCut{regionCut});
   }
-  // Index all selected stage allocations and stores in two walks. The prior
-  // implementation walked the complete candidate twice for every edge before
-  // doing any split, which dominated large independent-op baselines even
-  // after the actual operations were moved instead of cloned.
-  candidate->walk([&](mlir::memref::AllocOp allocation) {
-    const SpatialEdgeStrategy *marker = getRegionCutMarker(allocation.getLoc());
-    auto found = regionCutIndices.find(marker);
+  // TileRegion lowering reports the exact allocation relation directly.  The
+  // relation is invocation-local C++ state keyed by current SSA, not an
+  // OpaqueLoc marker copied through the IR.
+  for (const MaterializedSelectedDDRStage &stage :
+       emissionRelations.selectedDDRStages) {
+    auto found = regionCutIndices.find(stage.strategy);
     if (found == regionCutIndices.end())
-      return;
+      continue;
     MaterializedRegionCut &materialized = orderedRegionCuts[found->second];
-    if (!materialized.spillAllocation) {
-      materialized.spillAllocation = allocation;
-      materialized.region = allocation->getParentOfType<TileRegionOp>();
-    }
-  });
+    if (materialized.spillAllocation)
+      return failResult(
+          failureReason,
+          "selected DDR stage materialized more than one exact allocation");
+    materialized.spillAllocation = stage.allocation;
+    materialized.region = stage.allocation->getParentOfType<TileRegionOp>();
+  }
+  llvm::DenseMap<mlir::Value, size_t> cutByAllocation;
+  for (auto [index, materialized] : llvm::enumerate(orderedRegionCuts))
+    if (materialized.spillAllocation)
+      cutByAllocation.try_emplace(materialized.spillAllocation.getResult(),
+                                  index);
   candidate->walk([&](StorageStoreOp store) {
     TileRegionOp owner = store->getParentOfType<TileRegionOp>();
     if (!owner || !owner.getBody().hasOneBlock())
       return;
-    const SpatialEdgeStrategy *marker = getRegionCutMarker(store.getLoc());
-    if (!marker) {
-      if (auto allocation = getViewRoot(store.getDest())
-                                .getDefiningOp<mlir::memref::AllocOp>())
-        marker = getRegionCutMarker(allocation.getLoc());
-    }
-    auto found = regionCutIndices.find(marker);
-    if (found == regionCutIndices.end())
+    auto found = cutByAllocation.find(getViewRoot(store.getDest()));
+    if (found == cutByAllocation.end())
       return;
     MaterializedRegionCut &materialized = orderedRegionCuts[found->second];
     mlir::Operation *root = store.getOperation();
@@ -3156,9 +3128,14 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
     wafer::support::ScopedCompileTimingSpan timing(
         "transformation-phase", "selected-edge-materialization",
         "split-ddr-stages");
+    llvm::SmallVector<mlir::Value, 8> materializedStageBuffers;
+    for (const MaterializedSelectedDDRStage &stage :
+         emissionRelations.selectedDDRStages)
+      materializedStageBuffers.push_back(stage.allocation->getResult(0));
     for (const MaterializedRegionCut &regionCut : orderedRegionCuts)
-      if (mlir::failed(splitAtRegionCut(regionCut.spillAllocation,
-                                        regionCut.marker, failureReason)))
+      if (mlir::failed(
+              splitAtRegionCut(regionCut.spillAllocation, regionCut.marker,
+                               materializedStageBuffers, failureReason)))
         return mlir::failure();
   }
   {

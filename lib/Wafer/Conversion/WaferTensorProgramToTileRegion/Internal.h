@@ -31,7 +31,8 @@
 
 namespace wafer {
 struct SpatialEdgeFragment;
-}
+struct SpatialEdgeStrategy;
+} // namespace wafer
 
 namespace wafer::tensor_program_to_tile_region {
 
@@ -144,6 +145,10 @@ enum class CandidatePeerEndpointKind : uint8_t { Send, Receive };
 /// serializes this record.
 struct CandidatePeerEndpoint {
   mlir::Value value;
+  /// Exact compiler-owned buffer backing a receive value.  The value may be
+  /// rebuilt by tensor tiling, while this SSA allocation remains the stable
+  /// relation used to find the surviving ToTensor view.
+  mlir::Value carrierBuffer;
   CandidatePeerEndpointKind kind = CandidatePeerEndpointKind::Send;
   PhysicalTileId peer{0};
   uint64_t bytes = 0;
@@ -155,11 +160,27 @@ struct CandidatePeerEndpoint {
   /// separate from the logical Direct-DTE message identity.
   uint64_t consumerScheduleOrdinal = 0;
   unsigned consumerOperand = 0;
-  /// Identity of the selected exact fragment while the private tensor clone
-  /// is being tiled.  It is used only to rebind a receive endpoint to the
-  /// surviving cloned tensor.empty and is stripped before TileRegion IR is
-  /// produced.
+  /// Query-local identity of the selected exact fragment.  It is used only in
+  /// C++ planning/diagnostics; the relation is never encoded in IR.
   const SpatialEdgeFragment *selectedFragment = nullptr;
+};
+
+/// Query-local relation between one selected DDR stage and the tensor-level
+/// compiler-owned buffer created for it.  This relation is passed directly to
+/// TileRegion lowering; it is never encoded in Location or serialized in IR.
+struct CandidateSelectedDDRStage {
+  mlir::Value buffer;
+  const SpatialEdgeStrategy *strategy = nullptr;
+};
+
+/// Concrete TileRegion allocation produced for one selected DDR stage.
+struct MaterializedSelectedDDRStage {
+  mlir::memref::AllocOp allocation;
+  const SpatialEdgeStrategy *strategy = nullptr;
+};
+
+struct TileRegionEmissionRelations {
+  llvm::SmallVector<MaterializedSelectedDDRStage, 8> selectedDDRStages;
 };
 
 struct SelectedCollectivePartitionGroup {
@@ -293,6 +314,8 @@ public:
   explicit TileRegionBodyEmitter(
       std::string *failureReason, int64_t currentLogicalPartition,
       llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints = {},
+      llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages = {},
+      TileRegionEmissionRelations *emissionRelations = nullptr,
       llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage = {},
       llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage = {});
 
@@ -303,6 +326,8 @@ private:
   std::string *failureReason;
   int64_t currentLogicalPartition = -1;
   llvm::SmallVector<CandidatePeerEndpoint, 8> peerEndpoints;
+  llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages;
+  TileRegionEmissionRelations *emissionRelations = nullptr;
   llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage;
   llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage;
   llvm::DenseMap<mlir::Value, BufferVersions> buffers;
@@ -651,6 +676,8 @@ mlir::LogicalResult convertTensorProgramToTileRegionModuleInPlace(
     std::string *failureReason, bool suppressDiagnostics = true,
     bool verifyResult = true, bool populateFallbackFailureReason = true,
     llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints = {},
+    llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages = {},
+    TileRegionEmissionRelations *emissionRelations = nullptr,
     llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage = {},
     llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage = {});
 

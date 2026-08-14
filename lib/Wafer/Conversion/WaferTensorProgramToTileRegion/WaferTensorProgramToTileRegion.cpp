@@ -61,6 +61,8 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
     mlir::ModuleOp module, unsigned functionalArgumentCount,
     int64_t currentLogicalPartition, std::string *failureReason,
     llvm::SmallVector<CandidatePeerEndpoint, 8> peerEndpoints,
+    llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages,
+    TileRegionEmissionRelations *emissionRelations,
     llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
     llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
@@ -89,9 +91,9 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
   mlir::func::ReturnOp oldReturn = scope.getReturn();
   mlir::IRRewriter rewriter(module.getContext());
   rewriter.setInsertionPoint(oldReturn);
-  TileRegionBodyEmitter emitter(failureReason, currentLogicalPartition,
-                                peerEndpoints, sourceLineage,
-                                operandDemandLineage);
+  TileRegionBodyEmitter emitter(
+      failureReason, currentLogicalPartition, peerEndpoints, selectedDDRStages,
+      emissionRelations, sourceLineage, operandDemandLineage);
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "conversion-phase", "rewriteTensorProgramInPlace",
       "TileRegionBodyEmitter::emit");
@@ -155,33 +157,20 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
         std::string *failureReason, bool suppressDiagnostics, bool verifyResult,
         bool populateFallbackFailureReason,
         llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints,
+        llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages,
+        TileRegionEmissionRelations *emissionRelations,
         llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
         llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage) {
   wafer::support::ScopedCompileTimingSpan timing(
       "conversion", "convertTensorProgramToTileRegionModuleInPlace", "total");
-  // Rewrite a private clone and commit only after the complete structured
-  // shard has lowered and verified.
-  mlir::OwningOpRef<mlir::ModuleOp> candidate;
-  llvm::SmallVector<CandidatePeerEndpoint, 8> mappedEndpoints;
-  {
-    wafer::support::ScopedCompileTimingSpan cloneTiming(
-        "conversion-phase", "convertTensorProgramToTileRegionModuleInPlace",
-        "clone");
-    mlir::IRMapping cloneMapping;
-    candidate = mlir::cast<mlir::ModuleOp>(module->clone(cloneMapping));
-    mappedEndpoints.reserve(peerEndpoints.size());
-    for (const CandidatePeerEndpoint &endpoint : peerEndpoints) {
-      mlir::Value mapped = cloneMapping.lookupOrNull(endpoint.value);
-      if (!mapped) {
-        setFailureReason(failureReason,
-                         "peer endpoint value is outside candidate module");
-        return mlir::failure();
-      }
-      CandidatePeerEndpoint mappedEndpoint = endpoint;
-      mappedEndpoint.value = mapped;
-      mappedEndpoints.push_back(std::move(mappedEndpoint));
-    }
-  }
+  // The caller owns the already-private candidate and is the sole rollback
+  // boundary.  A failed in-place conversion leaves that disposable candidate
+  // mutated; adding another whole-module clone here would duplicate the same
+  // transaction without strengthening atomic publication.
+  if (emissionRelations)
+    emissionRelations->selectedDDRStages.clear();
+  llvm::SmallVector<CandidatePeerEndpoint, 8> mappedEndpoints(
+      peerEndpoints.begin(), peerEndpoints.end());
   mlir::LogicalResult conversionResult = mlir::success();
   {
     wafer::support::ScopedCompileTimingSpan rewriteTiming(
@@ -191,12 +180,14 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
       mlir::ScopedDiagnosticHandler handler(
           context, [](mlir::Diagnostic &) { return mlir::success(); });
       conversionResult = rewriteTensorProgramInPlace(
-          *candidate, functionalArgumentCount, currentLogicalPartition,
-          failureReason, mappedEndpoints, sourceLineage, operandDemandLineage);
+          module, functionalArgumentCount, currentLogicalPartition,
+          failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
+          sourceLineage, operandDemandLineage);
     } else {
       conversionResult = rewriteTensorProgramInPlace(
-          *candidate, functionalArgumentCount, currentLogicalPartition,
-          failureReason, mappedEndpoints, sourceLineage, operandDemandLineage);
+          module, functionalArgumentCount, currentLogicalPartition,
+          failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
+          sourceLineage, operandDemandLineage);
     }
   }
 
@@ -212,19 +203,12 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
     wafer::support::ScopedCompileTimingSpan verifyTiming(
         "analysis-phase", "convertTensorProgramToTileRegionModuleInPlace",
         "verify");
-    if (mlir::failed(mlir::verify(*candidate))) {
+    if (mlir::failed(mlir::verify(module))) {
       setFailureReason(failureReason,
                        "lowered tile-region module failed verifier");
       return mlir::failure();
     }
   }
 
-  {
-    wafer::support::ScopedCompileTimingSpan commitTiming(
-        "conversion-phase", "convertTensorProgramToTileRegionModuleInPlace",
-        "commit");
-    module->setAttrs((*candidate)->getAttrs());
-    module.getBodyRegion().takeBody(candidate->getBodyRegion());
-  }
   return mlir::success();
 }

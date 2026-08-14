@@ -24,27 +24,6 @@ namespace wafer::tensor_program_to_tile_region {
 // final legality owner.
 static constexpr uint64_t kExternalTensorCopyWorkingSetSlots = 4;
 
-static const SpatialEdgeStrategy *
-getSelectedEdgeStrategyMarker(mlir::Location location) {
-  if (auto opaque = mlir::dyn_cast<mlir::OpaqueLoc>(location))
-    return mlir::OpaqueLoc::getUnderlyingLocationOrNull<
-        const SpatialEdgeStrategy *>(opaque);
-  auto fused = mlir::dyn_cast<mlir::FusedLoc>(location);
-  if (!fused)
-    return nullptr;
-  const SpatialEdgeStrategy *result = nullptr;
-  for (mlir::Location nested : fused.getLocations()) {
-    const SpatialEdgeStrategy *candidate =
-        getSelectedEdgeStrategyMarker(nested);
-    if (!candidate)
-      continue;
-    if (result && result != candidate)
-      return nullptr;
-    result = candidate;
-  }
-  return result;
-}
-
 /// Ends one compiler-owned SPM value after its final tensor-level observation.
 /// The deallocation is an explicit residency release: Tile-to-Instr completion
 /// reconstruction must complete any pending NCC access before it, and exact
@@ -106,16 +85,22 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
       return mlir::success();
     mlir::Operation *cloned = builder.clone(*allocation.getOperation());
     compilerOwnedBuffers[allocation.getResult()] = cloned->getResult(0);
-    const SpatialEdgeStrategy *edgeMarker =
-        getSelectedEdgeStrategyMarker(allocation.getLoc());
-    // A marked compiler-owned DDR allocation is an explicit op-stage
+    auto selected = llvm::find_if(
+        selectedDDRStages, [&](const CandidateSelectedDDRStage &stage) {
+          return stage.buffer == allocation.getResult();
+        });
+    // A selected compiler-owned DDR allocation is an explicit op-stage
     // destination. RegionCut creates it for a local edge; the
     // IndependentDDRStages materializer creates it for a cross-Tile fragment
     // assembly. JointDataflow PeerFragments never creates this allocation, so
     // recognizing the artifact here cannot infer or select a baseline mode.
-    if (edgeMarker && (edgeMarker->action == SpatialEdgeAction::RegionCut ||
-                       edgeMarker->action == SpatialEdgeAction::PeerFragments))
+    if (selected != selectedDDRStages.end()) {
       selectedDDRStageExternalBuffers.insert(cloned->getResult(0));
+      if (emissionRelations)
+        emissionRelations->selectedDDRStages.push_back(
+            MaterializedSelectedDDRStage{
+                mlir::cast<mlir::memref::AllocOp>(cloned), selected->strategy});
+    }
     return mlir::success();
   }
 
@@ -932,13 +917,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
   bool isLoopYield = insertSlice.getResult().hasOneUse() &&
                      mlir::isa<mlir::scf::YieldOp>(
                          insertSlice.getResult().use_begin()->getOwner());
-  const SpatialEdgeStrategy *selectedRegionCut = nullptr;
-  if (auto destination = insertSlice.getDest()
-                             .getDefiningOp<mlir::bufferization::ToTensorOp>())
-    if (auto allocation =
-            destination.getMemref().getDefiningOp<mlir::memref::AllocOp>())
-      selectedRegionCut = getSelectedEdgeStrategyMarker(allocation.getLoc());
-  if (!selectedRegionCut && externalIt != externalBuffers.end()) {
+  bool selectedDDRStageDestination = false;
+  if (externalIt != externalBuffers.end()) {
     mlir::Value root = externalIt->second;
     llvm::DenseSet<mlir::Value> visited;
     while (root && visited.insert(root).second) {
@@ -954,31 +934,10 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
       else
         break;
     }
-    if (auto allocation = root.getDefiningOp<mlir::memref::AllocOp>())
-      selectedRegionCut = getSelectedEdgeStrategyMarker(allocation.getLoc());
+    selectedDDRStageDestination =
+        selectedDDRStageExternalBuffers.contains(root);
   }
-  const bool isCompilerOwnedRegionCutDestination =
-      (selectedRegionCut &&
-       selectedRegionCut->action == SpatialEdgeAction::RegionCut) ||
-      (externalIt != externalBuffers.end() && [&] {
-        mlir::Value root = externalIt->second;
-        llvm::DenseSet<mlir::Value> visited;
-        while (root && visited.insert(root).second) {
-          if (auto subview = root.getDefiningOp<mlir::memref::SubViewOp>())
-            root = subview.getSource();
-          else if (auto cast = root.getDefiningOp<mlir::memref::CastOp>())
-            root = cast.getSource();
-          else if (auto expand =
-                       root.getDefiningOp<mlir::memref::ExpandShapeOp>())
-            root = expand.getSrc();
-          else if (auto collapse =
-                       root.getDefiningOp<mlir::memref::CollapseShapeOp>())
-            root = collapse.getSrc();
-          else
-            break;
-        }
-        return selectedDDRStageExternalBuffers.contains(root);
-      }());
+  const bool isCompilerOwnedRegionCutDestination = selectedDDRStageDestination;
   // A writable external destination is an explicit DDR tensor version. An
   // insert may update that version in place exactly when the old functional
   // destination has no other semantic observer. The new version may then be

@@ -49,7 +49,8 @@ mlir::LogicalResult wafer::lowerSpatialOutputShardsToTileRegionModule(
   llvm::SmallVector<StructuredOpTemporalTile, 16> mappedTemporalTiles;
   mappedTemporalTiles.reserve(operationTemporalTiles.size());
   for (const StructuredOpTemporalTile &tile : operationTemporalTiles) {
-    if (!tile.operation || !seenTemporalOperations.insert(tile.operation).second) {
+    if (!tile.operation ||
+        !seenTemporalOperations.insert(tile.operation).second) {
       setFailureReason(failureReason,
                        "structured temporal mapping contains a null or "
                        "duplicate operation");
@@ -76,7 +77,8 @@ mlir::LogicalResult wafer::lowerSpatialOutputShardsToTileRegionModule(
           /*suppressDiagnostics=*/true,
           /*verifyResult=*/true,
           /*populateFallbackFailureReason=*/true,
-          /*peerEndpoints=*/{}, sourceLineage, operandDemandLineage)))
+          /*peerEndpoints=*/{}, /*selectedDDRStages=*/{},
+          /*emissionRelations=*/nullptr, sourceLineage, operandDemandLineage)))
     return mlir::failure();
 
   module = std::move(candidate);

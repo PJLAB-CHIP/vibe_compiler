@@ -112,13 +112,16 @@ matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
 TileRegionBodyEmitter::TileRegionBodyEmitter(
     std::string *failureReason, int64_t currentLogicalPartition,
     llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints,
+    llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages,
+    TileRegionEmissionRelations *emissionRelations,
     llvm::ArrayRef<CardProgramSourceOperationLineage> sourceLineage,
     llvm::ArrayRef<StructuredOperandDemandLineage> operandDemandLineage)
     : failureReason(failureReason),
       currentLogicalPartition(currentLogicalPartition),
       peerEndpoints(peerEndpoints.begin(), peerEndpoints.end()),
-      sourceLineage(sourceLineage), operandDemandLineage(operandDemandLineage) {
-}
+      selectedDDRStages(selectedDDRStages),
+      emissionRelations(emissionRelations), sourceLineage(sourceLineage),
+      operandDemandLineage(operandDemandLineage) {}
 
 mlir::FailureOr<TileRegionOp>
 TileRegionBodyEmitter::emit(TensorProgramScope scope,
