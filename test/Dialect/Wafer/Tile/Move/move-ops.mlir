@@ -9,22 +9,20 @@ module {
       {offsets = array<i64: 2>, sizes = array<i64: 4>, strides = array<i64: 1>}
       : memref<8xf32, #wafer.memory<spm, tensor>>
      -> memref<4xf32, #wafer.memory<spm, tensor>>
-  %inserted = wafer.tile.insert_slice %slice into %wide
+  wafer.tile.insert_slice %slice into %wide
       {offsets = array<i64: 2>, sizes = array<i64: 4>, strides = array<i64: 1>}
       : memref<4xf32, #wafer.memory<spm, tensor>>
        into memref<8xf32, #wafer.memory<spm, tensor>>
-     -> memref<8xf32, #wafer.memory<spm, tensor>>
   %matrix = "builtin.unrealized_conversion_cast"()
       : () -> memref<2x4xf32, #wafer.memory<spm, tensor>>
   %row = wafer.tile.extract_slice %matrix
       {offsets = array<i64: 0, 0>, sizes = array<i64: 1, 4>, strides = array<i64: 1, 1>}
       : memref<2x4xf32, #wafer.memory<spm, tensor>>
      -> memref<4xf32, #wafer.memory<spm, tensor>>
-  %row_inserted = wafer.tile.insert_slice %row into %matrix
+  wafer.tile.insert_slice %row into %matrix
       {offsets = array<i64: 1, 0>, sizes = array<i64: 1, 4>, strides = array<i64: 1, 1>}
       : memref<4xf32, #wafer.memory<spm, tensor>>
        into memref<2x4xf32, #wafer.memory<spm, tensor>>
-     -> memref<2x4xf32, #wafer.memory<spm, tensor>>
   %copy = wafer.tile.copy %patch
       : memref<4xf32, #wafer.memory<spm, tensor>>
      -> memref<4xf32, #wafer.memory<spm, tensor>>

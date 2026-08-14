@@ -18,6 +18,7 @@
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/STLExtras.h"
@@ -28,6 +29,8 @@
 #include <optional>
 
 namespace {
+
+template <typename OpT> OpT findSingleOp(mlir::ModuleOp module);
 
 TEST(WaferInterfacesTest, InterfaceClassesAreGenerated) {
   SUCCEED() << "Wafer interface headers compile";
@@ -141,6 +144,55 @@ module {
   EXPECT_EQ(terminator.getSuccessorOperands(
                 mlir::RegionBranchPoint::parent()).front(),
             yield.getValues().front());
+}
+
+TEST(WaferInterfacesTest, TileAliasesUseStandardViewAndDestinationContracts) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
+  wafer::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @alias_contract(
+      %source: memref<2x2xf16, #wafer.memory<spm, tensor>>,
+      %dest: memref<4xf16, #wafer.memory<spm, tensor>>) {
+    %view = wafer.tile.reshape %source
+        : memref<2x2xf16, #wafer.memory<spm, tensor>>
+       -> memref<4xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.insert_slice %view into %dest
+        {offsets = array<i64: 0>, sizes = array<i64: 4>,
+         strides = array<i64: 1>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+          into memref<4xf16, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  auto view = findSingleOp<wafer::ViewReshapeOp>(*module);
+  ASSERT_TRUE(view);
+  auto viewLike =
+      mlir::dyn_cast<mlir::ViewLikeOpInterface>(view.getOperation());
+  ASSERT_TRUE(viewLike);
+  EXPECT_EQ(viewLike.getViewSource(), view.getSource());
+
+  auto insert = findSingleOp<wafer::MoveInsertSliceOp>(*module);
+  ASSERT_TRUE(insert);
+  auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(
+      insert.getOperation());
+  ASSERT_TRUE(dps);
+  ASSERT_TRUE(dps.hasPureBufferSemantics());
+  ASSERT_EQ(dps.getNumDpsInputs(), 1);
+  ASSERT_EQ(dps.getNumDpsInits(), 1);
+  EXPECT_EQ(dps.getDpsInputs().front(), insert.getSource());
+  EXPECT_EQ(dps.getDpsInits().front(), insert.getDest());
+  EXPECT_EQ(insert->getNumResults(), 0u);
 }
 
 template <typename OpT> OpT findSingleOp(mlir::ModuleOp module) {

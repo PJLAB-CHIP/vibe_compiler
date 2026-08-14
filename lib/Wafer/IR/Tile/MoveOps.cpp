@@ -113,16 +113,11 @@ mlir::LogicalResult MoveExtractSliceOp::verify() {
 mlir::LogicalResult MoveInsertSliceOp::verify() {
   mlir::RankedTensorType sourceTensor;
   mlir::RankedTensorType destTensor;
-  mlir::RankedTensorType resultTensor;
   if (mlir::failed(getSPMBufferTensor(getOperation(), getSource().getType(),
                                       "insert_slice source", sourceTensor)) ||
       mlir::failed(getSPMBufferTensor(getOperation(), getDest().getType(),
-                                      "insert_slice dest", destTensor)) ||
-      mlir::failed(getSPMBufferTensor(getOperation(), getResult().getType(),
-                                      "insert_slice result", resultTensor)))
+                                      "insert_slice dest", destTensor)))
     return mlir::failure();
-  if (getDest().getType() != getResult().getType())
-    return emitOpError("insert_slice result type must match dest type");
   if (mlir::failed(verifySameElementLayoutAndSpace(
           getOperation(), getSource().getType(), sourceTensor,
           getDest().getType(), destTensor, "insert_slice")))
@@ -163,6 +158,25 @@ mlir::LogicalResult MoveCopyIntoOp::verify() {
     return mlir::failure();
   if (sourceTensor != destTensor)
     return emitOpError("copy_into source and dest tensor types must match");
+  return mlir::success();
+}
+
+mlir::LogicalResult MoveReshapeOp::verify() {
+  mlir::RankedTensorType sourceTensor;
+  mlir::RankedTensorType resultTensor;
+  if (mlir::failed(getSPMBufferTensor(getOperation(), getSource().getType(),
+                                      "reshape_copy source", sourceTensor)) ||
+      mlir::failed(getSPMBufferTensor(getOperation(), getResult().getType(),
+                                      "reshape_copy result", resultTensor)))
+    return mlir::failure();
+  if (mlir::failed(verifySameElementLayoutAndSpace(
+          getOperation(), getSource().getType(), sourceTensor,
+          getResult().getType(), resultTensor, "reshape_copy")))
+    return mlir::failure();
+  if (!sourceTensor.hasStaticShape() || !resultTensor.hasStaticShape())
+    return emitOpError("reshape_copy requires static tensor shapes");
+  if (sourceTensor.getNumElements() != resultTensor.getNumElements())
+    return emitOpError("reshape_copy must preserve static element count");
   return mlir::success();
 }
 

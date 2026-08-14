@@ -342,25 +342,9 @@ public:
     auto sourceType =
         mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
     auto destType = mlir::dyn_cast<mlir::MemRefType>(op.getDest().getType());
-    auto resultType =
-        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
-    if (!sourceType || !destType || !resultType)
+    if (!sourceType || !destType)
       return failPattern(rewriter, op, failureReason,
                          "tile.insert_slice lowering requires memref types");
-
-    analysis::IndexRelationResult copyRelation =
-        analysis::IndexRelation::identity(resultType.getShape());
-    if (!copyRelation.isExact())
-      return failPattern(rewriter, op, failureReason,
-                         "tile.insert_slice copy relation is not exact");
-    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> copyDescriptors =
-        getRelationMovementDescriptors(
-            rewriter, op, destType, resultType, resultType.getShape(),
-            *copyRelation.get(), *copyRelation.get(),
-            MovementEngine::GatherScatter, failureReason,
-            "tile.insert_slice dest copy lowering");
-    if (mlir::failed(copyDescriptors))
-      return mlir::failure();
 
     llvm::ArrayRef<int64_t> offsets = op.getOffsets();
     llvm::ArrayRef<int64_t> sizes = op.getSizes();
@@ -372,7 +356,7 @@ public:
       return failPattern(rewriter, op, failureReason,
                          "tile.insert_slice cannot map rank reduction");
     llvm::SmallVector<mlir::AffineExpr, 4> destResults;
-    destResults.reserve(resultType.getRank());
+    destResults.reserve(destType.getRank());
     unsigned reducedDim = 0;
     for (unsigned fullDim = 0; fullDim < sizes.size(); ++fullDim) {
       mlir::AffineExpr expression =
@@ -390,47 +374,22 @@ public:
         analysis::IndexRelation::fromAffineMap(
             mlir::AffineMap::get(sourceShape.size(), 0, destResults,
                                  rewriter.getContext()),
-            sourceShape, resultType.getShape());
+            sourceShape, destType.getShape());
     if (!sourceRelation.isExact() || !destRelation.isExact())
       return failPattern(rewriter, op, failureReason,
                          "tile.insert_slice relation is not exact");
     mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
         insertDescriptors = getRelationMovementDescriptors(
-            rewriter, op, sourceType, resultType, sourceShape,
+            rewriter, op, sourceType, destType, sourceShape,
             *sourceRelation.get(), *destRelation.get(),
             MovementEngine::GatherScatter, failureReason,
             "tile.insert_slice lowering");
     if (mlir::failed(insertDescriptors))
       return mlir::failure();
 
-    // An updated destination version can reuse its existing storage when all
-    // observations of the old version precede this insertion in the same
-    // block. This is the explicit destination-style case emitted for
-    // loop-carried tensor state; retaining a fresh result allocation there
-    // would create a dynamic allocation instance on every loop backedge.
-    bool canUpdateDestinationInPlace =
-        llvm::all_of(op.getDest().getUsers(), [&](mlir::Operation *user) {
-          return user == op.getOperation() ||
-                 (user->getBlock() == op->getBlock() &&
-                  user->isBeforeInBlock(op.getOperation()));
-        });
-    if (canUpdateDestinationInPlace) {
-      createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                     op.getDest(), *insertDescriptors);
-      rewriter.replaceOp(op, op.getDest());
-      return mlir::success();
-    }
-
-    mlir::FailureOr<mlir::Value> result = createDestAlloc(
-        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
-    if (mlir::failed(result))
-      return mlir::failure();
-
-    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getDest(), *result,
-                                   *copyDescriptors);
     createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                   *result, *insertDescriptors);
-    rewriter.replaceOp(op, *result);
+                                   op.getDest(), *insertDescriptors);
+    rewriter.eraseOp(op);
     return mlir::success();
   }
 
@@ -848,6 +807,34 @@ public:
       rewriter.replaceOp(op, view.getResult());
       return mlir::success();
     }
+    return failPattern(
+        rewriter, op, failureReason,
+        "tile.reshape is an alias view but the selected physical layouts do "
+        "not preserve an identical element mapping; materialize movement "
+        "before reshape");
+  }
+
+private:
+  std::string *failureReason;
+};
+
+class MoveReshapeLowering : public mlir::OpRewritePattern<MoveReshapeOp> {
+public:
+  MoveReshapeLowering(mlir::MLIRContext *context, std::string *failureReason)
+      : mlir::OpRewritePattern<MoveReshapeOp>(context),
+        failureReason(failureReason) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(MoveReshapeOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
+    auto resultType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    if (!sourceType || !resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reshape_copy lowering requires memref types");
 
     std::optional<CanonicalReshapeMovementRelations> movementRelations =
         getCanonicalReshapeMovementRelations(rewriter.getContext(),
@@ -856,32 +843,22 @@ public:
     if (!movementRelations)
       return failPattern(
           rewriter, op, failureReason,
-          "tile.reshape canonical relation cannot be represented by a "
+          "tile.reshape_copy canonical relation cannot be represented by a "
           "rectangular affine refinement");
     mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
-        getRelationMovementDescriptors(rewriter, op, sourceType, resultType,
-                                       movementRelations->iterationShape,
-                                       movementRelations->iterationToSource,
-                                       movementRelations->iterationToDest,
-                                       MovementEngine::GatherScatter,
-                                       failureReason, "tile.reshape lowering");
-    if (mlir::failed(descriptors)) {
-      if (failureReason) {
-        std::string typeDetail;
-        llvm::raw_string_ostream detailStream(typeDetail);
-        detailStream << " (source=" << sourceType << ", result=" << resultType
-                     << ")";
-        detailStream.flush();
-        failureReason->append(typeDetail);
-      }
+        getRelationMovementDescriptors(
+            rewriter, op, sourceType, resultType,
+            movementRelations->iterationShape,
+            movementRelations->iterationToSource,
+            movementRelations->iterationToDest, MovementEngine::GatherScatter,
+            failureReason, "tile.reshape_copy lowering");
+    if (mlir::failed(descriptors))
       return mlir::failure();
-    }
 
     mlir::FailureOr<mlir::Value> dest = createDestAlloc(
         op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
     if (mlir::failed(dest))
       return mlir::failure();
-
     createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(), *dest,
                                    *descriptors);
     rewriter.replaceOp(op, *dest);
@@ -899,7 +876,8 @@ void wafer::tile_region_to_instr::populateMovementLoweringPatterns(
   mlir::MLIRContext *context = patterns.getContext();
   patterns.add<TileLoadLowering, TileStoreLowering, LayoutMaterializeLowering,
                TileCopyLowering, TileCopyIntoLowering, MoveExtractSliceLowering,
-               MoveInsertSliceLowering, MoveTransposeLowering,
+               MoveInsertSliceLowering, MoveReshapeLowering,
+               MoveTransposeLowering,
                InstrTDMADataMoveLowering, MoveBroadcastLowering>(context,
                                                                  failureReason);
 }

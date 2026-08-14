@@ -2,6 +2,7 @@
 
 #include "Internal.h"
 
+#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 #include "Wafer/Support/TargetPolicy.h"
 
@@ -169,14 +170,13 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
 
     llvm::SmallVector<int64_t, 4> offsets(resultType.getRank(), 0);
     llvm::SmallVector<int64_t, 4> strides(resultType.getRank(), 1);
-    auto move = builder.create<MoveInsertSliceOp>(
-        materialize.getLoc(), makeSPMMemRefType(resultType, MemLayout::Tensor),
-        *source, *dest,
+    builder.create<MoveInsertSliceOp>(
+        materialize.getLoc(), *source, *dest,
         mlir::DenseI64ArrayAttr::get(materialize.getContext(), offsets),
         mlir::DenseI64ArrayAttr::get(materialize.getContext(),
                                      resultType.getShape()),
         mlir::DenseI64ArrayAttr::get(materialize.getContext(), strides));
-    record(materialize.getResult(), MemLayout::Tensor, move.getResult());
+    record(materialize.getResult(), MemLayout::Tensor, *dest);
     return mlir::success();
   }
 
@@ -643,12 +643,12 @@ TileRegionBodyEmitter::convertTensorPad(mlir::tensor::PadOp pad,
   builder.create<ComputeFillOp>(pad.getLoc(), destination, *scalar,
                                 /*fill_domain=*/FillDomainAttr{});
   llvm::SmallVector<int64_t, 4> strides(sourceType.getRank(), 1);
-  auto inserted = builder.create<MoveInsertSliceOp>(
-      pad.getLoc(), resultBufferType, *source, destination,
+  builder.create<MoveInsertSliceOp>(
+      pad.getLoc(), *source, destination,
       builder.getDenseI64ArrayAttr(low),
       builder.getDenseI64ArrayAttr(sourceType.getShape()),
       builder.getDenseI64ArrayAttr(strides));
-  record(pad.getResult(), MemLayout::Tensor, inserted.getResult());
+  record(pad.getResult(), MemLayout::Tensor, destination);
   return mlir::success();
 }
 
@@ -1284,6 +1284,13 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
       getOrMaterialize(insertSlice.getDest(), MemLayout::Tensor, builder);
   if (mlir::failed(source) || mlir::failed(dest))
     return mlir::failure();
+  if (!hasNoObservableDestUseExceptInsert(insertSlice))
+    *dest = builder
+                .create<MoveCopyOp>(
+                    insertSlice.getLoc(),
+                    makeSPMMemRefType(resultTensorType, MemLayout::Tensor),
+                    *dest)
+                .getResult();
 
   mlir::MLIRContext *context = insertSlice.getContext();
   auto offsets =
@@ -1292,13 +1299,12 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
       mlir::DenseI64ArrayAttr::get(context, insertSlice.getStaticSizes());
   auto strides =
       mlir::DenseI64ArrayAttr::get(context, insertSlice.getStaticStrides());
-  auto move = builder.create<MoveInsertSliceOp>(
-      insertSlice.getLoc(),
-      makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *source, *dest,
+  builder.create<MoveInsertSliceOp>(
+      insertSlice.getLoc(), *source, *dest,
       offsets, sizes, strides);
   releasePrivateSPMValueAfterLastUse(insertSlice.getSource(), *source,
                                      insertSlice.getLoc(), builder);
-  record(insertSlice.getResult(), MemLayout::Tensor, move.getResult());
+  record(insertSlice.getResult(), MemLayout::Tensor, *dest);
   return mlir::success();
 }
 
@@ -1381,9 +1387,23 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorReshape(
     sourceLayout = MemLayout::Tensor;
   }
 
-  auto reshape = builder.create<ViewReshapeOp>(
-      op->getLoc(), makeSPMMemRefType(resultTensorType, sourceLayout), source);
-  record(resultValue, sourceLayout, reshape.getResult());
+  mlir::MemRefType resultType =
+      makeSPMMemRefType(resultTensorType, sourceLayout);
+  auto sourceType = mlir::dyn_cast<mlir::MemRefType>(source.getType());
+  if (!sourceType)
+    return fail("tensor reshape source is not a memref");
+  mlir::Value result;
+  if (mlir::succeeded(
+          analysis::TransferRealizability::proveStaticReshapeMetadataView(
+              sourceType, resultType, /*destinationMayWrite=*/true)))
+    result = builder
+                 .create<ViewReshapeOp>(op->getLoc(), resultType, source)
+                 .getResult();
+  else
+    result = builder
+                 .create<MoveReshapeOp>(op->getLoc(), resultType, source)
+                 .getResult();
+  record(resultValue, sourceLayout, result);
   return mlir::success();
 }
 

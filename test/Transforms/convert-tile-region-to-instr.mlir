@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-convert-tile-region-to-instr %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s | FileCheck %s
 
 func.func @load_compute_store(
     %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
@@ -341,11 +341,10 @@ func.func @movement_extract_insert_broadcast_transpose(%zero: f16) {
         {offsets = array<i64: 2>, sizes = array<i64: 4>, strides = array<i64: 1>}
         : memref<8xf16, #wafer.memory<spm, tensor>>
        -> memref<4xf16, #wafer.memory<spm, tensor>>
-    %inserted = wafer.tile.insert_slice %slice into %wide
+    wafer.tile.insert_slice %slice into %wide
         {offsets = array<i64: 2>, sizes = array<i64: 4>, strides = array<i64: 1>}
         : memref<4xf16, #wafer.memory<spm, tensor>>
          into memref<8xf16, #wafer.memory<spm, tensor>>
-       -> memref<8xf16, #wafer.memory<spm, tensor>>
     %matrix = memref.alloc()
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     %transposed = wafer.tile.transpose %matrix
@@ -596,7 +595,7 @@ func.func @reshape_cx_block_major_materializes(%zero: f16) {
   ^bb0(%fill: f16):
     %source = memref.alloc()
         : memref<2x128xf16, #wafer.memory<spm, cx>>
-    %reshaped = wafer.tile.reshape %source
+    %reshaped = wafer.tile.reshape_copy %source
         : memref<2x128xf16, #wafer.memory<spm, cx>>
        -> memref<4x64xf16, #wafer.memory<spm, cx>>
     wafer.tile.yield %fill : f16
@@ -605,7 +604,7 @@ func.func @reshape_cx_block_major_materializes(%zero: f16) {
 }
 
 // CHECK-LABEL: func.func @reshape_cx_block_major_materializes
-// CHECK-NOT: wafer.tile.reshape
+// CHECK-NOT: wafer.tile.reshape_copy
 // CHECK: memref.alloc() : memref<2x128xf16, #wafer.memory<spm, cx>>
 // CHECK: %[[RESHAPED:.+]] = memref.alloc() : memref<4x64xf16, #wafer.memory<spm, cx>>
 // CHECK: wafer.instr.gather_scatter %{{.+}} to %[[RESHAPED]]
@@ -622,7 +621,7 @@ func.func @reshape_cx_period_inside_projected_factor(%zero: f16) {
   ^bb0(%fill: f16):
     %source = memref.alloc()
         : memref<2x256xf16, #wafer.memory<spm, cx>>
-    %reshaped = wafer.tile.reshape %source
+    %reshaped = wafer.tile.reshape_copy %source
         : memref<2x256xf16, #wafer.memory<spm, cx>>
        -> memref<1x2x2x128xf16, #wafer.memory<spm, cx>>
     wafer.tile.yield %fill : f16
@@ -631,7 +630,7 @@ func.func @reshape_cx_period_inside_projected_factor(%zero: f16) {
 }
 
 // CHECK-LABEL: func.func @reshape_cx_period_inside_projected_factor
-// CHECK-NOT: wafer.tile.reshape
+// CHECK-NOT: wafer.tile.reshape_copy
 // CHECK: %[[PERIOD_SOURCE:.+]] = memref.alloc() : memref<2x256xf16, #wafer.memory<spm, cx>>
 // CHECK: %[[PERIOD_RESHAPED:.+]] = memref.alloc() : memref<1x2x2x128xf16, #wafer.memory<spm, cx>>
 // CHECK: wafer.instr.gather_scatter %[[PERIOD_SOURCE]] to %[[PERIOD_RESHAPED]]

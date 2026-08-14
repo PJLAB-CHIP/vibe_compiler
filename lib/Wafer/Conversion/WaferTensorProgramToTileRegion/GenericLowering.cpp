@@ -774,20 +774,20 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTwoWayConcatGeneric(
                                             secondType.getShape().end());
 
   mlir::MLIRContext *context = generic.getContext();
-  auto firstInsert = builder.create<MoveInsertSliceOp>(
-      generic.getLoc(), resultType, *first, seed.getResult(),
+  builder.create<MoveInsertSliceOp>(
+      generic.getLoc(), *first, seed.getResult(),
       mlir::DenseI64ArrayAttr::get(context, offsets),
       mlir::DenseI64ArrayAttr::get(context, firstSizes),
       mlir::DenseI64ArrayAttr::get(context, strides));
 
   offsets[concatAxis] = firstType.getDimSize(concatAxis);
-  auto secondInsert = builder.create<MoveInsertSliceOp>(
-      generic.getLoc(), resultType, *second, firstInsert.getResult(),
+  builder.create<MoveInsertSliceOp>(
+      generic.getLoc(), *second, seed.getResult(),
       mlir::DenseI64ArrayAttr::get(context, offsets),
       mlir::DenseI64ArrayAttr::get(context, secondSizes),
       mlir::DenseI64ArrayAttr::get(context, strides));
 
-  record(generic->getResult(0), MemLayout::Tensor, secondInsert.getResult());
+  record(generic->getResult(0), MemLayout::Tensor, seed.getResult());
   return mlir::success();
 }
 

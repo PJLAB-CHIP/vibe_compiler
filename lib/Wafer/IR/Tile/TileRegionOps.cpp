@@ -125,8 +125,6 @@ static StorageTrace traceSPMStorage(mlir::Value value, TileRegionOp owner,
     return finish(traceValue(toTensor.getMemref()));
   if (auto toMemref = mlir::dyn_cast<mlir::bufferization::ToMemrefOp>(producer))
     return finish(traceValue(toMemref.getTensor()));
-  if (auto reshape = mlir::dyn_cast<ViewReshapeOp>(producer))
-    return finish(traceValue(reshape.getSource()));
   if (auto viewLike = mlir::dyn_cast<mlir::ViewLikeOpInterface>(producer))
     return finish(traceValue(viewLike.getViewSource()));
   if (auto select = mlir::dyn_cast<mlir::SelectLikeOpInterface>(producer)) {

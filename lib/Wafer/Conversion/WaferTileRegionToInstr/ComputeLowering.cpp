@@ -293,42 +293,6 @@ public:
     llvm::SmallVector<MovementDescriptorPair> descriptors;
   };
 
-  /// Returns the in-place destination for a loop-carried accumulation: the
-  /// elementwise result is the value yielded by an enclosing scf.for and one
-  /// of its inputs is that loop's carried iter_arg.  The update then writes
-  /// directly into the carried buffer so no SPM allocation is created inside
-  /// the loop body.  Returns {} when the pattern does not hold or the carried
-  /// input would need a layout materialization first.
-  static mlir::Value
-  findLoopCarriedAccumulateDest(ComputeElementwiseOp op,
-                                llvm::ArrayRef<InputMovementPlan> plans) {
-    mlir::Operation *user = nullptr;
-    for (mlir::Operation *candidate : op.getResult().getUsers()) {
-      if (user)
-        return {};
-      user = candidate;
-    }
-    auto yield = mlir::dyn_cast_or_null<mlir::scf::YieldOp>(user);
-    if (!yield)
-      return {};
-    auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(yield->getParentOp());
-    if (!loop || !loop->isAncestor(op.getOperation()))
-      return {};
-    for (auto [index, yielded] : llvm::enumerate(yield.getResults())) {
-      if (yielded != op.getResult() ||
-          index >= loop.getNumRegionIterArgs())
-        continue;
-      mlir::Value iterArg = loop.getRegionIterArgs()[index];
-      for (auto [inputIndex, input] : llvm::enumerate(op.getInputs())) {
-        if (input != iterArg || inputIndex >= plans.size() ||
-            plans[inputIndex].materializedType)
-          continue;
-        return iterArg;
-      }
-    }
-    return {};
-  }
-
   ElementwiseLowering(mlir::MLIRContext *context, std::string *failureReason)
       : mlir::OpRewritePattern<ComputeElementwiseOp>(context),
         failureReason(failureReason) {}
@@ -506,19 +470,9 @@ public:
       inputs.push_back(materialized);
       materializedMappedInput = true;
     }
-    // A loop-carried accumulation lowers in place on the carried buffer:
-    // its result is the value yielded by an enclosing scf.for and one of its
-    // inputs is that loop's carried iter_arg.  A fresh SPM allocation inside
-    // the loop body would itself be carried across the backedge, which the
-    // SPM memory planner rejects without multi-instance placement.
-    mlir::Value inPlaceDest = {};
-    if (op.getKind() != ComputeElementwiseKind::Select)
-      inPlaceDest = findLoopCarriedAccumulateDest(op, movementPlans);
     mlir::Value dest =
-        inPlaceDest
-            ? inPlaceDest
-            : rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
-                  .getResult();
+        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
+            .getResult();
 
     if (op.getKind() == ComputeElementwiseKind::Select) {
       createGatherScatterDescriptors(rewriter, op.getLoc(), inputs[2], dest,
