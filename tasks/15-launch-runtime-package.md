@@ -37,8 +37,10 @@ Pipeline position:
 
 ## 2. 已确认的Wafer执行事实
 
-- 每个Tile target entry消费一个有序参数表。当前实现名`KernelABISlot`并不准确：kernel wrapper从pointer row读取地址，
-  model wrapper从BootParam descriptor读取地址；current设计统一称`TileEntryArgument`。
+- 每个Tile target entry消费一个有序参数表。当前实现名`KernelABISlot`并不准确：`launchKernel`
+  provider mapping从pointer row读取地址，`txLoadGraph`/`txLaunchModel` provider mapping从BootParam descriptor读取地址；
+  二者是同一Tile entry合同的不同底层承载，不是两层runtime或两套package语义。current设计统一称
+  `TileEntryArgument`。
 - `TileEntryArgument`只描述某个Tile target entry的一个有序参数：ordinal、closed kind、恰一个typed reference
   （ProgramTensor/TargetTensor、external port或entry-local requirement）、`MemLayout`、shape、physical bytes、alignment和access。
   它不拥有bytes、file range或device address；pointer row和BootParam只是两种consumer representation。
@@ -226,9 +228,11 @@ reset或下一次submit不能重传、重排或覆盖program data。one-shot仍�
 这样静态大小、alignment和lifetime在side effect前一次排好，不逐tensor或逐Tile调用allocator。若某个provider能力要求分开，
 必须由typed capability和明确memory-plan分支决定，不能静默按失败顺序拆分。
 
-Model launch保持现有exact-build边界：只接受其已经资格化的aligned rank-1..6 F32 input/output，不接受parameter/constant、
-workspace、Direct-DTE或current kernel pointer-row memory plan。扩展必须同步compiler、BootParam ABI、package、runtime、
-target model和板端证据。
+当前Wafer `txLoadGraph`/`txLaunchModel` adapter是同一Tile entry合同的另一个provider mapping，不是单独的
+“model runtime”。它现有exact-build实现只资格化了aligned rank-1..6 F32 input/output，尚未承接
+parameter/constant、workspace、Direct-DTE或current kernel pointer-row memory plan。这些是当前Wafer adapter的coverage，
+不是vendor接口的能力上限。扩展该mapping必须同步compiler、BootParam ABI、package、runtime、target model和板端证据；
+不得反向改写ProgramTensor、TargetTensor、`TileEntryArgument`或runtime memory plan语义。
 
 ## 6. Board lifecycle
 
@@ -320,7 +324,8 @@ Host/no-card至少覆盖：
 - workspace base与compiler offset不被runtime重排；
 - Direct-DTE/profile正负例、deadline、cleanup与poison；
 - source tree/NPY/IR/unreferenced files拒绝；
-- current kernel与exact model launch各自能力不被放宽。
+- kernel pointer-row与model BootParam两个provider mappings消费同一`TileEntryArgument` schema；测试只签发
+  各自current adapter coverage，不把adapter未实现能力写成vendor上限。
 
 板端case使用FP16/BF16，fresh生成完整package并先通过no-card；单进程串行launch、bounded timeout、output/guard和正常lifecycle。
 代码或环境未变化时不重复历史case。Q56达到`board-ready`需要case/oracle/runner完整且实际生成新package；

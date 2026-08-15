@@ -147,7 +147,9 @@ source program
 - current target LLVM metadata显式包含card/tile/launch slot、entry、target identity、runtime ABI、format与dense
   `TileEntryArgument[]`。
 - Tile entry argument记录ordinal、closed kind、program/target identity（如适用）、dtype、layout、shape、physical bytes、
-  alignment和access；output argument引用caller-visible output port。kernel pointer row与model BootParam只是不同consumer。
+  alignment和access；output argument引用caller-visible output port。kernel pointer row与model BootParam只是同一
+  Tile entry合同的不同provider mappings，不形成两层runtime或两套package语义。adapter尚未实现的coverage
+  不能写成vendor接口的能力上限。
 - target call descriptor registry是symbol/signature/field position/issue domain的唯一事实源。consumer用typed semantic和decoder，
   不解析symbol spelling。
 - host JIT dispatch只是把final target calls转成typed transactions的internal bridge，不是public runtime ABI或serialized field。

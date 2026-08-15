@@ -165,7 +165,8 @@
   runtime pointer-table storage或只适用于kernel launch。
 - 根因：用某一个wrapper的承载形式给跨target consumer的entry argument命名。
 - 修复模式：稳定语义名为`TileEntryArgument`；它记录ordinal、closed kind、target descriptor、bytes/alignment和access，
-  pointer row或BootParam只是不同lowering consumer。
+  pointer row或BootParam只是同一entry合同的不同provider lowering。不按vendor函数名分裂package/runtime架构，
+  也不把当前adapter缺失写成vendor能力上限。
 - 防复发：kernel/model两条wrapper都从同一个argument schema生成并readback；实现改名同批替换全部producer/consumer，
   不保留旧symbol或alias。
 
