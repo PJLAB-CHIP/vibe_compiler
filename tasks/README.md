@@ -78,6 +78,12 @@ Q55接口版本收敛计划见`tasks/plans/interface-version-consolidation.md`�
 继续拥有具体frontend、target、package、runtime、profiler与verification字段语义。Q55不建立compatibility mode，
 只保留真实外围版本并让repo内同步接口回到一种current表示。
 
+Q56 package数据闭合与Q57设备驻留执行共用`tasks/plans/executable-package-and-resident-runtime.md`。Q56在Q49.P和
+Q50.A–Q53主搜索继续施工前，先替换`CardExecutable`之后丢失layout/backing/init/lifetime的静态package边界；它不改变
+selected IR或搜索空间。Q57只在Q53按新package合同达到`board-ready`后启动，增加loaded executable、device buffer/view和
+显式submission lifetime；当前仍以single context、单inflight和无cancel为事实，不把serving engine或persistent device loop
+并入runtime。15继续是唯一package/runtime设计owner，实施计划不复制current schema。
+
 Q48语义驱动superoptimizer计划见`tasks/plans/semantic-superoptimization.md`。它必须在Q53按card-local multi-Tile新合同
 重新达到`board-ready`、Q47 current ABI可消费final Instr/TargetCall后启动，
 复用05-08、10-11、16-18的现有IR、candidate、proof consumer、model和源码ownership合同；目标是把自动生成并证明的
