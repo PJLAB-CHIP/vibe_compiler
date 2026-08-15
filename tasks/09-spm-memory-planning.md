@@ -116,7 +116,7 @@ Pipeline position:
   不把任一traversal/task/region/Tile的offset独立提交，也不把hardware `busytable`当作completion/lifetime语义；
   full-shape initial candidate与其它tiled candidates运行同一allocation-domain SPM planning和CardExecutable verification gate，不设bypass；
   不依据presumed Tile equivalence复用或跳过任何Tile plan；allocator不决定哪些boundary应resident，不生成
-  implementation/transfer/physical-version/per-edge candidate set，也不通过给两个distinct roots分配同一offset来
+  implementation/transfer/physical-encoding/per-edge candidate set，也不通过给两个distinct roots分配同一offset来
   模拟copy消除，不把某个unsafe consumer拆成partial promotion；
   不从pipeline flag、估算overlap、region共置或buffer数量猜测lifetime；不创建chunk、movement、buffer、order或completion，
   也不把同region独立traversal误判为coupled fusion；
@@ -215,7 +215,7 @@ live segment，不靠symbol名字判断callee行为，也不形成跨过程summa
   SPM memory planning 不直接消费
   target-abstract tile-region IR，而消费instruction legalization生成的instruction-level IR with unplaced
   Wafer-tagged memref values。
-- candidate rewrite在该clone中显式物化的implementation、physical version、transfer、residency、layout和movement demand。
+- candidate rewrite在该clone中显式物化的implementation、physical encoding、transfer、residency、layout和movement demand。
 - instruction legalization / selection 产生的 concrete memref value、operand/result/temp/workspace/
   accumulator/psum/staging 分类、instruction family、effect event 和 async policy。
 - `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
@@ -264,7 +264,7 @@ BufferDemand {
 }
 ```
 
-V0 `kind`：
+当前 `kind`：
 
 - input/output tile。
 - intermediate tile。
@@ -328,7 +328,7 @@ lifetime 从 IR 结构和 effect 推出：
 - communication wait / group barrier。
 - host-visible output boundary。
 
-V0 规则：
+当前规则：
 
 - synchronous op 的 input live 到该 op read 完；output live 到最后 use。
 - 本地 compute/movement issue按typed worker进入ordered-pending candidate set；source/destination access至少活到
@@ -381,7 +381,7 @@ selected instruction lowering下，对全部SPM roots按真实lifetime/coexisten
 输入必须足够接近真实 lowering：
 
 - tiled control-flow / event order。
-- actual compute form、physical version、transfer/layout materialization和compute/movement instruction form。
+- actual compute form、physical encoding、transfer/layout materialization和compute/movement instruction form。
 - instruction-derived `BufferDemand`。
 - effect / async issue / typed participant join / exact wait / barrier。
 - target range、reserved range、alignment、range-end policy。
@@ -410,7 +410,7 @@ empty demand返回`Feasible`、empty placement和high-water 0。
 形成causal no-good；`ResourceExhausted`与internal failure都是indeterminate，只消耗本次work并保留原合法search state，
 不得被candidate-selection提升成unsupported、capacity failure或其它exact rejection。
 
-V0 event model：
+当前event model：
 
 - 每个 movement / materialization / compute / sync op 产生issue/read/write/typed completion event。
 - communication p2p op 产生 send/recv issue event，`wafer.instr.dte_wait` 或 lower-level DTE/FSM wait
@@ -434,7 +434,7 @@ issue edge，但不能替代`!async.token`、participant join、exact wait、mem
 
 ## 7. Range and Alignment Policy
 
-当前事实和 V0 策略：
+当前事实和策略：
 
 - per-tile SPM window 是 3 MiB。
 - 普通 tensor allocation 使用保守可用区间，避开 Kcore/runtime reserved range。
@@ -594,7 +594,7 @@ gate通过后提交`wafer.spm.offset`。06的generation worklist不接收已写o
 
 ## 9. Failure Feedback
 
-Current structured failure reasons包括：
+当前structured failure reasons包括：
 
 - `capacity_overflow`（仅完整hardware arena已证明不可行）；
 - `packing_search_exhausted`；
@@ -837,7 +837,7 @@ worker/effect/token合同处理；NCC completion只接受typed participant join�
 
 ## 15. 后续扩展
 
-这些机制有价值，但不进入 V0 主路径。进入条件必须明确：
+这些机制有价值，但不进入 当前主路径。进入条件必须明确：
 
 - 多 pool allocation：当 ordinary pool、communication staging、runtime-visible buffer 的 reserved
   range 和 lifetime 约束稳定后引入；在此之前用单 pool + reserved range 更容易验证。

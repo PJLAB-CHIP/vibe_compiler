@@ -28,13 +28,11 @@ from urllib.parse import urlparse
 import fcntl
 
 
-RECORD_SCHEMA_VERSION = 2
 RECORD_KIND = "wafer-numeric-model-deps"
 RECORD_STATUS = "conformance-passed"
-CONFORMANCE_POLICY = "wafer-numeric-model-conformance-v1"
-SNAPSHOT_SCHEMA_VERSION = 1
+CONFORMANCE_POLICY = "wafer-numeric-model-conformance"
 SNAPSHOT_KIND = "wafer-numeric-model-canonical-snapshot"
-TOOLCHAIN_POLICY = "wafer-host-numeric-build-environment-v1"
+TOOLCHAIN_POLICY = "wafer-host-numeric-build-environment"
 NUMERIC_ROOT_TOKEN = "${NUMERIC_ROOT}"
 
 SOFTFLOAT_PLATFORM = "Linux-x86_64-GCC"
@@ -160,7 +158,6 @@ class ValidatedNumericRecord:
     def cmake_snapshot(self) -> dict[str, Any]:
         file_records = self.record["artifacts"]
         return {
-            "schema_version": SNAPSHOT_SCHEMA_VERSION,
             "kind": SNAPSHOT_KIND,
             "record_sha256": self.record_sha256,
             "root": self.root.as_posix(),
@@ -1237,7 +1234,6 @@ def validate_numeric_record_snapshot(
     _require_exact_keys(
         record,
         {
-            "schema_version",
             "kind",
             "status",
             "pins",
@@ -1248,8 +1244,6 @@ def validate_numeric_record_snapshot(
         },
         "numeric dependency record",
     )
-    if _require_int(record["schema_version"], "numeric schema_version") != RECORD_SCHEMA_VERSION:
-        raise RuntimeError("numeric dependency record schema mismatch")
     if record["kind"] != RECORD_KIND or record["status"] != RECORD_STATUS:
         raise RuntimeError("numeric dependency record is not conformance-passed")
 
@@ -1340,7 +1334,7 @@ def validate_numeric_record_snapshot(
         "managed_m4": "install/m4/bin/m4",
         "pkg_config": "disabled",
         "mpfr_patches": "",
-        "elf_identity_policy": "sha256-build-id-soname-needed-rpath-v1",
+        "elf_identity_policy": "sha256-build-id-soname-needed-rpath",
     }
     for field, expected in expected_build_scalars.items():
         if build[field] != expected:

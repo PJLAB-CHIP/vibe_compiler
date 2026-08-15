@@ -24,16 +24,15 @@ from typing import Any, Callable
 DEFAULT_REFERENCE_MATMUL_SIZE = 4096
 DEFAULT_HF_TRANSFORMER_BATCH_SIZE = 1
 DEFAULT_HF_TRANSFORMER_SEQUENCE_LENGTH = 4
-WORKLOAD_CORPUS_SCHEMA_VERSION = 1
 DEFAULT_WORKLOAD_CORPUS_SPEC = (
     pathlib.Path(__file__).resolve().parent
     / "workloads"
-    / "single-card-vertical-v1.json"
+    / "single-card-vertical.json"
 )
 HF_CARD_PARTITION_MESH_SHAPE = (1,)
 HF_CARD_PARTITION_AXIS_NAMES = ("card_partition",)
 LLAMA_SCALE_PAYLOAD_ALGORITHM = (
-    "wafer-exact-f16-splitmix64-counter-byte-scaled-v3"
+    "wafer-exact-f16-splitmix64-counter-byte-scaled"
 )
 _UINT64_MASK = (1 << 64) - 1
 _SPLITMIX64_STREAM_DOMAIN = 0xD1B54A32D192ED03
@@ -526,12 +525,8 @@ def _increasing_k_gemm_reference(
 def load_workload_corpus_spec(spec_path: pathlib.Path) -> dict[str, Any]:
     with spec_path.open("r", encoding="utf-8") as file:
         spec = json.load(file)
-    if spec.get("schema_version") != WORKLOAD_CORPUS_SCHEMA_VERSION:
-        raise RuntimeError(
-            "unsupported workload corpus schema_version "
-            f"{spec.get('schema_version')!r}; expected "
-            f"{WORKLOAD_CORPUS_SCHEMA_VERSION}"
-        )
+    if "schema_version" in spec:
+        raise RuntimeError("workload corpus must not contain a version field")
     cases = spec.get("cases")
     if not isinstance(cases, list) or not cases:
         raise RuntimeError("workload corpus must contain a non-empty cases list")
@@ -1272,8 +1267,6 @@ def _build_workload_case_payload(
         n = int(config["n"])
         if min(m, k, n) <= 0:
             raise RuntimeError("simple GEMM dimensions must be positive")
-        if config.get("model_semantics_revision") != "wafer-simple-gemm-v1":
-            raise RuntimeError("unsupported simple GEMM semantics revision")
         source_config = config
         lhs_f32 = _deterministic_gemm_array(
             numpy_module, (m, k), seed=seed, stream=0
@@ -1299,8 +1292,6 @@ def _build_workload_case_payload(
             raise RuntimeError(
                 "linear residual workload requires output_features == input_features"
             )
-        if config.get("model_semantics_revision") != "wafer-linear-mlp-v1":
-            raise RuntimeError("unsupported linear/MLP model semantics revision")
         source_config = config
         input_array = _deterministic_float32_array(
             numpy_module,
@@ -1353,7 +1344,6 @@ def _build_workload_case_payload(
         source_config = {
             "hf_config": hf_config,
             "workload_config": config,
-            "model_semantics_revision": "wafer-causal-llama-decoder-v1",
         }
         batch_size = int(config["batch_size"])
         sequence_length = int(config["sequence_length"])
@@ -1375,14 +1365,14 @@ def _build_workload_case_payload(
                 normalization_delta_denominator,
             ) = _load_llama_scale_payload_config(case["id"], config)
         else:
-            # The frozen tiny diagnostic corpus predates the scale-payload
-            # schema. Its existing source digest and values remain unchanged.
+            # The tiny diagnostic case uses fixed scaling instead of an
+            # explicit payload descriptor.
             input_denominator = 128
             projection_denominator = 4096
             normalization_delta_denominator = 4096
         if kind == "llama_decoder_block" and storage_dtype != "float16":
             raise RuntimeError(
-                "the versioned Llama scale payload requires float16 storage"
+                "the explicit Llama scale payload requires float16 storage"
             )
         payload_array = (
             _deterministic_counter_float16_array
@@ -1613,7 +1603,6 @@ def emit_workload_cpu_reference(
         )
 
     reference_record = {
-        "schema_version": WORKLOAD_CORPUS_SCHEMA_VERSION,
         "corpus_id": spec["corpus_id"],
         "case_id": case_id,
         "kind": case["kind"],
@@ -2222,7 +2211,6 @@ def emit_workload_corpus(
                 )
 
         case_record = {
-            "schema_version": WORKLOAD_CORPUS_SCHEMA_VERSION,
             "corpus_id": spec["corpus_id"],
             "case_id": case["id"],
             "source": spec["source"],
@@ -2257,7 +2245,6 @@ def emit_workload_corpus(
     (output_dir / "corpus.json").write_text(
         json.dumps(
             {
-                "schema_version": WORKLOAD_CORPUS_SCHEMA_VERSION,
                 "corpus_id": spec["corpus_id"],
                 "cases": corpus_records,
             },
@@ -2352,7 +2339,6 @@ def emit_workload_variant(
     )
     program_digest = _canonical_program_digest(program_dir, numpy_module)
     record = {
-        "schema_version": WORKLOAD_CORPUS_SCHEMA_VERSION,
         "included_in_corpus": False,
         "variant_kind": "diagnostic-seed",
         "base_corpus_id": spec["corpus_id"],

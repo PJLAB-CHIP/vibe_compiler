@@ -103,7 +103,7 @@ class PairedPayloads:
 
 
 @dataclasses.dataclass(frozen=True)
-class CampaignCase:
+class OptimizationComparisonCase:
     key: str
     family: str
     rank_count: int
@@ -838,7 +838,7 @@ def noc_resident_m_sharded_gemm_oracle(
 CASES = {
     case.key: case
     for case in (
-        CampaignCase(
+        OptimizationComparisonCase(
             "reciprocal-implementation",
             "numeric-dag-implementation",
             1,
@@ -849,7 +849,7 @@ CASES = {
             reciprocal_payloads,
             reciprocal_oracle,
         ),
-        CampaignCase(
+        OptimizationComparisonCase(
             "f16-common-factor",
             "numeric-dag-implementation",
             1,
@@ -861,7 +861,7 @@ CASES = {
             f16_factor_oracle,
             RELAXED_F16_ALGEBRA_OUTPUT,
         ),
-        CampaignCase(
+        OptimizationComparisonCase(
             "resident-fanout-share",
             "resident-share-recompute",
             1,
@@ -872,7 +872,7 @@ CASES = {
             resident_fanout_payloads,
             resident_fanout_oracle,
         ),
-        CampaignCase(
+        OptimizationComparisonCase(
             "consumer-local-recompute",
             "resident-share-recompute",
             1,
@@ -883,7 +883,7 @@ CASES = {
             recompute_payloads,
             recompute_oracle,
         ),
-        CampaignCase(
+        OptimizationComparisonCase(
             "long-steady-elementwise-add",
             "static-fixed-slot-candidate",
             1,
@@ -894,7 +894,7 @@ CASES = {
             long_steady_add_payloads,
             long_steady_add_oracle,
         ),
-        CampaignCase(
+        OptimizationComparisonCase(
             "ready-order-movement-first",
             "ready-order",
             1,
@@ -905,7 +905,7 @@ CASES = {
             ready_order_payloads,
             ready_order_oracle,
         ),
-        CampaignCase(
+        OptimizationComparisonCase(
             "gemm-aligned-physical-route",
             "tile-physical-route",
             1,
@@ -916,7 +916,7 @@ CASES = {
             lambda: gemm_payloads(64, 128, 128),
             gemm_route_oracle,
         ),
-        CampaignCase(
+        OptimizationComparisonCase(
             "gemm-tail-physical-route",
             "tile-physical-route",
             1,
@@ -927,7 +927,7 @@ CASES = {
             lambda: gemm_payloads(65, 129, 129),
             gemm_route_oracle,
         ),
-        CampaignCase(
+        OptimizationComparisonCase(
             "tree-all-reduce",
             "collective-algorithm",
             16,
@@ -938,7 +938,7 @@ CASES = {
             all_reduce_payloads,
             collective_oracle,
         ),
-        CampaignCase(
+        OptimizationComparisonCase(
             "noc-resident-large-gemm",
             "noc-resident-dataflow",
             NOC_RESIDENT_GEMM_RANKS,
@@ -952,7 +952,7 @@ CASES = {
             noc_resident_large_gemm_payloads,
             noc_resident_large_gemm_oracle,
         ),
-        CampaignCase(
+        OptimizationComparisonCase(
             "noc-resident-m-sharded-gemm",
             "noc-resident-dataflow",
             NOC_RESIDENT_M_SHARDED_GEMM_RANKS,
@@ -1023,7 +1023,7 @@ def run(
     return result
 
 
-def metadata(case: CampaignCase) -> dict[str, object]:
+def metadata(case: OptimizationComparisonCase) -> dict[str, object]:
     return {
         "name": "forward",
         "stablehlo_version": "0.0.0",
@@ -1055,7 +1055,7 @@ def metadata(case: CampaignCase) -> dict[str, object]:
     }
 
 
-def write_source(work_dir: pathlib.Path, case: CampaignCase) -> pathlib.Path:
+def write_source(work_dir: pathlib.Path, case: OptimizationComparisonCase) -> pathlib.Path:
     known_children = {
         "source-program",
         "baseline-package",
@@ -1093,7 +1093,7 @@ def compile_package(
     compiler: pathlib.Path,
     source: pathlib.Path,
     output: pathlib.Path,
-    case: CampaignCase,
+    case: OptimizationComparisonCase,
     *,
     reserved_baseline: bool,
     profile: bool = False,
@@ -1202,7 +1202,7 @@ def normalized_manifest(manifest: dict[str, object]) -> dict[str, object]:
 def validate_paired_packages(
     baseline: pathlib.Path,
     winner: pathlib.Path,
-    case: CampaignCase,
+    case: OptimizationComparisonCase,
     *,
     target_identity: str = TARGET_IDENTITY,
 ) -> tuple[
@@ -1629,7 +1629,7 @@ def validate_floating_pair(
 
 
 def validate_paired_payloads(
-    case: CampaignCase, payloads: PairedPayloads
+    case: OptimizationComparisonCase, payloads: PairedPayloads
 ) -> None:
     if (
         len(payloads.inputs) != case.rank_count
@@ -1705,7 +1705,7 @@ def validate_paired_payloads(
 
 def write_payloads(
     work_dir: pathlib.Path,
-    case: CampaignCase,
+    case: OptimizationComparisonCase,
     bindings_by_variant: dict[str, dict[tuple[int, str, int], int]],
     payloads: PairedPayloads,
 ) -> dict[str, list[str]]:
@@ -1756,7 +1756,7 @@ def write_payloads(
 
 def compare_captured_outputs(
     work_dir: pathlib.Path,
-    case: CampaignCase,
+    case: OptimizationComparisonCase,
     payloads: PairedPayloads,
     variant: str,
 ) -> None:
@@ -1793,7 +1793,7 @@ def compare_captured_outputs(
 
 
 def no_card_command(
-    wafer_run: pathlib.Path, package: pathlib.Path, case: CampaignCase
+    wafer_run: pathlib.Path, package: pathlib.Path, case: OptimizationComparisonCase
 ) -> list[str]:
     command = [str(wafer_run), "--package-dir", str(package)]
     if case.rank_count == 1:
@@ -1814,7 +1814,7 @@ def no_card_command(
 def board_command(
     args: argparse.Namespace,
     package: pathlib.Path,
-    case: CampaignCase,
+    case: OptimizationComparisonCase,
     resource_arguments: list[str],
 ) -> list[str]:
     command = [str(args.wafer_run), "--package-dir", str(package)]
@@ -1847,7 +1847,7 @@ def board_command(
 
 def verify_board_output(
     stdout: str,
-    case: CampaignCase,
+    case: OptimizationComparisonCase,
     output_ids: set[int],
     completion_evidence: set[tuple[int, int]],
 ) -> None:
@@ -1935,7 +1935,7 @@ def main() -> int:
     if args.repeat < 1 or args.completion_timeout_ms < 1:
         raise RuntimeError("repeat and completion timeout must be positive")
     if not args.no_card and os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
-        print("compiler optimization campaign hardware execution is not armed")
+        print("compiler optimization comparison hardware execution is not armed")
         return 77
     if not args.no_card and any(
         value is None
@@ -2117,7 +2117,7 @@ if __name__ == "__main__":
         json.JSONDecodeError,
     ) as error:
         print(
-            f"wafer_board_compiler_optimization_campaign_test: {error}",
+            f"wafer_board_compiler_optimization_comparison_test: {error}",
             file=sys.stderr,
         )
         raise SystemExit(1)

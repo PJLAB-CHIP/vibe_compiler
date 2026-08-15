@@ -18,7 +18,6 @@ from numeric_deps import sha256_archive_tree, sha256_tree
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERSIONS_FILE = REPO_ROOT / "cmake" / "third_party" / "WaferDependencyVersions.cmake"
-RECORD_SCHEMA_VERSION = 1
 RECORD_KIND = "wafer-bulk-model-deps"
 RECORD_STATUS = "complete"
 SNAPSHOT_KIND = "wafer-bulk-model-canonical-snapshot"
@@ -154,7 +153,6 @@ def validate_record(
     record = _closed_object(
         record,
         {
-            "schema_version",
             "kind",
             "status",
             "dependency",
@@ -168,8 +166,6 @@ def validate_record(
     )
     if raw != canonical_json(record).encode("utf-8"):
         raise RuntimeError("bulk dependency record is not canonical JSON")
-    if record["schema_version"] != RECORD_SCHEMA_VERSION:
-        raise RuntimeError("bulk dependency record schema mismatch")
     if record["kind"] != RECORD_KIND or record["status"] != RECORD_STATUS:
         raise RuntimeError("bulk dependency record kind/status mismatch")
 
@@ -296,7 +292,6 @@ def make_snapshot(
     files = validate_record(record_path, root, versions)
     record_path = _regular_file(record_path)
     return {
-        "schema_version": 1,
         "kind": SNAPSHOT_KIND,
         "root": root.as_posix(),
         "record": record_path.as_posix(),

@@ -121,4 +121,4 @@ Q40无卡收尾只运行直接合同：
 - hardware batch/catalog registration的静态合同；
 - touched-target全量编译、文本一致性与`git diff --check`。
 
-不运行默认全量suite、历史campaign或真实板端。无卡门禁不提供hardware overlap、速度或profitability结论。
+不运行默认全量suite、历史校准批次或真实板端。无卡门禁不提供hardware overlap、速度或profitability结论。

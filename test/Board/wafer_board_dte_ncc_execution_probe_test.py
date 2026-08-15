@@ -532,7 +532,7 @@ def build_probe(
             "--output",
             str(linked),
             "--loader-abi",
-            "tx8-kcore-loader-cluster-v1",
+            "tx8-kcore-loader-cluster",
             "--extra-object",
             str(helper),
         ],

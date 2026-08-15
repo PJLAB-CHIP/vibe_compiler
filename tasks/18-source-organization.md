@@ -181,7 +181,7 @@ transaction bridge，不能进入package/runtime ABI文档或public header。
 - TX provider adapter；
 - ProfileInstrumentation strict loader/verifier。
 
-ExecutablePackage当前manifest schema与profile instrumentation schema的version、fields和verification只在typed runtime owner定义；package的
+ExecutablePackage manifest version与profile activation format version只在typed runtime owner定义；profile plan/site map不拥有版本；各文件的fields和verification仍由该owner定义。package的
 resource scopes与entry completion同样由该owner持有。Python runner只能消费canonical manifest/evidence或调用public tool；
 不得内置另一份schema validator。旧schema reader和兼容translation不存在。profile instrumentation只暴露单一primary executable output、
 count/trace captures和一个16-Tile site map，不保留output集合shell或重复digest API。

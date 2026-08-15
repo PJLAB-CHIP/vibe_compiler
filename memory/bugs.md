@@ -445,3 +445,13 @@
   不是ownership proof。
 - 修复模式：PeerFragments逐fragment检查当前Tile是否materialize producer；非fragment策略才使用strategy级source。
 - 防复发：覆盖receive-only Tile、multi-source fragments和非fragment策略，并在diagnostic中输出expected layout、structured node与Tile。
+
+## Repo内同步接口不应各自递增版本
+
+- 现象：frontend nested metadata、profile plan/site、dependency record、workload和内部算法名称分别携带版本，修改同一语义时
+  需要跨多层同步数值并保留旧分支。
+- 根因：把源码revision内同步演进的内部表示误当成独立兼容边界，用版本号代替exact field contract和集中parser检查。
+- 修复模式：先列出真实producer、consumer、存储和部署生命周期；只有独立文件或ABI保留一个顶层current版本，其余表示
+  原位修改并同批更新所有调用方，旧输入在唯一边界入口fail closed。
+- 防复发：新增版本前必须写明独立producer/consumer、支持周期和兼容测试；内部field、算法、hash domain、model和helper
+  metadata不得使用`vN`名称或双reader。

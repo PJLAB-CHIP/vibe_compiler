@@ -124,7 +124,7 @@ decodeCompactProgramTensor(const compiler::ProgramTensor &tensor,
         TargetModelInvocationErrorCode::InvalidProgramInvocation,
         "program tensor storage width is inconsistent");
   const LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministicV1())
+      getModelProfileRecord(ModelProfileId::formalDeterministic())
           .numericDecodePolicy;
   std::vector<RawLogicalValue> values;
   values.reserve(tensor.getBytes().size() / elementBytes);
@@ -157,7 +157,7 @@ encodeCompactProgramTensor(llvm::ArrayRef<RawLogicalValue> values,
                            "compact target output byte count overflows");
   std::vector<uint8_t> bytes(values.size() * elementBytes, 0);
   const LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministicV1())
+      getModelProfileRecord(ModelProfileId::formalDeterministic())
           .numericEncodePolicy;
   for (auto [index, value] : llvm::enumerate(values)) {
     if (value.format != format)

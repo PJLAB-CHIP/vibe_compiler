@@ -19,9 +19,9 @@ Pipeline position:
 - Output IR / files:
   `ExecutablePackage`：canonical manifest.json与all-and-only referenced modules；其loader形成
   VerifiedPackageManifest与RuntimeInvocationPlan，board执行形成invocation result；profile请求额外产生digest-bound
-  schema-v10 instrumentation。
+  profile instrumentation；只有activation文件拥有独立format version。
 - Downstream consumer:
-  wafer-run no-card、board runtime provider、profile campaign/report和外部package审计。
+  wafer-run no-card、board runtime provider、profile collection/report和外部package审计。
 - User-level driver / named pipeline:
   wafer-compile `search|none`生成`ExecutablePackage`；wafer-run消费verified package并执行完整card-scoped domain。
 - Explicit non-goals:
@@ -190,10 +190,10 @@ completion使context poisoned；本invocation停止，禁止自动retry/reset/po
 
 板端执行单进程逐case串行。timeout只需在合理bounded范围内，不作为compiler搜索的任意硬性能阈值。
 
-## 7. Profile instrumentation schema v10
+## 7. Profile instrumentation
 
-profile instrumentation是普通schema-v8 production package的digest-bound sibling；它使用独立且唯一的schema version 10，固定
-`card_count=1`、`tile_count=16`。它只描述：
+profile instrumentation是普通schema-v8 production package的digest-bound sibling；activation文件使用唯一format version并固定
+`card_count=1`、`tile_count=16`，`plan.json`与site map只使用strict current fields，不再各自拥有版本。它只描述：
 
 - 一个selected production output；
 - count/trace capture packages；
@@ -201,7 +201,7 @@ profile instrumentation是普通schema-v8 production package的digest-bound sibl
 - 从accepted final Instr派生的static work与有来源的rate；
 - production/capture manifest digest关系。
 
-schema-v10没有output集合层、role/id、execution package shell或兼容reader。production output
+profile instrumentation没有output集合层、role/id、execution package shell或兼容reader。production output
 直接由activation中的manifest digest绑定用户选择的ordinary package；static cost位于`plan.json`，site map顶层直接包含16个
 Tile rows，capture canonical path只有`captures/count`与`captures/trace`。verified object只在production output保存一次
 manifest digest，不再复制外层digest字段。
@@ -216,7 +216,7 @@ profile数据是measurement/evidence，不是Q51 search plan、IR sidecar或runt
 
 host gate至少覆盖：
 
-- package schema-v8与profile instrumentation schema-v10各自canonical roundtrip、strict fields/limits及所有旧version拒绝；
+- package manifest与profile activation各自canonical roundtrip、strict fields/limits及unsupported version拒绝；plan/site map拒绝任何version字段；
 - non-identity physical `tile_id`/`launch_slot` mapping；
 - duplicate/missing/unavailable Tile、launch slot、module/export、resource、slot和digest负例；
 - card-scoped共享地址一次分配、Tile-scoped资源隔离及output完整readback；

@@ -34,7 +34,7 @@ Pipeline position:
 本轮盘点以当前源码注册和configured `wafer-dev`为输入，不形成长期case catalog。盘点时默认CTest共
 141项；历史cost记录中，25项完整no-card编译累计约839秒，calibration/catalog/pending类93项累计约
 360秒，而全部lit约4秒、直接unit/verifier类约6秒。主要负担不是局部IR合同，而是把已完成硬件校准、
-历史campaign矩阵、pending inventory和重复profile/full-package编译永久挂在默认CTest上。
+历史校准矩阵、pending inventory和重复profile/full-package编译永久挂在默认CTest上。
 
 收窄后的稳定边界如下：
 
@@ -46,9 +46,9 @@ Pipeline position:
   executable中，由`check-wafer-compiler-integration`点名运行，不再让默认unit入口重放完整搜索；
 - 已有model-scale whole-variant与frontier workload不再被聚合integration入口重复执行；其局部
   profitability/numeric/frontier合同由直接analysis/planner unit覆盖，真实大输入编译上界和package归Q41直接case；
-- 历史校准、characterization、pending inventory、批量campaign及其no-card package生成不再注册到默认
+- 历史校准、characterization、pending inventory、批量校准及其no-card package生成不再注册到默认
   CTest；现有脚本仍可由对应owner按需单独调用，真实板端注册仍只受既有显式board feature控制；
-- 后续compiler任务各自注册或直接运行一个与当前artifact边界对应的case，不借历史campaign全矩阵代签；
+- 后续compiler任务各自注册或直接运行一个与当前artifact边界对应的case，不借历史校准全矩阵代签；
 - feature-on numeric/SystemC中已经被完整聚合unit覆盖的filtered gtest不再重复注册。
 
 一次性完整unit盘点还暴露了Direct-DTE structured occurrence的现有合同回归：两端拥有相同typed

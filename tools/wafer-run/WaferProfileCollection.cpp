@@ -1,6 +1,6 @@
-//===- WaferProfileCampaign.cpp - Automatic board profile run ----------===//
+//===- WaferProfileCollection.cpp - Board profile collection -----------===//
 
-#include "WaferProfileCampaign.h"
+#include "WaferProfileCollection.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Runtime/ProfilerRecord.h"
@@ -50,7 +50,7 @@ llvm::Error invalid(llvm::Twine message) {
                                  message.str().c_str());
 }
 
-struct ProfileCampaignData {
+struct ProfileCollectionData {
   const ProfiledPackage *profiledPackage = nullptr;
   BoardInvocationFilePlan executionPlan;
   const ProfileCapturePackage *countPackage = nullptr;
@@ -121,8 +121,8 @@ indexValidatedOutputs(const PackageManifest &manifest,
   std::map<SemanticOutputKey, IndexedOutput> indexed;
   for (const BoardRuntimeOutput &output : outputs) {
     auto resource =
-        llvm::find_if(manifest.resources, [&](const auto &campaign) {
-          return campaign.id == output.resource;
+        llvm::find_if(manifest.resources, [&](const auto &collection) {
+          return collection.id == output.resource;
         });
     if (resource == manifest.resources.end() || !resource->hostVisible ||
         resource->access == PackageAccessMode::ReadOnly)
@@ -412,8 +412,8 @@ bool eventMatchesSite(const ProfileTargetCallSite &site,
 
 llvm::Error
 validateTraceSites(const VerifiedProfileInstrumentation &instrumentation,
-                   const ProfileCampaignData &campaign) {
-  if (campaign.trace.size() != WAFER_TX81_PROFILER_TILE_COUNT)
+                   const ProfileCollectionData &collection) {
+  if (collection.trace.size() != WAFER_TX81_PROFILER_TILE_COUNT)
     return invalid("profile trace tile domain is incomplete");
   llvm::ArrayRef<ProfileTileSiteMap> siteMap = instrumentation.getSiteMap();
   if (siteMap.size() != WAFER_TX81_PROFILER_TILE_COUNT)
@@ -427,10 +427,9 @@ validateTraceSites(const VerifiedProfileInstrumentation &instrumentation,
         tileMap.launchSlot != LaunchSlotId(launchSlot))
       return invalid(
           "profile typed trace/site-map Tile domain is not canonical");
-    const Tx81ProfilerRecord &trace = campaign.trace[tileId];
+    const Tx81ProfilerRecord &trace = collection.trace[tileId];
     if (trace.header.tile_id != static_cast<uint32_t>(tileId))
-      return invalid(
-          "profile trace record disagrees with its Tile site map");
+      return invalid("profile trace record disagrees with its Tile site map");
     for (const WaferTx81ProfilerTSMCallEvent &event : trace.events) {
       if (!isTx81ProfilerSiteValid(event))
         return invalid("profile trace event has no typed primary site");
@@ -551,7 +550,7 @@ void emitRuntimeLaunch(llvm::json::OStream &json,
 }
 
 void emitProfileExperiment(llvm::json::OStream &json,
-                           const ProfileCampaignData &campaign,
+                           const ProfileCollectionData &collection,
                            llvm::ArrayRef<ProfileTileSiteMap> siteMap) {
   json.object([&] {
     json.attributeArray("clock", [&] {
@@ -573,7 +572,7 @@ void emitProfileExperiment(llvm::json::OStream &json,
       json.attributeArray("tiles", [&] {
         for (const ProfileTileSiteMap &tile : siteMap) {
           const Tx81ProfilerRecord &record =
-              campaign.trace[tile.tileId.getValue()];
+              collection.trace[tile.tileId.getValue()];
           json.object([&] {
             json.attribute("card_id", tile.cardId.getValue());
             json.attribute("tile_id", tile.tileId.getValue());
@@ -585,7 +584,7 @@ void emitProfileExperiment(llvm::json::OStream &json,
             json.attribute("count", int64_t(record.header.event_count));
             json.attribute(
                 "counted_event_count",
-                campaign.count[record.header.tile_id].header.next_sequence);
+                collection.count[record.header.tile_id].header.next_sequence);
             json.attribute("next_sequence", record.header.next_sequence);
             json.attribute("dropped_event_count",
                            int64_t(record.header.dropped_event_count));
@@ -699,7 +698,7 @@ void emitProfileExperiment(llvm::json::OStream &json,
       json.attributeArray("tiles", [&] {
         for (const ProfileTileSiteMap &tile : siteMap) {
           const Tx81ProfilerRecord &record =
-              campaign.trace[tile.tileId.getValue()];
+              collection.trace[tile.tileId.getValue()];
           const WaferTx81ProfilerRecordHeader &header = record.header;
           const bool enabled = pmuEnabled(header);
           json.object([&] {
@@ -757,12 +756,12 @@ llvm::Expected<std::string>
 serializeEvidence(const VerifiedProfileInstrumentation &instrumentation,
                   llvm::StringRef runId, const BoardDeviceInfo &device,
                   llvm::ArrayRef<BoardProfileMeasurementSample> samples,
-                  const ProfileCampaignData &campaign,
+                  const ProfileCollectionData &collection,
                   const BoardProfileOutputValidator &outputValidation) {
   if (samples.size() != 1)
     return invalid("profile evidence inputs are incomplete");
   const PackageManifest &primaryManifest =
-      campaign.profiledPackage->getPackage().getManifest();
+      collection.profiledPackage->getPackage().getManifest();
   llvm::ArrayRef<ProfileTileSiteMap> siteMap = instrumentation.getSiteMap();
   if (siteMap.size() != WAFER_TX81_PROFILER_TILE_COUNT)
     return invalid("profile evidence has no complete Tile site map");
@@ -774,13 +773,11 @@ serializeEvidence(const VerifiedProfileInstrumentation &instrumentation,
   json.object([&] {
     json.attribute("schema", "wafer.profile.evidence");
     json.attribute("schema_version",
-                   int64_t(kBoardProfileEvidenceSchemaVersion));
+                   int64_t(kBoardProfileEvidenceFormatVersion));
     json.attribute("run_id", runId);
     json.attributeObject("program", [&] {
       json.attribute("program_manifest_sha256",
-                     campaign.profiledPackage->getManifestDigest());
-      json.attribute("profile_instrumentation_schema_version",
-                     int64_t(instrumentation.getSchemaVersion()));
+                     collection.profiledPackage->getManifestDigest());
       json.attribute("target_identity", targetIdentity);
       json.attributeObject(
           "launch", [&] { emitRuntimeLaunch(json, primaryManifest.launch); });
@@ -790,8 +787,8 @@ serializeEvidence(const VerifiedProfileInstrumentation &instrumentation,
       json.attribute("record_abi", kProfileRecordABI);
     });
     json.attributeBegin("static_cost_model");
-    writeProfileStaticCostModel(json,
-                                campaign.profiledPackage->getStaticCostModel());
+    writeProfileStaticCostModel(
+        json, collection.profiledPackage->getStaticCostModel());
     json.attributeEnd();
     json.attributeObject("output_validation", [&] {
       json.attribute("mode", stringifyBoardProfileOutputValidationMode(
@@ -835,8 +832,8 @@ serializeEvidence(const VerifiedProfileInstrumentation &instrumentation,
     json.attributeArray("topology", [&] {
       for (uint32_t launchSlot = 0; launchSlot < WAFER_TX81_PROFILER_TILE_COUNT;
            ++launchSlot) {
-        auto tile = llvm::find_if(device.tiles, [&](const auto &campaign) {
-          return campaign.launchSlot == LaunchSlotId(launchSlot);
+        auto tile = llvm::find_if(device.tiles, [&](const auto &collection) {
+          return collection.launchSlot == LaunchSlotId(launchSlot);
         });
         json.object([&] {
           json.attribute("card_id", int64_t(0));
@@ -892,7 +889,7 @@ serializeEvidence(const VerifiedProfileInstrumentation &instrumentation,
       json.attribute("measurement_basis", true);
     });
     json.attributeBegin("experiment");
-    emitProfileExperiment(json, campaign, siteMap);
+    emitProfileExperiment(json, collection, siteMap);
     json.attributeEnd();
   });
   output << "\n";
@@ -1163,7 +1160,7 @@ replaceCurrentProfileReport(PendingProfileReportRun &reportRun,
   if (!observedPrevious)
     return observedPrevious.takeError();
   if (*observedPrevious != reportRun.previousRunDirectory)
-    return invalid("current profile report changed during this campaign");
+    return invalid("current profile report changed during this collection");
   if (std::error_code error =
           llvm::sys::fs::rename(temporaryCurrent, reportRun.currentEntry))
     return llvm::createStringError(
@@ -1193,11 +1190,11 @@ writeProfileReport(PendingProfileReportRun &reportRun,
                    const VerifiedProfileInstrumentation &instrumentation,
                    const BoardDeviceInfo &device,
                    llvm::ArrayRef<BoardProfileMeasurementSample> samples,
-                   const ProfileCampaignData &campaign,
+                   const ProfileCollectionData &collection,
                    const BoardProfileOutputValidator &outputValidation) {
   llvm::Expected<std::string> evidence =
       serializeEvidence(instrumentation, reportRun.runId, device, samples,
-                        campaign, outputValidation);
+                        collection, outputValidation);
   if (!evidence)
     return evidence.takeError();
   llvm::SmallString<256> evidencePath(reportRun.stagingDirectory);
@@ -1243,7 +1240,7 @@ writeProfileReport(PendingProfileReportRun &reportRun,
 
 } // namespace
 
-#if defined(WAFER_PROFILE_CAMPAIGN_TESTING)
+#if defined(WAFER_PROFILE_COLLECTION_TESTING)
 namespace testing {
 
 llvm::Expected<ProfileReportWriteResult> writeProfileReportForTesting(
@@ -1368,7 +1365,7 @@ llvm::Error BoardProfileOutputValidator::recordPrimaryOutputs(
   if (!indexed)
     return indexed.takeError();
   if (indexed->empty())
-    return invalid("profile campaign has no writable output resource");
+    return invalid("profile collection has no writable output resource");
 
   std::vector<BoardProfileOutputValidationResource> resources;
   std::vector<Impl::ExpectedOutput> expectedOutputs;
@@ -1574,45 +1571,45 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
   return result;
 }
 
-llvm::Expected<BoardProfileCampaignResult>
-runBoardProfileCampaign(const VerifiedProfileInstrumentation &instrumentation,
-                        const PackageManifest &primaryManifest,
-                        const BoardInvocationFilePlan &primaryPlan,
-                        BoardRuntimeDriver &driver) {
+llvm::Expected<BoardProfileCollectionResult>
+runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
+                          const PackageManifest &primaryManifest,
+                          const BoardInvocationFilePlan &primaryPlan,
+                          BoardRuntimeDriver &driver) {
   if (primaryManifest.cardCount != 1 ||
       primaryManifest.tileCount != WAFER_TX81_PROFILER_TILE_COUNT)
     return invalid(
-        "profile campaign requires a complete one-card, 16-Tile package");
+        "profile collection requires a complete one-card, 16-Tile package");
 
-  ProfileCampaignData campaign;
-  campaign.profiledPackage = &instrumentation.getProfiledPackage();
+  ProfileCollectionData collection;
+  collection.profiledPackage = &instrumentation.getProfiledPackage();
 
   llvm::Expected<BoardInvocationFilePlan> execution =
       remapBoardInvocationFilePlan(
           primaryPlan, primaryManifest,
-          campaign.profiledPackage->getPackage().getManifest());
+          collection.profiledPackage->getPackage().getManifest());
   if (!execution)
     return execution.takeError();
-  campaign.executionPlan = std::move(*execution);
-  campaign.countPackage =
+  collection.executionPlan = std::move(*execution);
+  collection.countPackage =
       instrumentation.findCapture(ProfileCaptureKind::Count);
-  campaign.tracePackage =
+  collection.tracePackage =
       instrumentation.findCapture(ProfileCaptureKind::Trace);
-  if (!campaign.countPackage || !campaign.tracePackage)
+  if (!collection.countPackage || !collection.tracePackage)
     return invalid(
         "profile instrumentation has no complete capture package set");
   llvm::Expected<BoardInvocationFilePlan> count =
-      makeCapturePlan(primaryPlan, primaryManifest, *campaign.countPackage);
+      makeCapturePlan(primaryPlan, primaryManifest, *collection.countPackage);
   if (!count)
     return count.takeError();
-  campaign.countPlan = std::move(*count);
+  collection.countPlan = std::move(*count);
   llvm::Expected<BoardInvocationFilePlan> trace =
-      makeCapturePlan(primaryPlan, primaryManifest, *campaign.tracePackage);
+      makeCapturePlan(primaryPlan, primaryManifest, *collection.tracePackage);
   if (!trace)
     return trace.takeError();
-  campaign.tracePlan = std::move(*trace);
+  collection.tracePlan = std::move(*trace);
 
-  const uint64_t eventStorage = campaign.tracePackage->getRecordBytes() -
+  const uint64_t eventStorage = collection.tracePackage->getRecordBytes() -
                                 WAFER_TX81_PROFILER_EVENTS_OFFSET -
                                 WAFER_TX81_PROFILER_BUFFER_GUARD_BYTES;
   const uint64_t traceCapacity =
@@ -1683,17 +1680,17 @@ runBoardProfileCampaign(const VerifiedProfileInstrumentation &instrumentation,
             switch (step.launch) {
             case BoardProfileProtocolLaunch::Primary: {
               llvm::Expected<BoardRuntimeInvocationResult> result = execute(
-                  campaign.profiledPackage->getPackage(),
-                  campaign.profiledPackage->getPackageDirectory(),
-                  campaign.executionPlan,
+                  collection.profiledPackage->getPackage(),
+                  collection.profiledPackage->getPackageDirectory(),
+                  collection.executionPlan,
                   /*profilerExpected=*/false,
                   BoardCompletionObservationPolicy::ProfileHighResolution,
                   BoardDeviceTimingPolicy::StreamEvents);
               if (!result)
                 return result.takeError();
               if (llvm::Error error = outputValidation.recordPrimaryOutputs(
-                      campaign.profiledPackage->getPackage().getManifest(),
-                      campaign.executionPlan, result->outputs))
+                      collection.profiledPackage->getPackage().getManifest(),
+                      collection.executionPlan, result->outputs))
                 return std::move(error);
               observation.deviceExecutionNanoseconds =
                   result->deviceExecutionNanoseconds;
@@ -1707,9 +1704,9 @@ runBoardProfileCampaign(const VerifiedProfileInstrumentation &instrumentation,
             }
             case BoardProfileProtocolLaunch::Count: {
               llvm::Expected<BoardRuntimeInvocationResult> result =
-                  execute(campaign.countPackage->getPackage(),
-                          campaign.countPackage->getPackageDirectory(),
-                          campaign.countPlan,
+                  execute(collection.countPackage->getPackage(),
+                          collection.countPackage->getPackageDirectory(),
+                          collection.countPlan,
                           /*profilerExpected=*/true,
                           BoardCompletionObservationPolicy::Normal,
                           BoardDeviceTimingPolicy::Disabled);
@@ -1717,25 +1714,25 @@ runBoardProfileCampaign(const VerifiedProfileInstrumentation &instrumentation,
                 return result.takeError();
               if (llvm::Error error =
                       outputValidation.validateDiagnosticOutputs(
-                          campaign.countPackage->getPackage().getManifest(),
-                          campaign.countPlan, result->outputs))
+                          collection.countPackage->getPackage().getManifest(),
+                          collection.countPlan, result->outputs))
                 return std::move(error);
               llvm::Expected<std::vector<Tx81ProfilerRecord>> records =
-                  decodeProfilerOutputs(*campaign.countPackage, *result);
+                  decodeProfilerOutputs(*collection.countPackage, *result);
               if (!records)
                 return records.takeError();
-              campaign.count = std::move(*records);
+              collection.count = std::move(*records);
               for (uint32_t tile = 0; tile < WAFER_TX81_PROFILER_TILE_COUNT;
                    ++tile)
                 observation.countSequences[tile] =
-                    campaign.count[tile].header.next_sequence;
+                    collection.count[tile].header.next_sequence;
               return observation;
             }
             case BoardProfileProtocolLaunch::Trace: {
               llvm::Expected<BoardRuntimeInvocationResult> result =
-                  execute(campaign.tracePackage->getPackage(),
-                          campaign.tracePackage->getPackageDirectory(),
-                          campaign.tracePlan,
+                  execute(collection.tracePackage->getPackage(),
+                          collection.tracePackage->getPackageDirectory(),
+                          collection.tracePlan,
                           /*profilerExpected=*/true,
                           BoardCompletionObservationPolicy::Normal,
                           BoardDeviceTimingPolicy::Disabled);
@@ -1743,25 +1740,25 @@ runBoardProfileCampaign(const VerifiedProfileInstrumentation &instrumentation,
                 return result.takeError();
               if (llvm::Error error =
                       outputValidation.validateDiagnosticOutputs(
-                          campaign.tracePackage->getPackage().getManifest(),
-                          campaign.tracePlan, result->outputs))
+                          collection.tracePackage->getPackage().getManifest(),
+                          collection.tracePlan, result->outputs))
                 return std::move(error);
               llvm::Expected<std::vector<Tx81ProfilerRecord>> records =
-                  decodeProfilerOutputs(*campaign.tracePackage, *result);
+                  decodeProfilerOutputs(*collection.tracePackage, *result);
               if (!records)
                 return records.takeError();
-              campaign.trace = std::move(*records);
+              collection.trace = std::move(*records);
               if (llvm::Error error =
-                      validateTraceSites(instrumentation, campaign))
+                      validateTraceSites(instrumentation, collection))
                 return std::move(error);
               for (uint32_t tile = 0; tile < WAFER_TX81_PROFILER_TILE_COUNT;
                    ++tile) {
                 const WaferTx81ProfilerRecordHeader &header =
-                    campaign.trace[tile].header;
+                    collection.trace[tile].header;
                 observation.trace[tile] = {
-                    campaign.count[tile].header.next_sequence,
+                    collection.count[tile].header.next_sequence,
                     header.next_sequence,
-                    static_cast<uint64_t>(campaign.trace[tile].events.size()),
+                    static_cast<uint64_t>(collection.trace[tile].events.size()),
                     header.dropped_event_count,
                     header.flags,
                     header.trace_state,
@@ -1775,13 +1772,13 @@ runBoardProfileCampaign(const VerifiedProfileInstrumentation &instrumentation,
           [&](llvm::ArrayRef<BoardProfileMeasurementSample> samples)
               -> llvm::Error {
             if (!device)
-              return invalid("profile campaign produced no qualified device "
+              return invalid("profile collection produced no qualified device "
                              "inventory");
             if (llvm::Error error = outputValidation.removeReferenceFiles())
               return std::move(error);
             llvm::Expected<std::string> reportDirectory =
                 writeProfileReport(*reportRun, instrumentation, *device,
-                                   samples, campaign, outputValidation);
+                                   samples, collection, outputValidation);
             if (!reportDirectory)
               return reportDirectory.takeError();
             profileRunDirectory = std::move(*reportDirectory);
@@ -1790,12 +1787,12 @@ runBoardProfileCampaign(const VerifiedProfileInstrumentation &instrumentation,
   if (!protocol)
     return protocol.takeError();
   if (!finalResult)
-    return invalid("profile campaign produced no final output");
+    return invalid("profile collection produced no final output");
   cleanupStaging.release();
 
-  return BoardProfileCampaignResult{
+  return BoardProfileCollectionResult{
       std::move(*finalResult),
-      std::move(campaign.executionPlan),
+      std::move(collection.executionPlan),
       std::move(profileRunDirectory),
   };
 }

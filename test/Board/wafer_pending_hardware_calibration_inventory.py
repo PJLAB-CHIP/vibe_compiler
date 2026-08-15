@@ -204,8 +204,8 @@ FAMILIES = (
         execution_scope="rank-one-and-full-card",
         bindings=(
             _binding(
-                "test/Board/wafer_compiler_optimization_campaign_catalog.py",
-                "CAMPAIGN_CASES",
+                "test/Board/wafer_compiler_optimization_comparison_cases.py",
+                "OPTIMIZATION_COMPARISON_CASES",
                 COMPILER_OPTIMIZATION_CASES,
                 "key",
             ),
@@ -431,7 +431,7 @@ FAMILIES = (
         blocker=(
             "the compiler-owned multi-buffer producer and host gates are "
             "closed; only fresh configured-board baseline/winner "
-            "qualification remains, and no repo-owned board campaign asset "
+            "qualification remains, and no repo-owned board test collection asset "
             "currently supplies that evidence"
         ),
     ),

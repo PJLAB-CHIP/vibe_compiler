@@ -277,7 +277,7 @@
       "additionalProperties": false,
       "required": ["model", "scope", "rates", "tiles"],
       "properties": {
-        "model": {"const": "tx81-static-peak-lower-bound-v1"},
+        "model": {"const": "tx81-static-throughput-lower-bound"},
         "scope": {
           "const": "complete-final-instruction-program-per-physical-tile"
         },
@@ -376,7 +376,6 @@
       "additionalProperties": false,
       "required": [
         "program_manifest_sha256",
-        "profile_instrumentation_schema_version",
         "target_identity",
         "launch",
         "card_count",
@@ -387,9 +386,6 @@
       "properties": {
         "program_manifest_sha256": {
           "$ref": "#/$defs/sha256"
-        },
-        "profile_instrumentation_schema_version": {
-          "const": 10
         },
         "target_identity": {
           "$ref": "#/$defs/nonEmptyString"
@@ -404,7 +400,7 @@
           "const": 16
         },
         "site_correlation_basis": {
-          "const": "typed-target-call-ordinal-ssa-numbering-occurrence-v3"
+          "const": "target-call-ordinal-ssa-position"
         },
         "record_abi": {
           "const": "wafer-tx81-profiler-record-v4"

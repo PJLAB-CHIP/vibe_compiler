@@ -179,7 +179,7 @@ completion从final actual Instr的effects、worker issue domains、async tokens�
 
 ### 6.2 ExecutablePackage
 
-- ordinary package strict `schema_version=8`、profile instrumentation strict `schema_version=10`，旧version和额外/缺失field拒绝；
+- ordinary package manifest与profile activation分别严格检查自己的top-level version；profile plan/site map不携带version，所有文件均拒绝额外/缺失field；
 - `card_count=1`、`tile_count=16`，entries覆盖all-and-only Tiles与dense launch slots；
 - program-boundary resources为card scope并被16个entries引用；workspace/status为Tile scope且只被对应entry引用；
 - resources、modules、entries和slots all-and-only covered，无悬空或重复ID；

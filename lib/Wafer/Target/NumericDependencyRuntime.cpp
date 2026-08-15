@@ -147,7 +147,7 @@ bindNumericDependenciesToLoadedObjects(
     return verifiedGMP.takeError();
 
   llvm::SHA256 bindingHasher;
-  bindingHasher.update("wafer-numeric-dependency-execution-v1");
+  bindingHasher.update("wafer-numeric-dependency-execution");
   bindingHasher.update(llvm::StringRef("\0", 1));
   bindingHasher.update(record.getRecordSHA256());
   for (const NumericLoadedObject *loadedObject :

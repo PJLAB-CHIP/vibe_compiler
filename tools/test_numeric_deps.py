@@ -22,7 +22,6 @@ from numeric_deps import (
     LICENSE_SOURCE_FILES,
     LINKAGE_POLICY,
     RECORD_KIND,
-    RECORD_SCHEMA_VERSION,
     RECORD_STATUS,
     REQUIRED_FILES,
     REQUIRED_CONFORMANCE_GATES,
@@ -255,7 +254,6 @@ def make_record(
         )
 
     record = {
-        "schema_version": RECORD_SCHEMA_VERSION,
         "kind": RECORD_KIND,
         "status": RECORD_STATUS,
         "pins": pin_records,
@@ -272,7 +270,7 @@ def make_record(
             "toolchain": toolchain,
             "environments": numeric_build_environments(toolchain),
             "mpfr_patches": "",
-            "elf_identity_policy": "sha256-build-id-soname-needed-rpath-v1",
+            "elf_identity_policy": "sha256-build-id-soname-needed-rpath",
         },
         "artifacts": {
             name: file_identity(root, path, readelf=readelf)
@@ -346,15 +344,15 @@ class NumericDependencyTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "duplicate JSON key"):
                 load_record(path)
 
-    def test_record_rejects_bool_schema_version(self) -> None:
+    def test_record_rejects_obsolete_schema_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             versions, archives = make_versions(root)
             record = make_record(root, versions, archives)
             value = load_record(record)
-            value["schema_version"] = True
+            value["schema_version"] = 2
             atomic_write_json(record, value)
-            with self.assertRaisesRegex(RuntimeError, "must be an integer"):
+            with self.assertRaisesRegex(RuntimeError, "unexpected=.*schema_version"):
                 validate_numeric_record(record, root, versions)
 
     def test_record_rejects_missing_thread_safe_build_policy(self) -> None:

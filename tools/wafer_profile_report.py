@@ -16,12 +16,10 @@ from typing import Any
 
 
 SCHEMA_NAME = "wafer.profile.evidence"
-SCHEMA_VERSION = 11
-INSTRUMENTATION_SCHEMA_VERSION = 10
+EVIDENCE_FORMAT_VERSION = 11
 RECORD_ABI = "wafer-tx81-profiler-record-v4"
 ANALYSIS_SCHEMA_NAME = "wafer.profile.analysis"
-ANALYSIS_SCHEMA_VERSION = 10
-STATIC_COST_MODEL = "tx81-static-peak-lower-bound-v1"
+STATIC_COST_MODEL = "tx81-static-throughput-lower-bound"
 STATIC_COST_SCOPE = "complete-final-instruction-program-per-physical-tile"
 TILES = tuple(range(16))
 NCC_ENGINES = ("CT", "NE", "RDMA", "WDMA", "TDMA")
@@ -325,7 +323,6 @@ def _validate_program(evidence: Mapping[str, Any]) -> None:
         program,
         {
             "program_manifest_sha256",
-            "profile_instrumentation_schema_version",
             "target_identity",
             "launch",
             "card_count",
@@ -339,15 +336,6 @@ def _validate_program(evidence: Mapping[str, Any]) -> None:
         program["program_manifest_sha256"],
         "program.program_manifest_sha256",
     )
-    version = _integer(
-        program["profile_instrumentation_schema_version"],
-        "program.profile_instrumentation_schema_version",
-    )
-    if version != INSTRUMENTATION_SCHEMA_VERSION:
-        _fail(
-            "program.profile_instrumentation_schema_version",
-            f"must be {INSTRUMENTATION_SCHEMA_VERSION}",
-        )
     _string(program["target_identity"], "program.target_identity")
     _validate_launch(program["launch"], "program.launch")
     if _integer(program["card_count"], "program.card_count") != 1:
@@ -358,7 +346,7 @@ def _validate_program(evidence: Mapping[str, Any]) -> None:
         program["site_correlation_basis"],
         "program.site_correlation_basis",
     )
-    if basis != "typed-target-call-ordinal-ssa-numbering-occurrence-v3":
+    if basis != "target-call-ordinal-ssa-position":
         _fail("program.site_correlation_basis", "unknown correlation basis")
     if _string(program["record_abi"], "program.record_abi") != RECORD_ABI:
         _fail("program.record_abi", f"must be {RECORD_ABI!r}")
@@ -1221,8 +1209,8 @@ def validate_evidence(value: object) -> Mapping[str, Any]:
     )
     if evidence["schema"] != SCHEMA_NAME:
         _fail("schema", f"must be {SCHEMA_NAME!r}")
-    if evidence["schema_version"] != SCHEMA_VERSION:
-        _fail("schema_version", f"must be {SCHEMA_VERSION}")
+    if evidence["schema_version"] != EVIDENCE_FORMAT_VERSION:
+        _fail("schema_version", f"must be {EVIDENCE_FORMAT_VERSION}")
     _string(evidence["run_id"], "run_id")
     _validate_program(evidence)
     topology = _validate_topology(evidence)
@@ -3073,7 +3061,6 @@ def analyze_evidence(value: object) -> dict[str, Any]:
     }
     return {
         "schema": ANALYSIS_SCHEMA_NAME,
-        "schema_version": ANALYSIS_SCHEMA_VERSION,
         "run_id": evidence["run_id"],
         "record_abi": evidence["program"]["record_abi"],
         "valid": qualified,
@@ -3238,9 +3225,9 @@ h1{font-size:23px;margin:3px 0 2px;line-height:1.2}.run-id{color:var(--muted);fo
 .event-TDMA,.observation-TDMA{--event-stroke:var(--tdma);--event-fill-0:#ffedd5;--event-fill-1:#fed7aa;--event-fill-2:#fff7ed;--event-solid-0:#c4600c;--event-solid-1:#9a3412;--event-solid-2:#fb923c}
 .event-DIRECT_DTE,.observation-DIRECT_DTE{--event-stroke:var(--dte);--event-fill-0:#e4e7ec;--event-fill-1:#d0d5dd;--event-fill-2:#f2f4f7;--event-solid-0:#475467;--event-solid-1:#344054;--event-solid-2:#667085}
 .event{position:absolute;top:8px;height:8px;min-width:3px;border:1px solid #fff;border-radius:3px;cursor:pointer;z-index:2;box-shadow:0 0 0 1px var(--event-stroke)}
-.event-v0{background:var(--event-solid-0)}.event-v1{background:var(--event-solid-1)}.event-v2{background:var(--event-solid-2)}
+.event-color-0{background:var(--event-solid-0)}.event-color-1{background:var(--event-solid-1)}.event-color-2{background:var(--event-solid-2)}
 .observation-bound{position:absolute;top:2px;height:20px;min-width:3px;border:1px dashed var(--event-stroke);border-radius:4px;z-index:1;pointer-events:none;opacity:.78}
-.observation-bound.event-v0{background:var(--event-fill-0)}.observation-bound.event-v1{background:var(--event-fill-1)}.observation-bound.event-v2{background:var(--event-fill-2)}
+.observation-bound.event-color-0{background:var(--event-fill-0)}.observation-bound.event-color-1{background:var(--event-fill-1)}.observation-bound.event-color-2{background:var(--event-fill-2)}
 .observation-bound.ambiguous{border-color:#a45b06;background:#fff7e8}.observation-bound.zero{border-color:#667085;background:#f2f4f7}
 .event:hover,.event.selected{outline:2px solid #17212b;outline-offset:1px;z-index:2}
 .event.marker{width:3px!important;min-width:3px;border-radius:0;box-shadow:0 0 0 1px #fff,0 0 0 2px currentColor}
@@ -3756,7 +3743,7 @@ function renderTimeline(){
   const semanticLane=`<div class="lane lane-primary" data-lane-engine="Trace-run Kcore ledger"><div class="lane-label"><b>Trace-run Kcore ledger</b><span>${number(tile.semantic_partition.exclusive_cycles)} cyc</span></div><div class="lane-track">${gridlines}${semanticMarks}</div></div>`;
   const exactEventMark=(event,index,showBound)=>{
     const engine=event.engine;
-    const variant=`event-v${index%3}`;
+    const variant=`event-color-${index%3}`;
     const bound=showBound&&event.activity_window_status==="Bounded"&&event.activity_plot_begin_fraction!=null&&event.activity_plot_end_fraction!=null?`<span class="observation-bound observation-${engine} ${variant}${event.attribution_ambiguous?" ambiguous":""}${event.zero_delta_marker?" zero":""}" data-interval-role="observation-bound" style="left:${event.activity_plot_begin_fraction*100}%;width:${Math.max(.2,(event.activity_plot_end_fraction-event.activity_plot_begin_fraction)*100)}%" title="${escapeHtml(engine)} · PMU 正增量发生在此保守范围内的某处；不代表持续 busy 或精确执行起止"></span>`:"";
     const selected=state.selectedEvent&&state.selectedEvent.tile===event.tile&&state.selectedEvent.sequence===event.sequence&&state.selectedEvent.site_id===event.site_id;
     const role=event.display_interval_role;

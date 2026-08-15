@@ -147,8 +147,7 @@ public:
       if (tile.launchSlotId.getValue() != static_cast<int64_t>(index))
         return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                             "sink launch-slot order is not canonical");
-      tileBindings.push_back(
-          {tile.cardId, tile.tileId, tile.launchSlotId});
+      tileBindings.push_back({tile.cardId, tile.tileId, tile.launchSlotId});
     }
     begun = true;
     return llvm::Error::success();
@@ -164,8 +163,7 @@ public:
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                           "command launch slot is outside the invocation");
     const TileBinding &binding = tileBindings[static_cast<size_t>(launchSlot)];
-    if (command.cardId != binding.cardId ||
-        command.tileId != binding.tileId)
+    if (command.cardId != binding.cardId || command.tileId != binding.tileId)
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                           "command Tile binding disagrees with "
                           "its launch slot");
@@ -293,8 +291,7 @@ public:
     llvm_unreachable("unknown target model control action");
   }
 
-  llvm::Error completeTile(CardId cardId,
-                           TileId tileId,
+  llvm::Error completeTile(CardId cardId, TileId tileId,
                            LaunchSlotId launchSlotId) override {
     if (failure)
       return systemCError(failure->code, failure->str());
@@ -304,8 +301,7 @@ public:
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                           "completed Tile is outside the invocation");
     const TileBinding &binding = tileBindings[static_cast<size_t>(launchSlot)];
-    if (cardId != binding.cardId ||
-        tileId != binding.tileId ||
+    if (cardId != binding.cardId || tileId != binding.tileId ||
         launchSlotId != binding.launchSlotId)
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                           "completed Tile binding disagrees with its launch "
@@ -358,14 +354,13 @@ public:
       const TileBinding &binding =
           tileBindings[static_cast<size_t>(slot.launchSlot)];
       outputResources.push_back(slot.resource);
-      outputs.push_back({slot.resource, binding.cardId,
-                         binding.tileId, binding.launchSlotId,
-                         slot.slotOrdinal, slot.resourceIndex,
-                         std::move(*bytes)});
+      outputs.push_back({slot.resource, binding.cardId, binding.tileId,
+                         binding.launchSlotId, slot.slotOrdinal,
+                         slot.resourceIndex, std::move(*bytes)});
     }
     completedResult.emplace(
         TargetModelResult{memory.getAddressPlan().getTargetIdentity(),
-                          ModelProfileId::formalDeterministicV1(),
+                          ModelProfileId::formalDeterministic(),
                           static_cast<int64_t>(completedLaunchSlots.size()),
                           issuedCommandCount,
                           detail::getSystemCThreadProcessCount(runner),
@@ -383,7 +378,7 @@ public:
                           std::move(managedReferenceTensorEnvironmentDigests),
                           std::move(managedReferenceTensorImplementations),
                           detail::getSystemCVersion(),
-                          "untimed-delta-worker-aware-ncc-v2",
+                          "untimed-delta-worker-aware-ncc",
                           std::move(outputs)});
     return llvm::Error::success();
   }
@@ -817,12 +812,10 @@ private:
   }
 
   bool validateCommandTile(const compiler::TargetCommand &command,
-                           uint32_t payloadTileId,
-                           llvm::StringRef stage) {
+                           uint32_t payloadTileId, llvm::StringRef stage) {
     const int64_t tileId = command.tileId.getValue();
     if (tileId < 0 ||
-        static_cast<uint64_t>(tileId) >
-            std::numeric_limits<uint32_t>::max() ||
+        static_cast<uint64_t>(tileId) > std::numeric_limits<uint32_t>::max() ||
         payloadTileId != static_cast<uint32_t>(tileId)) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, stage,
                    command.launchSlotId.getValue(), command.issueOrdinal,

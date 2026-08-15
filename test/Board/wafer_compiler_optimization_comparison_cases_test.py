@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate production-compiler optimization campaign coverage and oracles."""
+"""Validate production-compiler optimization comparison coverage and oracles."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import tempfile
 
 import torch
 
-import wafer_board_compiler_optimization_campaign_test as driver
-import wafer_compiler_optimization_campaign_catalog as catalog
+import wafer_board_compiler_optimization_comparison_test as driver
+import wafer_compiler_optimization_comparison_cases as catalog
 
 
 EXPECTED_CASE_KEYS = {
@@ -272,12 +272,14 @@ def main() -> int:
     )
 
     assert set(catalog.CASES_BY_KEY) == EXPECTED_CASE_KEYS
-    assert len(catalog.CASES_BY_KEY) == len(catalog.CAMPAIGN_CASES)
+    assert len(catalog.CASES_BY_KEY) == len(catalog.OPTIMIZATION_COMPARISON_CASES)
     paired_case_keys = {
-        case.key for case in catalog.CAMPAIGN_CASES if case.requires_pair
+        case.key
+        for case in catalog.OPTIMIZATION_COMPARISON_CASES
+        if case.requires_pair
     }
     assert paired_case_keys.issubset(driver.CASES), (
-        "new paired campaign entries must have a concrete executable driver case"
+        "new paired comparison entries must have a concrete executable driver case"
     )
     for key, executable in driver.CASES.items():
         dtypes = {
@@ -314,7 +316,7 @@ def main() -> int:
         *(
             case.oracle.executable_capabilities
             - catalog.STRUCTURAL_EVIDENCE_CAPABILITIES
-            for case in catalog.CAMPAIGN_CASES
+            for case in catalog.OPTIMIZATION_COMPARISON_CASES
         )
     )
     assert claimed_execution_capabilities == set(
@@ -348,15 +350,26 @@ def main() -> int:
         for rhs in disposition_partitions[index + 1 :]
     ), "every optimization axis must have exactly one disposition"
 
-    board_orders = [case.board_order for case in catalog.CAMPAIGN_CASES]
+    board_orders = [
+        case.board_order for case in catalog.OPTIMIZATION_COMPARISON_CASES
+    ]
     assert len(set(board_orders)) == len(board_orders)
-    assert all(case.priority == "P0" for case in catalog.CAMPAIGN_CASES)
-    assert all(case.rank_count in {1, 16} for case in catalog.CAMPAIGN_CASES)
-    assert all(case.completion_contract for case in catalog.CAMPAIGN_CASES)
+    assert all(
+        case.priority == "P0" for case in catalog.OPTIMIZATION_COMPARISON_CASES
+    )
+    assert all(
+        case.rank_count in {1, 16}
+        for case in catalog.OPTIMIZATION_COMPARISON_CASES
+    )
+    assert all(
+        case.completion_contract
+        for case in catalog.OPTIMIZATION_COMPARISON_CASES
+    )
     assert tuple(
         case.key
         for case in sorted(
-            catalog.CAMPAIGN_CASES, key=lambda entry: entry.board_order
+            catalog.OPTIMIZATION_COMPARISON_CASES,
+            key=lambda entry: entry.board_order,
         )
     ) == (
         "reciprocal-implementation",
@@ -371,7 +384,7 @@ def main() -> int:
         "tree-all-reduce",
     )
 
-    for case in catalog.CAMPAIGN_CASES:
+    for case in catalog.OPTIMIZATION_COMPARISON_CASES:
         assert case.oracle.is_strong, f"{case.key}: weak board oracle"
         assert case.oracle.performance_is_promotion_evidence is False
         assert case.oracle.structural_checks
@@ -396,7 +409,7 @@ def main() -> int:
                 case.oracle.performance_kind
                 == catalog.PerformanceOracleKind.BALANCED_HOST_PROCESS_OBSERVATION
             )
-            assert case.execution_asset == catalog.PAIRED_CAMPAIGN_DRIVER
+            assert case.execution_asset == catalog.PAIRED_COMPARISON_TEST
             assert driver.CASES[case.key].rank_count == case.rank_count
             binding = case.driver_binding
             assert binding is not None
@@ -503,10 +516,12 @@ def main() -> int:
     shared_families = {
         family: {
             case.key
-            for case in catalog.CAMPAIGN_CASES
+            for case in catalog.OPTIMIZATION_COMPARISON_CASES
             if case.family == family
         }
-        for family in {case.family for case in catalog.CAMPAIGN_CASES}
+        for family in {
+            case.family for case in catalog.OPTIMIZATION_COMPARISON_CASES
+        }
     }
     assert shared_families["tile-layout-route"] == {
         "gemm-aligned-physical-route",
@@ -559,7 +574,7 @@ def main() -> int:
         for case in sorted(
             (
                 case
-                for case in catalog.CAMPAIGN_CASES
+                for case in catalog.OPTIMIZATION_COMPARISON_CASES
                 if case.requires_pair
             ),
             key=lambda entry: entry.board_order,
@@ -602,10 +617,10 @@ def main() -> int:
         )
 
     print(
-        "wafer_compiler_optimization_campaign_catalog_test: "
+        "wafer_compiler_optimization_comparison_cases_test: "
         f"axes={len(catalog.OPTIMIZATION_AXES)} "
         f"board_axes={len(catalog.BOARD_AXES)} "
-        f"cases={len(catalog.CAMPAIGN_CASES)} "
+        f"cases={len(catalog.OPTIMIZATION_COMPARISON_CASES)} "
         f"host_only={len(catalog.HOST_ONLY_AXES)} "
         f"pending_configured_board="
         f"{len(catalog.PENDING_CONFIGURED_BOARD_AXES)} passed"

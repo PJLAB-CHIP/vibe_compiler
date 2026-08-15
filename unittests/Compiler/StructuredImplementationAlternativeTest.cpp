@@ -358,7 +358,7 @@ TEST_F(StructuredImplementationAlternativeTest,
                                                  partitions};
 
   AttentionImplementationAlternativeProvider provider;
-  EXPECT_EQ(provider.getStableKey(), "wafer.structured-attention.v1");
+  EXPECT_EQ(provider.getStableKey(), "wafer.structured-attention");
   StructuredImplementationAlternativePoints points;
   std::string failureReason;
   ASSERT_TRUE(

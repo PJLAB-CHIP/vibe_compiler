@@ -1,6 +1,5 @@
 {
-  "schema_version": 1,
-  "corpus_id": "wafer-llama-2-7b-block-v1",
+  "corpus_id": "wafer-llama-2-7b-block",
   "source": {
     "framework": {
       "name": "PyTorch",
@@ -19,7 +18,7 @@
     {
       "id": "llama-2-7b-block-f16",
       "kind": "llama_decoder_block",
-      "source_revision": "sha256:072025a7c17bd66800d605db1f0f161fba52d3d317db1f7782fff2535fba760b",
+      "source_revision": "sha256:85cbc56dfef139629d46ebfc355e73af91c6662167218c0107d6b79e0e376611",
       "seed": 20260715,
       "dtype": "float16",
       "config": {
@@ -28,7 +27,7 @@
         "sequence_length": 16,
         "causal_attention": true,
         "payload": {
-          "algorithm": "wafer-exact-f16-splitmix64-counter-byte-scaled-v3",
+          "algorithm": "wafer-exact-f16-splitmix64-counter-byte-scaled",
           "input_denominator": 128,
           "normalization_delta_denominator": 4096,
           "projection_denominator": 8192
@@ -41,7 +40,7 @@
         ]
       },
       "digests": {
-        "source_config": "sha256:072025a7c17bd66800d605db1f0f161fba52d3d317db1f7782fff2535fba760b",
+        "source_config": "sha256:85cbc56dfef139629d46ebfc355e73af91c6662167218c0107d6b79e0e376611",
         "input": "sha256:670af394751491cc639d59f4411eb6a00f876106bfa9a25116cd1b3056c63d24",
         "parameters": "sha256:dca3c064f2d0b228385df06b5b0906b152c4569c88902c7e97dfccf73f0ea5c2",
         "reference_output": "sha256:6071569cde4caf5e8b9bdfd4736fe8ad741094f7b7a7b466cc41d8fa09ec2fa0",

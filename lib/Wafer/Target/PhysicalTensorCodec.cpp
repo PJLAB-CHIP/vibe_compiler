@@ -162,7 +162,7 @@ unpackPhysicalTensorLogicalValues(const NumericTensorKey &key,
     return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
                       "tensor element count exceeds host size_t");
   const LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministicV1())
+      getModelProfileRecord(ModelProfileId::formalDeterministic())
           .numericDecodePolicy;
   std::vector<RawLogicalValue> result;
   result.reserve(static_cast<size_t>(key.getElementCount()));
@@ -199,7 +199,7 @@ packPhysicalTensorLogicalValues(const NumericTensorKey &key,
     return codecError(PhysicalTensorCodecErrorCode::InvalidLogicalValueCount,
                       "logical value count does not match the tensor key");
   const LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministicV1())
+      getModelProfileRecord(ModelProfileId::formalDeterministic())
           .numericEncodePolicy;
   std::vector<uint8_t> result(storageTemplate.begin(), storageTemplate.end());
   size_t valueIndex = 0;

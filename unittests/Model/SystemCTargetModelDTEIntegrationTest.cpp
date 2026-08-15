@@ -55,7 +55,7 @@ TEST(SystemCTargetModelDTEIntegrationTest,
   EXPECT_GE(result->issuedCommandCount, 16u * 8u);
   EXPECT_GE(result->systemCThreadProcessCount, 17u);
   EXPECT_GT(result->finalDeltaCount, 0u);
-  EXPECT_EQ(result->schedulerIdentity, "untimed-delta-worker-aware-ncc-v2");
+  EXPECT_EQ(result->schedulerIdentity, "untimed-delta-worker-aware-ncc");
   ASSERT_EQ(result->outputs.size(), 16u);
   for (const TargetModelOutput &output : result->outputs) {
     ASSERT_GE(output.logicalRank, 0);

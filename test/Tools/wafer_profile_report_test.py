@@ -87,12 +87,12 @@ def _test_program(module: object) -> None:
     first = module.analyze_evidence(evidence)
     second = module.analyze_evidence(copy.deepcopy(evidence))
     assert first == second
-    assert first["schema_version"] == 10
+    assert "schema_version" not in first
     assert first["record_abi"] == "wafer-tx81-profiler-record-v4"
 
     permuted = make_evidence(permute_bindings=True)
     module.validate_evidence(permuted)
-    assert module.analyze_evidence(permuted)["schema_version"] == 10
+    assert "schema_version" not in module.analyze_evidence(permuted)
 
     final = first["program"]
     duration = final["duration"]
@@ -154,7 +154,7 @@ def _test_program(module: object) -> None:
         "status": "Measured",
     }
     hardware = final["hardware_cost_analysis"]
-    assert hardware["model"] == "tx81-static-peak-lower-bound-v1"
+    assert hardware["model"] == "tx81-static-throughput-lower-bound"
     assert (
         hardware["scope"]
         == "complete-final-instruction-program-per-physical-tile"
@@ -1254,10 +1254,6 @@ def _test_rejections(module: object) -> None:
     old["schema_version"] = 5
     _must_reject(module, old, "schema_version")
 
-    old_instrumentation = make_evidence()
-    old_instrumentation["program"]["profile_instrumentation_schema_version"] = 2
-    _must_reject(module, old_instrumentation, "profile_instrumentation_schema_version")
-
     inconsistent_binding = make_evidence(permute_bindings=True)
     inconsistent_binding["experiment"]["clock"][0]["launch_slot"] = 0
     inconsistent_binding["experiment"]["clock"][1]["launch_slot"] = 1
@@ -1493,7 +1489,7 @@ def _test_report_files(repo: pathlib.Path, module: object) -> None:
         analysis = json.loads(
             analysis_path.read_text(encoding="utf-8")
         )
-        assert analysis["schema_version"] == 10
+        assert "schema_version" not in analysis
         assert analysis["program"]["duration"]["qualified"]
 
         command = [
@@ -1513,12 +1509,9 @@ def _test_report_files(repo: pathlib.Path, module: object) -> None:
         )
     )
     assert schema["properties"]["schema_version"]["const"] == 11
-    assert (
-        schema["$defs"]["programMetadata"]["properties"][
-            "profile_instrumentation_schema_version"
-        ]["const"]
-        == 10
-    )
+    assert "profile_instrumentation_schema_version" not in schema["$defs"][
+        "programMetadata"
+    ]["properties"]
     assert "experiment" in schema["required"]
     assert "static_cost_model" in schema["required"]
     assert "experiments" not in schema["required"]
@@ -1548,7 +1541,7 @@ def _test_report_files(repo: pathlib.Path, module: object) -> None:
     static_model = schema["$defs"]["staticCostModel"]
     assert (
         static_model["properties"]["model"]["const"]
-        == "tx81-static-peak-lower-bound-v1"
+        == "tx81-static-throughput-lower-bound"
     )
     assert static_model["properties"]["scope"]["const"] == (
         "complete-final-instruction-program-per-physical-tile"

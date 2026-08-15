@@ -116,7 +116,7 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
   let summary = "target-abstract tile elementwise compute";
   let description = [{
     `wafer.tile.elementwise` represents tile-local scalar elementwise
-    compute over already materialized SPM storage values. The V0 operation keeps
+    compute over already materialized SPM storage values. The operation keeps
     its operand/result relation explicit: without `indexing_maps`, all operands
     and the result must have the same logical tensor type; with
     `indexing_maps`, operands may use verifier-proven permutation-only

@@ -21,8 +21,7 @@ namespace {
 using namespace wafer;
 using namespace wafer::model;
 
-constexpr ModelProfileId kModelProfile =
-    ModelProfileId::formalDeterministicV1();
+constexpr ModelProfileId kModelProfile = ModelProfileId::formalDeterministic();
 
 NumericTensorKey makeTensor(LogicalFormat format, PhysicalTensorLayout layout,
                             std::vector<uint64_t> shape) {
@@ -113,8 +112,7 @@ TEST(ManagedReferenceTargetModelTest,
   }
   EXPECT_EQ(managed.evidence.scalarEvaluations, 6u);
   EXPECT_FALSE(managed.evidence.environmentDigest.empty());
-  EXPECT_EQ(managed.evidence.implementation,
-            "native-non-nan-f16-f32-tensor-v1");
+  EXPECT_EQ(managed.evidence.implementation, "native-non-nan-f16-f32-tensor");
 }
 
 TEST(ManagedReferenceTargetModelTest,
@@ -165,8 +163,8 @@ TEST(ManagedReferenceTargetModelTest,
       {LogicalFormat::F32, UINT64_C(0x40800000)}};
   ResolvedNumericCommand reduce =
       resolve(llvm::cantFail(NumericCommandKey::createNativeCTReduce(
-          NumericReduceOperation::Sum, reduceInput,
-          reduceOutput, NativeCTReduceDimension::Trailing0)));
+          NumericReduceOperation::Sum, reduceInput, reduceOutput,
+          NativeCTReduceDimension::Trailing0)));
   TargetModelNumericRequest reduceRequest{
       reduce,
       {makeStorage(reduceInput, reduceValues)},

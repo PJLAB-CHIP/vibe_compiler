@@ -40,7 +40,7 @@ buildTx81ProfilerLaunchImage(uint64_t recordBytes, uint32_t tileId,
 /// Decodes and verifies one terminal record, including version, byte layout,
 /// guards, event bounds and internal lifecycle consistency. Overflow and
 /// protocol-invalid records are retained as structurally decoded evidence;
-/// verifyTx81ProfilerTileDomain rejects them for a successful campaign.
+/// verifyTx81ProfilerTileDomain rejects them for a successful collection.
 llvm::Expected<Tx81ProfilerRecord>
 decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes);
 

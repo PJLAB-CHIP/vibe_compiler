@@ -116,17 +116,17 @@ public payload bytes，不把NumPy dtype或host endianness提升为target physic
 ### 3.3 Post-SPMD parameter shards
 
 post-SPMD marker存在时，每个parameter必须在
-`functions/forward.parameter_shards.json` schema version 4中有唯一记录。root至少包含：
+`functions/forward.parameter_shards.json`中有唯一记录。该文件由repo-owned helper与frontend verifier同步演进，
+不建立独立版本线。root至少包含：
 
 ```text
-parameter_shards_version = 4
 function
 num_partitions
 parameters[]
 ```
 
-`num_partitions`只表示logical card-partition count，不表示Tile数量。旧schema-v3及其
-`logical_rank_count`/`rank`字段已删除，frontend不提供双reader或兼容翻译。
+`num_partitions`只表示logical card-partition count，不表示Tile数量。历史`logical_rank_count`/`rank`字段已删除，
+frontend不提供双reader或兼容翻译。
 
 每个parameter record通过`argument_index`绑定function argument，并声明`name`、dtype、global/local shape、
 `distribution`和每partition shard。`distribution`只接受：
@@ -151,7 +151,6 @@ pre-SPMD `forward.meta`不得有`distributed_boundary`。明确post-SPMD marker�
 
 ```text
 distributed_boundary:
-  version = 2
   num_partitions
   inputs[]   # 精确覆盖input_locations.type_ == input_arg
   outputs[]  # 精确覆盖全部function results
@@ -159,8 +158,8 @@ distributed_boundary:
 
 input/output record分别以`argument_index`/`result_index`绑定原boundary identity，并包含`distribution`、
 `global_shape`、`local_shape`、dtype和`partitions[]`中的
-`{partition_id, replica_id, offsets, sizes, strides}`。旧schema-v1及其
-`logical_rank_count`/`ranks`/`rank`字段已删除。helper从XLA
+`{partition_id, replica_id, offsets, sizes, strides}`。它不拥有nested版本；helper与frontend verifier随同一源码
+revision同步演进。历史`logical_rank_count`/`ranks`/`rank`字段已删除。helper从XLA
 `HloSharding` typed API生成这些事实，不解析或反推opaque sharding string。
 
 verifier要求record coverage精确且无重复，dtype/local shape与post-SPMD module和`input/output_signature`逐项一致，
@@ -183,16 +182,16 @@ name与版本workaround只留在adapter或诊断中。
 - 保存exporter产生的`mhlo.sharding`，不提前转成target Tile或Wafer私有strategy。
 
 Q5.C的source-backed corpus由
-`test/Tools/Inputs/workloads/single-card-vertical-v1.json`和真实capture generator拥有。当前固定case是
+`test/Tools/Inputs/workloads/single-card-vertical.json`和真实capture generator拥有。当前固定case是
 linear-residual MLP与tiny Llama decoder block；spec记录source revision、config、seed、dtype、shape和payload/
 reference digest。独立NumPy oracle、framework CPU交叉检查与重复export canonical-equivalence只证明source
 verification，不证明compiler、runtime或board完成。Q20/Q21必须直接消费这些admitted program，不能换成手写
 task/instruction fixture。
 
-Q28另以`test/Tools/Inputs/workloads/llama-2-7b-block-v1.json`固定标准Llama-2 7B单block配置：H=4096、
+Q28另以`test/Tools/Inputs/workloads/llama-2-7b-block.json`固定标准Llama-2 7B单block配置：H=4096、
 I=11008、32 heads、head dimension 128、FP16、batch 1、sequence 16。generator直接分块填充最终FP16 parameter
 allocation，避免为90M-element projection额外建立全尺寸临时数组；最终`expected.npy`必须由同一parameter/input的
-PyTorch eager CPU完整block执行产生，手写NumPy路径只作诊断。scale payload使用versioned SplitMix64 counter映射：
+PyTorch eager CPU完整block执行产生，手写NumPy路径只作诊断。scale payload使用显式SplitMix64 counter映射：
 global row-major index、固定seed和彼此独立的parameter stream共同形成长周期、FP16-exact值，避免matrix axis短周期重复及
 跨projection系统性相关；input、全部parameter和expected在digest及output writing前逐项检查finite。重复export必须
 得到canonical-equivalent program和固定digest，既有tiny corpus保持冻结而不随scale算法迁移。该case的shape、seed和
@@ -265,8 +264,8 @@ frontend mandatory coverage包括：
 - parameter/constant NPY shape/dtype/order/truncation与unsafe path负例；F16 `<f2`、host-compatible `=f2`、BF16 `|V2`
   canonical bytes正例及`>f2`拒绝；
 - `input_arg` position唯一连续；
-- `forward.parameter_shards.json` schema-v4 replicated/partitioned card-partition coverage、gap/overlap、payload一致性和mesh mismatch；
-- schema-v2 distributed input/result identity、global/local shape、dtype、partition/replica domain及data/column真实策略；
+- `forward.parameter_shards.json` replicated/partitioned card-partition coverage、gap/overlap、payload一致性和mesh mismatch；
+- distributed input/result identity、global/local shape、dtype、partition/replica domain及data/column真实策略；
 - pre-exported StableHLO parse/printer及显式IR-local lowering补充测试。
 
 完成记录必须区分真实exporter gate、program verifier和下游Q15 gate。FileCheck、手写MLIR或CPU oracle单独通过

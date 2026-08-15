@@ -3,7 +3,7 @@
 #include "Wafer/Runtime/BoardRuntime.h"
 #include "Wafer/Runtime/PackageManifest.h"
 #include "Wafer/Runtime/ProfileInstrumentation.h"
-#include "WaferProfileCampaign.h"
+#include "WaferProfileCollection.h"
 #include "WaferRunBoardIO.h"
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
 #include "Wafer/Runtime/TxBoardRuntime.h"
@@ -358,9 +358,8 @@ int runNoCard(
     printNoCardTilePlan(tile);
   llvm::outs() << "invocation_tiles: " << invocationPlan->tileCount << "\n";
   if (profileInstrumentation)
-    llvm::outs() << "profile_instrumentation: ready schema="
-                 << profileInstrumentation->getSchemaVersion()
-                 << " cards=" << profileInstrumentation->getCardCount()
+    llvm::outs() << "profile_instrumentation: ready cards="
+                 << profileInstrumentation->getCardCount()
                  << " tiles=" << profileInstrumentation->getTileCount()
                  << " captures=" << profileInstrumentation->getCaptures().size()
                  << " target_call_sites="
@@ -420,14 +419,14 @@ int runBoard(const Options &options,
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       [&]() -> llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> {
     if (profileInstrumentation) {
-      llvm::Expected<wafer::runtime::cli::BoardProfileCampaignResult> campaign =
-          wafer::runtime::cli::runBoardProfileCampaign(
+      llvm::Expected<wafer::runtime::cli::BoardProfileCollectionResult>
+          collection = wafer::runtime::cli::runBoardProfileCollection(
               *profileInstrumentation, manifest, *filePlan, **driver);
-      if (!campaign)
-        return campaign.takeError();
-      completedPlan = std::move(campaign->finalPlan);
-      profileRunDirectory = std::move(campaign->runDirectory);
-      return std::move(campaign->finalResult);
+      if (!collection)
+        return collection.takeError();
+      completedPlan = std::move(collection->finalPlan);
+      profileRunDirectory = std::move(collection->runDirectory);
+      return std::move(collection->finalResult);
     }
     completedPlan = std::move(*filePlan);
     return wafer::runtime::executeBoardInvocation(

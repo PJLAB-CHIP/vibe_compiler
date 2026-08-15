@@ -37,7 +37,7 @@ TARGET_IDENTITY = "wafer-tx81-single-card"
 PROFILE_INSTRUMENTATION_READY = (
     "profile_instrumentation: ready schema=7 ranks=16 variants=1 captures=2"
 )
-PROFILE_CAMPAIGN_LAUNCH_COUNT = 3
+PROFILE_MEASUREMENT_COUNT = 3
 PROFILE_PRIMARY_EXECUTION_COUNT = 1
 BOARD_PROCESS_TIMEOUT_MARGIN_SECONDS = 120.0
 LAUNCH_EVIDENCE = {
@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "compile byte-identical ordinary/profile packages, then execute "
-            "one fixed Primary->Count->Trace campaign"
+            "one fixed Primary->Count->Trace profile collection"
         ),
     )
     parser.add_argument(
@@ -873,7 +873,7 @@ def main() -> int:
                 + ", ".join(missing)
             )
         if args.profile and args.repeat != 1:
-            raise RuntimeError("--profile requires exactly one fixed campaign")
+            raise RuntimeError("--profile requires exactly one fixed profile collection")
         if not args.profile and args.repeat < 2:
             raise RuntimeError("--repeat must be at least 2")
         if args.completion_timeout_ms <= 0:
@@ -960,7 +960,7 @@ def main() -> int:
             timeout_seconds=max(
                 300.0,
                 (
-                    PROFILE_CAMPAIGN_LAUNCH_COUNT
+                    PROFILE_MEASUREMENT_COUNT
                     * args.completion_timeout_ms
                     / 1000.0
                     + BOARD_PROCESS_TIMEOUT_MARGIN_SECONDS
@@ -978,8 +978,8 @@ def main() -> int:
             package, profile_result.stdout
         )
         print(
-            "board_profile_campaign: pass "
-            f"launches={PROFILE_CAMPAIGN_LAUNCH_COUNT} "
+            "board_profile_collection: pass "
+            f"launches={PROFILE_MEASUREMENT_COUNT} "
             f"primary={PROFILE_PRIMARY_EXECUTION_COUNT}"
         )
         print(f"board_profile_device_duration_ns: {device_duration}")

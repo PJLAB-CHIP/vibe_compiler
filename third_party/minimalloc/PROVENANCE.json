@@ -1,5 +1,4 @@
 {
-  "schema_version": 1,
   "upstream": {
     "repository": "https://github.com/google/minimalloc.git",
     "commit": "9f5cf810fec4494df473c23cffd0567989e81b69",

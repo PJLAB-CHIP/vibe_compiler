@@ -96,8 +96,7 @@ protected:
     return {"known", value, "none"};
   }
 
-  static int64_t tileForLaunchSlot(int64_t launchSlot,
-                                           bool permuteTiles) {
+  static int64_t tileForLaunchSlot(int64_t launchSlot, bool permuteTiles) {
     if (!permuteTiles || launchSlot > 1)
       return launchSlot;
     return 1 - launchSlot;
@@ -134,9 +133,9 @@ protected:
       work.directionalNoCTransmitBytes.east = knownStaticCost(0);
       work.directionalNoCTransmitBytes.south = knownStaticCost(0);
       work.directionalNoCTransmitBytes.west = knownStaticCost(0);
-      model.tiles.push_back(
-          {wafer::CardId(0), wafer::TileId(tile),
-           wafer::runtime::LaunchSlotId(launchSlot), std::move(work)});
+      model.tiles.push_back({wafer::CardId(0), wafer::TileId(tile),
+                             wafer::runtime::LaunchSlotId(launchSlot),
+                             std::move(work)});
     }
     return model;
   }
@@ -160,7 +159,7 @@ protected:
       json.attribute("schema", "wafer-profile-activation");
       json.attribute(
           "schema_version",
-          int64_t(wafer::runtime::kProfileInstrumentationSchemaVersion));
+          int64_t(wafer::runtime::kProfileInstrumentationFormatVersion));
       json.attribute("primary_manifest_sha256", productionDigestOverride.empty()
                                                     ? manifestDigest(primary)
                                                     : productionDigestOverride);
@@ -239,8 +238,7 @@ protected:
         ResourceId profiler(static_cast<uint64_t>(launchSlot) + 2);
         manifest.resources.push_back(
             {profiler,
-             TileResourceScope{wafer::CardId(0),
-                               wafer::TileId(tile)},
+             TileResourceScope{wafer::CardId(0), wafer::TileId(tile)},
              PackageResourceRole::Workspace,
              1,
              profilerName.str(),
@@ -252,9 +250,9 @@ protected:
         slots.push_back({2, profiler, PackageAccessMode::ReadWrite});
       }
       manifest.entries.push_back(
-          {EntryId(launchSlot), wafer::CardId(0),
-           wafer::TileId(tile), LaunchSlotId(launchSlot), ModuleId(0),
-           std::move(slots), PackageEntryCompletionKind::ReturnAfterLocalDrain,
+          {EntryId(launchSlot), wafer::CardId(0), wafer::TileId(tile),
+           LaunchSlotId(launchSlot), ModuleId(0), std::move(slots),
+           PackageEntryCompletionKind::ReturnAfterLocalDrain,
            NoTransportRequirements{}});
     }
     llvm::Expected<VerifiedPackageManifest> verified =
@@ -305,9 +303,6 @@ protected:
           wafer::getTargetCallDescriptors();
       json.object([&] {
         json.attribute("schema", "wafer-profile-target-call-site-map");
-        json.attribute(
-            "schema_version",
-            int64_t(wafer::runtime::kProfileInstrumentationSchemaVersion));
         json.attribute("card_count", int64_t(1));
         json.attribute("tile_count", int64_t(16));
         json.attribute("site_basis", "verified-target-llvm-entry-reachable-"
@@ -318,8 +313,7 @@ protected:
                        static_cast<int64_t>(descriptors.size()));
         json.attributeArray("tiles", [&] {
           for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
-            const int64_t tile =
-                tileForLaunchSlot(launchSlot, permuteTiles);
+            const int64_t tile = tileForLaunchSlot(launchSlot, permuteTiles);
             json.object([&] {
               json.attribute("card_id", int64_t(0));
               json.attribute("tile_id", tile);
@@ -385,9 +379,6 @@ protected:
       llvm::json::OStream json(output, 2);
       json.object([&] {
         json.attribute("schema", "wafer-profile-plan");
-        json.attribute(
-            "schema_version",
-            int64_t(wafer::runtime::kProfileInstrumentationSchemaVersion));
         json.attribute("card_count", int64_t(1));
         json.attribute("tile_count", int64_t(16));
         json.attribute("site_map", "site-map.json");
@@ -425,8 +416,6 @@ TEST_F(ProfileInstrumentationTest,
       wafer::runtime::loadVerifiedProfileInstrumentation(instrumentation,
                                                          primary);
   ASSERT_TRUE(static_cast<bool>(loaded)) << llvm::toString(loaded.takeError());
-  EXPECT_EQ(loaded->getSchemaVersion(),
-            wafer::runtime::kProfileInstrumentationSchemaVersion);
   EXPECT_EQ(loaded->getProfiledPackage().getManifestDigest(),
             manifestDigest(primary));
   EXPECT_EQ(loaded->getCardCount(), 1);
@@ -489,8 +478,7 @@ TEST_F(ProfileInstrumentationTest,
   EXPECT_FALSE(siteMap.front().sites.front().correlationKey.empty());
 }
 
-TEST_F(ProfileInstrumentationTest,
-       PreservesExplicitTileAndLaunchSlotBinding) {
+TEST_F(ProfileInstrumentationTest, PreservesExplicitTileAndLaunchSlotBinding) {
   ASSERT_NO_FATAL_FAILURE(writePackage(
       primary, /*outputBytes=*/4, /*recordBytes=*/0,
       /*profilerName=*/"tx81_profiler_record", /*resourceNamePrefix=*/"",
@@ -583,7 +571,7 @@ TEST_F(ProfileInstrumentationTest,
   size_t recordABI = corrupted.find(wafer::runtime::kProfileRecordABI);
   ASSERT_NE(recordABI, std::string::npos);
   corrupted.replace(recordABI, wafer::runtime::kProfileRecordABI.size(),
-                    "wafer-tx81-profiler-record-v2");
+                    "invalid-profiler-record-abi");
   ASSERT_NO_FATAL_FAILURE(writeText(planPath, corrupted));
   ASSERT_NO_FATAL_FAILURE(writeActivation());
 
@@ -594,7 +582,7 @@ TEST_F(ProfileInstrumentationTest,
             std::string::npos);
 }
 
-TEST_F(ProfileInstrumentationTest, RejectsRetiredSchemaV9) {
+TEST_F(ProfileInstrumentationTest, RejectsUnsupportedActivationVersion) {
   llvm::SmallString<256> activationPath(instrumentation);
   llvm::sys::path::append(
       activationPath,
@@ -606,7 +594,7 @@ TEST_F(ProfileInstrumentationTest, RejectsRetiredSchemaV9) {
   const std::string current = "\"schema_version\": 10";
   size_t version = corrupted.find(current);
   ASSERT_NE(version, std::string::npos);
-  corrupted.replace(version, current.size(), "\"schema_version\": 9");
+  corrupted.replace(version, current.size(), "\"schema_version\": 999");
   ASSERT_NO_FATAL_FAILURE(writeText(activationPath, corrupted));
 
   auto loaded = wafer::runtime::loadVerifiedProfileInstrumentation(

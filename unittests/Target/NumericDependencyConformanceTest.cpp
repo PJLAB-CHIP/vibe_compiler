@@ -85,7 +85,7 @@ protected:
     ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory(
         "wafer-numeric-conformance", root));
     recordPath = path("numeric-model-deps.json");
-    generatePythonSchemaV2Fixture();
+    generateCurrentPythonFixture();
     ASSERT_FALSE(HasFatalFailure());
     loadRecord();
   }
@@ -113,7 +113,7 @@ protected:
         destination, static_cast<llvm::sys::fs::perms>(mode)));
   }
 
-  void generatePythonSchemaV2Fixture() {
+  void generateCurrentPythonFixture() {
     llvm::SmallString<256> repository(WAFER_TEST_SOURCE_DIR);
     llvm::SmallString<256> producer(repository);
     llvm::sys::path::append(producer, "tools", "test_numeric_deps.py");
@@ -122,7 +122,7 @@ protected:
 
     llvm::ErrorOr<std::string> python = llvm::sys::findProgramByName("python3");
     ASSERT_TRUE(static_cast<bool>(python))
-        << "python3 is required for the schema-v2 producer fixture";
+        << "python3 is required for the current producer fixture";
     const std::string program = *python;
     const std::string script =
         "import pathlib,sys;"
@@ -246,12 +246,11 @@ protected:
 };
 
 TEST_F(NumericDependencyConformanceTest,
-       ReadsPythonProducedSchemaV2RecordAndLoadedObjects) {
+       ReadsPythonProducedCurrentRecordAndLoadedObjects) {
   llvm::Expected<NumericDependencyConformanceRecord> parsed =
       read(recordDigest);
   ASSERT_TRUE(static_cast<bool>(parsed))
       << (parsed ? std::string() : llvm::toString(parsed.takeError()));
-  EXPECT_EQ(parsed->getSchemaVersion(), 2u);
   EXPECT_EQ(parsed->getSources().size(), 5u);
   EXPECT_EQ(parsed->getFiles().size(), 20u);
   EXPECT_EQ(parsed->getTools().size(), 10u);
@@ -359,17 +358,12 @@ TEST_F(NumericDependencyConformanceTest, RejectsUnknownAndMissingFields) {
 TEST_F(NumericDependencyConformanceTest, RejectsDuplicateJSONField) {
   std::string text = llvm::formatv("{0:2}", record).str();
   ASSERT_FALSE(text.empty());
-  text.insert(1, "\"schema_version\":2,");
+  text.insert(1, "\"kind\":\"duplicate\",");
   expectError(read(writeRawRecord(text)),
               NumericDependencyConformanceErrorCode::DuplicateField);
 }
 
 TEST_F(NumericDependencyConformanceTest, RejectsBooleanIntegerFields) {
-  top()["schema_version"] = true;
-  expectError(read(writeRecord()),
-              NumericDependencyConformanceErrorCode::TypeMismatch);
-
-  top()["schema_version"] = 2;
   gate("m4-build")["exit_code"] = false;
   expectError(read(writeRecord()),
               NumericDependencyConformanceErrorCode::TypeMismatch);

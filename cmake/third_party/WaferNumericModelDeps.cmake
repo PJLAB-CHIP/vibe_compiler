@@ -51,14 +51,11 @@ function(wafer_enable_numeric_model_deps)
       "${_wafer_numeric_check_error}")
   endif()
 
-  string(JSON _wafer_numeric_snapshot_schema GET
-    "${_WAFER_NUMERIC_SNAPSHOT_JSON}" schema_version)
   string(JSON _wafer_numeric_snapshot_kind GET
     "${_WAFER_NUMERIC_SNAPSHOT_JSON}" kind)
-  if(NOT _wafer_numeric_snapshot_schema EQUAL 1 OR
-     NOT _wafer_numeric_snapshot_kind STREQUAL
+  if(NOT _wafer_numeric_snapshot_kind STREQUAL
        "wafer-numeric-model-canonical-snapshot")
-    message(FATAL_ERROR "Managed numeric-model canonical snapshot schema mismatch")
+    message(FATAL_ERROR "Managed numeric-model canonical snapshot kind mismatch")
   endif()
   string(JSON _wafer_numeric_record_sha256 GET
     "${_WAFER_NUMERIC_SNAPSHOT_JSON}" record_sha256)

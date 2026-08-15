@@ -330,7 +330,7 @@ class DirectDTEProfileGateTest(unittest.TestCase):
             max(
                 300.0,
                 (
-                    HARNESS.PROFILE_CAMPAIGN_LAUNCH_COUNT * 60.0
+                    HARNESS.PROFILE_MEASUREMENT_COUNT * 60.0
                     + HARNESS.DIRECT_DTE_PROCESS_TIMEOUT_MARGIN_SECONDS
                 ),
             ),
@@ -338,7 +338,7 @@ class DirectDTEProfileGateTest(unittest.TestCase):
         verify_board.assert_called_once()
         verify_report.assert_called_once()
         self.assertIn(
-            "direct_dte_profile_campaign: pass launches=3 primary=1",
+            "direct_dte_profile_collection: pass launches=3 primary=1",
             output.getvalue(),
         )
 

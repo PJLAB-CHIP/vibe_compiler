@@ -26,8 +26,8 @@ class ModelProfileId {
 public:
   ModelProfileId() = delete;
 
-  static constexpr ModelProfileId formalDeterministicV1() {
-    return ModelProfileId(Value::FormalDeterministicV1);
+  static constexpr ModelProfileId formalDeterministic() {
+    return ModelProfileId(Value::FormalDeterministic);
   }
 
   friend constexpr bool operator==(ModelProfileId lhs, ModelProfileId rhs) {
@@ -38,7 +38,7 @@ public:
   }
 
 private:
-  enum class Value : uint8_t { FormalDeterministicV1 };
+  enum class Value : uint8_t { FormalDeterministic };
 
   explicit constexpr ModelProfileId(Value value) : value(value) {}
 

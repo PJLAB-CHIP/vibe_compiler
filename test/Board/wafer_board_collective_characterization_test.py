@@ -16,7 +16,7 @@ import time
 
 import numpy as np
 
-import wafer_board_compiler_optimization_campaign_test as paired_support
+import wafer_board_compiler_optimization_comparison_test as paired_support
 import wafer_direct_dte_board_evidence as direct_dte_evidence
 import wafer_runtime_launch_contract as runtime_launch
 from wafer_collective_hardware_characterization_catalog import (

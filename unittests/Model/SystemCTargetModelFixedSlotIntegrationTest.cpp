@@ -300,8 +300,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
 
   llvm::raw_string_ostream diagnostics(diagnosticText);
   llvm::Expected<TargetLLVMModules> targetModules =
-      compileCardExecutableToTargetLLVMModules(*executable,
-                                                        diagnostics);
+      compileCardExecutableToTargetLLVMModules(*executable, diagnostics);
   ASSERT_TRUE(static_cast<bool>(targetModules))
       << diagnosticText << llvm::toString(targetModules.takeError());
   ASSERT_EQ(targetModules->getModules().size(), 1u);
@@ -479,7 +478,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   EXPECT_EQ(result->issuedCommandCount, recording.commands.size());
   EXPECT_EQ(result->formalNumericCommandCount, adds.size());
   EXPECT_GT(result->finalDeltaCount, 0u);
-  EXPECT_EQ(result->schedulerIdentity, "untimed-delta-worker-aware-ncc-v2");
+  EXPECT_EQ(result->schedulerIdentity, "untimed-delta-worker-aware-ncc");
   EXPECT_FALSE(result->numericFlags.invalid);
   EXPECT_FALSE(result->numericFlags.divByZero);
   EXPECT_FALSE(result->numericFlags.overflow);

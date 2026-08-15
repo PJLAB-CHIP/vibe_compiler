@@ -296,7 +296,7 @@ configured board执行后才能标`done`。
   fresh生成，production bytes一致、grid launch和profile companion闭合，两包均通过no-card；
 - 旧18轴的唯一性、round-trip、disable-only/enable-only package与diagnostic只证明当时机制可区分，不再保留parser或public option；
 - current public回归只验证`production`/`none`两态parse/stringify、未知值pre-publication拒绝，以及`none`仍经过完整baseline late gates；
-- 原compiler optimization campaign及NoC/partial-reduction host comparison baseline已迁到正式`none` preset；
+- 原compiler optimization comparison tests及NoC/partial-reduction host comparison baseline已迁到正式`none` preset；
 - 16-rank FP16 M-sharded K=1024 runner再次fresh生成ordinary/profile两个production package，递归bytes一致、
   grid launch和NE GEMM target structure一致、profile companion完整且两包均通过no-card。
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Typed coverage contract for the production-compiler board campaign.
+"""Typed coverage contract for the production-compiler board test collection.
 
 The catalog groups choices by board-observable behavior, not by pass name.  A
 single paired package case may therefore account for several implementation
@@ -132,7 +132,7 @@ class DriverOracleBinding:
 
 
 @dataclasses.dataclass(frozen=True)
-class CampaignCase:
+class OptimizationComparisonCase:
     key: str
     family: str
     priority: str
@@ -180,8 +180,8 @@ BOARD_DISPOSITIONS = frozenset(
         AxisDisposition.EXISTING_BOARD_FAMILY,
     }
 )
-PAIRED_CAMPAIGN_DRIVER = (
-    "test/Board/wafer_board_compiler_optimization_campaign_test.py"
+PAIRED_COMPARISON_TEST = (
+    "test/Board/wafer_board_compiler_optimization_comparison_test.py"
 )
 
 
@@ -371,16 +371,16 @@ PAIRED_COMMON_CAPABILITIES = frozenset(
 
 EXECUTION_CAPABILITY_ANCHORS = {
     ExecutableEvidenceCapability.PACKAGE_PUBLIC_SEMANTICS_EQUAL: _anchor(
-        PAIRED_CAMPAIGN_DRIVER,
+        PAIRED_COMPARISON_TEST,
         "normalized_manifest(manifests[\"baseline\"])",
     ),
     ExecutableEvidenceCapability.FULL_OUTPUT_EXACT: _anchor(
-        PAIRED_CAMPAIGN_DRIVER,
+        PAIRED_COMPARISON_TEST,
         "else torch_reference.EXACT",
         "assert_raw_capture_matches",
     ),
     ExecutableEvidenceCapability.FULL_OUTPUT_FLOATING_TOLERANCE: _anchor(
-        PAIRED_CAMPAIGN_DRIVER,
+        PAIRED_COMPARISON_TEST,
         "torch_reference.ComparisonPolicy(",
         "assert_raw_capture_matches",
     ),
@@ -389,17 +389,17 @@ EXECUTION_CAPABILITY_ANCHORS = {
         "std::fill(bytes.begin(), bytes.end(), UINT8_C(0xa5))",
     ),
     ExecutableEvidenceCapability.ALL_RANK_STATUS: _anchor(
-        PAIRED_CAMPAIGN_DRIVER,
+        PAIRED_COMPARISON_TEST,
         "\"--direct-dte-status-abi\"",
         "actual_completions",
     ),
     ExecutableEvidenceCapability.BOUNDED_LIFECYCLE: _anchor(
-        PAIRED_CAMPAIGN_DRIVER,
+        PAIRED_COMPARISON_TEST,
         "timeout_seconds=(",
         "not retry or invoke reset/power operations",
     ),
     ExecutableEvidenceCapability.BALANCED_PAIR_ORDER: _anchor(
-        PAIRED_CAMPAIGN_DRIVER,
+        PAIRED_COMPARISON_TEST,
         "def balanced_order",
     ),
     ExecutableEvidenceCapability.REPEATED_LIFECYCLE: _anchor(
@@ -438,8 +438,8 @@ def _paired_case(
     board_batch: BoardBatch,
     board_order: int,
     oracle: OracleContract,
-) -> CampaignCase:
-    return CampaignCase(
+) -> OptimizationComparisonCase:
+    return OptimizationComparisonCase(
         key=key,
         family=family,
         priority="P0",
@@ -464,12 +464,12 @@ def _paired_case(
             "normal runtime cleanup",
             "no retry, reset, or power action",
         ),
-        execution_asset=PAIRED_CAMPAIGN_DRIVER,
+        execution_asset=PAIRED_COMPARISON_TEST,
         driver_binding=PAIRED_DRIVER_BINDINGS[key],
     )
 
 
-CAMPAIGN_CASES = (
+OPTIMIZATION_COMPARISON_CASES = (
     _paired_case(
         "gemm-aligned-physical-route",
         "tile-layout-route",
@@ -721,7 +721,7 @@ CAMPAIGN_CASES = (
             },
         ),
     ),
-    CampaignCase(
+    OptimizationComparisonCase(
         # Compatibility key retained for existing CTest/runner selections.  This
         # asset proves the shared Direct-DTE transport vertical; it does not
         # identify a Direct all-reduce compiler algorithm.
@@ -827,7 +827,7 @@ CAMPAIGN_CASES = (
     ),
 )
 
-CASES_BY_KEY = {case.key: case for case in CAMPAIGN_CASES}
+CASES_BY_KEY = {case.key: case for case in OPTIMIZATION_COMPARISON_CASES}
 
 
 FRONTEND_HOST_GATES = (

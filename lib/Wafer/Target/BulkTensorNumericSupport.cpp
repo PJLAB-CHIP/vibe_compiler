@@ -108,7 +108,7 @@ llvm::StringRef getBulkAdapterContractDigest() {
   static const std::string digest = [] {
     llvm::SmallString<512> payload;
     llvm::raw_svector_ostream stream(payload);
-    appendField(stream, "schema", "wafer-bulk-adapter-v1");
+    appendField(stream, "schema", "wafer-bulk-adapter");
     appendField(stream, "input", "target-owned-physical-codec-layout");
     appendField(stream, "backend_dense_format", "f32");
     appendField(stream, "backend_primitive",

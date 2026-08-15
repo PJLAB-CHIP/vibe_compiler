@@ -68,27 +68,27 @@
 # RUN: %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/get-pid-target-kernel.ll \
 # RUN:   --output %t.get-pid.so \
-# RUN:   --loader-abi tx8-kcore-loader-grid-v1
+# RUN:   --loader-abi tx8-kcore-loader-grid
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm -u %t.get-pid.so | FileCheck %s --check-prefix=GETPID
 # RUN: not %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/get-pid-target-kernel.ll \
 # RUN:   --output %t.get-pid-base.so \
-# RUN:   --loader-abi tx8-kcore-loader-v1 2>&1 | FileCheck %s --check-prefix=GETPID-BASE
+# RUN:   --loader-abi tx8-kcore-loader 2>&1 | FileCheck %s --check-prefix=GETPID-BASE
 
 # RUN: %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/cluster-topology-target-kernel.ll \
 # RUN:   --output %t.cluster-topology.so \
-# RUN:   --loader-abi tx8-kcore-loader-cluster-v1
+# RUN:   --loader-abi tx8-kcore-loader-cluster
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm -u %t.cluster-topology.so | FileCheck %s --check-prefix=CLUSTER-TOPOLOGY
 # RUN: not %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/cluster-topology-target-kernel.ll \
 # RUN:   --output %t.cluster-topology-grid.so \
-# RUN:   --loader-abi tx8-kcore-loader-grid-v1 2>&1 | FileCheck %s --check-prefix=CLUSTER-TOPOLOGY-GRID
+# RUN:   --loader-abi tx8-kcore-loader-grid 2>&1 | FileCheck %s --check-prefix=CLUSTER-TOPOLOGY-GRID
 
 # RUN: %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/direct-dte-address-target-kernel.ll \
 # RUN:   --output %t.direct-dte-address.so \
-# RUN:   --loader-abi tx8-kcore-loader-v1
+# RUN:   --loader-abi tx8-kcore-loader
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm -u %t.direct-dte-address.so | FileCheck %s --check-prefix=DTE-ADDRESS
 
 # CHECK-LABEL: compile:
@@ -169,7 +169,7 @@
 
 # UNDEF: error: undefined Wafer target CRT symbols remain after link: wafer_tx81_missing
 
-# NOTALLOWED: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-v1: unexpected_loader_hook
+# NOTALLOWED: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader: unexpected_loader_hook
 
 # HEAP-DAG: U rt_free
 # HEAP-DAG: U rt_malloc
@@ -177,11 +177,11 @@
 # HEAP-NOT: csi_kernel_malloc
 
 # GETPID: U __get_pid
-# GETPID-BASE: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-v1: __get_pid
+# GETPID-BASE: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader: __get_pid
 
 # CLUSTER-TOPOLOGY-DAG: U __get_pid
 # CLUSTER-TOPOLOGY-DAG: U init_tile_id
-# CLUSTER-TOPOLOGY-GRID: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-grid-v1: init_tile_id
+# CLUSTER-TOPOLOGY-GRID: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-grid: init_tile_id
 
 # DTE-ADDRESS: U get_tile_spm_addr_base
 

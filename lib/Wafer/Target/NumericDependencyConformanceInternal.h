@@ -24,7 +24,7 @@ using ErrorCode = NumericDependencyConformanceErrorCode;
 inline constexpr llvm::StringLiteral kRecordKind = "wafer-numeric-model-deps";
 inline constexpr llvm::StringLiteral kRecordStatus = "conformance-passed";
 inline constexpr llvm::StringLiteral kConformancePolicy =
-    "wafer-numeric-model-conformance-v1";
+    "wafer-numeric-model-conformance";
 
 inline constexpr llvm::StringLiteral kRequiredPins[] = {
     "softfloat", "testfloat", "m4", "gmp", "mpfr"};

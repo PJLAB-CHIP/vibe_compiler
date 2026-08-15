@@ -2,8 +2,8 @@
 
 #include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
-#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/IR/Target/TargetTopology.h"
+#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
@@ -45,8 +45,7 @@ namespace wafer::target_llvm_detail {
 
 mlir::FailureOr<DirectDTEEndpointDomain>
 resolveDirectDTEEndpointDomain(const TargetTopology &topology,
-                               mlir::ModuleOp diagnosticModule,
-                               CardId cardId,
+                               mlir::ModuleOp diagnosticModule, CardId cardId,
                                TileId tileId) {
   std::optional<llvm::ArrayRef<TileId>> available =
       topology.getAvailableTileIds(cardId);
@@ -74,7 +73,7 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
           DTECompletionProfile::SenderWaitReceiverFSM)
     return op.emitError()
            << "unsupported_target_transport: Direct DTE binding profile "
-              "is not supported by the V0 target CRT";
+              "is not supported by the target CRT";
   if (op.getBytesAttr().getInt() <= 0 ||
       op.getBytesAttr().getInt() > std::numeric_limits<int32_t>::max())
     return op.emitError()
@@ -82,8 +81,7 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
               "positive int32_t packet size";
   int64_t peer = op.getPeerAttr().getInt();
   const TileId peerTileId(peer);
-  if (peer < 0 ||
-      !llvm::is_contained(domain.availableTileIds, peerTileId) ||
+  if (peer < 0 || !llvm::is_contained(domain.availableTileIds, peerTileId) ||
       peerTileId == domain.tileId)
     return op.emitError()
            << "unsupported_target_transport: Direct DTE peer is outside "
@@ -127,8 +125,7 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
       return op.emitError(
           "unsupported_target_transport: Direct DTE selector-table binding "
           "requires one converted i64 selector");
-    llvm::ArrayRef<int64_t> table =
-        binding.getRouteBindings().asArrayRef();
+    llvm::ArrayRef<int64_t> table = binding.getRouteBindings().asArrayRef();
     if (table.empty() || table.size() % 3 != 0)
       return op.emitError(
           "unsupported_target_transport: Direct DTE route binding "
@@ -139,8 +136,8 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
       if (!checkedAdd(table[index + 1], op.getBytesAttr().getInt(),
                       remoteEnd) ||
           table[index + 1] < targetPolicy.memory.spmBase ||
-          remoteEnd > targetPolicy.memory.spmLimit ||
-          table[index + 2] < 0 || table[index + 2] > 3)
+          remoteEnd > targetPolicy.memory.spmLimit || table[index + 2] < 0 ||
+          table[index + 2] > 3)
         return op.emitError(
             "unsupported_target_transport: Direct DTE route binding "
             "entry is outside the target SPM/FSM domain");
@@ -160,21 +157,20 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
       if (!checkedAdd(table[index + 1], op.getBytesAttr().getInt(),
                       remoteEnd) ||
           table[index + 1] < targetPolicy.memory.spmBase ||
-          remoteEnd > targetPolicy.memory.spmLimit ||
-          table[index + 2] < 0 || table[index + 2] > 3)
+          remoteEnd > targetPolicy.memory.spmLimit || table[index + 2] < 0 ||
+          table[index + 2] > 3)
         return op.emitError(
             "unsupported_target_transport: Direct DTE route binding "
             "entry is outside the target SPM/FSM domain");
       mlir::Value selected = builder.create<mlir::LLVM::ICmpOp>(
-          op.getLoc(), mlir::LLVM::ICmpPredicate::eq,
-          routeSelector,
+          op.getLoc(), mlir::LLVM::ICmpPredicate::eq, routeSelector,
           constantI64(op.getLoc(), table[index]));
       remoteDestination = builder.create<mlir::LLVM::SelectOp>(
-          op.getLoc(), selected,
-          constantI64(op.getLoc(), table[index + 1]), remoteDestination);
+          op.getLoc(), selected, constantI64(op.getLoc(), table[index + 1]),
+          remoteDestination);
       remoteReceiverFsm = builder.create<mlir::LLVM::SelectOp>(
-          op.getLoc(), selected,
-          constantI32(op.getLoc(), table[index + 2]), remoteReceiverFsm);
+          op.getLoc(), selected, constantI32(op.getLoc(), table[index + 2]),
+          remoteReceiverFsm);
     }
     break;
   }
@@ -188,11 +184,9 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
   appendI32(op.getLoc(), args, peerTileId.getValue());
   args.push_back(remoteReceiverFsm);
   appendI32(op.getLoc(), args, /*isHighPerformance=*/0);
-  mlir::Value event =
-      emitI64Call(op.getLoc(),
-                  getTargetCallDescriptor(
-                      TargetCallBuiltin::DirectDTESendPrepare),
-                  args);
+  mlir::Value event = emitI64Call(
+      op.getLoc(),
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare), args);
   emitCall(op.getLoc(),
            getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue),
            mlir::ValueRange(event));
@@ -213,7 +207,7 @@ FunctionLowering::lowerDTERecv(InstrDTERecvOp op,
           DTECompletionProfile::SenderWaitReceiverFSM)
     return op.emitError()
            << "unsupported_target_transport: Direct DTE binding profile "
-              "is not supported by the V0 target CRT";
+              "is not supported by the target CRT";
   if (op.getBytesAttr().getInt() <= 0 ||
       op.getBytesAttr().getInt() > std::numeric_limits<int32_t>::max())
     return op.emitError()
@@ -221,8 +215,7 @@ FunctionLowering::lowerDTERecv(InstrDTERecvOp op,
               "positive int32_t packet size";
   int64_t peer = op.getPeerAttr().getInt();
   const TileId peerTileId(peer);
-  if (peer < 0 ||
-      !llvm::is_contained(domain.availableTileIds, peerTileId) ||
+  if (peer < 0 || !llvm::is_contained(domain.availableTileIds, peerTileId) ||
       peerTileId == domain.tileId)
     return op.emitError()
            << "unsupported_target_transport: Direct DTE peer is outside "
@@ -240,8 +233,7 @@ FunctionLowering::lowerDTERecv(InstrDTERecvOp op,
   appendI32(op.getLoc(), args, binding.getReceiverFsmId());
   return emitI64Call(
       op.getLoc(),
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTERecvPrepare),
-      args);
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTERecvPrepare), args);
 }
 
 mlir::LogicalResult
@@ -297,10 +289,9 @@ mlir::LogicalResult injectDirectDTEStatusLifecycle(
 
   mlir::OpBuilder builder(moduleOp.getContext());
   mlir::Type i32Type = mlir::IntegerType::get(moduleOp.getContext(), 32);
-  const TargetCallDescriptor &begin =
-      getTargetCallDescriptor(beginBuiltin);
-  const TargetCallDescriptor &finish = getTargetCallDescriptor(
-      TargetCallBuiltin::DirectDTEFinish);
+  const TargetCallDescriptor &begin = getTargetCallDescriptor(beginBuiltin);
+  const TargetCallDescriptor &finish =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEFinish);
   registerTargetCallee(moduleOp.getContext(), usedCallees, begin);
   registerTargetCallee(moduleOp.getContext(), usedCallees, finish);
 

@@ -30,7 +30,7 @@ DIRECT_DTE_PROCESS_TIMEOUT_MARGIN_SECONDS = 30
 PROFILE_INSTRUMENTATION_READY = (
     "profile_instrumentation: ready schema=7 ranks=16 variants=1 captures=2"
 )
-PROFILE_CAMPAIGN_LAUNCH_COUNT = 3
+PROFILE_MEASUREMENT_COUNT = 3
 PROFILE_PRIMARY_EXECUTION_COUNT = 1
 PROFILE_EVIDENCE_SCHEMA_VERSION = 8
 PROFILE_ANALYSIS_SCHEMA_VERSION = 7
@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "compile byte-identical ordinary/profile packages, then execute "
-            "one fixed Primary->Count->Trace campaign"
+            "one fixed Primary->Count->Trace profile collection"
         ),
     )
     parser.add_argument("--device-id", type=int, default=0)
@@ -767,7 +767,7 @@ def main() -> int:
     if args.repeat < 1 or args.completion_timeout_ms < 1:
         raise RuntimeError("repeat and completion timeout must be positive")
     if args.profile and args.repeat != 1:
-        raise RuntimeError("--profile requires exactly one fixed campaign")
+        raise RuntimeError("--profile requires exactly one fixed profile collection")
     if not args.no_card and os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
         print("Direct-DTE hardware execution is not armed", file=sys.stderr)
         return 77
@@ -855,7 +855,7 @@ def main() -> int:
             timeout_seconds=(
                 max(
                     300.0,
-                    PROFILE_CAMPAIGN_LAUNCH_COUNT
+                    PROFILE_MEASUREMENT_COUNT
                     * args.completion_timeout_ms
                     / 1000.0
                     + DIRECT_DTE_PROCESS_TIMEOUT_MARGIN_SECONDS,
@@ -867,8 +867,8 @@ def main() -> int:
             package, result.stdout
         )
         print(
-            "direct_dte_profile_campaign: pass "
-            f"launches={PROFILE_CAMPAIGN_LAUNCH_COUNT} "
+            "direct_dte_profile_collection: pass "
+            f"launches={PROFILE_MEASUREMENT_COUNT} "
             f"primary={PROFILE_PRIMARY_EXECUTION_COUNT}"
         )
         print(f"direct_dte_profile_device_duration_ns: {device_duration}")

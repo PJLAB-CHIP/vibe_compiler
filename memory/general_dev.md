@@ -153,8 +153,8 @@ source program
 
 ## Package schema v8
 
-- ordinary package只接受current schema version 8，profile instrumentation只接受current schema version 10；旧version fail closed，
-  没有兼容reader/translator。profile v10是单一production instrumentation合同，不含variant shell或重复manifest digest API。
+- ordinary package只接受一个current manifest schema version；profile instrumentation只在`activation.json`保留一个current
+  format version，digest-bound plan/site map和profile evidence不复制该版本。旧外围格式fail closed，没有兼容reader/translator。
 - production manifest固定 `card_count=1`、`tile_count=16`，entries显式保存 `(card_id,tile_id,launch_slot)`。
 - program input/parameter/constant/output使用card scope；workspace与transport status使用Tile scope。
 - sharing只由同一ResourceId被多个entry slots引用表达，不能从role/name/type/shape推断。
@@ -162,6 +162,16 @@ source program
 - slots dense zero-based，resources/modules/entries all-and-only covered；module/export/phase/digest关系必须readback。
 - entry completion只接受 `return_after_local_drain`；Direct-DTE status resource/ABI/size/alignment/access/watchdog exact。
 - canonical JSON parser要求exact fields、bounded size/nesting/records；serializer后重新parse/verify再发布。
+
+## 接口版本归属
+
+- 只有能脱离当前进程独立保存或部署的文件格式、compiler/runtime/device ABI与原始证据格式拥有版本；普通C++ API、
+  pass、analysis、非持久化IR和repo内同步生成/读取的helper metadata直接原位演进。
+- 每个真实边界只有一个顶层current版本和一个parser/loader/ABI检查入口。内部field、算法、hash domain和model名称不再
+  各自建立版本线，nested record不复制已经验证的外围版本。
+- 没有明确旧producer、旧consumer和支持周期时，删除旧reader、fallback与兼容wrapper；negative test只证明旧输入被
+  明确拒绝，不保留第二种current representation。
+- 第三方版本、外部文件格式、license、vendor规格和设备runtime版本是输入事实，继续记录，不与Wafer内部格式版本合并。
 
 ## No-card与board runtime
 

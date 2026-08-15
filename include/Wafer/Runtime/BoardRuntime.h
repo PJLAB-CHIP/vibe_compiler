@@ -130,8 +130,9 @@ struct BoardGraphHandle {
 
 /// Controls how a provider observes terminal submission state. Ordinary
 /// invocations retain the provider's low-overhead polling cadence. Profiler
-/// campaigns request a higher-resolution cadence so host launch-to-completion
-/// samples can be qualified by the resolution that was actually observed.
+/// profile collection requests a higher-resolution cadence so host
+/// launch-to-completion samples can be qualified by the resolution that was
+/// actually observed.
 enum class BoardCompletionObservationPolicy {
   Normal,
   ProfileHighResolution,
@@ -317,7 +318,7 @@ struct BoardRuntimeInvocationResult {
   std::vector<BoardRuntimeTileResult> tiles;
   std::vector<BoardRuntimeStage> completedStages;
   /// Host steady-clock interval from immediately before provider submission
-  /// through successful card completion. This is a campaign-level latency
+  /// through successful card completion. This is a collection-level latency
   /// observation, not a tile clock and not per-instruction hardware time.
   uint64_t launchToCompletionNanoseconds = 0;
   /// Host steady-clock time spent strictly inside provider submission calls,

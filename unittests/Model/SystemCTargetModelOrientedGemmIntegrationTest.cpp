@@ -6,8 +6,8 @@
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
-#include "Wafer/Compiler/CompilationInternal.h"
 #include "Wafer/Compiler/CardExecutableInternal.h"
+#include "Wafer/Compiler/CompilationInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -194,8 +194,7 @@ module {
     return executable.takeError();
   tensorProgram = nullptr;
   llvm::Expected<TargetLLVMModules> targetLLVMModules =
-      compileCardExecutableToTargetLLVMModules(*executable,
-                                                        diagnostics);
+      compileCardExecutableToTargetLLVMModules(*executable, diagnostics);
   if (!targetLLVMModules)
     return targetLLVMModules.takeError();
   if (llvm::Error error = rewriteGemmAsOrientationChain(*targetLLVMModules))
@@ -212,8 +211,7 @@ public:
     commands.push_back(command);
     return nextEvent++;
   }
-  llvm::Error completeTile(CardId, TileId,
-                           LaunchSlotId) override {
+  llvm::Error completeTile(CardId, TileId, LaunchSlotId) override {
     return llvm::Error::success();
   }
   llvm::Error completeInvocation() override { return llvm::Error::success(); }
@@ -224,7 +222,7 @@ public:
 };
 
 TEST(SystemCTargetModelOrientedGemmIntegrationTest,
-     ExecutesNNNTTNTTThroughVersionedTargetABI) {
+     ExecutesNNNTTNTTThroughCurrentTargetABI) {
   std::string diagnostics;
   llvm::Expected<TargetLLVMModules> targetLLVMModules =
       compileOrientedGemmTargetModules(diagnostics);
@@ -255,10 +253,8 @@ TEST(SystemCTargetModelOrientedGemmIntegrationTest,
   std::vector<TargetModelInputBinding> inputs;
   for (const TargetLLVMModule &module : targetLLVMModules->getModules()) {
     const int64_t launchSlot = module.getLaunchSlotId().getValue();
-    arguments.push_back({module.getCardId(),
-                         module.getTileId(),
-                         module.getLaunchSlotId(),
-                         {}});
+    arguments.push_back(
+        {module.getCardId(), module.getTileId(), module.getLaunchSlotId(), {}});
     size_t inputCount = 0;
     size_t outputCount = 0;
     for (const KernelABISlot &slot : module.getKernelABISlots()) {
@@ -290,9 +286,8 @@ TEST(SystemCTargetModelOrientedGemmIntegrationTest,
       ASSERT_EQ(bytes.size(), static_cast<uint64_t>(slot.byteSize));
       if (launchSlot == 0)
         inputs.push_back(
-            {getTargetModelResourceId(module.getCardId(),
-                                      module.getTileId(), slot.role,
-                                      slot.resourceIndex),
+            {getTargetModelResourceId(module.getCardId(), module.getTileId(),
+                                      slot.role, slot.resourceIndex),
              std::move(bytes)});
       ++inputCount;
     }

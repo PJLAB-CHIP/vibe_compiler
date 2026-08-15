@@ -130,7 +130,7 @@ std::string makeLoaderDigest() {
 std::string makeHostPlatformDigest() {
   llvm::SmallString<2048> payload;
   llvm::raw_svector_ostream stream(payload);
-  appendField(stream, "schema", "wafer-host-platform-v1");
+  appendField(stream, "schema", "wafer-host-platform");
   appendField(stream, "process_triple", llvm::sys::getProcessTriple());
   appendField(stream, "cpu_fingerprint", makeStableCPUFingerprint());
   appendField(stream, "cpu_online",
@@ -243,7 +243,7 @@ createManagedBulkExecutionEnvironment() {
 
   llvm::SmallString<512> backendPayload;
   llvm::raw_svector_ostream backendStream(backendPayload);
-  appendField(backendStream, "schema", "wafer-bulk-backend-v1");
+  appendField(backendStream, "schema", "wafer-bulk-backend");
   appendField(backendStream, "name", "oneDNN");
   appendField(backendStream, "version", WAFER_BULK_ONEDNN_VERSION);
   appendField(backendStream, "commit", WAFER_BULK_ONEDNN_COMMIT);
@@ -262,7 +262,7 @@ createManagedBulkExecutionEnvironment() {
   std::string hostPlatformDigest = makeHostPlatformDigest();
   llvm::SmallString<1024> environmentPayload;
   llvm::raw_svector_ostream environmentStream(environmentPayload);
-  appendField(environmentStream, "schema", "wafer-bulk-environment-v1");
+  appendField(environmentStream, "schema", "wafer-bulk-environment");
   appendField(environmentStream, "backend", backend.getDigest());
   appendField(environmentStream, "host_cpu", cpuName);
   appendField(environmentStream, "host_features", featuresDigest);
@@ -270,11 +270,11 @@ createManagedBulkExecutionEnvironment() {
   appendField(environmentStream, "effective_isa", isaName);
   appendField(environmentStream, "fenv_round", std::fegetround());
   appendField(environmentStream, "mxcsr", mxcsr);
-  appendField(environmentStream, "thread_runtime", "seq-caller-worker-v1");
+  appendField(environmentStream, "thread_runtime", "sequential-caller-worker");
   cached = BulkExecutionEnvironment(
       std::move(backend), std::move(cpuName), std::move(featuresDigest),
       std::move(hostPlatformDigest), isaName, std::fegetround(), mxcsr,
-      "seq-caller-worker-v1", sha256(environmentPayload));
+      "sequential-caller-worker", sha256(environmentPayload));
   return *cached;
 }
 

@@ -20,8 +20,7 @@
 namespace wafer::model {
 namespace {
 
-constexpr llvm::StringLiteral kImplementation =
-    "native-non-nan-f16-f32-tensor-v1";
+constexpr llvm::StringLiteral kImplementation = "native-non-nan-f16-f32-tensor";
 
 llvm::Error referenceError(const llvm::Twine &detail) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),

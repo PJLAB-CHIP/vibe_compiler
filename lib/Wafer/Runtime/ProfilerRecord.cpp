@@ -167,8 +167,8 @@ buildTx81ProfilerLaunchImage(uint64_t recordBytes, uint32_t tileId,
                               offsetof(WaferTx81ProfilerLaunchConfig, magic),
                               WAFER_TX81_PROFILER_LAUNCH_CONFIG_MAGIC);
   writeLittleEndian<uint32_t>(
-      image, offsetof(WaferTx81ProfilerLaunchConfig, schema_version),
-      WAFER_TX81_PROFILER_SCHEMA_VERSION);
+      image, offsetof(WaferTx81ProfilerLaunchConfig, record_version),
+      WAFER_TX81_PROFILER_RECORD_VERSION);
   writeLittleEndian<uint32_t>(
       image, offsetof(WaferTx81ProfilerLaunchConfig, config_bytes),
       WAFER_TX81_PROFILER_LAUNCH_CONFIG_BYTES);
@@ -214,8 +214,8 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
   std::memcpy(&record.header, bytes.data(), sizeof(record.header));
   const WaferTx81ProfilerRecordHeader &header = record.header;
   if (header.magic != WAFER_TX81_PROFILER_RECORD_MAGIC ||
-      header.schema_version != WAFER_TX81_PROFILER_SCHEMA_VERSION)
-    return invalid("TX81 profiler record magic or schema version is invalid");
+      header.record_version != WAFER_TX81_PROFILER_RECORD_VERSION)
+    return invalid("TX81 profiler record magic or version is invalid");
   if (header.header_bytes != WAFER_TX81_PROFILER_HEADER_BYTES ||
       header.event_bytes != WAFER_TX81_PROFILER_TSM_CALL_EVENT_BYTES ||
       header.events_offset != WAFER_TX81_PROFILER_EVENTS_OFFSET)

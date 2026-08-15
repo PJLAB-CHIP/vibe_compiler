@@ -5,8 +5,8 @@
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
-#include "Wafer/Compiler/CompilationInternal.h"
 #include "Wafer/Compiler/CardExecutableInternal.h"
+#include "Wafer/Compiler/CompilationInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -131,8 +131,7 @@ module {
     return executable.takeError();
   tensorProgram = nullptr;
   llvm::Expected<TargetLLVMModules> target =
-      compileCardExecutableToTargetLLVMModules(*executable,
-                                                        diagnostics);
+      compileCardExecutableToTargetLLVMModules(*executable, diagnostics);
   if (!target)
     return target.takeError();
   return CompiledElementwiseProgram{std::move(*executable), std::move(*target)};
@@ -157,9 +156,8 @@ std::vector<RawLogicalValue> makeSequentialF32Values(int64_t globalOffset,
   return values;
 }
 
-const ProgramResourceBinding *
-findProgramBinding(const TileExecutable &tile,
-                   const KernelABISlot &slot) {
+const ProgramResourceBinding *findProgramBinding(const TileExecutable &tile,
+                                                 const KernelABISlot &slot) {
   ProgramResourceRole role;
   switch (slot.role) {
   case KernelABISlotRole::UserInput:
@@ -212,10 +210,8 @@ TEST(SystemCTargetModelIntegrationTest,
     ASSERT_EQ(module.getTileId(), tile.getTileId());
     ASSERT_EQ(module.getLaunchSlotId(), tile.getLaunchSlotId());
     const int64_t launchSlot = module.getLaunchSlotId().getValue();
-    arguments.push_back({module.getCardId(),
-                         module.getTileId(),
-                         module.getLaunchSlotId(),
-                         {}});
+    arguments.push_back(
+        {module.getCardId(), module.getTileId(), module.getLaunchSlotId(), {}});
     size_t userInputCount = 0;
     size_t outputCount = 0;
     for (const KernelABISlot &slot : module.getKernelABISlots()) {
@@ -250,9 +246,8 @@ TEST(SystemCTargetModelIntegrationTest,
         ASSERT_EQ(bytes.size(), static_cast<uint64_t>(slot.byteSize));
         if (launchSlot == 0)
           inputs.push_back(
-              {getTargetModelResourceId(module.getCardId(),
-                                        module.getTileId(), slot.role,
-                                        slot.resourceIndex),
+              {getTargetModelResourceId(module.getCardId(), module.getTileId(),
+                                        slot.role, slot.resourceIndex),
                std::move(bytes)});
         ++userInputCount;
       } else if (slot.role == KernelABISlotRole::Output) {
@@ -280,7 +275,7 @@ TEST(SystemCTargetModelIntegrationTest,
   EXPECT_GE(result->systemCThreadProcessCount, 17u);
   EXPECT_GT(result->finalDeltaCount, 0u);
   EXPECT_FALSE(result->systemCVersion.empty());
-  EXPECT_EQ(result->schedulerIdentity, "untimed-delta-worker-aware-ncc-v2");
+  EXPECT_EQ(result->schedulerIdentity, "untimed-delta-worker-aware-ncc");
   EXPECT_TRUE(result->numericFlags.inexact);
   EXPECT_FALSE(result->numericFlags.invalid);
   EXPECT_FALSE(result->numericFlags.divByZero);

@@ -17,8 +17,7 @@ namespace {
 
 using namespace wafer;
 
-constexpr ModelProfileId kModelProfile =
-    ModelProfileId::formalDeterministicV1();
+constexpr ModelProfileId kModelProfile = ModelProfileId::formalDeterministic();
 
 struct IndependentRoundResult {
   uint64_t bits;

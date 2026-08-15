@@ -26,7 +26,7 @@ Pipeline position:
   wafer-compile `search|none`；用户不手工拼接target passes，也不选择内部TargetCall或module materialization。
 - Explicit non-goals:
   不重新做physical-dataflow mapping；不从symbol、文件名、vector ordinal、pid或launch position恢复物理身份；
-  不把低层module dispatch提升为公开ABI；不兼容读取旧 target metadata、旧 entry ABI 或旧 target-module schema。
+  不把低层module dispatch提升为公开ABI；不提供 target metadata或entry ABI兼容读取路径。
 - Completion gate:
   16 个 Tile interfaces all-and-only、物理三元组唯一且关系一致；每个 target module 的 current
   metadata/ABI/exports/digest fresh readback；任一 Tile 失败时无部分 output 可见；Q53 source→package/no-card
@@ -61,7 +61,7 @@ GSPMD的card-level domain。当前实现类`CardExecutable`必须收敛为`CardE
 TargetCall frontend和model必须共享这组owner-backed modules，不得重新lower accepted IR。当前实现类
 `TargetLLVMModules`只作为该owner set的代码索引，不是稳定output名称。
 
-current target LLVM metadata schema 是 `wafer-target-llvm-module-v4`，至少精确绑定：
+current target LLVM module通过typed metadata精确绑定：
 
 - `wafer.target.card_id`；
 - `wafer.target.tile_id`；
@@ -70,7 +70,7 @@ current target LLVM metadata schema 是 `wafer-target-llvm-module-v4`，至少�
 - target identity、current Kernel Runtime ABI 与 module format；
 - dense typed Kernel ABI slot rows。
 
-metadata readback必须与 C++ typed owner逐项相等。缺字段、重复字段、旧 schema、错误 target triple、错误 entry
+metadata readback必须与 C++ typed owner逐项相等。缺字段、重复字段、未知字段、错误 target triple、错误 entry
 type 或 slot mismatch 均在 writing 前失败。
 
 ## 3. Target conversion 责任
@@ -171,7 +171,7 @@ profiling以同一次 accepted final output为事实源。instrumented capture m
 
 Host gates至少覆盖：
 
-- current target LLVM schema v4 roundtrip与旧/缺字段拒绝；
+- typed target LLVM metadata roundtrip与未知/缺失字段拒绝；
 - non-identity `tile_id`/`launch_slot` mapping，包含 aggregate与非aggregate writing；
 - all-and-only 16 Tile interfaces、duplicate/unavailable Tile、duplicate/missing launch slot负例；
 - ABI slot role/layout/size/alignment/signature双射；

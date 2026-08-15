@@ -22,8 +22,7 @@ namespace {
 
 using namespace wafer;
 
-constexpr ModelProfileId kModelProfile =
-    ModelProfileId::formalDeterministicV1();
+constexpr ModelProfileId kModelProfile = ModelProfileId::formalDeterministic();
 
 ResolvedNumericCommand resolveConvert(uint16_t opcode,
                                       NumericRoundingMode rounding) {

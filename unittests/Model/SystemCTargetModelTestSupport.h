@@ -57,7 +57,7 @@ struct PendingComputeDTERewriteResult {
   size_t overlappingReadCount = 0;
 };
 
-/// Inserts worker-0 V3 elementwise and GEMM calls immediately before Direct
+/// Inserts worker-0 elementwise and GEMM calls immediately before Direct
 /// DTE receive preparation. Even ranks use elementwise and odd ranks use GEMM,
 /// so one all-rank invocation exercises both typed read footprints.
 llvm::Expected<PendingComputeDTERewriteResult>
@@ -78,7 +78,7 @@ struct LateJoinDTERewriteResult {
   size_t insertedLateJoinCount = 0;
 };
 
-/// Leaves one overlapping worker-0 elementwise command pending when the V3
+/// Leaves one overlapping worker-0 elementwise command pending when the
 /// Direct-DTE send is issued, then places the matching participant join
 /// immediately after that issue. This intentionally-invalid ordering covers
 /// source-write and destination-read/write hazards independently.

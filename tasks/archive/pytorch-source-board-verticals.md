@@ -23,7 +23,7 @@ Pipeline position:
   expected、runtime output capture和可审计的torch comparator结果。
 - Downstream consumer:
   no-card preflight、configured-board correctness、Q40/Q41 optimization qualification及需要高层tensor
-  correctness的optimization campaign。
+  correctness的optimization comparison tests。
 - User-level driver / named pipeline:
   importer Python执行test/Board/PyTorch下的统一runner；编译仍只经wafer-compile，执行仍只经wafer-run。
 - Explicit non-goals:
@@ -76,7 +76,7 @@ Pipeline position:
 2. 保留现有single-tile shape的rank-one GEMM，并让distributed case对齐Q39已有16-rank `4096³` contracting-K
    sharded GEMM，以及实际shape的HuggingFace Llama-2 7B block Megatron TP16；后两者必须在post-SPMD IR自然
    产生AllReduce，不能另写collective MLIR。
-3. 让现有高层GEMM/AllReduce、Q40/Q41和optimization campaign的tensor expected/capture复用torch seam；保留
+3. 让现有高层GEMM/AllReduce、Q40/Q41和optimization comparison tests的tensor expected/capture复用torch seam；保留
    低层qualification fixture自身的结构/协议检查。
 4. 运行source export、增量构建、focused CTest/no-card和静态一致性检查；真实设备不可用时停在
    `board-ready`并明确未执行board gate。

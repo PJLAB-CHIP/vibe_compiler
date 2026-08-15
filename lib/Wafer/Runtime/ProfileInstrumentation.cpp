@@ -208,8 +208,8 @@ uint64_t expectedRecordBytes(ProfileCaptureKind capture) {
 }
 
 llvm::Error verifyHeader(const llvm::json::Object &root,
-                         llvm::StringRef expectedSchema, bool hasTopology,
-                         const PackageParseLimits &limits,
+                         llvm::StringRef expectedSchema, bool hasVersion,
+                         bool hasTopology, const PackageParseLimits &limits,
                          llvm::StringRef context);
 bool isLowercaseSHA256(llvm::StringRef digest);
 
@@ -223,8 +223,8 @@ parseActivation(const llvm::json::Object &root,
                         {}, "profile activation"))
     return std::move(error);
   if (llvm::Error error =
-          verifyHeader(root, kActivationSchema, /*hasTopology=*/false, limits,
-                       "profile activation"))
+          verifyHeader(root, kActivationSchema, /*hasVersion=*/true,
+                       /*hasTopology=*/false, limits, "profile activation"))
     return std::move(error);
   llvm::Expected<std::string> primaryDigest = requireString(
       root, "primary_manifest_sha256", "profile activation", limits);
@@ -257,8 +257,8 @@ parseActivation(const llvm::json::Object &root,
 }
 
 llvm::Error verifyHeader(const llvm::json::Object &root,
-                         llvm::StringRef expectedSchema, bool hasTopology,
-                         const PackageParseLimits &limits,
+                         llvm::StringRef expectedSchema, bool hasVersion,
+                         bool hasTopology, const PackageParseLimits &limits,
                          llvm::StringRef context) {
   llvm::Expected<std::string> schema =
       requireString(root, "schema", context, limits);
@@ -266,12 +266,14 @@ llvm::Error verifyHeader(const llvm::json::Object &root,
     return schema.takeError();
   if (*schema != expectedSchema)
     return invalid(context + ".schema is not supported");
-  llvm::Expected<uint64_t> version =
-      requireUnsigned(root, "schema_version", context);
-  if (!version)
-    return version.takeError();
-  if (*version != kProfileInstrumentationSchemaVersion)
-    return invalid(context + ".schema_version is not supported");
+  if (hasVersion) {
+    llvm::Expected<uint64_t> version =
+        requireUnsigned(root, "schema_version", context);
+    if (!version)
+      return version.takeError();
+    if (*version != kProfileInstrumentationFormatVersion)
+      return invalid(context + ".schema_version is not supported");
+  }
   if (hasTopology) {
     llvm::Expected<uint64_t> cardCount =
         requireUnsigned(root, "card_count", context);
@@ -298,12 +300,14 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
                                   uint64_t &totalRecords) {
   if (llvm::Error error = requireFields(
           root,
-          {"schema", "schema_version", "card_count", "tile_count", "site_map",
+          {"schema", "card_count", "tile_count", "site_map",
            "site_key_contract", "static_cost_model", "capture_packages"},
           {}, "profile plan"))
     return std::move(error);
-  if (llvm::Error error = verifyHeader(root, kPlanSchema, /*hasTopology=*/true,
-                                       limits, "profile plan"))
+  if (llvm::Error error =
+          verifyHeader(root, kPlanSchema,
+                       /*hasVersion=*/false,
+                       /*hasTopology=*/true, limits, "profile plan"))
     return std::move(error);
 
   llvm::Expected<std::string> siteMap =
@@ -669,8 +673,7 @@ parseStaticCostModel(const llvm::json::Value &value,
   if (!tiles)
     return tiles.takeError();
   if ((*tiles)->size() != static_cast<size_t>(kProfileInstrumentationTileCount))
-    return invalid(context +
-                   ".tiles must contain all and only 16 Tiles");
+    return invalid(context + ".tiles must contain all and only 16 Tiles");
   if (llvm::Error error =
           accountRecords((*tiles)->size() * 20, totalRecords, limits))
     return std::move(error);
@@ -710,9 +713,8 @@ parseStaticCostModel(const llvm::json::Value &value,
         *launchSlot >=
             static_cast<uint64_t>(kProfileInstrumentationTileCount) ||
         seenTileIds[*tileId] || seenLaunchSlots[*launchSlot])
-      return invalid(context +
-                     ".tiles must contain unique Tiles and a "
-                     "unique dense launch-slot domain");
+      return invalid(context + ".tiles must contain unique Tiles and a "
+                               "unique dense launch-slot domain");
     seenTileIds[*tileId] = true;
     seenLaunchSlots[*launchSlot] = true;
     const llvm::json::Value *workValue = (*tileObject)->get("work");
@@ -1034,9 +1036,8 @@ parseTileSiteMap(const llvm::json::Value &value, uint64_t index,
   if (*cardId != 0 ||
       *tileId >= static_cast<uint64_t>(kProfileInstrumentationTileCount) ||
       *launchSlot >= static_cast<uint64_t>(kProfileInstrumentationTileCount))
-    return invalid(context +
-                   " Tile/launch-slot binding is outside card0 "
-                   "Tile0..15");
+    return invalid(context + " Tile/launch-slot binding is outside card0 "
+                             "Tile0..15");
   llvm::Expected<const llvm::json::Array *> sites =
       requireArray(**object, "sites", context);
   if (!sites)
@@ -1065,23 +1066,22 @@ parseTileSiteMap(const llvm::json::Value &value, uint64_t index,
     if (site.siteId != siteIndex)
       return invalid(context + " site IDs must be unique and dense from zero");
     else if (!correlationKeys.insert(site.correlationKey).second)
-      return invalid(context +
-                     " correlation keys must be unique per Tile");
+      return invalid(context + " correlation keys must be unique per Tile");
   return result;
 }
 
 llvm::Expected<std::vector<ProfileTileSiteMap>>
 parseSiteMap(const llvm::json::Object &root, const PackageParseLimits &limits,
              uint64_t &totalRecords) {
-  if (llvm::Error error = requireFields(
-          root,
-          {"schema", "schema_version", "card_count", "tile_count", "site_basis",
-           "correlation_basis", "target_call_registry_size", "tiles"},
-          {}, "profile site map"))
+  if (llvm::Error error = requireFields(root,
+                                        {"schema", "card_count", "tile_count",
+                                         "site_basis", "correlation_basis",
+                                         "target_call_registry_size", "tiles"},
+                                        {}, "profile site map"))
     return std::move(error);
   if (llvm::Error error =
-          verifyHeader(root, kSiteMapSchema, /*hasTopology=*/true, limits,
-                       "profile site map"))
+          verifyHeader(root, kSiteMapSchema, /*hasVersion=*/false,
+                       /*hasTopology=*/true, limits, "profile site map"))
     return std::move(error);
   llvm::Expected<std::string> basis =
       requireString(root, "site_basis", "profile site map", limits);
@@ -1106,8 +1106,7 @@ parseSiteMap(const llvm::json::Object &root, const PackageParseLimits &limits,
   if (!tiles)
     return tiles.takeError();
   if ((*tiles)->size() != static_cast<size_t>(kProfileInstrumentationTileCount))
-    return invalid(
-        "profile site map must contain all and only 16 Tiles");
+    return invalid("profile site map must contain all and only 16 Tiles");
   if (llvm::Error error =
           accountRecords((*tiles)->size(), totalRecords, limits))
     return std::move(error);
@@ -1253,8 +1252,7 @@ const PackageResourceRecord *findResource(const PackageManifest &manifest,
 const PackageEntrypointRecord *findEntryForTile(const PackageManifest &manifest,
                                                 int64_t tileId) {
   auto iterator = llvm::find_if(manifest.entries, [&](const auto &entry) {
-    return entry.cardId == CardId(0) &&
-           entry.tileId == TileId(tileId);
+    return entry.cardId == CardId(0) && entry.tileId == TileId(tileId);
   });
   return iterator == manifest.entries.end() ? nullptr : &*iterator;
 }
@@ -1294,9 +1292,8 @@ verifyProfilePhysicalBindings(const ProfiledPackage &profiledPackage,
         siteTile.launchSlot != launchSlot ||
         !hasSamePhysicalBinding(*entry, staticTile) ||
         !hasSamePhysicalBinding(*entry, siteTile))
-      return invalid(
-          "profile Tile/launch-slot binding differs from the "
-          "profiled package");
+      return invalid("profile Tile/launch-slot binding differs from the "
+                     "profiled package");
   }
   return llvm::Error::success();
 }

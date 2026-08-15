@@ -480,7 +480,7 @@ def main() -> None:
 
     optimizer_catalog = _load_python_asset(
         repo,
-        "test/Board/wafer_compiler_optimization_campaign_catalog.py",
+        "test/Board/wafer_compiler_optimization_comparison_cases.py",
         "wafer_compiler_optimization_catalog_collective_check",
     )
     direct_transport = optimizer_catalog.CASES_BY_KEY["direct-all-reduce"]

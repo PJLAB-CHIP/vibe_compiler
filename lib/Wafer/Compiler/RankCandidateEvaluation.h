@@ -54,32 +54,28 @@ enum class RankInstrLoweringFailureKind : uint8_t {
 /// the failed semantic gate and optional logical rank, but carries no partial
 /// placement and cannot mutate or repair the Tile parent.
 struct RankInstrLoweringFailure {
-  RankInstrLoweringFailureKind kind =
-      RankInstrLoweringFailureKind::None;
+  RankInstrLoweringFailureKind kind = RankInstrLoweringFailureKind::None;
   int64_t logicalRank = -1;
   std::string gate;
 };
 
 struct EvaluatedRankCandidate {
-  EvaluatedRankCandidate(int64_t stableSemanticOrdinal,
-                              bool reservedBaseline,
-                              RankExecutableSet variant,
-                              uint32_t scheduleActionOrdinal = 0,
-                              RankScheduleActionKey actionKey = {},
-                              bool implementationAlternativeOrigin = false)
+  EvaluatedRankCandidate(int64_t stableSemanticOrdinal, bool reservedBaseline,
+                         RankExecutableSet variant,
+                         uint32_t scheduleActionOrdinal = 0,
+                         RankScheduleActionKey actionKey = {},
+                         bool implementationAlternativeOrigin = false)
       : stableSemanticOrdinal(stableSemanticOrdinal),
         scheduleActionOrdinal(scheduleActionOrdinal), actionKey(actionKey),
         reservedBaseline(reservedBaseline),
         implementationAlternativeOrigin(implementationAlternativeOrigin),
         variant(std::move(variant)) {}
 
-  EvaluatedRankCandidate(EvaluatedRankCandidate &&) noexcept =
-      default;
+  EvaluatedRankCandidate(EvaluatedRankCandidate &&) noexcept = default;
   EvaluatedRankCandidate &
   operator=(EvaluatedRankCandidate &&) noexcept = default;
   EvaluatedRankCandidate(const EvaluatedRankCandidate &) = delete;
-  EvaluatedRankCandidate &
-  operator=(const EvaluatedRankCandidate &) = delete;
+  EvaluatedRankCandidate &operator=(const EvaluatedRankCandidate &) = delete;
 
   int64_t stableSemanticOrdinal = 0;
   uint32_t scheduleActionOrdinal = 0;
@@ -117,7 +113,7 @@ struct CoordinatedScheduleAction {
 /// It is valid only for coverage pruning; final Instr recost remains the
 /// selection owner.
 inline constexpr llvm::StringLiteral kScheduleActionEstimateModelName =
-    "executable-schedule-recipe-structural-coverage-v2";
+    "executable-schedule-recipe-structural-coverage";
 
 enum class CoordinatedScheduleActionEstimateDimension : uint8_t {
   QualifiedOverlapWindows,
@@ -232,12 +228,10 @@ bool isRecoverableRankInstrLoweringFailure(
 class RankCandidateEvaluationCursor {
 public:
   ~RankCandidateEvaluationCursor();
-  RankCandidateEvaluationCursor(
-      RankCandidateEvaluationCursor &&) noexcept;
+  RankCandidateEvaluationCursor(RankCandidateEvaluationCursor &&) noexcept;
   RankCandidateEvaluationCursor &
   operator=(RankCandidateEvaluationCursor &&) noexcept;
-  RankCandidateEvaluationCursor(
-      const RankCandidateEvaluationCursor &) = delete;
+  RankCandidateEvaluationCursor(const RankCandidateEvaluationCursor &) = delete;
   RankCandidateEvaluationCursor &
   operator=(const RankCandidateEvaluationCursor &) = delete;
 
@@ -258,13 +252,12 @@ private:
       const CoordinatedTileVariant &,
       const frontend::FrontendProgramVerificationResult &,
       const ExecutionConfig &, const OptimizationConfig &,
-      CoordinatedWorkLedger &, llvm::raw_ostream &,
-      RankInstrLoweringFailure &, RankCandidateSearchStatistics *,
-      RankCandidateSelectionMode, unsigned,
+      CoordinatedWorkLedger &, llvm::raw_ostream &, RankInstrLoweringFailure &,
+      RankCandidateSearchStatistics *, RankCandidateSelectionMode, unsigned,
       llvm::ArrayRef<const CoordinatedCommunicationActionProvider *>);
   friend mlir::FailureOr<RankCandidateEvaluationStep>
   advanceRankCandidateEvaluation(RankCandidateEvaluationCursor &,
-                                      CandidateEvaluationReservation);
+                                 CandidateEvaluationReservation);
 };
 
 mlir::FailureOr<std::unique_ptr<RankCandidateEvaluationCursor>>
@@ -286,7 +279,7 @@ beginRankCandidateEvaluation(
 /// expansion reservation returned by the shared work ledger.
 mlir::FailureOr<RankCandidateEvaluationStep>
 advanceRankCandidateEvaluation(RankCandidateEvaluationCursor &cursor,
-                                    CandidateEvaluationReservation reservation);
+                               CandidateEvaluationReservation reservation);
 
 /// Result of the downstream exact consumer for one materialized complete-rank
 /// action. A recoverable rejection keeps the recipe attempt charged and asks
@@ -341,8 +334,7 @@ deriveCoordinatedScheduleActions(
 /// atomically; failure also closes the attempted reservation with actual work
 /// while leaving the original Tile parent available for a newly reserved
 /// coordinator-owned repair sibling.
-mlir::FailureOr<std::vector<EvaluatedRankCandidate>>
-evaluateRankCandidate(
+mlir::FailureOr<std::vector<EvaluatedRankCandidate>> evaluateRankCandidate(
     const CoordinatedTileVariant &tileVariant,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig,

@@ -83,7 +83,7 @@ std::string
 computeBulkTensorPayloadDigest(llvm::ArrayRef<BulkTensorStorage> tensors) {
   llvm::SmallString<1024> payload;
   llvm::raw_svector_ostream stream(payload);
-  appendField(stream, "schema", "wafer-bulk-payload-v1");
+  appendField(stream, "schema", "wafer-bulk-payload");
   appendField(stream, "tensor_count", tensors.size());
   for (auto [index, tensor] : llvm::enumerate(tensors)) {
     appendField(stream,
@@ -99,7 +99,7 @@ computeBulkTensorPayloadDigest(llvm::ArrayRef<BulkTensorStorage> tensors) {
 std::string computeBulkTensorStorageDigest(const BulkTensorStorage &tensor) {
   llvm::SmallString<512> payload;
   llvm::raw_svector_ostream stream(payload);
-  appendField(stream, "schema", "wafer-bulk-storage-v1");
+  appendField(stream, "schema", "wafer-bulk-storage");
   appendField(stream, "key", tensor.getKey().getDigest());
   appendField(stream, "bytes", sha256(tensor.getStorage()));
   return sha256(payload);

@@ -100,14 +100,14 @@ add_test(NAME WaferUnitTests
 )
 
 add_executable(WaferRunBoardIOUnitTests
-  Runtime/WaferProfileCampaignTest.cpp
+  Runtime/WaferProfileCollectionTest.cpp
   Runtime/WaferRunBoardIOTest.cpp
-  ${CMAKE_SOURCE_DIR}/tools/wafer-run/WaferProfileCampaign.cpp
+  ${CMAKE_SOURCE_DIR}/tools/wafer-run/WaferProfileCollection.cpp
   ${CMAKE_SOURCE_DIR}/tools/wafer-run/WaferRunBoardIO.cpp
 )
 llvm_update_compile_flags(WaferRunBoardIOUnitTests)
 target_compile_definitions(WaferRunBoardIOUnitTests PRIVATE
-  WAFER_PROFILE_CAMPAIGN_TESTING=1
+  WAFER_PROFILE_COLLECTION_TESTING=1
 )
 target_include_directories(WaferRunBoardIOUnitTests PRIVATE
   ${CMAKE_SOURCE_DIR}/tools/wafer-run

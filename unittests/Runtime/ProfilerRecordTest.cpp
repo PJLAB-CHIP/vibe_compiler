@@ -33,7 +33,7 @@ std::vector<uint8_t> makeRecord(uint32_t tile, bool trace = true) {
   std::vector<uint8_t> bytes(kRecordBytes, 0);
   WaferTx81ProfilerRecordHeader header{};
   header.magic = WAFER_TX81_PROFILER_RECORD_MAGIC;
-  header.schema_version = WAFER_TX81_PROFILER_SCHEMA_VERSION;
+  header.record_version = WAFER_TX81_PROFILER_RECORD_VERSION;
   header.header_bytes = WAFER_TX81_PROFILER_HEADER_BYTES;
   header.event_bytes = WAFER_TX81_PROFILER_TSM_CALL_EVENT_BYTES;
   header.events_offset = WAFER_TX81_PROFILER_EVENTS_OFFSET;
@@ -164,7 +164,7 @@ TEST(ProfilerRecordTest, BuildsLaunchConfigurationWithoutExposingASchemaSlot) {
   WaferTx81ProfilerLaunchConfig config{};
   std::memcpy(&config, image->data(), sizeof(config));
   EXPECT_EQ(config.magic, WAFER_TX81_PROFILER_LAUNCH_CONFIG_MAGIC);
-  EXPECT_EQ(config.schema_version, WAFER_TX81_PROFILER_SCHEMA_VERSION);
+  EXPECT_EQ(config.record_version, WAFER_TX81_PROFILER_RECORD_VERSION);
   EXPECT_EQ(config.config_bytes, WAFER_TX81_PROFILER_LAUNCH_CONFIG_BYTES);
   EXPECT_EQ(config.record_bytes, kRecordBytes);
   EXPECT_EQ(config.tile_id, 5u);

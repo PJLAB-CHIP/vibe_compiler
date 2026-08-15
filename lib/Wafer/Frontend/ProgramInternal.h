@@ -52,7 +52,6 @@ struct DistributedBoundaryBinding {
 };
 
 struct DistributedBoundary {
-  int64_t version = 0;
   int64_t numPartitions = 0;
   std::vector<DistributedBoundaryBinding> inputs;
   std::vector<DistributedBoundaryBinding> outputs;

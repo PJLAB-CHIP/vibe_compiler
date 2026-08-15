@@ -14,7 +14,6 @@ import unittest
 from bulk_deps import (
     BUILD_OPTIONS,
     RECORD_KIND,
-    RECORD_SCHEMA_VERSION,
     RECORD_STATUS,
     REQUIRED_FILES,
     REQUIRED_GATES,
@@ -52,7 +51,6 @@ def make_fixture(root: pathlib.Path) -> tuple[pathlib.Path, dict[str, object]]:
             "size": path.stat().st_size,
         }
     record: dict[str, object] = {
-        "schema_version": RECORD_SCHEMA_VERSION,
         "kind": RECORD_KIND,
         "status": RECORD_STATUS,
         "dependency": {

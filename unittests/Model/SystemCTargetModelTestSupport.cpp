@@ -142,14 +142,14 @@ module {
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
   llvm::Expected<compiler::CardExecutable> executable =
-      compiler::detail::buildCardExecutable(
-          context, *tensorProgram, std::move(program), *config, diagnostics,
-          std::nullopt);
+      compiler::detail::buildCardExecutable(context, *tensorProgram,
+                                            std::move(program), *config,
+                                            diagnostics, std::nullopt);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
-  return compiler::compileCardExecutableToTargetLLVMModules(
-      *executable, diagnostics);
+  return compiler::compileCardExecutableToTargetLLVMModules(*executable,
+                                                            diagnostics);
 }
 
 llvm::Expected<DirectDTEInvocationData> buildDirectDTEInvocationData(
@@ -328,7 +328,7 @@ insertPendingComputeBeforeDTEReceive(
       gemmDescriptor.arguments.size() != 9 ||
       joinDescriptor.arguments.size() != 1)
     return llvm::createStringError(
-        "pending-compute test descriptors have unexpected V3 signatures");
+        "pending-compute test descriptors have unexpected signatures");
 
   PendingComputeDTERewriteResult result;
   for (const compiler::TargetLLVMModule &targetModule :
@@ -455,7 +455,7 @@ insertPendingComputeWithLateJoin(compiler::TargetLLVMModules &targetLLVMModules,
   if (elementwiseDescriptor.arguments.size() != 6 ||
       joinDescriptor.arguments.size() != 1)
     return llvm::createStringError(
-        "late-join test descriptors have unexpected V3 signatures");
+        "late-join test descriptors have unexpected signatures");
 
   LateJoinDTERewriteResult result;
   for (const compiler::TargetLLVMModule &targetModule :

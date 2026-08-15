@@ -153,7 +153,6 @@ distributedBoundaryToJson(const DistributedBoundary &boundary) {
   for (const DistributedBoundaryBinding &binding : boundary.outputs)
     outputs.push_back(distributedBindingToJson(binding, "result_index"));
   return llvm::json::Object{
-      {"version", 2},
       {"num_partitions", boundary.numPartitions},
       {"inputs", std::move(inputs)},
       {"outputs", std::move(outputs)},
@@ -282,7 +281,6 @@ std::string bindingsToJson(const std::string &functionName,
   for (const ParameterBinding &binding : bindings)
     parameters.push_back(bindingToJson(binding));
   llvm::json::Object root{
-      {"parameter_shards_version", 4},
       {"function", functionName},
       {"num_partitions", numPartitions},
       {"parameters", std::move(parameters)},

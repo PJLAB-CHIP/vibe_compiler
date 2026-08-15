@@ -33,8 +33,7 @@ constexpr uint64_t kModelDynInfoBytes = 72;
 llvm::Error validateEntryInputs(llvm::Function &body,
                                 llvm::ArrayRef<KernelABISlot> slots,
                                 const RuntimeLaunchContract &launch,
-                                LaunchSlotId launchSlotId,
-                                int64_t tileCount) {
+                                LaunchSlotId launchSlotId, int64_t tileCount) {
   if (body.isVarArg() || !body.getReturnType()->isVoidTy() ||
       body.arg_size() != slots.size() ||
       !llvm::all_of(body.args(), [](const llvm::Argument &argument) {
@@ -103,8 +102,7 @@ void retainModelDynamicExport(llvm::Module &module, llvm::Function &entry,
 
 llvm::Expected<llvm::SmallVector<uint64_t, 16>>
 getModelDescriptorIndices(llvm::ArrayRef<KernelABISlot> slots,
-                          LaunchSlotId launchSlotId,
-                          int64_t tileCountValue) {
+                          LaunchSlotId launchSlotId, int64_t tileCountValue) {
   uint64_t inputCount = 0;
   uint64_t outputCount = 0;
   for (const KernelABISlot &slot : slots) {
@@ -155,11 +153,12 @@ getModelDescriptorIndices(llvm::ArrayRef<KernelABISlot> slots,
   return indices;
 }
 
-llvm::Expected<std::unique_ptr<llvm::Module>> materializeDeviceEntryABI(
-    const llvm::Module &module, llvm::StringRef entrySymbol,
-    llvm::ArrayRef<KernelABISlot> slots,
-    const RuntimeLaunchContract &runtimeLaunchContract,
-    LaunchSlotId launchSlotId, int64_t tileCount) {
+llvm::Expected<std::unique_ptr<llvm::Module>>
+materializeDeviceEntryABI(const llvm::Module &module,
+                          llvm::StringRef entrySymbol,
+                          llvm::ArrayRef<KernelABISlot> slots,
+                          const RuntimeLaunchContract &runtimeLaunchContract,
+                          LaunchSlotId launchSlotId, int64_t tileCount) {
   std::unique_ptr<llvm::Module> deviceModule = llvm::CloneModule(module);
   llvm::Function *body = deviceModule->getFunction(entrySymbol);
   if (!body || body->isDeclaration())
@@ -235,8 +234,7 @@ llvm::Error writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
     return std::move(error);
   llvm::Expected<std::unique_ptr<llvm::Module>> deviceModule =
       materializeDeviceEntryABI(module, entrySymbol, slots,
-                                runtimeLaunchContract, launchSlotId,
-                                tileCount);
+                                runtimeLaunchContract, launchSlotId, tileCount);
   if (!deviceModule)
     return deviceModule.takeError();
   return writeTargetLLVMIR(**deviceModule, path);
@@ -268,12 +266,12 @@ llvm::Error runDeviceLink(const TargetToolchain &toolchain,
   std::string moduleStorage = module.str();
   std::string objectStorage = object.str();
   std::string crtObjectStorage = crtObject.str();
-  std::string loaderABI = "tx8-kcore-loader-v1";
+  std::string loaderABI = "tx8-kcore-loader";
   if (const auto *kernel = runtimeLaunchContract.getKernel()) {
     if (kernel->form == KernelLaunchForm::Grid)
-      loaderABI = "tx8-kcore-loader-grid-v1";
+      loaderABI = "tx8-kcore-loader-grid";
     else if (kernel->form == KernelLaunchForm::Cluster)
-      loaderABI = "tx8-kcore-loader-cluster-v1";
+      loaderABI = "tx8-kcore-loader-cluster";
   }
   llvm::SmallVector<llvm::StringRef, 18> arguments = {python,
                                                       script,

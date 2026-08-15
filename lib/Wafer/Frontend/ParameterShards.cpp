@@ -79,8 +79,7 @@ getVerifiedPartitionSlice(const ParameterShardSlice &slice) {
           slice.sizes,       slice.strides,   slice.relativePath};
 }
 
-bool verifyShardEntry(const llvm::json::Object &object,
-                      int64_t numPartitions,
+bool verifyShardEntry(const llvm::json::Object &object, int64_t numPartitions,
                       llvm::ArrayRef<int64_t> globalShape,
                       llvm::ArrayRef<int64_t> localShape, Type elementType,
                       llvm::StringRef parameterName, llvm::StringRef programDir,
@@ -339,10 +338,9 @@ bool verifyParameterShardMetadata(
     if (!shardObject)
       return rejectProgramDirectory("parameter shard entries must be objects",
                                     diagnostics);
-    if (verifyShardEntry(*shardObject, numPartitions, globalShape,
-                         localShape, tensorType.getElementType(), name,
-                         programDir, distribution, seenPartitions,
-                         seenReplicaIds,
+    if (verifyShardEntry(*shardObject, numPartitions, globalShape, localShape,
+                         tensorType.getElementType(), name, programDir,
+                         distribution, seenPartitions, seenReplicaIds,
                          verifiedSlices, diagnostics))
       return true;
   }
@@ -396,19 +394,16 @@ bool verifyParameterShards(
   if (!root)
     return rejectProgramDirectory(
         "parameter shard metadata root must be an object", diagnostics);
+  if (root->get("parameter_shards_version"))
+    return rejectProgramDirectory(
+        "parameter shard metadata must not contain a version field",
+        diagnostics);
 
-  int64_t version = 0;
   std::string function;
   int64_t numPartitions = 0;
-  if (readIntegerField(*root, "parameter_shards_version", version,
-                       diagnostics) ||
-      readStringField(*root, "function", function, diagnostics) ||
-      readIntegerField(*root, "num_partitions", numPartitions,
-                       diagnostics))
+  if (readStringField(*root, "function", function, diagnostics) ||
+      readIntegerField(*root, "num_partitions", numPartitions, diagnostics))
     return true;
-  if (version != 4)
-    return rejectProgramDirectory(
-        "unsupported parameter shard metadata version", diagnostics);
   if (function != meta.name)
     return rejectProgramDirectory(
         "parameter shard function does not match program directory meta",
@@ -441,9 +436,9 @@ bool verifyParameterShards(
       return rejectProgramDirectory(
           "parameter shard metadata entries must be objects", diagnostics);
     wafer::frontend::ProgramParameterBinding verifiedBinding;
-    if (verifyParameterShardMetadata(
-            *object, meta, functionType, numPartitions, seenParameterArgs,
-            programDir, diagnostics, result ? &verifiedBinding : nullptr))
+    if (verifyParameterShardMetadata(*object, meta, functionType, numPartitions,
+                                     seenParameterArgs, programDir, diagnostics,
+                                     result ? &verifiedBinding : nullptr))
       return true;
     if (result)
       result->parameters.push_back(std::move(verifiedBinding));

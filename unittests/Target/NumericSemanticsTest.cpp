@@ -58,8 +58,7 @@ using wafer::PhysicalTensorLayout;
 using wafer::ResolvedNumericCommand;
 using wafer::TargetConvertParameterKind;
 
-constexpr ModelProfileId kModelProfile =
-    ModelProfileId::formalDeterministicV1();
+constexpr ModelProfileId kModelProfile = ModelProfileId::formalDeterministic();
 constexpr wafer::LogicalFormat kComputeFormats[] = {
     wafer::LogicalFormat::I8, wafer::LogicalFormat::F16,
     wafer::LogicalFormat::BF16, wafer::LogicalFormat::F32};
@@ -214,7 +213,7 @@ TEST(NumericSemanticsTest, ModelProfileOwnsStableCompletePolicyDigest) {
   ASSERT_EQ(profiles.size(), 1u);
   const wafer::ModelProfileRecord &profile = profiles.front();
   EXPECT_EQ(profile.id, kModelProfile);
-  EXPECT_EQ(profile.canonicalSpelling, "wafer-model-formal-deterministic-v1");
+  EXPECT_EQ(profile.canonicalSpelling, "wafer-model-formal-deterministic");
   EXPECT_EQ(profile.numericDecodePolicy,
             (wafer::LogicalScalarCodecPolicy{
                 wafer::LogicalByteOrder::LittleEndian,
@@ -227,14 +226,14 @@ TEST(NumericSemanticsTest, ModelProfileOwnsStableCompletePolicyDigest) {
                 wafer::NonCanonicalEncodingPolicy::ClearUnusedBits}));
   EXPECT_TRUE(profile.modelOnly);
   EXPECT_EQ(profile.policyDigest,
-            "sha256:f6b38b0231d2459cd7d5cb345639474e61daf2a76c253163ffe1aa3a"
-            "a0e46d82");
+            "sha256:387003244e5a3393b39ed02709f4bbd4a8293eac140cff73f47ef40a8"
+            "199cae8");
   EXPECT_EQ(wafer::stringifyModelProfileId(kModelProfile),
             profile.canonicalSpelling);
   EXPECT_EQ(&wafer::getModelProfileRecord(kModelProfile), &profile);
 
   llvm::Expected<ModelProfileId> parsed =
-      wafer::parseModelProfileId("wafer-model-formal-deterministic-v1");
+      wafer::parseModelProfileId("wafer-model-formal-deterministic");
   ASSERT_TRUE(static_cast<bool>(parsed))
       << (parsed ? std::string() : llvm::toString(parsed.takeError()));
   EXPECT_EQ(*parsed, kModelProfile);

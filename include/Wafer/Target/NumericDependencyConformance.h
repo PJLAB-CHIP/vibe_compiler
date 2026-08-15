@@ -17,8 +17,6 @@
 
 namespace wafer {
 
-inline constexpr uint32_t kNumericDependencyConformanceSchemaVersion = 2;
-
 /// Stable failure classes for dependency record validation. Diagnostics use
 /// these spellings rather than parser- or operating-system-specific text so a
 /// caller can classify a failure without inspecting mutable external state.
@@ -35,7 +33,6 @@ enum class NumericDependencyConformanceErrorCode {
   MissingField,
   UnknownField,
   TypeMismatch,
-  SchemaMismatch,
   PolicyMismatch,
   ClosureMismatch,
   SizeMismatch,
@@ -177,7 +174,6 @@ public:
   NumericDependencyConformanceRecord &
   operator=(const NumericDependencyConformanceRecord &) = delete;
 
-  uint32_t getSchemaVersion() const { return schemaVersion; }
   llvm::StringRef getKind() const { return kind; }
   llvm::StringRef getStatus() const { return status; }
   llvm::StringRef getManagedRoot() const { return managedRoot; }
@@ -214,7 +210,6 @@ private:
 
   NumericDependencyConformanceRecord() = default;
 
-  uint32_t schemaVersion = 0;
   std::string kind;
   std::string status;
   std::string managedRoot;
@@ -230,7 +225,7 @@ private:
   std::vector<NumericDependencyConformanceGateRecord> gates;
 };
 
-/// Read and verify schema version 2 of numeric-model-deps.json.  The expected
+/// Read and verify the current numeric-model-deps.json contract. The expected
 /// digest must be the configure-time trusted digest emitted only after the
 /// Python producer verifies each source archive (the raw 64-character,
 /// lowercase SHA-256 stored by WaferNumericModelDeps.cmake); computing it from

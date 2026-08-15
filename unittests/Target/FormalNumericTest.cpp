@@ -33,7 +33,7 @@ using wafer::ResolvedNumericCommand;
 using wafer::TargetConvertParameterKind;
 
 constexpr wafer::ModelProfileId kModelProfile =
-    wafer::ModelProfileId::formalDeterministicV1();
+    wafer::ModelProfileId::formalDeterministic();
 
 static_assert(std::is_default_constructible_v<FormalNumericExecutionContext>);
 static_assert(!std::is_copy_constructible_v<FormalNumericExecutionContext>);

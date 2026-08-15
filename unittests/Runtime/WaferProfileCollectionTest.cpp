@@ -1,4 +1,4 @@
-#include "WaferProfileCampaign.h"
+#include "WaferProfileCollection.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Target/TargetFormat.h"
@@ -363,7 +363,7 @@ TEST_F(WaferProfileReportDirectoryTest,
   EXPECT_TRUE(llvm::sys::fs::exists(prior));
 }
 
-TEST(WaferProfileCampaignTest, FixedOrderRunsOnePrimaryThenCountAndTrace) {
+TEST(WaferProfileCollectionTest, FixedOrderRunsOnePrimaryThenCountAndTrace) {
   std::vector<BoardProfileProtocolStep> steps;
   bool measurementsConsumed = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
@@ -628,7 +628,7 @@ TEST_F(WaferProfileOutputValidationTest,
   }
 }
 
-TEST(WaferProfileCampaignTest, FirstLaunchErrorStopsEveryLaterCall) {
+TEST(WaferProfileCollectionTest, FirstLaunchErrorStopsEveryLaterCall) {
   for (size_t failureIndex : {size_t(0), size_t(1), size_t(2)}) {
     size_t calls = 0;
     bool measurementsConsumed = false;
@@ -654,7 +654,7 @@ TEST(WaferProfileCampaignTest, FirstLaunchErrorStopsEveryLaterCall) {
   }
 }
 
-TEST(WaferProfileCampaignTest,
+TEST(WaferProfileCollectionTest,
      PrimaryHostGateFailureDestroysLocalSessionAndMakesNoLaterLaunch) {
   struct LocalSession {
     explicit LocalSession(bool &destroyed) : destroyed(destroyed) {}
@@ -665,7 +665,7 @@ TEST(WaferProfileCampaignTest,
   size_t providerLaunches = 0;
   bool sessionDestroyed = false;
   bool measurementsConsumed = false;
-  auto runCampaign =
+  auto runCollection =
       [&]() -> llvm::Expected<wafer::runtime::cli::BoardProfileProtocolResult> {
     std::optional<LocalSession> session;
     return wafer::runtime::cli::runFixedBoardProfileProtocol(
@@ -676,7 +676,7 @@ TEST(WaferProfileCampaignTest,
           EXPECT_EQ(step.launch, BoardProfileProtocolLaunch::Primary);
           session.emplace(sessionDestroyed);
           // Models the host output/topology gate after the first successful
-          // provider invocation has created the campaign-local session.
+          // provider invocation has created the collection-local session.
           return llvm::createStringError(llvm::errc::invalid_argument,
                                          "primary host output gate failed");
         },
@@ -687,7 +687,7 @@ TEST(WaferProfileCampaignTest,
         });
   };
 
-  auto result = runCampaign();
+  auto result = runCollection();
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_EQ(providerLaunches, 1u);
   EXPECT_TRUE(sessionDestroyed);
@@ -696,7 +696,7 @@ TEST(WaferProfileCampaignTest,
             std::string::npos);
 }
 
-TEST(WaferProfileCampaignTest,
+TEST(WaferProfileCollectionTest,
      QuantizedZeroPrimaryObservationResolutionIsRetained) {
   size_t calls = 0;
   bool measurementsConsumed = false;
@@ -722,7 +722,7 @@ TEST(WaferProfileCampaignTest,
   EXPECT_TRUE(measurementsConsumed);
 }
 
-TEST(WaferProfileCampaignTest,
+TEST(WaferProfileCollectionTest,
      MissingPrimaryDeviceTimingStopsBeforeLaterLaunches) {
   size_t calls = 0;
   bool measurementsConsumed = false;
@@ -747,7 +747,7 @@ TEST(WaferProfileCampaignTest,
             std::string::npos);
 }
 
-TEST(WaferProfileCampaignTest, QuantizedZeroPrimaryDeviceTimeIsAccepted) {
+TEST(WaferProfileCollectionTest, QuantizedZeroPrimaryDeviceTimeIsAccepted) {
   bool measurementsConsumed = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
       /*traceCapacity=*/8,
@@ -768,7 +768,7 @@ TEST(WaferProfileCampaignTest, QuantizedZeroPrimaryDeviceTimeIsAccepted) {
   EXPECT_TRUE(measurementsConsumed);
 }
 
-TEST(WaferProfileCampaignTest,
+TEST(WaferProfileCollectionTest,
      HostSubmitOutsidePrimaryEnvelopeStopsBeforeLaterLaunches) {
   size_t calls = 0;
   bool measurementsConsumed = false;
@@ -794,7 +794,7 @@ TEST(WaferProfileCampaignTest,
             std::string::npos);
 }
 
-TEST(WaferProfileCampaignTest, QuantizedZeroPrimaryHostEnvelopeIsRetained) {
+TEST(WaferProfileCollectionTest, QuantizedZeroPrimaryHostEnvelopeIsRetained) {
   size_t calls = 0;
   bool measurementsConsumed = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
@@ -821,7 +821,7 @@ TEST(WaferProfileCampaignTest, QuantizedZeroPrimaryHostEnvelopeIsRetained) {
   EXPECT_TRUE(measurementsConsumed);
 }
 
-TEST(WaferProfileCampaignTest, CountCapacityFailurePreventsTraceLaunch) {
+TEST(WaferProfileCollectionTest, CountCapacityFailurePreventsTraceLaunch) {
   size_t calls = 0;
   size_t traceCalls = 0;
   bool measurementsConsumed = false;
@@ -846,7 +846,7 @@ TEST(WaferProfileCampaignTest, CountCapacityFailurePreventsTraceLaunch) {
             std::string::npos);
 }
 
-TEST(WaferProfileCampaignTest, TraceMismatchStopsBeforeReportWrite) {
+TEST(WaferProfileCollectionTest, TraceMismatchStopsBeforeReportWrite) {
   size_t calls = 0;
   size_t traceCalls = 0;
   bool measurementsConsumed = false;

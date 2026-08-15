@@ -49,8 +49,6 @@ TEST(NumericManagedDependencyIntegrationTest,
                                                     expectedRecordSHA256);
   ASSERT_TRUE(static_cast<bool>(record))
       << (record ? std::string() : llvm::toString(record.takeError()));
-  EXPECT_EQ(record->getSchemaVersion(),
-            wafer::kNumericDependencyConformanceSchemaVersion);
   EXPECT_EQ(record->getManagedRoot(), managedRoot);
   EXPECT_EQ(record->getRecordPath(), recordPath);
   EXPECT_EQ(record->getRecordSHA256(), expectedRecordSHA256);

@@ -27,8 +27,8 @@ using numeric_semantics_internal::isValidDigest;
 
 namespace {
 
-constexpr ModelProfileId kFormalDeterministicV1 =
-    ModelProfileId::formalDeterministicV1();
+constexpr ModelProfileId kFormalDeterministic =
+    ModelProfileId::formalDeterministic();
 
 void writeSelector(llvm::raw_ostream &stream,
                    const NumericCapabilitySelector &selector) {
@@ -132,7 +132,7 @@ std::string makeResolutionDigest(const ModelProfileRecord &model,
                                  const NumericCapabilityPattern &pattern) {
   std::string canonical;
   llvm::raw_string_ostream stream(canonical);
-  stream << "wafer-resolved-numeric-command-v1\n"
+  stream << "wafer-resolved-numeric-command\n"
          << "model-policy-digest=" << model.policyDigest << '\n'
          << "key-digest=" << key.getDigest() << '\n'
          << "pattern-digest=" << pattern.getDigest() << '\n';
@@ -264,7 +264,7 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
             NumericModelImplementationStatus::Implemented ||
         pattern.getModelCapability().reason !=
             NumericModelImplementationReason::None ||
-        !semantics || semantics->getModelProfile() != kFormalDeterministicV1 ||
+        !semantics || semantics->getModelProfile() != kFormalDeterministic ||
         semantics->getFamily() != expectedFamily ||
         pattern.getFormalKernelKind() != expectedKernel ||
         pattern.getComparatorKind() != NumericComparatorKind::RawExact ||
@@ -297,7 +297,7 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
 
   for (size_t index = 0; index < patterns.size(); ++index) {
     const NumericCapabilityPattern &pattern = patterns[index];
-    if (pattern.getModelProfile() != kFormalDeterministicV1)
+    if (pattern.getModelProfile() != kFormalDeterministic)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "numeric capability pattern has an unexpected model");
@@ -908,7 +908,7 @@ getRegisteredNumericCapabilityPatterns() {
     std::vector<NumericCapabilityPattern> result;
     result.reserve(276);
     const ModelProfileRecord &model =
-        getModelProfileRecord(kFormalDeterministicV1);
+        getModelProfileRecord(kFormalDeterministic);
     constexpr NumericCompilerEmittabilityCapability compilerCapability = {
         NumericCompilerEmittabilityStatus::Emittable,
         NumericCompilerEmittabilityReason::None,
@@ -931,7 +931,7 @@ getRegisteredNumericCapabilityPatterns() {
           model, family, selector, modelAxis, compilerCapability,
           evidenceCapability, semantics, kernel, comparator, backend);
       result.push_back(NumericCapabilityPattern(
-          kFormalDeterministicV1, family, std::move(selector), modelAxis,
+          kFormalDeterministic, family, std::move(selector), modelAxis,
           compilerCapability, evidenceCapability, semantics, kernel, comparator,
           backend, std::move(digest)));
     };
@@ -950,7 +950,7 @@ getRegisteredNumericCapabilityPatterns() {
         break;
       case TargetConvertParameterKind::None: {
         const NumericSemanticsProfile *semantics =
-            findCTConvertSemantics(kFormalDeterministicV1, route.opcode,
+            findCTConvertSemantics(kFormalDeterministic, route.opcode,
                                    NumericRoundingMode::NearestEven);
         if (!semantics)
           llvm::report_fatal_error(
@@ -978,8 +978,8 @@ getRegisteredNumericCapabilityPatterns() {
                 nullptr, std::nullopt, std::nullopt);
             continue;
           }
-          const NumericSemanticsProfile *semantics = findCTConvertSemantics(
-              kFormalDeterministicV1, route.opcode, mode);
+          const NumericSemanticsProfile *semantics =
+              findCTConvertSemantics(kFormalDeterministic, route.opcode, mode);
           if (!semantics)
             llvm::report_fatal_error(
                 "deterministic capability pattern has no reusable semantics");
@@ -1001,7 +1001,7 @@ getRegisteredNumericCapabilityPatterns() {
          getNumericElementwiseOperations()) {
       if (isNumericElementwiseLogic(operation)) {
         const NumericSemanticsProfile *semantics = findCTElementwiseSemantics(
-            kFormalDeterministicV1, operation, LogicalFormat::Bool);
+            kFormalDeterministic, operation, LogicalFormat::Bool);
         if (!semantics)
           llvm::report_fatal_error(
               "BOOL logic capability pattern has no reusable semantics");
@@ -1024,8 +1024,8 @@ getRegisteredNumericCapabilityPatterns() {
                         nullptr, std::nullopt, std::nullopt);
           continue;
         }
-        const NumericSemanticsProfile *semantics = findCTElementwiseSemantics(
-            kFormalDeterministicV1, operation, format);
+        const NumericSemanticsProfile *semantics =
+            findCTElementwiseSemantics(kFormalDeterministic, operation, format);
         if (!semantics)
           llvm::report_fatal_error(
               "elementwise capability pattern has no reusable semantics");
@@ -1051,7 +1051,7 @@ getRegisteredNumericCapabilityPatterns() {
         continue;
       }
       const NumericSemanticsProfile *semantics =
-          findNEGemmSemantics(kFormalDeterministicV1, format);
+          findNEGemmSemantics(kFormalDeterministic, format);
       if (!semantics)
         llvm::report_fatal_error(
             "GEMM capability pattern has no reusable semantics");
@@ -1077,7 +1077,7 @@ getRegisteredNumericCapabilityPatterns() {
           continue;
         }
         const NumericSemanticsProfile *semantics = findNativeCTReduceSemantics(
-            kFormalDeterministicV1, operation, format);
+            kFormalDeterministic, operation, format);
         if (!semantics)
           llvm::report_fatal_error(
               "native reduction capability pattern has no reusable semantics");

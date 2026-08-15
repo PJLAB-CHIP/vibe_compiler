@@ -14,7 +14,7 @@ tile-level IR，并在tile→instruction阶段完成movement/materialization、�
 携带这些字段。该缺口不回滚Q17 output writing状态，但CModel不得补偿。
 当前ODS对compact RDMA/WDMA继续省略offset pair，对mapped transfer则要求两端root-relative offset同时显式存在（包括0）；
 plain GEMM继续表示implicit normal/normal，oriented GEMM必须显式携带两个closed orientation attrs并进入同一current worker-aware ABI。
-Q32.V已闭合mapped transfer、physical-footprint fill与versioned oriented GEMM的source/Tile/Instr/TargetCall/formal/SystemC纵向；
+Q32.V已闭合mapped transfer、physical-footprint fill与explicit oriented GEMM的source/Tile/Instr/TargetCall/formal/SystemC纵向；
 Q32.M/S已把这些能力接入共同candidate基础，Q49 baseline与Q51 `search`负责让complete CardModule candidate中的每个Tile module只lower一次并在最终worker/effect/range上
 fresh重建completion；planner不能复制或猜测字段。实现状态以`tasks/progress.md`为准。
 
@@ -23,7 +23,7 @@ fresh重建completion；planner不能复制或猜测字段。实现状态以`tas
 - `wafer.instr.*` 是当前 compiler pipeline 需要的 target-aligned instruction subset，不是完整
   硬件 ISA、Tsm wrapper 或 opcode 全量镜像。每个进入该层的 op 必须能被 verifier 解释，并且在
   target LLVM call emission 中要么 lower 到明确 target CRT / DTE helper call，要么结构化失败。
-- 只新增 `wafer.instr.*` 硬件相关调用级 op，包括 CT/NE/RDMA/WDMA/TDMA 和 Direct DTE 的 V0 子集。
+- 只新增 `wafer.instr.*` 硬件相关调用级 op，包括 CT/NE/RDMA/WDMA/TDMA 和 Direct DTE 的 当前支持子集。
 - `wafer.instr.*` 不再直接复用 tile 层 `Compute*Kind`。tile 层的
   `#wafer.elementwise_kind` / `#wafer.reduce_kind` 表示 target-abstract compute semantics；
   instruction 层使用 `#wafer.instr_elementwise_kind`、`#wafer.instr_reduce_kind` 和
@@ -195,7 +195,7 @@ Pipeline position:
   还要证明所有 transport 匹配和 shared physical geometry/range/narrowing contract。production elementwise必须
   不携带map且same-shape；reduce init必须在tile→instruction阶段显式分解或拒绝，terminal instruction op不携带init。
   current engine×format×selected-fields必须由tasks/14 typed conversion/ABI合同准入。Q32.V启用mapped DMA时，
-  必须通过descriptor-cover和两端range closure；若启用oriented GEMM，必须匹配versioned ABI capability。任一Tile/task/traversal scope
+  必须通过descriptor-cover和两端range closure；若启用oriented GEMM，必须匹配oriented ABI capability。任一Tile/task/traversal scope
   失败都丢弃整个 clone。
 ```
 
@@ -370,7 +370,7 @@ instr-level target kind。
 多个 instruction family 时，才允许引入显式 `instruction_family` attr，并由 verifier 保证取值和 op contract
 一致。
 
-| instruction family | V0 op | 来源 | 说明 |
+| instruction family | supported op | 来源 | 说明 |
 | --- | --- | --- | --- |
 | RDMA | `wafer.instr.rdma` | `wafer.tile.load` | DDR memref -> SPM memref |
 | WDMA | `wafer.instr.wdma` | `wafer.tile.store` | SPM memref -> DDR memref |
@@ -384,7 +384,7 @@ instr-level target kind。
 | NE | `wafer.instr.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
 | NE | `wafer.instr.conv` | future conv lowering / imported target op | basic Conv / Depthwise / BackwardConv packet fields |
 | CT | `wafer.instr.pool` / `wafer.instr.unpool` | future pool/unpool lowering / imported target op | pool indexed-output arity与i16 index-buffer SSA dataflow |
-| TDMA | `wafer.instr.tdma_data_move` | future structured data-move lowering / imported target op | V0 production target 只允许 pad / img2col；mirror / transpose / rotate / NCHW-NHWC / TensorNom 这类 transform movement 如果以 imported target op 进入 instr IR，必须由 instr lowering 在 target LLVM / package export 前 materialize 成 gather_scatter，或在后续板端验证后再开启 target path |
+| TDMA | `wafer.instr.tdma_data_move` | future structured data-move lowering / imported target op | current production target 只允许 pad / img2col；mirror / transpose / rotate / NCHW-NHWC / TensorNom 这类 transform movement 如果以 imported target op 进入 instr IR，必须由 instr lowering 在 target LLVM / package export 前 materialize 成 gather_scatter，或在后续板端验证后再开启 target path |
 | CT | `wafer.instr.peripheral` | future peripheral lowering / imported target op | arg / factorize / bilinear / LUT / random / element-mask target kind；factorize保留IR kind但当前target-illegal；count typed writeback合同见7.7，live implementation在完成前仍拒绝 |
 | DTE | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | accepted `wafer.tile.peer_send/peer_recv` and matching await | fixed-size unicast Direct DTE invocation over unplaced SPM memrefs |
 
@@ -402,7 +402,7 @@ instruction op不保存planner的`InvalidLaneState`，但必须让该state可从
 
 Q32.V若确有多个TargetCall可观察mode，可增加封闭typed
 `#wafer.valid_lane_mode<logical_segments|full_physical|masked>`核对selected contract，但它不能替代offset/count/mask。
-若现有TargetCall无法从实际字段唯一恢复execution domain，就必须新增versioned ABI字段或拒绝该capability；CModel只消费
+若现有TargetCall无法从实际字段唯一恢复execution domain，就必须新增typed ABI字段或拒绝该capability；CModel只消费
 最终TargetCall sequence。Q46补齐existing encoding implementation和concrete verifier后，Cx/NCx CT
 relation/select/logic/convert/bitpacked candidate必须从现有字段重建full-physical traversal，并完成
 TargetCall/SystemC、tail/padding和canary纵向；不能因存在padding而固定回Tensor。
@@ -410,10 +410,10 @@ TargetCall/SystemC、tail/padding和canary纵向；不能因存在padding而固�
 ### 4.2 Instruction Coverage Matrix
 
 `wafer.instr` coverage 按 compiler IR 合同分层，而不是按硬件 opcode 数量分层。target LLVM call emission
-只能把 **V0 production target surface** 当作必须支持的 production lowering 输入；其它类别不能隐式进入现有
+只能把 **current production target surface** 当作必须支持的 production lowering 输入；其它类别不能隐式进入现有
 泛 op 或 lowering fallback。
 
-这里的 `V0 production target op` 只说明 instruction IR / verifier / target LLVM call-emission 层必须识别
+这里的 `current production target op` 只说明 instruction IR / verifier / target LLVM call-emission 层必须识别
 该 op，并生成 Wafer-owned `wafer_tx81_*` call 或结构化失败。它不说明 repo-local Wafer CRT wrapper
 已经定义该 symbol，也不说明 packet/register provenance、device-code required-symbol gate 或板端执行已经通过；
 CRT、device link、required-symbol和module writing属于`tasks/14`，manifest/package/runtime boundary属于`tasks/15`，
@@ -421,31 +421,31 @@ packet/register与板端证据另由`tasks/16` gate。
 
 | 硬件 / wrapper 能力 | 当前 `wafer.instr` 表示 | coverage tier | 处理规则 |
 | --- | --- | --- | --- |
-| RDMA / WDMA contiguous 和三层 stride descriptor | `wafer.instr.rdma` / `wafer.instr.wdma` | V0 production target op | target LLVM call emission 必须生成 target CRT call；descriptor 保持 byte-level `inner_bytes`、stride 和 iteration |
-| TDMA `TsmDataMove::GatherScatter` | `wafer.instr.gather_scatter` | V0 production target op | 真实layout materialization、SPM copy和可静态证明的slice/transpose/broadcast movement展开为一条或多条gather/scatter；完整copy在actual clone由08用IndexRelation、physical map、effect/lifetime/completion重证，能安全coalesce时删除，不能证明或无法压成V0 descriptor时分别保留或结构化失败 |
-| `TsmPeripheral::Memset` / scalar fill | `wafer.instr.fill` | V0 production target op | attr缺省保持v1 Tensor logical-valid count；显式`physical_footprint`从Cx/NCx/BOOL physical encoding checked派生count并覆盖padding/tail/unused bits。current TX81只对BOOL full physical footprint开放I8 byte-fill canonicalization，native TDMA `Fmt_BOOL`和logical-valid BOOL均fail closed |
-| CT arithmetic / relation / logic / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | V0 production target op | 覆盖当前enum中的target kind；tile-level map必须先materialize为movement/同形状operand并strip，terminal op不携带`indexing_maps`。Q46补齐existing encoding implementation的Cx/NCx `i1` mapping后，可用既有full-traversal fields承载value-form relation/logic的bitpacked result；scalar immediate、VuV/VuVLoop和缺失rounding field的形态仍需显式target variant |
-| semantic select | 无单条 select op | V0 composite lowering | 必须展开为 false-copy `gather_scatter` + `bit2fp` + `mask_move`；`wafer.instr.elementwise <select>` 非法 |
+| RDMA / WDMA contiguous 和三层 stride descriptor | `wafer.instr.rdma` / `wafer.instr.wdma` | current production target op | target LLVM call emission 必须生成 target CRT call；descriptor 保持 byte-level `inner_bytes`、stride 和 iteration |
+| TDMA `TsmDataMove::GatherScatter` | `wafer.instr.gather_scatter` | current production target op | 真实layout materialization、SPM copy和可静态证明的slice/transpose/broadcast movement展开为一条或多条gather/scatter；完整copy在actual clone由08用IndexRelation、physical map、effect/lifetime/completion重证，能安全coalesce时删除，不能证明或无法压成supported descriptor时分别保留或结构化失败 |
+| `TsmPeripheral::Memset` / scalar fill | `wafer.instr.fill` | current production target op | attr缺省保持v1 Tensor logical-valid count；显式`physical_footprint`从Cx/NCx/BOOL physical encoding checked派生count并覆盖padding/tail/unused bits。current TX81只对BOOL full physical footprint开放I8 byte-fill canonicalization，native TDMA `Fmt_BOOL`和logical-valid BOOL均fail closed |
+| CT arithmetic / relation / logic / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | current production target op | 覆盖当前enum中的target kind；tile-level map必须先materialize为movement/同形状operand并strip，terminal op不携带`indexing_maps`。Q46补齐existing encoding implementation的Cx/NCx `i1` mapping后，可用既有full-traversal fields承载value-form relation/logic的bitpacked result；scalar immediate、VuV/VuVLoop和缺失rounding field的形态仍需显式target variant |
+| semantic select | 无单条 select op | composite lowering | 必须展开为 false-copy `gather_scatter` + `bit2fp` + `mask_move`；`wafer.instr.elementwise <select>` 非法 |
 | CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` + target `dim` code | target-native leaf；Q0.L source-reduce correctness baseline不直接生成 | terminal op不携带init operand/attr；Q46只有在完整domain/dimension/combiner/init映射和numeric verification闭合时才生成native candidate。floating leaf order可变化，integer保持exact/modular |
-| CT convert opcode 139..174 | `wafer.instr.convert` + `#wafer.instr_convert_kind<src_dst>` + kind-specific attrs | V0 production target op | dtype pair 由 kind 唯一决定；INT8->FP 要求 `zero_point`，rounding wrapper 要求 `rounding_mode`，plain wrapper 不允许额外转换参数；same-format copy 必须走 movement，不允许伪造成 convert |
-| NE GEMM | `wafer.instr.gemm` | V0 production target op | 只表达 GEMM / batched GEMM 主路径参数；当前单一format及同element-type合同不表达product/accumulator/FMA/rounding，program-selectable行为必须先扩IR/CRT ABI，target-fixed行为必须按revision/tuple唯一映射；bias、scale、quant、fused activation和复杂psum policy不能隐式打开 |
+| CT convert opcode 139..174 | `wafer.instr.convert` + `#wafer.instr_convert_kind<src_dst>` + kind-specific attrs | current production target op | dtype pair 由 kind 唯一决定；INT8->FP 要求 `zero_point`，rounding wrapper 要求 `rounding_mode`，plain wrapper 不允许额外转换参数；same-format copy 必须走 movement，不允许伪造成 convert |
+| NE GEMM | `wafer.instr.gemm` | current production target op | 只表达 GEMM / batched GEMM 主路径参数；当前单一format及同element-type合同不表达product/accumulator/FMA/rounding，program-selectable行为必须先扩IR/CRT ABI，target-fixed行为必须按revision/tuple唯一映射；bias、scale、quant、fused activation和复杂psum policy不能隐式打开 |
 | NE affine INT8 GEMM | `wafer.instr.quantized_gemm` | typed production extension；未完成capability/CRT/golden前target-illegal | exact M/K/N/batch/format、q0/q1、left/right zero point、typed scale operands/mode和matched capability；不复用plain GEMM flag |
 | MXFP/FP8 packed decode | `wafer.instr.mxfp_decode` | explicit-composite production extension；未完成scratch/completion/CRT gate前target-illegal | packed source + block scale + destination + scratch；decode到BF16/FP16，不能冒充CT convert或native FP8 GEMM |
-| Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | V0 production target op with accepted physical binding | IR表达Tile peer、bytes和async token；post-memory CardExecutable verification提交endpoint、remote receiver offset、FSM/completion和status ABI后，target conversion生成opaque event/ready/send/wait/release CRT calls。缺binding或不一致仍以`unsupported_target_transport`拒绝；RuntimeSession不能补做endpoint/channel planning |
-| typed NCC participant drain | `wafer.instr.ncc_join` | V0 production target sync；LLVM call emitted | canonical非空participant集合lower到typed CRT join；每个participant都是高代价blocking worker drain，不是普通依赖、Direct DTE completion或multi-tile barrier；optimized steady state必须为零 |
-| SPM memcpy helper / copy | 无单独 copy op | V0 composite lowering | copy 是 `gather_scatter` 的 descriptor 特例；不引入 `wafer.instr.copy` |
-| ChannelNorm / DechannelNorm / Tensor-Normalization | 无单条 op | V0 composite lowering | 作为 layout materialization algorithm 展开为 gather/scatter 序列；native TensorNom opcode 133 不作为 V0 主路径 |
-| ordinary `TsmConv` | `wafer.instr.conv` + `#wafer.instr_conv_kind<conv>` | V0 production target op；LLVM call emitted | input/weight/output attrs必须与memref shape一致，并证明batch/channel/kernel/stride/dilation/pad/unpad输出关系；bias、scale、sparse、INT8 quant、fused activation和psum policy仍需后续扩展 |
+| Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | current production target op with accepted physical binding | IR表达Tile peer、bytes和async token；post-memory CardExecutable verification提交endpoint、remote receiver offset、FSM/completion和status ABI后，target conversion生成opaque event/ready/send/wait/release CRT calls。缺binding或不一致仍以`unsupported_target_transport`拒绝；RuntimeSession不能补做endpoint/channel planning |
+| typed NCC participant drain | `wafer.instr.ncc_join` | current production target sync；LLVM call emitted | canonical非空participant集合lower到typed CRT join；每个participant都是高代价blocking worker drain，不是普通依赖、Direct DTE completion或multi-tile barrier；optimized steady state必须为零 |
+| SPM memcpy helper / copy | 无单独 copy op | composite lowering | copy 是 `gather_scatter` 的 descriptor 特例；不引入 `wafer.instr.copy` |
+| ChannelNorm / DechannelNorm / Tensor-Normalization | 无单条 op | composite lowering | 作为 layout materialization algorithm 展开为 gather/scatter 序列；native TensorNom opcode 133 不作为 当前主路径 |
+| ordinary `TsmConv` | `wafer.instr.conv` + `#wafer.instr_conv_kind<conv>` | current production target op；LLVM call emitted | input/weight/output attrs必须与memref shape一致，并证明batch/channel/kernel/stride/dilation/pad/unpad输出关系；bias、scale、sparse、INT8 quant、fused activation和psum policy仍需后续扩展 |
 | `TsmDepthwiseConv` / backward conv | `#wafer.instr_conv_kind`枚举保留，但当前无合法production实例 | target-illegal pending exact profile | 当前shared verifier只有ordinary conv精确关系；不能因wrapper symbol存在就发call。恢复前必须分别定义channel/group、weight和output relation及negative gate |
-| `TsmPool` / `TsmUnPool` | `wafer.instr.pool` / `wafer.instr.unpool` | V0 production target op；LLVM call emitted | source/dest attrs必须匹配memref，并证明NHWC batch/channel、pad/kernel/stride输出关系；indexed output arity/index dtype精确检查，不能复用reduce或movement op表达 |
-| TDMA pad / img2col | `wafer.instr.tdma_data_move` + `#wafer.instr_data_move_kind` | V0 production target op；LLVM call emitted | pad/img2col分别证明source/dest shape、pad、kernel/stride关系；普通copy/layout segment仍优先使用`gather_scatter`；transform-like kind到target LLVM必须结构化失败 |
-| TDMA mirror / transpose / rotate / NCHW-NHWC / TensorNom | 无 production target op；enum 保留用于 imported/pre-lowering IR | V0 composite lowering or future target extension | V0 由 compiler lowering 展开为 `gather_scatter` 或结构化失败。`transpose` 使用 `permutation`，`mirror` 使用一个或多个 `axes`，`rotate90/180/270` 使用有序二元 `axes` 表示旋转平面，NCHW/NHWC 使用固定 4D layout permutation，`tensor_nom` 使用 logical-linear 到 physical-layout materialization。package / target export 如果仍看到这些 kind，说明 pipeline 漏了 materialization，应拒绝 |
-| concat / maskgather variants | 无单独 op | V0 composite；native `dims=HW`永久target-illegal | source-level任意轴concat在V0一律展开为typed `gather_scatter` movement；current production wrapper只证明last logical dim映射到native CT concat的C编码，W/H的bounded raw completion不构成production资格。header虽公开HW编码，但native Concat `dims=HW`是错误/非法指令组合：不得构造、序列化或提交板端packet，不保留board case，也没有复测或重新资格化入口。maskgather variants仍需bool/index operand policy；未定义前不能复用`tdma_data_move` |
+| `TsmPool` / `TsmUnPool` | `wafer.instr.pool` / `wafer.instr.unpool` | current production target op；LLVM call emitted | source/dest attrs必须匹配memref，并证明NHWC batch/channel、pad/kernel/stride输出关系；indexed output arity/index dtype精确检查，不能复用reduce或movement op表达 |
+| TDMA pad / img2col | `wafer.instr.tdma_data_move` + `#wafer.instr_data_move_kind` | current production target op；LLVM call emitted | pad/img2col分别证明source/dest shape、pad、kernel/stride关系；普通copy/layout segment仍优先使用`gather_scatter`；transform-like kind到target LLVM必须结构化失败 |
+| TDMA mirror / transpose / rotate / NCHW-NHWC / TensorNom | 无 production target op；enum 保留用于 imported/pre-lowering IR | composite lowering or future target extension | 当前实现 由 compiler lowering 展开为 `gather_scatter` 或结构化失败。`transpose` 使用 `permutation`，`mirror` 使用一个或多个 `axes`，`rotate90/180/270` 使用有序二元 `axes` 表示旋转平面，NCHW/NHWC 使用固定 4D layout permutation，`tensor_nom` 使用 logical-linear 到 physical-layout materialization。package / target export 如果仍看到这些 kind，说明 pipeline 漏了 materialization，应拒绝 |
+| concat / maskgather variants | 无单独 op | composite；native `dims=HW`永久target-illegal | source-level任意轴concat在当前实现一律展开为typed `gather_scatter` movement；current production wrapper只证明last logical dim映射到native CT concat的C编码，W/H的bounded raw completion不构成production资格。header虽公开HW编码，但native Concat `dims=HW`是错误/非法指令组合：不得构造、序列化或提交板端packet，不保留board case，也没有复测或重新资格化入口。maskgather variants仍需bool/index operand policy；未定义前不能复用`tdma_data_move` |
 | VuV / VuVLoop / scalar-immediate BOOL variants | 当前`elementwise`只覆盖value-form opcode family kind，不单独建模这些variant | future extension | Q46的bitpacked result只复用existing value-form instruction与encoding traversal；VuV/VuVLoop、scalar immediate和其它缺字段variant仍须独立typed target合同，不能靠`elementwise`名称吞掉 |
-| Peripheral argmax/argmin/bilinear/lut/rand/elem_mask | `wafer.instr.peripheral` + `#wafer.instr_peripheral_kind` | V0 production target op；LLVM call emitted | kind决定input/output arity；`elem_count`必须与primary input和所有kind-specific buffers/shape capacity一致，LUT table另与`lut_elem_count`一致。Count mechanical/numeric纵向属于later Q3.6，current target保持拒绝；bitcount仍不纳入production |
+| Peripheral argmax/argmin/bilinear/lut/rand/elem_mask | `wafer.instr.peripheral` + `#wafer.instr_peripheral_kind` | current production target op；LLVM call emitted | kind决定input/output arity；`elem_count`必须与primary input和所有kind-specific buffers/shape capacity一致，LUT table另与`lut_elem_count`一致。Count mechanical/numeric纵向属于later Q3.6，current target保持拒绝；bitcount仍不纳入production |
 | Peripheral factorize | `wafer.instr.peripheral` + `#wafer.instr_peripheral_kind<factorize>` | IR kind保留；production target-illegal | 当前没有精确factorize semantic profile；target conversion以`unsupported_target_operation`拒绝，repo-local CRT header/source不得保留对应symbol |
 | raw DTE non-unicast / stream / mailbox | 无 | future communication ABI | 需要独立 communication ABI 和板端验证；current physical peer path只生成fixed-size unicast DTE packet |
-| SCALAR / CSR ordinary execution | 无 | not compiler instr IR in V0 | `TsmExecute` 普通 dispatch 不覆盖 SCALAR/CSR；CSR wait/sync 只能通过明确 sync/runtime ABI 进入 |
+| SCALAR / CSR ordinary execution | 无 | not compiler instr IR in 当前实现 | `TsmExecute` 普通 dispatch 不覆盖 SCALAR/CSR；CSR wait/sync 只能通过明确 sync/runtime ABI 进入 |
 
 semantic select中的mask不是地址或隐式pointer-width整数。compiler-emitted
 `wafer_tx81_mask_move(uint64_t src, uint32_t mask, uint64_t dst, uint32_t elem_count, uint32_t format)`
@@ -454,22 +454,22 @@ semantic select中的mask不是地址或隐式pointer-width整数。compiler-emi
 physical address range必须适配`uint32_t`，然后才生成i32参数。CRT不得再通过`uint64_t`形参加内部cast
 隐藏narrowing。
 
-V0 不定义 `wafer.instr.copy`。公开 SPM memcpy helper 本身也是
+当前实现 不定义 `wafer.instr.copy`。公开 SPM memcpy helper 本身也是
 `TsmDataMove::GatherScatter` 样例；把 copy 单独做成 instruction op 会把 helper 名字提升为 IR
 语义。
 
-`ChannelNorm/DechannelNorm` 也不是 V0 单条 instruction op。它们是 layout materialization algorithm；
+`ChannelNorm/DechannelNorm` 也不是 当前实现 单条 instruction op。它们是 layout materialization algorithm；
 R3.2d 要么展开成一条或多条 `wafer.instr.gather_scatter`，要么结构化失败。对于
 `C > block` 且存在 retained `C0` tail 的 `Cx/NCx`，full C blocks 和 compact tail block 的
 inner width / stride 不同，lowering 通常需要至少两段 GatherScatter：一段搬 full blocks，一段搬
-tail `C0`。如果 full-block 段和 tail 段都无法分别表示为 V0 三层 stride/iteration descriptor，
+tail `C0`。如果 full-block 段和 tail 段都无法分别表示为 当前支持的三层 stride/iteration descriptor，
 R3.2d 必须失败。
 
 `TsmExecute` 普通 dispatch path 只覆盖 CT/NE/RDMA/WDMA/TDMA。DTE 不走这条 dispatch path，
 但仍属于 `wafer.instr.*` 的硬件通信调用层。当前fixed-size unicast只在Q16.T accepted physical binding、
 remote receiver offset、FSM/completion、status ABI与CRT合同闭合后lower到Direct DTE/FSM helper；缺binding、
 不一致或超出accepted profile时明确拒绝，不能直接回退到raw-DTE ABI。SCALAR 当前 reserved/stub；
-CSR/sync helper 不在 V0 ordinary compute path 中。
+CSR/sync helper 不在 current ordinary compute path 中。
 
 ## 5. Operand And Result Model
 
@@ -521,7 +521,7 @@ resource继续使用MLIR custom `SideEffects::Resource`，但不再复制成`Waf
 buffer role从operand/result和typed op semantics取得，bytes/footprint从type、encoding和descriptor fields重算，
 issue/exact wait/participant completion从SSA token、typed worker和显式op推导。
 
-`InstrFamily` 是 Wafer enum/interface fact，V0 至少包含：
+`InstrFamily` 是 Wafer enum/interface fact，当前实现 至少包含：
 
 | enum | hardware invocation family |
 | --- | --- |
@@ -536,7 +536,7 @@ family marker只返回当前op可验证的instruction family，不返回planner 
 MemoryEffectOpInterface直接关联actual buffer value或custom SideEffects::Resource；它不携带第二份role/index/bytes
 record。真正completion由op semantics、SSA token、typed worker/participant join及path-covering verifier共同证明。对
 `rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert`、`gemm` 和
-`dte_*` 这类固定 family 的 V0 op，`getInstructionFamily()` 由 op class 静态派生，不要求 IR
+`dte_*` 这类固定 family 的 supported op，`getInstructionFamily()` 由 op class 静态派生，不要求 IR
 打印 `instruction_family` attr。后续若出现同一个 op contract 下可选择多个 family 的 instruction
 op，才在该 op 上增加显式 attr，并把合法取值纳入 verifier。
 
@@ -672,7 +672,7 @@ wafer.instr.gather_scatter source to dest attr-dict
 | --- | --- | --- | --- |
 | `wafer.instr.gather_scatter` | `source: MemRef<#wafer.memory<spm, *>>`, `dest: MemRef<#wafer.memory<spm, *>>` | none | `byte_count`, `inner_bytes`, optional `src_offset` / `dst_offset`, `src_strides`, `src_iterations`, `dst_strides`, `dst_iterations` |
 
-V0 只定义这一条 TDMA-backed movement op。copy、layout materialization、static slice movement、broadcast
+当前实现 只定义这一条 TDMA-backed movement op。copy、layout materialization、static slice movement、broadcast
 和 transpose 都要么映射成一条或多条 gather_scatter，要么失败。`wafer.instr.copy` 不作为
 单独 IR op；contiguous copy 是 gather_scatter descriptor 特例。`src_offset` / `dst_offset`
 是 operand buffer 内的字节偏移，用于表达同一 buffer 内的分段 movement；它们不是
@@ -716,7 +716,7 @@ target verifier先证明count等于完整physical bytes×8；唯一CRT边界再�
 其 `kind` 直接对应 convert wrapper / opcode pair，例如 `fp32_int32`，verifier 从 kind 推导
 source/dest element type 并检查 memref type。INT8->FP wrapper 组需要 `zero_point`；FP/INT
 之间需要 rounding 的 wrapper 组需要 `rounding_mode`，取值范围由 target rounding mode 编码约束；
-plain wrapper 组不允许携带这两个 attr。当前没有 `wafer.tile.convert` source op，因此 V0 定义
+plain wrapper 组不允许携带这两个 attr。当前没有 `wafer.tile.convert` source op，因此 当前实现 定义
 ODS/verifier 和 package metadata intake，但不声称存在 tile convert lowering pattern。
 
 `#wafer.elementwise_kind` / `#wafer.reduce_kind` 只允许出现在 tile-level target-abstract op。
@@ -782,10 +782,10 @@ rank-4 tensor直接flatten，调用边界会丢失NCx per-batch bank boundary，
 
 当canonical rank-3 form的`batch_count=1`时，`NCx[1,M,C]`与plain `Cx[M,C]`的footprint及全部logical-element offset
 相同；回归覆盖两个完整channel block与`C0` tail。因此当前target call在`batch_count=1`处擦除source rank不会产生
-byte-order歧义。Fused bias、activation、quant、psum accumulation policy 和 sparse / INT8 variants 不属于 R3.2d V0。
+byte-order歧义。Fused bias、activation、quant、psum accumulation policy 和 sparse / INT8 variants 不属于 R3.2d 当前实现。
 
-目标Instr IR在选择versioned oriented ABI时必须显式携带两个orientation字段且不得依赖default；旧v1 lowering仍只能接受
-normal/normal。orientation进入tasks/14的typed target-call/ABI capability和tasks/17的
+目标Instr IR在选择oriented ABI时必须显式携带两个orientation字段且不得依赖default；未携带orientation的
+plain form只表示normal/normal。orientation进入tasks/14的typed target-call/ABI capability和tasks/17的
 `NumericCommandKey`/qualification identity。typed ABI、compiler emission和SystemC qualification闭合后可进入model-only
 profile；真实board provider还必须命中对应environment的board-supported allowlist，二者不能混称。
 
@@ -802,7 +802,7 @@ floating Tile-local algebraic reassociation/reduction-tree rewrite不通过Instr
 显式SSA DAG/SCF；instruction lowering只消费该actual DAG，不读取隐藏order或“已重结合”标志。跨Tile reduction同样必须
 已经物化为实际p2p、elementwise和token DAG，不增加numeric carrier。
 
-#### 7.5.1 Relation-Guided Cx/NCx Physical-Version Absorption
+#### 7.5.1 Relation-Guided Cx/NCx Physical-Encoding Absorption
 
 current target没有独立`vector_width`、packing mode/factor或packing ABI字段。Cx/NCx packing只由dtype、typed encoding、
 shape/tail通过`WaferPhysicalEncodingAttrInterface`推出；current target helpers只回答instruction/format capability，不进入这些查询。
@@ -818,7 +818,7 @@ wafer.instr.mxfp_decode packed, scale, scratch into dest attr-dict
 ```
 
 `wafer.instr.quantized_gemm`只由verified `wafer.tile.quantized_gemm`和matched native
-`LowPrecisionComputeCapabilityV1`产生。operands/effects显式覆盖lhs/rhs/dest及enabled scale buffers；attrs固定M/K/N、
+`LowPrecisionComputeCapability`产生。operands/effects显式覆盖lhs/rhs/dest及enabled scale buffers；attrs固定M/K/N、
 left/right batch、transpose、input/output target format、q0/q1、left/right zero point、closed scale mode和typed
 `QuantStorageAbiProfileId` ref。q0/q1和zero point必须在target证明范围内，accumulator/result/saturation relation必须与
 上游descriptor一致。首个signed-i8 profile只允许mathematical zero point `[0,127]`并checked转换为同值raw field；
@@ -826,7 +826,7 @@ negative zp、128..255或two's-complement reinterpretation必须由另一个有g
 static_cast。首个native profile的destination是INT8且output zero point固定为0；i32仅为internal accumulator，f16
 结果必须由后续显式dequant/convert op产生。bias、activation、sparse、implicit psum、其它output zero point或
 capability未声明的granularity非法。
-V1 command中的rounding/saturation是profile固定implicit hardware policy的冗余防错编码，不是caller-selectable
+current command中的rounding/saturation是profile固定implicit hardware policy的冗余防错编码，不是caller-selectable
 packet field；CRT只接受与profile常量完全相等的值。首个planned native profile还要求`scale_mode=none`和两个scale
 operands absent；axis scale在exact formula/indexing/table dtype证据形成新profile前target-illegal。
 `wafer.instr.convert`的single-source zero-point不是该op的替代品。
@@ -887,10 +887,10 @@ wafer.instr.peripheral #wafer.instr_peripheral_kind<kind> inputs into dests attr
 
 | op | operands | result | required attrs |
 | --- | --- | --- | --- |
-| `wafer.instr.tdma_data_move` | `source: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_data_move_kind`, `source_shape`, `dest_shape`; pre-lowering transform attrs are `permutation` for transpose and `axes` for mirror/rotate; V0 production target allows only `pad` with `pads` and `img2col` with `pads` + `kernel_strides` |
+| `wafer.instr.tdma_data_move` | `source: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_data_move_kind`, `source_shape`, `dest_shape`; pre-lowering transform attrs are `permutation` for transpose and `axes` for mirror/rotate; current production target allows only `pad` with `pads` and `img2col` with `pads` + `kernel_strides` |
 | `wafer.instr.peripheral` | `inputs: Variadic<SPM memref>`, `dests: Variadic<SPM memref>` | none | `kind: #wafer.instr_peripheral_kind`, `elem_count`; kind-specific attrs for bilinear/LUT/elem_mask |
 
-`wafer.instr.tdma_data_move` 的V0 production surface只表达wrapper-level `pad` / `img2col`；两者的
+`wafer.instr.tdma_data_move` 的当前 production surface只表达wrapper-level `pad` / `img2col`；两者的
 source/dest attrs必须匹配memref shape，并分别证明pad或kernel/stride/pad的输出关系。
 Img2col的`kernel_strides`固定为`[Kx, Ky, Sx, Sy]`，`pads`为`[top, bottom, left, right]`；
 对NHWC source `[N,H,W,C]`，其vendor-visible destination是
@@ -898,7 +898,7 @@ Img2col的`kernel_strides`固定为`[Kx, Ky, Sx, Sy]`，`pads`为`[top, bottom, 
 `outW=(W+left+right-Kx)/Sx+1`并要求整型窗口关系合法。第二维按`ky,kx`、第三维按`oh,ow`
 展开；不能把常见的`[N,outH,outW,C*Ky*Kx]`表示直接当作该wrapper ABI。
 mirror、transpose、rotate、NCHW/NHWC 和 TensorNom 这类 transform-like DataMove kind 虽然有
-public wrapper/header 证据，但 V0 不把它们作为 production target surface；普通 copy、layout segment
+public wrapper/header 证据，但 当前实现 不把它们作为 production target surface；普通 copy、layout segment
 movement、static slice / broadcast / transpose / mirror / rotate 的可证明 byte movement 由 compiler
 lowering 展开成 `wafer.instr.gather_scatter`，无法表达时由 lowering 结构化失败。`mirror`
 的 `axes` 是被翻转的 logical axis 集合；`rotate90/180/270` 的 `axes = [a, b]` 是有序旋转平面，
@@ -954,7 +954,7 @@ alignment。14唯一拥有`writeback_raw_u32`的target byte-order/store合同并
 该typed TargetCall语义和地址绑定，不能从u64地址反推本层memref shape、dtype或layout。
 
 later Q3.6的synchronous writeback必须由`wafer.instr.peripheral<count>`自身的typed effect/completion合同和exact
-TargetCall语义表达，不能按op名恢复，也不需要再造versioned completion-property registry。若wrapper在返回前等待local
+TargetCall语义表达，不能按op名恢复，也不需要再造completion-property registry。若wrapper在返回前等待local
 compute/movement并写入destination，Instr effect、path verifier和target conversion直接验证这一事实；consumer、alias和
 lifetime据此排序。terminal participant join只收口实际pending worker，不能替代Count op自身的同步合同。
 
@@ -977,7 +977,7 @@ R3.2d 应实现为 MLIR DialectConversion：
 - no type conversion for Wafer tagged memref values。
 - conversion failure 必须结构化返回给 planner；rejected instruction IR 不进入 accepted 主线 IR。
 
-当前V0与终态扩展的mapping边界：
+当前与终态扩展的mapping边界：
 
 Tile-to-Instr只消费已经由physical-dataflow selection materialize的Tile body。current communication surface只有显式
 `wafer.tile.peer_send`、`wafer.tile.peer_recv`和matching await；conversion逐项lower为Instr DTE send/recv/wait，不恢复abstract
@@ -988,7 +988,7 @@ non-singleton cross-card collective在对应transport尚未实现时fail closed�
 | --- | --- |
 | `wafer.tile.load` | Q32.R后consume destination-style source/dest；compact Tensor是baseline。Q32.V mapped extension从两端typed views/encoding、08 exact transfer proof及current DMA instruction limits导出direct cover，并发射显式`src_offset`/`dst_offset`的RDMA；target identity不参与physical encoding query。若consumer要求known padding，先fill完整destination再发valid segments；staged alternative必须已显式物化为Tensor+GS payload IR |
 | `wafer.tile.store` | consume destination-style source/dest；compact Tensor是baseline。Q32.V mapped extension从两端typed views/encoding、08 exact transfer proof及current DMA instruction limits导出direct cover，并发射显式`src_offset`/`dst_offset`的WDMA；target identity不参与physical encoding query。staged alternative必须已显式物化在payload IR，source lifetime由typed worker ordered-pending及其真实external/terminal cut闭合，不能因WDMA本身插join |
-| `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; derive exact full-block/tail physical pieces from the unified physical encoding facts, directly form up to three stride/iteration levels, and emit one or more `wafer.instr.gather_scatter`; do not require source/result physical byte counts to match and do not copy padding; structured failure only when static logical movement cannot be represented by V0 descriptors |
+| `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; derive exact full-block/tail physical pieces from the unified physical encoding facts, directly form up to three stride/iteration levels, and emit one or more `wafer.instr.gather_scatter`; do not require source/result physical byte counts to match and do not copy padding; structured failure only when static logical movement cannot be represented by supported descriptors |
 | `wafer.tile.fill` | current只对Tensor logical-valid domain生成无domain attr的`wafer.instr.fill`；padding/physical-footprint初始化已增加typed Instr/TargetCall字段并闭合count/raw-value纵向 |
 | `wafer.tile.gemm` | ensure/create selected aligned SPM physical versions；plain form只在normal/normal relation成立时生成无orientation字段的`wafer.instr.gemm`。若operand/result已是合法Cx/NCx，直接消费该encoding且不插入packing字段；本lowering不判断历史上是否删除过layout/GS，tasks/06集成证据从winner readback证明absorption。typed orientation无损写入current oriented Instr op；不能从shape或op名恢复flag |
 | `wafer.tile.elementwise` | materialize every input indexing map into explicit movement/same-shape operands; strip even identity maps; ensure/create destination; map non-select kind and emit map-free `wafer.instr.elementwise`; semantic select lowers to false-copy `gather_scatter` + `bit2fp` + `mask_move`; reject if a map is unrepresentable |
@@ -998,7 +998,7 @@ non-singleton cross-card collective在对应transport尚未实现时fail closed�
 | `wafer.tile.insert_slice` | create destination SPM memref; first construct an exact valid-domain copy of the original destination, then compose the static insertion relation and overlay the source with symbolic loop descriptors; replace result with the new memref |
 | `wafer.tile.broadcast` | create destination SPM memref; compose `dimensions` with source/result physical encodings, preserve zero source strides for repeated reads, directly materialize exact loop descriptors, and replace result with dest memref |
 | `wafer.tile.transpose` | create destination SPM memref; compose the inverse permutation with source/result physical encodings and directly materialize exact multi-loop descriptors; split only at Cx/NCx full/tail, field-width or three-level boundaries, and replace result with dest memref |
-| `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits packed `wafer.instr.gather_scatter` descriptors only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
+| `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits packed `wafer.instr.gather_scatter` descriptors only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by supported descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 
 R3.2d.4 已覆盖 static movement descriptor splitting / packing：
@@ -1007,7 +1007,7 @@ R3.2d.4 已覆盖 static movement descriptor splitting / packing：
   都复用统一 logical-to-physical calculator，覆盖 compact `tensor/ntensor` 与 `Cx/NCx`。它们先从
   op 语义恢复 source/result logical index relation，再计算两端 physical byte offset；不能用 generic
   memref load/store/copy 或名字匹配绕过 movement 语义。
-- V0 当前只 materialize 静态、byte-addressable、可按 buffer-local offset 表示的 descriptor 序列。
+- 当前实现 当前只 materialize 静态、byte-addressable、可按 buffer-local offset 表示的 descriptor 序列。
   lowering在logical relation与encoding piece上符号执行，从内向外直接合并最多三层
   source/dest stride × iteration；只在full/C0/folded tail、NCx per-N padding、directional DMA连续性、
   target field和三层上限边界拆成后续command。dynamic shape、bit-packed element或无法证明的relation
@@ -1041,7 +1041,7 @@ legalize 的其它 instruction fragments。
 
 必须结构化失败的情况：
 
-- non-ranked or dynamic-shaped memref where V0 needs static byte/stride computation.
+- non-ranked or dynamic-shaped memref where 当前实现 needs static byte/stride computation.
 - unsupported Wafer memory attr, address space or physical layout marker for an instruction family.
 - invalid/unused/F64/unknown format，或GEMM使用F32。其它13种current logical format不能仅因dtype被拒绝；
   relation/elementwise/convert若缺少source semantic、opcode、shape/layout、field或typed convert-route proof，按缺失的
@@ -1073,7 +1073,7 @@ Diagnostics should mention the source op and the missing legality fact, for exam
 R3.2d verifier checks only instruction legality:
 
 - ODS type constraints enforce memref/tensor/scalar operand classes.
-- all Wafer tagged memref types used by instruction ops are ranked and static for V0.
+- all Wafer tagged memref types used by instruction ops are ranked and static in the current implementation.
 - memory attr matches instruction family:
   RDMA reads `#wafer.memory<ddr, *>` and writes `#wafer.memory<spm, *>`；
   WDMA reads `#wafer.memory<spm, *>` and writes `#wafer.memory<ddr, *>`；
@@ -1108,11 +1108,11 @@ R3.2d verifier checks only instruction legality:
   对应op-specific fact，不能由私有numeric capability表把某个current dtype整体改成target-illegal。target-model尚未实现
   某个op×dtype的数值执行也只限制model gate，不反向缩小compiler/ABI legality。
 - NE GEMM and CT reduce require supported aligned layout marker, dtype and rank. current plain GEMM按implicit
-  normal/normal relation匹配stored shape与M/K/N/batch；Q32.V oriented tuple只有在typed orientation字段、versioned
+  normal/normal relation匹配stored shape与M/K/N/batch；Q32.V oriented tuple只有在typed orientation字段、
   target ABI和capability row同时匹配时合法。每个command tuple还必须唯一映射numeric semantics profile；terminal CT reduce has no init operand/
   attr，任何残留字段target-illegal；Q0.L source reduce必须更早lower为有序fill/movement/elementwise composite或拒绝，native
   reduce只有compiler-owned full-domain mapping与numeric-verification proof后才可进入production。
-- relation-guided physical-version absorption不增加Instr字段；verifier只从current Instr/operands的memref type与
+- relation-guided physical-encoding absorption不增加Instr字段；verifier只从current Instr/operands的memref type与
   existing encoding证明shape/tail对应的packing，并核对geometry、valid/padding lane、range、alias、effect和completion。
   current target helpers只回答instruction/format capability，不参与physical encoding查询。Q32既有GEMM absorption证据保持不变；
   Q46广义movement消失及删除前后等价性只由其独立集成gate证明，不由Instr verifier反推。
@@ -1143,7 +1143,7 @@ R3.2d verifier checks only instruction legality:
   `avg` forbids the operand, and the legacy scalar `index` attr is always rejected.
 - `wafer.instr.tdma_data_move` requires SPM source/dest memrefs with matching element type, rank-4
   positive source/dest descriptors equal to memref shapes, and kind-specific descriptor attrs/equations.
-  V0 production target only accepts `pad` with exact pad output relation and `img2col` with exact
+  current production target only accepts `pad` with exact pad output relation and `img2col` with exact
   kernel/stride/pad output relation. Transform-like kinds
   `mirror/transpose/rotate*/nchw2nhwc/nhwc2nchw/tensor_nom` are verifier-legal only as explicit
   pre-lowering/imported IR and must be materialized to `gather_scatter` before target LLVM or package
@@ -1156,7 +1156,7 @@ R3.2d verifier checks only instruction legality:
   peripheral ops require a same-dtype value dest plus an i32 index dest. `bilinear` requires
   source/dest shape attrs; LUT kinds require `lut_elem_count`; `elem_mask` requires `scale`,
   `probability` and `rounding_mode`. Count的终态只接受一个source和单元素i32 SPM dest，禁止其它kind attrs并要求匹配14的
-  versioned ABI/profile；当前实现仍拒绝，直到typed dest、TargetCall/CRT写回及capability validation同批落地。
+  typed ABI/profile；当前实现仍拒绝，直到typed dest、TargetCall/CRT写回及capability validation同批落地。
   `factorize` may pass the instruction verifier but remains target-illegal until an exact production semantic
   profile exists.
 - no SPM offset/end/bank attrs before SPM offset assignment.
@@ -1281,8 +1281,8 @@ wafer.tile.region ... {
 }
 ```
 
-这是当前V0保守路径的形态示例，不固定parser/printer，也不固定planner对physical-dataflow realization的选择。
-例中的GEMM省略orientation表示v1 normal/normal。versioned oriented ABI必须显式打印两个typed orientation；
+这是当前保守路径的形态示例，不固定parser/printer，也不固定planner对physical-dataflow realization的选择。
+例中的GEMM省略orientation表示implicit normal/normal。oriented ABI必须显式打印两个typed orientation；
 mapped transfer也必须用带local offset的typed RDMA/WDMA表达，不能由lowering猜测。
 例子中 stride 数值只说明 descriptor 字段位置，不作为 Cx padding 或 hardware packet 的规范值；
 真实 padded size、Cx/NCx 对齐、bool bitpack、descriptor stride 和 SPM offset 分别由
@@ -1328,7 +1328,7 @@ R3.2d.1 已完成：
    `source_shape`的aligned i16 SPM buffer，`avg`禁止携带，旧scalar `index` attr一律拒绝。
    indexed pool的第二个dest同步为i16。target lowering把已证明的静态SPM起始地址写入既有
    `uint32_t` ABI槽，`avg`传0。`wafer.instr.tdma_data_move` verifier 按 kind 检查字段组合：
-   `pad` / `img2col` 是 V0 production target input，transform-like kind 只允许作为 pre-lowering/imported
+   `pad` / `img2col` 是 current production target input，transform-like kind 只允许作为 pre-lowering/imported
    instr IR；`transpose`、`mirror`、`rotate*`、NCHW/NHWC 和 TensorNom 由
    `--wafer-convert-tile-region-to-instr` 在 target/package 边界前 materialize；
    `wafer.instr.peripheral` verifier 按
@@ -1387,7 +1387,7 @@ R3.2d.4 已完成：
 17. 实现`wafer.instr.mxfp_decode`及packed/scale/scratch/completion合同，lower到显式software decode + scale
     composite；不得把legacy helper或普通convert当完成证明。
 
-## 13. Current Instruction ABI 收口
+## 13. Instruction ABI 收口
 
 本边界消费final verified typed Instr，并产出只可lower到current TargetCall的完整Tile instruction program；TargetCall/CRT与module writing
 仍由14拥有，package/runtime与证据分别由15、16拥有。
@@ -1396,11 +1396,11 @@ R3.2d.4 已完成：
   conversion分支均已删除，lowering没有名字alias或隐式fallback。
 - ordinary worker、oriented GEMM、NCCJoin及Direct-DTE lifecycle继续由各自typed op、enum、operand/type、effect和
   verifier定义语义；TargetCall symbol或registry ordinal不是instruction grammar，也不得反向恢复typed语义。
-- `GemmOrientedV2`之类由历史ABI命名污染的internal builtin改用稳定语义名；真实current CRT symbol是否带`_v3`
+- `GemmOriented`之类由历史ABI命名污染的internal builtin改用稳定语义名；真实current CRT symbol是否带`_v3`
   由14的ABI registry决定，不把symbol版本写回Instr op kind。
 - fresh板端门禁仍需验证worker0 completion和至少一个隔离的nonzero-worker或Direct-DTE路径；只过host model不算闭合。
 
-本计划不改变entry ABI、DTE status schema或其它独立版本化Instr字段，也不引入superoptimizer、
+本计划不改变entry ABI或DTE status ABI，也不引入superoptimizer、
 solver或新的instruction semantics interface。
 
 ## 14. Semantic Alternative 与 Instr 边界

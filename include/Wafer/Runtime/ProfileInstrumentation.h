@@ -26,17 +26,17 @@ struct TargetCallDescriptor;
 
 namespace runtime {
 
-inline constexpr uint32_t kProfileInstrumentationSchemaVersion = 10;
+inline constexpr uint32_t kProfileInstrumentationFormatVersion = 10;
 inline constexpr int64_t kProfileInstrumentationCardCount = 1;
 inline constexpr int64_t kProfileInstrumentationTileCount = 16;
 inline constexpr llvm::StringLiteral kProfileSiteCorrelationBasis =
-    "typed-target-call-ordinal-ssa-numbering-occurrence-v3";
+    "target-call-ordinal-ssa-position";
 inline constexpr llvm::StringLiteral kProfileSiteKeyContract =
-    "physical-tile-local-site-id-and-correlation-key-v1";
+    "tile-local-site-id-and-correlation-key";
 inline constexpr llvm::StringLiteral kProfileRecordABI =
-    WAFER_TX81_PROFILER_RECORD_ABI_V4;
+    WAFER_TX81_PROFILER_RECORD_ABI;
 inline constexpr llvm::StringLiteral kProfileStaticCostModelName =
-    "tx81-static-peak-lower-bound-v1";
+    "tx81-static-throughput-lower-bound";
 inline constexpr llvm::StringLiteral kProfileStaticCostModelScope =
     "complete-final-instruction-program-per-physical-tile";
 inline constexpr llvm::StringLiteral kProfileInstrumentationActivationFileName =
@@ -212,7 +212,6 @@ public:
   VerifiedProfileInstrumentation &
   operator=(const VerifiedProfileInstrumentation &) = delete;
 
-  uint32_t getSchemaVersion() const { return schemaVersion; }
   int64_t getCardCount() const { return cardCount; }
   int64_t getTileCount() const { return tileCount; }
   llvm::StringRef getRoot() const { return root; }
@@ -235,7 +234,6 @@ private:
       : root(std::move(root)), profiledPackage(std::move(profiledPackage)),
         captures(std::move(captures)), siteMap(std::move(siteMap)) {}
 
-  uint32_t schemaVersion = kProfileInstrumentationSchemaVersion;
   int64_t cardCount = kProfileInstrumentationCardCount;
   int64_t tileCount = kProfileInstrumentationTileCount;
   std::string root;

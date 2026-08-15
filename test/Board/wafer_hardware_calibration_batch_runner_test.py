@@ -320,11 +320,11 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             len(RUNNER.SELECTABLE_BATCHES["compiler-optimization-paired"]),
             len(RUNNER.COMPILER_OPTIMIZATION_PAIRED_CASES),
         )
-        campaign = RUNNER.select_calibration_steps(
-            None, ("compiler-optimization-campaign",)
+        batch = RUNNER.select_calibration_steps(
+            None, ("compiler-optimization-tests",)
         )
         self.assertEqual(
-            [step.key for step in campaign],
+            [step.key for step in batch],
             [
                 "initial-profile-heartbeat",
                 "direct-dte-collective",

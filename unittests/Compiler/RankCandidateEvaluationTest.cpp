@@ -629,8 +629,7 @@ module {
 
 TEST(RankCandidateEvaluationSchedulerTest,
      StartsWithSeedAndRotatesAfterRejectedAttempts) {
-  using Coordinator =
-      wafer::compiler::detail::RankCandidateEvaluationScheduler;
+  using Coordinator = wafer::compiler::detail::RankCandidateEvaluationScheduler;
   using Lane = wafer::compiler::detail::RankCandidateEvaluationLane;
   Coordinator coordinator;
   EXPECT_FALSE(coordinator.chooseNextLane(/*seedAvailable=*/true,
@@ -664,8 +663,7 @@ TEST(RankCandidateEvaluationSchedulerTest,
 
 TEST(RankCandidateEvaluationSchedulerTest,
      StopsAtEightInvocationWideExactAcceptances) {
-  using Coordinator =
-      wafer::compiler::detail::RankCandidateEvaluationScheduler;
+  using Coordinator = wafer::compiler::detail::RankCandidateEvaluationScheduler;
   Coordinator coordinator;
   ASSERT_TRUE(mlir::succeeded(coordinator.recordMandatoryBaselineAccepted()));
   for (unsigned index = 1;
@@ -686,8 +684,7 @@ TEST(RankCandidateEvaluationSchedulerTest,
 
 TEST(RankCandidateEvaluationSchedulerTest,
      StopsAtSixteenTotalAttemptsWhenEveryRotatedAttemptRejects) {
-  using Coordinator =
-      wafer::compiler::detail::RankCandidateEvaluationScheduler;
+  using Coordinator = wafer::compiler::detail::RankCandidateEvaluationScheduler;
   Coordinator coordinator;
   ASSERT_TRUE(mlir::succeeded(coordinator.recordMandatoryBaselineAccepted()));
   while (coordinator.canAttempt()) {
@@ -706,26 +703,22 @@ TEST(RankCandidateEvaluationSchedulerTest,
 TEST(RankCandidateEvaluationSchedulerTest,
      SetupFailureClassificationKeepsCoordinatorInvariantsFatal) {
   wafer::compiler::detail::RankInstrLoweringFailure failure;
-  failure.kind = wafer::compiler::detail::RankInstrLoweringFailureKind::
-      RankInstrLowering;
+  failure.kind =
+      wafer::compiler::detail::RankInstrLoweringFailureKind::RankInstrLowering;
   EXPECT_TRUE(
-      wafer::compiler::detail::isRecoverableRankInstrLoweringFailure(
-          failure));
+      wafer::compiler::detail::isRecoverableRankInstrLoweringFailure(failure));
   failure.kind =
       wafer::compiler::detail::RankInstrLoweringFailureKind::SPMAllocation;
   EXPECT_TRUE(
-      wafer::compiler::detail::isRecoverableRankInstrLoweringFailure(
-          failure));
+      wafer::compiler::detail::isRecoverableRankInstrLoweringFailure(failure));
   failure.kind =
       wafer::compiler::detail::RankInstrLoweringFailureKind::RankDomain;
   EXPECT_FALSE(
-      wafer::compiler::detail::isRecoverableRankInstrLoweringFailure(
-          failure));
+      wafer::compiler::detail::isRecoverableRankInstrLoweringFailure(failure));
   failure.kind =
       wafer::compiler::detail::RankInstrLoweringFailureKind::WorkLedger;
   EXPECT_FALSE(
-      wafer::compiler::detail::isRecoverableRankInstrLoweringFailure(
-          failure));
+      wafer::compiler::detail::isRecoverableRankInstrLoweringFailure(failure));
 }
 
 TEST_F(RankCandidateEvaluationTest,
@@ -1089,7 +1082,7 @@ TEST_F(RankCandidateEvaluationTest,
       wafer::compiler::detail::CoordinatedWorkerPlacementKind::Unplaced, 0,
       10));
   // Two fixed-slot loop identities occupy the same typed action shape. The
-  // versioned estimate prefers the larger qualified overlap value.
+  // current estimate prefers the larger qualified overlap value.
   estimates.push_back(makeEstimate(
       1, wafer::compiler::detail::CoordinatedReadyOrderKind::Canonical,
       wafer::compiler::detail::CoordinatedBufferingKind::StaticFixedSlot,
@@ -1266,9 +1259,8 @@ TEST_F(RankCandidateEvaluationTest,
   auto seed = wafer::compiler::detail::advanceRankCandidateEvaluation(
       **cursor, variant.evaluationReservation);
   ASSERT_TRUE(mlir::succeeded(seed)) << diagnosticsText;
-  ASSERT_EQ(
-      seed->kind,
-      wafer::compiler::detail::RankCandidateEvaluationStepKind::Accepted)
+  ASSERT_EQ(seed->kind,
+            wafer::compiler::detail::RankCandidateEvaluationStepKind::Accepted)
       << diagnosticsText;
   ASSERT_TRUE(seed->candidate);
   EXPECT_EQ(seed->candidate->scheduleActionOrdinal, 0u);
@@ -1546,8 +1538,7 @@ TEST_F(RankCandidateEvaluationTest,
     std::string diagnosticText;
     llvm::raw_string_ostream diagnostics(diagnosticText);
     for (const auto &tileParent : *candidates) {
-      const wafer::analysis::CardInstructionProgramCost *baselineCost =
-          nullptr;
+      const wafer::analysis::CardInstructionProgramCost *baselineCost = nullptr;
       auto baseline =
           llvm::find_if(evaluatedCandidates, [](const auto &candidate) {
             return candidate.reservedBaseline;
@@ -1606,8 +1597,8 @@ TEST_F(RankCandidateEvaluationTest,
         beforeSelection.unreserved != afterSelection.unreserved ||
         beforeSelection.consumedByKind != afterSelection.consumedByKind)
       return std::nullopt;
-    llvm::ArrayRef<wafer::compiler::detail::EvaluatedRankCandidate>
-        winnerView(&*winner, 1);
+    llvm::ArrayRef<wafer::compiler::detail::EvaluatedRankCandidate> winnerView(
+        &*winner, 1);
     result.winnerDigest =
         wafer::compiler::detail::computeEvaluatedRankCandidateSetDigest(
             winnerView);
@@ -1731,11 +1722,9 @@ TEST_F(RankCandidateEvaluationTest,
       std::make_shared<wafer::support::CompileWorkStatisticsSession>();
   wafer::support::ScopedCompileWorkStatisticsActivation workActivation(
       workSession);
-  EXPECT_TRUE(
-      mlir::failed(wafer::compiler::detail::evaluateRankCandidate(
-          variant, program, *executionConfig,
-          wafer::OptimizationConfig::production(), *ledger, diagnostics,
-          failure)));
+  EXPECT_TRUE(mlir::failed(wafer::compiler::detail::evaluateRankCandidate(
+      variant, program, *executionConfig,
+      wafer::OptimizationConfig::production(), *ledger, diagnostics, failure)));
   diagnostics.flush();
   EXPECT_EQ(
       failure.kind,

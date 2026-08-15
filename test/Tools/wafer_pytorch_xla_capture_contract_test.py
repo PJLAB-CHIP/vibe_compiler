@@ -367,7 +367,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             self.tool.DEFAULT_WORKLOAD_CORPUS_SPEC
         )
 
-        self.assertEqual(spec["corpus_id"], "wafer-single-card-vertical-v1")
+        self.assertEqual(spec["corpus_id"], "wafer-single-card-vertical")
         self.assertEqual(
             spec["source"]["framework"],
             {
@@ -408,14 +408,14 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             for digest in case["digests"].values():
                 self.assertRegex(digest, r"^sha256:[0-9a-f]{64}$")
 
-    def test_llama_scale_payload_is_explicit_and_versioned(self):
+    def test_llama_scale_payload_is_explicit(self):
         spec_path = (
             REPO_ROOT
             / "test"
             / "Tools"
             / "Inputs"
             / "workloads"
-            / "llama-2-7b-block-v1.json"
+            / "llama-2-7b-block.json"
         )
         spec = self.tool.load_workload_corpus_spec(spec_path)
         case = spec["cases"][0]
@@ -424,7 +424,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             case["config"]["payload"],
             {
                 "algorithm": (
-                    "wafer-exact-f16-splitmix64-counter-byte-scaled-v3"
+                    "wafer-exact-f16-splitmix64-counter-byte-scaled"
                 ),
                 "input_denominator": 128,
                 "normalization_delta_denominator": 4096,
@@ -441,7 +441,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
         self.assertEqual(case["reference"]["atol"], 0.004)
         self.assertEqual(case["reference"]["rtol"], 0.002)
 
-    def test_llama_scale_payload_rejects_implicit_or_unversioned_scale(self):
+    def test_llama_scale_payload_rejects_implicit_or_unknown_algorithm(self):
         with self.assertRaisesRegex(
             RuntimeError, "requires explicit config.payload"
         ):
@@ -453,7 +453,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
                 "scale-case",
                 {
                     "payload": {
-                        "algorithm": "unversioned",
+                        "algorithm": "unsupported-algorithm",
                         "input_denominator": 128,
                         "projection_denominator": 8192,
                         "normalization_delta_denominator": 4096,
@@ -468,7 +468,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             / "Tools"
             / "Inputs"
             / "workloads"
-            / "llama-2-7b-block-v1.json"
+            / "llama-2-7b-block.json"
         )
         spec = self.tool.load_workload_corpus_spec(spec_path)
         base = spec["cases"][0]

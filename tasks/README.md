@@ -24,12 +24,13 @@
 | 11 | `tasks/11-instruction-ir.md` | complete static Tile instruction program、current descriptor/geometry/range/narrowing legality及mapped/physical-fill/oriented typed extension |
 | 12 | `tasks/12-ddr-memory-planning.md` | 当前DDR demand/accepted offsets；multi-arena/state/streaming延后 |
 | 13 | `tasks/13-communication.md` | selected Tile edge到typed p2p/staging/token/wait IR、Direct DTE card-scoped verification和completion；multi-card延后 |
-| 14 | `tasks/14-target-conversion-module-writing.md` | `CardExecutable`的current target identity/format、structure-preserving conversion、CRT ABI和atomic target-module writing |
+| 14 | `tasks/14-target-code-generation.md` | `CardExecutable`的current target identity/format、structure-preserving conversion、CRT ABI和atomic target-module writing |
 | 15 | `tasks/15-launch-runtime-package.md` | `CardExecutable -> ExecutablePackage`、typed manifest、canonical JSON、no-card RuntimeSession和board adapter边界 |
 | 16 | `tasks/16-verification-contract.md` | `TensorProgram -> CardModule/TileRegion/Instr -> CardExecutable -> ExecutablePackage`的target correctness、CPU oracle、target-model、scale、no-card和board分层gate |
 | 17 | `tasks/17-target-execution-model.md` | `CardExecutable`及其same-invocation target LLVM owner消费、multi-dtype numeric、oneDNN bulk、target-call/SystemC untimed CModel与板端numeric correlation边界 |
 | 18 | `tasks/18-source-organization.md` | 跨pipeline的源码ownership、translation unit、内部接口、构建依赖和测试镜像组织合同；不改变IR/output语义 |
 | 19 | `tasks/19-mlir-engineering.md` | 跨IR层的ODS、standard interface、operation-scoped pass/analysis、rewrite/conversion和named nested pipeline工程合同；不重定义01–18语义 |
+| 20 | `tasks/20-interface-evolution.md` | 跨compiler/runtime/tool的内部接口演进、持久化格式与ABI版本owner、集中兼容检查和current-only表示合同 |
 
 ### Pipeline Owner 索引
 
@@ -53,6 +54,7 @@
 | target execution model、multi-dtype numeric/bulk、same-invocation target module消费、SystemC/CModel capability、板端numeric correlation和deferred timing | 17；target module形成与writing合同由14拥有，target/runtime/verification consumer由14、15、16约束 |
 | 跨上述边界的源码与构建模块化 | 18；各IR/output语义仍由01-17拥有 |
 | 跨上述IR层的MLIR operation scope、pass/analysis manager、interface和rewrite工程合同 | 19；各层具体语义仍由01-18拥有 |
+| 跨compiler/runtime/tool的格式与ABI版本边界 | 20；具体字段语义仍由02、11、14-17拥有 |
 
 ## 实施计划导航
 
@@ -71,6 +73,10 @@ Q54 MLIR工程化整改计划见`tasks/plans/mlir-engineering-remediation.md`。
 层级成为真实pass与analysis层级，收口typed ODS、standard interface、named nested pipeline和transactional rewrite，并
 通过18定义的source truth gate；它不产生新IR stage或第二production driver。Q54优先于Q49.P、Q50.A/Q51继续施工，避免把semantic
 Location、whole-module local wrapper和手工analysis lifecycle固化进baseline probe或新的candidate/search实现。
+
+Q55接口版本收敛计划见`tasks/plans/interface-version-consolidation.md`。20只定义版本owner和兼容边界；02、11、14-17
+继续拥有具体frontend、target、package、runtime、profiler与verification字段语义。Q55不建立compatibility mode，
+只保留真实外围版本并让repo内同步接口回到一种current表示。
 
 Q48语义驱动superoptimizer计划见`tasks/plans/semantic-superoptimization.md`。它必须在Q53按card-local multi-Tile新合同
 重新达到`board-ready`、Q47 current ABI可消费final Instr/TargetCall后启动，

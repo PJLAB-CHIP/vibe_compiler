@@ -421,7 +421,7 @@ void wafer_tx81_profile_entry_begin(uint64_t buffer_address,
 
   wafer_profile_zero(wafer_profile_header, WAFER_TX81_PROFILER_HEADER_BYTES);
   wafer_profile_header->magic = WAFER_TX81_PROFILER_RECORD_MAGIC;
-  wafer_profile_header->schema_version = WAFER_TX81_PROFILER_SCHEMA_VERSION;
+  wafer_profile_header->record_version = WAFER_TX81_PROFILER_RECORD_VERSION;
   wafer_profile_header->header_bytes = WAFER_TX81_PROFILER_HEADER_BYTES;
   wafer_profile_header->event_bytes = WAFER_TX81_PROFILER_TSM_CALL_EVENT_BYTES;
   wafer_profile_header->events_offset = WAFER_TX81_PROFILER_EVENTS_OFFSET;
@@ -511,7 +511,7 @@ void wafer_tx81_profile_entry_begin_from_config(uint64_t buffer_address) {
       (const volatile WaferTx81ProfilerLaunchConfig *)(uintptr_t)buffer_address;
   WaferTx81ProfilerLaunchConfig config;
   config.magic = source->magic;
-  config.schema_version = source->schema_version;
+  config.record_version = source->record_version;
   config.config_bytes = source->config_bytes;
   config.record_bytes = source->record_bytes;
   config.tile_id = source->tile_id;
@@ -520,7 +520,7 @@ void wafer_tx81_profile_entry_begin_from_config(uint64_t buffer_address) {
   for (uint32_t index = 0; index < 3U; ++index)
     config.reserved[index] = source->reserved[index];
   if (config.magic != WAFER_TX81_PROFILER_LAUNCH_CONFIG_MAGIC ||
-      config.schema_version != WAFER_TX81_PROFILER_SCHEMA_VERSION ||
+      config.record_version != WAFER_TX81_PROFILER_RECORD_VERSION ||
       config.config_bytes != WAFER_TX81_PROFILER_LAUNCH_CONFIG_BYTES ||
       config.guard != WAFER_TX81_PROFILER_LAUNCH_CONFIG_GUARD ||
       config.reserved[0] != 0U || config.reserved[1] != 0U ||

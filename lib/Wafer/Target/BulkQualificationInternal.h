@@ -20,18 +20,16 @@
 namespace wafer::bulk_qualification_detail {
 
 inline constexpr llvm::StringLiteral kCalibrationSchema =
-    "wafer-bulk-calibration-v1";
-inline constexpr llvm::StringLiteral kPolicySchema =
-    "wafer-bulk-frozen-policy-v1";
+    "wafer-bulk-calibration";
+inline constexpr llvm::StringLiteral kPolicySchema = "wafer-bulk-policy";
 inline constexpr llvm::StringLiteral kFinalSchema =
-    "wafer-bulk-qualification-record-v1";
+    "wafer-bulk-qualification-record";
 inline constexpr llvm::StringLiteral kValueDomain =
-    "deterministic-finite-f32-exact-inputs-v1";
-inline constexpr llvm::StringLiteral kTargetComparator = "raw-exact-v1";
-inline constexpr llvm::StringLiteral kBackendComparator =
-    "absolute-relative-v1";
+    "deterministic-finite-f32-exact-inputs";
+inline constexpr llvm::StringLiteral kTargetComparator = "raw-exact";
+inline constexpr llvm::StringLiteral kBackendComparator = "absolute-relative";
 inline constexpr llvm::StringLiteral kProofBasis =
-    "finite-calibration-held-out-exact-payload-v1";
+    "finite-calibration-held-out-exact-payload";
 
 llvm::Error invalid(const llvm::Twine &detail);
 

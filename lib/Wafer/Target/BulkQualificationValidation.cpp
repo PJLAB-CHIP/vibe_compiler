@@ -108,7 +108,7 @@ llvm::Error validateBulkBackend(const BulkExecutionEnvironment &environment,
       requireString(*object, "disjoint_proof", "bulk frozen policy");
   if (!proof)
     return proof.takeError();
-  if (*proof != "same-domain-distinct-seed-spec-and-payload-v2")
+  if (*proof != "same-domain-distinct-seed-spec-and-payload")
     return invalid("bulk frozen policy disjoint proof mismatch");
   const llvm::json::Object *specObject = object->getObject("held_out_spec");
   if (!specObject)

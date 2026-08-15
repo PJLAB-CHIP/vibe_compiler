@@ -93,7 +93,7 @@ materializeBulkQualificationCase(BulkQualificationSpec spec,
   if (!key)
     return key.takeError();
   llvm::Expected<ResolvedNumericCommand> command = resolveNumericCommand(
-      ModelProfileId::formalDeterministicV1(), std::move(*key));
+      ModelProfileId::formalDeterministic(), std::move(*key));
   if (!command)
     return command.takeError();
   if (!command->isSupported())

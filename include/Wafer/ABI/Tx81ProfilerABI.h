@@ -25,13 +25,13 @@
  *   separately qualified counter semantics must all succeed before analysis.
  */
 
-#define WAFER_TX81_PROFILER_RECORD_ABI_V4 "wafer-tx81-profiler-record-v4"
+#define WAFER_TX81_PROFILER_RECORD_ABI "wafer-tx81-profiler-record-v4"
 
 #define WAFER_TX81_PROFILER_RECORD_MAGIC UINT64_C(0x3152464f52505757)
 #define WAFER_TX81_PROFILER_HEADER_GUARD UINT64_C(0xa3d95f672cb184e0)
 #define WAFER_TX81_PROFILER_BUFFER_GUARD UINT64_C(0x6e2ac4d13975bf08)
 
-#define WAFER_TX81_PROFILER_SCHEMA_VERSION 4U
+#define WAFER_TX81_PROFILER_RECORD_VERSION 4U
 #define WAFER_TX81_PROFILER_LAUNCH_CONFIG_MAGIC UINT64_C(0x3147464352505757)
 #define WAFER_TX81_PROFILER_LAUNCH_CONFIG_GUARD UINT64_C(0xd28c4f6173a950be)
 #define WAFER_TX81_PROFILER_LAUNCH_CONFIG_BYTES 64U
@@ -139,7 +139,7 @@ enum WaferTx81ProfilerEventMetadata {
  */
 typedef struct WaferTx81ProfilerLaunchConfig {
   uint64_t magic;
-  uint32_t schema_version;
+  uint32_t record_version;
   uint32_t config_bytes;
   uint64_t record_bytes;
   uint32_t tile_id;
@@ -223,7 +223,7 @@ typedef struct WaferTx81ProfilerTSMCallEvent {
 
 typedef struct WaferTx81ProfilerRecordHeader {
   uint64_t magic;
-  uint32_t schema_version;
+  uint32_t record_version;
   uint32_t header_bytes;
   uint32_t event_bytes;
   uint32_t events_offset;

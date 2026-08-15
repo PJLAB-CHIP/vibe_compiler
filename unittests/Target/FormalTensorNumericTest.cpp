@@ -19,8 +19,7 @@ namespace {
 
 using namespace wafer;
 
-constexpr ModelProfileId kModelProfile =
-    ModelProfileId::formalDeterministicV1();
+constexpr ModelProfileId kModelProfile = ModelProfileId::formalDeterministic();
 
 static_assert(!std::is_default_constructible_v<FormalNumericWorkBudget>);
 

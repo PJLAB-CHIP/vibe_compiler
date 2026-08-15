@@ -1,5 +1,5 @@
 add_executable(wafer-run
-  WaferProfileCampaign.cpp
+  WaferProfileCollection.cpp
   WaferRunBoardIO.cpp
   wafer-run.cpp
 )

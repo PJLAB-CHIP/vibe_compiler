@@ -168,7 +168,7 @@ TEST(BulkQualificationTest, ManagedEnvironmentHasClosedReadbackIdentity) {
   EXPECT_TRUE(first->getBackend().getLibraryDigest().starts_with("sha256:"));
   EXPECT_TRUE(first->getHostPlatformDigest().starts_with("sha256:"));
   EXPECT_EQ(first->getFloatingRoundingMode(), FE_TONEAREST);
-  EXPECT_EQ(first->getThreadRuntime(), "seq-caller-worker-v1");
+  EXPECT_EQ(first->getThreadRuntime(), "sequential-caller-worker");
 }
 
 TEST(BulkQualificationTest,
@@ -445,12 +445,12 @@ TEST(BulkQualificationTest, SpecAndRecordFilesAreClosedCanonicalAndNoReplace) {
             std::string::npos);
 
   const std::string noncanonicalPath = files.getPath("noncanonical.json");
-  ASSERT_FALSE(static_cast<bool>(writeText(
-      noncanonicalPath,
-      "{ \"batch_count\":1,\"destination_layout\":\"cx\","
-      "\"format\":\"f32\",\"k\":3,\"lhs_layout\":\"cx\","
-      "\"m\":2,\"n\":4,\"rhs_layout\":\"cx\","
-      "\"schema\":\"wafer-bulk-qualification-spec-v2\",\"seed\":7}\n")));
+  ASSERT_FALSE(static_cast<bool>(
+      writeText(noncanonicalPath,
+                "{ \"batch_count\":1,\"destination_layout\":\"cx\","
+                "\"format\":\"f32\",\"k\":3,\"lhs_layout\":\"cx\","
+                "\"m\":2,\"n\":4,\"rhs_layout\":\"cx\","
+                "\"schema\":\"wafer-bulk-qualification-spec\",\"seed\":7}\n")));
   EXPECT_NE(expectError(loadBulkQualificationSpec(noncanonicalPath))
                 .find("not in canonical form"),
             std::string::npos);
@@ -460,7 +460,7 @@ TEST(BulkQualificationTest, SpecAndRecordFilesAreClosedCanonicalAndNoReplace) {
       unknownPath, "{\"batch_count\":1,\"destination_layout\":\"cx\","
                    "\"format\":\"f32\",\"k\":3,\"lhs_layout\":\"cx\","
                    "\"m\":2,\"n\":4,\"rhs_layout\":\"cx\","
-                   "\"schema\":\"wafer-bulk-qualification-spec-v2\",\"seed\":7,"
+                   "\"schema\":\"wafer-bulk-qualification-spec\",\"seed\":7,"
                    "\"unknown\":false}\n")));
   EXPECT_NE(expectError(loadBulkQualificationSpec(unknownPath))
                 .find("unknown, missing or duplicate fields"),
@@ -471,7 +471,7 @@ TEST(BulkQualificationTest, SpecAndRecordFilesAreClosedCanonicalAndNoReplace) {
       malformedPath, "{\"batch_count\":\"bad\",\"destination_layout\":\"bad\","
                      "\"format\":\"bad\",\"k\":\"bad\",\"lhs_layout\":\"bad\","
                      "\"m\":\"bad\",\"n\":\"bad\",\"rhs_layout\":\"bad\","
-                     "\"schema\":\"wafer-bulk-qualification-spec-v2\","
+                     "\"schema\":\"wafer-bulk-qualification-spec\","
                      "\"seed\":\"bad\"}\n")));
   std::string malformedError =
       expectError(loadBulkQualificationSpec(malformedPath));
@@ -485,7 +485,7 @@ TEST(BulkQualificationTest, SpecAndRecordFilesAreClosedCanonicalAndNoReplace) {
       "{\"batch_count\":1,\"destination_layout\":\"cx\","
       "\"format\":\"f32\",\"k\":3,\"lhs_layout\":\"cx\","
       "\"m\":2,\"n\":4,\"rhs_layout\":\"cx\","
-      "\"schema\":\"wafer-bulk-qualification-spec-v1\",\"seed\":7}\n")));
+      "\"schema\":\"invalid-bulk-qualification-spec\",\"seed\":7}\n")));
   EXPECT_NE(expectError(loadBulkQualificationSpec(obsoleteSchemaPath))
                 .find("schema mismatch"),
             std::string::npos);

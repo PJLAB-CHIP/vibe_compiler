@@ -636,12 +636,11 @@ def check_minimalloc_snapshot(versions: dict[str, str]) -> None:
             f"invalid curated MiniMalloc provenance manifest: {error}"
         ) from error
     if set(provenance) != {
-        "schema_version",
         "upstream",
         "curated",
         "semantic_deltas",
-    } or provenance["schema_version"] != 1:
-        raise RuntimeError("curated MiniMalloc provenance schema changed")
+    }:
+        raise RuntimeError("curated MiniMalloc provenance fields changed")
 
     upstream = provenance["upstream"]
     if set(upstream) != {

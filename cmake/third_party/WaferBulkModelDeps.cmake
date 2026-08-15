@@ -40,13 +40,10 @@ function(wafer_enable_bulk_model_deps)
       "${_wafer_bulk_check_error}")
   endif()
 
-  string(JSON _wafer_bulk_schema GET
-    "${_WAFER_BULK_SNAPSHOT_JSON}" schema_version)
   string(JSON _wafer_bulk_kind GET
     "${_WAFER_BULK_SNAPSHOT_JSON}" kind)
-  if(NOT _wafer_bulk_schema EQUAL 1 OR
-     NOT _wafer_bulk_kind STREQUAL "wafer-bulk-model-canonical-snapshot")
-    message(FATAL_ERROR "Managed bulk-model canonical snapshot schema mismatch")
+  if(NOT _wafer_bulk_kind STREQUAL "wafer-bulk-model-canonical-snapshot")
+    message(FATAL_ERROR "Managed bulk-model canonical snapshot kind mismatch")
   endif()
   string(JSON _wafer_bulk_root GET "${_WAFER_BULK_SNAPSHOT_JSON}" root)
   string(JSON _wafer_bulk_record GET "${_WAFER_BULK_SNAPSHOT_JSON}" record)

@@ -135,7 +135,7 @@ std::string makeTensorDigest(LogicalFormat format, PhysicalTensorLayout layout,
                              uint64_t elementCount) {
   std::string canonical;
   llvm::raw_string_ostream stream(canonical);
-  stream << "wafer-numeric-tensor-key-v1\n"
+  stream << "wafer-numeric-tensor-key\n"
          << "format=" << stringifyLogicalFormat(format) << '\n'
          << "layout=" << stringifyPhysicalTensorLayout(layout) << '\n'
          << "rank=" << shape.size() << '\n';

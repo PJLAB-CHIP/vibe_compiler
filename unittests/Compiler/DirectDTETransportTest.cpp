@@ -987,7 +987,7 @@ TEST_F(DirectDTETransportTest, MismatchedHelperCallOccurrenceFailsClosed) {
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   EXPECT_NE(diagnosticText.find("occurrence paths are not structurally "
-                                "identical across Tiles"),
+                                "identical across physical Tiles"),
             std::string::npos);
 }
 

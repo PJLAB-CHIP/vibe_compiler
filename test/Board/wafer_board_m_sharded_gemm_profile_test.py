@@ -12,37 +12,37 @@ import shutil
 import sys
 
 import wafer_board_all_rank_add_test as profile_support
-import wafer_board_compiler_optimization_campaign_test as campaign
+import wafer_board_compiler_optimization_comparison_test as comparison
 import wafer_runtime_launch_contract as runtime_launch
 
 
 def require_stable_production_structure(
-    ordinary: campaign.TargetStructure, profiled: campaign.TargetStructure
+    ordinary: comparison.TargetStructure, profiled: comparison.TargetStructure
 ) -> None:
-    campaign.require_call(ordinary.counts, "_gemm", present=True)
-    campaign.require_call(profiled.counts, "_gemm", present=True)
+    comparison.require_call(ordinary.counts, "_gemm", present=True)
+    comparison.require_call(profiled.counts, "_gemm", present=True)
     if ordinary != profiled:
         raise RuntimeError(
             "ordinary and profiled production target structures differ"
         )
 
 
-CASE = campaign.CampaignCase(
+CASE = comparison.OptimizationComparisonCase(
     key="m-sharded-replicated-gemm-profile",
     family="compiler-search-scalability",
-    rank_count=campaign.NOC_RESIDENT_M_SHARDED_GEMM_RANKS,
+    rank_count=comparison.NOC_RESIDENT_M_SHARDED_GEMM_RANKS,
     launch_kind=runtime_launch.KERNEL_LAUNCH_KIND,
     inputs=(
-        campaign.F16_NOC_RESIDENT_M_SHARDED_GEMM_LHS_LOCAL,
-        campaign.F16_NOC_RESIDENT_M_SHARDED_GEMM_RHS_LOCAL,
+        comparison.F16_NOC_RESIDENT_M_SHARDED_GEMM_LHS_LOCAL,
+        comparison.F16_NOC_RESIDENT_M_SHARDED_GEMM_RHS_LOCAL,
     ),
-    outputs=(campaign.F16_NOC_RESIDENT_M_SHARDED_GEMM_OUTPUT_LOCAL,),
-    module_factory=campaign.noc_resident_m_sharded_gemm_module,
-    payload_factory=campaign.noc_resident_m_sharded_gemm_payloads,
+    outputs=(comparison.F16_NOC_RESIDENT_M_SHARDED_GEMM_OUTPUT_LOCAL,),
+    module_factory=comparison.noc_resident_m_sharded_gemm_module,
+    payload_factory=comparison.noc_resident_m_sharded_gemm_payloads,
     structural_oracle=require_stable_production_structure,
     expected_launch=runtime_launch.GRID_KERNEL_LAUNCH,
 )
-PROFILE_CAMPAIGN_LAUNCH_COUNT = 3
+PROFILE_MEASUREMENT_COUNT = 3
 
 
 def parse_args() -> argparse.Namespace:
@@ -92,7 +92,7 @@ def write_source(work_dir: pathlib.Path) -> pathlib.Path:
     (source / "data").mkdir()
     (source / "functions" / "forward.mlir").write_text(CASE.module_factory())
     (source / "functions" / "forward.meta").write_text(
-        json.dumps(campaign.metadata(CASE), separators=(",", ":")) + "\n"
+        json.dumps(comparison.metadata(CASE), separators=(",", ":")) + "\n"
     )
     return source
 
@@ -151,20 +151,20 @@ def main() -> int:
             )
 
     payloads = CASE.payload_factory()
-    campaign.validate_paired_payloads(CASE, payloads)
+    comparison.validate_paired_payloads(CASE, payloads)
     source = write_source(args.work_dir)
     packages = {
         "baseline": args.work_dir / "ordinary-package",
         "winner": args.work_dir / "profile-package",
     }
-    campaign.compile_package(
+    comparison.compile_package(
         args.wafer_compile,
         source,
         packages["baseline"],
         CASE,
         reserved_baseline=False,
     )
-    campaign.compile_package(
+    comparison.compile_package(
         args.wafer_compile,
         source,
         packages["winner"],
@@ -179,11 +179,11 @@ def main() -> int:
         bindings_by_variant,
         output_ids_by_variant,
         completion_evidence_by_variant,
-    ) = campaign.validate_paired_packages(
+    ) = comparison.validate_paired_packages(
         packages["baseline"], packages["winner"], CASE
     )
     structures = {
-        name: campaign.target_structure(package, args.tx8_objdump)
+        name: comparison.target_structure(package, args.tx8_objdump)
         for name, package in packages.items()
     }
     require_stable_production_structure(
@@ -197,10 +197,10 @@ def main() -> int:
                 "launch": CASE.launch_contract,
                 "rank_count": CASE.rank_count,
                 "ordinary_module_digests": list(
-                    campaign.module_digests(packages["baseline"])
+                    comparison.module_digests(packages["baseline"])
                 ),
                 "profiled_module_digests": list(
-                    campaign.module_digests(packages["winner"])
+                    comparison.module_digests(packages["winner"])
                 ),
                 "scheduler_body_sha256": list(
                     structures["winner"].scheduler_body_sha256
@@ -215,13 +215,13 @@ def main() -> int:
         )
         + "\n"
     )
-    resource_arguments = campaign.write_payloads(
+    resource_arguments = comparison.write_payloads(
         args.work_dir, CASE, bindings_by_variant, payloads
     )
 
     if args.no_card:
         for name, package in packages.items():
-            result = campaign.run(
+            result = comparison.run(
                 [
                     str(args.wafer_run),
                     "--package-dir",
@@ -238,25 +238,25 @@ def main() -> int:
         )
         return 0
 
-    result = campaign.run(
-        campaign.board_command(
+    result = comparison.run(
+        comparison.board_command(
             args, packages["winner"], CASE, resource_arguments["winner"]
         ),
         timeout_seconds=max(
             300.0,
-            PROFILE_CAMPAIGN_LAUNCH_COUNT
+            PROFILE_MEASUREMENT_COUNT
             * args.completion_timeout_ms
             / 1000.0
-            + campaign.PROCESS_TIMEOUT_MARGIN_SECONDS,
+            + comparison.PROCESS_TIMEOUT_MARGIN_SECONDS,
         ),
     )
-    campaign.verify_board_output(
+    comparison.verify_board_output(
         result.stdout,
         CASE,
         output_ids_by_variant["winner"],
         completion_evidence_by_variant["winner"],
     )
-    campaign.compare_captured_outputs(
+    comparison.compare_captured_outputs(
         args.work_dir, CASE, payloads, "winner"
     )
     device_duration, report = profile_support.verify_profile_report(

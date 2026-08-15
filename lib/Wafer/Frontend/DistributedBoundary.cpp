@@ -139,8 +139,7 @@ bool verifyDistributedBoundaryBinding(const DistributedBoundaryBinding &binding,
   std::vector<bool> seenReplicaIds(numPartitions, false);
   std::vector<int64_t> maximumSizes(binding.globalShape.size(), 0);
   for (const DistributedBoundaryPartition &partition : binding.partitions) {
-    if (partition.partitionId < 0 ||
-        partition.partitionId >= numPartitions)
+    if (partition.partitionId < 0 || partition.partitionId >= numPartitions)
       return rejectProgramDirectory(
           "distributed boundary partition_id is out of range", diagnostics);
     if (seenPartitions[partition.partitionId])
@@ -154,8 +153,7 @@ bool verifyDistributedBoundaryBinding(const DistributedBoundaryBinding &binding,
             "partitioned distributed boundary replica_id must be 0",
             diagnostics);
     } else {
-      if (partition.replicaId < 0 ||
-          partition.replicaId >= numPartitions)
+      if (partition.replicaId < 0 || partition.replicaId >= numPartitions)
         return rejectProgramDirectory(
             "replicated distributed boundary replica_id is out of range",
             diagnostics);
@@ -207,9 +205,9 @@ bool verifyDistributedBoundaryBinding(const DistributedBoundaryBinding &binding,
         "partitioned distributed boundary slices do not explain local_shape",
         diagnostics);
   }
-  return verifyDistributedBoundaryCoverage(
-      binding.partitions, binding.globalShape, binding.distribution,
-      diagnostics);
+  return verifyDistributedBoundaryCoverage(binding.partitions,
+                                           binding.globalShape,
+                                           binding.distribution, diagnostics);
 }
 
 } // namespace
@@ -230,9 +228,6 @@ bool verifyDistributedBoundary(
         diagnostics);
 
   const DistributedBoundary &boundary = *meta.distributedBoundary;
-  if (boundary.version != 2)
-    return rejectProgramDirectory("unsupported distributed_boundary version",
-                                  diagnostics);
   if (boundary.numPartitions <= 0)
     return rejectProgramDirectory(
         "distributed_boundary num_partitions must be positive", diagnostics);
@@ -279,9 +274,9 @@ bool verifyDistributedBoundary(
     auto tensorType =
         dyn_cast<RankedTensorType>(functionType.getInput(binding.index));
     if (!tensorType ||
-        verifyDistributedBoundaryBinding(
-            binding, tensorType, meta.inputSignatures[binding.index],
-            boundary.numPartitions, diagnostics))
+        verifyDistributedBoundaryBinding(binding, tensorType,
+                                         meta.inputSignatures[binding.index],
+                                         boundary.numPartitions, diagnostics))
       return true;
   }
   for (auto [index, location] : llvm::enumerate(meta.inputLocations)) {
@@ -303,9 +298,9 @@ bool verifyDistributedBoundary(
     auto tensorType =
         dyn_cast<RankedTensorType>(functionType.getResult(binding.index));
     if (!tensorType ||
-        verifyDistributedBoundaryBinding(
-            binding, tensorType, meta.outputSignatures[binding.index],
-            boundary.numPartitions, diagnostics))
+        verifyDistributedBoundaryBinding(binding, tensorType,
+                                         meta.outputSignatures[binding.index],
+                                         boundary.numPartitions, diagnostics))
       return true;
   }
   if (llvm::any_of(seenOutputs, [](bool seen) { return !seen; }))
@@ -314,30 +309,27 @@ bool verifyDistributedBoundary(
         diagnostics);
   if (result) {
     result->numPartitions = boundary.numPartitions;
-    auto copyBindings =
-        [&](llvm::ArrayRef<DistributedBoundaryBinding> source,
-            std::vector<wafer::frontend::ProgramBoundaryBinding> &destination,
-            bool inputs) {
-          destination.reserve(source.size());
-          for (const DistributedBoundaryBinding &binding : source) {
-            wafer::frontend::ProgramBoundaryBinding typed;
-            typed.index = binding.index;
-            typed.programIndex =
-                inputs ? meta.inputLocations[binding.index].position
-                       : binding.index;
-            typed.distribution =
-                getVerifiedDistributionKind(binding.distribution);
-            typed.globalShape = binding.globalShape;
-            typed.localShape = binding.localShape;
-            typed.dtype = normalizeProgramDtype(binding.dtype);
-            typed.partitionSlices.reserve(binding.partitions.size());
-            for (const DistributedBoundaryPartition &partition :
-                 binding.partitions)
-              typed.partitionSlices.push_back(
-                  getVerifiedPartitionSlice(partition));
-            destination.push_back(std::move(typed));
-          }
-        };
+    auto copyBindings = [&](llvm::ArrayRef<DistributedBoundaryBinding> source,
+                            std::vector<wafer::frontend::ProgramBoundaryBinding>
+                                &destination,
+                            bool inputs) {
+      destination.reserve(source.size());
+      for (const DistributedBoundaryBinding &binding : source) {
+        wafer::frontend::ProgramBoundaryBinding typed;
+        typed.index = binding.index;
+        typed.programIndex = inputs
+                                 ? meta.inputLocations[binding.index].position
+                                 : binding.index;
+        typed.distribution = getVerifiedDistributionKind(binding.distribution);
+        typed.globalShape = binding.globalShape;
+        typed.localShape = binding.localShape;
+        typed.dtype = normalizeProgramDtype(binding.dtype);
+        typed.partitionSlices.reserve(binding.partitions.size());
+        for (const DistributedBoundaryPartition &partition : binding.partitions)
+          typed.partitionSlices.push_back(getVerifiedPartitionSlice(partition));
+        destination.push_back(std::move(typed));
+      }
+    };
     copyBindings(boundary.inputs, result->distributedInputs, true);
     copyBindings(boundary.outputs, result->distributedOutputs, false);
   }

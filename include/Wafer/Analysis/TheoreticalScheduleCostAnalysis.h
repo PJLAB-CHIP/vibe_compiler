@@ -14,7 +14,7 @@
 
 namespace wafer::analysis {
 
-/// Versioned point-model inputs used by the theoretical duration estimate.
+/// Explicit point-model inputs used by the theoretical duration estimate.
 /// These flags are diagnostic only; they never establish a performance proof.
 enum class StaticDurationAssumption : uint32_t {
   None = 0,
@@ -118,8 +118,8 @@ struct StaticScheduleWork {
 
 /// Work in one branch has data/effect order and therefore sums. Different
 /// branches in one stage are independent and therefore the stage duration is
-/// their maximum. Distinct work pointers let a structured-DAG scheduler represent
-/// concurrent branches with different service demands.
+/// their maximum. Distinct work pointers let a structured-DAG scheduler
+/// represent concurrent branches with different service demands.
 struct StaticScheduleBranch {
   llvm::SmallVector<StaticScheduleWork, 4> dependentWork;
 };
@@ -182,9 +182,8 @@ public:
   }
 
 private:
-  explicit StaticSchedulePlan(
-      const CardInstructionProgramCost &controlCost,
-      llvm::SmallVector<StaticScheduleStep, 8> steps)
+  explicit StaticSchedulePlan(const CardInstructionProgramCost &controlCost,
+                              llvm::SmallVector<StaticScheduleStep, 8> steps)
       : controlCost(&controlCost), steps(std::move(steps)) {}
 
   const CardInstructionProgramCost *controlCost;
@@ -192,8 +191,8 @@ private:
 };
 
 /// Estimate explicit plans under one uniform enabled-term set. Pointer form
-/// lets independently-owned structured-DAG candidates retain their finite plans and
-/// phase costs without copies. A null plan returns an empty result.
+/// lets independently-owned structured-DAG candidates retain their finite plans
+/// and phase costs without copies. A null plan returns an empty result.
 llvm::SmallVector<ProgramDurationEstimate, 16>
 estimateStaticSchedulePlanDurations(
     llvm::ArrayRef<const StaticSchedulePlan *> plans,

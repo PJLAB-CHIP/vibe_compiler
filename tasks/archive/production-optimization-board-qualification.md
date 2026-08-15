@@ -1,4 +1,4 @@
-# Production Compiler Optimization Board Campaign 实施计划
+# Production Compiler Optimization Board Qualification 实施计划
 
 状态：当前8个同源paired case已经按FP16合同fresh串行执行并8/8通过：common-factor、reciprocal、
 resident fanout、consumer-local recompute、ready-order、两个GEMM和tree all-reduce。tree all-reduce
@@ -45,7 +45,7 @@ Pipeline position:
   当前production优化轴全部映射到new paired-board、existing-board、host-exact或pending
   configured-board gate之一；需要A/B的case实际生成结构不同但boundary等价的baseline/winner
   package，no-card双包均通过；已有board-mapped case的CTest和默认外显式批次顺序已经注册。
-  software pipeline configured-board gate在仓内尚无消费同源compiler package的board campaign
+  software pipeline configured-board gate在仓内尚无消费同源compiler package的board qualification
   asset时保留external blocker；初始/终止heartbeat、单进程串行、timeout、无retry/reset/power
   合同保持。真实上板前状态为pending，不把资产ready写成board evidence。
 ```
@@ -101,7 +101,7 @@ Pipeline position:
 - `loop-invariant`：当前由host production-frontier positive/negative gate覆盖。公开StableHLO
   source-to-package链尚不能把该rewrite消费的SCF loop带到tensor-program stage，因此不为凑板测
   引入测试旁路；未来真实source producer闭合后再按trip=1与trip>1接入同源双包；
-- `collective-algorithm`：现有Direct DTE production vertical在campaign中复跑；Tree all-reduce同源双包只声明
+- `collective-algorithm`：现有Direct DTE production vertical在qualification batch中复跑；Tree all-reduce同源双包只声明
   final target静态prepare callsite与workspace减少、scheduler body不同，并以f16 full output和16条
   all-and-only completion/status验证正确性。ordered rank graph由既有host exact gate负责，不能由静态callsite
   反推。Ring all-gather当前公开SPMD boundary只提交reserved baseline，不能拿两个相同package上板冒充A/B。
@@ -123,7 +123,7 @@ producer；唯一剩余门禁是在configured board上复用同一个paired-pack
 3. CTest inventory必须把board case标成`board;hardware;compiler-optimization;paired`并持有同一
    device resource lock；
 4. 现有hardware runner在默认校准步骤之外提供显式
-   `--batch compiler-optimization-campaign`，按canonical order执行既有Direct vertical和8个paired case；
+   `--batch compiler-optimization-tests`，按canonical order执行既有Direct vertical和8个paired case；
    `--batch compiler-optimization-paired`只保留8个同源双包子集。二者都只在本次重启会话开头执行一次
    初始资格测试，不在结尾或case之间重复环境qualification；
 5. 每个optimizer case归档三份source snapshot、两份最终ELF与manifest、结构/观测JSON、raw payload及

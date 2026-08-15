@@ -96,7 +96,7 @@ packTensor(const InvocationMemoryRegistry &memory, int64_t launchSlot,
 llvm::Expected<ResolvedNumericCommand>
 resolveNumeric(NumericCommandKey command) {
   llvm::Expected<ResolvedNumericCommand> resolved = resolveNumericCommand(
-      ModelProfileId::formalDeterministicV1(), std::move(command));
+      ModelProfileId::formalDeterministic(), std::move(command));
   if (!resolved)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
                        llvm::toString(resolved.takeError()));
@@ -623,7 +623,7 @@ executeMemset(const compiler::TargetCommand &command,
   if (!key)
     return key.takeError();
   const LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministicV1())
+      getModelProfileRecord(ModelProfileId::formalDeterministic())
           .numericEncodePolicy;
   llvm::Expected<RawLogicalValue> scalar = makeRawLogicalValue(
       value.format, value.value, policy.nonCanonicalEncoding);

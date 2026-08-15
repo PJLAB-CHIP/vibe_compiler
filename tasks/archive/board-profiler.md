@@ -228,7 +228,7 @@ device elapsed time、Primary 输出或局部 counter 证据。
   rank/site typed identity、engine、correlation 和目标调用顺序。
 - runner 在任何 submit 前解析完整 ordered phase export 集合；provider stream/submission 存活期间不再
   解析新 function。
-- 同一 companion 的 campaign/publication 由 runner 单进程串行拥有。报告先在临时目录完整生成，再原子
+- 同一 companion 的测量序列和报告写入由 runner 单进程串行拥有。报告先在临时目录完整生成，再原子
   替换 `runs/current`；内部 capture package 不作为用户报告产物。
 
 ## 实施 checkpoints
@@ -238,7 +238,7 @@ device elapsed time、Primary 输出或局部 counter 证据。
 2. **Record 和 instrumentation**：record ABI 显式携带 typed phase kind、production-correlated /
    trace-only count、site/submit/wait/DTE span、严格 sample bounds、zero-delta/ambiguous 状态和
    exclusive profiler overhead；Count/Trace terminal protocol和decoder negative闭合。
-3. **Runtime campaign**：固定三次 launch、Primary 首门槛、Count capacity、Trace exact audit、每次 output
+3. **Runtime measurement sequence**：固定三次 launch、Primary 首门槛、Count capacity、Trace exact audit、每次 output
    校验、timeout stop、三文件原子发布。
 4. **Analyzer/report**：单次Primary TX stream launch-to-completion包络及分离的host diagnostics、
    16 tile、五类NCC engine execution nanoseconds、Direct-DTE phase cycles/raw activity、
@@ -255,7 +255,7 @@ Q9 在含真实 Direct-DTE wait 的
 
 ## Historical Add evidence boundary
 
-2026-07-28 的历史 Add campaign 串行执行了 Primary、Count、Trace 三次 launch，未重试或复位；输出
+2026-07-28 的历史 Add 测量序列串行执行了 Primary、Count、Trace 三次 launch，未重试或复位；输出
 16个resource均 expected-exact，Count/Trace 与 Primary 一致，16 tile 和64个event完整。旧报告中的
 `1,029,187 ns`来自 host steady-clock submit→all-rank trusted-completion envelope，只能作为历史 host
 diagnostic，不能再称为最终 artifact 的 kernel/model device elapsed time，也不能满足当前 Primary
@@ -271,7 +271,7 @@ device-event elapsed time，也没有 Direct-DTE wait，不能用 host envelope 
 ## Completion evidence
 
 2026-07-28 使用本轮新构建、新package、新launch和新output串行完成最终门禁。板卡heartbeat通过后，
-Add与Direct-DTE各执行一个固定Primary→Count→Trace campaign，未并发、未reset或power。Add的未插桩
+Add与Direct-DTE各执行一个固定Primary→Count→Trace测量序列，未并发、未reset或power。Add的未插桩
 Primary TX stream device elapsed为`856000 ns`，host submit为`142118 ns`，host
 launch-to-completion为`1166716 ns`；Direct-DTE分别为`1328000 ns`、`185727 ns`和`1766194 ns`。
 两者均为`valid=true`，16 rank output expected-exact，Count/Trace与Primary一致。

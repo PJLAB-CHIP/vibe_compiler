@@ -20,7 +20,6 @@ import uuid
 from bulk_deps import (
     BUILD_OPTIONS as BULK_BUILD_OPTIONS,
     RECORD_KIND as BULK_RECORD_KIND,
-    RECORD_SCHEMA_VERSION as BULK_RECORD_SCHEMA_VERSION,
     RECORD_STATUS as BULK_RECORD_STATUS,
     REQUIRED_GATES as BULK_REQUIRED_GATES,
     SOURCE_DIRECTORY_PREFIX as BULK_SOURCE_DIRECTORY_PREFIX,
@@ -31,7 +30,6 @@ from bulk_deps import (
 from systemc_deps import (
     BUILD_OPTIONS as SYSTEMC_BUILD_OPTIONS,
     RECORD_KIND as SYSTEMC_RECORD_KIND,
-    RECORD_SCHEMA_VERSION as SYSTEMC_RECORD_SCHEMA_VERSION,
     RECORD_STATUS as SYSTEMC_RECORD_STATUS,
     REQUIRED_GATES as SYSTEMC_REQUIRED_GATES,
     SOURCE_DIRECTORY_PREFIX as SYSTEMC_SOURCE_DIRECTORY_PREFIX,
@@ -45,7 +43,6 @@ from numeric_deps import (
     LINKAGE_POLICY,
     NumericPin,
     RECORD_KIND,
-    RECORD_SCHEMA_VERSION,
     RECORD_STATUS,
     SOFTFLOAT_PLATFORM,
     SOFTFLOAT_RAISE_FLAGS,
@@ -838,7 +835,6 @@ int main(void) {{
             )
 
         record = {
-            "schema_version": RECORD_SCHEMA_VERSION,
             "kind": RECORD_KIND,
             "status": RECORD_STATUS,
             "pins": pin_records,
@@ -855,7 +851,7 @@ int main(void) {{
                 "toolchain": toolchain,
                 "environments": environments,
                 "mpfr_patches": "",
-                "elf_identity_policy": "sha256-build-id-soname-needed-rpath-v1",
+                "elf_identity_policy": "sha256-build-id-soname-needed-rpath",
             },
             "artifacts": {
                 name: file_identity(numeric_root, path, readelf=readelf)
@@ -1146,7 +1142,6 @@ def build_bulk_model_dependencies(
             "api-smoke": smoke,
         }
         record = {
-            "schema_version": BULK_RECORD_SCHEMA_VERSION,
             "kind": BULK_RECORD_KIND,
             "status": BULK_RECORD_STATUS,
             "dependency": {
@@ -1501,7 +1496,6 @@ def build_systemc_model_dependency(
             "delta-event-smoke": smoke,
         }
         record = {
-            "schema_version": SYSTEMC_RECORD_SCHEMA_VERSION,
             "kind": SYSTEMC_RECORD_KIND,
             "status": SYSTEMC_RECORD_STATUS,
             "dependency": {

@@ -56,7 +56,7 @@ def _static_cost_model() -> dict[str, Any]:
             }
         )
     return {
-        "model": "tx81-static-peak-lower-bound-v1",
+        "model": "tx81-static-throughput-lower-bound",
         "scope": "complete-final-instruction-program-per-physical-tile",
         "rates": {
             "card_ddr_bytes_per_second": 200_000_000_000,
@@ -488,14 +488,13 @@ def make_evidence(*, permute_bindings: bool = False) -> dict[str, Any]:
         "run_id": "fixture-primary-program",
         "program": {
             "program_manifest_sha256": FINAL_DIGEST,
-            "profile_instrumentation_schema_version": 10,
             "record_abi": RECORD_ABI,
             "target_identity": target_identity,
             "launch": _kernel_launch(),
             "card_count": 1,
             "tile_count": 16,
             "site_correlation_basis": (
-                "typed-target-call-ordinal-ssa-numbering-occurrence-v3"
+                "target-call-ordinal-ssa-position"
             ),
         },
         "topology": [

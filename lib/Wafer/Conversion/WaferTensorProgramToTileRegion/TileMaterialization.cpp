@@ -41,8 +41,8 @@ static bool isCandidateOutputDestination(TensorProgramScope scope,
     if (isTensorProgramOutputBoundary(scope, current, outputIndex))
       return true;
     // A structured shard traversal may end at an internal same-region
-    // physical version. tensor.empty is the typed destination for that
-    // version; bufferization later materializes the corresponding SPM root in
+    // physical encoding. tensor.empty is the typed destination for that
+    // encoding; bufferization later materializes the corresponding SPM root in
     // the actual Tile clone. This does not make an arbitrary producer result a
     // boundary.
     if (auto empty = current.getDefiningOp<mlir::tensor::EmptyOp>())
@@ -2286,8 +2286,8 @@ getCandidateOutputBoundary(TensorProgramScope scope, unsigned outputIndex,
 /// Give every pure ranked-tensor function result a structured output anchor.
 /// Source programs routinely return a shape view or an insert/extract update
 /// rather than the last compute op itself.  Those values are still ordinary
-/// SSA dataflow and must not narrow structured-DAG search to workloads whose return
-/// happens to be a DPS op.  A generic identity anchor exposes the result
+/// SSA dataflow and must not narrow structured-DAG search to workloads whose
+/// return happens to be a DPS op.  A generic identity anchor exposes the result
 /// domain through TilingInterface; producer fusion must then prove the exact
 /// tile relation through the original view/update chain.  Failure to fuse
 /// remains a candidate legality failure rather than a full-tensor fallback.

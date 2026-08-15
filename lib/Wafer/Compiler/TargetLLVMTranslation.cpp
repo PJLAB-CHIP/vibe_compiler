@@ -31,7 +31,6 @@ namespace wafer::compiler::detail {
 namespace {
 
 constexpr llvm::StringLiteral kTargetLLVMTriple = "riscv64-unknown-unknown-elf";
-constexpr llvm::StringLiteral kTargetLLVMSchemaMetadata = "wafer.target.schema";
 constexpr llvm::StringLiteral kTargetLLVMCardIdMetadata =
     "wafer.target.card_id";
 constexpr llvm::StringLiteral kTargetLLVMTileIdMetadata =
@@ -46,7 +45,6 @@ constexpr llvm::StringLiteral kTargetLLVMFormatMetadata =
     "wafer.target.module_format";
 constexpr llvm::StringLiteral kTargetLLVMSlotsMetadata =
     "wafer.target.abi_slots";
-constexpr llvm::StringLiteral kTargetLLVMSchema = "wafer-target-llvm-module-v4";
 
 llvm::StringRef stringifyKernelABISlotRole(KernelABISlotRole role) {
   switch (role) {
@@ -89,7 +87,6 @@ void addSignedMetadata(llvm::Module &module, llvm::StringRef name,
 void attachTargetLLVMMetadata(llvm::Module &module,
                               const PreparedTile &prepared,
                               llvm::StringRef entrySymbol) {
-  addStringMetadata(module, kTargetLLVMSchemaMetadata, kTargetLLVMSchema);
   addSignedMetadata(module, kTargetLLVMCardIdMetadata,
                     prepared.cardId.getValue());
   addSignedMetadata(module, kTargetLLVMTileIdMetadata,
@@ -272,14 +269,14 @@ verifyTargetLLVMSlotMetadata(const llvm::Module &module,
 
 } // namespace
 
-llvm::Error verifyTargetLLVMModule(
-    const llvm::Module &module, CardId expectedCardId,
-    TileId expectedTileId, LaunchSlotId expectedLaunchSlotId,
-    llvm::StringRef expectedEntrySymbol,
-    TargetIdentityId expectedTargetIdentity,
-    KernelRuntimeABIId expectedKernelRuntimeABI,
-    llvm::StringRef expectedModuleFormat,
-    llvm::ArrayRef<KernelABISlot> expectedSlots) {
+llvm::Error
+verifyTargetLLVMModule(const llvm::Module &module, CardId expectedCardId,
+                       TileId expectedTileId, LaunchSlotId expectedLaunchSlotId,
+                       llvm::StringRef expectedEntrySymbol,
+                       TargetIdentityId expectedTargetIdentity,
+                       KernelRuntimeABIId expectedKernelRuntimeABI,
+                       llvm::StringRef expectedModuleFormat,
+                       llvm::ArrayRef<KernelABISlot> expectedSlots) {
   std::string verifierOutput;
   llvm::raw_string_ostream verifierDiagnostics(verifierOutput);
   if (llvm::verifyModule(module, &verifierDiagnostics))
@@ -288,8 +285,7 @@ llvm::Error verifyTargetLLVMModule(
                                    verifierOutput.c_str());
   std::string expectedIdentifier =
       llvm::formatv("wafer.target.card.{0}.tile.{1:D5}.launch.{2:D5}",
-                    expectedCardId.getValue(),
-                    expectedTileId.getValue(),
+                    expectedCardId.getValue(), expectedTileId.getValue(),
                     expectedLaunchSlotId.getValue())
           .str();
   if (module.getModuleIdentifier() != expectedIdentifier)
@@ -302,10 +298,6 @@ llvm::Error verifyTargetLLVMModule(
         llvm::errc::invalid_argument,
         "target LLVM triple is not the closed target triple");
 
-  llvm::Expected<llvm::StringRef> schema =
-      readSingleStringMetadata(module, kTargetLLVMSchemaMetadata);
-  if (!schema)
-    return schema.takeError();
   llvm::Expected<int64_t> cardId =
       readSingleSignedMetadata(module, kTargetLLVMCardIdMetadata);
   if (!cardId)
@@ -342,8 +334,7 @@ llvm::Error verifyTargetLLVMModule(
       parseKernelRuntimeABIId(*abiSpelling);
   if (!abi)
     return abi.takeError();
-  if (*schema != kTargetLLVMSchema ||
-      *cardId != expectedCardId.getValue() ||
+  if (*cardId != expectedCardId.getValue() ||
       *tileId != expectedTileId.getValue() ||
       *launchSlot != expectedLaunchSlotId.getValue() ||
       *entrySymbol != expectedEntrySymbol ||
@@ -408,8 +399,7 @@ mlir::LogicalResult verifyLoweredKernelABI(PreparedTile &prepared,
 }
 
 llvm::Expected<TargetLLVMModule>
-translatePreparedTile(PreparedTile prepared,
-                              llvm::StringRef entrySymbol) {
+translatePreparedTile(PreparedTile prepared, llvm::StringRef entrySymbol) {
   auto llvmContext = std::make_unique<llvm::LLVMContext>();
   std::unique_ptr<llvm::Module> llvmModule = mlir::translateModuleToLLVMIR(
       *prepared.module, *llvmContext, "wafer_target_physical_tile");
@@ -418,8 +408,7 @@ translatePreparedTile(PreparedTile prepared,
                                    "target LLVM IR translation failed");
   llvmModule->setModuleIdentifier(
       llvm::formatv("wafer.target.card.{0}.tile.{1:D5}.launch.{2:D5}",
-                    prepared.cardId.getValue(),
-                    prepared.tileId.getValue(),
+                    prepared.cardId.getValue(), prepared.tileId.getValue(),
                     prepared.launchSlotId.getValue())
           .str());
   llvmModule->setTargetTriple(kTargetLLVMTriple);
@@ -428,15 +417,14 @@ translatePreparedTile(PreparedTile prepared,
     return std::move(error);
   attachTargetLLVMMetadata(*llvmModule, prepared, entrySymbol);
   if (llvm::Error error = verifyTargetLLVMModule(
-          *llvmModule, prepared.cardId, prepared.tileId,
-          prepared.launchSlotId, entrySymbol, prepared.targetIdentity,
-          prepared.kernelRuntimeABI, prepared.moduleFormat, prepared.slots))
+          *llvmModule, prepared.cardId, prepared.tileId, prepared.launchSlotId,
+          entrySymbol, prepared.targetIdentity, prepared.kernelRuntimeABI,
+          prepared.moduleFormat, prepared.slots))
     return std::move(error);
   return TargetLLVMModulesBuilder::makeModule(
-      prepared.cardId, prepared.tileId, prepared.launchSlotId,
-      entrySymbol, prepared.targetIdentity, prepared.kernelRuntimeABI,
-      prepared.moduleFormat, std::move(prepared.slots), std::move(llvmContext),
-      std::move(llvmModule));
+      prepared.cardId, prepared.tileId, prepared.launchSlotId, entrySymbol,
+      prepared.targetIdentity, prepared.kernelRuntimeABI, prepared.moduleFormat,
+      std::move(prepared.slots), std::move(llvmContext), std::move(llvmModule));
 }
 
 } // namespace wafer::compiler::detail

@@ -265,7 +265,7 @@ std::string descriptorDigest(dnnl::memory::desc descriptor,
   std::vector<uint8_t> blob = descriptor.get_blob();
   llvm::SmallString<512> identity;
   llvm::raw_svector_ostream stream(identity);
-  appendField(stream, "schema", "wafer-bulk-descriptor-v1");
+  appendField(stream, "schema", "wafer-bulk-descriptor");
   appendField(stream, "environment", environment.getDigest());
   appendField(stream, "adapter", getBulkAdapterContractDigest());
   appendField(stream, "resolution", command.getDigest());

@@ -40,14 +40,11 @@ function(wafer_enable_systemc_model_deps)
       "${_wafer_systemc_check_error}")
   endif()
 
-  string(JSON _wafer_systemc_schema GET
-    "${_WAFER_SYSTEMC_SNAPSHOT_JSON}" schema_version)
   string(JSON _wafer_systemc_kind GET
     "${_WAFER_SYSTEMC_SNAPSHOT_JSON}" kind)
-  if(NOT _wafer_systemc_schema EQUAL 1 OR
-     NOT _wafer_systemc_kind STREQUAL
+  if(NOT _wafer_systemc_kind STREQUAL
          "wafer-systemc-model-canonical-snapshot")
-    message(FATAL_ERROR "Managed SystemC canonical snapshot schema mismatch")
+    message(FATAL_ERROR "Managed SystemC canonical snapshot kind mismatch")
   endif()
   string(JSON _wafer_systemc_root GET
     "${_WAFER_SYSTEMC_SNAPSHOT_JSON}" root)

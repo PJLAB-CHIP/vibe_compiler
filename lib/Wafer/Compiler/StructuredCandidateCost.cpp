@@ -692,7 +692,7 @@ static RankFacts deriveRankFacts(const CoordinatedRankTileModule &rank) {
       appendControlPath(physical, operation);
       physical << '\n';
       accumulators[index(Dimension::ResourcePressure)].addEstimate(
-          1, 1, "memref.alloc", "current-static-buffer-sites-v1");
+          1, 1, "memref.alloc", "static-buffer-sites");
       return;
     }
     if (!isTileOperation(operation))
@@ -734,7 +734,7 @@ static RankFacts deriveRankFacts(const CoordinatedRankTileModule &rank) {
         return;
       }
       if (!multiplicity.exact) {
-        std::string model = (llvm::Twine("static-site-dynamic-control-v1:") +
+        std::string model = (llvm::Twine("static-site-dynamic-control:") +
                              multiplicity.disposition)
                                 .str();
         accumulator.addEstimate(*amount, 1, identity, model);
@@ -775,15 +775,15 @@ static RankFacts deriveRankFacts(const CoordinatedRankTileModule &rank) {
     }
     addEstimated(Dimension::InstrAggregateWork, instructionSites,
                  operation->getName().getStringRef(),
-                 "tile-action-instruction-site-model-v1");
+                 "tile-action-instruction-site-model");
     addEstimated(Dimension::CompletionMaximumRankWaitWork, instructionSites,
                  operation->getName().getStringRef(),
-                 "tile-action-completion-obligation-model-v1");
+                 "tile-action-completion-obligation-model");
     if (mlir::isa<StorageLoadOp, StorageStoreOp>(operation) ||
         isLocalMovement(operation) || isTileCommunication(operation))
       addEstimated(Dimension::DescriptorPressure, instructionSites,
                    operation->getName().getStringRef(),
-                   "tile-action-descriptor-site-model-v1");
+                   "tile-action-descriptor-site-model");
 
     if (isTileCompute(operation)) {
       sawCompute = true;
@@ -800,9 +800,9 @@ static RankFacts deriveRankFacts(const CoordinatedRankTileModule &rank) {
         std::optional<uint64_t> selectWork =
             getStaticElementCount(select.getResult().getType());
         addEstimated(Dimension::ComputeAggregateWork, selectWork, identity,
-                     "select-element-operation-proxy-v1");
+                     "select-element-operation-proxy");
         addEstimated(Dimension::ComputeMaximumRankWork, selectWork, identity,
-                     "select-element-operation-proxy-v1");
+                     "select-element-operation-proxy");
       } else {
         addKnownOrEstimated(Dimension::ComputeAggregateWork, std::nullopt,
                             identity);
@@ -819,13 +819,13 @@ static RankFacts deriveRankFacts(const CoordinatedRankTileModule &rank) {
                           getCompactBytes(load.getSource().getType()),
                           "tile.load-bytes");
       addEstimated(Dimension::DDRMaximumRankIssueWork, 1, "tile.load",
-                   "one-ddr-issue-per-tile-request-v1");
+                   "one-ddr-issue-per-tile-request");
     } else if (auto store = mlir::dyn_cast<StorageStoreOp>(operation)) {
       addKnownOrEstimated(Dimension::DDRAggregateWriteBytes,
                           getCompactBytes(store.getDest().getType()),
                           "tile.store-bytes");
       addEstimated(Dimension::DDRMaximumRankIssueWork, 1, "tile.store",
-                   "one-ddr-issue-per-tile-request-v1");
+                   "one-ddr-issue-per-tile-request");
     }
 
     if (isLocalMovement(operation)) {
@@ -851,7 +851,7 @@ static RankFacts deriveRankFacts(const CoordinatedRankTileModule &rank) {
       // Peer and collective request payloads are explicit logical bytes in
       // current Tile IR. Algorithm-specific routing remains owned by
       // executable evaluation;
-      // the versioned logical phase/link/endpoint models below provide only
+      // the logical phase/link/endpoint models below provide only
       // comparable pre-Instr estimates and are replaced by final recost.
       addKnownOrEstimated(Dimension::NoCAggregatePayloadBytes, payload,
                           operation->getName().getStringRef());
@@ -864,10 +864,10 @@ static RankFacts deriveRankFacts(const CoordinatedRankTileModule &rank) {
       }
       addEstimated(Dimension::NoCLinkWork, linkWork,
                    operation->getName().getStringRef(),
-                   "logical-one-hop-link-byte-model-v1");
+                   "logical-one-hop-link-byte-model");
       addEstimated(Dimension::NoCEndpointWork, communicationPhases,
                    operation->getName().getStringRef(),
-                   "logical-communication-phase-endpoint-model-v1");
+                   "logical-communication-phase-endpoint-model");
       addKnownOrEstimated(Dimension::AllRankCouplingWork, 1,
                           operation->getName().getStringRef());
     }
@@ -885,7 +885,7 @@ static RankFacts deriveRankFacts(const CoordinatedRankTileModule &rank) {
     accumulators[index(Dimension::CriticalPathLowerBound)].add(
         criticalPathLowerBound, 1, "tile-ssa-dependency-lower-bound");
     accumulators[index(Dimension::ResourcePressure)].addEstimate(
-        0, 1, tileKey, "current-static-buffer-sites-v1");
+        0, 1, tileKey, "static-buffer-sites");
   }
   if (sawCompute) {
     // Current IR has no durable recompute role, while exact aggregate compute
@@ -894,7 +894,7 @@ static RankFacts deriveRankFacts(const CoordinatedRankTileModule &rank) {
     // Instr recost still charges every materialized compute instruction.
     accumulators[index(Dimension::RecomputeAggregateWork)].addEstimate(
         0, 1, "recompute-role-not-explicit-total-compute-exact",
-        "no-explicit-recompute-role-model-v1");
+        "no-explicit-recompute-role-model");
   }
   RankFacts result;
   for (size_t metricIndex = 0;

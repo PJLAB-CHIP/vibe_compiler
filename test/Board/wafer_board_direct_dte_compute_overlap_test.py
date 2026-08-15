@@ -14,7 +14,7 @@ import time
 
 import torch
 
-import wafer_board_compiler_optimization_campaign_test as campaign
+import wafer_board_compiler_optimization_comparison_test as comparison
 
 
 TARGET_IDENTITY = "wafer-tx81-single-card"
@@ -52,13 +52,13 @@ module {{
 """
 
 
-def overlap_payloads() -> campaign.PairedPayloads:
-    lhs = campaign.random_f16((ELEMENT_COUNT,), 400)
-    rhs = campaign.random_f16((ELEMENT_COUNT,), 401)
+def overlap_payloads() -> comparison.PairedPayloads:
+    lhs = comparison.random_f16((ELEMENT_COUNT,), 400)
+    rhs = comparison.random_f16((ELEMENT_COUNT,), 401)
     expected = (lhs + lhs) + (rhs * rhs)
     inputs = [[lhs.clone(), rhs.clone()] for _ in range(16)]
     outputs = [[expected.clone()] for _ in range(16)]
-    return campaign.PairedPayloads(
+    return comparison.PairedPayloads(
         inputs,
         outputs,
         [[expected.clone()] for _ in range(16)],
@@ -66,19 +66,19 @@ def overlap_payloads() -> campaign.PairedPayloads:
 
 
 def overlap_structure_oracle(
-    baseline: campaign.TargetStructure,
-    winner: campaign.TargetStructure,
+    baseline: comparison.TargetStructure,
+    winner: comparison.TargetStructure,
 ) -> None:
     del baseline, winner
 
 
-CASE = campaign.CampaignCase(
+CASE = comparison.OptimizationComparisonCase(
     "direct-dte-compute-overlap",
     "direct-dte-compute-overlap",
     16,
-    campaign.CLUSTER_LAUNCH_KIND,
-    (campaign.F16_524288, campaign.F16_524288),
-    (campaign.F16_524288,),
+    comparison.CLUSTER_LAUNCH_KIND,
+    (comparison.F16_524288, comparison.F16_524288),
+    (comparison.F16_524288,),
     overlap_module,
     overlap_payloads,
     overlap_structure_oracle,
@@ -135,7 +135,7 @@ def write_source(work_dir: pathlib.Path) -> pathlib.Path:
     (source / "data").mkdir()
     (source / "functions" / "forward.mlir").write_text(CASE.module_factory())
     (source / "functions" / "forward.meta").write_text(
-        json.dumps(campaign.metadata(CASE), separators=(",", ":")) + "\n"
+        json.dumps(comparison.metadata(CASE), separators=(",", ":")) + "\n"
     )
     return source
 
@@ -155,7 +155,7 @@ def compile_variant(
     ):
         environment.pop(variable, None)
     environment[selection] = "1"
-    result = campaign.run(
+    result = comparison.run(
         [
             str(compiler),
             "--input-program-dir",
@@ -195,7 +195,6 @@ def validate_overlap_qualification(
     activation = json.loads(activation_path.read_text())
     if (
         attestation.get("schema") != "wafer-static-fixed-slot-qualification"
-        or attestation.get("schema_version") != 1
         or attestation.get("selection_kind")
         != "direct-dte-compute-overlap"
         or attestation.get("target")
@@ -206,6 +205,12 @@ def validate_overlap_qualification(
         }
     ):
         raise RuntimeError("overlap qualification identity is invalid")
+    if (
+        activation.get("schema")
+        != "wafer-static-fixed-slot-qualification-activation"
+        or activation.get("schema_version") != 1
+    ):
+        raise RuntimeError("overlap qualification activation is invalid")
     if (
         attestation.get("manifest_sha256") != digest(package / "manifest.json")
         or activation.get("manifest_sha256")
@@ -244,8 +249,8 @@ def validate_overlap_qualification(
 
 
 def validate_target_structure(
-    baseline: campaign.TargetStructure,
-    overlap: campaign.TargetStructure,
+    baseline: comparison.TargetStructure,
+    overlap: comparison.TargetStructure,
 ) -> None:
     for structure in (baseline, overlap):
         for fragment in (
@@ -255,7 +260,7 @@ def validate_target_structure(
             "direct_dte_recv_prepare",
             "direct_dte_wait",
         ):
-            campaign.require_call(structure.counts, fragment, present=True)
+            comparison.require_call(structure.counts, fragment, present=True)
     if baseline.scheduler_body_sha256 == overlap.scheduler_body_sha256:
         raise RuntimeError(
             "overlap candidate scheduler is identical to its serialized baseline"
@@ -287,7 +292,7 @@ def main() -> int:
             )
 
     payloads = CASE.payload_factory()
-    campaign.validate_paired_payloads(CASE, payloads)
+    comparison.validate_paired_payloads(CASE, payloads)
     source = write_source(args.work_dir)
     packages = {
         "baseline": args.work_dir / "baseline-package",
@@ -310,14 +315,14 @@ def main() -> int:
         bindings_by_variant,
         output_ids_by_variant,
         completion_evidence_by_variant,
-    ) = campaign.validate_paired_packages(
+    ) = comparison.validate_paired_packages(
         packages["baseline"],
         packages["winner"],
         CASE,
         target_identity=TARGET_IDENTITY,
     )
     structures = {
-        name: campaign.target_structure(package, args.tx8_objdump)
+        name: comparison.target_structure(package, args.tx8_objdump)
         for name, package in packages.items()
     }
     validate_target_structure(structures["baseline"], structures["winner"])
@@ -328,13 +333,13 @@ def main() -> int:
             str(relative): hashlib.sha256(
                 (packages["winner"] / relative).read_bytes()
             ).hexdigest()
-            for relative in campaign.SOURCE_SNAPSHOT_PATHS
+            for relative in comparison.SOURCE_SNAPSHOT_PATHS
         },
         "target_identity": TARGET_IDENTITY,
         "launch": CASE.launch_contract,
         "rank_count": CASE.rank_count,
         "module_digests": {
-            name: list(campaign.module_digests(package))
+            name: list(comparison.module_digests(package))
             for name, package in packages.items()
         },
         "accepted_instr_digests": [
@@ -364,14 +369,14 @@ def main() -> int:
     (args.work_dir / "target-structure.json").write_text(
         json.dumps(structure_record, indent=2, sort_keys=True) + "\n"
     )
-    resource_arguments = campaign.write_payloads(
+    resource_arguments = comparison.write_payloads(
         args.work_dir, CASE, bindings_by_variant, payloads
     )
 
     if args.no_card:
         for name, package in packages.items():
-            result = campaign.run(
-                campaign.no_card_command(args.wafer_run, package, CASE)
+            result = comparison.run(
+                comparison.no_card_command(args.wafer_run, package, CASE)
             )
             if "board_execution: false" not in result.stdout:
                 raise RuntimeError(
@@ -384,25 +389,25 @@ def main() -> int:
         return 0
 
     rows: list[dict[str, object]] = []
-    for sample, name in enumerate(campaign.balanced_order(args.repeat), start=1):
+    for sample, name in enumerate(comparison.balanced_order(args.repeat), start=1):
         start_ns = time.monotonic_ns()
-        result = campaign.run(
-            campaign.board_command(
+        result = comparison.run(
+            comparison.board_command(
                 args, packages[name], CASE, resource_arguments[name]
             ),
             timeout_seconds=(
                 args.completion_timeout_ms / 1000
-                + campaign.PROCESS_TIMEOUT_MARGIN_SECONDS
+                + comparison.PROCESS_TIMEOUT_MARGIN_SECONDS
             ),
         )
         elapsed_ns = time.monotonic_ns() - start_ns
-        campaign.verify_board_output(
+        comparison.verify_board_output(
             result.stdout,
             CASE,
             output_ids_by_variant[name],
             completion_evidence_by_variant[name],
         )
-        campaign.compare_captured_outputs(
+        comparison.compare_captured_outputs(
             args.work_dir, CASE, payloads, name
         )
         row = {

@@ -173,7 +173,7 @@ def validate_board_args(args: argparse.Namespace) -> None:
         )
     if args.expected_tile_count != 16:
         raise RuntimeError(
-            "worker placement campaign requires the qualified 16-rank card"
+            "worker placement test requires the qualified 16-rank card"
         )
     if args.completion_timeout_ms <= 0 or args.repeat < catalog.REPEATS:
         raise RuntimeError(
@@ -389,7 +389,7 @@ def build_probe(
             "--output",
             str(linked),
             "--loader-abi",
-            "tx8-kcore-loader-v1",
+            "tx8-kcore-loader",
             "--extra-object",
             str(helper),
         ],

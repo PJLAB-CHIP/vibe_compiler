@@ -25,8 +25,8 @@ using numeric_semantics_internal::isValidDigest;
 
 namespace {
 
-constexpr ModelProfileId kFormalDeterministicV1 =
-    ModelProfileId::formalDeterministicV1();
+constexpr ModelProfileId kFormalDeterministic =
+    ModelProfileId::formalDeterministic();
 constexpr NumericRoundingMode kDeterministicRoundingModes[] = {
     NumericRoundingMode::NearestEven,
     NumericRoundingMode::TowardZero,
@@ -38,7 +38,7 @@ std::string makeModelPolicyDigest(const ModelProfileRecord &record) {
   std::string canonical;
   llvm::raw_string_ostream stream(canonical);
   stream
-      << "wafer-model-policy-v1\n"
+      << "wafer-model-policy\n"
       << "model=" << record.canonicalSpelling << '\n'
       << "decode-byte-order="
       << static_cast<unsigned>(record.numericDecodePolicy.byteOrder) << '\n'
@@ -83,7 +83,7 @@ std::string makeSemanticsDigest(
     NumericReductionOrderPolicy reductionOrderPolicy) {
   std::string canonical;
   llvm::raw_string_ostream stream(canonical);
-  stream << "wafer-numeric-semantics-v4\n"
+  stream << "wafer-numeric-semantics\n"
          << "model-policy-digest=" << model.policyDigest << '\n';
   std::visit(
       [&](const auto &typedKey) {
@@ -166,8 +166,8 @@ std::string makeSemanticsDigest(
 llvm::ArrayRef<ModelProfileRecord> getRegisteredModelProfiles() {
   static const std::vector<ModelProfileRecord> profiles = [] {
     ModelProfileRecord record{
-        kFormalDeterministicV1,
-        "wafer-model-formal-deterministic-v1",
+        kFormalDeterministic,
+        "wafer-model-formal-deterministic",
         {LogicalByteOrder::LittleEndian,
          LogicalBitOrder::LeastSignificantBitFirstWithinByte,
          NonCanonicalEncodingPolicy::Reject},
@@ -281,7 +281,7 @@ getRegisteredNumericCTConvertSemanticsProfiles() {
     size_t parameterlessRouteCount = 0;
     size_t roundingRouteCount = 0;
     const ModelProfileRecord &model =
-        getModelProfileRecord(kFormalDeterministicV1);
+        getModelProfileRecord(kFormalDeterministic);
 
     for (const TargetConvertRoute &route : getTargetConvertRoutes()) {
       if (route.parameterKind == TargetConvertParameterKind::ZeroPoint) {
@@ -347,7 +347,7 @@ getRegisteredNumericCTConvertSemanticsProfiles() {
             NumericReductionAccumulatorInitializationPolicy::NotApplicable,
             NumericReductionOrderPolicy::NotApplicable);
         result.push_back(NumericSemanticsProfile(
-            kFormalDeterministicV1, std::move(key), mode,
+            kFormalDeterministic, std::move(key), mode,
             NumericRoundingPointPolicy::ConversionResult, floatToIntegerPolicy,
             floatingNaNPolicy, floatingSignedZeroPolicy,
             floatingSubnormalPolicy, floatingTininessPolicy,
@@ -399,7 +399,7 @@ getRegisteredNumericCTElementwiseSemanticsProfiles() {
     std::vector<NumericSemanticsProfile> result;
     result.reserve(88);
     const ModelProfileRecord &model =
-        getModelProfileRecord(kFormalDeterministicV1);
+        getModelProfileRecord(kFormalDeterministic);
 
     auto append = [&](NumericElementwiseOperation operation,
                       LogicalFormat inputFormat) {
@@ -473,7 +473,7 @@ getRegisteredNumericCTElementwiseSemanticsProfiles() {
           NumericReductionAccumulatorInitializationPolicy::NotApplicable,
           NumericReductionOrderPolicy::NotApplicable);
       result.push_back(NumericSemanticsProfile(
-          kFormalDeterministicV1, std::move(key), roundingMode,
+          kFormalDeterministic, std::move(key), roundingMode,
           roundingPointPolicy, FloatToIntegerPolicy::NotApplicable,
           floatingNaNPolicy, floatingSignedZeroPolicy, floatingSubnormalPolicy,
           floatingTininessPolicy, exceptionFlagPolicy,
@@ -530,7 +530,7 @@ getRegisteredNumericNEGemmSemanticsProfiles() {
     std::vector<NumericSemanticsProfile> result;
     result.reserve(3);
     const ModelProfileRecord &model =
-        getModelProfileRecord(kFormalDeterministicV1);
+        getModelProfileRecord(kFormalDeterministic);
     for (LogicalFormat format :
          getCompilerNumericFormats(TargetFormatEngine::NE)) {
       if (format == LogicalFormat::I8)
@@ -556,7 +556,7 @@ getRegisteredNumericNEGemmSemanticsProfiles() {
           NumericReductionAccumulatorInitializationPolicy::NotApplicable,
           NumericReductionOrderPolicy::NotApplicable);
       result.push_back(NumericSemanticsProfile(
-          kFormalDeterministicV1, std::move(key),
+          kFormalDeterministic, std::move(key),
           NumericRoundingMode::NearestEven,
           NumericRoundingPointPolicy::GemmFusedMultiplyAddAndDestination,
           FloatToIntegerPolicy::NotApplicable,
@@ -602,7 +602,7 @@ llvm::ArrayRef<NumericSemanticsProfile>
 getRegisteredNumericNativeCTReduceSemanticsProfiles() {
   static const std::vector<NumericSemanticsProfile> profiles = [] {
     const ModelProfileRecord &model =
-        getModelProfileRecord(kFormalDeterministicV1);
+        getModelProfileRecord(kFormalDeterministic);
     NumericSemanticsKey key = NumericNativeCTReduceSemanticsKey(
         NumericReduceOperation::Sum, LogicalFormat::F32);
     std::string digest = makeSemanticsDigest(
@@ -625,8 +625,7 @@ getRegisteredNumericNativeCTReduceSemanticsProfiles() {
         NumericReductionOrderPolicy::IncreasingLogicalRowMajorInputIndex);
     std::vector<NumericSemanticsProfile> result;
     result.push_back(NumericSemanticsProfile(
-        kFormalDeterministicV1, std::move(key),
-        NumericRoundingMode::NearestEven,
+        kFormalDeterministic, std::move(key), NumericRoundingMode::NearestEven,
         NumericRoundingPointPolicy::ReductionStep,
         FloatToIntegerPolicy::NotApplicable,
         FloatingNaNPolicy::CanonicalPositiveQuietNaN,

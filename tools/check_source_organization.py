@@ -188,7 +188,7 @@ BOARD_RUNTIME_SOURCES = (
 )
 WAFER_RUN_SOURCES = (
     "TxBoardRuntime.cpp",
-    "WaferProfileCampaign.cpp",
+    "WaferProfileCollection.cpp",
     "WaferRunBoardIO.cpp",
     "wafer-run.cpp",
 )
@@ -817,7 +817,7 @@ def check_retired_profile_surfaces_removed(root: Path, errors: list[str]) -> Non
         root / "include/Wafer/Runtime/ProfileInstrumentation.h",
         root / "lib/Wafer/Runtime/ProfileInstrumentation.cpp",
         root / "lib/Wafer/Compiler/WriteExecutablePackage.cpp",
-        root / "tools/wafer-run/WaferProfileCampaign.cpp",
+        root / "tools/wafer-run/WaferProfileCollection.cpp",
         root / "tools/wafer-run/wafer-run.cpp",
     )
     for path in production_paths:

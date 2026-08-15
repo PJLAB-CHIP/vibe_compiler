@@ -54,8 +54,6 @@ llvm::StringRef stringifyNumericDependencyConformanceErrorCode(
     return "unknown-field";
   case ErrorCode::TypeMismatch:
     return "type-mismatch";
-  case ErrorCode::SchemaMismatch:
-    return "schema-mismatch";
   case ErrorCode::PolicyMismatch:
     return "policy-mismatch";
   case ErrorCode::ClosureMismatch:
@@ -185,18 +183,10 @@ readNumericDependencyConformanceRecord(
     return top.takeError();
   if (llvm::Error error =
           requireExactKeys(**top,
-                           {"schema_version", "kind", "status", "pins", "build",
-                            "artifacts", "licenses", "conformance"},
+                           {"kind", "status", "pins", "build", "artifacts",
+                            "licenses", "conformance"},
                            "numeric dependency record"))
     return error;
-
-  llvm::Expected<uint64_t> schema = requireUnsigned(
-      *(*top)->get("schema_version"), "numeric record schema_version");
-  if (!schema)
-    return schema.takeError();
-  if (*schema != kNumericDependencyConformanceSchemaVersion)
-    return invalid(ErrorCode::SchemaMismatch,
-                   "numeric dependency record schema mismatch");
   llvm::Expected<std::string> kind =
       requireString(*(*top)->get("kind"), "numeric record kind");
   if (!kind)
@@ -210,7 +200,6 @@ readNumericDependencyConformanceRecord(
                    "numeric dependency record is not conformance-passed");
 
   NumericDependencyConformanceRecord result;
-  result.schemaVersion = static_cast<uint32_t>(*schema);
   result.kind = std::move(*kind);
   result.status = std::move(*status);
   result.managedRoot = root->resolved;

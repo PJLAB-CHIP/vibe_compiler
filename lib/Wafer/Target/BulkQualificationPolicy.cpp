@@ -214,7 +214,7 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
        stringifyBulkQualificationKind(BulkQualificationKind::ProfileBounded)},
       {"maximum_absolute_error", tolerance.maximumAbsoluteError},
       {"maximum_relative_error", tolerance.maximumRelativeError},
-      {"disjoint_proof", "same-domain-distinct-seed-spec-and-payload-v2"},
+      {"disjoint_proof", "same-domain-distinct-seed-spec-and-payload"},
   };
   return writeFileNoReplace(outputPath, canonicalJSON(std::move(policy)));
 }

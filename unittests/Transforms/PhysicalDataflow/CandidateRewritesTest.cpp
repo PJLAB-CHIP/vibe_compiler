@@ -170,7 +170,7 @@ module {
 }
 
 TEST_F(CandidateRewritesTest,
-       SharesOneFanoutSecondaryPhysicalVersionAcrossConsumers) {
+       SharesOneFanoutSecondaryPhysicalEncodingAcrossConsumers) {
   auto module = parse(R"mlir(
 module {
   func.func @fanout(%input: memref<3x65xf16, #wafer.memory<spm, cx>>)

@@ -203,7 +203,7 @@ TEST(NumericCodecTest, LayoutBitOffsetsDriveBooleanCodecWithoutGeometryCopy) {
   auto type = mlir::MemRefType::get({2, 9}, mlir::IntegerType::get(&context, 1),
                                     mlir::MemRefLayoutAttrInterface{}, memory);
   const wafer::ModelProfileRecord &profile = wafer::getModelProfileRecord(
-      wafer::ModelProfileId::formalDeterministicV1());
+      wafer::ModelProfileId::formalDeterministic());
 
   std::array<uint8_t, 3> storage{};
   std::array<uint8_t, 3> expected{};

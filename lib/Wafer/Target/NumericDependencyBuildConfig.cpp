@@ -226,7 +226,7 @@ parseBuildConfig(const llvm::json::Value &value) {
   if (!toolchainPolicy)
     return toolchainPolicy.takeError();
   result.toolchainPolicy = std::move(*toolchainPolicy);
-  if (result.toolchainPolicy != "wafer-host-numeric-build-environment-v1")
+  if (result.toolchainPolicy != "wafer-host-numeric-build-environment")
     return invalid(ErrorCode::PolicyMismatch,
                    "numeric toolchain policy mismatch");
   llvm::Expected<const llvm::json::Object *> tools =
@@ -368,7 +368,7 @@ parseBuildConfig(const llvm::json::Value &value) {
           expectString(result.mpfrPatches, "", "MPFR patch set"))
     return error;
   if (llvm::Error error = expectString(result.elfValidationPolicy,
-                                       "sha256-build-id-soname-needed-rpath-v1",
+                                       "sha256-build-id-soname-needed-rpath",
                                        "ELF validation policy"))
     return error;
 

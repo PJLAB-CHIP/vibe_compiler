@@ -51,7 +51,7 @@ def main() -> int:
     )
     try:
         base = {
-            "schema": "wafer-bulk-qualification-spec-v2",
+            "schema": "wafer-bulk-qualification-spec",
             "format": "bf16",
             "m": 4,
             "k": 8,
@@ -122,7 +122,7 @@ def main() -> int:
         if "bulk qualification validated" not in output:
             raise RuntimeError("validation did not report read-back success")
         record_data = json.loads(record.read_text(encoding="utf-8"))
-        if record_data["schema"] != "wafer-bulk-qualification-record-v1":
+        if record_data["schema"] != "wafer-bulk-qualification-record":
             raise RuntimeError("final record schema mismatch")
         if record_data["qualification_kind"] != "profile-bounded":
             raise RuntimeError("finite CLI corpus claimed a non-empirical proof")

@@ -27,7 +27,7 @@ using wafer::tensor_program_to_tile_region::DecodeAttentionSemantics;
 using wafer::tensor_program_to_tile_region::TensorProgramScope;
 
 static constexpr llvm::StringLiteral kProviderStableKey =
-    "wafer.structured-attention.v1";
+    "wafer.structured-attention";
 
 static void setFailureReason(std::string *failureReason,
                              llvm::StringRef reason) {

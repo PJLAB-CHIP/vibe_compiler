@@ -223,7 +223,7 @@ def validate_operator_payload_dtypes(
 
     optimization = load_asset_module(
         repo,
-        "test/Board/wafer_board_compiler_optimization_campaign_test.py",
+        "test/Board/wafer_board_compiler_optimization_comparison_test.py",
         cache,
     )
     invalid_optimization_i8 = tuple(
@@ -235,7 +235,7 @@ def validate_operator_payload_dtypes(
         )
     )
     assert not invalid_optimization_i8, (
-        "production optimization campaign contains i8 operator payloads: "
+        "production optimization comparison contains i8 operator payloads: "
         f"{invalid_optimization_i8}"
     )
 

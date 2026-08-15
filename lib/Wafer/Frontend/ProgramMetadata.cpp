@@ -241,9 +241,14 @@ parseDistributedBoundaryBindings(const llvm::json::Object &object,
 FailureOr<DistributedBoundary>
 parseDistributedBoundary(const llvm::json::Object &object,
                          llvm::raw_ostream &diagnostics) {
+  if (object.get("version")) {
+    rejectProgramDirectory(
+        "distributed_boundary must not contain a nested version field",
+        diagnostics);
+    return failure();
+  }
   DistributedBoundary boundary;
-  if (readIntegerField(object, "version", boundary.version, diagnostics) ||
-      readIntegerField(object, "num_partitions", boundary.numPartitions,
+  if (readIntegerField(object, "num_partitions", boundary.numPartitions,
                        diagnostics))
     return failure();
   FailureOr<std::vector<DistributedBoundaryBinding>> inputs =

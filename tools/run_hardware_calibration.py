@@ -309,7 +309,7 @@ CALIBRATION_STEPS = (
         "full-card-runtime",
         "wafer-board-kernel-grid-add-profile",
         (
-            "16-rank Add correctness and final-output profiler campaign "
+            "16-rank Add correctness and final-output profiler collection "
             "over the same production package"
         ),
     ),
@@ -402,7 +402,7 @@ EXPLICIT_ONLY_STEPS = (
         "wafer-board-m-sharded-replicated-gemm-profile",
         (
             "16-rank FP16 M-sharded replicated-operand GEMM exact "
-            "correctness and final-output profiler campaign"
+            "correctness and final-output profiler collection"
         ),
     ),
     CalibrationStep(
@@ -754,7 +754,7 @@ SELECTABLE_BATCHES = {
         or step.batch.startswith("full-card-pending-")
     ),
 }
-SELECTABLE_BATCHES["compiler-optimization-campaign"] = (
+SELECTABLE_BATCHES["compiler-optimization-tests"] = (
     "direct-dte-collective",
     *SELECTABLE_BATCHES["compiler-optimization-paired"],
 )

@@ -9,12 +9,12 @@
 # RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.corpus/tiny-llama-decoder-f32/program | FileCheck %s --check-prefix=LLAMA-VERIFY
 
 # CORPUS: "case_id": "linear-residual-mlp-f32"
-# CORPUS: "corpus_id": "wafer-single-card-vertical-v1"
+# CORPUS: "corpus_id": "wafer-single-card-vertical"
 # CORPUS: "exported_program": "sha256:b6eae1be4607b0e44c4bd66aa95101efc6e3471b743e4b19a67d90a1d3622287"
 # CORPUS: "repeat_export_canonical_equivalent": true
 # CORPUS: "case_id": "tiny-llama-decoder-f32"
 # CORPUS: "causal_attention": true
-# CORPUS: "corpus_id": "wafer-single-card-vertical-v1"
+# CORPUS: "corpus_id": "wafer-single-card-vertical"
 # CORPUS: "exported_program": "sha256:51efa9d95cbf82c615690cea22fa80fb340b2220b9dcaddb66809962daecbd9c"
 # CORPUS: "repeat_export_canonical_equivalent": true
 # CORPUS: "git_revision": "396608c7105b3763874fe3800dfabdfa2b38a28a"

@@ -881,7 +881,7 @@ def _pair_cell(
             "Eight-iteration windows are two device-side four-round chunks "
             "with one recorded participant drain, never an unmatched D+2 "
             "submission. Existing sustained smoke evidence remains provenance "
-            "only; this matched campaign executes the cell on the same basis "
+            "only; this matched test executes the cell on the same basis "
             "as its ratio and reciprocal controls"
         ),
         delegated=delegated,

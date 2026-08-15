@@ -18,7 +18,7 @@ DEFAULT_GCC_VERSION = "10.4.0"
 DEFAULT_MARCH = "rv64imafdc"
 DEFAULT_CRT_MCPU = "c908"
 DEFAULT_MABI = "lp64d"
-DEFAULT_LOADER_ABI = "tx8-kcore-loader-v1"
+DEFAULT_LOADER_ABI = "tx8-kcore-loader"
 PROFILE_CAPTURE_KINDS = ("none", "count", "trace")
 BASE_LOADER_ABI_UNDEFINED_SYMBOLS = frozenset(
     {
@@ -47,10 +47,10 @@ BASE_LOADER_ABI_UNDEFINED_SYMBOLS = frozenset(
     }
 )
 LOADER_ABI_UNDEFINED_SYMBOLS = {
-    "tx8-kcore-loader-v1": BASE_LOADER_ABI_UNDEFINED_SYMBOLS,
-    "tx8-kcore-loader-grid-v1": BASE_LOADER_ABI_UNDEFINED_SYMBOLS
+    "tx8-kcore-loader": BASE_LOADER_ABI_UNDEFINED_SYMBOLS,
+    "tx8-kcore-loader-grid": BASE_LOADER_ABI_UNDEFINED_SYMBOLS
     | {"__get_pid"},
-    "tx8-kcore-loader-cluster-v1": BASE_LOADER_ABI_UNDEFINED_SYMBOLS
+    "tx8-kcore-loader-cluster": BASE_LOADER_ABI_UNDEFINED_SYMBOLS
     | {"__get_pid", "init_tile_id"},
 }
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]

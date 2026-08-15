@@ -1,7 +1,7 @@
-//===- WaferProfileCampaign.h - Automatic board profile run ----*- C++ -*-===//
+//===- WaferProfileCollection.h - Board profile collection -----*- C++ -*-===//
 
-#ifndef WAFER_TOOLS_WAFER_RUN_WAFERPROFILECAMPAIGN_H
-#define WAFER_TOOLS_WAFER_RUN_WAFERPROFILECAMPAIGN_H
+#ifndef WAFER_TOOLS_WAFER_RUN_WAFERPROFILECOLLECTION_H
+#define WAFER_TOOLS_WAFER_RUN_WAFERPROFILECOLLECTION_H
 
 #include "Wafer/Runtime/ProfileInstrumentation.h"
 #include "WaferRunBoardIO.h"
@@ -19,7 +19,7 @@
 
 namespace wafer::runtime::cli {
 
-inline constexpr uint32_t kBoardProfileEvidenceSchemaVersion = 11;
+inline constexpr uint32_t kBoardProfileEvidenceFormatVersion = 11;
 
 enum class BoardProfileProtocolLaunch {
   Primary,
@@ -84,7 +84,7 @@ struct BoardProfileOutputValidationResource {
 llvm::StringRef stringifyBoardProfileOutputValidationMode(
     BoardProfileOutputValidationMode mode);
 
-/// Semantic-keyed output validator for one board profile campaign. The single
+/// Semantic-keyed output validator for one board profile collection. The single
 /// uninstrumented profiled-package execution is validated against every
 /// supplied external expected tensor with its exact or relaxed-f16 policy,
 /// then stored as the same-session byte reference. Count and trace results are
@@ -139,7 +139,7 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
         llvm::Error(llvm::ArrayRef<BoardProfileMeasurementSample>)>
         consumeMeasurements);
 
-#if defined(WAFER_PROFILE_CAMPAIGN_TESTING)
+#if defined(WAFER_PROFILE_COLLECTION_TESTING)
 namespace testing {
 
 struct ProfileReportWriteResult {
@@ -161,22 +161,22 @@ llvm::Expected<ProfileReportWriteResult> writeProfileReportForTesting(
 } // namespace testing
 #endif
 
-struct BoardProfileCampaignResult {
+struct BoardProfileCollectionResult {
   BoardRuntimeInvocationResult finalResult;
   BoardInvocationFilePlan finalPlan;
   std::string runDirectory;
 };
 
-/// Executes the compiler-owned, fixed profiler campaign in one qualified
+/// Executes the compiler-owned, fixed profiler collection in one qualified
 /// board session. The caller supplies only the ordinary invocation file plan;
 /// all diagnostic capture packages and profiler buffers come from the
 /// verified sibling instrumentation.
-llvm::Expected<BoardProfileCampaignResult>
-runBoardProfileCampaign(const VerifiedProfileInstrumentation &instrumentation,
-                        const PackageManifest &primaryManifest,
-                        const BoardInvocationFilePlan &primaryPlan,
-                        BoardRuntimeDriver &driver);
+llvm::Expected<BoardProfileCollectionResult>
+runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
+                          const PackageManifest &primaryManifest,
+                          const BoardInvocationFilePlan &primaryPlan,
+                          BoardRuntimeDriver &driver);
 
 } // namespace wafer::runtime::cli
 
-#endif // WAFER_TOOLS_WAFER_RUN_WAFERPROFILECAMPAIGN_H
+#endif // WAFER_TOOLS_WAFER_RUN_WAFERPROFILECOLLECTION_H

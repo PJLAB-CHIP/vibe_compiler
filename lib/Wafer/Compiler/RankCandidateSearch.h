@@ -60,7 +60,7 @@ inline constexpr uint32_t kMaximumCoordinatedConnectionExpansionsPerStep = 8;
 inline constexpr uint32_t kMaximumStructuredCandidateStates = 64;
 inline constexpr uint32_t kMaximumCoordinatedSuccessfulActualCandidates = 16;
 inline constexpr char kCoordinatedConnectionProposalEstimateModel[] =
-    "connection-choice-byte-residency-ddr-fragmentation-v3";
+    "connection-choice-byte-residency-ddr-fragmentation";
 
 /// Stable semantic work classes charged to the one invocation-local search
 /// ledger. They are compiler scheduling policy, not IR or output descriptors.

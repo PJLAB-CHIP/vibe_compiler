@@ -17,7 +17,7 @@ Pipeline position:
 - User-level driver / named pipeline:
   现有`wafer-compile`、`wafer-opt`和named pipelines；本任务不新增driver。
 - Explicit non-goals:
-  不做关键词机械替换，不改archive，不改变IR语义或用户ABI。
+  不做关键词机械替换，不改变IR语义或用户ABI；archive不作为current架构合同，只有用户明确要求的术语修正才同步文件名和引用。
 - Done criteria:
   受影响的声明、实现、CMake、测试和current docs同步完成，并通过fresh build与对应测试。
 ```
@@ -67,8 +67,8 @@ Pipeline position:
 `CardResourceScope`、`TileResourceScope`、card/Tile topology字段、logical-to-Tile placement边界以及logical range与target byte
 range的真实对照继续保留必要限定；它们不是本批要消除的重复范围词。
 
-profile schema v10的correlation basis/static-cost scope和硬件校准catalog的claim key已是持久化协议或
-历史证据标识，不是active C++抽象名。本批不在不升级schema/证据合同的情况下改写它们；新的
+profile activation保留真实format version；correlation basis、static-cost scope和硬件校准claim key使用稳定语义名，
+不再把内部算法revision伪装成独立版本。新的
 type、function、pass option、pipeline timing和diagnostic均使用`Card`、`Tile`、`CardExecutable`等已由IR和强类型
 定义的名称。
 
@@ -84,10 +84,11 @@ type、function、pass option、pipeline timing和diagnostic均使用`Card`、`T
 | target/runtime | profile数据写入、运行参数构造、target command验证和模型执行分别命名；C/C++符号与diagnostic同步 |
 | MLIR source | verifier、target execution facts、instruction verification和StableHLO collective lowering按实际IR层命名；声明、实现、CMake和lit文件同步 |
 | tools/tests/docs | Python字段和函数使用file、record、evidence、write、validation等具体对象或动作；current tasks、memory和presentations同步到现有API |
+| profile与优化资格化 | runtime数据收集使用`WaferProfileCollection`；重复采样使用`PROFILE_MEASUREMENT_COUNT`；A/B用例和入口使用`OptimizationComparisonCases`与`PAIRED_COMPARISON_TEST` |
 
-没有为名称建立源码黑名单。现有dependency snapshot v1/v2字段属于已落盘格式，上游StableHLO/PyTorch-XLA类名和环境变量
-属于外部API，历史archive文件名属于只读导航；本轮没有通过改写这些字符串制造兼容性变化。所有一手C++/Python抽象、文件名、
-diagnostic和current文档已经退出旧术语。
+没有为名称建立源码黑名单。dependency snapshot由repo内producer/consumer同步演进，不拥有独立版本线；
+上游StableHLO/PyTorch-XLA类名和环境变量属于外部API；archive不是current设计事实源。所有一手C++/Python抽象、
+文件名、diagnostic和current文档已经退出旧术语。
 
 ## 已完成批次验证
 
@@ -109,6 +110,6 @@ diagnostic和current文档已经退出旧术语。
 StructuredDAG placement enumeration和CardExecutable candidate synthesis属于Q49/Q52搜索行为，本批没有用
 长搜索代替命名合同验证；没有执行真实板端测试。
 
-`test/Board/wafer_compiler_optimization_campaign_catalog.py`仍包含Q50.S未来迁移的旧source reference；它在Q54前后均未注册到
+`test/Board/wafer_compiler_optimization_comparison_cases.py`仍包含Q50.S未来迁移的旧source reference；它在Q54前后均未注册到
 CMake/CTest，当前自检会因缺少已退役`CandidateRewrites.cpp`而失败。本轮没有伪造新的production实现来满足该字符串检查；
 该catalog必须在Q50.S建立actual structured alternatives时按新实现重写或删除，不能作为当前compiler能力证明。

@@ -606,17 +606,17 @@ static CoordinatedStructuralProposal makeImplementationStructuralProposal(
   };
   setEstimate(StructuredCandidateCostDimension::ResourcePressure,
               estimates.estimatedPeakLiveBytes,
-              "provider-typed-peak-live-bytes-v1");
+              "provider-typed-peak-live-bytes");
   std::optional<uint64_t> aggregateCompute =
       logicalRankCount > 0 && estimates.estimatedComputeScalarOps
           ? checkedMultiply(*estimates.estimatedComputeScalarOps,
                             static_cast<uint64_t>(logicalRankCount))
           : std::nullopt;
   setEstimate(StructuredCandidateCostDimension::ComputeAggregateWork,
-              aggregateCompute, "provider-typed-compute-scalar-ops-v1");
+              aggregateCompute, "provider-typed-compute-scalar-ops");
   setEstimate(StructuredCandidateCostDimension::ComputeMaximumRankWork,
               estimates.estimatedComputeScalarOps,
-              "provider-typed-compute-scalar-ops-v1");
+              "provider-typed-compute-scalar-ops");
   structural.recipe.implementationAlternative = std::move(point);
   structural.recipe.implementationPostResidencyAction = postResidencyAction;
   return structural;
@@ -1060,8 +1060,7 @@ mlir::FailureOr<CoordinatedTileVariant> materializeCoordinatedTileRepair(
   return sibling;
 }
 
-std::string computeRankCandidateSetDigest(
-    const RankCandidateSet &candidates) {
+std::string computeRankCandidateSetDigest(const RankCandidateSet &candidates) {
   llvm::SHA256 hasher;
   for (const CoordinatedTileVariant &variant : candidates) {
     std::string header =

@@ -49,7 +49,7 @@ constexpr llvm::StringLiteral kAttestationSchema =
     "wafer-static-fixed-slot-qualification";
 constexpr llvm::StringLiteral kActivationSchema =
     "wafer-static-fixed-slot-qualification-activation";
-constexpr int64_t kSchemaVersion = 1;
+constexpr int64_t kQualificationFormatVersion = 1;
 
 static bool satisfiesSPMAlignment(mlir::memref::AllocOp allocation,
                                   int64_t offset,
@@ -1121,32 +1121,29 @@ static void writeRankSummary(llvm::json::OStream &json,
   });
 }
 
-static std::string
-serializeAttestation(llvm::StringRef manifestDigest,
-                     const CardExecutable &cardExecutable,
-                     llvm::ArrayRef<RankSummary> ranks,
-                     bool directDTEComputeOverlap) {
+static std::string serializeAttestation(llvm::StringRef manifestDigest,
+                                        const CardExecutable &cardExecutable,
+                                        llvm::ArrayRef<RankSummary> ranks,
+                                        bool directDTEComputeOverlap) {
   std::string storage;
   llvm::raw_string_ostream stream(storage);
   {
     llvm::json::OStream json(stream, /*IndentSize=*/2);
     json.object([&] {
       json.attribute("schema", kAttestationSchema);
-      json.attribute("schema_version", kSchemaVersion);
       json.attribute("selection_kind", directDTEComputeOverlap
                                            ? "direct-dte-compute-overlap"
                                            : "static-fixed-slot");
       json.attribute("manifest_sha256", manifestDigest);
       json.attribute("accepted_instr_digest_basis",
-                     "final-accepted-instr-module-text-v1");
+                     "final-accepted-instr-module-text");
       json.attributeObject("target", [&] {
-        json.attribute("identity",
-                       stringifyTargetIdentityId(
-                           cardExecutable.getExecutionConfig()
-                               .getTargetIdentityId()));
         json.attribute(
-            "rank_count",
-            cardExecutable.getExecutionConfig().getRankCount());
+            "identity",
+            stringifyTargetIdentityId(
+                cardExecutable.getExecutionConfig().getTargetIdentityId()));
+        json.attribute("rank_count",
+                       cardExecutable.getExecutionConfig().getRankCount());
         json.attributeArray("logical_ranks", [&] {
           for (const RankSummary &rank : ranks)
             json.value(rank.logicalRank);
@@ -1171,7 +1168,7 @@ static std::string serializeActivation(llvm::StringRef manifestDigest,
     llvm::json::OStream json(stream, /*IndentSize=*/2);
     json.object([&] {
       json.attribute("schema", kActivationSchema);
-      json.attribute("schema_version", kSchemaVersion);
+      json.attribute("schema_version", kQualificationFormatVersion);
       json.attribute("manifest_sha256", manifestDigest);
       json.attribute("attestation_sha256", attestationDigest);
     });
@@ -1211,12 +1208,11 @@ llvm::Error verifyStaticFixedSlotProgram(const RankExecutable &rank) {
 
 mlir::LogicalResult writeStaticFixedSlotQualificationRecord(
     llvm::StringRef instrumentationRoot, llvm::StringRef packageRoot,
-    const CardExecutable &cardExecutable,
-    bool requireDirectDTEComputeOverlap, llvm::raw_ostream &diagnostics) {
+    const CardExecutable &cardExecutable, bool requireDirectDTEComputeOverlap,
+    llvm::raw_ostream &diagnostics) {
   const auto &rankExecutables = cardExecutable.getRankExecutables();
   if (rankExecutables.size() !=
-      static_cast<size_t>(
-          cardExecutable.getExecutionConfig().getRankCount())) {
+      static_cast<size_t>(cardExecutable.getExecutionConfig().getRankCount())) {
     reject(diagnostics, "fixed-slot qualification rank domain differs from "
                         "final cardExecutable");
     return mlir::failure();
@@ -1254,9 +1250,8 @@ mlir::LogicalResult writeStaticFixedSlotQualificationRecord(
   if (createDirectory(instrumentationRoot, diagnostics))
     return mlir::failure();
 
-  const std::string attestation =
-      serializeAttestation(*manifestDigest, cardExecutable, ranks,
-                           requireDirectDTEComputeOverlap);
+  const std::string attestation = serializeAttestation(
+      *manifestDigest, cardExecutable, ranks, requireDirectDTEComputeOverlap);
   llvm::SmallString<256> attestationPath(instrumentationRoot);
   llvm::sys::path::append(attestationPath, "attestation.json");
   if (mlir::failed(

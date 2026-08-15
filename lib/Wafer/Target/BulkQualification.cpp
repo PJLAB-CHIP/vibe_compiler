@@ -29,7 +29,7 @@
 namespace wafer::bulk_qualification_detail {
 
 static constexpr llvm::StringLiteral kCurrentSpecSchema =
-    "wafer-bulk-qualification-spec-v2";
+    "wafer-bulk-qualification-spec";
 
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(llvm::errc::invalid_argument, detail);
@@ -255,7 +255,7 @@ llvm::json::Object
 environmentJSON(const BulkExecutionEnvironment &environment) {
   const BulkBackendDescriptor &backend = environment.getBackend();
   return llvm::json::Object{
-      {"schema", "wafer-bulk-execution-environment-v1"},
+      {"schema", "wafer-bulk-execution-environment"},
       {"backend_name", backend.getName()},
       {"backend_version", backend.getVersion()},
       {"backend_commit", backend.getCommit()},
@@ -335,10 +335,10 @@ llvm::Error validateEnvironmentJSON(const llvm::json::Object &object,
     return error;
   if (!fenvRound)
     return invalid("bulk execution environment identity is incomplete");
-  if (*schema != "wafer-bulk-execution-environment-v1" ||
+  if (*schema != "wafer-bulk-execution-environment" ||
       *backendName != "oneDNN" || *backendVersion != "3.12" ||
       backendCommit->size() != 40 || cpuName->empty() ||
-      effectiveISA->empty() || *threadRuntime != "seq-caller-worker-v1" ||
+      effectiveISA->empty() || *threadRuntime != "sequential-caller-worker" ||
       *fenvRound != FE_TONEAREST || (*mxcsr & UINT64_C(0x8040)) != 0 ||
       (*mxcsr & UINT64_C(0x6000)) != 0 ||
       (*mxcsr & UINT64_C(0x1f80)) != UINT64_C(0x1f80) || *workerCount != 1 ||
