@@ -3,8 +3,8 @@
 设计合同由`tasks/14-target-code-generation.md`、`tasks/15-launch-runtime-package.md`和
 `tasks/16-verification-contract.md`拥有，状态只看`tasks/progress.md`。本计划只拆施工顺序，不建立第二套总体架构。
 
-状态：Q58先闭合编译事务中的parameter/constant所有权和target data handoff；Q56随后闭合
-`CardExecutable -> ExecutablePackage -> one-shot runtime`；Q57保持later，只在主compiler和新package都达到
+状态：Q58先闭合编译事务中的parameter/constant所有权和target data handoff；Q56随后将current产品收口到
+`CardExecutable -> ExecutablePackage -> txLaunchKernel one-shot runtime`并退役model launch分支；Q57保持later，只在主compiler和新package都达到
 `board-ready`后启动。
 
 ## 1. 拆分依据
@@ -122,7 +122,7 @@ modules
 entries
 ```
 
-- `target/launch`：target identity、runtime ABI、module format、launch kind、entry ABI和ordered phases；
+- `target/launch`：target identity、runtime ABI、module format、kernel launch mode、entry ABI和ordered phases；
 - `program_data`：固定相对路径、total bytes、base alignment和whole-file digest；
 - `program_tensors`：parameter/constant的逻辑identity和descriptor；
 - `target_tensors`：ProgramTensor引用、exact target descriptor、file offset/span/alignment；
@@ -132,8 +132,8 @@ entries
 
 不序列化provider allocation表；上述records直接被writer、loader和runtime plan消费。package中的file offset只是target-ready bytes的位置；
 实际`BoardDeviceMemory`只在board execution或PreparedExecution中取得。Q56实施时将当前误导性的`KernelABISlot`原位重命名为
-`TileEntryArgument`并同步替换producer、kernel pointer-row wrapper、model BootParam wrapper、package/runtime consumer和测试；
-不保留旧symbol或兼容alias。
+`TileEntryArgument`并同步替换producer、kernel pointer-row wrapper、package/runtime consumer和测试；同时从Wafer-owned
+current compiler/package/runtime接口删除`txLoadGraph`/`txLaunchModel`分支，不保留旧symbol、枚举值、选择开关或兼容alias。
 
 没有TargetTensor时仍写canonical empty `program-data.bin`，记录`total_bytes=0`、`base_alignment=1`；runtime验证后跳过
 program-data allocation/H2D。存在TargetTensor时total bytes必须为正，base alignment覆盖全部target requirements。
@@ -175,7 +175,7 @@ Pipeline position:
   terminal、busy、timeout、unknown partial submission和poison全部板端验证。
 ```
 
-`PreparedExecution`拥有loaded modules/graph、optional non-empty program data `BoardDeviceMemory`、invocation `BoardDeviceMemory`、pointer rows、
+`PreparedExecution`拥有loaded kernel modules、optional non-empty program data `BoardDeviceMemory`、invocation `BoardDeviceMemory`、pointer rows、
 transport/profile状态和provider failure state。one-shot API只能成为同一路径的便利封装，不能保留第二套执行实现。
 初始SubmitRequest复用Q56 external-port host bindings并更新固定invocation ranges；caller-owned device pointer/import不在当前provider能力中，
 不能写成已经支持。
@@ -188,7 +188,7 @@ transport/profile状态和provider failure state。one-shot API只能成为同�
 | XLA/PJRT | 编译结果与已准备执行对象分离；on-device layout、buffer lifetime和completion显式 | Client聚合compile/load、弱shape检查、把package parameter当每次input |
 | TileRT | prepare一次、地址稳定、重复forward/reset；参数/cache/temp执行前准备 | 假设GPU单kernel、照搬其closed binary内部实现或bs=1限制 |
 | vLLM/SGLang | 将请求调度、cache policy与device execution分层；未来固定容量状态和step metadata作为压力测试 | 把scheduler、prefix tree、KV page分配和serving协议写入Wafer底层runtime |
-| Wafer | CardExecutable、16 Tile、TileEntryArgument、pointer table/BootParam绑定、每Tile workspace、RDMA/WDMA、Direct-DTE和typed completion | 用外部项目对象替代当前compiler/CRT/provider事实 |
+| Wafer | CardExecutable、16 Tile、TileEntryArgument、kernel pointer table、每Tile workspace、RDMA/WDMA、Direct-DTE和typed completion | 用外部项目对象替代当前compiler/CRT/provider事实；把历史model-launch adapter保留为current产品分支 |
 
 ## 6. 明确不算完成
 

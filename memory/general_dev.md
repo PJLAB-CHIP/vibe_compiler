@@ -147,9 +147,8 @@ source program
 - current target LLVM metadata显式包含card/tile/launch slot、entry、target identity、runtime ABI、format与dense
   `TileEntryArgument[]`。
 - Tile entry argument记录ordinal、closed kind、program/target identity（如适用）、dtype、layout、shape、physical bytes、
-  alignment和access；output argument引用caller-visible output port。kernel pointer row与model BootParam只是同一
-  Tile entry合同的不同provider mappings，不形成两层runtime或两套package语义。adapter尚未实现的coverage
-  不能写成vendor接口的能力上限。
+  alignment和access；output argument引用caller-visible output port。current产品provider只把它lower为`txLaunchKernel`
+  pointer row；`txLoadGraph`/`txLaunchModel`只保留反向工程事实，不进入compiler/package/runtime合同。
 - target call descriptor registry是symbol/signature/field position/issue domain的唯一事实源。consumer用typed semantic和decoder，
   不解析symbol spelling。
 - host JIT dispatch只是把final target calls转成typed transactions的internal bridge，不是public runtime ABI或serialized field。
@@ -160,7 +159,7 @@ source program
 - ordinary package只接受一个current manifest schema identity和exact fields；profile instrumentation、plan/site map与profile
   evidence各自由自己的current schema identity和exact fields验证。旧外围格式fail closed，没有兼容reader/translator。
 - production manifest固定 `card_count=1`、`tile_count=16`，entries显式保存 `(card_id,tile_id,launch_slot)`。
-- target identity/runtime ABI/module format与launch kind/entry ABI/ordered phases直接记录并同module readback逐项相等。
+- target identity/runtime ABI/module format与kernel launch mode/entry ABI/ordered phases直接记录并同module readback逐项相等。
 - parameter/constant由logical `ProgramTensor`、selected `TargetTensor`和`data/program-data.bin`中的checked file range表达；
   external input/output只保存port与target descriptor，没有package bytes。
 - sharing只由多个`TileEntryArgument`引用同一TargetTensor或port表达，不能从role/name/type/shape/digest推断。

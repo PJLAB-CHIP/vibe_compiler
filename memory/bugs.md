@@ -159,16 +159,15 @@
 - 防复发：fake provider检查non-empty program data一次allocation/整体H2D、empty program data零provider call、invocation一次allocation且无per-Tile allocator call；target测试检查
   workspace仍为`workspaceBase + wafer.ddr.offset`，device RDMA/WDMA继续消费该DDR地址。
 
-## Tile entry argument不是kernel-only slot
+## Tile entry argument不是runtime pointer-row slot
 
-- 现象：同一descriptor同时被kernel pointer row和model BootParam消费，却命名为`KernelABISlot`，后续设计误以为它等同
-  runtime pointer-table storage或只适用于kernel launch。
-- 根因：用某一个wrapper的承载形式给跨target consumer的entry argument命名。
+- 现象：target entry argument被命名为`KernelABISlot`，后续设计误以为它拥有runtime pointer-row storage，
+  或把argument identity与pointer-row child range混成一个对象。
+- 根因：用runtime carrier中的“slot”给compiler target entry argument命名。
 - 修复模式：稳定语义名为`TileEntryArgument`；它记录ordinal、closed kind、target descriptor、bytes/alignment和access，
-  pointer row或BootParam只是同一entry合同的不同provider lowering。不按vendor函数名分裂package/runtime架构，
-  也不把当前adapter缺失写成vendor能力上限。
-- 防复发：kernel/model两条wrapper都从同一个argument schema生成并readback；实现改名同批替换全部producer/consumer，
-  不保留旧symbol或alias。
+  current kernel pointer row只是runtime按该schema实现的地址表，不能反向拥有argument语义。
+- 防复发：kernel wrapper从同一个argument schema生成并readback；实现改名同批替换全部producer/consumer，
+  `txLoadGraph`/`txLaunchModel`退出current产品接口，不保留旧symbol、枚举值或alias。
 
 ## 持久化接口更新不能保留兼容reader
 

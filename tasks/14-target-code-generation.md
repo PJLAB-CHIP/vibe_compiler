@@ -100,8 +100,9 @@ type 或 entry argument mismatch 均在 writing 前失败。
 ### 3.1 ABI preparation
 
 ABI preparation只消费final accepted Instr IR和program boundary bindings，生成dense、zero-based
-`TileEntryArgument[]`。当前C++类型`KernelABISlot`同时服务kernel pointer-row和model BootParam，既非kernel-only也不总是
-pointer slot；Q56实施时原位重命名全部producer/consumer，不保留旧symbol。`TileEntryArgument`只描述某个Tile target entry
+`TileEntryArgument[]`。当前C++类型`KernelABISlot`实际描述Tile target entry的有序参数，并不拥有current kernel
+pointer-row storage，因此名称误导；Q56实施时原位重命名全部producer/consumer，不保留旧symbol，并将
+`txLoadGraph`/`txLaunchModel`退出current产品consumer。`TileEntryArgument`只描述某个Tile target entry
 的一个有序参数：ordinal、closed kind、恰一个typed reference（ProgramTensor/TargetTensor、external port或entry-local
 requirement）、dtype、`MemLayout`、shape、physical bytes、alignment与access；它不拥有bytes、file range或device address。
 
@@ -209,7 +210,7 @@ Host gates至少覆盖：
 - typed target LLVM metadata roundtrip与未知/缺失字段拒绝；
 - non-identity `tile_id`/`launch_slot` mapping，包含 aggregate与非aggregate writing；
 - all-and-only 16 Tile interfaces、duplicate/unavailable Tile、duplicate/missing launch slot负例；
-- Tile entry argument kind/layout/size/alignment/signature双射，kernel pointer-row与model BootParam绑定消费同一argument schema；
+- Tile entry argument kind/layout/size/alignment/signature与current kernel pointer-row绑定双射；
 - ProgramTensor、ProgramDataRange、TargetTensor与16 Tile arguments的all-and-only join；同一range的多representation、
   TargetTensor共享和不兼容argument引用负例；
 - 每个package-owned TargetTensor一次bounded materialization，profile/model consumer不得触发per-Tile或

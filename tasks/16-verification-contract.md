@@ -183,7 +183,8 @@ completion从final actual Instr的effects、worker issue domains、async tokens�
 
 - ordinary package manifest与profile activation分别严格检查自己的current top-level identity和exact field set；所有文件均拒绝额外/缺失field，不保留version branch或旧reader；
 - `card_count=1`、`tile_count=16`，entries覆盖all-and-only Tiles与dense launch slots；
-- target identity/runtime ABI/module format与launch kind/entry ABI/ordered phases同CardExecutable和module readback逐项相等；
+- target identity/runtime ABI/module format与kernel launch mode/entry ABI/ordered phases同CardExecutable和module readback逐项相等，
+  model launch kind或fallback输入必须拒绝；
 - program data、ProgramTensor、TargetTensor、inputs、outputs、modules、entries和arguments all-and-only covered，
   无悬空、重复ID、未引用文件或source NPY/tree；
 - ProgramTensor logical descriptor、TargetTensor `MemLayout`/shape/physical bytes/alignment和existing codec逐项一致；

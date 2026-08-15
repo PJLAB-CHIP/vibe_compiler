@@ -242,7 +242,9 @@ consumer分为四条互不冒充的路径：
 2. **repo-owned TargetCall/SystemC model**：消费same-invocation target-model container中的同次lowering modules，执行typed calls、
    address spaces、engine/event和numeric semantics；不执行repo CRT、RISC-V ELF或vendor packet。
 3. **board RuntimeProvider**：消费verified package并实际完成allocation/import/H2D/load/submit/wait/status/D2H/cleanup；
-   current kernel/model、16-Tile Direct DTE和production workload vertical按environment/profile独立资格化。
+   current产品执行只使用`txLaunchKernel` family（Grid或Direct-DTE所需的Cluster Prepare/Main），16-Tile Direct DTE和
+   production workload vertical按environment/profile独立资格化。`txLoadGraph`/`txLaunchModel`只保留反向工程与历史资格证据，
+   不进入current compiler/package/runtime产品合同。
 4. **exact-package model**：只有ISS/vendor simulator同时闭合loader ABI、MMIO/custom instruction、Direct DTE和provider lifecycle时，
    才能原样执行package内all-and-only RISC-V modules。
 

@@ -1310,7 +1310,7 @@ typed DAG 接受并通过 `tasks/16` gate 后才具有 Wafer runtime 语义。
 | `TsmRun` | `Runtime::GetPhyAddr(bootparam)` 后调 `txLaunchModelSync(phy_bootparam)` | 只证明该旧 provider 暴露 synchronous call；不能证明它与 HPGR completion 的相对架构地位 |
 | current `txLaunchKernel` | AP按固定logical tile id `0..15`划分总grid block，Kcore逐block设置pid后调用共享entry；不会按active-count重编号 | 当前full-good V5.6中grid1只由logical tile 0取得唯一block；一次grid16由logical tile `t`执行pid `t`。缺失tile会丢失对应pid而不会remap；真实执行依据仍需full-good inventory与slice/canary板端写回 |
 | current `txLoadGraph` | 读取`tile0..tile15/kcore_fw.so`，以外层type-5 model packet同步执行内层type-6 `DYNLIB_LOAD` | 只加载；不能把外层packet名解释成一次inference。每tile按自身id选择对应size/address并解析共享symbol |
-| current `txLaunchModel` | AP把同一BPM地址广播到active tiles；内层type-7按module name运行各tile本地`entry(D_BootParamHead *)` | 已恢复exact-build布局和device call；public header没有builder/版本承诺，production acceptance归`tasks/15`/`tasks/16` |
+| current `txLaunchModel` | AP把同一BPM地址广播到active tiles；内层type-7按module name运行各tile本地`entry(D_BootParamHead *)` | 已恢复exact-build布局和device call；public header没有builder/版本承诺，该链只作反向工程事实，不进入current产品acceptance |
 | `TsmLaunch/TsmLaunchPg/TsmAsyncRun/TsmDeviceSynchronize` | 当前实现是 stub/success path | 不能作为 execution 或 completion 证据 |
 | `TsmGetTileInfo/SetTileInfo` | 调 `txGetDeviceAllTileInfo/txSetDeviceSelectedTileInfo`，复制 16/8 个 tile records | 静态调用链不能证明返回内容；board gate 归 `tasks/16` |
 | `TsmProcessProfData` | 构造 profiling dyn TLV，运行 bootparam，结束路径 dump profiling data | record shape 静态可见，counter accuracy 归 `tasks/16` 验证 |

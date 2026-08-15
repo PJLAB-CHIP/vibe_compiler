@@ -1,8 +1,8 @@
 # Wafer ExecutablePackage、Runtime Invocation Planning 与 Board Launch
 
 状态：本文是current `ExecutablePackage`、target-ready program data和runtime launch的唯一现行设计合同；
-Q58/Q56/Q57实施状态只看`tasks/progress.md`。本文按当前single-card、all-and-only 16 Tiles、static-ranked entry收口，
-不预埋multi-entry、跨卡或serving协议。
+Q58/Q56/Q57实施状态只看`tasks/progress.md`。本文按当前single-card、all-and-only 16 Tiles、static-ranked entry和
+`txLaunchKernel` family收口，不预埋model launch、multi-entry、跨卡或serving协议。
 
 ## 1. Pipeline contract
 
@@ -15,7 +15,7 @@ Pipeline position:
   为package-owned TargetTensor确定program-data.bin中的deterministic offset/span/alignment并只转换一次；
   写出current manifest、all-and-only modules和target-ready program data；strict readback；
   no-card形成完整runtime memory/launch plan；board runtime取得BoardDeviceMemory、完成H2D、构造pointer rows、
-  load/submit/wait/readback/cleanup。
+  load kernel modules、submit/wait/readback/cleanup。
 - Output IR / files:
   一个ExecutablePackage：manifest.json、modules/下all-and-only target modules、data/program-data.bin；
   runtime产生RuntimeInvocationPlan与typed invocation result。
@@ -26,24 +26,24 @@ Pipeline position:
 - Explicit non-goals:
   不重新选择target layout、physical-dataflow、Tile placement、workspace offset、RDMA/WDMA或Direct-DTE schedule；
   runtime不解析NPY/checkpoint、不做shard/quantize/transpose/pack；
-  不从name/path/digest/tile ordinal恢复identity；不保留旧manifest reader；
+  不从name/path/digest/tile ordinal恢复identity；不保留旧manifest reader或model launch分支；
   不建立通用module registry、weight manager、PJRT式Client/Buffer API、runtime JIT或serving scheduler。
 - Done criteria:
   logical ProgramTensor、TargetTensor、program-data offset、TileEntryArgument和runtime address逐层闭合；
   parameter/constant无需caller逐次绑定；external input/output没有package bytes；
   non-empty program data一次大块allocation与一次整体H2D，empty program data零provider调用，pointer rows使用base+offset；
-  package root无source tree或未引用文件；strict parser/readback、no-card、fake provider和完整板端case通过。
+  package root无source tree或未引用文件；model launch输入fail closed；strict parser/readback、no-card、fake provider和
+  完整kernel板端case通过。
 ```
 
 ## 2. 已确认的Wafer执行事实
 
-- 每个Tile target entry消费一个有序参数表。当前实现名`KernelABISlot`并不准确：`launchKernel`
-  provider mapping从pointer row读取地址，`txLoadGraph`/`txLaunchModel` provider mapping从BootParam descriptor读取地址；
-  二者是同一Tile entry合同的不同底层承载，不是两层runtime或两套package语义。current设计统一称
-  `TileEntryArgument`。
+- 每个Tile target entry消费一个有序参数表。当前实现名`KernelABISlot`并不准确：它描述Tile target entry参数，
+  不拥有kernel pointer-row storage；current设计统一称`TileEntryArgument`。current产品provider只把该参数表lower为
+  `txLaunchKernel`所需的pointer row。`txLoadGraph`/`txLaunchModel`不进入本合同。
 - `TileEntryArgument`只描述某个Tile target entry的一个有序参数：ordinal、closed kind、恰一个typed reference
   （ProgramTensor/TargetTensor、external port或entry-local requirement）、`MemLayout`、shape、physical bytes、alignment和access。
-  它不拥有bytes、file range或device address；pointer row和BootParam只是两种consumer representation。
+  它不拥有bytes、file range、device address或pointer-row storage；pointer row只是current kernel runtime representation。
 - parameter/constant/input/output在Instr中是external DDR roots；compiler不为它们生成physical base。
 - compiler-managed Tile-local DDR对象已经获得`wafer.ddr.offset`；target ABI只新增一个workspace base argument，
   device地址为`workspaceBase + acceptedOffset`。
@@ -74,7 +74,7 @@ entries
 current要求`card_count=1`、`tile_count=16`。parser要求exact field set、bounded JSON size/nesting/record count、
 checked integer conversion和canonical serialization；没有version branch、upgrade reader或兼容alias。
 
-`target`记录compiler-fixed target identity、runtime ABI和module format；`launch`直接记录current launch kind、entry ABI和
+`target`记录compiler-fixed target identity、runtime ABI和module format；`launch`直接记录current kernel launch mode、entry ABI和
 ordered phases。它们必须与CardExecutable、target module readback及全部entries逐项相等，runtime不得从module path或entry
 shape猜测launch方式。
 
@@ -228,11 +228,10 @@ reset或下一次submit不能重传、重排或覆盖program data。one-shot仍�
 这样静态大小、alignment和lifetime在side effect前一次排好，不逐tensor或逐Tile调用allocator。若某个provider能力要求分开，
 必须由typed capability和明确memory-plan分支决定，不能静默按失败顺序拆分。
 
-当前Wafer `txLoadGraph`/`txLaunchModel` adapter是同一Tile entry合同的另一个provider mapping，不是单独的
-“model runtime”。它现有exact-build实现只资格化了aligned rank-1..6 F32 input/output，尚未承接
-parameter/constant、workspace、Direct-DTE或current kernel pointer-row memory plan。这些是当前Wafer adapter的coverage，
-不是vendor接口的能力上限。扩展该mapping必须同步compiler、BootParam ABI、package、runtime、target model和板端证据；
-不得反向改写ProgramTensor、TargetTensor、`TileEntryArgument`或runtime memory plan语义。
+current产品合同只接受kernel launch family。`txLoadGraph`/`txLaunchModel`的exact-build反向工程和历史adapter代码不作为
+package能力、runtime fallback或Q56完成门禁；Q56实施时从Wafer-owned current compiler/package/runtime接口原位删除该分支，
+不保留兼容reader、枚举值或选择开关。反向工程事实继续留在`docs/`，但不得反向改写ProgramTensor、TargetTensor、
+`TileEntryArgument`或runtime memory plan语义。
 
 ## 6. Board lifecycle
 
@@ -260,7 +259,7 @@ current kernel执行：
 4. TargetTensor address = program data base + manifest offset；
 5. workspace/input/output/status address = invocation base + planned offset；
 6. 为16个Tile按`TileEntryArgument.ordinal`写pointer rows；
-7. load required modules/graph，按typed phases提交完整card domain。
+7. load required kernel modules，按typed Grid或Cluster phases提交完整card domain。
 
 workspace内部的compiler-managed地址仍是compiled `workspaceBase + wafer.ddr.offset`；runtime不得看到或重新pack内部对象。
 
@@ -281,7 +280,7 @@ Q57只延长Q56已经验证的对象lifetime：
 ```text
 PreparedExecution owns:
   qualified device generation
-  loaded modules/graph
+  loaded kernel modules
   optional non-empty program data BoardDeviceMemory
   invocation BoardDeviceMemory
   Tile pointer rows
@@ -324,8 +323,7 @@ Host/no-card至少覆盖：
 - workspace base与compiler offset不被runtime重排；
 - Direct-DTE/profile正负例、deadline、cleanup与poison；
 - source tree/NPY/IR/unreferenced files拒绝；
-- kernel pointer-row与model BootParam两个provider mappings消费同一`TileEntryArgument` schema；测试只签发
-  各自current adapter coverage，不把adapter未实现能力写成vendor上限。
+- current kernel pointer-row与`TileEntryArgument` schema双射，package/runtime不接受model BootParam分支或fallback。
 
 板端case使用FP16/BF16，fresh生成完整package并先通过no-card；单进程串行launch、bounded timeout、output/guard和正常lifecycle。
 代码或环境未变化时不重复历史case。Q56达到`board-ready`需要case/oracle/runner完整且实际生成新package；
@@ -337,4 +335,4 @@ Host/no-card至少覆盖：
 - XLA/PJRT：采用编译结果与prepared execution分层、on-device layout与completion显式；不照搬Client/Buffer大接口。
 - TileRT：采用prepare一次、地址稳定、重复执行；不假设GPU单kernel或闭源内部实现。
 - vLLM/SGLang：只用于压力测试未来固定容量state和step metadata；scheduler/cache policy不进入本合同。
-- Wafer的CardExecutable、TileEntryArgument、pointer row/BootParam、workspace offsets、RDMA/WDMA、Direct-DTE和provider能力始终是主事实源。
+- Wafer的CardExecutable、TileEntryArgument、kernel pointer row、workspace offsets、RDMA/WDMA、Direct-DTE和provider能力始终是主事实源。
