@@ -127,7 +127,7 @@
 
 ## Logical elements与physical bytes不可混用
 
-- 现象：bitpacked/blocked/padded tensor的SPM/DDR range、movement cost或ABI slot尺寸按element count计算，出现越界或错误收益。
+- 现象：bitpacked/blocked/padded tensor的SPM/DDR range、movement cost或`TileEntryArgument`尺寸按element count计算，出现越界或错误收益。
 - 根因：layout enum与physical codec没有成为size/address唯一事实源。
 - 修复模式：数学work使用logical elements；allocation、address、ABI、movement与transport使用checked physical footprint。
 - 防复发：bitpacked、padding、non-unit stride、alignment和overflow正负例同时覆盖，byte size相等不推断layout。
@@ -139,12 +139,35 @@
 - 修复模式：IR显式保存physical source/destination、message identity、domain、encoding与bytes；topology analysis只读current typed topology。
 - 防复发：non-identity topology、partial overlap mapping、fanout/fanin、mismatched payload和missing recv负例。
 
-## Card-scoped与Tile-scoped resource不可用名字区分
+## Program tensor、target representation和device memory不能共用一个identity
 
-- 现象：每个Tile重复分配program input/output，或多个Tile错误共享workspace/status，只因resource name/role看起来相同。
-- 根因：package缺少typed physical scope，consumer从名称、shape或重复slot猜alias。
-- 修复模式：current package用`CardResourceScope`和`TileResourceScope`；sharing只由同一个ResourceId被多个entry引用表达。
-- 防复发：card resource exactly 16 references且只分配一次；Tile resource exactly one matching entry；cross-scope duplicate role/index失败。
+- 现象：每个Tile重复保存或上传同一parameter，或者package file offset被直接当成`txMalloc` handle；相反，多个Tile的
+  workspace/status又因role相同而错误共享。
+- 根因：一个`ResourceId`同时承担logical ProgramTensor、selected target representation、package bytes和provider allocation identity，
+  consumer只能从name、shape、role或重复argument猜sharing。
+- 修复模式：`ProgramTensor`、`TargetTensor`、program-data file range和runtime `BoardDeviceMemory base + checked offset`分层；
+  sharing只由多个`TileEntryArgument`显式引用同一TargetTensor表达。每Tileworkspace/status在invocation memory中取得独立range。
+- 防复发：同一TargetTensor只materialize和上传一次；不同TargetTensor即使digest相同也不合并；workspace/status ranges按Tile
+  non-overlap；package ID与provider allocation handle互换必须失败。
+
+## Host H2D与编译生成的DDR↔SPM搬运不能混成一层
+
+- 现象：runtime按parameter或Tile反复allocate/copy，甚至尝试在launch时重新规划layout和片上搬运，导致完整模型启动成本和地址合同失控。
+- 根因：套用GPU buffer API，把host→device初始化、global DDR storage和device执行期间的local memory movement视为同一动作。
+- 修复模式：compiler用`MemLayout`、physical bytes和accepted offsets决定TargetTensor及RDMA/WDMA；runtime只取得一块program-data
+  `BoardDeviceMemory`和一块invocation `BoardDeviceMemory`，完成必要H2D，并把`base + checked offset`传给Tile entry。
+- 防复发：fake provider检查non-empty program data一次allocation/整体H2D、empty program data零provider call、invocation一次allocation且无per-Tile allocator call；target测试检查
+  workspace仍为`workspaceBase + wafer.ddr.offset`，device RDMA/WDMA继续消费该DDR地址。
+
+## Tile entry argument不是kernel-only slot
+
+- 现象：同一descriptor同时被kernel pointer row和model BootParam消费，却命名为`KernelABISlot`，后续设计误以为它等同
+  runtime pointer-table storage或只适用于kernel launch。
+- 根因：用某一个wrapper的承载形式给跨target consumer的entry argument命名。
+- 修复模式：稳定语义名为`TileEntryArgument`；它记录ordinal、closed kind、target descriptor、bytes/alignment和access，
+  pointer row或BootParam只是不同lowering consumer。
+- 防复发：kernel/model两条wrapper都从同一个argument schema生成并readback；实现改名同批替换全部producer/consumer，
+  不保留旧symbol或alias。
 
 ## 持久化接口更新不能保留兼容reader
 
@@ -160,7 +183,7 @@
 - 根因：把module topology等同execution domain，并默认 `pid == launch_slot == tile_id`。
 - 修复模式：aggregate只合并code payload；target modules/package仍保存16个explicit Tile interfaces与typed mapping，dispatch读取verified
   launch-slot relation。
-- 防复发：不同Tile body、共享module、non-identity tile/slot mapping与高ordinal ABI slot的集成测试。
+- 防复发：不同Tile body、共享module、non-identity tile/launch-slot mapping与高ordinal `TileEntryArgument`的集成测试。
 
 ## Internal JIT bridge不是runtime ABI
 
@@ -171,7 +194,7 @@
 
 ## Target LLVM不能被不同consumer重复lower
 
-- 现象：target code generation、model和host frontend各自从accepted IR重新lower，target annotations、ABI slot或call ordinals漂移。
+- 现象：target code generation、model和host frontend各自从accepted IR重新lower，target annotations、Tile entry arguments或call ordinals漂移。
 - 根因：没有owner-backed same-invocation target LLVM boundary。
 - 修复模式：accepted Tile只翻译一次，target module连同LLVMContext move-own；下游共享不可变owner set。
 - 防复发：测试统计单次translation，并让package/TargetCall/SystemC消费同一owner；metadata逐field readback。
@@ -187,7 +210,8 @@
 
 - 现象：发现binding、module export或transport capability错误时已经分配内存/加载module，cleanup与错误归因复杂。
 - 根因：semantic verification分散在provider调用过程中。
-- 修复模式：no-card/runtime validation先闭合manifest、capability、resources、phases、entries和16-Tile invocation plan，再允许allocation。
+- 修复模式：no-card/runtime validation先闭合manifest、capability、program data、ports、modules、phases、entries、memory plan和
+  16-Tile invocation plan，再允许allocation。
 - 防复发：每类invalid input断言provider call count为零；no-card与board共享同一plan builder。
 
 ## Partial submission必须poison session
@@ -199,20 +223,20 @@
 
 ## Card-shared output必须在card-scoped invocation完成后一次读取
 
-- 现象：某个Tile完成就D2H shared output，读到其它Tile尚未写完的区域；或同一ResourceId被多次copyback覆盖。
+- 现象：某个Tile完成就D2H shared output，读到其它Tile尚未写完的区域；或同一output port被多次copyback覆盖。
 - 根因：把Tile-local completion和card-scoped output readback混淆。
-- 修复模式：所有phases、16个entries和transport status验证后，按unique card-scoped ResourceId一次D2H；随后原子构造result。
+- 修复模式：所有phases、16个entries和transport status验证后，按unique output port的planned range一次D2H；随后原子构造result。
 - 防复发：不同Tile写disjoint slices的共享output测试，提前D2H和duplicate copyback失败。
 
-## Target model不能为每个ABI slot复制card resource
+## Target model不能为每个TileEntryArgument复制card data
 
-- 现象：package/runtime按一个card-scoped ResourceId分配一次，但functional model按`(launch_slot, slot_ordinal)`建立16份
-  input/output backing；跨Tile写入彼此不可见，model可能错误通过board上会失败的程序。
-- 根因：model把ABI引用位置当成allocation identity，并把所有slot address强制为互不重叠。
-- 修复模式：从显式physical owner、Kernel ABI role和resource index建立model resource identity；program boundary由card拥有并
-  共享一个base/backing，workspace/status由Tile拥有；unique output resource只发布一次。
-- 防复发：两Tile通过不同slot读写同一card output必须互相可见；Tile workspace必须隔离；同一card resource使用不同base、
-  不同resource复用重叠base和按name猜alias都必须fail closed。
+- 现象：functional model按`(launch_slot, argument_ordinal)`建立16份input/output/parameter bytes；跨Tile写入彼此不可见，
+  model可能错误通过board上会失败的程序。
+- 根因：model把entry argument引用位置当成memory identity，并把所有argument address强制为互不重叠。
+- 修复模式：model从显式ProgramTensor/TargetTensor/port与`TileEntryArgument`relation建立private memory；card data共享一个base，
+  workspace/status由Tile独占；unique output port只发布一次。model-private memory不定义package/provider allocation identity。
+- 防复发：两Tile通过不同arguments读写同一card output必须互相可见；Tile workspace必须隔离；同一TargetTensor使用不同base、
+  不同TargetTensor复用重叠base和按name猜alias都必须fail closed。
 
 ## SystemC身份不能来自OS thread或调用顺序
 

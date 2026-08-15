@@ -1,6 +1,6 @@
 # Wafer Frontend 与 StableHLO Program Directory 设计
 
-状态：2026-08-15按card-level GSPMD、产品frontend入口与大payload backing边界同步。本文只拥有StableHLO program directory、
+状态：2026-08-15按card-level GSPMD、产品frontend入口与program-data ownership边界同步。本文只拥有StableHLO program directory、
 metadata/payload和frontend verification合同；`num_partitions`描述card partition，不描述单卡16个Tile。
 typed model/state/resource graph与Tile级时空综合属于下游，不是frontend事实。实现状态看`tasks/progress.md`。
 
@@ -80,27 +80,28 @@ per-card-partition local tensor的typed output合同，不是planner sidecar，�
 多个entry或program graph，必须先设计可由IR/metadata verifier证明且有下游consumer的最小表示；不能恢复历史
 私有model dialect、复合frontend owner或side-table对象图作为前置。
 
-### 2.1 Payload root、view 与 transaction lifetime
+### 2.1 Program data ownership 与 transaction lifetime
 
-parameter/external captured-constant的逻辑身份、数据内容和target物理表示是三个不同边界。frontend verified output对每个payload只建立：
+parameter/external captured-constant的逻辑身份、source bytes和target物理表示是三个不同边界。frontend verified output对每个payload只建立：
 
 - 显式logical parameter/external captured-constant identity及其function argument关系；
-- transaction拥有的immutable storage root；root必须由private snapshot/pinned content或其它能证明整次读取内容稳定的owner支撑，
+- transaction拥有的`ProgramDataSource`；它必须由private snapshot、pinned content或其它能证明整次读取内容稳定的owner支撑，
   仅持有一个regular-file descriptor、mtime或path不构成immutable证明；
-- root内checked half-open byte range与当前source logical tensor view，包括dtype和shape；post-SPMD card slice由SPMD handoff另行形成；
+- source内checked half-open `ProgramDataRange`，包括logical dtype、shape和partition/slice descriptor；post-SPMD card slice由SPMD handoff另行形成；
 - 内容digest与source provenance，用于证明读取的bytes未变；digest相等不创建alias。current source schema中每个external
-  parameter/captured-constant binding拥有自己的backing identity，只有该binding的replication/slice可以共享backing。
+  parameter/captured-constant binding拥有自己的`ProgramTensorId`，只有该binding的replication/slice可以共享同一source/range。
 
 path和name仍只用于当前container定位与诊断。verifier必须检查header、element count、payload extent与整数运算，拒绝truncated、
 trailing、overflow及source在transaction期间变化；不得先验证路径再在后续stage无owner地重新打开。NPY是当前source adapter，
-不是target layout、package data image或runtime binding。
+不是target layout、target-ready program data或runtime binding。
 
-source snapshot只需要隔离IR、metadata和目录结构事实。大payload通过owner-backed checked view传递，不能为了snapshot、
-propagated program、post-SPMD merge或每个Tile binding复制整棵data tree。SPMD只为实际产生的新card shard建立新的backing/view；
-replicated view可以显式引用同一immutable backing，不能同时保留original data和byte-identical shard来暗示sharing。
+source snapshot只需要隔离IR、metadata和目录结构事实。大payload通过`ProgramDataHandoff`中的owned source与checked range传递，
+不能为了snapshot、propagated program、post-SPMD merge或每个Tile binding复制整棵data tree。SPMD只为实际改变bytes的新card
+shard建立新的`ProgramDataSource`；replication或contiguous slice引用已有source和新range，不能同时保留original data和
+byte-identical shard来暗示sharing。
 
 SPMD helper是外部进程边界，不是一个可继续传裸C++引用的pass。Q58必须让helper消费transaction-owned、content-stable的
-all-and-only IR/metadata/backing ranges，并把输出shard作为新backing readback接管；helper不能重新打开原source path、整树复制
+all-and-only IR/metadata/ProgramDataRange，并把真正产生的新shard作为`ProgramDataSource` readback接管；helper不能重新打开原source path、整树复制
 或整NPY读入host vector。current product compiler只接受`num_partitions=1`，多partition shard只在frontend/helper isolated gate中
 证明，不冒充source→CardExecutable完整产品路径。
 
@@ -121,7 +122,8 @@ program IR authority原位替换为`functions/forward.stablehlo.bc`承载的Stab
 mutation复用的“verified path”。
 
 产品adapter和source verifier必须复用同一ingestion实现；advisory verifier只报告当前路径是否通过检查，compiler仍在自己的
-transaction中重新打开、拥有并验证全部输入。参数内容的source backing/view生命周期由Q58负责，不在Q60重建参数管理层或plugin registry。
+transaction中重新打开、拥有并验证全部输入。参数内容的`ProgramDataSource`/`ProgramDataRange`生命周期由Q58负责，
+不在Q60重建参数管理层或plugin registry。
 
 ## 3. Frontend Verification
 
@@ -285,7 +287,7 @@ tensor program。frontend verifier本身不执行helper、不形成调度单元�
 target context或writing authority。
 
 source-to-package driver在parse前建立transaction ownership：IR、metadata和目录结构进入私有snapshot，大payload由
-content-stable且完成extent/digest校验的owner-backed source/view持有；后续frontend verify、helper和IR transforms只消费该transaction
+content-stable且完成extent/digest校验的`ProgramDataSource`/`ProgramDataRange`持有；后续frontend verify、helper和IR transforms只消费该transaction
 拥有的事实。当前整目录复制以及propagated/original/shard多份payload是Q58必须删除的实现差距，不能成为长期隔离机制。
 source不得被原地补metadata、topology或shards。Q15最终发布的是重新
 parse/verify过的card-partition-local structured tensor program directory；fixed structured optimization完成后，
@@ -310,7 +312,7 @@ frontend mandatory coverage包括：
   再经`torch.testing`比较；
 - graph break/eager fallback、metadata length/shape/dtype mismatch；
 - program-directory static boundary；IR-only bounded dynamic及unbounded/invalid bound负例；
-- parameter/external captured-constant backing/view owner、range、digest、source mutation、shape/dtype/order/truncation/trailing与unsafe path负例；
+- parameter/external captured-constant `ProgramDataSource`/`ProgramDataRange` owner、digest、source mutation、shape/dtype/order/truncation/trailing与unsafe path负例；
   F16 `<f2`、host-compatible `=f2`、BF16 `|V2`
   canonical bytes正例及`>f2`拒绝；
 - `input_arg` position唯一连续；

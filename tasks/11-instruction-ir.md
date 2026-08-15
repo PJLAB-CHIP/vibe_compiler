@@ -431,7 +431,7 @@ packet/register与板端证据另由`tasks/16` gate。
 | NE GEMM | `wafer.instr.gemm` | current production target op | 只表达 GEMM / batched GEMM 主路径参数；当前单一format及同element-type合同不表达product/accumulator/FMA/rounding，program-selectable行为必须先扩IR/CRT ABI，target-fixed行为必须按revision/tuple唯一映射；bias、scale、quant、fused activation和复杂psum policy不能隐式打开 |
 | NE affine INT8 GEMM | `wafer.instr.quantized_gemm` | typed production extension；未完成capability/CRT/golden前target-illegal | exact M/K/N/batch/format、q0/q1、left/right zero point、typed scale operands/mode和matched capability；不复用plain GEMM flag |
 | MXFP/FP8 packed decode | `wafer.instr.mxfp_decode` | explicit-composite production extension；未完成scratch/completion/CRT gate前target-illegal | packed source + block scale + destination + scratch；decode到BF16/FP16，不能冒充CT convert或native FP8 GEMM |
-| Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | current production target op with accepted physical binding | IR表达Tile peer、bytes和async token；post-memory CardExecutable verification提交endpoint、remote receiver offset、FSM/completion和status ABI后，target conversion生成opaque event/ready/send/wait/release CRT calls。缺binding或不一致仍以`unsupported_target_transport`拒绝；RuntimeSession不能补做endpoint/channel planning |
+| Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | current production target op with accepted physical binding | IR表达Tile peer、bytes和async token；post-memory CardExecutable verification提交endpoint、remote receiver offset、FSM/completion和status ABI后，target conversion生成opaque event/ready/send/wait/release CRT calls。缺binding或不一致仍以`unsupported_target_transport`拒绝；runtime不能补做endpoint/channel planning |
 | typed NCC participant drain | `wafer.instr.ncc_join` | current production target sync；LLVM call emitted | canonical非空participant集合lower到typed CRT join；每个participant都是高代价blocking worker drain，不是普通依赖、Direct DTE completion或multi-tile barrier；optimized steady state必须为零 |
 | SPM memcpy helper / copy | 无单独 copy op | composite lowering | copy 是 `gather_scatter` 的 descriptor 特例；不引入 `wafer.instr.copy` |
 | ChannelNorm / DechannelNorm / Tensor-Normalization | 无单条 op | composite lowering | 作为 layout materialization algorithm 展开为 gather/scatter 序列；native TensorNom opcode 133 不作为 当前主路径 |
@@ -487,7 +487,7 @@ memref 替换原 op result 的 uses。
   explicit movement。
 - SPM offset、range、bank span由R3.2f写入；后续target-codegen必须从这些facts、accepted executable
   bindings和当前memref use-def/view relation派生address/range参数，不能复制成独立placed/access descriptor
-  中间协议。后续runtime只实例化verified manifest声明的resource/ABI slots，不读取instruction memref或SPM plan。
+  中间协议。后续runtime只把verified manifest中的`TileEntryArgument`绑定到预排的device addresses，不读取instruction memref或SPM plan。
 - RDMA/WDMA 的 DDR side 使用 `memref<..., #wafer.memory<ddr, layout>>`；DDR memory planning stage 负责
   external allocation contract、declared arena/placement-domain resource、compiler-managed/resident requirement、planned DDR
   ranges 和 constant residency。

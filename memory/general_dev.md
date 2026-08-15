@@ -144,8 +144,10 @@ source program
 ## Target conversion与TargetCall
 
 - accepted Tile只做一次target LLVM translation；ExecutablePackage、TargetCall frontend和model共享owner-backed target module set。
-- current target LLVM metadata显式包含card/tile/launch slot、entry、target identity、runtime ABI、format与dense Kernel ABI slots。
-- ABI slot记录role、resource index、dtype、layout、shape、physical bytes和alignment；output是caller-owned slot。
+- current target LLVM metadata显式包含card/tile/launch slot、entry、target identity、runtime ABI、format与dense
+  `TileEntryArgument[]`。
+- Tile entry argument记录ordinal、closed kind、program/target identity（如适用）、dtype、layout、shape、physical bytes、
+  alignment和access；output argument引用caller-visible output port。kernel pointer row与model BootParam只是不同consumer。
 - target call descriptor registry是symbol/signature/field position/issue domain的唯一事实源。consumer用typed semantic和decoder，
   不解析symbol spelling。
 - host JIT dispatch只是把final target calls转成typed transactions的internal bridge，不是public runtime ABI或serialized field。
@@ -156,10 +158,13 @@ source program
 - ordinary package只接受一个current manifest schema identity和exact fields；profile instrumentation、plan/site map与profile
   evidence各自由自己的current schema identity和exact fields验证。旧外围格式fail closed，没有兼容reader/translator。
 - production manifest固定 `card_count=1`、`tile_count=16`，entries显式保存 `(card_id,tile_id,launch_slot)`。
-- program input/parameter/constant/output使用card scope；workspace与transport status使用Tile scope。
-- sharing只由同一ResourceId被多个entry slots引用表达，不能从role/name/type/shape推断。
-- card-scoped resource由16个entries各引用一次、runtime分配一次；Tile-scoped resource只由对应entry引用。
-- slots dense zero-based，resources/modules/entries all-and-only covered；module/export/phase/digest关系必须readback。
+- target identity/runtime ABI/module format与launch kind/entry ABI/ordered phases直接记录并同module readback逐项相等。
+- parameter/constant由logical `ProgramTensor`、selected `TargetTensor`和`data/program-data.bin`中的checked file range表达；
+  external input/output只保存port与target descriptor，没有package bytes。
+- sharing只由多个`TileEntryArgument`引用同一TargetTensor或port表达，不能从role/name/type/shape/digest推断。
+- `TileEntryArgument` ordinals dense zero-based，program/target tensors、ports、modules、entries和arguments all-and-only covered；
+  module/export/phase/digest关系必须readback。
+- target layout、physical bytes和alignment由compiler决定；package writer只预排file offsets并materialize一次；runtime不重新pack。
 - entry completion只接受 `return_after_local_drain`；Direct-DTE status resource/ABI/size/alignment/access/watchdog exact。
 - canonical JSON parser要求exact fields、bounded size/nesting/records；serializer后重新parse/verify再写入最终目录。
 
@@ -175,9 +180,13 @@ source program
 
 ## No-card与board runtime
 
-- no-card从VerifiedPackageManifest和provider capability构造完整16-Tile RuntimeInvocationPlan，但不产生任何provider effect。
+- no-card从verified `ExecutablePackage`和provider capability构造完整16-Tile `RuntimeInvocationPlan`，但不产生任何provider effect。
 - provider inventory显式提供available Tile ID、launch slot和coordinates；重复、缺失或mapping mismatch在allocation前失败。
-- card-scoped allocation按ResourceId创建一次并共享地址；Tile-scoped allocation隔离。caller只绑定host-visible program resources。
+- runtime为non-empty program data取得一块`BoardDeviceMemory`并整体H2D一次；canonical empty program data不产生provider call。
+  input/output、每Tileworkspace/status/profile和pointer rows在一块invocation `BoardDeviceMemory`中预排non-overlap checked ranges。
+  Tile entry只接收对应`base + offset`地址。
+- host H2D只初始化global DDR；compiled RDMA/WDMA负责执行期间DDR↔SPM，workspace内部地址仍为
+  `workspaceBase + wafer.ddr.offset`。caller只绑定external inputs/outputs。
 - board lifecycle按verified plan执行H2D、module load/export resolve、typed phases、同一absolute deadline、status验证、D2H和cleanup。
 - provider可以内部使用多queue/stream，但caller不能组装它们。partial/unknown accepted subset、timeout或不可信状态使session
   poisoned；禁止自动retry/reset/power，poison后不继续provider calls。
@@ -189,7 +198,7 @@ source program
 - 每个Tile有独立SystemC process和private SPM/address domain；card DDR可由typed resource共享。
 - transaction携带显式card/tile/launch slot和Tile-local issue ordinal；OS thread、symbol和容器位置不拥有身份。
 - descriptor/decoder负责ABI，plain C++ kernel负责functional semantics，SystemC wrapper负责event/resource ordering。
-- complete output按exact Kernel ABI codec解码后与独立CPU expected比较；整数/bit pattern exact，浮点使用case-owned policy。
+- complete output按exact target descriptor codec解码后与独立CPU expected比较；整数/bit pattern exact，浮点使用case-owned policy。
 - SystemC只证明functional-event语义，不证明cycle、bandwidth、contention或真实board performance。
 
 ## Board证据
@@ -213,7 +222,7 @@ source program
   `PARTIAL_SOURCES_INTENDED`整体关闭漏列检查。fresh CMake configure必须能发现新source未归属的问题。
 - CMake显式列source；删除功能时同批删除header/source/CMake/test/fixture，不保留empty target或compatibility alias。
 - tests按Dialect、Analysis、Conversion、Pipeline/Tool、Runtime、Model、Board边界组织；fixture不能成为第二schema/ABI实现。
-- internal low-level aggregate module或JIT bridge可保留，但长期合同仍由explicit Tile interfaces、typed resources和current ABI定义。
+- internal low-level aggregate module或JIT bridge可保留，但长期合同仍由explicit Tile interfaces、`TileEntryArgument`和current ABI定义。
 - 文档先写边界和通用方法，再用case示例；case shape、模型名、参数顺序和某次winner不成为协议。
 
 ## Compiler 名称限定

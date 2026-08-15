@@ -12,7 +12,7 @@
 | 编号 | 文档 | 范围 |
 | --- | --- | --- |
 | 01 | `tasks/01-architecture.md` | compiler stack主架构：production pipeline、library/CLI transaction、IR/module/package graph、跨层不变量、consumer分支和职责索引 |
-| 02 | `tasks/02-frontend-stablehlo-program.md` | StableHLO program directory、产品adapter边界、payload backing/view lifetime与frontend验证 |
+| 02 | `tasks/02-frontend-stablehlo-program.md` | StableHLO program directory、产品adapter边界、ProgramDataSource/ProgramDataRange lifetime与frontend验证 |
 | 03 | `tasks/03-shardy-spmd.md` | Shardy/XLA的card-level GSPMD output与`num_partitions`；不绑定片内Tile |
 | 04 | `tasks/04-topology-execution-mesh.md` | logical card partition mesh与独立target card/Tile topology |
 | 05 | `tasks/05-local-compute-normalization.md` | card-partition-local structured compute normalization与tensor collective boundary |
@@ -22,10 +22,10 @@
 | 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/coexistence、fixed-capacity MiniMalloc legality、all-root coverage、validated placement/headroom和accepted offsets；candidate choice仍由06拥有 |
 | 10 | `tasks/10-compute-movement.md` | 窄source implementation OpInterface/external model、typed target-abstract compute/movement、standard MLIR effects/interface reuse和issue/token/fence/wait |
 | 11 | `tasks/11-instruction-ir.md` | complete static Tile instruction program、current descriptor/geometry/range/narrowing legality及mapped/physical-fill/oriented typed extension |
-| 12 | `tasks/12-ddr-memory-planning.md` | 当前DDR demand/accepted offsets；multi-arena/state/streaming延后 |
+| 12 | `tasks/12-ddr-memory-planning.md` | 当前DDR demand/accepted offsets；多DDR分区、state和streaming延后 |
 | 13 | `tasks/13-communication.md` | selected Tile edge到typed p2p/staging/token/wait IR、Direct DTE card-scoped verification和completion；multi-card延后 |
 | 14 | `tasks/14-target-code-generation.md` | `CardExecutable`的current target identity/format、accepted immutable data preparation、structure-preserving conversion、CRT ABI和atomic target-module writing |
-| 15 | `tasks/15-launch-runtime-package.md` | `CardExecutable -> ExecutablePackage`、logical/selected-physical tensor、target-ready data、allocation/view/port/internal storage、no-card和board adapter边界 |
+| 15 | `tasks/15-launch-runtime-package.md` | `CardExecutable -> ExecutablePackage`、ProgramTensor/TargetTensor、program-data.bin、TileEntryArgument、runtime memory plan、no-card和board adapter边界 |
 | 16 | `tasks/16-verification-contract.md` | `TensorProgram -> CardModule/TileRegion/Instr -> CardExecutable -> ExecutablePackage`的target correctness、data/whole-program scale、CPU oracle、target-model、no-card和board分层gate |
 | 17 | `tasks/17-target-execution-model.md` | `CardExecutable`及其same-invocation target LLVM owner消费、multi-dtype numeric、oneDNN bulk、target-call/SystemC untimed CModel与板端numeric correlation边界 |
 | 18 | `tasks/18-source-organization.md` | 跨pipeline的源码ownership、translation unit、compiler library/tool/install、构建依赖和测试镜像组织合同；不改变IR/output语义 |
@@ -38,7 +38,7 @@
 
 | Pipeline boundary | Owner文档 |
 | --- | --- |
-| verified frontend program、产品adapter、payload backing和当前program directory | 02 |
+| verified frontend program、产品adapter、program data ownership和当前program directory | 02 |
 | pre-SPMD topology和execution mesh | 04 |
 | Shardy/SPMD card-partition output | 03 |
 | card-partition-local compute normalization与collective boundary | 05；跨stage正确性证据由16约束 |
@@ -49,7 +49,7 @@
 | Tile peer/collective materialization、Direct DTE completion、card-scoped acceptance与post-memory transport activation | 13；joint choice由06、target/package/verification consumer由14、15、16约束 |
 | card-local multi-Tile时空调度、MPMD executable构造和`CardExecutable` | 06；资源/lifetime边界由09、12、13共同约束 |
 | target LLVM、accepted immutable data preparation、CRT/device link和staged target module | 14 |
-| target-ready data、typed manifest、launch和RuntimeSession | 15 |
+| target-ready data、typed manifest、RuntimeInvocationPlan和board launch | 15 |
 | 横跨上述边界的completion evidence | 16 |
 | target execution model、multi-dtype numeric/bulk、same-invocation target module消费、SystemC/CModel capability、板端numeric correlation和deferred timing | 17；target module形成与writing合同由14拥有，target/runtime/verification consumer由14、15、16约束 |
 | 跨上述边界的源码与构建模块化 | 18；各IR/output语义仍由01-17拥有 |
@@ -78,21 +78,22 @@ Q55接口版本收敛计划见`tasks/plans/interface-version-consolidation.md`�
 继续拥有具体frontend、target、package、runtime、profiler与verification字段语义。Q55不建立compatibility mode，
 只保留真实外围版本并让repo内同步接口回到一种current表示。
 
-Q56 package数据闭合与Q57设备驻留执行共用`tasks/plans/executable-package-and-resident-runtime.md`。Q56先替换
-`CardExecutable`之后丢失layout/init/lifetime的静态package边界，并以bounded selected-physical-version materialization形成
-target-ready data；它不改变selected IR或搜索空间。Q57只在Q53按新package合同达到`board-ready`后启动，增加loaded
-executable、device buffer/view和显式submission lifetime；当前仍以single context、单inflight、无cancel和provider声明的
-loaded graph/module上限为事实，不把external execution engine、multi-inflight或persistent device loop并入runtime。15继续是
-唯一package/runtime设计owner，实施计划不复制current schema。
-
-Q58 program data backing与Q61 whole-program scale共用
-`tasks/plans/program-data-and-whole-program-scale.md`。Q58在Q56之后把verified source→外部SPMD helper→CardExecutable同事务
-data handoff切换成immutable source backing/checked view/owner lifetime，删除整树和per-Tile大payload复制，并以完整大型参数inventory量化
-RSS/disk/IO；package schema仍只由15/Q56拥有。Q61在Q53 `board-ready`后用完整程序验证frontend、IR、search、target和
+Q58 program data ownership与Q61 whole-program scale共用
+`tasks/plans/program-data-and-whole-program-scale.md`。Q58先把verified source→外部SPMD helper→CardExecutable同事务
+data handoff切换成`ProgramDataSource`、checked `ProgramDataRange`和move-only `ProgramDataHandoff`，删除整树和per-Tile
+大payload复制，并以完整大型参数inventory量化RSS/disk/IO；它不选择target layout或定义package schema。Q61在Q53
+`board-ready`后用完整程序验证frontend、IR、search、target和
 package的共同规模，Llama 7B仅作可选named scale witness，不把LLM或serving协议写入compiler合同。
 
+Q56 package数据闭合与Q57设备驻留执行共用`tasks/plans/executable-package-and-resident-runtime.md`。Q56消费Q58 handoff，
+把`ProgramTensor`、selected `TargetTensor`、`data/program-data.bin` file range和`TileEntryArgument`闭合为唯一静态package合同；
+runtime在side effect前预排program data与invocation memory，并以`BoardDeviceMemory base + offset`绑定，不逐tensor分配。
+Q57只在Q53按新package合同达到`board-ready`后启动，把同一合同延长为`PreparedExecution -> submit* -> close`；当前仍以
+single context、单inflight、无cancel和provider声明的loaded graph/module上限为事实，不把external execution engine、
+multi-inflight或persistent device loop并入runtime。15继续是唯一package/runtime设计owner，实施计划不复制current schema。
+
 Q59 compiler entry transaction与Q60 frontend production entry共用
-`tasks/plans/compiler-entry-productization.md`。Q59在Q58之后让compiler library primary result、package commit、CLI status
+`tasks/plans/compiler-entry-productization.md`。Q59在Q56达到`board-ready`后让compiler library primary result、package commit、CLI status
 与install tree成为同一事务；Q60在Q52 search scalability后将最小framework adapter与portable StableHLO ingestion接入
 同一source contract。Q53必须从Q60产品入口fresh生成证据，不能继续把test generator当成用户frontend。
 

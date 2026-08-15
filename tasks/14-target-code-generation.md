@@ -1,7 +1,7 @@
 # Wafer Target Code Generation 与 TargetCall
 
-状态：本文是target conversion、selected target physical data、LLVM module、device link、readback与TargetCall的唯一现行设计合同；
-Q56/Q58的数据代码实施状态只看`tasks/progress.md`。单卡编译边界固定覆盖16个available Tiles；Q49先收口`none` baseline，
+状态：本文是target conversion、target-ready program data、LLVM module、device link、readback与TargetCall的唯一现行设计合同；
+Q58/Q56的数据代码实施状态只看`tasks/progress.md`。单卡编译边界固定覆盖16个available Tiles；Q49先收口`none` baseline，
 Q51再把selected `CardExecutable`接入这条边界。现有host/model
 验证不能代替Q53的fresh package/no-card和真实板端matched A/B gate。
 
@@ -12,15 +12,15 @@ Pipeline position:
 - Upstream IR / input:
   Q49 `none` baseline或Q51 `search`选中的`CardExecutable`；其中all-and-only `wafer.tile.module`已投影为16个
   Tile ModuleOp，并完成TileRegion→Instr、fresh completion、SPM/DDR placement、transport与executable verification；
-  Tile entry携带typed program binding，current compilation transaction可解析对应parameter/external captured-constant payload。
+  Tile entry携带typed program binding，Q58 `ProgramDataHandoff`稳定拥有对应parameter/external captured-constant文件与checked range。
 - Current stage responsibility:
   对每个 Tile 做 current target ABI preparation、Instr→Target LLVM conversion、LLVM translation、
-  target-call legality、device link、ELF/readback验证；同时将logical bindings/views与16 Tile ABI slots做一次all-and-only
-  join，形成selected target physical versions与bounded materialization input。
+  target-call legality、device link、ELF/readback验证；同时将logical bindings、ProgramDataRange与16 Tile entry arguments做一次
+  all-and-only join，形成selected TargetTensor与bounded materialization input。
 - Output IR / files:
   与同一`CardExecutable`绑定的invocation-local target LLVM owner set及原子发布target-module view；每个Tile
-  interface都携带(card_id, tile_id, launch_slot)、entry symbol、typed Kernel ABI slots、module relation、
-  target identity、runtime ABI、format与digest；同一writing view另携带accepted target physical version descriptors。
+  interface都携带(card_id, tile_id, launch_slot)、entry symbol、typed `TileEntryArgument[]`、module relation、
+  target identity、runtime ABI、format与digest；同一writing result另携带accepted TargetTensor descriptors。
   它们是`CardExecutable -> ExecutablePackage`之间的lowering内部表示，
   不是新的稳定output层。
 - Downstream consumer:
@@ -30,8 +30,8 @@ Pipeline position:
   wafer-compile `search|none`；用户不手工拼接target passes，也不选择内部TargetCall或module materialization。
 - Explicit non-goals:
   不重新做physical-dataflow mapping；不从symbol、文件名、vector ordinal、pid或launch position恢复物理身份；
-  不把低层module dispatch提升为公开ABI；不提供 target metadata或entry ABI兼容读取路径；不把target-ready bytes、
-  package file range或runtime allocation写回Instr IR。
+  不把低层module dispatch提升为公开ABI；不提供target metadata或entry ABI兼容读取路径；不把target-ready bytes、
+  package file offset或device address写回Instr IR。
 - Completion gate:
   16 个 Tile interfaces all-and-only、物理三元组唯一且关系一致；每个 target module 的 current
   metadata/ABI/exports/digest fresh readback；任一 Tile 失败时无部分 output 可见；Q53 source→package/no-card
@@ -60,24 +60,22 @@ materializer、JIT bridge、runtime 或 diagnostic 都必须转发 typed fields�
 GSPMD的card-level domain。当前实现类`CardExecutable`必须收敛为`CardExecutable`的实现或迁移索引，不能继续定义
 一层长期output。
 
-### 2.2 Logical data 与 selected target physical version
+### 2.2 Program data 与 TargetTensor
 
-current `CardExecutable`的Tile program bindings提供logical parameter/external captured-constant identity、slice和ABI引用；source
-payload仍由compilation transaction解析。Q56可先消费current transaction locator，Q58再把同一consumer seam替换为
-owner-backed source storage/view；target codegen不能要求Q58作为Q56的前置，也不能把source backing塞进每个Tile record。
+Q58 `ProgramDataHandoff`为每个parameter/constant提供稳定`ProgramTensorId`、logical descriptor、owned file和
+checked `ProgramDataRange`；`CardExecutable`的Tile bindings只引用这些identity/slice，不携带payload。
 
-target ABI preparation将logical bindings/views与16个Tile的dense ABI slots做一次card-scoped join，验证每个引用all-and-only
-覆盖并形成：
+target ABI preparation将16个Tile的program bindings与最终entry argument types做一次card-scoped join，验证all-and-only覆盖并形成：
 
-- 每个selected target physical version的target dtype、layout、span、alignment和转换identity；
-- 各parameter/constant slot引用的exact logical view与selected physical version；
-- package materializer所需的source-view consumer与target descriptor关系。
+- 每个selected `TargetTensor`的ProgramTensor/ProgramDataRange来源；
+- exact target dtype、`MemLayout`、logical shape、physical span、alignment和转换identity；
+- 引用该TargetTensor的all-and-only(card, tile, launch slot, argument ordinal)集合；
+- Q56 package writer所需的bounded source reader和target codec动作。
 
-一份source storage backing、一个logical view和一个selected target physical version是三个不同identity。同一logical view可以因
-Q50.G最终选择的representation不同形成多个显式physical versions；只有引用同一version的slots才能共享target bytes。
-相同path、name、shape、bytes或digest不合并不同logical binding，相同logical binding也不因source backing相同而自动合并不同
-physical version。accepted descriptors只进入invocation-local target writing view，不写回Instr、不创建package path，也不分配
-runtime storage。
+ProgramTensor、ProgramDataRange和TargetTensor是不同identity。同一个ProgramDataRange可因Q50.G选择的representation不同形成多个
+TargetTensor；只有显式引用同一TargetTensor的entry arguments才能共享target bytes。不同ProgramTensor即使path、shape、bytes或
+digest相同也不自动合并。TargetTensor descriptor只进入同次target/package writing结果，不写回Instr、不创建package path，也不携带
+device address。
 
 ### 2.3 Target LLVM module
 
@@ -92,25 +90,28 @@ current target LLVM module通过typed metadata精确绑定：
 - `wafer.target.launch_slot`；
 - entry symbol；
 - target identity、current Kernel Runtime ABI 与 module format；
-- dense typed Kernel ABI slot rows。
+- dense typed Tile entry argument rows。
 
 metadata readback必须与 C++ typed owner逐项相等。缺字段、重复字段、未知字段、错误 target triple、错误 entry
-type 或 slot mismatch 均在 writing 前失败。
+type 或 entry argument mismatch 均在 writing 前失败。
 
 ## 3. Target conversion 责任
 
 ### 3.1 ABI preparation
 
-ABI preparation只消费 final accepted Instr IR 和 program boundary bindings，生成 dense、zero-based
-`KernelABISlot[]`。每个 slot 显式记录 role、resource index、dtype、physical layout、shape、byte size 与 alignment。
+ABI preparation只消费final accepted Instr IR和program boundary bindings，生成dense、zero-based
+`TileEntryArgument[]`。当前C++类型`KernelABISlot`同时服务kernel pointer-row和model BootParam，既非kernel-only也不总是
+pointer slot；Q56实施时原位重命名全部producer/consumer，不保留旧symbol。`TileEntryArgument`只描述某个Tile target entry
+的一个有序参数：ordinal、closed kind、恰一个typed reference（ProgramTensor/TargetTensor、external port或entry-local
+requirement）、dtype、`MemLayout`、shape、physical bytes、alignment与access；它不拥有bytes、file range或device address。
 
 稳定规则：
 
-- program input、parameter、constant、output对应card-scoped program/physical tensor bindings及其allocation/view；
+- parameter/constant对应card-scoped ProgramTensor/TargetTensor；program input/output对应external port；
 - accepted Tile entry在ABI preparation前精确保留frontend的全部真实arguments和results；CardModule内部使用过的
   scheduling destination已被消费，不能作为额外argument到达本层；
-- compiler workspace与Direct-DTE status对应Tile-scoped internal buffers及其allocation/view；
-- output 是 caller-owned append-only ABI slot，不通过隐藏返回 buffer 或 symbol 约定发布；
+- compiler workspace、profile record与Direct-DTE status是entry-local typed requirements，不伪装成ProgramTensor；
+- output是caller-visible append-only entry argument，不通过隐藏返回buffer或symbol约定发布；
 - workspace high-water 与 alignment 从同一个 final physical memory plan重算；
 - 地址、count、stride、iteration、enum 和 packet bounds 在 target boundary 窄化，overflow fail closed；
 - target call descriptor 是唯一 field-position 与 scalar-width 事实源。
@@ -120,13 +121,13 @@ late failure拒绝整个`CardExecutable` candidate，由Q51 candidate set选择�
 
 ### 3.2 Accepted immutable data preparation
 
-accepted immutable data preparation只消费上一节已经闭合的logical view与selected physical version。每个实际selected
-physical version只建立一个materialization input；转换器以bounded source window产生target bytes并增量计算digest，不能按Tile构造16份source/
-physical payload，也不能建立按元素总数增长的`RawLogicalValue[]`或整模型byte vector。
+accepted immutable data preparation只消费上一节闭合的ProgramDataRange与TargetTensor。每个TargetTensor只建立一个
+materialization input；转换器以bounded source window产生target-ready bytes，不能按Tile构造16份source/physical payload，也不能
+建立按元素总数增长的`RawLogicalValue[]`或整模型byte vector。
 
-这一阶段不决定package文件划分、segment offset或runtime residency；它只给15号package owner提供确定的source view、
-physical descriptor、exact byte count和可流式写入的转换动作。target model与profile writing必须复用同一accepted
-materialization，不得从每Tile binding重新打开NPY或重复转换。
+这一阶段不决定device base或provider allocation；它给15号package owner提供确定的ProgramDataRange、TargetTensor descriptor、
+exact byte count和可流式写入的转换动作。Q56为这些TargetTensor预排`program-data.bin` offset并计算whole-file digest。
+target model与profile writing必须复用同一materialization，不得重新打开source path或按Tile重复转换。
 
 ### 3.3 Instr 到 TargetCall
 
@@ -159,7 +160,7 @@ conversion不得新增“最终统一等待”来掩盖缺失的 Tile-local comp
 
 - verified module records；
 - exactly 16 个 `VerifiedTargetTileInterface`；
-- 每个 interface 的显式 `(card_id, tile_id, launch_slot)`、module ID 与 typed ABI slots；
+- 每个interface的显式`(card_id, tile_id, launch_slot)`、module ID与typed Tile entry arguments；
 - card-level ExecutionConfig与RuntimeLaunchContract。
 
 当前实现类`LinkedTargetModules`记录 linker 写出并校验过的 modules，但不能成为`CardExecutable`与
@@ -185,7 +186,7 @@ writing在私有 staging root中完成 LLVM IR、object、CRT、device link、EL
 1. 16 个 Tile interfaces完整、唯一，三元组与 available topology一致；
 2. target identity、runtime ABI、module format与所有 LLVM metadata一致；
 3. entry exports按 launch phases闭合，且每个 interface能解析到合法module/export；
-4. typed ABI slots与target LLVM entry signature一致；
+4. typed Tile entry arguments与target LLVM entry signature一致；
 5. all-and-only linked payload通过format、symbol、undefined allowlist和digest readback；
 6. 无未引用module、临时文件或部分输出泄漏。
 
@@ -197,7 +198,7 @@ profiling以同一次 accepted final output为事实源。instrumented capture m
 
 - ordinary production package只编译一次；
 - site identity从 typed target-call ordinal、SSA identity和occurrence派生；
-- profile capture不得改变普通 package的mapping、ABI slots、module digest关系或 completion；
+- profile capture不得改变普通 package的mapping、entry arguments、module digest关系或 completion；
 - profile instrumentation仍使用显式物理三元组，并校验它与 production manifest逐 Tile一致；
 - profile不存在时普通执行不受影响，存在但stale/malformed时fail closed。
 
@@ -208,10 +209,10 @@ Host gates至少覆盖：
 - typed target LLVM metadata roundtrip与未知/缺失字段拒绝；
 - non-identity `tile_id`/`launch_slot` mapping，包含 aggregate与非aggregate writing；
 - all-and-only 16 Tile interfaces、duplicate/unavailable Tile、duplicate/missing launch slot负例；
-- ABI slot role/layout/size/alignment/signature双射；
-- logical parameter/constant view、selected target physical version与16 Tile slot的all-and-only join；同一logical view的多version、
-  version共享和不兼容slot/version引用负例；
-- 每package-initialized immutable selected physical version一次bounded materialization，profile/model consumer不得触发per-Tile或
+- Tile entry argument kind/layout/size/alignment/signature双射，kernel pointer-row与model BootParam绑定消费同一argument schema；
+- ProgramTensor、ProgramDataRange、TargetTensor与16 Tile arguments的all-and-only join；同一range的多representation、
+  TargetTensor共享和不兼容argument引用负例；
+- 每个package-owned TargetTensor一次bounded materialization，profile/model consumer不得触发per-Tile或
   per-capture重复转换；
 - unsupported target call、geometry、dtype、overflow、undefined symbol与digest mismatch负例；
 - transaction staging的原子失败；

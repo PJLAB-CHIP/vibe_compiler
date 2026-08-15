@@ -1,8 +1,8 @@
 # Physical Dataflow Synthesis 实施计划
 
 状态：Q49 deterministic `none` baseline 已于 2026-08-11 达到 `board-ready`，但其控制流隔离和编译耗时不属于已签发的
-正确性证据。Q50.0无策略CardExecutable编译/准入边界与Q54 MLIR infrastructure已闭合；当前先由Q56/Q58/Q59收口
-package data、program data backing和compiler entry transaction，再以该current source-to-package路径隔离Q49.P baseline控制流，
+正确性证据。Q50.0无策略CardExecutable编译/准入边界与Q54 MLIR infrastructure已闭合；当前先由Q58/Q56/Q59收口
+program data ownership、package data和compiler entry transaction，再以该current source-to-package路径隔离Q49.P baseline控制流，
 并修复Q50.A production demand boundary、建立Q51.Core共同状态、transition和actual-probe seam；随后让
 Q50.S与Q50.B–Q50.K逐轴接入同一个owner，最后闭合Q51。
 算法、IR和长期pipeline contract仍只由
@@ -38,8 +38,8 @@ Pipeline position:
   不把 query-local candidate set、solver state、estimated allocation 或 board 结果写入 IR；不由本计划拥有 Q48 semantic
   superoptimization。
 - Completion gate:
-  Q50.0先建立共同CardExecutable compile/verification seam；Q54按19号合同收口MLIR infrastructure；Q56/Q58/Q59先闭合
-  package data、large payload backing与compile commit；Q49.P基于该current入口隔离
+  Q50.0先建立共同CardExecutable compile/verification seam；Q54按19号合同收口MLIR infrastructure；Q58/Q56/Q59先闭合
+  program data ownership、package data与compile commit；Q49.P基于该current入口隔离
   baseline控制流；Q50.A修复production exact-demand boundary；Q51.Core建立共同search kernel；Q50.S与Q50.B–Q50.K逐轴交付
   mechanism 且移除对应旧 owner；Q51 通过two-layer small exhaustive oracle、complete CardExecutable gates 和有效 fusion 闭合；
   Q52 在真实 workload 上形成可复现的 10/30 分钟 anytime 质量与吞吐结论；Q60建立产品frontend后，Q53从该入口生成 fresh package、oracle、runner
@@ -828,7 +828,7 @@ size、选择策略和 repair budget 必须由 profile 与 small oracle regret �
 
 ## 提交与收尾
 
-1. Q56、Q58、Q59由各自计划先行闭合；Q50.0、Q54、Q49.P、Q50.A、Q51.Core、Q50.S、Q50.B–Q50.K、Q51 closure、
+1. Q58、Q56、Q59由各自计划先行闭合；Q50.0、Q54、Q49.P、Q50.A、Q51.Core、Q50.S、Q50.B–Q50.K、Q51 closure、
    Q52、Q60与Q53分别形成独立可评审提交；不得把全部迁移积累成一个dirty diff。
 2. 每个 checkpoint 开始前记录将替换的旧 owner 调用链；提交前证明新调用链唯一，并只删除当前轴满足三项门禁的旧入口。
 3. 状态转换以 `tasks/progress.md` 为准；本计划不单独维护第二份动态状态表。

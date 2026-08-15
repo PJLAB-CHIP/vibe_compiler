@@ -220,9 +220,9 @@ wafer.ddr.offset = #wafer.ddr_offset<offset>
 ```
 
 typed Tile executable record说明offset属于对应Tile的default arena，并保留target address lowering需要的
-range/alignment facts。Q17从剩余compiler-managed DDR allocations重算high-water bytes/alignment，追加唯一
-workspace ABI slot和显式i64 arena-base entry argument；target lowering只在收到该typed argument index时生成
-`base + wafer.ddr.offset`，默认pass调用仍fail closed。slot和workspace最低alignment沿用生成memory plan的同一
+range/alignment facts。Q17从剩余compiler-managed DDR allocations重算high-water bytes/alignment，追加唯一workspace kind的
+`TileEntryArgument`；target lowering把它变成显式i64 workspace-base entry argument，并只在收到该typed argument index时生成
+`base + wafer.ddr.offset`，默认pass调用仍fail closed。argument与workspace最低alignment沿用生成memory plan的同一
 target policy；workspace alignment是该policy与全部显式alloc alignment约束的checked least common multiple，
 非正数或int64溢出结构化拒绝。该Tile-local base不代表cross-card shared-resource plan。
 
@@ -251,14 +251,13 @@ workspace/temp/explicit-spill allocations。函数式状态线程仍属于extern
 下表中的runtime-owned streamed immutable、persistent state和多scope resource行为只作future extension约束，不是当前planner或
 Q16 typed fields。
 
-| class | DDR memory planning responsibility | accepted executable resource responsibility |
+| class | DDR memory planning responsibility | downstream binding responsibility |
 | --- | --- | --- |
 | external input | validate view/range/descriptor in current candidate | derive external binding requirement, shape/dtype/layout/size/alignment contract |
 | external output | validate view/range/descriptor and write use in current candidate | derive output binding/writeback visibility requirement |
-| imported immutable parameter/weight shard | validate read-only descriptor/view、content/shard/layout identity和range；不分配runtime-owned root offset | bind exact `ResourceId`/digest/shard requirement；禁止write alias |
-| compiler-packaged resident immutable weight | plan complete read-only range in its declared arena；resident capacity不足时拒绝该candidate，不暗转streaming | summarize content digest、packing/quant descriptor、resident scope和backing bytes |
+| package-owned immutable parameter/constant | validate read-only descriptor/view、content/shard/layout identity和range；不为external DDR root分配compiler workspace offset | Q56绑定exact ProgramTensor/TargetTensor、digest、shard和target descriptor；不写provider allocation identity，禁止write alias |
 | streamed immutable parameter | 未来只接受上游actual IR中已有的typed source chunks、staging roots、copy/consumer/reuse completion和slot relation；本stage不形成window proposal | 按普通compiler-managed DDR/SPM roots规划可见range/lifetime；长期只保留actual IR、accepted offset及apply后的typed resource binding |
-| persistent state resource | validate declared capacity、subview range、alias/update relation、read/write effect和跨invocation lifetime；runtime-owned root不分配physical offset | preserve `ResourceId`、create/attach/reset/update policy、page geometry和exact consistency enum |
+| persistent state resource | future extension；必须先由上游IR显式给出capacity、subview、alias/update、effect与跨invocation lifetime，本stage不自行恢复 | 未来另建有真实producer/consumer的typed state/port合同；当前不预埋identity、page policy或runtime allocation record |
 | compiler-managed workspace/temp | plan symbolic offset with lifetime/reuse | summarize workspace bytes/ranges and accepted offset contract |
 | non-parameter resident constant | plan read-only range or reject if residency/streaming choice is not explicit | summarize resident constant bytes/ranges and backing-data requirement |
 | explicit compiler-managed spill DDR value | plan range across producer-to-last-consumer lifetime when explicitly represented；region内selective spill与cross-region materialization使用同一DDR root/lifetime合同 | summarize producer/consumer-visible backing allocation requirement |
@@ -420,9 +419,10 @@ DDR memory planning verifies:
 - explicit-spill producer-to-last-consumer lifetime是mandatory gate；真实root reuse/observer与entry terminal在显式completion后
   必须有对应空pending token/effect set，普通traversal/loop/spill/region结构不单独生成completion动作。
 
-DDR memory planning在physical base尚未materialize时只验证`arena_id + symbolic offset + span`、offset/span
-算术、arena capacity/alignment和ABI offset/size field width；这些是apply前gate。RuntimeSession取得actual
-allocation base后、任何launch/copy前，必须用同一geometry library验证base alignment、`base + offset + span`
+DDR memory planning在physical base尚未materialize时只验证compiler-managed DDR offset domain中的`symbolic offset + span`、
+offset/span算术、domain capacity/alignment和entry offset/size field width；这些是apply前gate。board invocation或后续
+`PreparedExecution`取得actual allocation base后、任何launch/copy前，必须用同一geometry library验证base alignment、
+`base + offset + span`
 不溢出target address width且落在runtime allocation object内。若pinned output在compile time已有真实base，
 可以提前执行同一actual-base gate；否则不能要求apply前验证尚不存在的physical begin/end，也不能让
 target LLVM用unchecked narrowing静默通过。

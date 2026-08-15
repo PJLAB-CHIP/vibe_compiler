@@ -2,7 +2,7 @@
 
 状态：当前模型是 owner-backed target LLVM/TargetCall 上的 untimed functional-event model。它验证target语义、physical
 Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或cycle model。动态任务状态只看
-`tasks/progress.md`；Q56的selected physical data复用合同尚未实现，现有model能力必须由current `CardExecutable` source vertical
+`tasks/progress.md`；Q58/Q56的program-data ownership与target representation复用合同尚未实现，现有model能力必须由current `CardExecutable` source vertical
 重新证明，不能沿用旧执行域结论。
 
 ## 1. Pipeline Contract
@@ -11,10 +11,10 @@ Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或
 Pipeline position:
 - Upstream IR / input:
   同一次compiler transaction产生的`CardExecutable`、与其绑定的owner-backed target LLVM module set、typed program
-  invocation、accepted logical data views/selected target physical versions与独立CPU expected；`CardExecutable`覆盖single card的all-and-only 16 Tiles并保留
+  invocation、Q58 `ProgramDataHandoff`、Q56 `TargetTensor`与独立CPU expected；`CardExecutable`覆盖single card的all-and-only 16 Tiles并保留
   (card_id, tile_id, launch_slot)。
 - Current stage responsibility:
-  将program tensors编码到exact Kernel ABI slots；通过host JIT执行final target LLVM entries并解码closed TargetCall
+  将每个`TargetTensor`编码一次并绑定到exact `TileEntryArgument`；通过host JIT执行final target LLVM entries并解码closed TargetCall
   registry；在SystemC中按Tile、worker、engine、event和private memory执行functional语义；原子发布完整结果。
 - Output IR / files:
   TargetModelResult：target/model identity、card-scoped completion统计、numeric flags、typed outputs及诊断；
@@ -38,21 +38,23 @@ Pipeline position:
 model只接受compiler保留的same-invocation owners：
 
 - `CardExecutable`提供program boundary bindings、Tile executable domain和completion/transport contract；
-- 与该`CardExecutable`绑定的target LLVM owner set提供target conversion真正发布所用的LLVM modules与typed Kernel ABI slots；
-- program invocation提供source tensor值，不复制target schema或猜测slot；
+- 与该`CardExecutable`绑定的target LLVM owner set提供target conversion真正发布所用的LLVM modules与typed
+  `TileEntryArgument`；
+- program invocation提供source tensor值，不复制target schema或猜测entry argument；
 - independent CPU expected只用于最终差分，不进入compiler IR/package。
 
 当前实现类`CardExecutable`与`TargetLLVMModules`只作为上述两个owner边界的迁移索引，不定义额外稳定output层。
 
-`prepareTargetModelInvocation`必须在JIT materialization前all-and-only消费每个非output program resource和每个ABI slot。
-它按显式resource owner、Kernel ABI role和resource index建立allocation identity：program-boundary resource由card拥有，
-workspace/status由Tile拥有。一个card input只编码和初始化一次，16个Tile slot绑定同一base；input physical bytes与
-slot values由prepared invocation拥有，不alias source NPY storage。
+`prepareTargetModelInvocation`必须在JIT materialization前all-and-only消费每个非output program tensor和每个
+`TileEntryArgument`。它按显式program tensor identity、entry argument relation和target layout建立model-private memory：
+card级`TargetTensor`、input/output由card共享，workspace/status由Tile独占。一个card input只编码和初始化一次，引用它的
+16个Tile entry arguments绑定同一base；input physical bytes与argument values由prepared invocation拥有，不alias source
+NPY storage。这里的model-private memory只服务functional model，不定义package中的provider allocation identity。
 
-Q56完成后，parameter/external captured-constant不得经per-Tile invocation重新打开或读取。model直接消费与package writer相同的
-logical views和package-initialized selected target physical versions，对每个实际immutable physical version执行一次bounded codec并让引用该version的Tile slots
-共享同一private backing。profile、package和model可以复用同一transaction内已经验证的materialization owner，但不能各自从
-logical payload重新转换；相同digest不合并不同logical binding或不同physical version。
+Q58/Q56完成后，parameter/external captured-constant不得经per-Tile invocation重新打开或读取。model直接消费compiler
+transaction持有的`ProgramDataRange`和已选`TargetTensor`，对每个`TargetTensor`执行一次bounded codec，并让引用它的
+`TileEntryArgument`共享同一model-private bytes。profile、package和model可以复用同一transaction内已经验证的
+materialization owner，但不能各自从source bytes重新转换；相同digest不合并不同`ProgramTensor`或不同target representation。
 
 ### 2.2 Explicit physical identity
 
@@ -95,9 +97,9 @@ model使用event-driven fixed point：只有ready transaction执行，执行后�
 
 ### 3.2 Tile memory与地址
 
-每个Tile拥有隔离的SPM/engine-visible address domain；同一个card-scoped DDR allocation必须由16个Tile slot共享同一typed
-base和同一private backing，不能为每个slot复制storage。Tile-scoped workspace/status必须保持独立allocation。
-地址解析只依赖prepared ABI allocation、physical layout和checked range：
+每个Tile拥有隔离的SPM/engine-visible address domain；同一个card-scoped `TargetTensor`必须让引用它的
+`TileEntryArgument`共享同一typed base和同一model-private bytes，不能按argument复制storage。Tile-scoped
+workspace/status保持独立memory。地址解析只依赖prepared entry argument memory、physical layout和checked range：
 
 - 每次read/write验证alignment、byte span、access mode与overflow；
 - view/strided/gather-scatter按target physical encoding求址；
@@ -135,8 +137,9 @@ peripheral和transport。unsupported组合返回typed error，不能落到“近
 
 ### 5.1 Physical codec
 
-source tensors先按exact Kernel ABI slot的dtype、shape、layout和physical footprint编码。outputs从相同slot metadata解码回
-source-visible dtype/shape，并按unique card resource一次发布；多个Tile output slot只是同一allocation的typed view，不形成
+source tensors先按对应TargetTensor或external port的target descriptor以及exact `TileEntryArgument`编码。outputs从
+相同descriptor解码回source-visible dtype/shape，并按unique output port一次发布；多个Tile output arguments只是同一
+model-private memory的checked byte range，不形成
 多个结果。byte size相等不能推断layout；padding、blocked layout、bitpacked format和narrow integer都由共享physical codec处理。
 
 codec必须提供bounded window接口：source range、target range、padding和incremental digest都以checked 64-bit arithmetic推进；
@@ -176,7 +179,7 @@ Grid/Cluster target lowering可以把16个不同Tile body合成一个低层modul
 
 所有failure归因到明确stage和physical identity：
 
-- invalid CardExecutable/program binding/ABI slot在JIT前失败；
+- invalid CardExecutable/program binding/Tile entry argument在JIT前失败；
 - decoder/target transaction错误带card/tile/launch slot与issue ordinal；
 - address/alias/hazard在issue时失败；
 - deadlock/no-progress带pending event/resource摘要；
@@ -190,8 +193,8 @@ Grid/Cluster target lowering可以把16个不同Tile body合成一个低层modul
 Unit/integration gate至少覆盖：
 
 - 16-Tile all-and-only准备、duplicate/missing/foreign Tile和non-identity tile/slot mapping；
-- dense ABI slot、card-shared allocation、Tile-local workspace/status与physical codec roundtrip；
-- 每selected parameter/constant physical version只编码一次、引用同一version的Tile共享backing、bounded codec peak window与
+- dense Tile entry arguments、card-shared memory、Tile-local workspace/status与physical codec roundtrip；
+- 每个parameter/constant `TargetTensor`只编码一次、引用同一target representation的Tile共享model-private bytes、bounded codec peak window与
   package materialization逐字节一致；
 - descriptor registry的每个payload family、bad width/enum/range/format负例；
 - 一Tile一SC_THREAD、independent progress、event wait/wakeup、NoProgress和atomic abort；

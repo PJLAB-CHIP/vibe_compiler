@@ -191,7 +191,7 @@ physical identity binding和atomic transaction sink lifecycle。
 
 `Model`进一步拆成：
 
-- program tensor↔Kernel ABI binding/codec；
+- program tensor/target tensor↔`TileEntryArgument` binding/codec；
 - private memory/address/range；
 - plain functional kernels；
 - formal/qualified bulk numeric；
@@ -287,7 +287,7 @@ source。删除功能时删除对应only-purpose fixture/golden/catalog；通用
 
 - physical-dataflow selection成为唯一decision owner，public optimization policy只为`search|none`，`none`只提供同pipeline baseline；
 - old/new双interface、compatibility wrapper、unused public pass和only-for-them tests全部删除；
-- Q58使large payload通过owner-backed source/view跨frontend、SPMD helper与CardExecutable同事务data handoff，
+- Q58使large payload通过`ProgramDataSource`、checked `ProgramDataRange`和`ProgramDataHandoff`跨frontend、SPMD helper与CardExecutable同事务传递，
   不以整树复制维持lifetime；
 - Q59使compiler library primary result、package commit、CLI exit与install tree属于同一owner；Q60产品adapter和portable
   StableHLO ingestion复用唯一Frontend verifier与CompilationRequest；

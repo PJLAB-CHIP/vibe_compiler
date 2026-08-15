@@ -6,7 +6,7 @@
 Q59/Q60 的施工顺序、checkpoint 和验证门禁，不复制 frontend program、compiler IR、package schema、runtime
 或接口演进合同，也不建立第二条 source-to-package pipeline。
 
-Q59 `compiler-entry-transaction-closure` 在 Q56 达到 `board-ready` 且 Q58 完成后执行；Q60
+Q59 `compiler-entry-transaction-closure` 在 Q58 完成且 Q56 达到 `board-ready` 后执行；Q60
 `frontend-production-entry` 在 Q52、Q44 和 Q59 完成后执行。Q53 production readiness 增加 Q60 为直接前置，
 并只消费 Q60 交付的产品 frontend output；Q59/Q60 均不以测试 generator 或历史 package 代替完成证据。
 
@@ -39,7 +39,7 @@ Pipeline position:
   让production compiler及其必需helper从install tree可迁移运行。
 - Output IR / files:
   typed CompilationResult，其primary product为move-only ExecutablePackage；该对象拥有canonical installed package root与
-  已验证manifest/member views。显式请求profiling时，result另持有按既有合同与ordinary package共同提交的profile product。
+  已验证manifest以及已打开的module/program-data members。显式请求profiling时，result另持有按既有合同与ordinary package共同提交的profile product。
   本任务不产生新IR层或第二种磁盘产品。
 - Downstream consumer:
   wafer-compile薄CLI、Q53 source-to-package readiness、wafer-run与package审计；

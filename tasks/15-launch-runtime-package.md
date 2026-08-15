@@ -1,302 +1,335 @@
 # Wafer ExecutablePackage、Runtime Invocation Planning 与 Board Launch
 
-状态：本文是`ExecutablePackage`、target-ready data与runtime launch的唯一现行设计合同；Q56/Q59的代码实施状态只看
-`tasks/progress.md`，下述目标字段和result owner不得误读为已经进入当前二进制。source-to-package compiler只写入single-card、
-all-and-only 16 Tiles的package。Q49–Q52分别闭合baseline、能力迁移、统一搜索和scalability；host/no-card局部合同闭合不等于
-Q53 `board-ready`，真实板端matched A/B gate也尚未完成。
+状态：本文是current `ExecutablePackage`、target-ready program data和runtime launch的唯一现行设计合同；
+Q58/Q56/Q57实施状态只看`tasks/progress.md`。本文按当前single-card、all-and-only 16 Tiles、static-ranked entry收口，
+不预埋multi-entry、跨卡或serving协议。
 
-## 1. Pipeline Contract
+## 1. Pipeline contract
 
 ```text
 Pipeline position:
 - Upstream IR / input:
-  通过verification的`CardExecutable`及其同一transaction中原子验证的target writing view；包含current target
-  identity/runtime ABI/module format、RuntimeLaunchContract、verified modules，以及exactly 16个带显式
-  (card_id, tile_id, launch_slot)的Tile interfaces和card-level accepted immutable data descriptors。
+  Q58 ProgramDataHandoff、final verified CardExecutable、同次target lowering产生的owner-backed modules、
+  16个TileEntryArgument[]与TargetTensor descriptors。
 - Current stage responsibility:
-  从typed target modules与accepted immutable data组装唯一current manifest、module payload和target-ready data；
-  区分external call ports、package-owned immutable initialization与compiler-planned internal storage，验证
-  allocation/view/physical descriptor、ABI slot、entry、transport、module/export和物理Tile domain；no-card构造完整runtime
-  plan；board runtime按同一plan分配、初始化、装载、提交、等待、readback和cleanup。
+  为package-owned TargetTensor确定program-data.bin中的deterministic offset/span/alignment并只转换一次；
+  写出current manifest、all-and-only modules和target-ready program data；strict readback；
+  no-card形成完整runtime memory/launch plan；board runtime取得BoardDeviceMemory、完成H2D、构造pointer rows、
+  load/submit/wait/readback/cleanup。
 - Output IR / files:
-  `ExecutablePackage`：move-only owner持有canonical package root、已验证manifest/member views、all-and-only referenced
-  modules与digest-bound target-ready data images；compiler writer与runtime loader返回同一语义对象，再形成
-  RuntimeInvocationPlan，board执行形成invocation result；profile请求额外产生digest-bound
-  profile instrumentation；所有Wafer-owned文件都使用无编号current schema identity与exact field set。
+  一个ExecutablePackage：manifest.json、modules/下all-and-only target modules、data/program-data.bin；
+  runtime产生RuntimeInvocationPlan与typed invocation result。
 - Downstream consumer:
-  wafer-run no-card、board runtime provider、profile collection/report和外部package审计。
+  wafer-run、Q49.P/Q53 qualification、profile和Q57 PreparedExecution。
 - User-level driver / named pipeline:
-  wafer-compile `search|none`生成`ExecutablePackage`；wafer-run消费verified package并执行完整card-scoped domain。
+  wafer-compile search|none写package；wafer-run --no-card|--board消费同一current合同。
 - Explicit non-goals:
-  不从parameter/resource名、路径、相同bytes、entry ordinal、tile_id或num_partitions推断sharing或launch；
-  runtime不解析NPY/checkpoint、不重新shard/quantize/pack；不暴露provider queue/packet；
-  不暴露按EntryId选择单个Tile的runtime入口；不保留旧manifest reader、旧launch ABI或兼容alias；
-  不把profile sidecar当普通执行合同。
-- Completion gate:
-  current manifest strict parse/serialize/readback；data image/segment、allocation/view/program tensor/physical tensor/internal buffer与16个entries
-  的ABI双射；显式物理三元组非恒等映射通过；parameter/constant无需caller binding；no-card无任何provider effect且生成完整plan；
-  真实板端逐case新鲜执行后才能形成board证据。
+  不重新选择target layout、physical-dataflow、Tile placement、workspace offset、RDMA/WDMA或Direct-DTE schedule；
+  runtime不解析NPY/checkpoint、不做shard/quantize/transpose/pack；
+  不从name/path/digest/tile ordinal恢复identity；不保留旧manifest reader；
+  不建立通用module registry、weight manager、PJRT式Client/Buffer API、runtime JIT或serving scheduler。
+- Done criteria:
+  logical ProgramTensor、TargetTensor、program-data offset、TileEntryArgument和runtime address逐层闭合；
+  parameter/constant无需caller逐次绑定；external input/output没有package bytes；
+  non-empty program data一次大块allocation与一次整体H2D，empty program data零provider调用，pointer rows使用base+offset；
+  package root无source tree或未引用文件；strict parser/readback、no-card、fake provider和完整板端case通过。
 ```
 
-## 2. Runtime launch contract
+## 2. 已确认的Wafer执行事实
 
-product-visible launch kind只有：
+- 每个Tile target entry消费一个有序参数表。当前实现名`KernelABISlot`并不准确：kernel wrapper从pointer row读取地址，
+  model wrapper从BootParam descriptor读取地址；current设计统一称`TileEntryArgument`。
+- `TileEntryArgument`只描述某个Tile target entry的一个有序参数：ordinal、closed kind、恰一个typed reference
+  （ProgramTensor/TargetTensor、external port或entry-local requirement）、`MemLayout`、shape、physical bytes、alignment和access。
+  它不拥有bytes、file range或device address；pointer row和BootParam只是两种consumer representation。
+- parameter/constant/input/output在Instr中是external DDR roots；compiler不为它们生成physical base。
+- compiler-managed Tile-local DDR对象已经获得`wafer.ddr.offset`；target ABI只新增一个workspace base argument，
+  device地址为`workspaceBase + acceptedOffset`。
+- kernel entry从pointer row逐项加载64位DDR地址。Compiler生成的RDMA/WDMA指令使用这些地址完成DDR↔SPM搬运。
+- host `txMemcpy`只初始化/回读DDR；Direct-DTE是独立跨Tile传输合同。
 
-- `kernel`：current card-scoped Grid或Cluster form；
-- `model`：current TX81 model BootParam ABI。
+因此package记录执行所需的typed buffers和初始化bytes，runtime决定实际`txMalloc`及base address；二者不能用同一个ID混写。
 
-kernel form、entry ABI与phase list是 nested typed facts，不是更多launch kinds。合法组合只能由
-`RuntimeLaunchContract` factory产生；parser、compiler、runtime和provider共享同一enum与canonical spelling。
+## 3. Current package schema
 
-Q56的package-owned parameter/constant初始化只扩展current kernel ABI路径。current `model` exact-build子集仍只接受其
-已经资格化的aligned rank-1..6 F32 user input/output，不接受parameter/constant、workspace、transport status或Direct-DTE；
-这条边界只有在model BootParam ABI、compiler、manifest、runtime、target model与板端证据同批闭合后才能原位扩展，不能因
-通用data tables存在而自动放宽。
-
-current kernel entry ABI保留card-scoped pointer-table形式，phase只允许typed `prepare`/`main`序列。Direct-DTE是
-entry transport requirement，会要求status resource和prepare/main lifecycle；它不是第三种launch kind或用户可选ABI。
-
-单卡source即使`num_partitions=1`，Q49 `none` baseline与Q51 `search`仍生成16个Tile entries；无工作Tile使用合法no-work body，而不是从
-package domain中消失。
-
-## 3. Current manifest schema
-
-### 3.1 Top-level
-
-canonical JSON只有以下top-level fields：
+canonical manifest只包含：
 
 ```text
 program
 target
+launch
 card_count
 tile_count
-data_images
-data_segments
-allocations
-views
+program_data
 program_tensors
-physical_tensors
-internal_buffers
+target_tensors
+inputs
+outputs
 modules
 entries
 ```
 
-当前production要求 `card_count=1`、`tile_count=16`。`target`精确包含 current target identity、
-Kernel Runtime ABI、typed launch contract和module format。parser要求exact field set、bounded JSON size/nesting/record
-count和canonical typed values；额外或缺失field直接失败，没有upgrade reader。各表职责固定为：
+current要求`card_count=1`、`tile_count=16`。parser要求exact field set、bounded JSON size/nesting/record count、
+checked integer conversion和canonical serialization；没有version branch、upgrade reader或兼容alias。
 
-- `data_images`：package内target-ready immutable file，记录safe relative path、exact size、alignment和content digest；
-- `data_segments`：image内checked `[offset, offset + length)`，只表达文件range，不表达logical tensor或device address；
-- `allocations`：runtime allocation descriptor，记录typed card/tile scope、memory domain、physical bytes、alignment、access和至多一个initializer；
-- `views`：allocation上的checked offset/span/access；多个view可显式引用同一allocation；
-- `program_tensors`：input/parameter/constant/output的role/index与logical dtype/shape，只表达program-boundary identity；
-- `physical_tensors`：引用一个input/parameter/constant/output program tensor，并记录selected target dtype/layout/span/alignment与view；
-  一个immutable program tensor可有多个显式physical tensor，只有同一physical-tensor identity才共享target bytes；
-- `internal_buffers`：workspace或transport status的closed kind与view引用；
-- `entries`：每Tile typed ABI slot只引用physical tensor或internal buffer，不再引用无语义`ResourceId`。
+`target`记录compiler-fixed target identity、runtime ABI和module format；`launch`直接记录current launch kind、entry ABI和
+ordered phases。它们必须与CardExecutable、target module readback及全部entries逐项相等，runtime不得从module path或entry
+shape猜测launch方式。
 
-initializer只允许引用与allocation exact-compatible的data segment。Q56中每个package-initialized parameter/constant physical tensor
-独占一个allocation、一个覆盖完整allocation的view和一个segment；initialized tensors之间暂不packing、overlap或共享allocation。
-没有initializer的storage由caller port或compiler/runtime lifecycle定义。device address不进入package，runtime只解析checked relative range。
+### 3.1 ProgramTensor
 
-### 3.2 Physical identity
+`program_tensors`只表达parameter/constant的逻辑身份：
 
-每个 entry显式记录：
+```text
+ProgramTensorRecord:
+  id
+  role                 # parameter | constant
+  role_index
+  logical dtype
+  global/local shape
+  partition/slice identity
+```
+
+identity来自verified source和Q58 handoff，不从name/path/shape/digest推导。Package不保存source path。
+
+### 3.2 TargetTensor
+
+`target_tensors`表达compiler已经选择的target representation：
+
+```text
+TargetTensorRecord:
+  id
+  program_tensor
+  target dtype
+  MemLayout
+  logical shape
+  physical bytes
+  required alignment
+  program-data offset
+```
+
+规则：
+
+- 同一ProgramTensor/ProgramDataRange/selected descriptor形成一个TargetTensor，可被多个Tile arguments共享；
+- descriptor不同必须形成不同TargetTensor并分别materialize；
+- `offset + physical bytes`必须checked且位于program data文件内；
+- `offset % required alignment == 0`，文件base alignment覆盖all target requirements；
+- placement按stable identity和完整tie-break确定，padding全为canonical zero；
+- physical bytes只能来自14号target descriptor/codec，不能用logical shape×dtype代替。
+
+### 3.3 Program data
+
+`program_data`只有一个current record：
+
+```text
+relative_path = data/program-data.bin
+total_bytes
+base_alignment
+digest
+```
+
+文件内容按TargetTensor offset直接排好，runtime不再逐tensorpack。Whole-file digest覆盖target bytes和padding。
+Package root不得包含source NPY、checkpoint、TensorProgram tree、compiler IR、临时partition文件或其它未引用成员。
+
+`target_tensors`为空时，`program-data.bin`仍作为零字节canonical member存在，`total_bytes=0`、`base_alignment=1`，runtime不执行
+program-data allocation或H2D；非空时`total_bytes>0`且`base_alignment`必须覆盖全部TargetTensor alignment。空表、文件大小和
+record三者必须exact一致，不能靠缺文件表达“没有参数”。
+
+### 3.4 External ports
+
+`inputs`和`outputs`分别记录：
+
+```text
+port id
+role index
+logical descriptor
+target descriptor
+physical bytes/alignment
+```
+
+current external port只有一个selected target descriptor。它没有TargetTensor ID或program-data offset：
+
+- input内容由caller提供，调用适配层按target descriptor编码；
+- output内存由runtime准备并在完成后回读，调用适配层按同一descriptor解码；
+- core BoardRuntime只搬精确physical bytes，不根据name或logical shape猜layout；
+- input/output alias、tie和caller-owned device pointer current均不支持，出现即fail closed。
+
+### 3.5 Modules与entries
+
+每个entry显式记录：
 
 ```text
 card_id
 tile_id
 launch_slot
 module
-slots
+ordered arguments
 completion
 transport
 ```
 
-current card的 `card_id=0`；16个 `tile_id`必须all-and-only匹配available topology；16个 `launch_slot`必须unique、
-dense且覆盖 `[0, 16)`。两者是独立domain，manifest不要求值相等。runtime plan按launch slot canonical排序，同时保留
-typed card/tile identity给module、resource、diagnostic和provider。
+argument是closed union：
 
-module records只拥有path、digest、format与typed exports。一个module可以服务一个或多个Tile interfaces；module ID、
-path和vector position都不是Tile identity。每个entry必须能解析到其launch phases所需的exports。
+- external input；
+- package-owned TargetTensor；
+- external output；
+- entry-local workspace；
+- entry-local profile record；
+- entry-local Direct-DTE status。
 
-### 3.3 Allocation、view、program/physical tensor 与初始化
+entry-local requirement直接记录bytes/alignment/access和必要typed ABI，不进入ProgramTensor/TargetTensor表。
+同一TargetTensor ID被多个entries引用是唯一共享事实；相同字段或文件range不能由runtime自动合并。
 
-allocation是唯一物理storage identity，view只是其checked subrange；logical descriptor属于`program_tensors`，target descriptor
-属于`physical_tensors`，都不靠allocation bytes反推。source backing不进入package。scope只有：
+`tile_id`与`launch_slot`是独立typed domains；launch slot必须dense且唯一，但不要求等于Tile ID。
+Module ID/path/vector位置不承担Tile identity。
 
-- card scope：physical tensors及可跨16个Tile共享的allocation root；
-- Tile scope：只属于对应Tile的workspace与transport status root。
+## 4. Package writing与owner
 
-稳定规则：
+Compiler assembly顺序：
 
-- 同一个card allocation只在runtime分配一次；16个Tile slots通过显式view/physical-tensor identity共享同一base；
-- Tile allocation只能被对应Tile的internal buffer与entry slot引用；
-- 每个view的offset、span和access必须位于allocation内，所有加法和address-width conversion checked；
-- logical bytes、target physical span、allocation bytes是不同数值，padding/blocked layout不能由shape×dtype替代；
-- `(role, role_index)`及internal-buffer identity各自唯一，physical-tensor identity稳定，slot ordinal dense zero-based；
-- slot access与引用对象及allocation access兼容，全部physical tensors/internal buffers all-and-only被entry ABI覆盖；
-- storage sharing只由相同allocation/view identity表达；name、path、shape、相同内容或digest都不能自动合并root。Q56仍拒绝
-  distinct program tensors之间的input/output alias或tie；共享physical storage事实不能偷偷升级成program alias语义；
-- 每个package-initialized immutable physical tensor与其allocation、full-span view、initializer和segment一一对应；同一个physical
-  tensor仍可被16个Tile ABI slots共同引用，但不同initialized physical tensors不得共享allocation或重叠view。
+1. 验证ExecutionConfig、target identity、runtime ABI、launch contract、module format和16 Tile domain；
+2. 对Q58 ProgramDataRange与16个TileEntryArgument做all-and-only join，建立ProgramTensor/TargetTensor；
+3. 按TargetTensor stable identity、physical bytes/alignment预排program-data offset和total bytes；
+4. 使用bounded source window和existing physical tensor codec，按offset流式写`program-data.bin`，每个TargetTensor转换一次；
+5. 写canonical zero padding并增量计算whole-file digest；
+6. 写all-and-only referenced modules及digest；
+7. 构造manifest，运行semantic verification、whole-root closure和canonical serialize/parse/readback；
+8. 全部成功后原子发布。
 
-external caller binding只覆盖input ports及显式允许的output destination；current external port必须解析到唯一selected physical
-tensor，多个external physical versions在Q56中fail closed；它们没有initializer或data segment，由caller input H2D或output D2H
-建立当次内容。parameter/constant可以有多个selected physical tensors，但每个都必须引用自己带initializer的package-owned
-allocation，caller不能覆盖；workspace和transport status不进入physical tensor表，也没有external port，由runtime按其closed
-lifecycle建立。
+`ExecutablePackage`若作为move-only C++ owner，必须实际持有verified manifest和已打开或mmap的module/program-data成员；
+只保存root path、随后任意重新打开不算ownership。Compiler writer与runtime loader使用同一semantic type，不能保留
+compiler-only和runtime-only两套verified壳。
 
-每个data segment必须被exactly one initializer引用，且每个initializer对应的segment length、physical descriptor span、full-span
-view与allocation bytes一致。data image允许包含多个不同initialized physical tensors的有界segment和alignment padding，但不得有
-重叠、越界、未引用segment或未声明的trailing payload；package root也不得包含未被manifest引用的source NPY、checkpoint、IR或临时文件。
+任一失败销毁staging root。已有package、历史manifest、board output或profile证据不能修补本次transaction。
 
-### 3.4 Entry completion 与 transport
+## 5. Runtime memory plan
 
-current manifest只接受 `return_after_local_drain`。它要求每个Tile entry返回前完成本地发起且影响结果、reuse或status的
-work；card-scoped成功仍要求16个entry和全部transport obligations共同完成。
+No-card在任何provider side effect前构造完整`RuntimeInvocationPlan`。它不序列化回package，包含：
 
-transport是closed union：
+- optional non-empty program-data allocation requirement及其total bytes/alignment、每个TargetTensor的child range；
+- invocation allocation requirement，以及input/output、每Tile workspace/profile/status和pointer-row的bytes/alignment、deterministic offsets；
+- 16个Tile arguments到上述child ranges的映射；
+- modules/exports/phases、completion和transport requirements；
+- aggregate bytes、address-width和provider capability检查。
 
-- `none`：不得存在该Tile的transport-status internal buffer；
-- `direct_dte`：exactly one Tile-scoped status internal buffer及其allocation/view，dtype/size/alignment/access与current status ABI一致，
-  并声明host watchdog required。
+Package identity与provider allocation identity分离。一个typed execution buffer可以映射到某次大块
+`BoardDeviceMemory`中的一个checked child range；child range不单独`txFree`，只由owning allocation控制lifetime。
 
-status从pending到success/error的协议由current ABI定义。runtime必须在provider-confirmed card-scoped completion后
-readback并验证所有required statuses；missing、pending、error或不完整domain均失败。
+Current kernel路径始终使用一块invocation allocation；TargetTensor非空时再使用一块program data allocation：
 
-## 4. Package assembly 与原子发布
+1. optional program data allocation：只读，内容来自non-empty `program-data.bin`；
+2. invocation allocation：input/output、Tile workspace/profile/status和pointer rows的deterministic non-overlap ranges。
 
-Q56完成后的`ExecutablePackage`只有一份move-only typed C++ semantic model；canonical JSON只是delivery projection。
-compiler writer和runtime loader都返回这个拥有package root、verified manifest及validated member views的对象，不再保留
-compiler-only `VerifiedPackage`和runtime-only `VerifiedPackageManifest`两层public壳。
+两块的边界来自真实lifetime和access差异：program data在prepare后只读并跨submit稳定，invocation memory承载每次更新与回读；
+reset或下一次submit不能重传、重排或覆盖program data。one-shot仍沿用同一plan，不另造按tensor分配的快捷路径。
 
-compiler只从同一`CardExecutable`绑定的target writing view组装`ExecutablePackage`，不重做target lowering。当前实现类
-`LinkedTargetModules`只记录 linker 写出并校验过的 modules。组装顺序：
+这样静态大小、alignment和lifetime在side effect前一次排好，不逐tensor或逐Tile调用allocator。若某个provider能力要求分开，
+必须由typed capability和明确memory-plan分支决定，不能静默按失败顺序拆分。
 
-1. 验证 ExecutionConfig、launch contract、target identity、format和16 Tile interfaces一致；
-2. 从logical bindings与selected target physical versions建立program tensors、physical tensors及allocations/views；
-3. 只对每个package-initialized parameter/constant selected physical version做一次bounded materialization，增量写data
-   image/segment并计算digest；external input/output physical tensors不生成compile-time bytes；
-4. 依据每Tile ABI建立Tile-scoped workspace/status allocations/views及dense typed slots；
-5. 复制all-and-only referenced modules并计算digest；
-6. 构造current typed manifest并运行semantic verifier；
-7. 遍历整个package root，serialize canonical JSON并重新parse、verify全部module/data path、range和digest；
-8. 仅在全部成功后原子发布package root。
+Model launch保持现有exact-build边界：只接受其已经资格化的aligned rank-1..6 F32 input/output，不接受parameter/constant、
+workspace、Direct-DTE或current kernel pointer-row memory plan。扩展必须同步compiler、BootParam ABI、package、runtime、
+target model和板端证据。
 
-任一失败都销毁本次staging root。已存在package、历史manifest、board output或profile evidence均不能作为输入修补
-当前transaction。
+## 6. Board lifecycle
 
-Q59完成后，source-to-package library的primary typed result是本次已readback且已提交的`ExecutablePackage`，而不是中间
-`CardExecutable`。只有第8步成功才能返回success；失败后目标package不可见。CLI output参数表示package destination，
-退出0当且仅当该destination已提交。
+### 6.1 Pre-effect validation
 
-CardExecutable、target LLVM modules和IR trace只在internal/debug/qualification lifetime中保留。target-model、IR dump和board
-qualification使用独立调用或独立结果；其失败不改变已提交package的真实性，也不能使production compile返回失败。profile是
-显式compile product时，普通package、capture packages和activation必须按现有共同transaction语义全部验证后再报告成功。
+在首个provider side effect前完成：
 
-## 5. Runtime invocation planning
+- package canonical parse、whole-root closure、module/program-data digest；
+- ProgramTensor/TargetTensor/port/entry/argument all-and-only coverage；
+- target descriptor、offset/span/alignment与file range；
+- target/runtime/format/launch capability；
+- 16 Tile inventory及`tile_id ↔ launch_slot` exact relation；
+- Direct-DTE/profile requirements；
+- input bindings与aggregate memory size/address-width；
+- configured deadline和provider known limitations。
 
-no-card消费verified package、caller port bindings与provider capability description，生成完整
-`RuntimeInvocationPlan`，但不分配device memory、不装载module、不提交任务。
+### 6.2 Allocation与初始化
 
-runtime只公开完整invocation planning；逐Tile plan是完整plan的内部构成，不能由API或`wafer-run`参数单独选择、
-资格化或执行。`wafer-run --no-card`与`wafer-run --board`都隐含消费all-and-only 16-Tile domain。
+current kernel执行：
 
-它验证：
+1. 若`program_data.total_bytes>0`，`txMalloc(total_bytes)`取得program data `BoardDeviceMemory`，mmap/read verified
+   `program-data.bin`并用一次`txMemcpy(H2D)`整体初始化；为0时验证canonical empty member并跳过这两项provider call；
+2. `txMalloc(invocation_plan.total_bytes)`取得invocation `BoardDeviceMemory`；
+3. input、status、profile和pointer rows按planned child range完成必要H2D；
+4. TargetTensor address = program data base + manifest offset；
+5. workspace/input/output/status address = invocation base + planned offset；
+6. 为16个Tile按`TileEntryArgument.ordinal`写pointer rows；
+7. load required modules/graph，按typed phases提交完整card domain。
 
-- target identity、runtime ABI、module format和launch capability exact match；
-- exactly 16个Tile sessions按launch-slot排序且保留显式card/tile identity；
-- caller bindings all-and-only覆盖external input/output ports，parameter/constant caller binding直接拒绝；
-- data image path/size/digest、segment range、allocation initializer与physical descriptor闭合；
-- 每个allocation/view的bytes、offset、span、alignment、access、memory domain与scope合法且总量无overflow；
-- module/export/phase、entry slots、transport status和host watchdog requirements闭合；
-- Direct-DTE及其它provider capability在首个side effect前满足。
+workspace内部的compiler-managed地址仍是compiled `workspaceBase + wafer.ddr.offset`；runtime不得看到或重新pack内部对象。
 
-no-card成功只证明package/runtime contract可执行，不证明target数值正确、设备可用或性能改善。
+### 6.3 Completion、readback与cleanup
 
-## 6. Board runtime lifecycle
+- 等待使用一个absolute deadline，不为每个Tile重置timeout；
+- `ReturnAfterLocalDrain`只说明Tile-local return；card成功要求16 Tile及transport obligations全部终止；
+- Direct-DTE status在provider-confirmed completion后readback并验证pending/success/error；
+- output按exact physical bytes D2H；decode属于调用适配层；
+- cleanup按load/allocate的reverse order执行并聚合error；
+- known pre-submit failure可正常cleanup；partial/unknown accepted subset、timeout或不可信provider状态使session poisoned，
+  禁止继续provider call，不自动retry/reset/power。
 
-### 6.1 Qualification
+## 7. Q57 PreparedExecution
 
-同一设备会话先一次性核对device count/selection、runtime inventory、16个available Tiles及显式
-`tile_id`↔`launch_slot`关系，形成move-only `QualifiedBoardRuntimeSession`。只要设备和软件身份不变，后续case复用该
-capability，不重复资格化。
+Q57只延长Q56已经验证的对象lifetime：
 
-public API只允许由第一笔完整card-scoped invocation建立该session；不存在先传入任意Tile count建立空session、随后再选择
-部分entry执行的入口。第一笔invocation失败时不返回session capability。
+```text
+PreparedExecution owns:
+  qualified device generation
+  loaded modules/graph
+  optional non-empty program data BoardDeviceMemory
+  invocation BoardDeviceMemory
+  Tile pointer rows
+  transport/profile state
+  provider failure state
 
-provider inventory是事实源；runtime不假设物理Tile按launch slot编号。重复、缺失、unavailable Tile或mapping mismatch
-在allocation/module load之前失败。显式device qualification、live inventory与package必须是同一个完整16-Tile domain；
-不能用更大的设备domain通过“至少覆盖16个”的检查后只执行其子集。
+submit(input/output bindings) -> Submission/Completion
+close() -> Error
+```
 
-### 6.2 Invocation
+初始TX provider保持single context、`max_inflight=1`、无cancel。program data、modules和workspace地址在
+PreparedExecution lifetime稳定；多次submit不重复allocate/load/program-data H2D。one-shot只能调用同一prepare/submit/close实现。
+初始submit复用current external-port host bindings并更新固定invocation ranges；caller-owned device pointer/import仍fail closed。
 
-每次card-scoped invocation按verified plan执行：
+runtime不拥有request queue、continuous batching、prefix/KV policy、tokenizer、sampling、LoRA LRU、Ray/进程编排或DP routing。
+未来固定容量state/step metadata只能在compiler产生对应typed entry arguments和layout后接入。
 
-1. 按allocation identity各分配一次device storage；
-2. 对带initializer的immutable allocation验证并copy exact package segment，对external input port执行caller H2D；
-3. 装载all-and-only module payload并解析typed exports；
-4. 为每个Tile按typed slot→physical tensor/internal buffer→view→allocation关系构造arguments；
-5. 按typed phase提交完整16-Tile domain；
-6. 使用同一个absolute deadline等待本phase完成；
-7. phase结束后释放provider-owned submission state，再进入下一phase；
-8. 所有phase完成后验证Direct-DTE status，copy observable outputs D2H；
-9. 正常cleanup并原子发布result。
+## 8. Profile
 
-one-shot runtime不会为每个Tile重复分配或上传同一个initialized card allocation。它可以用mmap/range read、pinned staging或provider
-支持的分段copy优化传输，但这些只是同一segment的I/O实现；package identity、initializer和terminal lifetime不能依赖某种
-zero-copy/direct-storage能力。
+Profile instrumentation必须复用同一个CardExecutable、TargetTensor materialization和program-data bytes：
 
-provider可以内部使用多个queue/stream，但caller不能观察或组装它们。partial/unknown accepted subset、timeout或不可信
-completion使context poisoned；本invocation停止，禁止自动retry/reset/power，也不在poison后继续provider calls。
+- ordinary/count/trace package的TargetTensor identity、offset和digest关系一致；
+- profile record只作为entry-local typed requirement增加；
+- profile不得触发parameter/constant再次转换；
+- activation/site map使用独立typed合同，不成为普通执行manifest字段；
+- stale/malformed profile在provider effect前失败。
 
-板端执行单进程逐case串行。timeout只需在合理bounded范围内，不作为compiler搜索的任意硬性能阈值。
+## 9. Verification
 
-## 7. Profile instrumentation
+Host/no-card至少覆盖：
 
-profile instrumentation是普通current production package的digest-bound sibling；activation文件使用稳定schema identity并固定
-`card_count=1`、`tile_count=16`，`plan.json`与site map只使用strict current fields，不再各自拥有版本。它只描述：
+- custom/generic package roundtrip、extra/missing field、canonical mismatch；
+- ProgramTensor/TargetTensor identity、multi-representation、cross-Tile共享及错误引用；
+- target descriptor的`MemLayout`、shape、physical bytes、alignment与codec一致；
+- deterministic offset、zero padding、whole-file digest、truncation/trailing/overlap/overflow；
+- external ports无package bytes，parameter/constant caller binding拒绝；
+- 16 Tile、non-identity tile/launch mapping、module/export/argument ordinal；
+- fake provider观察non-empty program data一次allocation/一次H2D、empty program data零次，invocation始终一次allocation、
+  pointer address=`base+offset`；
+- workspace base与compiler offset不被runtime重排；
+- Direct-DTE/profile正负例、deadline、cleanup与poison；
+- source tree/NPY/IR/unreferenced files拒绝；
+- current kernel与exact model launch各自能力不被放宽。
 
-- 一个selected production output；
-- count/trace capture packages；
-- typed target-call site map；
-- 从accepted final Instr派生的static work与有来源的rate；
-- production/capture manifest digest关系。
+板端case使用FP16/BF16，fresh生成完整package并先通过no-card；单进程串行launch、bounded timeout、output/guard和正常lifecycle。
+代码或环境未变化时不重复历史case。Q56达到`board-ready`需要case/oracle/runner完整且实际生成新package；
+真实板测通过前不标`done`。
 
-production、count和trace package从同一组accepted selected-physical-version materializations取得data images/segments。writer可在同一原子
-transaction内复用已验证bytes或底层文件块，但每个package仍有自足的manifest、path/range/digest闭包；不得重新转换三次，
-也不得建立依赖另一个package仍然存在的跨package语义引用。
+## 10. 参考工程采用边界
 
-profile instrumentation没有output集合层、role/id、execution package shell或兼容reader。production output
-直接由activation中的manifest digest绑定用户选择的ordinary package；static cost位于`plan.json`，site map顶层直接包含16个
-Tile rows，capture canonical path只有`captures/count`与`captures/trace`。verified object只在production output保存一次
-manifest digest，不再复制外层digest字段。
-
-每个static-cost row和site-map row都携带显式 `(card_id, tile_id, launch_slot)`，并逐Tile与production manifest
-一致。profile instrumentation不存在时普通执行继续；一旦存在，旧schema、stale digest、缺失Tile、错误site或capture package
-必须fail closed，不能降级忽略。
-
-profile数据是measurement/evidence，不是Q51 search plan、IR sidecar或runtime repair输入。
-
-## 8. Verification 与完成边界
-
-host gate至少覆盖：
-
-- package manifest与profile activation各自canonical roundtrip、strict fields/limits及unsupported version拒绝；plan/site map拒绝任何version字段；
-- non-identity physical `tile_id`/`launch_slot` mapping；
-- duplicate/missing/unavailable Tile、launch slot、module/export、image/segment/allocation/view/program tensor/physical tensor/internal buffer、slot和digest负例；
-- truncated/trailing/unreferenced data、range overflow/overlap/hole、bad digest、wrong physical descriptor和initializer mismatch负例；
-- external ports、package immutable data与internal storage all-and-only；parameter/constant caller binding拒绝；
-- card-scoped共享allocation一次分配/H2D、Tile-scoped storage隔离及output完整readback；
-- 每compile/package-initialized immutable selected target physical version一次transform，每package product/该physical version一个
-  segment projection；external input/output的transform与segment计数均为零，
-  每initialized allocation一次H2D；package immutable bytes等于initialized physical spans加有界alignment，profile不重复transform；
-- Grid/Cluster与Model typed launch；Direct-DTE prepare/main/status/watchdog只覆盖kernel路径，model与parameter/constant、workspace、
-  status或Direct-DTE组合均为负例；
-- no-card在首个provider effect前拒绝无效输入；
-- board failure stage、poison、cleanup和同一session资格复用。
-
-Q53的无卡完成证明必须由Q60产品frontend产生的current generic DAG、HF prefill/decode和Llama source新鲜生成current package并实际通过
-no-card。达到该边界只能标 `board-ready`；Llama与一个prefill/decode代表在真实设备完成同源 matched A/B、exact
-output/guard且获得可重复改善后，Q53才可标 `done`。已删除board harness和历史输出不再是入口或证据。
+- IREE：采用parameter bytes与device allocation分离、compiler解释layout、buffer child range和strict load；不引入VM/通用HAL。
+- XLA/PJRT：采用编译结果与prepared execution分层、on-device layout与completion显式；不照搬Client/Buffer大接口。
+- TileRT：采用prepare一次、地址稳定、重复执行；不假设GPU单kernel或闭源内部实现。
+- vLLM/SGLang：只用于压力测试未来固定容量state和step metadata；scheduler/cache policy不进入本合同。
+- Wafer的CardExecutable、TileEntryArgument、pointer row/BootParam、workspace offsets、RDMA/WDMA、Direct-DTE和provider能力始终是主事实源。

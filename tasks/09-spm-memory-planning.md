@@ -65,7 +65,7 @@ selected physical encoding / transfer materialization
   -> derive all-and-only fixed SPM allocation problems from roots/lifetime/coexistence
   -> 3 MiB fixed-capacity packing + shared physical geometry/range verification
   -> candidate target-ABI address/range/narrowing validation before selection
-  -> target-codegen derivation from the selected executable facts; runtime only binds verified manifest ABI slots
+  -> target-codegen derivation from the selected executable facts; runtime only binds verified TileEntryArguments to planned addresses
 ```
 
 如果allocation没有被接受，不能生成一个等待下游修复的scheduled task program，也不能保留
@@ -231,7 +231,8 @@ live segment，不靠symbol名字判断callee行为，也不形成跨过程summa
   allocator 分配，`#wafer.memory<ddr, *>` memref ownership和accepted range由DDR memory planner负责；
   resource role/scope/entry binding在atomic executable apply时materialize。
 - target-codegen从accepted IR、typed executable bindings和accepted offset facts派生address/range参数；
-  RuntimeSession只为verified manifest slots实例化resource base/handle，不读取或重算SPM plan。
+  no-card `RuntimeInvocationPlan`只把verified `TileEntryArgument`映射到checked memory ranges，board execution才取得base/handle；
+  两者都不读取或重算SPM plan。
 - movement/materialization/compute/sync op。
 - pass-local allocation summary：offset/range、size、alignment、lifetime、alias group。
 - hardware lowering 需要的 begin/end range 和 dtype storage size。
@@ -656,8 +657,9 @@ CardExecutable verification前的Tile executable validation从instruction IR中�
 不能在此新造state consistency、arena/residency policy或ResourceId。
 
 target-codegen之后只能结合accepted instruction IR与这些executable bindings派生address/range/
-stride参数。package从accepted executable序列化runtime-observable resource fields，RuntimeSession只实例化
-typed bindings。package/runtime不得再扫描raw memref/offset恢复resource role、scope、alias或lifetime。
+stride参数。package从accepted executable序列化ProgramTensor/TargetTensor、ports、entry-local requirements与
+`TileEntryArgument`；`RuntimeInvocationPlan`只映射checked memory ranges，board execution再取得实际base。
+package/runtime不得再扫描raw memref/offset恢复role、alias或lifetime。
 
 派生规则：
 
@@ -683,7 +685,7 @@ SPM bufferization 后，IR 应显式表达：
 - necessary effect / wait / barrier。
 
 target-codegen materialization后，bank/color、worker、queue、packet field只在能验证它们的lower-level IR或
-conversion-local value中出现；runtime physical base/handle只存在RuntimeSession。主线instruction IR不新增
+conversion-local value中出现；runtime physical base/handle只存在board invocation或后续`PreparedExecution`。主线instruction IR不新增
 placed memref、flat backing memref 或 explicit descriptor 事实源。
 上游structured program或调度container不携带这些字段。
 
